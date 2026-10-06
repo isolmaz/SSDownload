@@ -22,13 +22,13 @@ cargo run --locked --bin ssdownload -- --data-dir .qa\dev-profile   # separate p
 
 ## Checks
 
-There is no hosted CI and GitHub Actions is disabled for this repository. Every check runs on your machine:
+Pull requests and pushes to `main` run the same checks on GitHub Actions (`.github/workflows/ci.yml`: `cargo fmt --check`, Clippy with warnings as errors, `cargo test`, the extension tests and `cargo build`, all `--locked` on Windows). Run them on your machine first:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1
 ```
 
-It runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the extension tests (`node --test`) and `cargo audit` when it is installed. `scripts\install-hooks.ps1` installs it as a pre-push hook. Please do not add workflow files.
+It runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the extension tests (`node --test`) and `cargo audit` when it is installed. `scripts\install-hooks.ps1` installs it as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
 
 ## Code layout
 

@@ -1,4 +1,4 @@
-# Local quality gate. There is no hosted CI: run this before every push (the
+# Local quality gate. CI runs most of these steps too; run this before every push (the
 # pre-push hook from scripts/install-hooks.ps1 does it automatically) and before
 # every release.
 #

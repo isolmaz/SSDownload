@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/isolmaz/SSDownload/releases/latest"><img src="https://img.shields.io/github/v/release/isolmaz/SSDownload?label=download" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078d4" alt="Windows 10 and 11, 64-bit">
+  <a href="https://github.com/isolmaz/SSDownload/actions/workflows/ci.yml"><img src="https://github.com/isolmaz/SSDownload/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="LICENSE.txt"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
 </p>
 
@@ -58,7 +59,7 @@ Requires Windows 10/11 x64, the Visual Studio C++ Build Tools and [rustup](https
 cargo build --release --locked
 ```
 
-All checks run locally with `scripts\check.ps1`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Checks run locally with `scripts\check.ps1` and on every pull request in GitHub Actions. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
