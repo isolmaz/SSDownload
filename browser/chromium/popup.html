@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>SSDownload</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --alt:#f5f5f7; --text:#1d1d1f; --muted:#6e6e73; --line:rgba(0,0,0,.08); --accent:#0071e3; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1c1c1e; --alt:#2c2c2e; --text:#f5f5f7; --muted:#a1a1a6; --line:rgba(255,255,255,.12); --accent:#2997ff; } }
+  body { margin:0; width:320px; background:var(--bg); color:var(--text); font:13px/1.4 -apple-system,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; }
+  header { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--line); }
+  header strong { font-size:14px; flex:1; }
+  .switch { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); }
+  .switch span { color:var(--muted); }
+  input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
+  h2 { margin:0; padding:10px 14px 4px; font-size:12px; font-weight:600; color:var(--muted); }
+  ul { list-style:none; margin:0; padding:0 8px 8px; max-height:220px; overflow:auto; }
+  li button { width:100%; text-align:left; border:0; background:none; color:var(--text); padding:8px 8px; border-radius:8px; font:inherit; cursor:pointer; display:flex; gap:8px; }
+  li button:hover { background:var(--alt); }
+  li small { color:var(--muted); }
+  .empty { color:var(--muted); padding:4px 14px 12px; margin:0; }
+  footer { display:flex; gap:8px; padding:10px 14px; border-top:1px solid var(--line); }
+  footer button { flex:1; border:0; border-radius:980px; padding:7px 10px; font:inherit; cursor:pointer; background:var(--alt); color:var(--text); }
+  footer button.primary { background:var(--accent); color:#fff; }
+  .status { padding:0 14px 8px; color:var(--muted); min-height:0; }
+</style>
+</head>
+<body>
+<header><img src="icons/icon32.png" width="18" height="18" alt=""><strong>SSDownload</strong><span id="state"></span></header>
+<label class="switch"><span>Algılama</span><input type="checkbox" id="detection"></label>
+<label class="switch"><span id="site-label">Bu sitede düğmeyi gösterme</span><input type="checkbox" id="hide-site"></label>
+<h2>Bu sayfadaki medya</h2>
+<ul id="media"></ul>
+<p class="empty" id="empty" hidden>Bu sayfada seçilebilir medya bulunamadı. Videoyu oynatıp tekrar açın.</p>
+<p class="status" id="status"></p>
+<footer><button id="open-app" class="primary">Uygulamayı aç</button><button id="close">Kapat</button></footer>
+<script src="popup.js"></script>
+</body>
+</html>

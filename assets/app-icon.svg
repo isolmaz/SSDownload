@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">SSDownload application icon</title>
+  <desc id="desc">A white downward arrow above a turquoise download tray on a rounded blue tile.</desc>
+  <defs>
+    <linearGradient id="background" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2369E8"/>
+      <stop offset="1" stop-color="#123E9B"/>
+    </linearGradient>
+    <linearGradient id="tray" x1="116" y1="330" x2="396" y2="424" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#27D4C1"/>
+      <stop offset="1" stop-color="#16A5B9"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="15" stdDeviation="16" flood-color="#09245D" flood-opacity=".38"/>
+    </filter>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#background)"/>
+  <path d="M64 256C64 150 150 64 256 64c83 0 154 53 181 127" fill="none" stroke="#7FACFF" stroke-width="18" stroke-linecap="round" opacity=".35"/>
+  <g filter="url(#shadow)">
+    <path d="M221 119c0-19 16-35 35-35s35 16 35 35v137l42-42c14-14 36-14 50 0s14 36 0 50l-102 102c-14 14-36 14-50 0L129 264c-14-14-14-36 0-50s36-14 50 0l42 42V119z" fill="#fff"/>
+    <path d="M116 342c0-17 13-30 30-30h27l58 58c14 14 36 14 50 0l58-58h27c17 0 30 13 30 30v52c0 19-15 34-34 34H150c-19 0-34-15-34-34v-52z" fill="url(#tray)"/>
+    <circle cx="347" cy="370" r="12" fill="#E8FFFC"/>
+  </g>
+</svg>

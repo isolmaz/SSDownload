@@ -1,0 +1,77 @@
+{
+  "manifest_version": 3,
+  "name": "SSDownload",
+  "version": "1.6.1",
+  "description": "Detect downloadable media and send files, video, and audio to SSDownload.",
+  "update_url": "https://github.com/isolmaz/SSDownload/releases/latest/download/update.xml",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqrwiA1Uzun/qoRRisJGZt/TcBuuSdqcY6DYZkZp5gFoGO2uBdw4oe5NAFML07Z8ShZX0QrPm10iDLZkOyztESz6S039ZoFrVdy3S/sLM6tr1FqXViayDiy29Chcv844QeTAKsPI5ixVDB6kvcUFsWaXYFmsS6CslGSAPuFSRgeFOLBvc9kAy/EUcOqYDJP/SjU8t8UTtX8UuM9dwCX8MpeOJLrMPeVA8/bTDEg3+1mWf63RgNSKDqGf6gFZdevb/5DvD9NDGroY0a17GVX9iUN9Q4VCaeux8eKaLPa4FOlD1KlfERptxwho4pJBy5JcBY9PNw7U20CHgaPtetDrHZQIDAQAB",
+  "permissions": [
+    "alarms",
+    "contextMenus",
+    "downloads",
+    "nativeMessaging",
+    "storage",
+    "tabs",
+    "webRequest",
+    "webNavigation"
+  ],
+  "optional_permissions": [
+    "cookies"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "SSDownload",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "relay-sha256.js",
+        "content.js",
+        "relay-content.js"
+      ],
+      "all_frames": true,
+      "match_about_blank": true,
+      "run_at": "document_start",
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "page-observer.js"
+      ],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  },
+  "minimum_chrome_version": "119.0"
+}

@@ -1,0 +1,6 @@
+/target/
+/artifacts/
+/.qa/
+*.log
+*.key
+*.pem
