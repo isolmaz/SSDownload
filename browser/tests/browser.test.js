@@ -690,8 +690,21 @@ test("native host failures are converted into an actionable browser message", as
   const h = backgroundHarness({ native: async () => { throw new Error("Native messaging host not found"); } });
   await h.menu("ssdownload-app");
   const status = JSON.parse(vm.runInContext("JSON.stringify(tabStatus.get(7)||null)", h.context));
-  assert.match(String(status?.message || ""), /yerel bağlantısı kayıtlı değil/i);
+  assert.match(String(status?.message || ""), /uygulaması bu bilgisayarda bulunamadı/i);
   assert.equal(status?.error, true);
+});
+
+test("the popup offers the download page only when the app is missing, not when it refuses the extension", async () => {
+  const popup = h => new Promise(resolve => h.events.message.listeners.at(-1)({ channel: "ssdownload-popup", command: "state" },
+    { id: "test-extension", url: "chrome-extension://test-extension/popup.html" }, resolve));
+  const missing = backgroundHarness({ native: async () => { throw new Error("Specified native messaging host not found."); } });
+  await missing.settle();
+  const state = await popup(missing);
+  assert.equal(state.appMissing, true);
+  assert.match(state.capabilityError, /bulunamadı/);
+  const refused = backgroundHarness({ native: async () => { throw new Error("Access to the specified native messaging host is forbidden."); } });
+  await refused.settle();
+  assert.equal((await popup(refused)).appMissing, false);
 });
 
 test("a refused extension identity is reported as such, never as a missing registration", async () => {
@@ -700,7 +713,7 @@ test("a refused extension identity is reported as such, never as a missing regis
   await h.menu("ssdownload-app");
   const status = JSON.parse(vm.runInContext("JSON.stringify(tabStatus.get(7)||null)", h.context));
   assert.match(String(status?.message || ""), /izin vermiyor/i);
-  assert.doesNotMatch(String(status?.message || ""), /kayıtlı değil/i);
+  assert.doesNotMatch(String(status?.message || ""), /bulunamadı/i);
   assert.equal(status?.error, true);
 });
 

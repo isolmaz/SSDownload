@@ -861,6 +861,8 @@ api.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
   }
 });
 
+// Chrome's wording when no native host is registered: the app is not installed (or not on Windows).
+const APP_MISSING = /native messaging host.*not found|specified native messaging host|no such native application/i;
 function nativeErrorMessage(error) {
   const message = String(error && error.message ? error.message : error);
   // Chrome words a refused extension identity "Access to the specified native messaging host is
@@ -868,8 +870,8 @@ function nativeErrorMessage(error) {
   if (/forbidden/i.test(message)) {
     return "SSDownload yerel bağlantısı bu eklentiye izin vermiyor (eklenti kimliği izinli değil). SSDownload'ın sunduğu eklenti sürümünü kurun (Tarayıcı Kurulumu); ardından tarayıcıyı yeniden başlatın.";
   }
-  if (/native messaging host.*not found|specified native messaging host|no such native application/i.test(message)) {
-    return "SSDownload yerel bağlantısı kayıtlı değil. Masaüstü uygulamasında Tarayıcı Kurulumu'nu açın veya SSDownload.exe --register-host çalıştırın; ardından tarayıcıyı yeniden başlatın.";
+  if (APP_MISSING.test(message)) {
+    return "SSDownload uygulaması bu bilgisayarda bulunamadı. Eklenti, Windows için ücretsiz SSDownload uygulamasıyla çalışır: \"Uygulamayı indir\" ile kurun. Kuruluysa uygulamada Araçlar → Tarayıcı kurulumu'nu açın ve tarayıcıyı yeniden başlatın.";
   }
   if (/SSD-BRG-005/.test(message)) {
     return "SSDownload çalışmıyor. Araç çubuğu penceresindeki \"Uygulamayı aç\" ile başlatın.";
@@ -972,7 +974,9 @@ async function refreshCapabilities() {
       capabilityState=validateCapabilities(response);
       if (capabilityState.completedJobs !== null) noteCompletedJobs(capabilityState.completedJobs);
     } catch(error) {
-      capabilityState={status:"error",usageModes:null,sourceRefreshJobs:[],checkedAt:Date.now(),error:nativeErrorMessage(error)};
+      const raw=String(error?.message||error);
+      capabilityState={status:"error",usageModes:null,sourceRefreshJobs:[],checkedAt:Date.now(),error:nativeErrorMessage(error),
+        appMissing:APP_MISSING.test(raw)&&!/forbidden/i.test(raw)};
     }
     // A tab switch or a debounced discovery refresh re-reads facts the tabs
     // already hold; only a signature they have never seen reaches the broadcast.
@@ -1749,7 +1753,8 @@ async function popupState() {
     return { index, label: menuCandidateLabel(source), kind: source.kind === "audio" ? "audio" : "video" };
   });
   return { detectionEnabled, host, siteHidden: !!host && hidden.includes(host), media,
-    capabilityError: capabilityState.status === "ready" ? null : String(capabilityState.error || "") };
+    capabilityError: capabilityState.status === "ready" ? null : String(capabilityState.error || ""),
+    appMissing: capabilityState.status !== "ready" && capabilityState.appMissing === true };
 }
 async function handlePopupMessage(message) {
   // The popup is what wakes a suspended worker: the switch, the discovered media and the

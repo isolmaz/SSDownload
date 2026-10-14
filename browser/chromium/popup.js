@@ -3,6 +3,9 @@
 // service worker ("ssdownload-popup" channel); the popup holds no state of its own.
 "use strict";
 const popupApi = globalThis.browser || chrome;
+const DOWNLOAD_PAGE = "https://ssdownload.isolmaz.com/download";
+// Without the desktop app (not installed, or not Windows) the main button leads to its download page.
+let appMissing = false;
 
 function ask(command, extra) {
   return new Promise((resolve) => {
@@ -26,6 +29,8 @@ function show(state) {
   // The desktop's availability problem (not installed, not running, refused) is stated where the
   // user looks; "Uygulamayı aç" below is the explicit action that starts it.
   document.getElementById("status").textContent = state.capabilityError || "";
+  appMissing = state.appMissing === true;
+  document.getElementById("open-app").textContent = appMissing ? "Uygulamayı indir" : "Uygulamayı aç";
   const hide = document.getElementById("hide-site");
   hide.checked = state.siteHidden === true;
   hide.disabled = !state.host;
@@ -71,6 +76,11 @@ document.getElementById("hide-site").addEventListener("change", async (event) =>
   await apply(await ask("hide-site", { value: event.target.checked }));
 });
 document.getElementById("open-app").addEventListener("click", async () => {
+  if (appMissing) {
+    popupApi.tabs.create({ url: DOWNLOAD_PAGE });
+    window.close();
+    return;
+  }
   const reply = await ask("open-app");
   if (reply.error) document.getElementById("status").textContent = reply.error;
   else window.close();

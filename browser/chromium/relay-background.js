@@ -40,7 +40,7 @@
     // Chrome's "Access to the specified native messaging host is forbidden." also contains
     // the not-found wording, so a refused extension identity is recognised first.
     if (/forbidden/i.test(message)) return "SSDownload yerel bağlantısı bu eklentiye izin vermiyor (eklenti kimliği izinli değil).";
-    if (/native messaging host.*not found|specified native messaging host|no such native application/i.test(message)) return "SSDownload yerel bağlantısı kayıtlı değil.";
+    if (/native messaging host.*not found|specified native messaging host|no such native application/i.test(message)) return "SSDownload uygulaması bu bilgisayarda bulunamadı.";
     return `SSDownload kalıcı yerel bağlantısı kesildi: ${message}`;
   }
 

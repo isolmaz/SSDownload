@@ -168,7 +168,7 @@ test("relay reports a refused extension identity instead of a missing registrati
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),{browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
   const reply=await new Promise(resolve=>listener({channel:"ssdownload-relay-control",command:"start",jobId:"12345678-1234-4234-8234-123456789abc",tabId:7,frameId:0,documentId:"document",restart:false},{id:"owned",url:"chrome-extension://owned/popup.html"},resolve));
   assert.match(reply.error,/izin vermiyor/);
-  assert.doesNotMatch(reply.error,/kayıtlı değil/);
+  assert.doesNotMatch(reply.error,/bulunamadı/);
 });
 
 test("the persistent native port is released once the last relay job is gone",async()=>{
