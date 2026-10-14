@@ -24,7 +24,9 @@ use std::{
 };
 
 /// Release feed base for the published product: the assets of the newest
-/// GitHub release of the project repository.
+/// GitHub release of the project repository. Installed copies keep reading the base they
+/// were built with: moving it strands them unless the old base keeps serving a public,
+/// signed feed that points to a build with the new base.
 const DEFAULT_FEED_BASE: &str = "https://github.com/isolmaz/SSDownload/releases/latest/download";
 /// HTTP(S) response byte ceiling for the version feed document.
 const FEED_LIMIT: usize = 64 * 1024;
