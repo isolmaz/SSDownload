@@ -261,9 +261,10 @@ pub(super) fn explicit_drm(value: &Value) -> bool {
     match value.get("has_drm") {
         Some(Value::Bool(v)) => *v,
         Some(Value::Number(v)) => v.as_u64().unwrap_or(0) != 0,
+        // 'maybe' means the tool keeps the format and tests it before downloading it.
         Some(Value::String(v)) => !matches!(
             v.to_ascii_lowercase().as_str(),
-            "" | "false" | "none" | "no" | "0"
+            "" | "false" | "none" | "no" | "0" | "maybe"
         ),
         _ => false,
     }

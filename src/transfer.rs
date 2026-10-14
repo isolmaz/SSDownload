@@ -12,7 +12,10 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -494,7 +497,57 @@ pub(crate) fn download(
     }
 }
 
+/// Resumes retained work only when the server proves the file is unchanged. When it cannot
+/// (no validators, a changed resource, a Range request answered with a full body) the
+/// partial is discarded and the download restarts from zero, so two versions are never mixed.
 fn download_http(
+    request: &AddRequest,
+    output: &Path,
+    remote: RemoteInfo,
+    control: &TransferControl,
+    network: &NetworkGovernor,
+    connections: u8,
+    progress: &mut dyn FnMut(TransferProgress),
+) -> Result<TransferResult> {
+    match download_http_resuming(
+        request,
+        output,
+        remote.clone(),
+        control,
+        network,
+        connections,
+        progress,
+    ) {
+        Err(error) if preserves_partial(&error) && !control.stop_requested() => {
+            remove_if_exists(&part_path(output));
+            remove_if_exists(&state_path(output));
+            cleanup_legacy_segments(output);
+            progress(TransferProgress {
+                downloaded: 0,
+                total: remote.total,
+                speed: 0,
+                eta: None,
+                phase: crate::i18n::ui(
+                    "Kaynak kimliği kanıtlanamadı; baştan başlıyor",
+                    "The source identity could not be proven; restarting from the beginning",
+                )
+                .into(),
+            });
+            download_http_resuming(
+                request,
+                output,
+                remote,
+                control,
+                network,
+                connections,
+                progress,
+            )
+        }
+        other => other,
+    }
+}
+
+fn download_http_resuming(
     request: &AddRequest,
     output: &Path,
     remote: RemoteInfo,
@@ -511,9 +564,11 @@ fn download_http(
     let segment_count = remote
         .total
         .map(|total| {
+            // Sockets beyond the per-host cap would only wait for a permit while holding a range.
             (total / MIN_SEGMENT_SIZE)
                 .max(1)
-                .min(u64::from(connections)) as u8
+                .min(u64::from(connections))
+                .min(u64::from(network.per_host_limit().max(1))) as u8
         })
         .unwrap_or(1);
 
@@ -796,13 +851,10 @@ fn download_http_single(
                 );
             }
             Err(AttemptFailure::RangeRejected | AttemptFailure::ResourceChanged) if offset > 0 => {
-                bail!(
-                    "{}",
-                    crate::i18n::ui(
-                        "Sürdürme yanıtı kaynak kimliğini kanıtlamadı; kısmi dosya korundu",
-                        "The resume response did not prove the source identity; the partial file was kept",
-                    )
-                )
+                return Err(preserved_partial(crate::i18n::ui(
+                    "Sürdürme yanıtı kaynak kimliğini kanıtlamadı; kısmi dosya korundu",
+                    "The resume response did not prove the source identity; the partial file was kept",
+                )))
             }
             Err(AttemptFailure::RetryableStatus {
                 status,
@@ -1155,6 +1207,9 @@ fn download_segmented(
         .div_ceil(u64::from(count.max(1)))
         .clamp(MIN_SEGMENT_SIZE, MAX_SEGMENT_SIZE);
     let (event_tx, event_rx) = mpsc::sync_channel::<RangeEvent>(worker_count * 2);
+    // Raised when the scheduler gives up, so workers stop their current range at once
+    // instead of finishing it for nobody.
+    let abort = Arc::new(AtomicBool::new(false));
     let mut senders = Vec::with_capacity(worker_count);
     let mut handles = Vec::with_capacity(worker_count);
     for worker in 0..worker_count {
@@ -1165,6 +1220,7 @@ fn download_segmented(
         let remote = remote.clone();
         let part = part.clone();
         let control = control.clone();
+        let abort = abort.clone();
         let network = NetworkGovernor::clone(network);
         handles.push(thread::spawn(move || {
             let mut downloader = DynamicRangeWorker {
@@ -1174,6 +1230,7 @@ fn download_segmented(
                 remote: &remote,
                 path: &part,
                 control: &control,
+                abort: &abort,
                 divisor: count as u64,
             };
             loop {
@@ -1430,10 +1487,16 @@ fn download_segmented(
         }
     };
 
+    if outcome.is_err() {
+        abort.store(true, Ordering::Release);
+    }
     for sender in &senders {
         let _ = sender.try_send(RangeCommand::Stop);
     }
     drop(senders);
+    // Nothing reads events any more: a worker blocked on a full channel with its final
+    // result would otherwise never let the join below return.
+    drop(event_rx);
     for handle in handles {
         if handle.join().is_err() && outcome.is_ok() {
             return Err(AttemptFailure::Other(anyhow!(
@@ -1489,6 +1552,7 @@ struct DynamicRangeWorker<'a> {
     remote: &'a RemoteInfo,
     path: &'a Path,
     control: &'a TransferControl,
+    abort: &'a AtomicBool,
     divisor: u64,
 }
 
@@ -1498,6 +1562,10 @@ impl DynamicRangeWorker<'_> {
         range: ByteRange,
         report: &mut dyn FnMut(u64),
     ) -> std::result::Result<(), AttemptFailure> {
+        let abort = self.abort;
+        if abort.load(Ordering::Acquire) {
+            return Err(AttemptFailure::Interrupted);
+        }
         if self.easy.is_none() {
             let easy = self
                 .network
@@ -1564,7 +1632,7 @@ impl DynamicRangeWorker<'_> {
                 .map_err(anyhow::Error::from)?;
             transfer
                 .write_function(|data| {
-                    if control.stop_requested() {
+                    if control.stop_requested() || abort.load(Ordering::Acquire) {
                         return Ok(0);
                     }
                     if !response_allows_remote_body(&write_response.borrow(), expected, remote) {
@@ -1589,13 +1657,15 @@ impl DynamicRangeWorker<'_> {
                 })
                 .map_err(anyhow::Error::from)?;
             transfer
-                .progress_function(|_, _, _, _| !control.stop_requested())
+                .progress_function(|_, _, _, _| {
+                    !control.stop_requested() && !abort.load(Ordering::Acquire)
+                })
                 .map_err(anyhow::Error::from)?;
             transfer.perform()
         };
 
         let headers = response.borrow().clone();
-        if control.stop_requested() {
+        if control.stop_requested() || abort.load(Ordering::Acquire) {
             return Err(AttemptFailure::Interrupted);
         }
         if let Some(error) = io_error.borrow_mut().take() {
@@ -1611,6 +1681,14 @@ impl DynamicRangeWorker<'_> {
                 status: headers.status,
                 retry_after: headers.retry_after,
             });
+        }
+        if matches!(
+            headers.status,
+            401 | 403 | 404 | 408 | 410 | 500 | 502 | 504
+        ) {
+            return Err(AttemptFailure::Other(anyhow!(HttpStatusError {
+                status: headers.status
+            })));
         }
         if headers.status == 0 {
             return match perform_result {
@@ -2335,6 +2413,20 @@ fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
     easy.ssl_verify_host(true)?;
     easy.fail_on_error(false)?;
     easy.follow_location(false)?;
+    // Through an HTTP proxy the CONNECT reply would otherwise reach the header callback and
+    // read as the response itself (`status 200`), hiding a failed TLS handshake behind it.
+    // CURLOPT_SUPPRESS_CONNECT_HEADERS is not wrapped by the curl crate.
+    const CURLOPT_SUPPRESS_CONNECT_HEADERS: curl_sys::CURLoption = curl_sys::CURLOPTTYPE_LONG + 265;
+    let code = unsafe {
+        curl_sys::curl_easy_setopt(
+            easy.raw(),
+            CURLOPT_SUPPRESS_CONNECT_HEADERS,
+            1 as std::os::raw::c_long,
+        )
+    };
+    if code != curl_sys::CURLE_OK {
+        bail!("libcurl CONNECT başlıklarını gizleyemedi");
+    }
     // Site logins answer only for their own host (see `proxy::site_login`); every
     // redirect hop configures a new handle for its own URL, so credentials never follow.
     if let Some((username, password)) = crate::proxy::site_login(url) {
@@ -2391,6 +2483,34 @@ fn build_headers(
             if !referer.contains(['\r', '\n']) {
                 list.append(&format!("Referer: {referer}"))?;
             }
+        }
+    }
+    // Cookies the user consented to in the browser travel like the other session
+    // headers: same origin only, and only the ones that apply to this exact URL.
+    if same_origin
+        && !request
+            .headers
+            .keys()
+            .any(|name| name.trim().eq_ignore_ascii_case("cookie"))
+    {
+        let mut applicable = request
+            .session_cookies
+            .iter()
+            .filter(|cookie| {
+                !cookie.name.is_empty()
+                    && !cookie.name.contains(['=', ';', '\r', '\n'])
+                    && !cookie.value.contains([';', '\r', '\n'])
+                    && crate::media::scoped_cookie_applies(cookie, current)
+            })
+            .collect::<Vec<_>>();
+        applicable.sort_by_key(|cookie| std::cmp::Reverse(cookie.path.len()));
+        if !applicable.is_empty() {
+            let cookies = applicable
+                .iter()
+                .map(|cookie| format!("{}={}", cookie.name, cookie.value))
+                .collect::<Vec<_>>()
+                .join("; ");
+            list.append(&format!("Cookie: {cookies}"))?;
         }
     }
     if let Some(validator) = if_range {
@@ -2903,6 +3023,36 @@ fn final_name(
     }
     output.to_owned()
 }
+/// Decodes `%XX` escapes; `None` when an escape is malformed or the bytes are not UTF-8.
+fn percent_decode_utf8(value: &str) -> Option<String> {
+    let input = value.as_bytes();
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if input[index] == b'%' {
+            let high = (*input.get(index + 1)? as char).to_digit(16)?;
+            let low = (*input.get(index + 2)? as char).to_digit(16)?;
+            bytes.push((high * 16 + low) as u8);
+            index += 3;
+        } else {
+            bytes.push(input[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// The last path segment of a URL as a file name. A parsed `Url` keeps its segments
+/// percent-encoded, so `My%20File.pdf` must be decoded or the escapes would end up in
+/// the name on disk.
+pub(crate) fn url_file_name(url: &Url) -> Option<String> {
+    let segment = url
+        .path_segments()?
+        .next_back()
+        .filter(|segment| !segment.is_empty())?;
+    Some(percent_decode_utf8(segment).unwrap_or_else(|| segment.to_owned()))
+}
+
 fn disposition_name(value: &str) -> Option<String> {
     let mut parts = Vec::new();
     let mut start = 0;
@@ -2942,34 +3092,8 @@ fn disposition_name(value: &str) -> Option<String> {
             if !charset.eq_ignore_ascii_case("utf-8") {
                 continue;
             }
-            let input = encoded.as_bytes();
-            let mut bytes = Vec::new();
-            let mut i = 0;
-            let mut valid = true;
-            while i < input.len() {
-                if input[i] == b'%' {
-                    if i + 2 < input.len() {
-                        if let (Some(a), Some(b)) = (
-                            (input[i + 1] as char).to_digit(16),
-                            (input[i + 2] as char).to_digit(16),
-                        ) {
-                            bytes.push((a * 16 + b) as u8);
-                            i += 3;
-                            continue;
-                        }
-                    }
-                    valid = false;
-                    break;
-                }
-                bytes.push(input[i]);
-                i += 1;
-            }
-            if valid {
-                if let Ok(name) = String::from_utf8(bytes) {
-                    if !name.is_empty() {
-                        return Some(name);
-                    }
-                }
+            if let Some(name) = percent_decode_utf8(encoded).filter(|name| !name.is_empty()) {
+                return Some(name);
             }
         } else if key.eq_ignore_ascii_case("filename") {
             let value = value
@@ -3293,6 +3417,83 @@ mod tests {
     }
 
     #[test]
+    fn consented_session_cookies_reach_only_the_matching_same_origin_request() {
+        let cookie =
+            |name: &str, domain: &str, path: &str, secure: bool| crate::model::ScopedCookie {
+                name: name.into(),
+                value: format!("{name}-value"),
+                domain: domain.into(),
+                path: path.into(),
+                secure,
+                host_only: true,
+                ..Default::default()
+            };
+        let request = AddRequest {
+            session_cookies: vec![
+                cookie("site", "example.test", "/", false),
+                cookie("deep", "example.test", "/files", false),
+                cookie("elsewhere", "other.test", "/", false),
+                cookie("tls-only", "example.test", "/", true),
+            ],
+            ..Default::default()
+        };
+        let headers = |url: &str, origin_url: &str| {
+            let current = Url::parse(url).unwrap();
+            build_headers(
+                &request,
+                &current,
+                &origin(&Url::parse(origin_url).unwrap()),
+                None,
+            )
+            .unwrap()
+            .iter()
+            .map(|line| String::from_utf8_lossy(line).into_owned())
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            headers(
+                "http://example.test/files/a.bin",
+                "http://example.test/files/a.bin"
+            ),
+            vec!["Cookie: deep=deep-value; site=site-value".to_owned()]
+        );
+        assert_eq!(
+            headers("https://example.test/a.bin", "https://example.test/a.bin"),
+            vec!["Cookie: site=site-value; tls-only=tls-only-value".to_owned()]
+        );
+        // A redirect to another origin never carries the session.
+        assert!(headers("http://cdn.example.test/a.bin", "http://example.test/a.bin").is_empty());
+    }
+
+    #[test]
+    fn url_file_names_are_percent_decoded() {
+        let name = |value: &str| url_file_name(&Url::parse(value).unwrap());
+        assert_eq!(
+            name("https://example.test/a/My%20Report%20%281%29.pdf?token=a%20b"),
+            Some("My Report (1).pdf".into())
+        );
+        assert_eq!(
+            name("https://example.test/%C3%BCr%C3%BCn.zip"),
+            Some("ürün.zip".into())
+        );
+        // Parsing already percent-encodes characters typed straight into the address.
+        assert_eq!(
+            name("https://example.test/ürün listesi.zip"),
+            Some("ürün listesi.zip".into())
+        );
+        // A malformed or non-UTF-8 escape keeps the segment as received.
+        assert_eq!(
+            name("https://example.test/100%.txt"),
+            Some("100%.txt".into())
+        );
+        assert_eq!(
+            name("https://example.test/a%FF.bin"),
+            Some("a%FF.bin".into())
+        );
+        assert_eq!(name("https://example.test/folder/"), None);
+    }
+
+    #[test]
     fn redirect_never_allows_site_credentials_to_cross_origins() {
         assert!(header_is_safe_across_origin("authorization", true));
         assert!(!header_is_safe_across_origin("authorization", false));
@@ -3512,6 +3713,45 @@ mod tests {
     }
 
     #[test]
+    fn a_partial_without_any_validator_restarts_from_zero_instead_of_failing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload: Vec<u8> = (0..128).collect();
+        let served = payload.clone();
+        let (server_done, server_result) = mpsc::channel();
+        thread::spawn(move || {
+            let mut requests = Vec::new();
+            for index in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                requests.push(request);
+                let head =
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 128\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n";
+                stream.write_all(head).unwrap();
+                if index == 1 {
+                    stream.write_all(&served[..31]).unwrap();
+                } else if index == 3 {
+                    stream.write_all(&served).unwrap();
+                }
+                stream.flush().unwrap();
+            }
+            server_done.send(requests).unwrap();
+        });
+        let request = local_request(format!("http://{address}/no-validators"));
+        let control = TransferControl::default();
+        let network = NetworkGovernor::new(16);
+        let directory = TestDirectory::new("restart-unproven");
+        let output = directory.0.join("payload.bin");
+        assert!(download(&request, &output, &control, &network, 1, None, &mut |_| {}).is_err());
+        assert_eq!(fs::metadata(part_path(&output)).unwrap().len(), 31);
+        let result = download(&request, &output, &control, &network, 1, None, &mut |_| {}).unwrap();
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        let requests = server_result.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!requests[3].to_ascii_lowercase().contains("range:"));
+        assert!(!part_path(&output).exists());
+    }
+
+    #[test]
     fn cross_origin_redirect_strips_credentials_during_probe_and_download() {
         let target_listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let target_address = target_listener.local_addr().unwrap();
@@ -3684,6 +3924,212 @@ mod tests {
                 .filter(|request| request.contains("Range:"))
                 .count(),
             3
+        );
+    }
+
+    #[test]
+    fn a_failed_range_does_not_hang_the_scheduler_while_another_worker_keeps_reporting() {
+        fn serve(stream: &mut TcpStream, payload: &[u8]) {
+            let request = read_request(stream);
+            let total = payload.len();
+            if request.starts_with("HEAD ") {
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nETag: \"range-failure-v1\"\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                return;
+            }
+            let Some(range) = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                .map(|line| line.split_once(':').unwrap().1.trim().to_owned())
+            else {
+                response(
+                    stream,
+                    "200 OK",
+                    &["Accept-Ranges: bytes", "ETag: \"range-failure-v1\""],
+                    payload,
+                );
+                return;
+            };
+            let (start, end) = range
+                .strip_prefix("bytes=")
+                .and_then(|value| value.split_once('-'))
+                .unwrap();
+            let start: usize = start.parse().unwrap();
+            let end: usize = end.parse().unwrap();
+            if start == 0 && end > 0 {
+                response(stream, "416 Range Not Satisfiable", &[], b"");
+                return;
+            }
+            let body = &payload[start..=end];
+            let head = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nAccept-Ranges: bytes\r\nETag: \"range-failure-v1\"\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            if stream.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            // Every range after the first is served slowly, so its worker keeps reporting
+            // progress long after the first range has already failed.
+            for chunk in body.chunks(32 * 1024) {
+                if stream.write_all(chunk).is_err() {
+                    return;
+                }
+                if start > 0 {
+                    thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload: Arc<Vec<u8>> = Arc::new(
+            (0..MIN_SEGMENT_SIZE * 3)
+                .map(|index| (index % 251) as u8)
+                .collect(),
+        );
+        let stop = Arc::new(AtomicBool::new(false));
+        let server = {
+            let payload = payload.clone();
+            let stop = stop.clone();
+            thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream.set_nonblocking(false).unwrap();
+                            let payload = payload.clone();
+                            thread::spawn(move || serve(&mut stream, &payload));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+
+        let directory = TestDirectory::new("range-failure");
+        let output = directory.0.join("large.bin");
+        let (finished, outcome) = mpsc::channel();
+        {
+            let output = output.clone();
+            thread::spawn(move || {
+                let result = download(
+                    &local_request(format!("http://{address}/large")),
+                    &output,
+                    &TransferControl::default(),
+                    &NetworkGovernor::new(16),
+                    2,
+                    None,
+                    &mut |_| {},
+                )
+                .map(|result| fs::read(result.path).unwrap())
+                .map_err(|error| format!("{error:#}"));
+                let _ = finished.send(result);
+            });
+        }
+        let outcome = outcome
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the segmented scheduler hung after one range failed");
+        stop.store(true, Ordering::Release);
+        server.join().unwrap();
+        assert_eq!(outcome.unwrap(), *payload);
+    }
+
+    #[test]
+    fn a_gateway_error_on_a_later_range_is_a_retryable_http_status_not_a_range_rejection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload: Arc<Vec<u8>> = Arc::new(
+            (0..MIN_SEGMENT_SIZE * 3)
+                .map(|index| (index % 251) as u8)
+                .collect(),
+        );
+        let stop = Arc::new(AtomicBool::new(false));
+        let server = {
+            let payload = payload.clone();
+            let stop = stop.clone();
+            thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream.set_nonblocking(false).unwrap();
+                            let payload = payload.clone();
+                            thread::spawn(move || {
+                                let request = read_request(&mut stream);
+                                let total = payload.len();
+                                if request.starts_with("HEAD ") {
+                                    let _ = stream.write_all(
+                                        format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nETag: \"gateway-v1\"\r\nConnection: close\r\n\r\n").as_bytes(),
+                                    );
+                                    return;
+                                }
+                                let range = request
+                                    .lines()
+                                    .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                                    .and_then(|line| {
+                                        line.split_once("bytes=").map(|v| v.1.trim().to_owned())
+                                    })
+                                    .expect("ranged request");
+                                let (start, end) = range.split_once('-').unwrap();
+                                let (start, end): (usize, usize) =
+                                    (start.parse().unwrap(), end.parse().unwrap());
+                                if start > 0 {
+                                    // The first range has finished and been recorded by now.
+                                    thread::sleep(Duration::from_millis(400));
+                                    let _ = stream.write_all(
+                                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                    );
+                                    return;
+                                }
+                                let body = &payload[start..=end];
+                                let _ = stream.write_all(
+                                    format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nETag: \"gateway-v1\"\r\nConnection: close\r\n\r\n", body.len()).as_bytes(),
+                                );
+                                let _ = stream.write_all(body);
+                            });
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+
+        let directory = TestDirectory::new("range-gateway");
+        let output = directory.0.join("large.bin");
+        let error = download(
+            &local_request(format!("http://{address}/large")),
+            &output,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            2,
+            None,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        stop.store(true, Ordering::Release);
+        server.join().unwrap();
+        assert_eq!(http_status(&error), Some(502), "{error:#}");
+        assert!(!preserves_partial(&error), "{error:#}");
+        // The first range was durably recorded, so the retry resumes instead of restarting.
+        let state = read_state(&state_path(&output)).unwrap();
+        assert_eq!(
+            state.completed,
+            vec![ByteRange {
+                start: 0,
+                end: MIN_SEGMENT_SIZE * 3 / 2
+            }]
         );
     }
 

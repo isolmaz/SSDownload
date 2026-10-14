@@ -136,7 +136,10 @@ pub fn validate_relay_events(events: &[crate::model::RelayEvent]) -> Result<()> 
         // the batch must satisfy, because those fields carry the payload.
         if let Some(code) = &event.code {
             if crate::error_codes::from_text(code).is_none() {
-                bail!("Bilinmeyen hata kodu");
+                bail!(
+                    "{}",
+                    crate::i18n::ui("Bilinmeyen hata kodu", "Unknown error code")
+                );
             }
         }
         if let Some(host) = &event.host {

@@ -161,7 +161,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 line,
                 1,
             );
-            let label_w = scale(210, dlg.dpi);
+            let label_w = scale(276, dlg.dpi);
             for (index, (label_index, control)) in
                 [(4, f.connections), (5, f.checksum), (6, f.schedule)]
                     .iter()
@@ -186,15 +186,15 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_ADD_OK,
-                w - m - scale(130, dlg.dpi),
+                w - m - scale(150, dlg.dpi),
                 by,
-                scale(130, dlg.dpi),
+                scale(150, dlg.dpi),
                 row,
             );
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(230, dlg.dpi),
+                w - m - scale(250, dlg.dpi),
                 by,
                 scale(92, dlg.dpi),
                 row,
@@ -248,15 +248,15 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(18, dlg.dpi),
                 genel,
             );
-            place(f.ui_mode, genel, field_x, row_y, scale(140, dlg.dpi), line);
+            place(f.ui_mode, genel, field_x, row_y, scale(110, dlg.dpi), line);
             // Arayüz dili shares the mode row: the label column belongs to it,
             // so this label sits in the field area beside the combo.
             place_static(
                 &labels,
                 12,
-                field_x + scale(148, dlg.dpi),
+                field_x + scale(118, dlg.dpi),
                 row_y + scale(3, dlg.dpi),
-                scale(78, dlg.dpi),
+                scale(108, dlg.dpi),
                 scale(18, dlg.dpi),
                 genel,
             );
@@ -383,21 +383,23 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // The schedule toggle and its two clock fields share one row, and
             // all three are advanced-only.
             let schedule = genel && !simple;
-            let clock_w = scale(64, dlg.dpi);
-            place(f.schedule, schedule, cx, row_y, scale(238, dlg.dpi), line);
+            // The labels carry the "(SS:DD)" hint, so their slots are sized for
+            // the longer of the two languages' text.
+            let clock_w = scale(56, dlg.dpi);
+            place(f.schedule, schedule, cx, row_y, scale(194, dlg.dpi), line);
             place_static(
                 &labels,
                 2,
-                cx + scale(246, dlg.dpi),
+                cx + scale(200, dlg.dpi),
                 row_y + scale(3, dlg.dpi),
-                scale(62, dlg.dpi),
+                scale(100, dlg.dpi),
                 scale(18, dlg.dpi),
                 schedule,
             );
             place(
                 f.start,
                 schedule,
-                cx + scale(310, dlg.dpi),
+                cx + scale(304, dlg.dpi),
                 row_y,
                 clock_w,
                 line,
@@ -405,16 +407,16 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             place_static(
                 &labels,
                 3,
-                cx + scale(382, dlg.dpi),
+                cx + scale(366, dlg.dpi),
                 row_y + scale(3, dlg.dpi),
-                scale(38, dlg.dpi),
+                scale(80, dlg.dpi),
                 scale(18, dlg.dpi),
                 schedule,
             );
             place(
                 f.end,
                 schedule,
-                cx + scale(424, dlg.dpi),
+                cx + scale(450, dlg.dpi),
                 row_y,
                 clock_w,
                 line,
@@ -818,8 +820,15 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             MoveWindow(f.enabled, x(226), in_row(1), scale(130, dlg.dpi), line, 1);
             field(5, 364, in_row(1), 200, line);
             MoveWindow(f.quota, x(568), in_row(1), scale(92, dlg.dpi), line, 1);
-            field(3, 0, in_row(2), 90, line);
-            MoveWindow(f.completion, x(94), in_row(2), scale(200, dlg.dpi), line, 1);
+            field(3, 0, in_row(2), 104, line);
+            MoveWindow(
+                f.completion,
+                x(108),
+                in_row(2),
+                scale(190, dlg.dpi),
+                line,
+                1,
+            );
             move_id(
                 dlg.hwnd,
                 Q_UPDATE,
@@ -831,9 +840,9 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 Q_MOVE_JOB,
-                x(420),
+                x(416),
                 in_row(2),
-                scale(110, dlg.dpi),
+                scale(118, dlg.dpi),
                 line,
             );
             move_id(
@@ -1068,8 +1077,8 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             MoveWindow(f.dir, x(114), in_row(1), cw - scale(114, dlg.dpi), line, 1);
             field(3, 0, in_row(2), 130);
             MoveWindow(f.interval, x(134), in_row(2), scale(80, dlg.dpi), line, 1);
-            MoveWindow(f.enabled, x(230), in_row(2), scale(150, dlg.dpi), line, 1);
-            MoveWindow(f.overwrite, x(390), in_row(2), scale(270, dlg.dpi), line, 1);
+            MoveWindow(f.enabled, x(230), in_row(2), scale(146, dlg.dpi), line, 1);
+            MoveWindow(f.overwrite, x(380), in_row(2), scale(280, dlg.dpi), line, 1);
             move_id(dlg.hwnd, Y_NEW, x(0), in_row(3), scale(120, dlg.dpi), line);
             move_id(
                 dlg.hwnd,

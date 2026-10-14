@@ -18,7 +18,42 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    /// Opens the database. A file SQLite reports as not a database or malformed is moved
+    /// aside as `*.corrupt-<timestamp>` and a fresh one is created, with a warning; every
+    /// other failure (busy, disk full, a newer schema) is returned untouched.
     pub(crate) fn open(path: &Path) -> Result<Self> {
+        match Self::initialize(path) {
+            Err(error) if is_corrupt_database(&error) => {
+                let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                let mut moved = path.as_os_str().to_os_string();
+                moved.push(format!(".corrupt-{stamp}"));
+                let moved = std::path::PathBuf::from(moved);
+                std::fs::rename(path, &moved).with_context(|| {
+                    format!("Bozuk veritabanı kenara alınamadı: {}", path.display())
+                })?;
+                for suffix in ["-wal", "-shm"] {
+                    let mut side = path.as_os_str().to_os_string();
+                    side.push(suffix);
+                    let _ = std::fs::remove_file(side);
+                }
+                let mut store = Self::initialize(path)?;
+                store.warnings.push(crate::i18n::ui_owned!(
+                    format!(
+                        "İndirme veritabanı okunamadı; bozuk dosya {} olarak saklandı ve boş bir kuyruk açıldı.",
+                        moved.display()
+                    ),
+                    format!(
+                        "The download database could not be read; the damaged file was kept as {} and an empty queue was opened.",
+                        moved.display()
+                    )
+                ));
+                Ok(store)
+            }
+            other => other,
+        }
+    }
+
+    fn initialize(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!("Veritabanı klasörü oluşturulamadı: {}", parent.display())
@@ -330,6 +365,19 @@ impl Store {
     }
 }
 
+fn is_corrupt_database(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(failure, _))
+                if matches!(
+                    failure.code,
+                    rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt
+                )
+        )
+    })
+}
+
 fn encode_job(job: &Job) -> Result<String> {
     let json = serde_json::to_string(job).context("İş kaydı kodlanamadı")?;
     secure::seal(json).context("İş kaydı şifrelenemedi")
@@ -419,6 +467,34 @@ mod tests {
                 .unwrap(),
             1
         );
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_database_file_is_set_aside_and_replaced_with_an_empty_queue() {
+        let root = scratch();
+        let path = root.join("queue.sqlite3");
+        fs::write(&path, vec![0x5au8; 4096]).unwrap();
+
+        let mut store = Store::open(&path).unwrap();
+        assert!(store.load_jobs().unwrap().is_empty());
+        assert_eq!(store.warnings.len(), 1);
+        let kept = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("queue.sqlite3.corrupt-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(fs::read(kept[0].path()).unwrap(), vec![0x5au8; 4096]);
+        store
+            .save_job(&job(Uuid::new_v4().to_string(), JobState::Queued))
+            .unwrap();
         drop(store);
         fs::remove_dir_all(root).unwrap();
     }

@@ -3,6 +3,7 @@
 //! taskbar, follow the colour scheme and can be pinned on top.
 
 use super::*;
+use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 
 pub(super) const CLASS_CARD: &str = "SSDownload.Card";
 const TIMER_CARD: usize = 7;
@@ -96,7 +97,7 @@ pub(super) unsafe fn open_card(owner: HWND, app: App, kind: CardKind) {
             return;
         }
     }
-    let dpi = GetDpiForWindow(owner).max(96);
+    let dpi = primary_dpi();
     let pinned = matches!(kind, CardKind::Done(_));
     let raw = Box::into_raw(Box::new(CardUi {
         app,
@@ -140,9 +141,23 @@ pub(super) unsafe fn open_card(owner: HWND, app: App, kind: CardKind) {
         size_of::<u32>() as u32,
     );
     CARDS.with(|cards| cards.borrow_mut().push(hwnd));
+    trim_done_cards(hwnd);
     stack_cards();
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     SetTimer(hwnd, TIMER_CARD, 500, None);
+}
+
+/// DPI of the monitor the cards are stacked on (the primary one). The window
+/// that opened a card may sit on another monitor with another scale, which
+/// would draw the card too large or too small where it actually appears.
+unsafe fn primary_dpi() -> u32 {
+    let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+    let (mut x, mut y) = (0u32, 0u32);
+    if !monitor.is_null() && GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y) == 0 {
+        x.max(96)
+    } else {
+        GetDpiForSystem().max(96)
+    }
 }
 
 /// The downloads a card shows right now.
@@ -156,25 +171,60 @@ fn card_jobs<'a>(kind: &CardKind, snapshot: &'a AppSnapshot) -> Vec<&'a Job> {
         CardKind::Panel => snapshot
             .jobs
             .iter()
-            .filter(|job| {
-                matches!(
-                    job.state,
-                    JobState::Connecting
-                        | JobState::Downloading
-                        | JobState::Processing
-                        | JobState::Queued
-                        | JobState::Paused
-                )
-            })
+            .filter(|job| in_panel(job))
             .take(PANEL_ROWS)
             .collect(),
     }
+}
+
+/// Whether the mini panel lists a download: running or waiting, not finished.
+fn in_panel(job: &Job) -> bool {
+    matches!(
+        job.state,
+        JobState::Connecting
+            | JobState::Downloading
+            | JobState::Processing
+            | JobState::Queued
+            | JobState::Paused
+    )
 }
 
 unsafe fn card_height(card: &CardUi) -> i32 {
     let snapshot = card.app.snapshot();
     let rows = card_jobs(&card.kind, &snapshot).len().max(1) as i32;
     scale(HEADER + ROW * rows + FOOTER, card.dpi)
+}
+
+/// A burst of finished downloads would stack cards past the top of the screen,
+/// out of reach. The oldest completion cards the user did not keep go first, so
+/// the newest stay on screen; `newest` is never closed here.
+unsafe fn trim_done_cards(newest: HWND) {
+    let mut area: RECT = zeroed();
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut area as *mut RECT).cast(), 0);
+    let available = area.bottom - area.top;
+    loop {
+        let cards = CARDS.with(|cards| cards.borrow().clone());
+        let mut used = 0;
+        let mut oldest = None;
+        for hwnd in cards {
+            let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut CardUi;
+            if raw.is_null() {
+                continue;
+            }
+            used += card_height(&*raw) + scale(12, (*raw).dpi);
+            if oldest.is_none()
+                && hwnd != newest
+                && !(*raw).keep
+                && matches!((*raw).kind, CardKind::Done(_))
+            {
+                oldest = Some(hwnd);
+            }
+        }
+        match oldest {
+            Some(hwnd) if used > available => close_card(hwnd),
+            _ => break,
+        }
+    }
 }
 
 /// Stacks every open card upward from the bottom-right corner of the work area.
@@ -353,10 +403,14 @@ unsafe fn paint_card(card: &mut CardUi, dc: HDC) {
     let jobs = card_jobs(&card.kind, &snapshot);
     let title = match &card.kind {
         CardKind::Done(_) => crate::i18n::ui("İndirme tamamlandı", "Download complete").to_string(),
-        CardKind::Panel => crate::i18n::ui_owned!(
-            format!("İndirmeler ({})", jobs.len()),
-            format!("Downloads ({})", jobs.len())
-        ),
+        CardKind::Panel => {
+            // The rows are capped; the title still counts every listed download.
+            let total = snapshot.jobs.iter().filter(|job| in_panel(job)).count();
+            crate::i18n::ui_owned!(
+                format!("İndirmeler ({total})"),
+                format!("Downloads ({total})")
+            )
+        }
         CardKind::Jobs(_) => "SSDownload".to_string(),
     };
     let header = RECT {
@@ -371,14 +425,16 @@ unsafe fn paint_card(card: &mut CardUi, dc: HDC) {
     let mut x = client.right - pad + scale(6, d) - glyph;
     let glyphs: Vec<(Glyph, CardAction, u32)> = {
         let mut list = vec![(Glyph::Close, CardAction::Close, muted)];
+        // A completion card is always on top; its pin means "stay until closed".
+        let held = if matches!(card.kind, CardKind::Done(_)) {
+            card.keep
+        } else {
+            card.pinned
+        };
         list.push((
-            if card.pinned {
-                Glyph::Pinned
-            } else {
-                Glyph::Pin
-            },
+            if held { Glyph::Pinned } else { Glyph::Pin },
             CardAction::Pin,
-            if card.pinned { accent } else { muted },
+            if held { accent } else { muted },
         ));
         if !matches!(card.kind, CardKind::Done(_)) {
             list.push((Glyph::Expand, CardAction::Expand, muted));
@@ -562,9 +618,14 @@ unsafe fn run_action(card: &mut CardUi, action: CardAction) {
     match action {
         CardAction::Close => close_card(card.hwnd),
         CardAction::Pin => {
-            card.pinned = !card.pinned;
-            card.keep = card.pinned;
-            stack_cards();
+            if matches!(card.kind, CardKind::Done(_)) {
+                // Already on top; the pin only decides whether it stays.
+                card.keep = !card.keep;
+            } else {
+                card.pinned = !card.pinned;
+                card.keep = card.pinned;
+                stack_cards();
+            }
             InvalidateRect(card.hwnd, null(), 0);
         }
         CardAction::PauseAll => {

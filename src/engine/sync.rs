@@ -133,6 +133,20 @@ pub(super) fn perform_synchronization(
     easy.url(&policy.url)?;
     easy.follow_location(true)?;
     easy.max_redirections(10)?;
+    // Redirects may only lead to http(s): libcurl's default would also follow ftp(s).
+    // CURLOPT_REDIR_PROTOCOLS is not wrapped by the curl crate.
+    let redirect_protocols =
+        (curl_sys::CURLPROTO_HTTP | curl_sys::CURLPROTO_HTTPS) as std::os::raw::c_long;
+    if unsafe {
+        curl_sys::curl_easy_setopt(
+            easy.raw(),
+            curl_sys::CURLOPT_REDIR_PROTOCOLS,
+            redirect_protocols,
+        )
+    } != curl_sys::CURLE_OK
+    {
+        bail!("libcurl yönlendirme protokolleri kısıtlanamadı");
+    }
     easy.fail_on_error(false)?;
     easy.connect_timeout(Duration::from_secs(30))?;
     easy.low_speed_limit(1)?;
@@ -154,6 +168,8 @@ pub(super) fn perform_synchronization(
     easy.http_headers(conditional)?;
 
     let headers = RefCell::new(SyncHeaders::default());
+    let current = RefCell::new(Url::parse(&policy.url)?);
+    let downgraded = std::cell::Cell::new(false);
     let mut digest = Sha256::new();
     let mut written = 0u64;
     let mut write_error = None;
@@ -167,6 +183,16 @@ pub(super) fn perform_synchronization(
             if let Ok(line) = std::str::from_utf8(line) {
                 if let Some((name, value)) = line.split_once(':') {
                     let value = value.trim().to_owned();
+                    if name.eq_ignore_ascii_case("location") {
+                        let mut current = current.borrow_mut();
+                        if let Ok(next) = current.join(&value) {
+                            if current.scheme() == "https" && next.scheme() != "https" {
+                                downgraded.set(true);
+                                return false;
+                            }
+                            *current = next;
+                        }
+                    }
                     let mut headers = headers.borrow_mut();
                     if name.eq_ignore_ascii_case("etag") {
                         headers.etag = Some(value);
@@ -188,6 +214,15 @@ pub(super) fn perform_synchronization(
         })?;
         transfer.perform()
     };
+    if downgraded.get() {
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Senkronizasyon kaynağı HTTPS bağlantısını şifresiz bir adrese yönlendirdi; reddedildi",
+                "The synchronization source redirected an HTTPS connection to an insecure address; refused"
+            )
+        );
+    }
     if let Some(error) = write_error {
         return Err(error).context("Senkronizasyon verisi diske yazılamadı");
     }

@@ -97,7 +97,8 @@ pub(crate) struct UpdateOutcome {
     /// User-facing Turkish text. Includes the quarantine path when applicable.
     pub(crate) message: String,
     pub(crate) quarantine: Option<PathBuf>,
-    /// True when the installer was deliberately skipped (dry-run mode).
+    /// True when the installer was deliberately skipped (dry-run mode, or a portable copy
+    /// that is pointed to the release page); the application keeps running.
     pub(crate) dry_run: bool,
 }
 
@@ -113,7 +114,11 @@ pub fn is_newer(current: &str, candidate: &str) -> bool {
 }
 
 fn parse_semver(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.trim().split('.');
+    // The version names the staged file and the skipped-version preference verbatim.
+    if value.trim() != value {
+        return None;
+    }
+    let mut parts = value.split('.');
     let major = numeric_component(parts.next()?)?;
     let minor = numeric_component(parts.next()?)?;
     let patch = numeric_component(parts.next()?)?;
@@ -179,7 +184,7 @@ fn fetch_document(
     easy.ssl_verify_host(true)?;
     let mut data = Vec::new();
     let mut too_large = false;
-    {
+    let performed = {
         let mut transfer = easy.transfer();
         transfer.write_function(|chunk| {
             if data.len().saturating_add(chunk.len()) > limit {
@@ -189,19 +194,22 @@ fn fetch_document(
             data.extend_from_slice(chunk);
             Ok(chunk.len())
         })?;
-        transfer.perform().map_err(|error| {
-            anyhow!(
-                "{}",
-                crate::i18n::ui_owned!(
-                    format!("Güncelleme akışına erişilemedi: {error}"),
-                    format!("The update feed could not be reached: {error}")
-                )
-            )
-        })?;
-    }
+        transfer.perform()
+    };
+    // The refused write makes the transfer itself fail, so the size verdict has to come
+    // first or an oversized document is reported as an unreachable feed.
     if too_large {
         crate::bail_code!(crate::error_codes::UPD_001);
     }
+    performed.map_err(|error| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("Güncelleme akışına erişilemedi: {error}"),
+                format!("The update feed could not be reached: {error}")
+            )
+        )
+    })?;
     let status = easy.response_code()?;
     if status == 404 {
         crate::bail_code!(crate::error_codes::UPD_001);
@@ -431,12 +439,19 @@ fn move_into_quarantine(folder: &Path, file: &Path) -> Result<()> {
                 format!("Copying to quarantine failed: {}", file.display())
             )
         })?;
-        // The rename failed (likely a different volume); the original file in
-        // %TEMP% is a disposable OS scratch copy. Windows removes %TEMP%
-        // contents on its own schedule; we still surface both paths so the
-        // user can review them.
+        retire_copied_original(file);
     }
     Ok(())
+}
+
+/// The rename into quarantine failed and the copy succeeded: the original is renamed to
+/// `<name>.moved` (never deleted) so the startup reconciliation, which only picks staged
+/// `SSDownload-*-Setup.exe` files, does not copy it again at every start. When the original is
+/// still locked the rename fails too and the next start retries, which is the intent.
+fn retire_copied_original(file: &Path) {
+    let mut retired = file.as_os_str().to_owned();
+    retired.push(".moved");
+    let _ = fs::rename(file, PathBuf::from(retired));
 }
 
 /// Moves staged Setup downloads into a timestamped quarantine folder.
@@ -596,6 +611,9 @@ fn download_setup(
             true
         })?;
         if let Err(error) = transfer.perform() {
+            if oversized.get() {
+                crate::bail_code!(crate::error_codes::UPD_003);
+            }
             if let Some(io_error) = io_error.borrow_mut().take() {
                 return Err(io_error).context(crate::i18n::ui(
                     "Güncelleme diske yazılamadı",
@@ -637,59 +655,99 @@ fn download_setup(
     Ok(())
 }
 
-/// Launches the detached install+restart helper and exits through the
-/// graceful quit path. The helper waits for this process to exit, runs the
-/// staged Setup with `/S`, then reopens the application.
-///
-/// Two Windows details drive this shape:
-/// - The installer cannot replace a running `ssdownload.exe`, and its own
-///   `--quit` call plus a fixed sleep is not a reliable barrier, so the helper
-///   waits for this exact PID.
-/// - `std::process::Command` escapes embedded quotes the way the C runtime
-///   expects, which `cmd.exe` reads literally. Passing the script through
-///   `-EncodedCommand` avoids command-line quoting entirely, and PowerShell's
-///   `Wait-Process`/`Start-Process` need no console (the earlier `cmd` chain
-///   used `timeout`, which fails under `DETACHED_PROCESS` and silently stopped
-///   before the restart).
-fn launch_install_helper(setup: &Path, app_dir: &Path, expected_sha256: &str) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    let target = app_dir.join("ssdownload.exe");
+/// Name of the marker the install helper leaves in the profile when the silent Setup did not
+/// complete; the next start reports it.
+const INSTALL_FAILURE_MARKER: &str = "update-failure.json";
+
+/// The PowerShell the detached helper runs. It waits for this exact PID, verifies and runs the
+/// staged Setup with `/S`, and in every outcome reopens the existing application: a failed or
+/// timed-out installation leaves a marker file instead of an application that closed and never
+/// came back.
+fn install_helper_script(
+    pid: u32,
+    setup: &Path,
+    target: &Path,
+    expected_sha256: &str,
+    marker: &Path,
+    version: &str,
+) -> String {
     let quoted = |value: &str| format!("'{}'", value.replace('\'', "''"));
     // Keep the verified file open without write/delete sharing through installation.
     // A second path-based hash check alone would leave another replacement race.
-    let script = format!(
+    format!(
         "$ErrorActionPreference='Stop'; \
-         $running=Get-Process -Id {pid} -ErrorAction SilentlyContinue; \
-         if ($running) {{ $running | Wait-Process -Timeout 300 -ErrorAction Stop }}; \
-         $file=[IO.File]::Open({setup},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); \
+         $failure=$null; \
          try {{ \
-           $hasher=[Security.Cryptography.SHA256]::Create(); \
-           try {{ $hash=[BitConverter]::ToString($hasher.ComputeHash($file)).Replace('-','') }} \
-           finally {{ $hasher.Dispose() }}; \
-           if ($hash -ne {sha}) {{ throw 'Setup SHA-256 verification failed; installation was not started.' }}; \
-           $installer=Start-Process -FilePath {setup} -ArgumentList '/S' -Wait -PassThru; \
-           if ($installer.ExitCode -ne 0) {{ throw \"Setup exited with code $($installer.ExitCode)\" }} \
-         }} finally {{ $file.Dispose() }}; \
+           $running=Get-Process -Id {pid} -ErrorAction SilentlyContinue; \
+           if ($running) {{ $running | Wait-Process -Timeout 300 -ErrorAction Stop }}; \
+           $file=[IO.File]::Open({setup},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); \
+           try {{ \
+             $hasher=[Security.Cryptography.SHA256]::Create(); \
+             try {{ $hash=[BitConverter]::ToString($hasher.ComputeHash($file)).Replace('-','') }} \
+             finally {{ $hasher.Dispose() }}; \
+             if ($hash -ne {sha}) {{ throw 'Setup SHA-256 verification failed; installation was not started.' }}; \
+             $installer=Start-Process -FilePath {setup} -ArgumentList '/S' -Wait -PassThru; \
+             if ($installer.ExitCode -ne 0) {{ throw \"Setup exited with code $($installer.ExitCode)\" }} \
+           }} finally {{ if ($file) {{ $file.Dispose() }} }} \
+         }} catch {{ $failure=$_.Exception.Message }}; \
+         if ($failure) {{ \
+           try {{ [IO.File]::WriteAllText({marker},(ConvertTo-Json -Compress @{{version={version}; reason=$failure}}),(New-Object Text.UTF8Encoding $false)) }} catch {{ }} \
+         }}; \
          Start-Process -FilePath {target}",
-        pid = std::process::id(),
         setup = quoted(&setup.display().to_string()),
         target = quoted(&target.display().to_string()),
         sha = quoted(expected_sha256),
-    );
+        marker = quoted(&marker.display().to_string()),
+        version = quoted(version),
+    )
+}
+
+/// The hidden, windowless PowerShell invocation of `script`.
+///
+/// `std::process::Command` escapes embedded quotes the way the C runtime expects, which
+/// `cmd.exe` reads literally. Passing the script through `-EncodedCommand` avoids command-line
+/// quoting entirely, and PowerShell's `Wait-Process`/`Start-Process` need no console (the
+/// earlier `cmd` chain used `timeout`, which fails under `DETACHED_PROCESS` and silently
+/// stopped before the restart).
+fn helper_command(script: &str) -> std::process::Command {
     let mut utf16 = Vec::with_capacity(script.len() * 2);
     for unit in script.encode_utf16() {
         utf16.extend_from_slice(&unit.to_le_bytes());
     }
     let encoded = STANDARD.encode(utf16);
-    std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-EncodedCommand",
-            &encoded,
-        ])
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-EncodedCommand",
+        &encoded,
+    ]);
+    command
+}
+
+/// Launches the detached install+restart helper and exits through the
+/// graceful quit path. The helper waits for this process to exit, runs the
+/// staged Setup with `/S`, then reopens the application. The installer cannot
+/// replace a running `ssdownload.exe`, and its own `--quit` call plus a fixed
+/// sleep is not a reliable barrier, so the helper waits for this exact PID.
+fn launch_install_helper(
+    paths: &AppPaths,
+    setup: &Path,
+    app_dir: &Path,
+    manifest: &UpdateManifest,
+) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    let script = install_helper_script(
+        std::process::id(),
+        setup,
+        &app_dir.join("ssdownload.exe"),
+        &manifest.sha256,
+        &paths.base_dir.join(INSTALL_FAILURE_MARKER),
+        &manifest.version,
+    );
+    helper_command(&script)
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .spawn()
         .map_err(|error| {
@@ -702,6 +760,155 @@ fn launch_install_helper(setup: &Path, app_dir: &Path, expected_sha256: &str) ->
             )
         })?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct InstallFailure {
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    reason: String,
+}
+
+/// Text for a silent installation that did not complete, read from the helper's marker.
+/// The marker moves into a quarantine folder (NO-DELETE policy), so it is reported once.
+fn take_install_failure(paths: &AppPaths) -> Option<String> {
+    let marker = paths.base_dir.join(INSTALL_FAILURE_MARKER);
+    let bytes = fs::read(&marker).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_start_matches('\u{feff}').trim();
+    let failure = serde_json::from_str::<InstallFailure>(text).unwrap_or_else(|_| InstallFailure {
+        version: String::new(),
+        reason: text.chars().take(500).collect(),
+    });
+    if let Err(error) = quarantine_file(paths, &marker) {
+        crate::logging::record(
+            crate::logging::Event::warn("update.failure_marker").detail(format!("{error:#}")),
+        );
+    }
+    let version = if failure.version.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", failure.version)
+    };
+    let reason = if failure.reason.is_empty() {
+        crate::i18n::ui("bilinmeyen neden", "unknown reason").to_owned()
+    } else {
+        failure.reason
+    };
+    Some(crate::i18n::ui_owned!(
+        format!("SSDownload{version} güncellemesi kurulamadı; mevcut sürüm yeniden başlatıldı.\n\nNeden: {reason}\n\nGüncellemeyi Yardım menüsünden yeniden deneyebilirsiniz."),
+        format!("The SSDownload{version} update could not be installed; the current version was restarted.\n\nReason: {reason}\n\nYou can retry the update from the Help menu.")
+    ))
+}
+
+/// Reports a failed silent installation from the previous run, if the helper left a marker.
+fn report_install_failure(paths: &AppPaths) {
+    let Some(message) = take_install_failure(paths) else {
+        return;
+    };
+    crate::logging::record(
+        crate::logging::Event::warn("update.install_failed").detail(message.replace('\n', " ")),
+    );
+    let spawned = std::thread::Builder::new()
+        .name("update-failure-report".into())
+        .spawn(move || {
+            crate::gui::report_update_outcome(&UpdateOutcome {
+                success: false,
+                message,
+                ..UpdateOutcome::default()
+            });
+        });
+    if let Err(error) = spawned {
+        crate::logging::record(
+            crate::logging::Event::warn("update.check_spawn")
+                .detail(format!("Kurulum hatası bildirimi başlatılamadı: {error}")),
+        );
+    }
+}
+
+/// Registry key the installer writes; its `InstallLocation` is the installed copy's folder.
+const INSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SSDownload";
+/// Page that lists the portable ZIP of the newest release.
+const RELEASES_PAGE: &str = "https://github.com/isolmaz/SSDownload/releases/latest";
+
+fn installed_location() -> Option<PathBuf> {
+    let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey(INSTALL_KEY)
+        .ok()?;
+    let value: String = key.get_value("InstallLocation").ok()?;
+    let value = value.trim().trim_matches('"');
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+/// Comparable form of a directory: canonical when it exists, without the verbatim prefix and
+/// the trailing separator, lower case (Windows paths are case-insensitive).
+fn comparable_directory(path: &Path) -> String {
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let text = resolved.to_string_lossy();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    text.trim_end_matches(['\\', '/']).to_lowercase()
+}
+
+/// True when `exe_dir` is the folder the installer registered. A copy that is not (the
+/// portable ZIP, a developer build) cannot be updated by running the Setup.
+fn is_install_folder(exe_dir: &Path, installed: Option<&Path>) -> bool {
+    installed
+        .is_some_and(|installed| comparable_directory(exe_dir) == comparable_directory(installed))
+}
+
+/// True when the running executable lives in the folder the installer registered. A portable
+/// copy (ZIP, developer build) is updated from the release page, never by the silent Setup.
+pub fn is_installed_copy() -> bool {
+    current_exe_dir()
+        .map(|dir| is_install_folder(&dir, installed_location().as_deref()))
+        .unwrap_or(false)
+}
+
+/// Opens `url` in the default browser; false when the shell refused.
+fn open_in_browser(url: &str) -> bool {
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let target: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    result as isize > 32
+}
+
+/// What a portable copy gets instead of the silent Setup: the release page, where the new
+/// portable ZIP is. Marked `dry_run` so the caller does not quit the application: nothing
+/// was installed.
+fn portable_update_outcome(manifest: &UpdateManifest) -> UpdateOutcome {
+    let opened = open_in_browser(RELEASES_PAGE);
+    let mut message = crate::i18n::ui_owned!(
+        format!("Bu kopya kurulu bir sürüm değil (taşınabilir). Taşınabilir kopya, yeni taşınabilir ZIP dosyası indirilerek güncellenir: SSDownload {} paketini sürüm sayfasından indirip bu klasörün üzerine çıkarın.", manifest.version),
+        format!("This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {} package from the release page and extract it over this folder.", manifest.version)
+    );
+    message.push_str(&if opened {
+        crate::i18n::ui_owned!(
+            format!("\n\nSürüm sayfası tarayıcıda açıldı:\n{RELEASES_PAGE}"),
+            format!("\n\nThe release page was opened in your browser:\n{RELEASES_PAGE}")
+        )
+    } else {
+        crate::i18n::ui_owned!(
+            format!("\n\nSürüm sayfası açılamadı; bu adresi tarayıcıya yapıştırın:\n{RELEASES_PAGE}"),
+            format!("\n\nThe release page could not be opened; paste this address into your browser:\n{RELEASES_PAGE}")
+        )
+    });
+    UpdateOutcome {
+        success: true,
+        message,
+        quarantine: None,
+        dry_run: true,
+    }
 }
 
 pub(crate) struct UpdateContext<'a> {
@@ -742,6 +949,11 @@ fn check_with_feed(
 /// Runs one full update attempt. On any failure the partial artifact is moved
 /// into the quarantine folder and the error text includes that folder path.
 pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> UpdateOutcome {
+    // The Setup installs into the registered folder: for a portable copy it would add a
+    // second, installed copy and the old portable exe would be restarted forever.
+    if !ctx.dry_run && !is_installed_copy() {
+        return portable_update_outcome(manifest);
+    }
     let staging = staging_feed();
     let staging_dir = ctx.paths.base_dir.join("update-staging");
     let destination = staging_dir.join(format!("SSDownload-{}-Setup.exe", manifest.version));
@@ -901,7 +1113,7 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
                 downloaded: 0,
                 total: None,
             }));
-            if let Err(error) = launch_install_helper(&destination, &app_dir, &manifest.sha256) {
+            if let Err(error) = launch_install_helper(ctx.paths, &destination, &app_dir, manifest) {
                 let folder = quarantine_file(ctx.paths, &destination).ok();
                 return UpdateOutcome {
                     success: false,
@@ -1033,7 +1245,29 @@ fn note_available(version: &str) {
     *AVAILABLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(version.to_owned());
 }
 
+/// True when the release host answered: a verified feed, or one whose signature failed (a
+/// definitive verdict that retrying at once cannot change). Network and HTTP failures leave the
+/// daily gate open so the next start tries again.
+fn feed_answered(feed: &Result<UpdateManifest, anyhow::Error>) -> bool {
+    match feed {
+        Ok(_) => true,
+        Err(error) => crate::error_codes::code_of(error) == Some(crate::error_codes::UPD_002),
+    }
+}
+
+/// Records the time of the last answered update check, which gates the next startup check.
+fn stamp_update_check(app: &crate::app::App) {
+    let mut stamped = app.snapshot().settings;
+    stamped.last_update_check = chrono::Local::now().timestamp();
+    if let Err(error) = app.update_settings_quiet(stamped) {
+        crate::logging::record(crate::logging::Event::warn("update.settings_save").detail(
+            format!("Güncelleme denetim damgası kaydedilemedi: {error:#}"),
+        ));
+    }
+}
+
 pub fn startup_check(app: crate::app::App) {
+    report_install_failure(app.paths());
     let settings = app.snapshot().settings;
     if !settings.update_check_enabled {
         return;
@@ -1046,15 +1280,6 @@ pub fn startup_check(app: crate::app::App) {
     let Some(guard) = CheckInFlight::acquire() else {
         return;
     };
-    // Stamp the attempt immediately so a crashing check cannot loop.
-    let mut stamped = settings.clone();
-    stamped.last_update_check = now;
-    if let Err(error) = app.update_settings_quiet(stamped) {
-        crate::logging::record(crate::logging::Event::warn("update.settings_save").detail(
-            format!("Güncelleme denetim damgası kaydedilemedi: {error:#}"),
-        ));
-    }
-
     let spawned = std::thread::Builder::new()
         .name("update-check".into())
         .spawn(move || {
@@ -1063,6 +1288,10 @@ pub fn startup_check(app: crate::app::App) {
             let network = app.network_governor();
             let settings = app.snapshot().settings;
             let feed = fetch_feed(&network);
+            // An unreachable feed (offline start, flaky network) must not use up the day.
+            if feed_answered(&feed) {
+                stamp_update_check(&app);
+            }
             let CheckOutcome::Available(manifest) = check_with_feed(&settings, feed) else {
                 return;
             };
@@ -1133,15 +1362,10 @@ pub fn check_now(app: crate::app::App) {
             let _guard = guard;
             let paths = app.paths().clone();
             let network = app.network_governor();
-            let now = chrono::Local::now().timestamp();
-            let mut stamped = app.snapshot().settings;
-            stamped.last_update_check = now;
-            if let Err(error) = app.update_settings_quiet(stamped) {
-                crate::logging::record(crate::logging::Event::warn("update.settings_save").detail(
-                    format!("Güncelleme denetim damgası kaydedilemedi: {error:#}"),
-                ));
-            }
             let result = fetch_feed(&network);
+            if feed_answered(&result) {
+                stamp_update_check(&app);
+            }
             match result {
                 Ok(manifest) => {
                     if is_newer(env!("CARGO_PKG_VERSION"), &manifest.version) {
@@ -1229,7 +1453,11 @@ mod tests {
         assert!(!is_newer("1.4.1", "1.4.0"));
         assert!(!is_newer("1.4.1", "garbage"));
         assert!(!is_newer("garbage", "1.4.2"));
-        assert!(is_newer("1.4.0", " 1.5.0 "));
+        assert!(
+            !is_newer("1.4.0", " 1.5.0 "),
+            "a version with surrounding whitespace is not a release name"
+        );
+        assert!(!is_newer("1.4.0", "1.5.0\n"));
         // The feed publishes stable x.y.z releases only: a prerelease or build suffix is
         // not a release this product ships, so it is neither offered nor assumed newer.
         assert!(!is_newer("1.4.1", "1.4.1-beta"));
@@ -1376,6 +1604,216 @@ mod tests {
             Some("http://localhost:8123/feed/version.json")
         );
         std::env::remove_var("SSDOWNLOAD_UPDATE_FEED");
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-update-{name}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// Runs the helper script to completion and waits for the application stand-in it
+    /// relaunches (a `.cmd` that writes `reopened.txt`).
+    fn run_helper_and_wait_for_reopen(
+        root: &Path,
+        setup: &Path,
+        sha256: &str,
+        marker: &Path,
+    ) -> bool {
+        let target = root.join("ssdownload.cmd");
+        let reopened = root.join("reopened.txt");
+        fs::write(
+            &target,
+            format!("@echo off\r\necho reopened> \"{}\"\r\n", reopened.display()),
+        )
+        .unwrap();
+        let script = install_helper_script(2_000_000_000, setup, &target, sha256, marker, "9.9.9");
+        let status = helper_command(&script).status().expect("powershell starts");
+        assert!(status.success(), "the helper itself must finish cleanly");
+        for _ in 0..100 {
+            if reopened.is_file() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    #[test]
+    fn a_setup_that_cannot_run_leaves_a_marker_and_the_app_is_reopened() {
+        let root = temp_root("helper-missing");
+        let marker = root.join(INSTALL_FAILURE_MARKER);
+        let missing = root.join("SSDownload-9.9.9-Setup.exe");
+        assert!(
+            run_helper_and_wait_for_reopen(&root, &missing, &"0".repeat(64), &marker),
+            "the existing application must be reopened after a failed installation"
+        );
+        let written: serde_json::Value =
+            serde_json::from_slice(fs::read(&marker).expect("failure marker").as_slice()).unwrap();
+        assert_eq!(written["version"], "9.9.9");
+        assert!(
+            written["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("SSDownload-9.9.9-Setup.exe"),
+            "the reason must name the Setup that could not be opened: {written}"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_setup_that_exits_with_an_error_is_reported_with_its_exit_code() {
+        let root = temp_root("helper-exit");
+        let marker = root.join(INSTALL_FAILURE_MARKER);
+        // `whoami /S` is an invalid invocation and exits non-zero, like a failed silent Setup.
+        let setup = root.join("SSDownload-9.9.9-Setup.exe");
+        let system = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        fs::copy(system.join(r"System32\whoami.exe"), &setup).unwrap();
+        let sha256 = hex::encode(Sha256::digest(fs::read(&setup).unwrap()));
+        assert!(run_helper_and_wait_for_reopen(
+            &root, &setup, &sha256, &marker
+        ));
+        let written: serde_json::Value =
+            serde_json::from_slice(fs::read(&marker).expect("failure marker").as_slice()).unwrap();
+        let reason = written["reason"].as_str().unwrap_or_default();
+        assert!(reason.contains("Setup exited with code"), "{written}");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_helper_marker_is_reported_once_and_moved_into_quarantine() {
+        let root = temp_root("marker");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        assert!(
+            take_install_failure(&paths).is_none(),
+            "no marker, no report"
+        );
+        let marker = root.join(INSTALL_FAILURE_MARKER);
+        fs::write(
+            &marker,
+            "\u{feff}{\"version\":\"9.9.9\",\"reason\":\"Setup exited with code 2\"}",
+        )
+        .unwrap();
+        let message = take_install_failure(&paths).expect("the marker is reported");
+        assert!(
+            message.contains("9.9.9") && message.contains("Setup exited with code 2"),
+            "{message}"
+        );
+        assert!(!marker.exists(), "the marker moves out of the profile root");
+        let quarantined = fs::read_dir(root.join("update-quarantine"))
+            .unwrap()
+            .flatten()
+            .any(|folder| folder.path().join(INSTALL_FAILURE_MARKER).is_file());
+        assert!(
+            quarantined,
+            "the marker is kept in quarantine, never deleted"
+        );
+        assert!(take_install_failure(&paths).is_none(), "reported only once");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn only_the_registered_install_folder_counts_as_the_installed_copy() {
+        let installed = temp_root("installed");
+        let portable = temp_root("portable");
+        let respelled = PathBuf::from(format!("{}\\", installed.to_string_lossy().to_uppercase()));
+        assert!(is_install_folder(&installed, Some(&installed)));
+        assert!(
+            is_install_folder(&installed, Some(&respelled)),
+            "case and a trailing separator do not make a different folder"
+        );
+        assert!(!is_install_folder(&portable, Some(&installed)));
+        assert!(
+            !is_install_folder(&portable, None),
+            "without an installer registration every copy is portable"
+        );
+        fs::remove_dir_all(installed).ok();
+        fs::remove_dir_all(portable).ok();
+    }
+
+    #[test]
+    fn a_copied_original_is_renamed_so_it_is_not_staged_again() {
+        let root = temp_root("retire");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let staging = paths.base_dir.join("update-staging");
+        fs::create_dir_all(&staging).unwrap();
+        let setup = staging.join("SSDownload-9.9.9-Setup.exe");
+        fs::write(&setup, b"staged installer").unwrap();
+        retire_copied_original(&setup);
+        assert!(
+            !setup.exists(),
+            "the original no longer carries a Setup name"
+        );
+        assert!(
+            staging.join("SSDownload-9.9.9-Setup.exe.moved").is_file(),
+            "the original is kept under a .moved name, not deleted"
+        );
+        assert!(
+            reconcile_update_staging(&paths).unwrap().is_none(),
+            "a .moved file is not a staged Setup, so nothing is copied again"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn the_daily_gate_only_closes_when_the_feed_answered() {
+        let manifest = UpdateManifest {
+            version: "1.0.0".into(),
+            url: "https://example.test/Setup.exe".into(),
+            sha256: "0".repeat(64),
+            notes: String::new(),
+        };
+        assert!(feed_answered(&Ok(manifest)));
+        assert!(feed_answered(&Err(crate::error_codes::coded_default(
+            crate::error_codes::UPD_002
+        ))));
+        assert!(
+            !feed_answered(&Err(anyhow!("connection refused"))),
+            "an unreachable feed must not use up the day"
+        );
+        assert!(!feed_answered(&Err(crate::error_codes::coded_default(
+            crate::error_codes::UPD_001
+        ))));
+    }
+
+    /// Serves `body` once to the first request on a loopback port and returns its base URL.
+    fn serve_once(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            let mut buffer = [0u8; 2048];
+            let _ = stream.read(&mut buffer);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        });
+        (format!("http://{address}/version.json"), server)
+    }
+
+    #[test]
+    fn an_oversized_feed_document_is_reported_as_invalid_not_unreachable() {
+        let (url, server) = serve_once(vec![b'x'; 4096]);
+        let governor = NetworkGovernor::new(4);
+        let error = fetch_document(&governor, &url, 1024, true)
+            .expect_err("a document over the limit must be refused");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains(crate::error_codes::UPD_001.0),
+            "an oversized feed must carry its registry code, got: {text}"
+        );
+        server.join().unwrap();
     }
 
     #[test]

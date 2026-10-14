@@ -20,15 +20,17 @@ function event() {
 
 const nativeCapabilities={ok:true,result:{capabilities:{protocol:2,capability_version:3,site_entries:true,usage_modes:{video:true,file:true,audio:true},onboarding_version:1,settings_revision:1,source_refresh_jobs:[]}}};
 
-function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml } = {}) {
+function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map() } = {}) {
   const events = {
     headers: event(), beforeHeaders: event(), removed: event(), updated: event(), installed: event(), startup: event(),
-    menu: event(), message: event(), activated: event()
+    menu: event(), message: event(), activated: event(), alarm: event(), download: event(), suspend: event()
   };
   const storage = { session: { ...session }, local: { ...local } };
   const logs = [];
   const nativeRequests = [];
   const actionCalls = [];
+  const alarmCreates = [];
+  const downloadCalls = [];
   const menuEntries = [];
   const timers = new Map();
   let nextTimer = 0;
@@ -47,6 +49,19 @@ function backgroundHarness({ native = async request => request?.action?.type==="
       }
     },
     webRequest: { onHeadersReceived: events.headers, onBeforeSendHeaders: events.beforeHeaders },
+    // An alarm outlives the worker: the store is shared by every worker a test restarts.
+    alarms: {
+      create(name, info) { alarmCreates.push({ name, info }); alarmStore.set(name, info); },
+      async get(name) { return alarmStore.has(name) ? { name, ...alarmStore.get(name) } : undefined; },
+      onAlarm: events.alarm
+    },
+    downloads: {
+      onCreated: events.download,
+      async pause(id) { downloadCalls.push({ method: "pause", id }); },
+      async resume(id) { downloadCalls.push({ method: "resume", id }); },
+      async cancel(id) { downloadCalls.push({ method: "cancel", id }); },
+      async erase(query) { downloadCalls.push({ method: "erase", id: query.id }); }
+    },
     webNavigation: navigation,
     permissions: {
       async contains() { return storage.granted === true; },
@@ -71,7 +86,7 @@ function backgroundHarness({ native = async request => request?.action?.type==="
     runtime: {
       id: "test-extension", getURL(value = "") { return `chrome-extension://test-extension/${value}`; },
       getManifest() { return { version: "1.4.8" }; },
-      lastError: null, onInstalled: events.installed, onStartup: events.startup, onMessage: events.message,
+      lastError: null, onInstalled: events.installed, onStartup: events.startup, onMessage: events.message, onSuspend: events.suspend,
       async sendNativeMessage(_host, request) {
         nativeRequests.push(request);
         if (request?.action?.type === "log") logs.push(request.action.request.events);
@@ -150,11 +165,13 @@ function hlsChildren(text, base) { return hlsRelations(text,base).filter(item=>i
   // serialized toggle chain); tests need a deterministic point past all of it.
   async function settle() {
     for (let round = 0; round < 8; round += 1) {
+      // The session write trails a burst by a debounce; a settled worker has written it.
+      runTimers(750);
       for (let index = 0; index < 8; index += 1) await Promise.resolve();
       await new Promise(resolve => setImmediate(resolve));
     }
   }
-  return { events, storage, content, menu, state, waitFor, context, logs, timers, runTimers, settle, actionCalls, menuEntries, nativeRequests, action: browser.action };
+  return { events, storage, content, menu, state, waitFor, context, logs, timers, runTimers, settle, actionCalls, menuEntries, nativeRequests, alarmCreates, downloadCalls, action: browser.action };
 }
 
 // The toolbar icon opens popup.html; its switch sends this message to the worker.
@@ -200,16 +217,16 @@ test("the toolbar switch flips discovery, persists it, and keeps the badge in st
   const h = backgroundHarness();
   await h.settle();
   const last = (method) => h.actionCalls.filter(call => call.method === method).at(-1);
-  assert.equal(last("setBadgeText").text, "ON");
+  assert.equal(last("setBadgeText").text, "AÇIK");
   assert.equal(last("setBadgeBackgroundColor").color, "#16803a");
-  assert.match(last("setTitle").title, /açık/);
+  assert.match(last("setTitle").title, /açık — ayarlar için tıklayın/);
 
   await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: "https://files.example/one.pdf", kind: "file" }] });
   assert.equal((await h.state(7)).items.length, 1);
 
   await popupToggle(h); await popupToggle(h); await popupToggle(h);
   assert.equal(h.storage.local.detectionEnabled, false);
-  assert.equal(last("setBadgeText").text, "OFF");
+  assert.equal(last("setBadgeText").text, "KAPALI");
   assert.equal(last("setBadgeBackgroundColor").color, "#5f6368");
   assert.match(last("setTitle").title, /kapalı/);
 
@@ -677,6 +694,234 @@ test("native host failures are converted into an actionable browser message", as
   assert.equal(status?.error, true);
 });
 
+test("a refused extension identity is reported as such, never as a missing registration", async () => {
+  // Chrome's wording contains "specified native messaging host", the not-found phrase.
+  const h = backgroundHarness({ native: async () => { throw new Error("Access to the specified native messaging host is forbidden."); } });
+  await h.menu("ssdownload-app");
+  const status = JSON.parse(vm.runInContext("JSON.stringify(tabStatus.get(7)||null)", h.context));
+  assert.match(String(status?.message || ""), /izin vermiyor/i);
+  assert.doesNotMatch(String(status?.message || ""), /kayıtlı değil/i);
+  assert.equal(status?.error, true);
+});
+
+function takeoverNative({ completed = () => 0, accept = () => ({ ok: true, message: "Tamam" }) } = {}) {
+  return async request => request?.action?.type === "capabilities"
+    ? { ok: true, result: { capabilities: { protocol: 2, capability_version: 3, site_entries: true, browser_takeover: true, completed_jobs: completed(),
+      usage_modes: { video: true, file: true, audio: true }, onboarding_version: 1, settings_revision: 1, source_refresh_jobs: [] } } }
+    : accept(request);
+}
+const takeoverItem = (extra = {}) => ({ id: 41, url: "https://files.example/get?id=7", finalUrl: "https://files.example/dl/clip.mkv", filename: "",
+  state: "in_progress", incognito: false, referrer: "https://site.example/page", ...extra });
+
+test("a link handed over from the menu leaves the file name to the server instead of the address basename", async () => {
+  const h = backgroundHarness();
+  await h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/download.php?id=7" } });
+  await h.waitFor(() => h.nativeRequests.some(request => request?.action?.type === "add"));
+  const added = h.nativeRequests.find(request => request?.action?.type === "add");
+  // The desktop uses a suggested name verbatim and only reads Content-Disposition when none is given.
+  assert.equal(added.action.request.filename, null);
+  await h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/movie.mp4" } });
+  await h.waitFor(() => h.nativeRequests.filter(request => request?.action?.type === "add").length === 2);
+  assert.equal(h.nativeRequests.filter(request => request?.action?.type === "add")[1].action.request.filename, null, "a media suffix is never cut from a plain file");
+});
+
+test("download takeover keeps the browser's file name with its extension and erases the browser copy", async () => {
+  const h = backgroundHarness({ native: takeoverNative() });
+  h.events.download.listeners.at(-1)(takeoverItem({ filename: "C:\\Users\\me\\Downloads\\clip.mkv" }));
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "erase"));
+  const added = h.nativeRequests.find(request => request?.action?.type === "add");
+  assert.equal(added.action.request.kind, "file");
+  assert.equal(added.action.request.filename, "clip.mkv");
+  assert.equal(added.action.request.url, "https://files.example/dl/clip.mkv");
+  assert.equal(added.action.request.referer, "https://site.example/page");
+  assert.deepEqual(h.downloadCalls.map(call => call.method), ["pause", "cancel", "erase"]);
+});
+
+test("download takeover without a browser file name lets the desktop read the server's name", async () => {
+  const h = backgroundHarness({ native: takeoverNative() });
+  h.events.download.listeners.at(-1)(takeoverItem());
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "erase"));
+  assert.equal(h.nativeRequests.find(request => request?.action?.type === "add").action.request.filename, null);
+});
+
+test("a refused takeover resumes the browser download", async () => {
+  const h = backgroundHarness({ native: takeoverNative({ accept: () => ({ ok: false, message: "SSD-EXT-001 reddedildi" }) }) });
+  h.events.download.listeners.at(-1)(takeoverItem());
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "resume"));
+  assert.deepEqual(h.downloadCalls.map(call => call.method), ["pause", "resume"]);
+});
+
+test("a download that wakes a cold worker honours the stored OFF switch", async () => {
+  // The worker has not read its storage yet when the event arrives: the default must not decide.
+  const h = backgroundHarness({ local: { detectionEnabled: false }, native: takeoverNative() });
+  h.events.download.listeners.at(-1)(takeoverItem({ filename: "clip.mkv" }));
+  await h.settle();
+  assert.deepEqual(h.downloadCalls, [], "the browser keeps its download while the switch is off");
+  assert.equal(h.nativeRequests.filter(request => request?.action?.type === "add").length, 0);
+});
+
+test("a context menu click that wakes a cold worker honours the stored OFF switch", async () => {
+  const h = backgroundHarness({ local: { detectionEnabled: false } });
+  h.events.menu.listeners.at(-1)(
+    { menuItemId: "ssdownload-link", linkUrl: "https://files.example/x.zip", pageUrl: "https://site.example/watch" },
+    { id: 7, url: "https://site.example/watch" }
+  );
+  await h.settle();
+  assert.equal(h.nativeRequests.filter(request => request?.action?.type === "add").length, 0);
+});
+
+test("completed downloads are still counted after the worker restarted", async () => {
+  let completed = 0;
+  const alarmStore = new Map();
+  const native = takeoverNative({ completed: () => completed });
+  const first = backgroundHarness({ native, alarmStore });
+  await first.menu("ssdownload-link", { info: { linkUrl: "https://files.example/x.zip" } });
+  await first.waitFor(() => first.nativeRequests.some(request => request?.action?.type === "add"));
+  assert.equal(first.storage.session.completion.baseline, 0, "the baseline is recorded with the session");
+  assert.ok(first.storage.session.completion.handoffAt > 0);
+  // Two downloads finish while the suspended worker is gone.
+  completed = 2;
+  const second = backgroundHarness({ native, alarmStore, session: first.storage.session, local: first.storage.local });
+  await second.settle();
+  const badge = second.actionCalls.filter(call => call.method === "setBadgeText").at(-1);
+  assert.equal(badge.text, "2");
+  assert.equal(second.storage.session.completion.pending, 2);
+});
+
+test("the completion alarm of a restarted worker still polls the desktop after a recent handoff", async () => {
+  let completed = 0;
+  const alarmStore = new Map();
+  const native = takeoverNative({ completed: () => completed });
+  const first = backgroundHarness({ native, alarmStore });
+  await first.menu("ssdownload-link", { info: { linkUrl: "https://files.example/x.zip" } });
+  await first.waitFor(() => first.nativeRequests.some(request => request?.action?.type === "add"));
+  const second = backgroundHarness({ native, alarmStore, session: first.storage.session, local: first.storage.local });
+  await second.settle();
+  const probes = () => second.nativeRequests.filter(request => request?.action?.type === "capabilities").length;
+  const before = probes();
+  completed = 1;
+  second.events.alarm.listeners.at(-1)({ name: "ssdownload-completion-poll" });
+  await second.waitFor(() => probes() === before + 1);
+  await second.settle();
+  assert.equal(second.actionCalls.filter(call => call.method === "setBadgeText").at(-1).text, "1");
+});
+
+test("a worker start keeps the completion alarm that already exists", async () => {
+  const alarmStore = new Map();
+  const first = backgroundHarness({ alarmStore });
+  await first.settle();
+  assert.equal(first.alarmCreates.filter(call => call.name === "ssdownload-completion-poll").length, 1);
+  // Creating it again would restart its period, so a worker that wakes every few
+  // seconds would postpone the poll for as long as it keeps waking.
+  const restarted = backgroundHarness({ alarmStore });
+  await restarted.settle();
+  assert.equal(restarted.alarmCreates.length, 0);
+});
+
+test("a capability probe that finds the desktop closed says so and is retried within seconds", async () => {
+  let running = false;
+  const h = backgroundHarness({ native: async request => request?.action?.type === "capabilities"
+    ? (running ? nativeCapabilities : { ok: false, message: "SSD-BRG-005 SSDownload uygulamasına ulaşılamadı" })
+    : { ok: true, message: "Tamam" } });
+  await h.settle();
+  const popup = () => new Promise(resolve => h.events.message.listeners.at(-1)({ channel: "ssdownload-popup", command: "state" },
+    { id: "test-extension", url: "chrome-extension://test-extension/popup.html" }, resolve));
+  const closed = await popup();
+  assert.match(closed.capabilityError, /çalışmıyor/);
+  assert.doesNotMatch(closed.capabilityError, /protokol/, "a closed desktop is not a protocol mismatch");
+  running = true;
+  // Well inside the old one-minute cache, past the five-second one.
+  vm.runInContext("capabilityState.checkedAt = Date.now() - 6000", h.context);
+  assert.equal((await popup()).capabilityError, null);
+});
+
+test("the discovery session is written once after a burst and flushed when the worker suspends", async () => {
+  const h = backgroundHarness();
+  await h.settle();
+  delete h.storage.session.discovery;
+  const scan = url => h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url, kind: "file" }] });
+  const pending = () => [...h.timers.values()].filter(timer => timer.delay === 750).length;
+  const drain = async () => { for (let round = 0; round < 4; round += 1) await new Promise(resolve => setImmediate(resolve)); };
+  await scan("https://files.example/one.pdf");
+  await scan("https://files.example/one.pdf");
+  assert.equal(h.storage.session.discovery, undefined, "nothing is written while the burst runs");
+  assert.equal(pending(), 1, "one trailing write covers the whole burst");
+  h.runTimers(750);
+  await drain();
+  assert.ok(h.storage.session.discovery, "the trailing write lands");
+  delete h.storage.session.discovery;
+  await scan("https://files.example/two.pdf");
+  assert.equal(h.storage.session.discovery, undefined);
+  h.events.suspend.listeners[0]();
+  await drain();
+  assert.ok(h.storage.session.discovery, "suspension must not lose what the debounce still holds");
+  assert.equal(pending(), 0);
+});
+
+function popupHarness(reply) {
+  const elements = {};
+  const el = id => elements[id] ||= { id, textContent: "", checked: false, disabled: false, hidden: false, listeners: {},
+    addEventListener(name, listener) { this.listeners[name] = listener; }, append() {} };
+  const context = vm.createContext({ document: { getElementById: el, createElement: () => ({ append() {}, addEventListener() {} }) },
+    browser: { runtime: { lastError: null, sendMessage(message, callback) { callback(reply(message)); } } }, window: { close() {} }, Promise, Object, Array });
+  vm.runInContext(source("popup.js"), context, { filename: "popup.js" });
+  return { el };
+}
+
+test("the popup keeps its state and says why a switch failed instead of drawing everything off", async () => {
+  const state = { detectionEnabled: true, host: "site.example", siteHidden: false, media: [], capabilityError: null };
+  let failing = false;
+  const h = popupHarness(message => (message.command !== "state" && failing ? { error: "Depolama hatası" } : state));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.el("state").textContent, "AÇIK");
+  failing = true;
+  await h.el("detection").listeners.change({ target: { checked: false } });
+  assert.equal(h.el("detection").checked, true, "a failed switch leaves the real state on screen");
+  assert.equal(h.el("state").textContent, "AÇIK");
+  assert.equal(h.el("status").textContent, "Depolama hatası");
+  await h.el("hide-site").listeners.change({ target: { checked: true } });
+  assert.equal(h.el("status").textContent, "Depolama hatası");
+});
+
+test("the popup states why the desktop cannot be reached", async () => {
+  const message = "SSDownload çalışmıyor. Araç çubuğu penceresindeki \"Uygulamayı aç\" ile başlatın.";
+  const h = popupHarness(() => ({ detectionEnabled: false, host: "", siteHidden: false, media: [], capabilityError: message }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.el("status").textContent, message);
+  assert.equal(h.el("state").textContent, "KAPALI");
+});
+
+test("a page with detection off stops its periodic scan", async () => {
+  const intervalScans = async off => {
+    const h = contentHarness({ reply: { status: "ready", usageModes: { video: true, file: true, audio: true } } });
+    await new Promise(resolve => setImmediate(resolve));
+    if (off) h.storageListener()({ detectionEnabled: { newValue: false } }, "local");
+    vm.runInContext('lastScan=""', h.context);
+    const before = h.sent.length;
+    h.fireTimers();
+    return h.sent.length - before;
+  };
+  assert.ok(await intervalScans(false) > 0, "while detection is on, the interval reports a changed page");
+  assert.equal(await intervalScans(true), 0, "while it is off, nothing walks the document or messages the worker");
+});
+
+test("scroll events repaint the tiles once per frame, not once per event", async () => {
+  let rectCalls = 0;
+  const media = {
+    srcObject: null, currentSrc: "/movie.mp4", src: "/movie.mp4", tagName: "VIDEO",
+    getAttribute() { return null; }, querySelectorAll() { return []; },
+    getBoundingClientRect() { rectCalls += 1; return { left: 10, top: 20, right: 650, bottom: 380, width: 640, height: 360 }; },
+    checkVisibility() { return true; }
+  };
+  const h = contentHarness({ reply: { status: "ready", usageModes: { video: true, file: true, audio: true } }, nodes: { "video, audio": [media] } });
+  await vm.runInContext("refreshUsageModes()", h.context);
+  const before = rectCalls;
+  for (let event = 0; event < 5; event += 1) h.window.listeners.scroll({});
+  assert.equal(rectCalls, before, "no layout read happens inside the scroll event itself");
+  h.fireTimers();
+  assert.ok(rectCalls > before, "the deferred repaint still happens");
+});
+
 test("HLS URI ancestry groups qualities and audio under one iframe player", async () => {
   const h=backgroundHarness();
   const children=vm.runInContext('hlsChildren(\'#EXTM3U\\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",URI="audio.m3u8"\\n#EXT-X-STREAM-INF:BANDWIDTH=500,AUDIO="a"\\nlow.m3u8\\n#EXT-X-STREAM-INF:BANDWIDTH=900,AUDIO="a"\\nhigh.m3u8\',"https://cdn.example/master.m3u8")',h.context);
@@ -936,7 +1181,7 @@ function contentHarness(options = {}) {
       runtime: { sendMessage(value) { sent.push(value); const reply = options.reply; return Promise.resolve(typeof reply === "function" ? reply(value) : reply); }, onMessage: runtimeMessages },
       storage: { local: { get() { return Promise.resolve({ detectionEnabled: true }); } }, onChanged: { addListener(listener) { storageListener = listener; } } }
     },
-    URL, document, window, location: { href: "https://site.example/watch", origin: "https://site.example" }, innerHeight: 800,
+    URL, document, window, location: { href: "https://site.example/watch", origin: "https://site.example" }, innerHeight: 800, innerWidth: 1280,
     MutationObserver: Observer, PerformanceObserver: Observer,
     setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; }, clearTimeout() {},
     setInterval(callback, delay) { timers.push({ callback, delay }); return timers.length; },
@@ -953,6 +1198,25 @@ test("the no-single-media command clears the in-page affordance", async () => {
   assert.equal(h.buttons.length, 1, "the ready state must publish one affordance");
   h.runtimeMessages.listeners[0]({ channel: "ssdownload-background", command: "no-single-media" });
   assert.equal(h.buttons.length, 0, "a rejected page must remove its affordance");
+});
+
+test("a player scrolled out of view sideways keeps no tile at the viewport edge", async () => {
+  const player = (left, right) => ({
+    srcObject: null, currentSrc: "/movie.mp4", src: "/movie.mp4", tagName: "VIDEO",
+    getAttribute() { return null; }, querySelectorAll() { return []; },
+    getBoundingClientRect() { return { left, top: 20, right, bottom: 380, width: 640, height: 360 }; },
+    checkVisibility() { return true; }
+  });
+  const tileOf = async media => {
+    const h = contentHarness({ reply: { status: "ready", usageModes: { video: true, file: true, audio: true } }, nodes: { "video, audio": [media] } });
+    await vm.runInContext("refreshUsageModes()", h.context);
+    return h.buttons.find(button => button.textContent === "Bu videoyu indir");
+  };
+  assert.equal((await tileOf(player(10, 650))).hidden, false, "a player in view keeps its tile");
+  // The tile's left edge is clamped to the viewport, so without this it would sit at x=0 for a
+  // player that a carousel moved entirely off the left side.
+  assert.equal((await tileOf(player(-700, -60))).hidden, true, "a player left of the viewport has no tile");
+  assert.equal((await tileOf(player(1400, 2040))).hidden, true, "a player right of the viewport has no tile");
 });
 
 test("a document without a media element offers its own page and drops the offer with the page", async () => {

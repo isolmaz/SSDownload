@@ -176,8 +176,10 @@ pub(super) fn card_prop(name: &str) -> *const u16 {
         std::sync::LazyLock::new(|| wide("SSDownload.Dark"));
     static PREVIOUS: std::sync::LazyLock<Vec<u16>> =
         std::sync::LazyLock::new(|| wide("SSDownload.CardProc"));
-    static FONT_DPI: std::sync::LazyLock<Vec<u16>> =
-        std::sync::LazyLock::new(|| wide("SSDownload.CardFontDpi"));
+    static TITLE_DPI: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.CardTitleFontDpi"));
+    static DESCRIPTION_DPI: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.CardTextFontDpi"));
     static TITLE: std::sync::LazyLock<Vec<u16>> =
         std::sync::LazyLock::new(|| wide("SSDownload.CardTitleFont"));
     static DESCRIPTION: std::sync::LazyLock<Vec<u16>> =
@@ -186,7 +188,8 @@ pub(super) fn card_prop(name: &str) -> *const u16 {
         "dark" => CARD_DARK.as_ptr(),
         "previous" => PREVIOUS.as_ptr(),
         "title-font" => TITLE.as_ptr(),
-        "font-dpi" => FONT_DPI.as_ptr(),
+        "title-dpi" => TITLE_DPI.as_ptr(),
+        "text-dpi" => DESCRIPTION_DPI.as_ptr(),
         _ => DESCRIPTION.as_ptr(),
     }
 }
@@ -234,9 +237,17 @@ pub(super) unsafe fn card_font(
     faces: &[&str],
 ) -> HFONT {
     let dpi = GetDpiForWindow(hwnd).max(96);
+    // Each font records the DPI it was made for: the title and the description
+    // are drawn one after the other, so a shared record would mark the second
+    // one fresh as soon as the first was rebuilt.
+    let dpi_prop = card_prop(if prop == "title-font" {
+        "title-dpi"
+    } else {
+        "text-dpi"
+    });
     let stored = GetPropW(hwnd, card_prop(prop)) as isize;
     if stored != 0 {
-        if GetPropW(hwnd, card_prop("font-dpi")) as usize == dpi as usize {
+        if GetPropW(hwnd, dpi_prop) as usize == dpi as usize {
             return stored as HFONT;
         }
         // The window moved to another monitor: the cached font is stale.
@@ -245,7 +256,7 @@ pub(super) unsafe fn card_font(
     }
     let font = make_face_font(dpi, points, weight, faces);
     SetPropW(hwnd, card_prop(prop), font as HANDLE);
-    SetPropW(hwnd, card_prop("font-dpi"), dpi as usize as HANDLE);
+    SetPropW(hwnd, dpi_prop, dpi as usize as HANDLE);
     font
 }
 /// Vector icon for a card: a play triangle, a folder or a music note. Icon
@@ -427,7 +438,17 @@ pub(super) unsafe extern "system" fn card_proc(
                     DeleteObject(font as HGDIOBJ);
                 }
             }
-            RemovePropW(hwnd, card_prop("previous"));
+            RemovePropW(hwnd, card_prop("title-dpi"));
+            RemovePropW(hwnd, card_prop("text-dpi"));
+            // The button class frees its own state on this message, so it still
+            // has to reach the original proc.
+            let previous = RemovePropW(hwnd, card_prop("previous")) as isize;
+            if previous == 0 {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            let proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
+                std::mem::transmute(previous);
+            return CallWindowProcW(Some(proc), hwnd, msg, wparam, lparam);
         }
         _ => {}
     }
@@ -1096,6 +1117,26 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
     }
 }
 
+/// Splits a menu caption into its text and the character index of the letter its
+/// `&` marks; `&&` is a literal ampersand. The index counts characters, not
+/// bytes: "İ&ndirme" has the marker after a two-byte letter.
+pub(super) fn split_mnemonic(label: &str) -> (String, Option<usize>) {
+    let mut title = String::with_capacity(label.len());
+    let mut mnemonic = None;
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '&' {
+            title.push(c);
+        } else if chars.peek() == Some(&'&') {
+            chars.next();
+            title.push('&');
+        } else if mnemonic.is_none() && chars.peek().is_some() {
+            mnemonic = Some(title.chars().count());
+        }
+    }
+    (title, mnemonic)
+}
+
 /// Draws one bar item's box: the highlight a hot item gets and the caption with
 /// its keyboard hint. The item rect is the bar's own box for that caption,
 /// padding included, so the caption is drawn inside all of it and centred like
@@ -1130,14 +1171,7 @@ pub(super) unsafe fn draw_menu_item(
     } else {
         SelectObject(dc, font as HGDIOBJ)
     };
-    let mut title = String::from_utf16_lossy(&label[..length as usize]);
-    let mnemonic = match title.find('&') {
-        Some(at) => {
-            title.remove(at);
-            Some(at)
-        }
-        None => None,
-    };
+    let (title, mnemonic) = split_mnemonic(&String::from_utf16_lossy(&label[..length as usize]));
     let state = GetMenuState(menu, index as u32, MF_BYPOSITION);
     let enabled = state & (MF_DISABLED | MF_GRAYED) == 0;
     SetTextColor(dc, if enabled { DARK_TEXT } else { DARK_MUTED });
@@ -1430,11 +1464,12 @@ pub(super) unsafe fn allow_dark_mode_for_window() -> Option<AllowDarkModeForWind
     (*ADDRESS != 0).then(|| std::mem::transmute::<usize, AllowDarkModeForWindow>(*ADDRESS))
 }
 /// Opts the process into the shell colour scheme so comctl32 draws menus,
-/// combo boxes and list headers dark too. AllowDark follows the app setting and
-/// ForceLight keeps a light dialog light even on a dark desktop.
+/// combo boxes and list headers dark too. The app's own setting decides, not the
+/// desktop's: ForceDark keeps popup menus dark on a light desktop and ForceLight
+/// keeps a light dialog light on a dark one.
 pub(super) unsafe fn dark_app_mode(enabled: bool) {
     if let Some(set_mode) = set_preferred_app_mode() {
-        set_mode(if enabled { 1 } else { 3 });
+        set_mode(if enabled { 2 } else { 3 });
     }
     if let Some(flush) = flush_menu_themes() {
         flush();
@@ -1722,4 +1757,37 @@ pub(super) unsafe extern "system" fn progress_proc(
         }
     }
     call_previous(hwnd, msg, wparam, lparam)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_mnemonic;
+
+    #[test]
+    fn mnemonic_index_counts_characters_not_bytes() {
+        // The marker follows a two-byte letter, so a byte offset would underline
+        // the wrong letter of the Turkish "Downloads" caption.
+        let (title, at) = split_mnemonic("İ&ndirme");
+        assert_eq!(title, "İndirme");
+        assert_eq!(title.chars().nth(at.unwrap()), Some('n'));
+        let (title, at) = split_mnemonic("&Dosya");
+        assert_eq!((title.as_str(), at), ("Dosya", Some(0)));
+        let (title, at) = split_mnemonic("A&raçlar");
+        assert_eq!(title.chars().nth(at.unwrap()), Some('r'));
+    }
+
+    #[test]
+    fn mnemonic_marker_handles_literal_ampersands_and_missing_markers() {
+        assert_eq!(split_mnemonic("Help"), ("Help".to_string(), None));
+        assert_eq!(
+            split_mnemonic("Tom && Jerry"),
+            ("Tom & Jerry".to_string(), None)
+        );
+        assert_eq!(
+            split_mnemonic("Save &&&As"),
+            ("Save &As".to_string(), Some(6))
+        );
+        // A trailing marker has no letter to underline.
+        assert_eq!(split_mnemonic("File&"), ("File".to_string(), None));
+    }
 }

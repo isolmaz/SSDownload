@@ -37,6 +37,9 @@
   function safeDocument(value) { return typeof value === "string" && value.length > 0 && value.length <= 128; }
   function nativeError(error) {
     const message = String(error?.message || error || "Bilinmeyen yerel bağlantı hatası");
+    // Chrome's "Access to the specified native messaging host is forbidden." also contains
+    // the not-found wording, so a refused extension identity is recognised first.
+    if (/forbidden/i.test(message)) return "SSDownload yerel bağlantısı bu eklentiye izin vermiyor (eklenti kimliği izinli değil).";
     if (/native messaging host.*not found|specified native messaging host|no such native application/i.test(message)) return "SSDownload yerel bağlantısı kayıtlı değil.";
     return `SSDownload kalıcı yerel bağlantısı kesildi: ${message}`;
   }
@@ -186,6 +189,17 @@
     const values = Array.from(jobs.values()).slice(-8).map(({request, requestOps, ...value}) => ({...value, request}));
     if (JSON.stringify(values).length > MAX_SAVED_BYTES) throw new Error("Tarayıcı aktarım sürdürme kaydı çok büyük");
     await call(relayApi.storage.session, "set", { browserRelayJobs: values });
+    closeIdlePort();
+  }
+
+  // The persistent port keeps the service worker and a native host process alive; once no job
+  // is recorded and nothing is queued or in flight it has no purpose. The next command
+  // reconnects, and a port that is closed here never reports a disconnect to resetPort.
+  function closeIdlePort() {
+    if (!nativePort || jobs.size || nativeCurrent || nativeQueue.length) return;
+    const port = nativePort;
+    nativePort = null;
+    try { port.disconnect(); } catch (_) {}
   }
 
   function transferJobs(capabilities) {
@@ -244,7 +258,9 @@
       transfer = await transferCommand({ operation: "begin", id: state.jobId, total: null, etag: null, restart: false });
     } catch (error) {
       const reason = String(error?.message || error);
-      if (/İş bulunamadı|ayrılamaz|yetkilendirilmeli|Deneysel tarayıcı aktarımı/i.test(reason)) {
+      // The desktop words these refusals in its interface language (the engine's Turkish/English
+      // pairs); both wordings end the job's automatic resumption, never just the Turkish one.
+      if (/İş bulunamadı|ayrılamaz|yetkilendirilmeli|Deneysel tarayıcı aktarımı|cannot be set aside|must be authorized|Experimental browser transfer/i.test(reason)) {
         jobs.delete(state.jobId);
       } else {
         state.reason = reason.slice(0, 500);
@@ -523,7 +539,7 @@
     if (sender.id !== relayApi.runtime.id || typeof sender.url !== "string" || !sender.url.startsWith(relayApi.runtime.getURL(""))) {
       throw new Error("Tarayıcı aktarımı yalnız eklenti arayüzünden başlatılabilir");
     }
-    if (message.command === "start") return startRelay(message);
+    if (message.command === "start") return startRelay(message).finally(closeIdlePort);
     if (message.command === "status") {
       const state = jobs.get(message.jobId);
       return state ? {ok:true,jobId:state.jobId,state:state.paused?"paused":"running",reason:state.reason,automaticResume:state.autoResume===true,popupRequired:false,sourceRequired:true} : {ok:true,state:"inactive"};

@@ -35,6 +35,9 @@ pub(super) struct MediaOutputFingerprint<'a> {
     pub(super) exact_height: Option<u32>,
     pub(super) format_id: &'a Option<String>,
     pub(super) video_format_id: &'a Option<String>,
+    // Absent when unset, so fingerprints of existing workspaces keep their value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) playlist_items: &'a Option<String>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +72,7 @@ pub(super) fn fingerprint_value(
             exact_height: request.exact_height,
             format_id: &request.format_id,
             video_format_id: &request.video_format_id,
+            playlist_items: &request.playlist_items,
         },
         audio: MediaAudioFingerprint {
             output_format: &request.audio_format,
@@ -965,7 +969,7 @@ pub(super) fn manifest_snapshot(
     };
     let mut easy = network.easy_for_url(&target_url, control)?;
     easy.url(target)?;
-    easy.useragent("SSDownload/1.4")?;
+    easy.useragent(tools::USER_AGENT)?;
     easy.follow_location(false)?;
     easy.fail_on_error(false)?;
     easy.connect_timeout(timeout.min(Duration::from_secs(5)))?;

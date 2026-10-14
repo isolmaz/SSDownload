@@ -2,6 +2,41 @@
 
 use super::*;
 
+/// Extensions a chosen name may already carry for the container it will be saved in. Any other
+/// dot belongs to the title ("Python 3.12 guide", "Mr. Robot") and must stay in the file name.
+const MEDIA_NAME_EXTENSIONS: &[&str] = &[
+    "3gp", "aac", "avi", "flac", "m3u8", "m4a", "m4v", "mka", "mkv", "mov", "mp3", "mp4", "mpd",
+    "mpeg", "mpg", "oga", "ogg", "opus", "ts", "wav", "webm",
+];
+
+/// Per-download copies of the extractor document (signed URLs, header values). They live in the
+/// profile's private cookie-jar folder so the start-up sweep removes what a hard kill left.
+pub(super) const INFO_LEASE_PREFIX: &str = "ssdownload-source-info-";
+pub(super) const PINNED_LEASE_PREFIX: &str = "ssdownload-pinned-source-";
+
+pub(super) fn without_media_extension(output: &Path) -> PathBuf {
+    let known = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            MEDIA_NAME_EXTENSIONS
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(extension))
+        });
+    if known {
+        output.with_extension("")
+    } else {
+        output.to_path_buf()
+    }
+}
+
+pub(super) fn with_media_extension(output: &Path, extension: &std::ffi::OsStr) -> PathBuf {
+    let mut name = without_media_extension(output).into_os_string();
+    name.push(".");
+    name.push(extension);
+    PathBuf::from(name)
+}
+
 pub(super) struct OutputPlan {
     pub(super) template: PathBuf,
     pub(super) workspace: PathBuf,
@@ -94,10 +129,11 @@ impl OutputPlan {
                     fs::rename(&path, &target)?;
                 }
             }
-            crate::output::publish(&ready, &output.with_extension(""))?
+            crate::output::publish(&ready, &without_media_extension(output))?
         } else {
             let path = self.checked_output(last.context("Tamamlanan medya dosyası bulunamadı")?)?;
-            let target = output.with_extension(path.extension().context("Medya dosya türü eksik")?);
+            let target =
+                with_media_extension(output, path.extension().context("Medya dosya türü eksik")?);
             crate::output::publish(&path, &target)?
         };
         // This is a private, ownership-checked tree. Partial files remain here on pause/failure.
@@ -127,8 +163,8 @@ impl SourceInfoLease {
             crate::secure::unseal(&sealed).context("Doğrulanmış medya kaynak paketi açılamadı")?;
         let mut source: PinnedMediaSource =
             serde_json::from_str(&serialized).context("Doğrulanmış medya kaynak paketi bozuk")?;
-        let root =
-            std::env::temp_dir().join(format!("ssdownload-pinned-source-{}", uuid::Uuid::new_v4()));
+        let root = crate::paths::cookie_jar_dir()?
+            .join(format!("{PINNED_LEASE_PREFIX}{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root)?;
         let result = (|| -> Result<PathBuf> {
             for (index, manifest) in source.manifests.iter().enumerate() {
@@ -156,8 +192,8 @@ impl SourceInfoLease {
 
     pub(super) fn from_inspection(inspection: &Value) -> Result<Self> {
         let serialized = serde_json::to_vec(inspection)?;
-        let root =
-            std::env::temp_dir().join(format!("ssdownload-source-info-{}", uuid::Uuid::new_v4()));
+        let root = crate::paths::cookie_jar_dir()?
+            .join(format!("{INFO_LEASE_PREFIX}{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root)?;
         let info_path = root.join("source.info.json");
         if let Err(error) = fs::write(&info_path, serialized) {
@@ -310,6 +346,12 @@ pub(super) fn discard_attempt_outputs(
         .next()
         .unwrap_or("media")
         .to_owned();
+    // The tool reports files under the extended-length form of the workspace, which does not
+    // compare equal to the plain workspace path, so kept files are matched by resolved identity.
+    let keep = keep
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect::<HashSet<_>>();
     let mut removed = 0usize;
     let mut bytes = 0u64;
     for entry in fs::read_dir(&plan.workspace)? {
@@ -326,7 +368,14 @@ pub(super) fn discard_attempt_outputs(
             Some(name) => name,
             None => continue,
         };
-        if !name.starts_with(&stem) || keep.contains(&path) {
+        // `.owner`, `.request`, `.source*` are workspace state, never tool output: the playlist
+        // template has no literal prefix, so the stem alone would match them too.
+        if name.starts_with('.')
+            || !name.starts_with(&stem)
+            || path
+                .canonicalize()
+                .is_ok_and(|resolved| keep.contains(&resolved))
+        {
             continue;
         }
         let size = meta.len();

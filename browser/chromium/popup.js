@@ -15,9 +15,17 @@ function ask(command, extra) {
   });
 }
 
+// A reply that failed or never came carries no state: it must not be drawn as "everything off".
+function usable(reply) {
+  return !!reply && !reply.error && typeof reply.detectionEnabled === "boolean";
+}
+
 function show(state) {
   document.getElementById("detection").checked = state.detectionEnabled === true;
-  document.getElementById("state").textContent = state.detectionEnabled ? "ON" : "OFF";
+  document.getElementById("state").textContent = state.detectionEnabled ? "AÇIK" : "KAPALI";
+  // The desktop's availability problem (not installed, not running, refused) is stated where the
+  // user looks; "Uygulamayı aç" below is the explicit action that starts it.
+  document.getElementById("status").textContent = state.capabilityError || "";
   const hide = document.getElementById("hide-site");
   hide.checked = state.siteHidden === true;
   hide.disabled = !state.host;
@@ -44,13 +52,23 @@ function show(state) {
   document.getElementById("empty").hidden = (state.media || []).length > 0;
 }
 
-async function refresh() { show(await ask("state")); }
+// Draws a state reply; a failed one keeps what is on screen, says why, and re-reads the
+// worker's real state so the switches cannot drift from it.
+async function apply(reply) {
+  if (usable(reply)) { show(reply); return; }
+  const failure = reply?.error || "Eklenti arka planı yanıt vermedi.";
+  const state = await ask("state");
+  if (usable(state)) show(state);
+  document.getElementById("status").textContent = failure;
+}
+
+async function refresh() { await apply(await ask("state")); }
 
 document.getElementById("detection").addEventListener("change", async (event) => {
-  show(await ask("set-detection", { value: event.target.checked }));
+  await apply(await ask("set-detection", { value: event.target.checked }));
 });
 document.getElementById("hide-site").addEventListener("change", async (event) => {
-  show(await ask("hide-site", { value: event.target.checked }));
+  await apply(await ask("hide-site", { value: event.target.checked }));
 });
 document.getElementById("open-app").addEventListener("click", async () => {
   const reply = await ask("open-app");

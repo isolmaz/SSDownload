@@ -23,6 +23,8 @@ pub fn register_current(paths: &AppPaths) -> Result<()> {
         );
     }
     bridge::register(&executable, paths).context("Tarayıcı native messaging kaydı yapılamadı")?;
+    crate::extension::register_external()
+        .context("Tarayıcı eklentisi Chrome/Edge için kaydedilemedi")?;
 
     // The installer and portable archive place the unpacked extensions beside the executable.
     // In a source checkout browser_root also finds the repository directory. Generating this
@@ -35,7 +37,14 @@ pub fn register_current(paths: &AppPaths) -> Result<()> {
 
 pub fn unregister_current(paths: &AppPaths) -> Result<()> {
     bridge::unregister(&std::env::current_exe()?, paths)
-        .context("Tarayıcı native messaging kaydı kaldırılamadı")
+        .context("Tarayıcı native messaging kaydı kaldırılamadı")?;
+    // Another SSDownload copy may still own the browser connection; the
+    // extension stays installed for it.
+    if !bridge::host_registered() {
+        crate::extension::unregister_external()
+            .context("Tarayıcı eklentisi kaydı kaldırılamadı")?;
+    }
+    Ok(())
 }
 
 fn startup_name(paths: &AppPaths) -> String {
@@ -95,6 +104,8 @@ pub fn open_browser_setup(paths: &AppPaths) -> Result<()> {
         "Tarayıcı eklentisi dosyaları bulunamadı. Kurulumu onarın veya taşınabilir paketi yeniden açın.",
     )?;
     bridge::register(&executable, paths).context("Tarayıcı bağlantısı kaydedilemedi")?;
+    crate::extension::register_external()
+        .context("Tarayıcı eklentisi Chrome/Edge için kaydedilemedi")?;
     let page =
         write_browser_setup(&root, paths).context("Tarayıcı kurulum sayfası hazırlanamadı")?;
     shell_open(&page).context("Tarayıcı kurulum sayfası açılamadı")
@@ -217,18 +228,51 @@ fn write_browser_setup(browser_root: &Path, paths: &AppPaths) -> Result<PathBuf>
     let chromium_path = html_escape(&chromium.display().to_string());
     let chromium_url = html_escape(chromium_url.as_str());
 
+    let english = crate::i18n::english();
+    let text = |tr: &'static str, en: &'static str| if english { en } else { tr };
+    let store_url = html_escape(crate::extension::WEB_STORE_LISTING_URL);
+    let extension_id = crate::extension::CHROME_EXTENSION_ID;
+    let lang = text("tr", "en");
+    let title = text(
+        "SSDownload tarayıcı eklentisi",
+        "SSDownload browser extension",
+    );
+    let intro = text(
+        "SSDownload, eklentiyi Chrome ve Edge'e kendisi ekler. Tarayıcıyı bir sonraki açışınızda çıkan <b>Yeni eklenti eklendi</b> uyarısında <b>Eklentiyi etkinleştir</b>'e tıklayın.",
+        "SSDownload adds the extension to Chrome and Edge itself. The next time you open the browser, click <b>Enable extension</b> on the <b>New extension added</b> notice.",
+    );
+    let store_heading = text("Uyarıyı görmediyseniz", "Didn't see the notice?");
+    let store_body = text(
+        "Tarayıcıyı tamamen kapatıp yeniden açın veya eklentiyi Chrome Web Mağazası'ndan ekleyin. Edge, Chrome Web Mağazası eklentilerini de kurar.",
+        "Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.",
+    );
+    let store_button = text("Chrome Web Mağazası'nda aç", "Open in the Chrome Web Store");
+    let manual_heading = text("Mağaza olmadan yükleme", "Loading without the store");
+    let manual_steps = text(
+        "<li>Adres çubuğunda <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) açın.</li><li><b>Geliştirici modu</b>nu açın.</li><li><b>Paketlenmemiş öğe yükle</b>'yi seçip aşağıdaki klasörü gösterin.</li>",
+        "<li>Open <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) in the address bar.</li><li>Turn on <b>Developer mode</b>.</li><li>Choose <b>Load unpacked</b> and select the folder below.</li>",
+    );
+    let folder_button = text("Eklenti klasörünü aç", "Open the extension folder");
+    let id_label = text("Eklenti kimliği", "Extension ID");
+    let host_heading = text("Uygulama bağlantısı", "Connection to the app");
+    let host_body = text(
+        "Eklenti yalnızca bu bilgisayardaki SSDownload ile konuşur. Bağlantı kurulamazsa SSDownload'u açıp <b>Araçlar → Tarayıcı kurulumu</b>'nu yeniden çalıştırın veya <code>ssdownload.exe --register-host</code> komutunu kullanın. Eklenti indirilen dosyaları hiçbir zaman çalıştırmaz.",
+        "The extension talks only to SSDownload on this computer. If it cannot connect, open SSDownload and run <b>Tools → Browser setup</b> again, or use <code>ssdownload.exe --register-host</code>. The extension never runs downloaded files.",
+    );
+
     let html = format!(
         r#"<!doctype html>
-<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SSDownload Tarayıcı Kurulumu</title>
+<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
 <style>
 :root{{color-scheme:light dark;font-family:"Segoe UI",system-ui,sans-serif;background:#eef4fb;color:#15243b}}
 body{{margin:0}}main{{max-width:880px;margin:40px auto;padding:0 22px}}header{{background:linear-gradient(135deg,#1458c4,#17a3a3);color:white;border-radius:18px;padding:30px;box-shadow:0 12px 34px #1234}}
-h1{{margin:0 0 8px;font-size:30px}}header p{{margin:0;line-height:1.55}}section{{background:#fff;color:#15243b;margin:20px 0;padding:24px;border-radius:14px;box-shadow:0 5px 18px #17304c18}}h2{{margin-top:0}}ol{{padding-left:24px;line-height:1.65}}code{{display:block;overflow-wrap:anywhere;background:#e9f0f8;border:1px solid #ccdaea;padding:12px;border-radius:8px;user-select:all}}a.button{{display:inline-block;background:#1458c4;color:#fff;text-decoration:none;padding:10px 15px;border-radius:8px;font-weight:600}}small{{color:#52657a}}@media(prefers-color-scheme:dark){{:root{{background:#0d1725;color:#e9f1fc}}section{{background:#17263a;color:#e9f1fc}}code{{background:#0f1d2e;border-color:#334b67}}small{{color:#aec0d5}}}}
+h1{{margin:0 0 8px;font-size:30px}}header p{{margin:0;line-height:1.55}}section{{background:#fff;color:#15243b;margin:20px 0;padding:24px;border-radius:14px;box-shadow:0 5px 18px #17304c18}}h2{{margin-top:0}}ol{{padding-left:24px;line-height:1.65}}pre{{overflow-wrap:anywhere;white-space:pre-wrap;background:#e9f0f8;border:1px solid #ccdaea;padding:12px;border-radius:8px;user-select:all}}a.button{{display:inline-block;background:#1458c4;color:#fff;text-decoration:none;padding:10px 15px;border-radius:8px;font-weight:600}}small{{color:#52657a}}@media(prefers-color-scheme:dark){{:root{{background:#0d1725;color:#e9f1fc}}section{{background:#17263a;color:#e9f1fc}}pre{{background:#0f1d2e;border-color:#334b67}}small{{color:#aec0d5}}}}
 </style></head><body><main>
-<header><h1>SSDownload Tarayıcı Eklentisi</h1><p>Eklenti mağazada yayımlanmış gibi gösterilmez. Aşağıdaki dosyalar bu SSDownload kopyasıyla birlikte gelen, yerel ve paketlenmemiş eklenti kaynaklarıdır.</p></header>
-<section><h2>Chrome</h2><ol><li>Adres çubuğunda <b>chrome://extensions</b> açın.</li><li><b>Geliştirici modu</b> seçeneğini etkinleştirin.</li><li><b>Paketlenmemiş öğe yükle</b> seçeneğini seçip aşağıdaki klasörü gösterin.</li></ol><code>{chromium_path}</code><p><a class="button" href="{chromium_url}">Chrome eklenti klasörünü aç</a></p><small>Sabit eklenti kimliği: hgndggnlfpnflkmnbddmcnfniamckham</small></section>
-<section><h2>Native Messaging bağlantısı</h2><p>SSDownload içindeki tarayıcı kaydı, uygulamanın <b>Tarayıcı bağlantısını kaydet</b> işlemiyle veya <code>ssdownload.exe --register-host</code> komutuyla geçerli Windows kullanıcısı için oluşturulur. Eklenti indirilen dosyaları otomatik çalıştırmaz.</p></section>
+<header><h1>{title}</h1><p>{intro}</p></header>
+<section><h2>{store_heading}</h2><p>{store_body}</p><p><a class="button" href="{store_url}">{store_button}</a></p></section>
+<section><h2>{manual_heading}</h2><ol>{manual_steps}</ol><pre>{chromium_path}</pre><p><a class="button" href="{chromium_url}">{folder_button}</a></p><small>{id_label}: {extension_id}</small></section>
+<section><h2>{host_heading}</h2><p>{host_body}</p></section>
 </main></body></html>"#
     );
 
@@ -246,6 +290,26 @@ h1{{margin:0 0 8px;font-size:30px}}header p{{margin:0;line-height:1.55}}section{
         })
         .context("Tarayıcı kurulum sayfası atomik olarak yerleştirilemedi")?;
     Ok(page)
+}
+
+/// Opens the extension's Chrome Web Store listing in the default browser.
+pub fn open_web_store() -> Result<()> {
+    let operation = wide("open");
+    let target = wide(crate::extension::WEB_STORE_LISTING_URL);
+    let result = unsafe {
+        ShellExecuteW(
+            null_mut(),
+            operation.as_ptr(),
+            target.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result as isize <= 32 {
+        bail!("ShellExecuteW başarısız oldu (kod {})", result as isize);
+    }
+    Ok(())
 }
 
 fn shell_open(path: &Path) -> Result<()> {
@@ -314,8 +378,10 @@ mod tests {
         let page = write_browser_setup(&chrome_root, &paths).unwrap();
         assert_eq!(page, paths.base_dir.join(SETUP_FILE));
         let html = std::fs::read_to_string(&page).unwrap();
-        assert_eq!(html.matches("://extensions").count(), 1);
-        assert_eq!(html.matches("<section>").count(), 2);
+        assert!(html.contains(&html_escape(
+            &chrome_root.join("chromium").display().to_string()
+        )));
+        assert!(html.contains(crate::extension::WEB_STORE_LISTING_URL));
 
         std::fs::remove_dir_all(root).unwrap();
     }

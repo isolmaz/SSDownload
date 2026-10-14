@@ -20,6 +20,8 @@ SSDownload connects only to:
 
 GitHub, like any web server, sees the IP address of the computer that requests a file.
 
+The installer also registers the extension with Chrome and Edge (`HKCU\Software\Google\Chrome\Extensions` and `HKCU\Software\Microsoft\Edge\Extensions`). The browser itself then downloads and updates the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham), as it does for any store extension; SSDownload makes no connection for this. Uninstalling removes the entries and the browser removes the extension.
+
 ## Browser extension
 
 - The extension sends data **only to the SSDownload app on the same computer**, through the browser's native messaging channel.

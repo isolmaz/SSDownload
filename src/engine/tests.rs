@@ -816,3 +816,137 @@ fn proxy_tunnel_failures_are_retryable() {
     assert!(!retryable_error(&anyhow!("HTTP Error 403: Forbidden")));
     assert!(!retryable_error(&anyhow!("Unsupported URL")));
 }
+
+#[test]
+fn a_file_locked_by_another_program_is_retried_but_other_access_errors_are_not() {
+    let locked = |code| {
+        anyhow::Error::new(std::io::Error::from_raw_os_error(code))
+            .context("Tamamlanan dosya güvenle taşınamadı")
+    };
+    // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION
+    assert!(retryable_error(&locked(32)));
+    assert!(retryable_error(&locked(33)));
+    // ERROR_ACCESS_DENIED stays permanent
+    assert!(!retryable_error(&locked(5)));
+}
+
+#[test]
+fn a_job_whose_destination_folder_was_deleted_recreates_it_before_starting() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-folder-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let folder = root.join("deleted-after-queueing");
+    let output = folder.join("file.bin");
+    let id = Uuid::new_v4().to_string();
+    // A port nothing listens on, so the transfer itself fails at once after the folder step.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/file.bin", closed.local_addr().unwrap());
+    drop(closed);
+    let job = Job {
+        id: id.clone(),
+        request: AddRequest {
+            url,
+            kind: DownloadKind::File,
+            ..Default::default()
+        },
+        name: "file.bin".into(),
+        state: JobState::Queued,
+        path: output.clone(),
+        downloaded: 0,
+        total: None,
+        speed: 0,
+        eta: None,
+        error: None,
+        phase: "Sırada".into(),
+        created_at: 0,
+        updated_at: 0,
+        attempts: 0,
+        work_dir: Some(crate::recovery::work_dir(&output, &id)),
+        remove_requested: None,
+        claim: None,
+        legacy_completed: false,
+        browser_transfer_authorized: false,
+        priority: 0,
+        force_start: false,
+        open_when_done: false,
+    };
+    let allocation = ConnectionAllocation {
+        direct: 1,
+        media_fragments: 0,
+        usage_modes: UsageModes::default(),
+    };
+    let error = run_job(
+        &paths,
+        &job,
+        &output,
+        &TransferControl::default(),
+        &NetworkGovernor::new(2),
+        allocation,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(
+        folder.is_dir(),
+        "the destination folder was not recreated: {error:#}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn synchronization_refuses_a_redirect_to_a_non_http_protocol() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0u8; 2048];
+        let _ = std::io::Read::read(&mut stream, &mut buffer);
+        std::io::Write::write_all(
+            &mut stream,
+            b"HTTP/1.1 302 Found\r\nLocation: ftp://127.0.0.1:1/mirror.bin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    });
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("http://{address}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        ..Default::default()
+    };
+    let error = perform_synchronization(&policy, &NetworkGovernor::new(4))
+        .err()
+        .expect("the ftp redirect must be refused");
+    server.join().unwrap();
+    assert!(
+        error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<curl::Error>())
+            .any(|error| error.is_unsupported_protocol()),
+        "{error:#}"
+    );
+    assert!(!root.join("mirror.bin").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_named_from_the_address_gets_the_decoded_file_name() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-name-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(AddRequest {
+            url: "https://example.test/files/Y%C4%B1ll%C4%B1k%20Rapor%20%281%29.pdf?v=a%20b".into(),
+            directory: Some(root.join("out")),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..Default::default()
+        })
+        .unwrap()
+        .remove(0);
+    let snapshot = engine.snapshot();
+    let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+    assert_eq!(job.name, "Yıllık Rapor (1).pdf");
+    assert_eq!(job.path.file_name().unwrap(), "Yıllık Rapor (1).pdf");
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}

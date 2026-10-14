@@ -2,10 +2,102 @@
 
 use super::*;
 
+const SS_NOTIFY_STYLE: isize = 0x0100;
+const SS_ENDELLIPSIS_STYLE: isize = 0x4000;
+const SS_LEFTNOWORDWRAP_STYLE: isize = 0x000C;
+const SS_TYPE_MASK: isize = 0x001F;
+
+/// The window property holding the error line's tooltip on its dialog.
+fn error_tip_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.ErrorTip"));
+    NAME.as_ptr()
+}
+
+/// Keeps the tooltip of the error line in step with the line's text: the full
+/// message plus the hint that a click copies it.
+unsafe extern "system" fn error_line_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let result = call_previous(hwnd, msg, wparam, lparam);
+    if msg == WM_SETTEXT {
+        let tip = GetPropW(GetParent(hwnd), error_tip_prop()) as HWND;
+        if !tip.is_null() {
+            let message = text(hwnd);
+            let mut full = if message.is_empty() {
+                Vec::new()
+            } else {
+                wide(&crate::i18n::ui_owned!(
+                    format!("{message}\r\n\r\n(Panoya kopyalamak için tıklayın)"),
+                    format!("{message}\r\n\r\n(Click to copy)")
+                ))
+            };
+            let mut info: TTTOOLINFOW = zeroed();
+            info.cbSize = size_of::<TTTOOLINFOW>() as u32;
+            info.hwnd = hwnd;
+            info.uId = hwnd as usize;
+            info.lpszText = if full.is_empty() {
+                null_mut()
+            } else {
+                full.as_mut_ptr()
+            };
+            SendMessageW(tip, TTM_UPDATETIPTEXTW, 0, &info as *const _ as LPARAM);
+        }
+    }
+    result
+}
+
+/// Turns the dialog's error line into a single line that ends in an ellipsis
+/// when the message is longer than the row, with the whole message in a tooltip
+/// and copied to the clipboard on a click (see `dialog_command`).
+unsafe fn prepare_error_line(dlg: &DialogUi) {
+    let old = GetPropW(dlg.hwnd, error_tip_prop()) as HWND;
+    if !old.is_null() {
+        DestroyWindow(old);
+        RemovePropW(dlg.hwnd, error_tip_prop());
+    }
+    let style = GetWindowLongPtrW(dlg.error, GWL_STYLE);
+    SetWindowLongPtrW(
+        dlg.error,
+        GWL_STYLE,
+        (style & !SS_TYPE_MASK) | SS_LEFTNOWORDWRAP_STYLE | SS_NOTIFY_STYLE | SS_ENDELLIPSIS_STYLE,
+    );
+    let tip = CreateWindowExW(
+        WS_EX_TOPMOST,
+        wide("tooltips_class32").as_ptr(),
+        null(),
+        WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        dlg.hwnd,
+        null_mut(),
+        GetModuleHandleW(null()),
+        null(),
+    );
+    if tip.is_null() {
+        return;
+    }
+    SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, scale(520, dlg.dpi) as LPARAM);
+    subclass(dlg.error, error_line_proc);
+    let mut info: TTTOOLINFOW = zeroed();
+    info.cbSize = size_of::<TTTOOLINFOW>() as u32;
+    info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    info.hwnd = dlg.error;
+    info.uId = dlg.error as usize;
+    SendMessageW(tip, TTM_ADDTOOLW, 0, &info as *const _ as LPARAM);
+    SetPropW(dlg.hwnd, error_tip_prop(), tip as HANDLE);
+}
+
 /// The controls one kind of dialog is made of, plus the timer that keeps that
 /// kind up to date. Created once when the window is created, and again when a
 /// window changes kind in place (`rebuild_dialog_controls`).
 pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
+    prepare_error_line(dlg);
     let dlg_ptr = dlg as *mut DialogUi;
     match &mut (*dlg_ptr).kind {
         DialogKind::Wizard(f) => {
@@ -437,7 +529,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui(
                     "Sunucu başına iş ve bağlantı (1–16):",
-                    "Jobs and connections per server (1–16):",
+                    "Per-server limit (1–16):",
                 ),
                 0,
             );
@@ -448,7 +540,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui(
                     "Genel hız sınırı (KiB/sn, 0 = sınırsız):",
-                    "Overall speed limit (KiB/s, 0 = unlimited):",
+                    "Speed limit (KiB/s, 0 = unlimited):",
                 ),
                 0,
             );
@@ -758,6 +850,57 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 D_CANCEL,
                 false,
             );
+            // Tab order follows the order the controls were created in, and the
+            // General page's first row (level, language) and its checkboxes
+            // were created after the advanced rows. Put the General page's
+            // controls first, in the order the layout shows them; the other
+            // pages' controls and the buttons keep their creation order behind
+            // them, and a control hidden by the current page is skipped anyway.
+            let mut order = vec![
+                f.ui_mode,
+                f.ui_language,
+                f.dir,
+                GetDlgItem(dlg.hwnd, S_BROWSE),
+                f.max_active,
+                f.connections,
+            ];
+            if simple {
+                order.extend([f.site_entries, f.startup, f.tray, f.notify, f.dark]);
+            } else {
+                order.extend([
+                    f.mode_video,
+                    f.mode_file,
+                    f.mode_audio,
+                    f.clipboard,
+                    f.startup,
+                    f.tray,
+                    f.notify,
+                    f.dark,
+                    f.site_entries,
+                    f.schedule,
+                    f.start,
+                    f.end,
+                ]);
+            }
+            order.extend([
+                f.update_check,
+                GetDlgItem(dlg.hwnd, ID_SETTINGS_CHECK_UPDATES),
+                GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION),
+                GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
+            ]);
+            let mut previous = tabs;
+            for control in order {
+                SetWindowPos(
+                    control,
+                    previous,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+                previous = control;
+            }
         }
         DialogKind::Tools(f) => {
             dialog_label(
@@ -1124,8 +1267,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Eski dosyanın üzerine atomik yaz (varsayılan: sürüm koru)",
-                    "Atomically overwrite the old file (default: keep version)",
+                    "Eski dosyayı değiştir (varsayılan: sürüm koru)",
+                    "Replace the old file (default: keep versions)",
                 ),
                 Y_OVERWRITE,
             );
@@ -1204,16 +1347,24 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                &crate::i18n::ui_owned!(
-                    format!(
-                        "Seçili {} indirme için hız sınırı (KiB/sn, 0 = genel sınır):",
-                        f.ids.len()
-                    ),
-                    format!(
-                        "Speed limit for the {} selected download(s) (KiB/s, 0 = global limit):",
-                        f.ids.len()
+                &if f.ids.is_empty() {
+                    crate::i18n::ui(
+                        "Genel hız sınırı (KiB/sn, 0 = sınırsız):",
+                        "Overall speed limit (KiB/s, 0 = unlimited):",
                     )
-                ),
+                    .to_string()
+                } else {
+                    crate::i18n::ui_owned!(
+                        format!(
+                            "Seçili {} indirme için hız sınırı (KiB/sn, 0 = genel sınır):",
+                            f.ids.len()
+                        ),
+                        format!(
+                            "Speed limit for the {} selected download(s) (KiB/s, 0 = global limit):",
+                            f.ids.len()
+                        )
+                    )
+                },
                 0,
             );
             f.edit = dialog_edit(dlg.hwnd, dlg.font, SP_EDIT, false, true);

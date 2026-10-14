@@ -6,6 +6,8 @@ const HOST = "com.ssdownload.desktop";
 const MAX_MEDIA_PER_TAB = 200;
 const REQUEST_CONTEXT_MAX_AGE = 120000;
 const CAPABILITY_CACHE_AGE = 60000;
+const CAPABILITY_ERROR_AGE = 5000;
+const SESSION_SAVE_DELAY = 750;
 // The page markup a handoff may carry for the error report, bounded in bytes: a truncated
 // capture says so in place, and neither side of the wire ever sees more than the bound.
 const PAGE_HTML_LIMIT = 192 * 1024;
@@ -78,14 +80,23 @@ function invoke(target, method, ...args) {
   });
 }
 
-// The toolbar action is the whole interface: one click flips the global
-// switch and nothing else. No popup, sidebar or options page replaces it, so
-// the badge and tooltip are the only place the state can be read.
-const TOGGLE_ON = { text: "ON", color: "#16803a", title: "SSDownload: açık — kapatmak için tıklayın" };
-const TOGGLE_OFF = { text: "OFF", color: "#5f6368", title: "SSDownload: kapalı — açmak için tıklayın" };
+// The toolbar action opens popup.html, where the global switch is flipped; the badge
+// and tooltip are the always-visible reading of that switch.
+const TOGGLE_ON = { text: "AÇIK", color: "#16803a", title: "SSDownload: açık — ayarlar için tıklayın" };
+const TOGGLE_OFF = { text: "KAPALI", color: "#5f6368", title: "SSDownload: kapalı — ayarlar için tıklayın" };
 // Completed downloads since the popup was last opened; the badge shows the count.
 let pendingCompletions = 0, completedBaseline = null, lastHandoffAt = 0;
 const COMPLETION_POLL_WINDOW = 3 * 60 * 60 * 1000;
+// The worker is suspended and restarted many times while one download runs, so the counters
+// live in the session store: a restart must forget neither the baseline the completed jobs
+// are counted from nor the recent handoff that keeps the completion poll alive.
+function saveCompletion() {
+  invoke(api.storage.session, "set", { completion: { pending: pendingCompletions, baseline: completedBaseline, handoffAt: lastHandoffAt } }).catch(() => {});
+}
+function noteHandoff() {
+  lastHandoffAt = Date.now();
+  saveCompletion();
+}
 function actionState() {
   if (detectionEnabled && pendingCompletions > 0) {
     return { text: String(Math.min(pendingCompletions, 99)), color: "#34c759", title: `SSDownload: ${pendingCompletions} indirme tamamlandı` };
@@ -94,9 +105,9 @@ function actionState() {
 }
 function noteCompletedJobs(count) {
   if (!Number.isInteger(count) || count < 0) return;
-  if (completedBaseline === null || count < completedBaseline) { completedBaseline = count; return; }
+  if (completedBaseline === null || count < completedBaseline) { completedBaseline = count; saveCompletion(); return; }
   const pending = count - completedBaseline;
-  if (pending !== pendingCompletions) { pendingCompletions = pending; applyActionState(); }
+  if (pending !== pendingCompletions) { pendingCompletions = pending; saveCompletion(); applyActionState(); }
 }
 // The whole label is global on purpose: a per-tab badge would override the
 // ON/OFF switch on the tab that just acted and hide the state the user is
@@ -234,9 +245,15 @@ async function loadPrivacySetting() {
 let sessionError = null;
 const sessionReady = (async () => {
   await loadPrivacySetting();
-  const saved = await invoke(api.storage.session, "get", ["discovery", "downloadTickets", "browserLaunches"]);
+  const saved = await invoke(api.storage.session, "get", ["discovery", "downloadTickets", "browserLaunches", "completion"]);
   for (const [key, value] of (saved.downloadTickets || [])) if(validTicket(key,value))tickets.set(key,value);
   for (const [key, value] of (saved.browserLaunches || [])) if(validLaunch(key,value))launches.set(key,value);
+  const completion = saved.completion;
+  if (completion && typeof completion === "object") {
+    if (Number.isInteger(completion.pending) && completion.pending >= 0) pendingCompletions = completion.pending;
+    if (Number.isInteger(completion.baseline) && completion.baseline >= 0) completedBaseline = completion.baseline;
+    if (Number.isFinite(completion.handoffAt)) lastHandoffAt = completion.handoffAt;
+  }
   if (!saved.discovery || !detectionEnabled) return;
   for (const [tabId, entries] of saved.discovery.media) mediaByTab.set(tabId, new Map(entries.map(([,item])=>[sourceKey(item),item])));
   for (const [tabId, status] of saved.discovery.status) tabStatus.set(tabId, status);
@@ -251,7 +268,6 @@ const sessionReady = (async () => {
   () => { sessionError = "Geçici keşif belleği yüklenemedi; sayfayı yeniden tarayın."; }
 );
 let sessionWrite = Promise.resolve();
-let savePending = false;
 function boundedEntries(entries, budget) {
   const kept=[];
   for(const entry of entries.slice().reverse()) {
@@ -261,11 +277,20 @@ function boundedEntries(entries, budget) {
   }
   return kept;
 }
+// Every observed request marks the session dirty; one trailing write follows the burst, and the
+// worker's own suspension flushes it so nothing the debounce still holds is lost.
+let saveTimer = null;
 function saveSession() {
-  if (savePending) return;
-  savePending = true;
-  queueMicrotask(() => {
-    savePending = false;
+  if (saveTimer !== null) return;
+  saveTimer = setTimeout(writeSession, SESSION_SAVE_DELAY);
+}
+function flushSession() {
+  if (saveTimer === null) return;
+  clearTimeout(saveTimer);
+  writeSession();
+}
+function writeSession() {
+    saveTimer = null;
     let remaining = 4 * 1024 * 1024;
     const media = [];
     for (const [tabId, values] of Array.from(mediaByTab).reverse()) {
@@ -289,7 +314,6 @@ function saveSession() {
       // error does not stick to every status the worker reports.
       .then(() => { sessionError = null; })
       .catch(() => { sessionError = "Geçici keşif belleği kaydedilemedi; arka plan işçisi kapanınca liste kaybolabilir."; });
-  });
 }
 
 function safeUrl(value) {
@@ -839,10 +863,18 @@ api.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
 
 function nativeErrorMessage(error) {
   const message = String(error && error.message ? error.message : error);
+  // Chrome words a refused extension identity "Access to the specified native messaging host is
+  // forbidden.", which contains the not-found wording below: it has to be recognised first.
+  if (/forbidden/i.test(message)) {
+    return "SSDownload yerel bağlantısı bu eklentiye izin vermiyor (eklenti kimliği izinli değil). SSDownload'ın sunduğu eklenti sürümünü kurun (Tarayıcı Kurulumu); ardından tarayıcıyı yeniden başlatın.";
+  }
   if (/native messaging host.*not found|specified native messaging host|no such native application/i.test(message)) {
     return "SSDownload yerel bağlantısı kayıtlı değil. Masaüstü uygulamasında Tarayıcı Kurulumu'nu açın veya SSDownload.exe --register-host çalıştırın; ardından tarayıcıyı yeniden başlatın.";
   }
-  if (/access.*denied|forbidden/i.test(message)) {
+  if (/SSD-BRG-005/.test(message)) {
+    return "SSDownload çalışmıyor. Araç çubuğu penceresindeki \"Uygulamayı aç\" ile başlatın.";
+  }
+  if (/access.*denied/i.test(message)) {
     return "SSDownload yerel bağlantısına erişim reddedildi. Uygulamayı ve tarayıcıyı aynı Windows kullanıcısıyla çalıştırın.";
   }
   return `SSDownload bağlantı hatası: ${message}`;
@@ -924,11 +956,19 @@ async function broadcastCapabilities() {
   } catch (_) {}
 }
 async function refreshCapabilities() {
-  if(Date.now()-capabilityState.checkedAt<CAPABILITY_CACHE_AGE) return capabilityState;
+  // A failure is re-probed within seconds: a desktop the user has just started must not stay
+  // invisible for a minute because the last probe found it closed.
+  if(Date.now()-capabilityState.checkedAt<(capabilityState.status==="ready"?CAPABILITY_CACHE_AGE:CAPABILITY_ERROR_AGE)) return capabilityState;
   if(capabilityTask) return capabilityTask;
   capabilityTask=(async()=>{
+    // The completion counters are restored with the session; counting before that would
+    // re-baseline a restarted worker at the current total and lose what finished meanwhile.
+    await sessionReady;
     try {
       const response=await invoke(api.runtime,"sendNativeMessage",HOST,{version:2,action:{type:"capabilities"}});
+      // The probe never starts the desktop: a closed one answers with a coded refusal that
+      // names the real problem instead of reading as a protocol mismatch.
+      if(response && response.ok===false) throw new Error(String(response.message||""));
       capabilityState=validateCapabilities(response);
       if (capabilityState.completedJobs !== null) noteCompletedJobs(capabilityState.completedJobs);
     } catch(error) {
@@ -962,6 +1002,13 @@ function baseFilename(item) {
   const base = String(raw).replace(/\.(?:mp4|mkv|webm|m3u8|mpd|m4a|mp3)$/i, "")
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").slice(0, 150);
   return base || null;
+}
+// A plain file keeps its extension, and a name nobody supplied stays null: the desktop takes a
+// file job's suggested name verbatim and only resolves the server's own name (Content-Disposition)
+// when none is suggested, so an address basename or a stripped container suffix would hide it.
+function fileName(raw) {
+  const name = String(raw || "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").slice(0, 1024);
+  return name || null;
 }
 // The desktop fills the picker's name from the analysed title, and the user's edit in
 // the picker always wins at confirm time. The browser therefore suggests a name only
@@ -1138,7 +1185,7 @@ async function mediaRequest(tabId, item, session, kind, pageHtml) {
 // auto-narrowed to an arbitrary first ambiguous source: only the observed player
 // the user acted on, or an explicitly chosen candidate, reaches this function.
 async function openMediaPicker(tabId, item, frameId, requestedKind) {
-  lastHandoffAt = Date.now();
+  noteHandoff();
   if (!detectionEnabled) throw new Error("SSDownload kapalı. Açmak için araç çubuğundaki simgeye tıklayın.");
   await refreshCapabilities();
   const kind = requestedKind === "audio" || item.kind === "audio" ? "audio" : "video";
@@ -1162,10 +1209,10 @@ async function openMediaPicker(tabId, item, frameId, requestedKind) {
 // Direct context-menu submissions keep the existing digest de-duplication so a
 // repeated click cannot queue the same job twice.
 async function contextAdd(tabId, target, kind, pageUrl, label, frameId) {
-  lastHandoffAt = Date.now();
+  noteHandoff();
   const session = await sessionMetadata(tabId, { url: target, pageUrl });
   const request = { url: target, kind, headers: session.headers, referer: session.referer, page_url: pageUrl || null, playlist: false,
-    container: kind === "video" ? "mp4" : null, filename: baseFilename({ url: target, filename: label }) };
+    container: kind === "video" ? "mp4" : null, filename: kind === "file" ? fileName(label) : baseFilename({ url: target, filename: label }) };
   // A plain file link is an address the user pointed at, not a page handoff: the markup
   // belongs to the page and media handoffs only, so this path carries it for those kinds.
   if (kind !== "file") {
@@ -1305,6 +1352,9 @@ function scheduleMenuRefresh() {
 }
 async function runGuarded(tabId, purpose, task, host) {
   try {
+    // A click that wakes a suspended worker is handled before the stored switch has been
+    // read; the default would let a submission through while the switch is off.
+    await sessionReady;
     // The switch gates every submission, not just page discovery; the toolbar
     // icon is the only place to turn it back on.
     if (!detectionEnabled) throw new Error("SSDownload kapalı. Açmak için araç çubuğundaki simgeye tıklayın.");
@@ -1343,15 +1393,26 @@ function mediaCandidate(tabId, info, tab, kind) {
 }
 // The toolbar icon opens popup.html; detection is switched there.
 if (api.alarms?.create) {
-  try { api.alarms.create("ssdownload-completion-poll", { periodInMinutes: 1 }); } catch (_) {}
-  api.alarms.onAlarm?.addListener(alarm => {
-    if (alarm?.name !== "ssdownload-completion-poll" || Date.now() - lastHandoffAt > COMPLETION_POLL_WINDOW) return;
+  const COMPLETION_ALARM = "ssdownload-completion-poll";
+  // Creating an alarm again restarts its period, and the worker starts again after every idle
+  // suspension: an existing alarm is kept so the poll still fires when the worker wakes
+  // more often than once a minute.
+  invoke(api.alarms, "get", COMPLETION_ALARM).catch(() => null).then(existing => {
+    if (existing) return;
+    try { api.alarms.create(COMPLETION_ALARM, { periodInMinutes: 1 }); } catch (_) {}
+  });
+  api.alarms.onAlarm?.addListener(async alarm => {
+    if (alarm?.name !== COMPLETION_ALARM) return;
+    // The alarm wakes a fresh worker: the handoff time it is judged by comes from the session.
+    await sessionReady;
+    if (Date.now() - lastHandoffAt > COMPLETION_POLL_WINDOW) return;
     capabilityState.checkedAt = 0;
     refreshCapabilities().catch(() => {});
   });
 }
 api.runtime.onInstalled.addListener(()=>{createMenus().catch(()=>{});sessionReady.then(()=>applyActionState()).catch(()=>{});});
 api.runtime.onStartup.addListener(()=>{createMenus().catch(()=>{});sessionReady.then(()=>applyActionState()).catch(()=>{});});
+api.runtime.onSuspend?.addListener(flushSession);
 api.tabs?.onActivated?.addListener?.(() => { createMenus().catch(() => {}); });
 api.tabs?.onUpdated?.addListener?.((_tabId, change) => { if (change?.url || change?.status === "complete") createMenus().catch(() => {}); });
 createMenus().catch(()=>{});
@@ -1676,7 +1737,9 @@ async function popupTab() {
 async function popupState() {
   pendingCompletions = 0;
   completedBaseline = capabilityState.completedJobs ?? completedBaseline;
+  saveCompletion();
   applyActionState();
+  await refreshCapabilities().catch(() => {});
   const tab = await popupTab();
   const host = safeUrl(tab?.url || "")?.hostname || "";
   const hidden = await hiddenHosts();
@@ -1685,9 +1748,13 @@ async function popupState() {
     const source = publicSource(tab.id, item);
     return { index, label: menuCandidateLabel(source), kind: source.kind === "audio" ? "audio" : "video" };
   });
-  return { detectionEnabled, host, siteHidden: !!host && hidden.includes(host), media };
+  return { detectionEnabled, host, siteHidden: !!host && hidden.includes(host), media,
+    capabilityError: capabilityState.status === "ready" ? null : String(capabilityState.error || "") };
 }
 async function handlePopupMessage(message) {
+  // The popup is what wakes a suspended worker: the switch, the discovered media and the
+  // completion counters it reads and resets must have been restored first.
+  await sessionReady;
   switch (message.command) {
     case "state": return popupState();
     case "set-detection": await setDetectionEnabled(message.value === true); return popupState();
@@ -1753,6 +1820,8 @@ function takeoverCandidate(item) {
   return TAKEOVER_EXTENSIONS.has(takeoverExtension(item));
 }
 async function takeOverDownload(item) {
+  // A download that wakes a suspended worker is judged by the stored switch, not its default.
+  await sessionReady;
   if (!detectionEnabled || !takeoverCandidate(item)) return;
   const state = await refreshCapabilities();
   if (state.status !== "ready" || state.browserTakeover !== true || !modeAllows("file")) return;
@@ -1760,7 +1829,7 @@ async function takeOverDownload(item) {
   try { await invoke(api.downloads, "pause", item.id); } catch (_) { return; }
   const referer = safeUrl(item.referrer || "")?.href || null;
   const request = { url: address, kind: "file", headers: {}, referer, page_url: referer, playlist: false,
-    container: null, filename: baseFilename({ url: address, filename: String(item.filename || "").split(/[\\/]/).pop() }),
+    container: null, filename: fileName(String(item.filename || "").split(/[\\/]/).pop()),
     request_id: crypto.randomUUID() };
   let accepted = false;
   try {
@@ -1772,7 +1841,7 @@ async function takeOverDownload(item) {
     logEvent("ext.takeover.refused", { level: "warn", outcome: "failed", host: urlHost(address), detail: String(error?.message || error).slice(0, 300) });
   }
   if (accepted) {
-    lastHandoffAt = Date.now();
+    noteHandoff();
     try { await invoke(api.downloads, "cancel", item.id); await invoke(api.downloads, "erase", { id: item.id }); } catch (_) {}
   } else {
     try { await invoke(api.downloads, "resume", item.id); } catch (_) {}

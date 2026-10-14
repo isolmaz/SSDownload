@@ -1,26 +1,21 @@
 # Collects the final release artifact set into one folder, generates and signs the
 # update feed and either prints the publication command or creates the GitHub
 # release of this repository (`isolmaz/SSDownload`). The release assets are the
-# only distribution channel: the desktop application reads
-# `releases/latest/download/version.json` and Chrome reads
-# `releases/latest/download/update.xml`.
+# application's distribution channel: the desktop application reads
+# `releases/latest/download/version.json`. The browser extension is published
+# separately on the Chrome Web Store (scripts/package-extension.ps1).
 #
-# Expected inputs (produced by scripts/package.ps1 and
-# scripts/package-extension.ps1):
+# Expected inputs (produced by scripts/package.ps1):
 #   <PackageDir>\SSDownload-<version>-Setup.exe
 #   <PackageDir>\SSDownload-<version>-win64.zip
 #   <PackageDir>\SHA256SUMS
-#   <ExtensionDir>\SSDownload-<version>.crx
-#   <ExtensionDir>\update.xml
-#   <ExtensionDir>\SHA256SUMS
 #
 # Usage:
-#   powershell -File scripts\prepare-release.ps1 -PackageDir artifacts/<v>/app -ExtensionDir artifacts/<v>/extension -Notes "<text>"
+#   powershell -File scripts\prepare-release.ps1 -PackageDir artifacts/<v>/app -Notes "<text>"
 #   powershell -File scripts\prepare-release.ps1 ... -Publish
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$PackageDir,
-    [Parameter(Mandatory = $true)][string]$ExtensionDir,
     [string]$OutputDirectory = '',   # artifacts/<version>/release by default
     [string]$Notes = '',
     [string]$Repository = 'isolmaz/SSDownload',
@@ -38,15 +33,11 @@ if (-not $Version) { throw 'Cargo.toml version is missing' }
 
 if (-not $OutputDirectory) { $OutputDirectory = "artifacts/$Version/release" }
 $PackageRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($ProjectRoot, $PackageDir))
-$ExtensionRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($ProjectRoot, $ExtensionDir))
 $SetupName = "SSDownload-$Version-Setup.exe"
 $ZipName = "SSDownload-$Version-win64.zip"
-$CrxName = "SSDownload-$Version.crx"
 $Inputs = @(
     @{ Source = (Join-Path $PackageRoot $SetupName); Name = $SetupName },
-    @{ Source = (Join-Path $PackageRoot $ZipName); Name = $ZipName },
-    @{ Source = (Join-Path $ExtensionRoot $CrxName); Name = $CrxName },
-    @{ Source = (Join-Path $ExtensionRoot 'update.xml'); Name = 'update.xml' }
+    @{ Source = (Join-Path $PackageRoot $ZipName); Name = $ZipName }
 )
 foreach ($input in $Inputs) {
     if (-not (Test-Path -LiteralPath $input.Source -PathType Leaf)) {
@@ -125,8 +116,8 @@ Write-Host "version.json signed (Ed25519). Public key: $feedPublicKey (matches F
 
 # Validate every checksum-manifest row against the bytes it names, then build the
 # public list from the artifacts this run actually publishes. The package
-# manifest covers the Setup, the win64 ZIP and the local-only symbols ZIP; the
-# extension manifest covers the CRX. A mismatch aborts the release instead of
+# manifest covers the Setup, the win64 ZIP and the local-only symbols ZIP. A
+# mismatch aborts the release instead of
 # being silently rewritten, because this folder is what users verify against.
 # A row must be a bare file name: a duplicate row, a missing required row or a
 # path that escapes the staging folder is rejected rather than parsed loosely.
@@ -156,46 +147,17 @@ function Assert-ManifestBytes {
 }
 Assert-ManifestBytes -ManifestPath (Join-Path $PackageRoot 'SHA256SUMS') -Directory $PackageRoot `
     -RequiredNames @($SetupName, $ZipName, "SSDownload-$Version-symbols.zip")
-Assert-ManifestBytes -ManifestPath (Join-Path $ExtensionRoot 'SHA256SUMS') -Directory $ExtensionRoot `
-    -RequiredNames @($CrxName)
 
-# The update manifest must describe this exact extension package: a version, an
-# extension id, a codebase and a CRX hash that belong to different builds must
-# not be assembled into one release.
+# The Setup and the portable ZIP ship browser/chromium; its version must be
+# this release's.
 $extensionManifest = Get-Content -LiteralPath (Join-Path $ProjectRoot 'browser\chromium\manifest.json') -Raw | ConvertFrom-Json
 if ($extensionManifest.version -ne $Version) {
-    throw "browser/chromium/manifest.json reports version $($extensionManifest.version) instead of $Version; update it and repackage the extension."
+    throw "browser/chromium/manifest.json reports version $($extensionManifest.version) instead of $Version; update it and repackage."
 }
-if (-not $extensionManifest.key) { throw 'browser/chromium/manifest.json has no key; the extension identity cannot be derived.' }
-if ($extensionManifest.update_url -cne "$feedBase/update.xml") {
-    throw "browser/chromium/manifest.json update_url is not $feedBase/update.xml"
-}
-$manifestDer = [Convert]::FromBase64String($extensionManifest.key)
-$manifestDigest = [BitConverter]::ToString(([System.Security.Cryptography.SHA256]::Create()).ComputeHash($manifestDer)).Replace('-', '').ToLowerInvariant()
-$manifestExtensionId = -join ($manifestDigest.Substring(0, 32).ToCharArray() | ForEach-Object { [char]([byte][char]'a' + [Convert]::ToInt32([string]$_, 16)) })
-$crxHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Dist $CrxName)).Hash.ToLowerInvariant()
-[xml]$updateXml = Get-Content -LiteralPath (Join-Path $Dist 'update.xml') -Raw
-$updateApp = $updateXml.gupdate.app
-if (-not $updateApp) { throw 'update.xml has no gupdate/app element' }
-if ($updateApp.appid -ne $manifestExtensionId) {
-    throw "update.xml targets extension id $($updateApp.appid) but manifest.json derives $manifestExtensionId"
-}
-$updateCheck = $updateApp.updatecheck
-if (-not $updateCheck) { throw 'update.xml has no updatecheck element' }
-if ($updateCheck.version -ne $Version) { throw "update.xml reports version $($updateCheck.version) instead of $Version" }
-# Chrome fetches a policy-installed CRX only from the update manifest's own origin.
-# update.xml and the CRX are assets of the same release, so the codebase must be
-# exactly this release's asset URL; a same-basename URL on another host would
-# otherwise be assembled into the release unnoticed.
-$expectedCodebase = "$releaseBase/$CrxName"
-if ($updateCheck.codebase -cne $expectedCodebase) {
-    throw "update.xml codebase $($updateCheck.codebase) is not the release asset $expectedCodebase"
-}
-if ($updateCheck.sha256 -ne $crxHash) { throw 'update.xml sha256 does not match the CRX in this release' }
 
 # The public list covers exactly the published artifacts, so every row resolves
 # to an asset of this release. The symbols ZIP stays local to the package folder.
-$publishedNames = @($SetupName, $ZipName, $CrxName, 'update.xml', 'version.json', 'version.json.sig')
+$publishedNames = @($SetupName, $ZipName, 'version.json', 'version.json.sig')
 $checksumRows = foreach ($name in $publishedNames) {
     $target = Join-Path $Dist $name
     if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Missing published artifact: $target" }
@@ -208,7 +170,7 @@ $checksumRows = foreach ($name in $publishedNames) {
 $notesPath = Join-Path $Dist 'notes.md'
 $body = if ($Notes) { $Notes } else { "SSDownload $Version" }
 $body += "`n`nSHA-256:`n"
-foreach ($name in @($SetupName, $ZipName, $CrxName)) {
+foreach ($name in @($SetupName, $ZipName)) {
     $body += "- ``{0}``: ``{1}```n" -f $name, (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Dist $name)).Hash.ToLowerInvariant()
 }
 [System.IO.File]::WriteAllText($notesPath, $body, [System.Text.UTF8Encoding]::new($false))
@@ -218,14 +180,15 @@ Write-Host 'Release folder ready:'
 Get-ChildItem -LiteralPath $Dist | ForEach-Object { Write-Host ("  {0}  ({1} bytes)" -f $_.Name, $_.Length) }
 
 $releaseTag = "v$Version"
-$uploadNames = @($SetupName, $ZipName, $CrxName, 'update.xml', 'version.json', 'version.json.sig', 'SHA256SUMS')
+$uploadNames = @($SetupName, $ZipName, 'version.json', 'version.json.sig', 'SHA256SUMS')
 $assetPaths = $uploadNames | ForEach-Object { Join-Path $Dist $_ }
 
 if (-not $Publish) {
     Write-Host ''
     Write-Host 'Verify gh authentication and push the release commit, then publish with:'
     $assetList = $uploadNames | ForEach-Object { "$OutputDirectory/$_" }
-    Write-Host ("  gh release create {0} --repo {1} --title `"SSDownload {2}`" --notes-file {3} {4}" -f $releaseTag, $Repository, $Version, $notesPath, ($assetList -join ' '))
+    Write-Host ("  gh release create {0} --repo {1} --title `"SSDownload {2}`" --notes-file {3} --draft {4}" -f $releaseTag, $Repository, $Version, $notesPath, ($assetList -join ' '))
+    Write-Host ("  gh release edit {0} --repo {1} --draft=false" -f $releaseTag, $Repository)
     Write-Host '  (or rerun this script with -Publish)'
     exit 0
 }
@@ -238,18 +201,26 @@ $ErrorActionPreference = 'SilentlyContinue'
 $existingRelease = & gh release view $releaseTag --repo $Repository --json tagName --jq '.tagName' 2>$null
 $probeExit = $LASTEXITCODE
 $ErrorActionPreference = $probePreference
+# A published release is visible to `releases/latest/download` the moment it exists, so a
+# client could read version.json before the Setup it names is uploaded. The release is
+# therefore created as a draft, every asset is uploaded, and only then is it published.
+$releaseIsDraft = $true
 if ($probeExit -eq 0 -and $existingRelease) {
-    Write-Host "Release $releaseTag exists; uploading the current artifacts"
+    $releaseIsDraft = ((& gh release view $releaseTag --repo $Repository --json isDraft --jq '.isDraft') -eq 'true')
+    Write-Host "Release $releaseTag exists (draft: $releaseIsDraft); uploading the current artifacts"
     & gh release upload $releaseTag --repo $Repository --clobber @assetPaths
     if ($LASTEXITCODE -ne 0) { throw 'gh release upload failed' }
 }
 else {
-    & gh release create $releaseTag --repo $Repository --title "SSDownload $Version" --notes-file $notesPath @assetPaths
+    & gh release create $releaseTag --repo $Repository --title "SSDownload $Version" --notes-file $notesPath --draft @assetPaths
     if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+}
+if ($releaseIsDraft) {
+    & gh release edit $releaseTag --repo $Repository --draft=false
+    if ($LASTEXITCODE -ne 0) { throw "gh release edit --draft=false failed; the draft $releaseTag is complete but unpublished" }
 }
 
 Write-Host ''
 Write-Host 'Published:'
 Write-Host "  feed:      $feedBase/version.json"
-Write-Host "  gupdate:   $feedBase/update.xml"
 Write-Host "  release:   https://github.com/$Repository/releases/tag/$releaseTag"

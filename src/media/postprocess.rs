@@ -222,7 +222,7 @@ pub(super) fn download_external_subtitle(
     };
     let mut easy = network.easy_for_url(&target, control)?;
     easy.url(&selected.url)?;
-    easy.useragent("SSDownload/1.3")?;
+    easy.useragent(tools::USER_AGENT)?;
     if let Some(cookie_jar) = &cookie_jar {
         easy.cookie_file(&cookie_jar.0)?;
     }

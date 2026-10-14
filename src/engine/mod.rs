@@ -1016,16 +1016,11 @@ impl Actor {
             .filename
             .as_deref()
             .map(str::to_owned)
-            .or_else(|| {
-                url.path_segments()
-                    .and_then(|mut segments| segments.next_back())
-                    .filter(|v| !v.is_empty())
-                    .map(str::to_owned)
-            })
+            .or_else(|| transfer::url_file_name(&url))
             .unwrap_or_else(|| format!("download-{}", &id[..8]));
         let name = safe_filename(&suggested, &id);
         let desired = if request.playlist {
-            directory.join(&name).with_extension("")
+            crate::output::without_real_extension(&directory.join(&name))
         } else {
             directory.join(&name)
         };
@@ -1355,7 +1350,11 @@ impl Actor {
         let ids = self
             .jobs
             .values()
-            .filter(|job| job.state == JobState::Failed && job.remove_requested.is_none())
+            .filter(|job| {
+                job.state == JobState::Failed
+                    && job.remove_requested.is_none()
+                    && !job.browser_transfer_authorized
+            })
             .map(|job| job.id.clone())
             .collect::<Vec<_>>();
         if ids.is_empty() {
@@ -3640,7 +3639,7 @@ impl Actor {
         self.next_generation = self.next_generation.wrapping_add(1).max(1);
         let control = TransferControl::default();
         job.state = JobState::Connecting;
-        job.phase = "Bağlanıyor".into();
+        job.phase = crate::i18n::ui("Bağlanıyor", "Connecting").into();
         crate::logging::record_job(
             id,
             crate::logging::Event::info("job.stage")
@@ -3974,21 +3973,17 @@ impl Actor {
             return desired.to_path_buf();
         }
         let parent = desired.parent().unwrap_or_else(|| Path::new("."));
-        let stem = desired
-            .file_stem()
-            .and_then(|v| v.to_str())
-            .unwrap_or("download");
-        let extension = desired.extension().and_then(|v| v.to_str());
-        for index in 1..10_000u32 {
-            let name = extension
-                .map(|ext| format!("{stem} ({index}).{ext}"))
-                .unwrap_or_else(|| format!("{stem} ({index})"));
-            let candidate = parent.join(name);
+        for index in 1..10_000usize {
+            let candidate = crate::output::numbered(desired, index);
             if !occupied(&candidate) {
                 return candidate;
             }
         }
-        parent.join(format!("{stem}-{}", Uuid::new_v4()))
+        let name = desired
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("download");
+        parent.join(format!("{name}-{}", Uuid::new_v4()))
     }
 
     fn publish(&mut self) {
@@ -4095,6 +4090,19 @@ fn run_job(
     allocation: ConnectionAllocation,
     progress: &mut dyn FnMut(TransferProgress),
 ) -> Result<TransferResult> {
+    // The output lock names the folder by its canonical path, so a destination the user
+    // deleted or renamed since the job was queued must be recreated first.
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            crate::i18n::ui_owned!(
+                format!("Hedef klasör oluşturulamadı: {}", parent.display()),
+                format!(
+                    "The destination folder could not be created: {}",
+                    parent.display()
+                )
+            )
+        })?;
+    }
     let _original_lock = crate::output::OutputLock::acquire(output)?;
     if let Some(done) = crate::recovery::recovered(paths, &job.id)? {
         return Ok(done);
@@ -4613,6 +4621,11 @@ fn retryable_error(error: &anyhow::Error) -> bool {
     }
     for cause in error.chain() {
         if let Some(error) = cause.downcast_ref::<std::io::Error>() {
+            // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION: a virus scanner or indexer
+            // holds the file for a moment, the same retry later succeeds.
+            if matches!(error.raw_os_error(), Some(32 | 33)) {
+                return true;
+            }
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::TimedOut

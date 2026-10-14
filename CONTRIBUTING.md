@@ -60,11 +60,11 @@ Contributions are licensed under the [MIT License](LICENSE.txt).
 
 ## Releases (maintainer)
 
-Everything ships from this repository's GitHub Releases: the Setup and portable ZIP, the signed update feed (`version.json`, `version.json.sig`) and the extension's `update.xml` and CRX. Requirements: NSIS 3.10 (`%LOCALAPPDATA%\Programs\nsis-3.10`), OpenSSL, Google Chrome (packs the CRX), an authenticated `gh`, and the two private keys outside the repository: `%LOCALAPPDATA%\SSDownload\keys\update-signing.key` (Ed25519, must match `FEED_PUBLIC_KEY` in `src/update.rs`) and `extension.key` (fixes the extension ID). Losing either key means installed copies can no longer verify updates or the extension ID changes, so keep an offline backup.
+The application ships from this repository's GitHub Releases: the Setup and portable ZIP and the signed update feed (`version.json`, `version.json.sig`). The browser extension ships through the Chrome Web Store. Requirements: NSIS 3.10 (`%LOCALAPPDATA%\Programs\nsis-3.10`), OpenSSL, an authenticated `gh`, and the two private keys outside the repository: `%LOCALAPPDATA%\SSDownload\keys\update-signing.key` (Ed25519, must match `FEED_PUBLIC_KEY` in `src/update.rs`) and `extension.key` (fixes the extension ID). Losing either key means installed copies can no longer verify updates or the extension ID changes, so keep an offline backup.
 
 1. Set the new version in `Cargo.toml` and `browser/chromium/manifest.json`, run `cargo check` to update `Cargo.lock`, and run `scripts\check.ps1`.
 2. `scripts\package.ps1` builds the release and writes the Setup, portable ZIP, symbols ZIP and `SHA256SUMS` to `artifacts\<version>\app`.
-3. `scripts\package-extension.ps1` writes the CRX and `update.xml` to `artifacts\<version>\extension`.
-4. Commit and push, then `scripts\prepare-release.ps1 -PackageDir artifacts\<version>\app -ExtensionDir artifacts\<version>\extension -Notes "<what changed>" -Publish` signs the feed, checks every checksum and creates the GitHub release with all assets.
+3. `scripts\package-extension.ps1` writes the store package `artifacts\<version>\extension\SSDownload-<version>-store.zip` (the manifest without `key`). Upload it to the Chrome Web Store item `hgndggnlfpnflkmnbddmcnfniamckham`. The first upload of the item must be built with `-FirstUpload`: it adds `key.pem`, which makes the store keep the manifest-key ID that the app registers and the native host allows. Never publish that ZIP.
+4. Commit and push, then `scripts\prepare-release.ps1 -PackageDir artifacts\<version>\app -Notes "<what changed>" -Publish` signs the feed, checks every checksum and creates the GitHub release with all assets.
 
 Optional Authenticode signing: `scripts\package.ps1 -SigningProfile <metadata.json>` (Azure Artifact Signing) or `-CertificateThumbprint <sha1> -TimestampServer <url>`.

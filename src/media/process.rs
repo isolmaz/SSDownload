@@ -39,6 +39,28 @@ pub(super) fn run_ytdlp_capture(
     result
 }
 
+/// Starts a suspended tool process and puts it under an owned job object before it runs.
+/// Failure to start or to own the process carries the stable tool-start code.
+fn spawn_owned(command: &mut Command, executable: &Path) -> Result<(Child, ProcessJob)> {
+    let mut child = command.spawn().map_err(|error| {
+        crate::error_codes::coded(
+            crate::error_codes::TOL_003,
+            format!("{} başlatılamadı: {error}", executable.display()),
+        )
+    })?;
+    match ProcessJob::assign(&child) {
+        Ok(job) => Ok((child, job)),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(crate::error_codes::coded(
+                crate::error_codes::TOL_003,
+                format!("{error:#}"),
+            ))
+        }
+    }
+}
+
 pub(super) fn run_capture_with_proxy(
     executable: &Path,
     args: &[String],
@@ -57,17 +79,7 @@ pub(super) fn run_capture_with_proxy(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("{} başlatılamadı", executable.display()))?;
-    let job = match ProcessJob::assign(&child) {
-        Ok(job) => job,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
+    let (mut child, job) = spawn_owned(&mut command, executable)?;
     let input_thread = write_input(&mut child, input)?;
     let stdout = child
         .stdout
@@ -99,13 +111,16 @@ pub(super) fn run_capture_with_proxy(
             if control.stop_requested() {
                 bail!("Kaynak hazırlığı durduruldu");
             }
-            bail!(
+            crate::bail_code!(
+                crate::error_codes::MED_011,
                 "Medya analizi {} saniye içinde tamamlanmadı",
                 timeout.as_secs()
             );
         }
         thread::sleep(Duration::from_millis(50));
     };
+    // Whatever still runs now is an orphan holding the pipes; the readers would wait on it.
+    job.terminate();
     let input_result = input_thread
         .join()
         .unwrap_or_else(|_| Err(std::io::Error::other("Medya girdi işçisi durdu")));
@@ -175,17 +190,7 @@ impl RunningDownload {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("{} başlatılamadı", executable.display()))?;
-        let job = match ProcessJob::assign(&child) {
-            Ok(job) => job,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
+        let (mut child, job) = spawn_owned(&mut command, executable)?;
         let stdin_thread = Some(write_input(&mut child, input)?);
         let stdout = child
             .stdout
@@ -293,6 +298,8 @@ pub(super) struct ActivityWatch {
     pub(super) last: Instant,
     pub(super) limit: Duration,
     pub(super) pings: Vec<Arc<std::sync::atomic::AtomicU64>>,
+    /// A yt-dlp post-processor (FFmpeg merge, remux or audio conversion) is running.
+    pub(super) postprocessing: bool,
 }
 
 impl ActivityWatch {
@@ -301,6 +308,7 @@ impl ActivityWatch {
             last: Instant::now(),
             limit,
             pings,
+            postprocessing: false,
         }
     }
 
@@ -308,12 +316,26 @@ impl ActivityWatch {
         self.last = Instant::now();
     }
 
+    /// yt-dlp reports a post-processor only at its start and end. FFmpeg runs silently and
+    /// opens no connection for as long as the local work takes, so it gets the longer
+    /// post-processing limit instead of the transfer limit.
+    pub(super) fn observe(&mut self, line: &str) {
+        if let Some(status) = line.strip_prefix(POSTPROCESS_PREFIX) {
+            self.postprocessing = matches!(status.trim(), "started" | "processing");
+        }
+    }
+
     pub(super) fn stalled(&self) -> bool {
-        if self.last.elapsed() < self.limit {
+        let limit = if self.postprocessing {
+            POSTPROCESS_STALL_LIMIT
+        } else {
+            self.limit
+        };
+        if self.last.elapsed() < limit {
             return false;
         }
         let now = crate::network::now_epoch_ms();
-        let limit_ms = self.limit.as_millis() as u64;
+        let limit_ms = limit.as_millis() as u64;
         self.pings.iter().all(|ping| {
             now.saturating_sub(ping.load(std::sync::atomic::Ordering::Acquire)) >= limit_ms
         })
@@ -346,6 +368,7 @@ pub(super) fn monitor_download(
         let mut active = false;
         while let Ok(line) = running.lines.try_recv() {
             active = true;
+            activity.observe(&line);
             handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
         }
         if active {
@@ -385,6 +408,8 @@ pub(super) fn monitor_download(
             while let Ok(line) = running.lines.try_recv() {
                 handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
             }
+            // The tool has exited: anything still alive is an orphan holding the output pipes.
+            running.job.terminate();
             running.join_readers();
             while let Ok(line) = running.lines.try_recv() {
                 handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
@@ -396,6 +421,7 @@ pub(super) fn monitor_download(
         }
         match running.lines.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
+                activity.observe(&line);
                 handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
                 activity.touch();
             }

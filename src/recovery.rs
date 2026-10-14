@@ -92,19 +92,27 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
-    let ok = unsafe {
-        MoveFileExW(
-            wide(&temp).as_ptr(),
-            wide(&path).as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
+    let mut attempt = 0u32;
+    loop {
+        let ok = unsafe {
+            MoveFileExW(
+                wide(&temp).as_ptr(),
+                wide(&path).as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if ok != 0 {
+            return Ok(());
+        }
         let error = std::io::Error::last_os_error();
+        if attempt < crate::output::LOCK_RETRIES && crate::output::is_transient_lock(&error) {
+            attempt += 1;
+            std::thread::sleep(crate::output::LOCK_RETRY_STEP * attempt);
+            continue;
+        }
         let _ = fs::remove_file(temp);
         return Err(error.into());
     }
-    Ok(())
 }
 fn read_receipt(paths: &AppPaths, id: &str) -> Result<Option<Receipt>> {
     let path = receipt_path(paths, id)?;
@@ -312,16 +320,26 @@ pub(crate) fn cleanup_work(job: &Job) -> Result<()> {
     let Some(path) = &job.work_dir else {
         return Ok(());
     };
-    if !path.exists() {
-        return Ok(());
+    if path.exists() {
+        reject_link(path)?;
+        if fs::read_to_string(path.join(".job"))? != job.id {
+            bail!("Çalışma klasörü sahipliği doğrulanamadı")
+        }
+        let mut entries = Vec::new();
+        inventory(path, path, &mut entries)?;
+        fs::remove_dir_all(path)?;
     }
-    reject_link(path)?;
-    if fs::read_to_string(path.join(".job"))? != job.id {
-        bail!("Çalışma klasörü sahipliği doğrulanamadı")
+    // A source renewal that restarted the download moved the previous parts here
+    // (see `archive_refresh_artifacts`); nothing else ever deletes them.
+    if let Some(archives) = path
+        .ancestors()
+        .nth(2)
+        .map(|root| root.join("refresh-archives").join(&job.id))
+        .filter(|archives| archives.exists())
+    {
+        reject_link(&archives)?;
+        fs::remove_dir_all(archives)?;
     }
-    let mut entries = Vec::new();
-    inventory(path, path, &mut entries)?;
-    fs::remove_dir_all(path)?;
     Ok(())
 }
 pub(crate) fn remove(paths: &AppPaths, job: &Job, delete_final: bool) -> Result<()> {
@@ -491,6 +509,35 @@ mod tests {
         assert!(!claim_path(&job.path).exists());
         assert!(!job.work_dir.as_ref().unwrap().exists());
         assert!(published.path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acknowledging_a_job_also_removes_its_source_refresh_archives() {
+        let (paths, root) = fixture();
+        let id = uuid::Uuid::new_v4().to_string();
+        let job = job(&root, id.clone(), "movie.mp4");
+        prepare_work(&job).unwrap();
+        let work = job.work_dir.as_ref().unwrap();
+        let archive = work
+            .ancestors()
+            .nth(2)
+            .unwrap()
+            .join("refresh-archives")
+            .join(&id)
+            .join("1700000000000-abc");
+        fs::create_dir_all(&archive).unwrap();
+        fs::write(archive.join("movie.mp4.ssdownload.part"), b"old parts").unwrap();
+
+        acknowledge(&paths, &job).unwrap();
+        assert!(!work.exists());
+        assert!(!work
+            .ancestors()
+            .nth(2)
+            .unwrap()
+            .join("refresh-archives")
+            .join(&id)
+            .exists());
         fs::remove_dir_all(root).unwrap();
     }
 

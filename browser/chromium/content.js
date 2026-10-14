@@ -39,6 +39,9 @@ const documentId = `${Date.now()}-${Math.random()}`;
 let observationCapabilities = null;
 const overlays = new Map();
 let overlayEnabled = false;
+// The stored switch. While it is off the periodic and mutation-driven scans stop: the worker
+// would discard their reports, and walking the document every 1.5 s would be pure cost.
+let detectionOn = true;
 let usageModes = null;
 // Page-level entries are the desktop's to grant, never this document's to assume: without
 // the negotiated capability the page tile is not drawn and no page handoff is submitted,
@@ -575,6 +578,7 @@ function paintOverlays() {
     // could only fail, and a document with recognised player markup keeps the page-level tile
     // for that case instead.
     const withdrawn = (description && !description.urls.length && !description.active && !description.played) || rect.width < 100 || rect.height < minimumHeight || rect.bottom < 0 || rect.top > innerHeight
+      || rect.right < 0 || rect.left > innerWidth
       || node.checkVisibility?.()===false || description?.adSignals.length>=2;
     hideTile(button, withdrawn);
     if (button.disabled) paintTile(button, "disabled");
@@ -656,7 +660,7 @@ function report(event) {
 
 function scheduleScan() {
   clearTimeout(scanTimer);
-  scanTimer = setTimeout(() => report("scan"), 350);
+  scanTimer = setTimeout(() => { if (detectionOn) report("scan"); }, 350);
 }
 
 document.addEventListener("play", () => report("play"), true);
@@ -745,7 +749,7 @@ refreshUsageModes();
 if (extensionApi.storage?.local) {
   // A site the user hid in the popup keeps discovery but shows no overlay button.
   const siteHidden=hosts=>Array.isArray(hosts)&&hosts.includes(location.hostname);
-  let detectionOn=true, hostHidden=false;
+  let hostHidden=false;
   Promise.resolve(extensionApi.storage.local.get({detectionEnabled:true,hiddenHosts:[]})).then(saved=>{detectionOn=saved.detectionEnabled!==false;hostHidden=siteHidden(saved.hiddenHosts);overlayEnabled=detectionOn&&!hostHidden;if(overlayEnabled){lastScan="";report("scan");}observerControl();updateOverlays();}).catch(()=>{});
   extensionApi.storage.onChanged?.addListener((changes,area)=>{
     if(area!=="local" || (!changes.detectionEnabled && !changes.hiddenHosts)) return;
@@ -789,9 +793,16 @@ if (typeof window !== "undefined") {
       manifest:{url:data.url,kind,relations,children},sources:[{url:data.url,contentType:kind==="dash"?"application/dash+xml":"application/vnd.apple.mpegurl",pageUrl:pageUrl()}]})?.catch(()=>{});
   });
   observerControl();
-  window.addEventListener("scroll", updateOverlays, true);
+  // Scroll fires for every scroller in the page, many times per frame: one repaint per frame.
+  let overlayFrame = 0;
+  const repaintOnce = () => { overlayFrame = 0; updateOverlays(); };
+  const scheduleOverlayUpdate = () => {
+    if (overlayFrame) return;
+    overlayFrame = typeof requestAnimationFrame === "function" ? requestAnimationFrame(repaintOnce) : setTimeout(repaintOnce, 16);
+  };
+  window.addEventListener("scroll", scheduleOverlayUpdate, true);
   window.addEventListener("resize", updateOverlays);
   window.addEventListener("popstate", scheduleScan);
   // Covers history.pushState and MSE source changes without patching page APIs.
-  setInterval(() => report("scan"), 1500);
+  setInterval(() => { if (detectionOn) report("scan"); }, 1500);
 }

@@ -16,7 +16,7 @@ Everything beyond the [README](../README.md): installation details, every menu, 
 
 - **Installer:** run `SSDownload-<version>-Setup.exe`. It installs per user (no administrator rights) into `%LOCALAPPDATA%\Programs\SSDownload`, adds a Start menu entry and registers the browser connection. Optionally it starts SSDownload with Windows.
 - **Portable:** extract `SSDownload-<version>-win64.zip` to a permanent folder, run `register-native-host.cmd` once for the browser connection and open `ssdownload.exe`. Moving the folder later requires running `register-native-host.cmd` again.
-- **Before upgrading,** exit through the tray menu. Installed copies update themselves: SSDownload checks the signed release feed at most once a day (Settings → General) and installs a verified update after you accept it.
+- **Before upgrading,** exit through the tray menu. Installed copies update themselves: SSDownload checks the signed release feed at most once a day (Settings → General) and installs a verified update after you accept it (**Install**, **Later** or **Skip this version**; Esc means Later). If a silent install fails, the app reopens and reports why on its next start. A portable copy is not changed in place: the offer opens the release page so you can download the new ZIP.
 - **Media support** (yt-dlp, FFmpeg/ffprobe and Deno) installs itself on first start from the GitHub releases of yt-dlp, Deno and the BtbN FFmpeg builds, each file checked against its published SHA-256, and refreshes weekly. A failure never blocks startup; **Tools → Install media support** retries.
 - The builds are not Authenticode-signed yet, so Windows SmartScreen may warn on first run. Compare the file with the SHA-256 on the release page before running it.
 
@@ -24,9 +24,10 @@ Everything beyond the [README](../README.md): installation details, every menu, 
 
 The Chrome/Edge extension adds the overlay button on videos, the right-click entries and optional download takeover. It talks only to the desktop app on the same computer. Its own text (button, popup and messages) is currently Turkish only.
 
-- **Load unpacked (any device):** open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, choose **Load unpacked** and select the `browser\chromium` folder next to `ssdownload.exe` (installed copies: `%LOCALAPPDATA%\Programs\SSDownload\browser\chromium`). **Tools → Browser setup** opens that folder and the steps.
-- **Managed devices:** **Settings → General → Install the extension in browsers** (or `ssdownload-cli --install-extension`) writes the per-user force-install policy; the browser must fully restart. Chrome only honours this policy on domain-joined or Chrome Browser Cloud Management enrolled devices, so on other machines the app explains why it skipped the write.
-- **Toolbar popup:** the discovery switch (`ON`/`OFF`), **Hide the button on this site** (discovery and context entries stay), the page's media list (each entry opens the desktop picker) and **Open the app**. After a handover the icon badge counts completed downloads.
+- **Automatic:** Setup (and `register-native-host.cmd` for the portable ZIP) registers the [Chrome Web Store extension](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham) with Chrome and Edge for your Windows user. The next time the browser starts it shows a "New extension added" notice: click **Enable extension**. Close every browser window first if the notice does not appear. If you remove the extension in the browser, it stays removed. Uninstalling SSDownload removes the registration, and the browser then removes the extension.
+- **Settings → General → Install the extension in browsers** repeats the registration and opens the Chrome Web Store page, where **Add to Chrome** installs it at once. It also removes the force-install policy entries that versions up to 1.6.1 wrote, because Chrome blocks the extension while one exists. If those entries need administrator rights, the app asks first (`ssdownload-cli --remove-extension-policies`).
+- **Without the store:** open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, choose **Load unpacked** and select the `browser\chromium` folder next to `ssdownload.exe` (installed copies: `%LOCALAPPDATA%\Programs\SSDownload\browser\chromium`). **Tools → Browser setup** opens that folder and the steps. The bundled copy has the same extension ID, so the browser connects it to the app the same way.
+- **Toolbar popup:** the discovery switch (`AÇIK`/`KAPALI`), **Hide the button on this site** (discovery and context entries stay), the page's media list (each entry opens the desktop picker) and **Open the app**. When the app cannot be reached, the popup says why. After a handover the icon badge counts completed downloads. Browsing alone never starts SSDownload: only an action you take (download, picker, Open the app) does.
 - If the browser cannot connect, check that the app and extension versions match and register the copy you use (`register-native-host.cmd` or reinstall).
 
 ## Downloading
@@ -34,14 +35,14 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 - **Files:** paste or drop links into **New download** (Ctrl+N), press Ctrl+V in the main window to add clipboard links, right-click a link in the browser → **Download link with SSDownload**, or let the extension take over ordinary browser downloads (**Settings → Behaviour → Take over browser downloads**, off by default; incognito, blob/data and extension downloads stay in the browser and a refused handover resumes there).
 - **Segmented and resumable:** large files download over several connections. A download resumes only when the server proves the file did not change (strong ETag, a SHA-256 you supplied, or the same `Last-Modified` and length); otherwise it restarts instead of mixing two versions. Finished files are published atomically and never overwrite an existing file (`name (1).ext`).
 - **Video and audio:** play the media and press the SSDownload button over it, use the extension's context entries, or use **File → Download video** (Ctrl+Shift+N) with the page address. The picker shows name, duration, thumbnail, quality (container, resolution, FPS, codec, HDR) and audio/subtitle tracks. **Download** turns the picker into that download's status view; closing it never cancels the download. A missing quality or track fails instead of being silently substituted, and the result is checked with ffprobe/FFmpeg before it is published.
-- **Picker memory:** **Remember this choice for \<site\>** stores quality, container and audio-only per site; the next media from that site is queued directly. **MP3** queues the best audio as MP3; a playlist accepts an item selection such as `1-10,15`.
+- **Picker memory:** **Remember this choice for \<site\>** stores quality, container and audio-only per site; the next media from that site is queued directly. **MP3** queues the best audio as MP3 at the highest quality; a playlist accepts an item selection such as `1-10,15`.
 - **On sites with feeds or previews,** open the video's own page first. DRM-protected streams are not supported.
 - **Batch:** a numeric or letter range such as `https://host/img[001-120].jpg` expands into up to 1000 jobs; **File → Batch download** shows an example, **Import list** loads a plain-text URL list and **Export list** writes the selected addresses.
 - **Duplicates:** adding an address already in the queue asks once per batch: use the existing job, download a new copy, or cancel.
 - **Session cookies:** some downloads need the site's session. Grant **Allow session cookies for this site** in the extension for that one site; nothing is read without that gesture, and **Remove site session permission** withdraws it.
 - **Expired links:** a job whose signed address expired waits as **Waiting for source**; **Renew source address** (or the extension's browser transfer entry) resumes the same job with a fresh address.
 - **Order and priority:** drag rows or use Alt+Home / Alt+End; queued work starts in list order. **Start now** starts a job immediately, outside the concurrency limit.
-- **Mini panel and completion card:** **Download → Mini panel** (or the tray) opens a small always-on-top list of active downloads. A finished download shows a card with **Open** and **Show in folder**.
+- **Mini panel and completion card:** **Download → Mini panel** (or the tray) opens a small list of active downloads that can be pinned on top. A finished download shows a card with **Open** and **Show in folder**.
 - **Tray:** progress on the icon; the menu has the mini panel, new download, add from clipboard, pause/resume all, speed-limit presets, shut down when done, a one-hour quiet mode, the download folder, updates, Settings and Exit.
 - **Holds:** a job waits when its disk has less than 256 MiB (or less than the remaining size) free, and optionally while Windows reports a metered connection. Windows is kept awake while downloads run (the display may still sleep).
 - **Simple and Advanced** (`Basit` / `Gelişmiş`) are chosen in the first-run wizard and in Settings. Advanced adds named queues with time windows and byte quotas, folder rules, a site crawler, periodic synchronization, site logins, the event and job logs and completion actions (notify, shut down, run a program).
@@ -94,7 +95,7 @@ The Simple surface shows only **General**; the other tabs keep their saved value
 ## Error codes and logs
 
 - Classified failures carry permanent `SSD-<area>-<number>` codes with Turkish and English messages. Areas: `BRG` browser bridge, `MED` media resolution, `NET` network, `TRF` transfer, `STO` storage, `RCV` recovery, `TOL` media tools, `UPD` updates, `EXT` extension. Codes are never renumbered or reused.
-- Logs live in `<profile>\logs\`: `events-YYYYMMDD.jsonl` and `ssdownload-YYYYMMDD.log`, rotating at 5 MB with five kept, plus per-job timelines in `logs\jobs\`. URLs are logged without credentials, query or fragment.
+- Logs live in `<profile>\logs\`: `events-YYYYMMDD.jsonl` and `ssdownload-YYYYMMDD.log`, rotating at 5 MB with five kept and removed after 30 days, plus per-job timelines in `logs\jobs\`. URLs are logged without credentials, query or fragment.
 - **Report failure** (on a failed analysis or job) and **Tools → Diagnostics** write a local folder and ZIP. Nothing is uploaded; look through it before sharing it in an issue.
 
 ## Command line
@@ -110,7 +111,7 @@ The Simple surface shows only **General**; the other tabs keep their saved value
 | `--diagnose [--diagnose-hours 24]` | Event log summary |
 | `--install-tools [--update-tools]` | Install or refresh the verified media tools |
 | `--register-host`, `--unregister-host` | Browser connection registration |
-| `--install-extension`, `--remove-extension-policies`, `--browser-setup` | Extension policy and setup |
+| `--remove-extension-policies`, `--browser-setup` | Remove the legacy extension policy; open the browser setup page |
 | `--enable-autostart`, `--disable-autostart` | Start with Windows |
 | `--background`, `--data-dir DIR`, `--debug`, `--quit`, `--version` | Start options |
 

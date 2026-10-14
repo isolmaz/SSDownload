@@ -312,7 +312,7 @@ pub(super) fn codec_equivalent(expected: &str, actual: &str) -> bool {
         let value = value.split('.').next().unwrap_or(value);
         match value.to_ascii_lowercase().as_str() {
             "avc1" | "avc" | "h264" => "h264",
-            "hev1" | "hvc1" | "hevc" | "h265" => "hevc",
+            "hev1" | "hvc1" | "dvh1" | "dvhe" | "hevc" | "h265" => "hevc",
             "av01" | "av1" => "av1",
             "vp09" | "vp9" => "vp9",
             "mp4v" | "mpeg4" => "mpeg4",
@@ -322,8 +322,8 @@ pub(super) fn codec_equivalent(expected: &str, actual: &str) -> bool {
             "mp3" => "mp3",
             "flac" => "flac",
             "alac" => "alac",
-            "ac3" => "ac3",
-            "eac3" => "eac3",
+            "ac3" | "ac-3" => "ac3",
+            "eac3" | "ec-3" => "eac3",
             _ => "",
         }
     }

@@ -62,24 +62,56 @@ impl Drop for OutputLock {
     }
 }
 
+/// How often a rename is retried while a scanner or indexer briefly holds the file.
+pub(crate) const LOCK_RETRIES: u32 = 5;
+pub(crate) const LOCK_RETRY_STEP: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION: a competing handle
+/// that usually closes within moments.
+pub(crate) fn is_transient_lock(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// The part of a file name after its last dot when it can be a file extension. A dot inside a
+/// title ("Mr. Robot", "Vol. 2 best of", "Python 3.12 guide") leaves text with spaces after
+/// it, which is not an extension and must stay part of the name.
+fn real_extension(path: &Path) -> Option<&str> {
+    let extension = path.extension()?.to_str()?;
+    ((1..=16).contains(&extension.chars().count()) && extension.chars().all(char::is_alphanumeric))
+        .then_some(extension)
+}
+
+/// The path without its extension, or unchanged when the last dot belongs to the name.
+pub(crate) fn without_real_extension(path: &Path) -> PathBuf {
+    if real_extension(path).is_some() {
+        path.with_extension("")
+    } else {
+        path.to_path_buf()
+    }
+}
+
 /// Same-volume atomic publication. Never pass MOVEFILE_REPLACE_EXISTING.
 pub(crate) fn publish(source: &Path, desired: &Path) -> Result<PathBuf> {
     for index in 0..10_000 {
         let target = if index == 0 {
             desired.to_path_buf()
         } else {
-            let stem = desired.file_stem().unwrap_or_default().to_string_lossy();
-            let name = match desired.extension() {
-                Some(ext) => format!("{stem} ({index}).{}", ext.to_string_lossy()),
-                None => format!("{stem} ({index})"),
-            };
-            desired.with_file_name(name)
+            numbered(desired, index)
         };
-        if unsafe { MoveFileExW(wide(source).as_ptr(), wide(&target).as_ptr(), 0) } != 0 {
-            return Ok(target);
-        }
-        let error = std::io::Error::last_os_error();
-        if !target.exists() {
+        let mut attempt = 0u32;
+        loop {
+            if unsafe { MoveFileExW(wide(source).as_ptr(), wide(&target).as_ptr(), 0) } != 0 {
+                return Ok(target);
+            }
+            let error = std::io::Error::last_os_error();
+            if target.exists() {
+                break;
+            }
+            if attempt < LOCK_RETRIES && is_transient_lock(&error) {
+                attempt += 1;
+                std::thread::sleep(LOCK_RETRY_STEP * attempt);
+                continue;
+            }
             return Err(error).context("Tamamlanan dosya güvenle taşınamadı");
         }
     }
@@ -87,10 +119,15 @@ pub(crate) fn publish(source: &Path, desired: &Path) -> Result<PathBuf> {
 }
 
 pub(crate) fn numbered(path: &Path, index: usize) -> PathBuf {
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let name = match path.extension() {
-        Some(ext) => format!("{stem} ({index}).{}", ext.to_string_lossy()),
-        None => format!("{stem} ({index})"),
+    let name = match real_extension(path) {
+        Some(extension) => {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            format!("{stem} ({index}).{extension}")
+        }
+        None => format!(
+            "{} ({index})",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ),
     };
     path.with_file_name(name)
 }
@@ -111,9 +148,19 @@ pub(crate) fn require_space(output: &Path, required: u64) -> Result<()> {
     }
     if available < required {
         bail!(
-            "Birleştirme için {} MiB boş alan gerekli, {} MiB mevcut. İndirilen parçalar korundu.",
-            required.div_ceil(1024 * 1024),
-            available / (1024 * 1024)
+            "{}",
+            crate::i18n::ui_owned!(
+                format!(
+                    "Yeterli boş alan yok: {} MiB gerekli, {} MiB mevcut. İndirilen parçalar korundu.",
+                    required.div_ceil(1024 * 1024),
+                    available / (1024 * 1024)
+                ),
+                format!(
+                    "Not enough free space: {} MiB needed, {} MiB available. The downloaded parts were kept.",
+                    required.div_ceil(1024 * 1024),
+                    available / (1024 * 1024)
+                ),
+            )
         )
     }
     Ok(())
@@ -160,6 +207,42 @@ mod tests {
         assert_eq!(std::fs::read(&desired).unwrap(), b"user file");
         assert_eq!(std::fs::read(&published).unwrap(), b"downloaded file");
         assert!(!source.exists());
+    }
+
+    #[test]
+    fn numbering_and_stripping_keep_dots_that_belong_to_the_title() {
+        let name = |path: PathBuf| path.file_name().unwrap().to_string_lossy().into_owned();
+        let dir = PathBuf::from(r"C:\d");
+        assert_eq!(name(numbered(&dir.join("Mr. Robot"), 1)), "Mr. Robot (1)");
+        assert_eq!(
+            name(numbered(&dir.join("Vol. 2 best of"), 2)),
+            "Vol. 2 best of (2)"
+        );
+        assert_eq!(name(numbered(&dir.join("report.pdf"), 1)), "report (1).pdf");
+        assert_eq!(name(numbered(&dir.join("noext"), 3)), "noext (3)");
+        assert_eq!(
+            without_real_extension(&dir.join("Vol. 2 best of")),
+            dir.join("Vol. 2 best of")
+        );
+        assert_eq!(
+            without_real_extension(&dir.join("Python 3.12 guide")),
+            dir.join("Python 3.12 guide")
+        );
+        assert_eq!(
+            without_real_extension(&dir.join("list.m3u8")),
+            dir.join("list")
+        );
+    }
+
+    #[test]
+    fn publish_numbers_an_extensionless_title_without_splitting_it() {
+        let directory = TestDirectory::new();
+        let desired = directory.0.join("Mr. Robot");
+        std::fs::write(&desired, b"existing").unwrap();
+        let source = directory.0.join("temporary.part");
+        std::fs::write(&source, b"new").unwrap();
+        let published = publish(&source, &desired).unwrap();
+        assert_eq!(published.file_name().unwrap(), "Mr. Robot (1)");
     }
 
     #[test]

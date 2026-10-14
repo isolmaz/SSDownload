@@ -35,7 +35,7 @@
 ## Install
 
 1. Download **`SSDownload-<version>-Setup.exe`** (or the portable ZIP) from the [latest release](https://github.com/isolmaz/SSDownload/releases/latest) and run it. No administrator rights are needed.
-2. Add the browser extension: open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, click **Load unpacked** and choose the `browser\chromium` folder in the install directory. **Tools → Browser setup** opens it for you.
+2. The installer adds the browser extension to Chrome and Edge. The next time you open the browser, click **Enable extension** on its "New extension added" notice. No notice? Add it from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham), or use **Tools → Browser setup** to load the bundled copy without the store.
 3. That's it. Media support (yt-dlp, FFmpeg, Deno) installs itself on first start, each file verified against its published SHA-256.
 
 The builds are not code-signed yet, so SmartScreen may warn on first run. The release page lists the SHA-256 of every file. Installed copies update themselves after you accept the signed update.

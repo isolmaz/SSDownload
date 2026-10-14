@@ -207,7 +207,7 @@ pub(super) fn validate_scoped_cookies(
     Ok(())
 }
 
-pub(super) fn scoped_cookie_applies(cookie: &ScopedCookie, target: &Url) -> bool {
+pub(crate) fn scoped_cookie_applies(cookie: &ScopedCookie, target: &Url) -> bool {
     if cookie.secure && target.scheme() != "https" {
         return false;
     }
@@ -240,10 +240,15 @@ pub(super) fn scoped_cookie_applies(cookie: &ScopedCookie, target: &Url) -> bool
 /// before any job can create a live jar; per-job creation never sweeps, so
 /// concurrent media jobs keep their own jars.
 pub(crate) fn sweep_stale_cookie_jars() {
-    let Ok(dir) = crate::paths::cookie_jar_dir() else {
-        return;
-    };
-    let Ok(entries) = fs::read_dir(&dir) else {
+    if let Ok(dir) = crate::paths::cookie_jar_dir() {
+        sweep_stale_session_files(&dir);
+    }
+}
+
+/// Cookie jars and the per-download extractor-document leases (`workspace.rs`) are session
+/// material that is deleted when its download ends; only a hard kill leaves them behind.
+pub(super) fn sweep_stale_session_files(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
@@ -251,6 +256,10 @@ pub(crate) fn sweep_stale_cookie_jars() {
         let name = name.to_string_lossy();
         if name.starts_with("ssdownload-cookie-") && name.ends_with(".txt") {
             let _ = fs::remove_file(entry.path());
+        } else if (name.starts_with(INFO_LEASE_PREFIX) || name.starts_with(PINNED_LEASE_PREFIX))
+            && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            let _ = fs::remove_dir_all(entry.path());
         }
     }
 }

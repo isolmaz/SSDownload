@@ -25,7 +25,7 @@ use windows_sys::Win32::{
     },
 };
 
-const HELP:&str="SSDownload — yerel Windows dosya/video/ses yöneticisi\n\nssdownload.exe                         Masaüstünü aç\n  --background                          Sistem tepsisinde başlat\n  --data-dir DIZIN                      Ayrı kullanıcı veri klasörü\n  --add URL                             Kuyruğa ekle\n    --kind auto|file|video|audio\n    --output DIZIN --name DOSYA\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id BENZERSIZ_KIMLIK\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle DIL --playlist --referer URL --start-at UNIX_VEYA_RFC3339\n  --request-json DOSYA                   AddRequest JSON ile ekle\n  --action-json DOSYA                    Eylem JSON'u çalıştır (ör. site taraması)\n  --inspect URL                          Video/ses bilgilerini JSON yaz\n  --status [--status-offset 0 --status-limit 100]   Sayfalı durum JSON\n  --diagnose [--diagnose-hours 24]      Olay günlüğü özeti JSON (site, kod, sonuç)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings DOSYA                   Settings JSON kaydet\n  --install-tools [--update-tools]       Doğrulanmış medya araçlarını kur\n  --browser-setup                        Tarayıcı kurulumunu aç\n  --install-extension                    Tarayıcı eklenti politikasını yaz\n  --remove-extension-policies            Tarayıcı eklenti politikasını kaldır\n  --register-host | --unregister-host    Native Messaging kaydı\n  --enable-autostart | --disable-autostart   Oturum açılışında başlatma\n  --quit                                 Etkin uygulamayı kapat\n  --debug                                Geliştirici modu (sihirbazı ve otomatik araç kurulumunu atlar)\n  --version | --help\n\nDRM desteklenmez. Ağ/oturum sınırları siteye bağlıdır.\n";
+const HELP:&str="SSDownload — yerel Windows dosya/video/ses yöneticisi\n\nssdownload.exe                         Masaüstünü aç\n  --background                          Sistem tepsisinde başlat\n  --data-dir DIZIN                      Ayrı kullanıcı veri klasörü\n  --add URL                             Kuyruğa ekle\n    --kind auto|file|video|audio\n    --output DIZIN --name DOSYA\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id BENZERSIZ_KIMLIK\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle DIL --playlist --referer URL --start-at UNIX_VEYA_RFC3339\n  --request-json DOSYA                   AddRequest JSON ile ekle\n  --action-json DOSYA                    Eylem JSON'u çalıştır (ör. site taraması)\n  --inspect URL                          Video/ses bilgilerini JSON yaz\n  --status [--status-offset 0 --status-limit 100]   Sayfalı durum JSON\n  --diagnose [--diagnose-hours 24]      Olay günlüğü özeti JSON (site, kod, sonuç)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings DOSYA                   Settings JSON kaydet\n  --install-tools [--update-tools]       Doğrulanmış medya araçlarını kur\n  --browser-setup                        Tarayıcı kurulumunu aç\n  --remove-extension-policies            Eski tarayıcı eklenti politikasını kaldır\n  --register-host | --unregister-host    Native Messaging kaydı\n  --enable-autostart | --disable-autostart   Oturum açılışında başlatma\n  --quit                                 Etkin uygulamayı kapat\n  --debug                                Geliştirici modu (sihirbazı ve otomatik araç kurulumunu atlar)\n  --version | --help\n\nDRM desteklenmez. Ağ/oturum sınırları siteye bağlıdır.\n";
 
 /// How long a second launch keeps trying to hand its request to the instance that already
 /// holds the single-instance mutex. That instance stays healthy while it loads its queue and
@@ -48,8 +48,14 @@ fn main() {
     if cli && !native {
         attach_console();
     }
+    // `--debug` alone still opens the desktop, so a startup failure belongs in the dialog.
+    let command_line = native
+        || args.iter().any(|arg| {
+            arg.starts_with("--")
+                && !matches!(arg.as_str(), "--background" | "--data-dir" | "--debug")
+        });
     if let Err(error) = run(&args) {
-        if cli {
+        if command_line {
             if native {
                 eprintln!("SSDownload native host: {error:#}");
             } else {
@@ -128,22 +134,12 @@ fn run(args: &[String]) -> Result<()> {
         })?;
         return Ok(());
     }
-    if has(args, "--install-extension") {
-        let report = extension::install_policies()?;
-        print_response(BridgeResponse {
-            result: None,
-            ok: true,
-            message: report.summary(),
-            snapshot: None,
-        })?;
-        return Ok(());
-    }
     if has(args, "--remove-extension-policies") {
-        let summary = extension::remove_policies()?;
+        let outcome = extension::remove_legacy_policies();
         print_response(BridgeResponse {
             result: None,
-            ok: true,
-            message: summary,
+            ok: outcome != extension::LegacyCleanup::NeedsElevation,
+            message: outcome.summary().into(),
             snapshot: None,
         })?;
         return Ok(());
@@ -611,7 +607,6 @@ fn validate_arguments(args: &[String]) -> Result<()> {
         "--browser-setup",
         "--register-host",
         "--unregister-host",
-        "--install-extension",
         "--remove-extension-policies",
         "--quit",
         "--diagnose",
@@ -663,7 +658,6 @@ fn validate_arguments(args: &[String]) -> Result<()> {
         "--browser-setup",
         "--register-host",
         "--unregister-host",
-        "--install-extension",
         "--remove-extension-policies",
         "--quit",
         "--diagnose",
@@ -683,6 +677,10 @@ fn validate_arguments(args: &[String]) -> Result<()> {
         } else {
             bail!("Bilinmeyen seçenek: {item}. --help kullanın.");
         }
+    }
+    // `--update-tools` accompanies `--install-tools`; on its own it is the command.
+    if has(args, "--update-tools") && !has(args, "--install-tools") {
+        command_count += 1;
     }
     if command_count > 1 {
         bail!("Bir çağrıda yalnızca bir işlem seçin.");
@@ -726,6 +724,21 @@ impl Drop for InstanceGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn argv(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn update_tools_is_a_command_unless_it_modifies_install_tools() {
+        assert!(validate_arguments(&argv(&["--install-tools", "--update-tools"])).is_ok());
+        assert!(validate_arguments(&argv(&["--update-tools"])).is_ok());
+        assert!(
+            validate_arguments(&argv(&["--update-tools", "--quit"])).is_err(),
+            "two commands must not run one and silently drop the other"
+        );
+        assert!(validate_arguments(&argv(&["--status", "--update-tools"])).is_err());
+    }
 
     /// The handoff policy is a pure function, so the schedule a second launch walks through
     /// is checked here without waiting on anything.

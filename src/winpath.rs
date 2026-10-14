@@ -49,7 +49,7 @@ pub(crate) fn shell_target(path: &Path) -> Result<String, String> {
     let text = path.to_string_lossy();
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("Açılacak yol boş".into());
+        return Err(crate::i18n::ui("Açılacak yol boş", "The path to open is empty").into());
     }
     let plain = if let Some(rest) = trimmed.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
@@ -61,7 +61,7 @@ pub(crate) fn shell_target(path: &Path) -> Result<String, String> {
     // The empty check above runs before the verbatim strip, so a bare `\\?\`
     // would otherwise reach the shell as "" and surface its own failure dialog.
     if plain.is_empty() {
-        return Err("Açılacak yol boş".into());
+        return Err(crate::i18n::ui("Açılacak yol boş", "The path to open is empty").into());
     }
     let only_separators = |value: &str| {
         !value.is_empty()
@@ -70,7 +70,10 @@ pub(crate) fn shell_target(path: &Path) -> Result<String, String> {
                 .all(|character| character == '\\' || character == '/')
     };
     if only_separators(&plain) {
-        return Err(format!("Açılacak yol geçersiz: {plain}"));
+        return Err(crate::i18n::ui_owned!(
+            format!("Açılacak yol geçersiz: {plain}"),
+            format!("The path to open is invalid: {plain}")
+        ));
     }
     Ok(plain)
 }

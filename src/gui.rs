@@ -41,13 +41,13 @@ pub(crate) fn report_update_error(text: &str) {
 #[cfg(not(windows))]
 pub(crate) fn report_update_error(_text: &str) {}
 
-/// One-time startup offer to install the browser extension policies.
+/// Startup clean-up of the force-install policies older versions wrote.
 #[cfg(windows)]
-pub(crate) fn offer_extension_install(app: crate::app::App) {
-    native::offer_extension_install(app)
+pub(crate) fn clean_legacy_extension_policies(app: crate::app::App) {
+    native::clean_legacy_extension_policies(app)
 }
 #[cfg(not(windows))]
-pub(crate) fn offer_extension_install(_app: crate::app::App) {}
+pub(crate) fn clean_legacy_extension_policies(_app: crate::app::App) {}
 
 /// Monitor rect of the window that owns the foreground when a browser handoff
 /// arrives: the native picker opens where the browser is. `None` when no window

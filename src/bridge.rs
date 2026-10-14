@@ -56,6 +56,10 @@ const MAX_PIPE_MESSAGE: usize = 1024 * 1024;
 /// Ceiling for the page markup a browser handoff may carry for error reports.
 /// The extension truncates below this; the bridge refuses anything larger.
 const MAX_PAGE_HTML: usize = 256 * 1024;
+/// Most cookies a browser handoff may carry, and the longest file name it may suggest. Both
+/// mirror what the extension itself enforces before it sends anything.
+const MAX_BROWSER_COOKIES: usize = 500;
+const MAX_BROWSER_FILENAME: usize = 1024;
 const PIPE_WORKERS: u32 = 8;
 const PIPE_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(15);
@@ -381,7 +385,11 @@ fn connect_pipe(paths: &AppPaths) -> Result<OwnedHandle> {
         }
         crate::bail_code!(
             crate::error_codes::BRG_005,
-            "SSDownload çalışan örneğine bağlanılamadı (Windows hata kodu {code})"
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("SSDownload çalışan örneğine bağlanılamadı (Windows hata kodu {code})"),
+                format!("Could not connect to the running SSDownload instance (Windows error code {code})")
+            )
         );
     }
 }
@@ -511,6 +519,7 @@ fn process_pipe_client(app: &App, pipe: windows_sys::Win32::Foundation::HANDLE) 
                     response.ok = false;
                     response.message = "Tek iş izin verilen ileti boyutunu aşıyor".into();
                     response.snapshot = None;
+                    output = serde_json::to_vec(&response)?;
                     continue;
                 }
                 response.message =
@@ -651,7 +660,11 @@ fn transact(paths: &AppPaths, action: Option<&Action>) -> Result<BridgeResponse>
         }
         crate::bail_code!(
             crate::error_codes::BRG_005,
-            "SSDownload çalışan örneğine bağlanılamadı (Windows hata kodu {code})"
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("SSDownload çalışan örneğine bağlanılamadı (Windows hata kodu {code})"),
+                format!("Could not connect to the running SSDownload instance (Windows error code {code})")
+            )
         );
     }
     output.truncate(read as usize);
@@ -804,7 +817,29 @@ fn validate_browser_add(request: &mut crate::model::AddRequest) -> Result<()> {
     }
     validate_browser_headers(&request.headers)?;
     for subtitle in &request.external_subtitles {
+        validate_http_url(&subtitle.url)?;
+        if let Some(referer) = &subtitle.referer {
+            validate_http_url(referer)?;
+        }
         validate_browser_headers(&subtitle.headers)?;
+    }
+    // The extension exports at most 500 cookies, each within the browser's own size limits.
+    if request.session_cookies.len() > MAX_BROWSER_COOKIES
+        || request.session_cookies.iter().any(|cookie| {
+            cookie.name.len() > 1024
+                || cookie.value.len() > 8192
+                || cookie.domain.len() > 255
+                || cookie.path.len() > 2048
+        })
+    {
+        bail!("Oturum çerezleri sınırı aşıyor");
+    }
+    if request
+        .filename
+        .as_ref()
+        .is_some_and(|name| name.len() > MAX_BROWSER_FILENAME)
+    {
+        bail!("Dosya adı çok uzun");
     }
     // Page markup is report material, not a transfer input: what the extension
     // hands over stays inside this bound so a report (or any later reader) can
@@ -1081,6 +1116,14 @@ fn record_browser_action_failure(action: &Action, error: &anyhow::Error) {
     }
 }
 
+/// Whether a browser action may start the desktop when nothing answers. The extension's
+/// background probes (capabilities at every page load, session-log batches) are passive: a
+/// desktop the user quit must stay closed, and those probes report "not running" instead.
+/// Only an explicit user action (picker, add, show window, transfer) starts it.
+fn starts_desktop(action: &Action) -> bool {
+    !matches!(action, Action::Capabilities | Action::Log { .. })
+}
+
 /// Runs the browser Native Messaging stdio loop. Multiple framed messages are supported.
 pub fn native_host(paths: &AppPaths) -> Result<()> {
     if !launch_origin_allowed() {
@@ -1167,8 +1210,10 @@ pub fn native_host(paths: &AppPaths) -> Result<()> {
                             // every other action stays on the plain transaction.
                             let dispatched = if matches!(action, Action::BrowserMedia { .. }) {
                                 send_browser_media(paths, action)
-                            } else {
+                            } else if starts_desktop(action) {
                                 transact_with_start(paths, Some(action))
+                            } else {
+                                transact(paths, Some(action))
                             };
                             match dispatched {
                                 Ok(response) => browser_response(response, include_media),
@@ -1348,6 +1393,14 @@ pub fn registered_profile(executable: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(profile))
 }
 
+/// True while any SSDownload copy owns a browser Native Messaging registration.
+pub fn host_registered() -> bool {
+    let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
+    registry_locations()
+        .iter()
+        .any(|location| hkcu.open_subkey(location).is_ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1513,7 +1566,7 @@ mod tests {
     }
 
     #[test]
-    fn chrome_native_registration_uses_chrome_paths_only() {
+    fn native_registration_covers_chrome_chromium_and_edge() {
         assert_eq!(
             registry_locations(),
             [
@@ -1550,6 +1603,71 @@ mod tests {
         assert_eq!(events[1].code.as_deref(), Some("SSD-EXT-007"));
         assert_eq!(events[1].host.as_deref(), Some("www.youtube.com"));
         validate_browser_action(&mut action).expect("eklenti olay aktarabilmeli");
+    }
+
+    #[test]
+    fn browser_handoffs_validate_subtitle_addresses_cookies_and_file_names() {
+        let valid = || AddRequest {
+            url: "https://example.test/video".into(),
+            filename: Some("clip.mkv".into()),
+            external_subtitles: vec![ExternalSubtitle {
+                url: "https://example.test/captions.vtt".into(),
+                referer: Some("https://example.test/watch".into()),
+                ..Default::default()
+            }],
+            session_cookies: vec![ScopedCookie {
+                name: "session".into(),
+                value: "value".into(),
+                domain: "example.test".into(),
+                path: "/".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(validate_browser_add(&mut valid()).is_ok());
+
+        let mut local_subtitle = valid();
+        local_subtitle.external_subtitles[0].url = "file:///C:/secret.txt".into();
+        assert!(validate_browser_add(&mut local_subtitle).is_err());
+
+        let mut local_referer = valid();
+        local_referer.external_subtitles[0].referer = Some("ftp://example.test/".into());
+        assert!(validate_browser_add(&mut local_referer).is_err());
+
+        let mut too_many = valid();
+        too_many.session_cookies =
+            vec![too_many.session_cookies[0].clone(); MAX_BROWSER_COOKIES + 1];
+        assert!(validate_browser_add(&mut too_many).is_err());
+        let mut at_limit = valid();
+        at_limit.session_cookies = vec![at_limit.session_cookies[0].clone(); MAX_BROWSER_COOKIES];
+        assert!(validate_browser_add(&mut at_limit).is_ok());
+
+        let mut huge_value = valid();
+        huge_value.session_cookies[0].value = "x".repeat(8193);
+        assert!(validate_browser_add(&mut huge_value).is_err());
+
+        let mut long_name = valid();
+        long_name.filename = Some("n".repeat(MAX_BROWSER_FILENAME + 1));
+        assert!(validate_browser_add(&mut long_name).is_err());
+    }
+
+    /// Passive probes the extension makes in the background must not launch a desktop the
+    /// user quit; the actions a user starts must still bring it up.
+    #[test]
+    fn only_explicit_browser_actions_start_the_desktop() {
+        let log: WireRequest = serde_json::from_slice(
+            br#"{"version":2,"action":{"type":"log","request":{"events":[{"event":"ext.session","level":"info","outcome":"ok"}]}}}"#,
+        )
+        .expect("log wire message");
+        assert!(!starts_desktop(&log.action.expect("log action")));
+        assert!(!starts_desktop(&Action::Capabilities));
+        assert!(starts_desktop(&Action::ShowWindow));
+        assert!(starts_desktop(&Action::Add {
+            request: AddRequest::default()
+        }));
+        assert!(starts_desktop(&Action::InspectStatus {
+            request_id: "inspect-1".into()
+        }));
     }
 
     #[test]

@@ -18,8 +18,12 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                             Ok(result) => {
                                 SendMessageW(f.list, LB_RESETCONTENT, 0, 0);
                                 for candidate in &result.candidates {
-                                    let label =
-                                        wide(&format!("{:?} · {}", candidate.kind, candidate.url));
+                                    let kind = match candidate.kind {
+                                        DownloadKind::Video => "Video",
+                                        DownloadKind::Audio => crate::i18n::ui("Ses", "Audio"),
+                                        _ => crate::i18n::ui("Dosya", "File"),
+                                    };
+                                    let label = wide(&format!("{kind} · {}", candidate.url));
                                     SendMessageW(f.list, LB_ADDSTRING, 0, label.as_ptr() as isize);
                                 }
                                 let truncated_note = if result.truncated {
@@ -881,7 +885,10 @@ pub(super) unsafe fn populate_media(
         let label = format!(
             "{} — {}{}{}",
             format.id,
-            format.language.as_deref().unwrap_or("dil bilinmiyor"),
+            format
+                .language
+                .as_deref()
+                .unwrap_or(crate::i18n::ui("dil bilinmiyor", "language unknown")),
             format
                 .audio_codec
                 .as_deref()
@@ -889,7 +896,10 @@ pub(super) unsafe fn populate_media(
                 .unwrap_or_default(),
             format
                 .audio_channels
-                .map(|channels| format!(" · {channels} kanal"))
+                .map(|channels| crate::i18n::ui_owned!(
+                    format!(" · {channels} kanal"),
+                    format!(" · {channels} ch")
+                ))
                 .unwrap_or_default()
         );
         let value = wide(&label);
@@ -924,9 +934,9 @@ pub(super) unsafe fn populate_media(
             "{} — {}",
             subtitle.language,
             if subtitle.automatic {
-                "otomatik"
+                crate::i18n::ui("otomatik", "automatic")
             } else {
-                "elle"
+                crate::i18n::ui("elle", "manual")
             }
         ));
         SendMessageW(f.subtitles, LB_ADDSTRING, 0, value.as_ptr() as isize);
@@ -1194,7 +1204,9 @@ pub(super) unsafe fn queue_media(
                 let mut settings = app.snapshot().settings.clone();
                 settings.last_video_container = container;
                 settings.last_video_height = height;
-                if let Err(error) = app.dispatch(Action::SetSettings { settings }) {
+                // Quiet: the "Settings saved." line would replace the
+                // "download added" confirmation the status bar shows.
+                if let Err(error) = app.update_settings_quiet(settings) {
                     message(
                         hwnd,
                         &crate::i18n::ui_owned!(

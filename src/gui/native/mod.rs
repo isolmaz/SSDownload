@@ -46,10 +46,10 @@ use windows_sys::Win32::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
         Input::KeyboardAndMouse::{
-            EnableWindow, GetFocus, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus,
-            TrackMouseEvent, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, TME_LEAVE,
-            TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN, VK_END, VK_F5, VK_HOME, VK_MENU,
-            VK_NEXT, VK_PRIOR, VK_UP,
+            EnableWindow, GetFocus, IsWindowEnabled, RegisterHotKey, ReleaseCapture, SetCapture,
+            SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+            TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN, VK_END, VK_F5, VK_HOME,
+            VK_MENU, VK_NEXT, VK_PRIOR, VK_UP,
         },
         Shell::*,
         WindowsAndMessaging::*,
@@ -83,6 +83,10 @@ const TRAY_ID: u32 = 1;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 const CF_UNICODETEXT_: u32 = 13;
 const WM_DROP_TEXT: u32 = WM_APP + 32;
+const CF_HDROP_: u32 = 15;
+/// File paths from an OLE drop (lparam = `Box<Vec<PathBuf>>`), delivered the way
+/// `WM_DROPFILES` would be: a registered OLE drop target replaces that message.
+const WM_DROP_FILES: u32 = WM_APP + 41;
 const WM_SHOW_WIZARD: u32 = WM_APP + 33;
 /// A second launch whose handoff ran out (the pipe stayed silent) asks for the raise the
 /// desktop performs for `Action::ShowWindow`; the value is shared through `bridge`.
@@ -210,21 +214,54 @@ unsafe extern "system" fn drop_data(
     _point: i64,
     effect: *mut u32,
 ) -> i32 {
-    let value = ole_unicode_text(data);
-    if let Some(value) = value {
+    // Dragged text or a link carries CF_UNICODETEXT; Explorer files carry only
+    // CF_HDROP, which this target has to read itself once it owns the window.
+    let posted = if let Some(value) = ole_unicode_text(data) {
         let boxed = Box::into_raw(Box::new(value));
-        if PostMessageW((*this).hwnd, WM_DROP_TEXT, 0, boxed as isize) == 0 {
+        let sent = PostMessageW((*this).hwnd, WM_DROP_TEXT, 0, boxed as isize) != 0;
+        if !sent {
             drop(Box::from_raw(boxed));
-            if !effect.is_null() {
-                *effect = DROPEFFECT_NONE;
-            }
-        } else if !effect.is_null() {
-            *effect = DROPEFFECT_COPY;
         }
-    } else if !effect.is_null() {
-        *effect = DROPEFFECT_NONE;
+        sent
+    } else if let Some(paths) = ole_dropped_files(data) {
+        let boxed = Box::into_raw(Box::new(paths));
+        let sent = PostMessageW((*this).hwnd, WM_DROP_FILES, 0, boxed as isize) != 0;
+        if !sent {
+            drop(Box::from_raw(boxed));
+        }
+        sent
+    } else {
+        false
+    };
+    if !effect.is_null() {
+        *effect = if posted {
+            DROPEFFECT_COPY
+        } else {
+            DROPEFFECT_NONE
+        };
     }
     S_OK_
+}
+/// The file paths of an OLE drop that carries a CF_HDROP list.
+unsafe fn ole_dropped_files(data: *mut c_void) -> Option<Vec<PathBuf>> {
+    if data.is_null() {
+        return None;
+    }
+    let object = data as *mut DataObject;
+    let format = FORMATETC {
+        cfFormat: CF_HDROP_ as u16,
+        ptd: null_mut(),
+        dwAspect: DVASPECT_CONTENT,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL as u32,
+    };
+    let mut medium: STGMEDIUM = zeroed();
+    if ((*(*object).vtable).get_data)(object, &format, &mut medium) < 0 {
+        return None;
+    }
+    let paths = dropped_paths(medium.u.hGlobal as HDROP);
+    ReleaseStgMedium(&mut medium);
+    (!paths.is_empty()).then_some(paths)
 }
 unsafe fn ole_unicode_text(data: *mut c_void) -> Option<String> {
     if data.is_null() {
@@ -485,6 +522,9 @@ struct MainUi {
     /// True while a popup the bar owns is tracking: the item that opened it
     /// keeps its highlight even after the cursor moved into the popup.
     menu_open: bool,
+    /// The update version the Yardım menu and the title currently announce; a
+    /// check that finishes after the window exists changes it.
+    update_version: Option<String>,
     /// Keyboard hint mode: Windows only underlines menu mnemonics while the
     /// user is working the bar from the keyboard (Alt held, or a menu open
     /// after Alt), so the strip tracks the same state.
@@ -492,6 +532,9 @@ struct MainUi {
     management_capable: bool,
     exiting: bool,
     tray_added: bool,
+    /// Next attempt to add the tray icon after a failed one, and the wait it
+    /// followed; the shell may not be ready yet at logon.
+    tray_retry: Option<(Instant, Duration)>,
     drop_target: *mut DropTarget,
     dpi: u32,
     taskbar: Option<Taskbar>,
@@ -505,6 +548,9 @@ struct MainUi {
     quiet_until: Option<Instant>,
     /// The download a completion balloon refers to.
     last_completed: Option<String>,
+    /// True while the balloon last shown is a completion balloon, the only kind
+    /// whose click opens `last_completed`'s folder.
+    balloon_is_completion: std::cell::Cell<bool>,
     hotkey_registered: bool,
     /// Registration was refused (another program owns the key) this session.
     hotkey_failed: bool,
@@ -524,6 +570,7 @@ fn wide(s: &str) -> Vec<u16> {
 pub fn offer_update(
     manifest: &crate::update::UpdateManifest,
 ) -> Option<crate::update::UpdateDecision> {
+    let installed = crate::update::is_installed_copy();
     let body = format!(
         "SSDownload {} {}\n\n{}\n\n{}",
         manifest.version,
@@ -536,27 +583,52 @@ pub fn offer_update(
         } else {
             manifest.notes.as_str()
         },
-        crate::i18n::ui(
-            "Evet: indir, doğrula ve kur\nHayır: daha sonra hatırlat\nİptal: bu sürümü bir daha sorma",
-            "Yes: download, verify and install\nNo: remind me later\nCancel: do not ask about this version again",
-        ),
+        // A portable copy never runs the silent Setup: its update opens the
+        // release page, so the offer must not promise an install.
+        if installed {
+            crate::i18n::ui(
+                "Kur: indir, doğrula ve kur. Daha sonra: sonra hatırlat. Atla: bu sürümü bir daha sorma.",
+                "Install: download, verify and install. Later: remind me later. Skip: do not ask about this version again.",
+            )
+        } else {
+            crate::i18n::ui(
+                "Sayfayı aç: indirme sayfasını aç. Daha sonra: sonra hatırlat. Atla: bu sürümü bir daha sorma.",
+                "Open page: open the download page. Later: remind me later. Skip: do not ask about this version again.",
+            )
+        },
     );
     let title = format!(
         "SSDownload {} {}",
         manifest.version,
         crate::i18n::ui("güncellemesi", "update"),
     );
+    // Escape and the close button answer "Later" (no Cancel button is listed, so
+    // the alert falls back to No): dismissing the offer never skips the version.
+    const SKIP: i32 = 100;
+    let buttons = [
+        (
+            IDYES,
+            if installed {
+                crate::i18n::ui("Kur", "Install")
+            } else {
+                crate::i18n::ui("Sayfayı aç", "Open page")
+            },
+        ),
+        (IDNO, crate::i18n::ui("Daha sonra", "Later")),
+        (SKIP, crate::i18n::ui("Bu sürümü atla", "Skip this version")),
+    ];
     let answer = unsafe {
-        message(
+        run_alert_buttons(
             std::ptr::null_mut(),
             &body,
             &title,
-            MB_YESNOCANCEL | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
+            MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
+            Some(&buttons),
         )
     };
     match answer {
-        IDYES => Some(crate::update::UpdateDecision::Install),
-        IDCANCEL => Some(crate::update::UpdateDecision::Skip),
+        Some(IDYES) => Some(crate::update::UpdateDecision::Install),
+        Some(SKIP) => Some(crate::update::UpdateDecision::Skip),
         _ => Some(crate::update::UpdateDecision::Later),
     }
 }
@@ -605,79 +677,57 @@ fn confirm_elevated(body: &str, title: &str) -> bool {
     answer == IDYES
 }
 
-/// One-time startup offer to install the browser extension policies. The flag
-/// is set regardless of the answer; Settings can always run the install again.
-pub fn offer_extension_install(app: crate::app::App) {
+/// Removes the force-install policies that versions up to 1.6.1 wrote: while
+/// such an entry exists Chrome blocks the extension ID, the Web Store copy
+/// included. When the policy hive needs administrator rights the user is asked
+/// once (`extension_offer_seen`).
+pub fn clean_legacy_extension_policies(app: crate::app::App) {
     let spawned = std::thread::Builder::new()
-        .name("extension-offer".into())
+        .name("extension-legacy-cleanup".into())
         .spawn(move || {
-            // Give the startup update check room to speak first.
-            std::thread::sleep(std::time::Duration::from_millis(2500));
+            if !crate::extension::legacy_policies_present() {
+                return;
+            }
+            let outcome = crate::extension::remove_legacy_policies();
+            crate::logging::record(
+                crate::logging::Event::info("gui.extension_legacy_cleanup")
+                    .detail(format!("{outcome:?}")),
+            );
+            if outcome != crate::extension::LegacyCleanup::NeedsElevation {
+                return;
+            }
             let mut next = app.snapshot().settings;
             if next.extension_offer_seen {
                 return;
             }
             next.extension_offer_seen = true;
             if let Err(error) = app.update_settings_quiet(next) {
-                crate::logging::record(crate::logging::Event::warn("gui.extension_offer_save").detail(format!("{error:#}")));
+                crate::logging::record(
+                    crate::logging::Event::warn("gui.extension_offer_save")
+                        .detail(format!("{error:#}")),
+                );
             }
-            let installed = crate::extension::policies_installed().unwrap_or(false);
-            if !crate::extension::device_is_enterprise_managed() {
-                // Chrome refuses a self-hosted force-install here, and a policy
-                // entry left over from an earlier version blocks the extension
-                // outright, so this is the one case worth interrupting for.
-                if installed
-                    && confirm_elevated(
-                        crate::i18n::ui(
-                            "Chrome, kurumsal yönetilmeyen cihazlarda bu eklentiyi politikayla kurmayı engelliyor ve kalan politika kaydı eklentiyi bloke ediyor.\n\nKayıt yönetici onayıyla kaldırılsın mı?",
-                            "Chrome blocks this extension from being force-installed by policy on devices that are not enterprise managed, and a leftover policy entry blocks the extension outright.\n\nRemove the policy entry with administrator approval?",
-                        ),
-                        crate::i18n::ui(
-                            "SSDownload tarayıcı eklentisi",
-                            "SSDownload browser extension",
-                        ),
-                    )
-                {
-                    let _ = crate::extension::run_elevated("--remove-extension-policies");
-                }
-                return;
-            }
-            if installed {
-                return;
-            }
-            let body = crate::extension::offer_dialog_body();
-            let answer = unsafe {
-                message(
-                    std::ptr::null_mut(),
-                    &body,
-                    crate::i18n::ui(
-                        "SSDownload tarayıcı eklentisi",
-                        "SSDownload browser extension",
-                    ),
-                    MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
-                )
-            };
-            if answer != IDYES {
-                return;
-            }
-            match crate::extension::install_policies() {
-                Ok(report) => report_update_text(&report.summary()),
-                Err(error) => {
-                    report_update_error(&format!(
-                        "{}: {error:#}",
-                        crate::i18n::ui(
-                            "Eklenti politikaları yazılamadı",
-                            "Could not write the extension policies",
-                        )
-                    ))
+            // Give the startup update check room to speak first.
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            if confirm_elevated(
+                crate::i18n::ui(
+                    "Eski bir SSDownload sürümünün yazdığı Chrome/Edge politika kaydı, tarayıcı eklentisini engelliyor.\n\nKayıt yönetici onayıyla kaldırılsın mı?",
+                    "A Chrome/Edge policy entry written by an older SSDownload version blocks the browser extension.\n\nRemove it with administrator approval?",
+                ),
+                crate::i18n::ui(
+                    "SSDownload tarayıcı eklentisi",
+                    "SSDownload browser extension",
+                ),
+            ) {
+                if let Err(error) = crate::extension::run_elevated("--remove-extension-policies") {
+                    report_update_error(&format!("{error:#}"));
                 }
             }
         });
     if let Err(error) = spawned {
         crate::logging::record(
-            crate::logging::Event::warn("gui.extension_offer_spawn").detail(format!(
-                "Eklenti teklif iş parçacığı başlatılamadı: {error}"
-            )),
+            crate::logging::Event::warn("gui.extension_legacy_cleanup_spawn")
+                .detail(format!("{error}")),
         );
     }
 }
@@ -744,6 +794,11 @@ fn mode_error(kind: DownloadKind) -> &'static str {
     }
 }
 unsafe fn keep_window_on_screen(hwnd: HWND) {
+    // A maximized frame extends past the work area by its border on purpose;
+    // clamping it would shrink the window while it still claims to be maximized.
+    if IsZoomed(hwnd) != 0 {
+        return;
+    }
     let mut rect: RECT = zeroed();
     if GetWindowRect(hwnd, &mut rect) == 0 {
         return;
@@ -1006,6 +1061,11 @@ fn extract_urls(value: &str) -> Vec<String> {
         c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '(' | ')' | '[' | ']')
     }) {
         let candidate = raw.trim_matches(|c: char| matches!(c, ',' | ';' | '.'));
+        // An Internet Shortcut (.url) keeps its address on a `URL=...` line.
+        let candidate = match candidate.find("=http") {
+            Some(at) if !candidate.starts_with("http") => &candidate[at + 1..],
+            _ => candidate,
+        };
         if (candidate.starts_with("http://") || candidate.starts_with("https://"))
             && url::Url::parse(candidate).is_ok()
             && !result.iter().any(|u| u == candidate)
@@ -1085,10 +1145,12 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             update_notice: ProgressNotice::default(),
             menu_hot: -1,
             menu_open: false,
+            update_version: crate::update::available_version(),
             menu_hint: false,
             management_capable,
             exiting: false,
             tray_added: false,
+            tray_retry: None,
             drop_target: null_mut(),
             dpi: 96,
             taskbar: None,
@@ -1097,6 +1159,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             tray_icon: null_mut(),
             quiet_until: None,
             last_completed: None,
+            balloon_is_completion: std::cell::Cell::new(false),
             hotkey_registered: false,
             hotkey_failed: false,
             dragging: None,
@@ -1148,12 +1211,10 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
         }
         // Non-blocking scheduled update check (daily-gated, background thread).
         crate::update::startup_check((*raw).app.clone());
-        // One-time extension install offer (Settings can repeat it anytime).
-        // A developer run is never interrupted by one-time prompts.
-        if !(*raw).app.snapshot().settings.debug_mode
-            && !(*raw).app.snapshot().settings.extension_offer_seen
-        {
-            crate::gui::offer_extension_install((*raw).app.clone());
+        // Policies older versions wrote block the extension; a developer run
+        // is never interrupted by the prompt this may need.
+        if !(*raw).app.snapshot().settings.debug_mode {
+            crate::gui::clean_legacy_extension_policies((*raw).app.clone());
         }
         // Missing media dependencies are fetched by the application itself: the
         // user never has to open a menu for them. The short delay lets the
@@ -1263,7 +1324,11 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
                     )
                 );
             }
-            if (accel.is_null() || TranslateAcceleratorW(hwnd, accel, &msg) == 0)
+            // TranslateAccelerator ignores which window a key was typed into, so a
+            // modeless dialog's Ctrl+A / Ctrl+V would run the main window's list
+            // commands instead of editing its own fields.
+            let main_message = msg.hwnd.is_null() || GetAncestor(msg.hwnd, GA_ROOT) == hwnd;
+            if !(main_message && !accel.is_null() && TranslateAcceleratorW(hwnd, accel, &msg) != 0)
                 && !dialog_message(hwnd, &msg)
             {
                 TranslateMessage(&msg);
@@ -1626,9 +1691,15 @@ unsafe extern "system" fn main_proc(
             0
         }
         WM_HOTKEY if wparam as i32 == HOTKEY_ADD => {
-            let urls = clipboard_urls();
-            SetForegroundWindow(hwnd);
-            show_add_dialog(hwnd, ui.app.clone(), urls.join("\r\n"), false);
+            if IsWindowEnabled(hwnd) == 0 {
+                // A modal dialog already holds the window: bring it forward
+                // instead of stacking a second one on top of it.
+                show_main(ui);
+            } else {
+                let urls = clipboard_urls();
+                SetForegroundWindow(hwnd);
+                show_add_dialog(hwnd, ui.app.clone(), urls.join("\r\n"), false);
+            }
             0
         }
         WM_SHOW_TOUR => {
@@ -1744,6 +1815,11 @@ unsafe extern "system" fn main_proc(
             handle_drop(ui, wparam as HDROP);
             0
         }
+        WM_DROP_FILES => {
+            let paths = Box::from_raw(lparam as *mut Vec<PathBuf>);
+            handle_dropped_paths(ui, *paths);
+            0
+        }
         WM_DROP_TEXT => {
             let value = Box::from_raw(lparam as *mut String);
             let urls = extract_urls(&value);
@@ -1788,7 +1864,11 @@ unsafe extern "system" fn main_proc(
             0
         }
         WM_CLOSE => {
-            if !ui.exiting && ui.snapshot.settings.close_to_tray {
+            if !ui.exiting && ui.snapshot.settings.close_to_tray && !ui.tray_added {
+                // Without a notification area icon a hidden window could never be
+                // reached again, so it stays on the taskbar instead.
+                ShowWindow(hwnd, SW_MINIMIZE);
+            } else if !ui.exiting && ui.snapshot.settings.close_to_tray {
                 ShowWindow(hwnd, SW_HIDE);
                 notify(
                     ui,
@@ -2268,11 +2348,16 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
     // Developer mode owns the first-run flow: a run that asked for it never
     // has a wizard pending, whichever profile it opens.
     ui.wizard_pending = snapshot.settings.onboarding_version < ONBOARDING_VERSION && !debug;
-    if mode == ui.ui_mode && debug == ui.debug_mode && !language_changed {
+    // An update check finishes on its own thread, long after the menu was built:
+    // the Yardım entry and the title badge follow it here.
+    let update_version = crate::update::available_version();
+    let update_changed = update_version != ui.update_version && !ui.menu_open;
+    if mode == ui.ui_mode && debug == ui.debug_mode && !language_changed && !update_changed {
         return;
     }
     ui.ui_mode = mode;
     ui.debug_mode = debug;
+    ui.update_version = update_version;
     let menu = create_main_menu(mode, debug);
     SendMessageW(menu as HWND, WM_SETFONT, ui.font as usize, 1);
     let previous = GetMenu(ui.hwnd);
@@ -2313,6 +2398,9 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
         InvalidateRect(ui.hwnd, null(), 1);
     }
     update_profile_controls(ui);
+    if update_changed {
+        update_title_and_tray(ui);
+    }
 }
 
 /// Keeps the user-facing retry usable exactly while it can do something: a
@@ -2560,7 +2648,11 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         ID_BATCH => show_add_dialog(
             ui.hwnd,
             ui.app.clone(),
-            "https://example.com/dosya[001-010].zip".into(),
+            crate::i18n::ui(
+                "https://example.com/dosya[001-010].zip",
+                "https://example.com/file[001-010].zip",
+            )
+            .into(),
             false,
         ),
         ID_IMPORT_LIST => import_url_list(ui),
@@ -2598,7 +2690,11 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
                 .filter_map(|id| ui.snapshot.jobs.iter().find(|job| &job.id == id))
                 .map(|job| job.request.url.clone())
                 .collect::<Vec<_>>();
-            if !urls.is_empty() && set_clipboard_text(&urls.join("\r\n")) {
+            let joined = urls.join("\r\n");
+            if !urls.is_empty() && set_clipboard_text(&joined) {
+                // The clipboard listener must not announce our own copy as a
+                // newly found link.
+                ui.clipboard_sequence_text = joined;
                 set_text(
                     ui.status,
                     crate::i18n::ui(
@@ -2687,7 +2783,18 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
                 ID_TRAY_SPEED_512K => 512,
                 _ => 0,
             };
-            let _ = ui.app.update_settings_quiet(settings);
+            if let Err(error) = ui.app.update_settings_quiet(settings) {
+                ui.app.message(
+                    format!(
+                        "{}: {error:#}",
+                        crate::i18n::ui(
+                            "Hız sınırı kaydedilemedi",
+                            "The speed limit could not be saved",
+                        )
+                    ),
+                    true,
+                );
+            }
         }
         ID_TRAY_SPEED_CUSTOM => {
             let current = ui.app.snapshot().settings.speed_limit_kib;
@@ -2900,6 +3007,9 @@ unsafe fn icon_with_progress(base: HICON, fraction: f64, indeterminate: bool) ->
     let source = if scaled.is_null() { base } else { scaled };
     let mut info: ICONINFO = zeroed();
     if GetIconInfo(source, &mut info) == 0 {
+        if !scaled.is_null() {
+            DestroyIcon(scaled);
+        }
         return base;
     }
     let dc = GetDC(null_mut());
@@ -2924,6 +3034,9 @@ unsafe fn icon_with_progress(base: HICON, fraction: f64, indeterminate: bool) ->
         ReleaseDC(null_mut(), dc);
         DeleteObject(info.hbmColor as HGDIOBJ);
         DeleteObject(info.hbmMask as HGDIOBJ);
+        if !scaled.is_null() {
+            DestroyIcon(scaled);
+        }
         return base;
     }
     // An icon without alpha takes full opacity where it has colour.
@@ -3021,7 +3134,9 @@ unsafe fn update_filter_labels(ui: &mut MainUi) {
                 .count()
         })
         .collect::<Vec<_>>();
-    if counts == ui.filter_counts {
+    // Rebuilding the entries would close a dropdown the user has open; the next
+    // tick tries again because the counts are not recorded yet.
+    if counts == ui.filter_counts || SendMessageW(ui.filter, CB_GETDROPPEDSTATE, 0, 0) != 0 {
         return;
     }
     ui.filter_counts = counts.clone();
@@ -3075,7 +3190,11 @@ unsafe fn save_placement(ui: &MainUi) {
         rect.top,
         rect.right,
         rect.bottom,
-        i32::from(placement.showCmd == SW_SHOWMAXIMIZED as u32),
+        // A minimized window remembers that it comes back maximized.
+        i32::from(
+            placement.showCmd == SW_SHOWMAXIMIZED as u32
+                || placement.flags & WPF_RESTORETOMAXIMIZED != 0,
+        ),
     ];
     let mut settings = ui.app.snapshot().settings;
     if settings.window_placement != Some(value) {
@@ -3325,7 +3444,11 @@ unsafe fn export_url_list(ui: &MainUi) {
         );
         return;
     }
-    let Some(path) = text_file_dialog(ui.hwnd, true, "ssdownload-liste.txt") else {
+    let Some(path) = text_file_dialog(
+        ui.hwnd,
+        true,
+        crate::i18n::ui("ssdownload-liste.txt", "ssdownload-list.txt"),
+    ) else {
         return;
     };
     let mut body = urls.join("\r\n");
@@ -3668,7 +3791,9 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
         // A browser handoff opens only its picker. The main window keeps its state;
         // a minimized owner would hide the picker it owns, so it goes to the tray
         // instead of coming forward.
-        if IsIconic(ui.hwnd) != 0 {
+        // Without a tray icon a hidden window could not be brought back, so it
+        // stays on the taskbar and the picker gets its own taskbar button instead.
+        if IsIconic(ui.hwnd) != 0 && ui.tray_added {
             ShowWindow(ui.hwnd, SW_HIDE);
         }
         ui.last_show_seq = snapshot.show_window_seq;
@@ -3698,6 +3823,7 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     }
     apply_menu_mode(ui, &snapshot);
     update_tools_menu(ui, &snapshot);
+    retry_tray(ui);
     if snapshot.revision == ui.snapshot.revision && !force_rows {
         ui.snapshot = snapshot;
         refresh_notices(ui);
@@ -3727,12 +3853,15 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     }
     if snapshot.settings.notify_completion {
         for job in newly_completed {
-            notify(
+            if notify(
                 ui,
                 crate::i18n::ui("İndirme tamamlandı", "Download complete"),
                 &job.name,
                 false,
-            );
+            ) {
+                ui.last_completed = Some(job.id.clone());
+                ui.balloon_is_completion.set(true);
+            }
         }
     }
     ui.known_completed = snapshot
@@ -3879,6 +4008,9 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
     let prior = selected_ids(ui);
     let rebuild = force || ids != ui.visible_ids;
     let mut changed = rebuild;
+    // Deleting every item scrolls the list back to the top; the row that was on
+    // top is brought back once the rows are in again.
+    let top_row = SendMessageW(ui.list, LVM_GETTOPINDEX, 0, 0).max(0);
     if rebuild {
         ui.row_cache.clear();
         SendMessageW(ui.list, WM_SETREDRAW, 0, 0);
@@ -3953,6 +4085,25 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
                 SendMessageW(ui.list, LVM_SETITEMSTATE, pos, &item as *const _ as isize);
             }
         }
+        // A new search or filter starts at the top; only a change made by the
+        // engine keeps the user's place.
+        if !force && top_row > 0 && !ui.visible_ids.is_empty() {
+            let mut first = RECT {
+                left: LVIR_BOUNDS as i32,
+                ..zeroed()
+            };
+            if SendMessageW(ui.list, LVM_GETITEMRECT, 0, &mut first as *mut _ as isize) != 0
+                && first.bottom > first.top
+            {
+                let rows = (top_row as i32).min(ui.visible_ids.len() as i32 - 1);
+                SendMessageW(
+                    ui.list,
+                    LVM_SCROLL,
+                    0,
+                    ((first.bottom - first.top) * rows) as isize,
+                );
+            }
+        }
     }
     SendMessageW(ui.list, WM_SETREDRAW, 1, 0);
     if changed {
@@ -3973,7 +4124,13 @@ unsafe fn set_list_cell(list: HWND, row: i32, col: i32, value: &str) {
 }
 
 fn search_key(value: &str) -> String {
-    value.replace('İ', "i").replace('I', "ı").to_lowercase()
+    // Dotted and dotless i fold together: a file name written "IMG_01" or
+    // "Image" must still match a query typed with the plain letter, and a
+    // Turkish "ışık" must still match "IŞIK".
+    value
+        .replace(['İ', 'I'], "i")
+        .to_lowercase()
+        .replace('ı', "i")
 }
 fn source_refresh_available(job: &Job) -> bool {
     let has_page = job
@@ -4373,7 +4530,11 @@ unsafe fn force_owned_dialogs(owner: HWND) {
     }
 }
 unsafe fn show_main(ui: &MainUi) {
-    ShowWindow(ui.hwnd, SW_RESTORE);
+    // SW_RESTORE would also un-maximize a window that was hidden maximized; only a
+    // minimized window needs it.
+    if IsIconic(ui.hwnd) != 0 {
+        ShowWindow(ui.hwnd, SW_RESTORE);
+    }
     keep_window_on_screen(ui.hwnd);
     ShowWindow(ui.hwnd, SW_SHOW);
     let popup = GetLastActivePopup(ui.hwnd);
@@ -4865,6 +5026,30 @@ unsafe fn add_tray(ui: &mut MainUi) {
         ui.tray_added = true;
     }
 }
+/// Tries to add the tray icon again after a failed attempt, from the refresh
+/// tick: the wait doubles from 2 s up to a minute, so a missing shell is not
+/// hammered. A window hidden with no icon could not be brought back.
+unsafe fn retry_tray(ui: &mut MainUi) {
+    if ui.tray_added {
+        ui.tray_retry = None;
+        return;
+    }
+    let now = Instant::now();
+    if ui.tray_retry.is_some_and(|(at, _)| now < at) {
+        return;
+    }
+    add_tray(ui);
+    if ui.tray_added {
+        ui.tray_retry = None;
+        // The tooltip and the progress icon are rewritten on the next change.
+        ui.tray_key.clear();
+        return;
+    }
+    let wait = ui.tray_retry.map_or(Duration::from_secs(2), |(_, last)| {
+        (last * 2).min(Duration::from_secs(60))
+    });
+    ui.tray_retry = Some((now + wait, wait));
+}
 unsafe fn remove_tray(ui: &mut MainUi) {
     if ui.tray_added {
         let mut data: NOTIFYICONDATAW = zeroed();
@@ -4880,10 +5065,11 @@ fn copy_wide<const N: usize>(dest: &mut [u16; N], src: &str) {
     dest[..value.len()].copy_from_slice(&value);
     dest[value.len()] = 0;
 }
-unsafe fn notify(ui: &MainUi, title: &str, body: &str, error: bool) {
+unsafe fn notify(ui: &MainUi, title: &str, body: &str, error: bool) -> bool {
     if !ui.tray_added || (!error && ui.quiet_until.is_some_and(|until| until > Instant::now())) {
-        return;
+        return false;
     }
+    ui.balloon_is_completion.set(false);
     let mut data: NOTIFYICONDATAW = zeroed();
     data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
     data.hWnd = ui.hwnd;
@@ -4893,6 +5079,7 @@ unsafe fn notify(ui: &MainUi, title: &str, body: &str, error: bool) {
     copy_wide(&mut data.szInfo, body);
     data.dwInfoFlags = if error { NIIF_ERROR } else { NIIF_INFO };
     Shell_NotifyIconW(NIM_MODIFY, &data);
+    true
 }
 /// The tray's right-click menu: the everyday actions without opening the window.
 unsafe fn tray_menu(ui: &MainUi) -> HMENU {
@@ -5030,11 +5217,13 @@ unsafe fn tray_menu(ui: &MainUi) -> HMENU {
 unsafe fn handle_tray(ui: &mut MainUi, event: u32) {
     match event {
         NIN_BALLOONUSERCLICK_ => {
-            // The balloon of a completed download opens its folder.
-            if let Some(id) = ui.last_completed.clone() {
-                let _ = ui.app.dispatch(Action::OpenFolder { id: Some(id) });
-            } else {
-                show_main(ui);
+            // The balloon of a completed download opens its folder; any other
+            // balloon (error, progress notice, tray hint) just opens the window.
+            match ui.last_completed.clone() {
+                Some(id) if ui.balloon_is_completion.get() => {
+                    let _ = ui.app.dispatch(Action::OpenFolder { id: Some(id) });
+                }
+                _ => show_main(ui),
             }
         }
         WM_LBUTTONUP | WM_LBUTTONDBLCLK | NIN_SELECT | NIN_KEYSELECT => show_main(ui),
@@ -5055,11 +5244,39 @@ unsafe fn handle_tray(ui: &mut MainUi, event: u32) {
             DestroyMenu(menu);
             PostMessageW(ui.hwnd, WM_NULL, 0, 0);
             if cmd != 0 {
-                main_command(ui, cmd, 0);
+                if IsWindowEnabled(ui.hwnd) == 0 && !tray_command_runs_under_modal(cmd) {
+                    // The menu reaches the window even while a modal dialog has it
+                    // disabled; a command that opens another dialog would stack it
+                    // on the first one, so the open dialog is brought forward.
+                    show_main(ui);
+                } else {
+                    main_command(ui, cmd, 0);
+                }
             }
         }
         _ => {}
     }
+}
+
+/// Tray menu commands that open no dialog of their own and so stay safe while a
+/// modal dialog holds the main window.
+fn tray_command_runs_under_modal(id: i32) -> bool {
+    matches!(
+        id,
+        ID_TRAY_SHOW
+            | ID_TRAY_PAUSE
+            | ID_TRAY_RESUME
+            | ID_TRAY_SPEED_UNLIMITED
+            | ID_TRAY_SPEED_1M
+            | ID_TRAY_SPEED_512K
+            | ID_TRAY_SHUTDOWN
+            | ID_TRAY_FOLDER
+            | ID_TRAY_QUIET
+            | ID_MINI_PANEL
+            | ID_UPDATE_CHECK
+            | ID_INSTALL_UPDATE
+            | ID_EXIT
+    )
 }
 
 unsafe fn clipboard_text() -> String {
@@ -5111,18 +5328,30 @@ unsafe fn handle_clipboard_change(ui: &mut MainUi) {
         );
     }
 }
+/// The paths of one HDROP, without releasing it.
+unsafe fn dropped_paths(drop: HDROP) -> Vec<PathBuf> {
+    let count = DragQueryFileW(drop, u32::MAX, null_mut(), 0);
+    (0..count)
+        .map(|i| {
+            let n = DragQueryFileW(drop, i, null_mut(), 0);
+            let mut buf = vec![0u16; n as usize + 1];
+            DragQueryFileW(drop, i, buf.as_mut_ptr(), buf.len() as u32);
+            PathBuf::from(String::from_utf16_lossy(&buf[..n as usize]))
+        })
+        .collect()
+}
 unsafe fn handle_drop(ui: &MainUi, drop: HDROP) {
+    let paths = dropped_paths(drop);
+    DragFinish(drop);
+    handle_dropped_paths(ui, paths);
+}
+unsafe fn handle_dropped_paths(ui: &MainUi, paths: Vec<PathBuf>) {
     use std::io::Read;
     const INPUT_LIMIT: usize = 1024 * 1024;
     let mut remaining = INPUT_LIMIT;
     let mut too_large = false;
-    let count = DragQueryFileW(drop, u32::MAX, null_mut(), 0);
     let mut collected = Vec::new();
-    for i in 0..count {
-        let n = DragQueryFileW(drop, i, null_mut(), 0);
-        let mut buf = vec![0u16; n as usize + 1];
-        DragQueryFileW(drop, i, buf.as_mut_ptr(), buf.len() as u32);
-        let path = PathBuf::from(String::from_utf16_lossy(&buf[..n as usize]));
+    for path in paths {
         if path.extension().and_then(|v| v.to_str()).is_some_and(|e| {
             matches!(
                 e.to_ascii_lowercase().as_str(),
@@ -5145,7 +5374,6 @@ unsafe fn handle_drop(ui: &MainUi, drop: HDROP) {
             collected.extend(extract_urls(s));
         }
     }
-    DragFinish(drop);
     if too_large {
         message(
             ui.hwnd,
@@ -5664,7 +5892,7 @@ unsafe fn create_dialog(
     }));
     // A window whose owner is hidden (the main window in the tray) gets its own
     // taskbar button, so a browser handoff's picker stands on its own.
-    let own_button = if owner.is_null() || IsWindowVisible(owner) == 0 {
+    let own_button = if owner.is_null() || IsWindowVisible(owner) == 0 || IsIconic(owner) != 0 {
         WS_EX_APPWINDOW
     } else {
         0
@@ -5698,7 +5926,7 @@ unsafe fn create_dialog(
             owner,
             &crate::i18n::ui_owned!(
                 format!("İletişim penceresi açılamadı (Win32 {error})."),
-                format!("Couldn't open the contact window (Win32 {error}).")
+                format!("The dialog window could not be opened (Win32 {error}).")
             ),
             "SSDownload",
             MB_OK | MB_ICONERROR,
@@ -7733,6 +7961,52 @@ mod tests {
             super::state_label(&job(JobState::Paused, "MP4")),
             JobState::Paused.label()
         );
+    }
+
+    #[test]
+    fn search_folds_dotted_and_dotless_i_together() {
+        let key = super::search_key;
+        // A capital I of an English file name is found by the plain letter.
+        assert!(key("IMG_0001.JPG").contains(&key("img")));
+        assert!(key("Installer.exe").contains(&key("install")));
+        // Turkish capitals and lower-case forms still find each other.
+        assert!(key("IŞIK.txt").contains(&key("ışık")));
+        assert!(key("İstanbul.pdf").contains(&key("istanbul")));
+        assert!(key("istanbul.pdf").contains(&key("İSTANBUL")));
+        assert!(!key("Notes.txt").contains(&key("video")));
+    }
+
+    #[test]
+    fn extract_urls_reads_internet_shortcut_files() {
+        let shortcut = "[InternetShortcut]\r\nURL=https://example.com/a.zip?x=1\r\nIconIndex=0\r\n";
+        assert_eq!(
+            super::extract_urls(shortcut),
+            ["https://example.com/a.zip?x=1"]
+        );
+        // A link that merely carries another link in its query stays whole.
+        assert_eq!(
+            super::extract_urls("see https://a.example/r?u=https://b.example/"),
+            ["https://a.example/r?u=https://b.example/"]
+        );
+    }
+
+    #[test]
+    fn tray_commands_that_open_a_dialog_wait_for_the_open_modal() {
+        use super::{
+            tray_command_runs_under_modal, ID_BATCH, ID_EXIT, ID_SETTINGS, ID_TRAY_ADD,
+            ID_TRAY_CLIPBOARD, ID_TRAY_PAUSE, ID_TRAY_SPEED_CUSTOM,
+        };
+        for id in [
+            ID_SETTINGS,
+            ID_TRAY_ADD,
+            ID_TRAY_CLIPBOARD,
+            ID_BATCH,
+            ID_TRAY_SPEED_CUSTOM,
+        ] {
+            assert!(!tray_command_runs_under_modal(id), "{id} opens a dialog");
+        }
+        assert!(tray_command_runs_under_modal(ID_TRAY_PAUSE));
+        assert!(tray_command_runs_under_modal(ID_EXIT));
     }
 
     #[test]

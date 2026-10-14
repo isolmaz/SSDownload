@@ -36,6 +36,8 @@ struct UiState {
     tool_progress: Option<ToolProgress>,
     tools_id: Option<String>,
     tools_error: Option<String>,
+    /// Cancels the running tool install when the application shuts down.
+    tools_control: Option<TransferControl>,
     messages: Vec<UserMessage>,
     next_message: u64,
     show_window_seq: u64,
@@ -127,6 +129,7 @@ impl App {
                     tool_progress: None,
                     tools_id: None,
                     tools_error: None,
+                    tools_control: None,
                     messages: Vec::new(),
                     next_message: 1,
                     show_window_seq: 0,
@@ -365,7 +368,11 @@ impl App {
                 let result = match outcome {
                     Ok(result) => result,
                     Err(_) => Err(anyhow::anyhow!(
-                        "Medya analizi beklenmeyen bir hatayla durdu."
+                        "{}",
+                        crate::i18n::ui(
+                            "Medya analizi beklenmeyen bir hatayla durdu.",
+                            "Media analysis stopped because of an unexpected error."
+                        )
                     )),
                 };
                 let text = {
@@ -382,7 +389,10 @@ impl App {
                     ui.inspect_control = None;
                     match result {
                         Ok(info) => {
-                            let text = format!("Medya bulundu: {}", info.title);
+                            let text = crate::i18n::ui_owned!(
+                                format!("Medya bulundu: {}", info.title),
+                                format!("Media found: {}", info.title)
+                            );
                             ui.media = Some(info);
                             (text, false)
                         }
@@ -784,6 +794,7 @@ impl App {
                         )
                     );
                 }
+                let tools_control = TransferControl::default();
                 {
                     let mut ui = self.inner.ui.lock().unwrap_or_else(|e| e.into_inner());
                     if ui.installing_tools {
@@ -807,6 +818,7 @@ impl App {
                     ui.tools_id = Some(request_id);
                     ui.tools_error = None;
                     ui.installing_tools = true;
+                    ui.tools_control = Some(tools_control.clone());
                     ui.tool_progress = Some(ToolProgress {
                         message: crate::i18n::ui(
                             "Yayın bilgileri kontrol ediliyor…",
@@ -827,6 +839,7 @@ impl App {
                                     app.paths(),
                                     force_update,
                                     &governor,
+                                    &tools_control,
                                     &mut |progress| {
                                         app.inner
                                             .ui
@@ -849,6 +862,7 @@ impl App {
                         let text = {
                             let mut ui = app.inner.ui.lock().unwrap_or_else(|e| e.into_inner());
                             ui.installing_tools = false;
+                            ui.tools_control = None;
                             ui.tools = tools::status(app.paths());
                             match result {
                                 Ok(installed) => {
@@ -883,11 +897,9 @@ impl App {
                         app.message(text.0, text.1);
                     })
                     .inspect_err(|_error| {
-                        self.inner
-                            .ui
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .installing_tools = false;
+                        let mut ui = self.inner.ui.lock().unwrap_or_else(|e| e.into_inner());
+                        ui.installing_tools = false;
+                        ui.tools_control = None;
                     })?;
             }
             Action::OpenFolder { id } => {
@@ -1164,6 +1176,7 @@ impl App {
         }
         let existing = self.inner.engine.snapshot();
         let mut jobs = Vec::new();
+        let mut skipped = 0usize;
         for id in selected {
             let candidate = session
                 .candidates
@@ -1178,6 +1191,7 @@ impl App {
                 .iter()
                 .any(|job| job.request.url == candidate.url)
             {
+                skipped += 1;
                 continue;
             }
             let request = AddRequest {
@@ -1191,6 +1205,14 @@ impl App {
             };
             jobs.extend(self.inner.engine.add(request)?);
         }
+        let added = jobs.len();
+        self.message(
+            crate::i18n::ui_owned!(
+                format!("{added} indirme eklendi, {skipped} adres zaten listede"),
+                format!("{added} download(s) added, {skipped} address(es) already in the list")
+            ),
+            false,
+        );
         Ok(jobs)
     }
 
@@ -1202,6 +1224,9 @@ impl App {
             let mut ui = self.inner.ui.lock().unwrap_or_else(|e| e.into_inner());
             ui.quit_requested = true;
             if let Some(control) = ui.inspect_control.take() {
+                control.cancel();
+            }
+            if let Some(control) = ui.tools_control.take() {
                 control.cancel();
             }
         }
@@ -1402,7 +1427,7 @@ fn crawl_site(
             )
         );
     }
-    let root_host = root
+    let mut root_host = root
         .host_str()
         .context(crate::i18n::ui(
             "Site host adı eksik",
@@ -1418,7 +1443,8 @@ fn crawl_site(
             crate::i18n::ui("Geçersiz site tarama kimliği.", "Invalid site-crawl id.")
         );
     }
-    let mut pending = std::collections::VecDeque::from([(root.clone(), 0u8)]);
+    // Each entry is (page, link depth, redirect hops already taken to reach it).
+    let mut pending = std::collections::VecDeque::from([(root.clone(), 0u8, 0u8)]);
     let mut visited = std::collections::BTreeSet::new();
     let mut candidate_urls = std::collections::BTreeSet::new();
     let mut candidates = Vec::new();
@@ -1428,7 +1454,7 @@ fn crawl_site(
     let mut last_failure: Option<String> = None;
     let mut truncated = false;
     let control = TransferControl::default();
-    while let Some((mut page, depth)) = pending.pop_front() {
+    while let Some((mut page, depth, hops)) = pending.pop_front() {
         page.set_fragment(None);
         if !visited.insert(page.to_string()) {
             continue;
@@ -1448,6 +1474,7 @@ fn crawl_site(
         easy.fail_on_error(true)?;
         easy.useragent("SSDownload-SiteCrawler/1")?;
         easy.timeout(std::time::Duration::from_secs(20))?;
+        let mut location: Option<String> = None;
         let failure = {
             let mut transfer = easy.transfer();
             transfer.write_function(|chunk| {
@@ -1456,10 +1483,50 @@ fn crawl_site(
                 body.extend_from_slice(&chunk[..count]);
                 Ok(count)
             })?;
+            transfer.header_function(|line| {
+                if let Some((name, value)) = std::str::from_utf8(line)
+                    .ok()
+                    .and_then(|line| line.split_once(':'))
+                {
+                    if name.eq_ignore_ascii_case("location") {
+                        location = Some(value.trim().to_string());
+                    }
+                }
+                true
+            })?;
             transfer.perform().err()
         };
         pages += 1;
         total_bytes = total_bytes.saturating_add(body.len() as u64);
+        let status = easy.response_code().unwrap_or(0);
+        if failure.is_none() && matches!(status, 301 | 302 | 303 | 307 | 308) {
+            if let Some(value) = location.as_deref() {
+                // The redirect is the answer: its body carries no links worth
+                // reading, and the target is judged by the same host policy as
+                // any link before it is fetched.
+                match redirect_target(&page, value, &root_host, policy.same_host_only) {
+                    Ok(next) if hops < MAX_CRAWL_REDIRECTS => {
+                        // A hop is not a scanned page: the target takes its place.
+                        pages -= 1;
+                        if let Some(host) = next.host_str() {
+                            root_host = host.to_ascii_lowercase();
+                        }
+                        pending.push_front((next, depth, hops + 1));
+                    }
+                    Ok(_) => {
+                        failed_pages += 1;
+                        last_failure = Some(
+                            crate::i18n::ui("Çok fazla yönlendirme", "Too many redirects").into(),
+                        );
+                    }
+                    Err(reason) => {
+                        failed_pages += 1;
+                        last_failure = Some(reason);
+                    }
+                }
+                continue;
+            }
+        }
         if let Some(error) = failure {
             failed_pages += 1;
             last_failure = Some(format!("{error:#}"));
@@ -1504,7 +1571,7 @@ fn crawl_site(
                     });
                 }
             } else if same_host && depth < policy.max_depth {
-                pending.push_back((target, depth + 1));
+                pending.push_back((target, depth + 1, 0));
             }
         }
     }
@@ -1536,6 +1603,55 @@ fn crawl_site(
         truncated,
         expires_at: chrono::Utc::now().timestamp() + 10 * 60,
     })
+}
+
+/// Redirects one page may take before the scan gives up on it.
+const MAX_CRAWL_REDIRECTS: u8 = 5;
+
+/// Whether two hosts are the same site for the crawler: equal, or equal once a
+/// leading `www.` is ignored, so `example.com` and `www.example.com` redirect
+/// into each other without leaving the scan's host policy.
+fn same_crawl_site(left: &str, right: &str) -> bool {
+    let strip = |host: &str| {
+        host.to_ascii_lowercase()
+            .trim_start_matches("www.")
+            .to_owned()
+    };
+    strip(left) == strip(right)
+}
+
+/// Resolves a redirect `Location` against the page that answered, applying the
+/// link rules (HTTP/HTTPS, no credentials) and the same-host policy. The error
+/// is the reason the redirect is not followed, ready for the scan result.
+fn redirect_target(
+    page: &url::Url,
+    location: &str,
+    root_host: &str,
+    same_host_only: bool,
+) -> std::result::Result<url::Url, String> {
+    let unsupported = || {
+        crate::i18n::ui(
+            "Desteklenmeyen yönlendirme adresi",
+            "Unsupported redirect address",
+        )
+        .to_string()
+    };
+    let mut target = page.join(location).map_err(|_| unsupported())?;
+    target.set_fragment(None);
+    if !matches!(target.scheme(), "http" | "https")
+        || !target.username().is_empty()
+        || target.password().is_some()
+    {
+        return Err(unsupported());
+    }
+    let host = target.host_str().ok_or_else(unsupported)?.to_owned();
+    if same_host_only && !same_crawl_site(&host, root_host) {
+        return Err(crate::i18n::ui_owned!(
+            format!("Başka bir siteye yönlendirme izlenmedi: {host}"),
+            format!("A redirect to another site was not followed: {host}")
+        ));
+    }
+    Ok(target)
 }
 
 fn html_links(text: &str) -> Vec<String> {
@@ -1585,7 +1701,10 @@ fn html_links(text: &str) -> Vec<String> {
 }
 
 fn candidate_kind(url: &url::Url, allowed: &[DownloadKind]) -> Option<DownloadKind> {
-    let extension = url.path().rsplit('.').next()?.to_ascii_lowercase();
+    // Only the last path segment carries an extension; a segment without one is a
+    // page to walk into, not a file to offer.
+    let segment = url.path().rsplit('/').next()?;
+    let extension = segment.rsplit_once('.')?.1.to_ascii_lowercase();
     let kind = if matches!(extension.as_str(), "mp4" | "mkv" | "webm" | "m3u8" | "mpd") {
         DownloadKind::Video
     } else if matches!(
@@ -1832,6 +1951,140 @@ mod tests {
             result.candidates
         );
         assert!(server.join().unwrap() >= 2, "server served both pages");
+    }
+
+    /// Regression: the extension was cut from the whole path, so an extensionless page
+    /// ("/about") or a dotted folder ("/v1.2/docs") became a file candidate and the crawl
+    /// never walked into it.
+    #[test]
+    fn crawl_candidates_are_judged_by_the_last_segment_only() {
+        let allowed = [DownloadKind::File, DownloadKind::Video, DownloadKind::Audio];
+        let kind = |value: &str| candidate_kind(&url::Url::parse(value).unwrap(), &allowed);
+        assert_eq!(kind("https://site.example/about"), None);
+        assert_eq!(kind("https://site.example/docs/"), None);
+        assert_eq!(kind("https://site.example/v1.2/docs"), None);
+        assert_eq!(kind("https://site.example/"), None);
+        assert_eq!(
+            kind("https://site.example/v1.2/setup.ZIP"),
+            Some(DownloadKind::File)
+        );
+        assert_eq!(
+            kind("https://site.example/a/clip.mp4"),
+            Some(DownloadKind::Video)
+        );
+        assert_eq!(
+            kind("https://site.example/a/song.flac"),
+            Some(DownloadKind::Audio)
+        );
+        assert_eq!(kind("https://site.example/a/page.html"), None);
+    }
+
+    #[test]
+    fn crawl_redirects_follow_the_host_policy() {
+        let page = url::Url::parse("http://example.com/start").unwrap();
+        let follow = |location: &str, same_host_only: bool| {
+            redirect_target(&page, location, "example.com", same_host_only)
+        };
+        assert_eq!(
+            follow("https://example.com/start", true).unwrap().as_str(),
+            "https://example.com/start"
+        );
+        assert_eq!(
+            follow("https://www.example.com/home#top", true)
+                .unwrap()
+                .as_str(),
+            "https://www.example.com/home"
+        );
+        assert_eq!(
+            follow("/next", true).unwrap().as_str(),
+            "http://example.com/next"
+        );
+        assert!(follow("https://other.example.org/", true).is_err());
+        assert!(follow("https://notexample.com/", true).is_err());
+        assert!(follow("https://other.example.org/", false).is_ok());
+        assert!(follow("ftp://example.com/file", true).is_err());
+        assert!(follow("https://user:pw@example.com/", true).is_err());
+    }
+
+    #[test]
+    fn site_crawl_follows_a_redirect_to_the_real_page() {
+        use std::io::{Read as _, Write as _};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        use std::time::{Duration, Instant};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let server = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !stop.load(AtomicOrdering::Relaxed) && Instant::now() < deadline {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    let stop = stop.clone();
+                    std::thread::spawn(move || {
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+                        let mut request = Vec::new();
+                        let mut buffer = [0u8; 512];
+                        while !stop.load(AtomicOrdering::Relaxed) {
+                            match stream.read(&mut buffer) {
+                                Ok(0) => break,
+                                Ok(count) => {
+                                    request.extend_from_slice(&buffer[..count]);
+                                    if !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                        continue;
+                                    }
+                                    let head = String::from_utf8_lossy(&request);
+                                    let reply = if head.starts_with("GET /start ") {
+                                        "HTTP/1.1 301 Moved Permanently\r\nLocation: /final.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                                    } else {
+                                        let body = "<a href=\"/movie.mp4\">video</a>";
+                                        format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                                    };
+                                    let _ = stream.write_all(reply.as_bytes());
+                                    let _ = stream.flush();
+                                    break;
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                    });
+                }
+            })
+        };
+        let result = crawl_site(
+            SiteCrawlRequest {
+                url: format!("http://{address}/start"),
+                request_id: Some("crawl-redirect".into()),
+                policy: Some(SiteCrawlerPolicy {
+                    max_depth: 1,
+                    same_host_only: true,
+                    allowed_kinds: vec![DownloadKind::File, DownloadKind::Video],
+                    max_pages: 1,
+                    max_candidates: 10,
+                    max_response_bytes: 256 * 1024,
+                    max_total_bytes: 1024 * 1024,
+                }),
+            },
+            &Settings::default(),
+            &crate::network::NetworkGovernor::new(2),
+        );
+        stop.store(true, AtomicOrdering::Relaxed);
+        server.join().unwrap();
+        let result = result.expect("the redirect should be followed");
+        assert_eq!(result.failed_pages, 0, "{:?}", result.last_failure);
+        assert_eq!(result.pages_scanned, 1, "the hop is not a scanned page");
+        assert!(
+            result
+                .candidates
+                .iter()
+                .any(|candidate| candidate.url.ends_with("/movie.mp4")),
+            "{:?}",
+            result.candidates
+        );
     }
 
     #[test]

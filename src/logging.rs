@@ -25,6 +25,7 @@ use std::{
         OnceLock,
     },
     thread,
+    time::Instant,
 };
 
 const QUEUE_CAPACITY: usize = 4096;
@@ -37,6 +38,10 @@ const JOB_FILE_KEEP: usize = 200;
 const JOB_FAMILIES: usize = 2;
 const _: () = assert!(JOB_FAMILIES >= 2, "job timelines must be able to rotate");
 const RECENT_KEEP: usize = 200;
+/// Day files older than this many days are deleted when a new day's files are opened.
+const RETENTION_DAYS: i64 = 30;
+/// Pause between attempts to open a day file that could not be opened.
+const OPEN_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How much detail reaches the log. Chosen in Settings; read once per session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -421,8 +426,35 @@ impl Writer {
         }
         let mut event = event;
         event.host = None;
+        event.detail = event.detail.map(|detail| hide_hosts(&detail));
         Some(event)
     }
+}
+
+/// Replaces the host of every address in an already sanitized detail line, so the privacy
+/// switch that stops host recording does not leave the site name behind inside a URL.
+fn hide_hosts(detail: &str) -> String {
+    detail
+        .split(' ')
+        .map(hide_word_host)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn hide_word_host(word: &str) -> String {
+    for index in std::iter::once(0).chain(embedded_url_start(word)) {
+        let (head, tail) = word.split_at(index);
+        let Ok(mut url) = url::Url::parse(tail.trim_matches(WORD_TRIM)) else {
+            continue;
+        };
+        if matches!(url.scheme(), "http" | "https" | "ftp" | "ftps")
+            && url.host().is_some()
+            && url.set_host(Some("host-hidden.invalid")).is_ok()
+        {
+            return format!("{head}{url}");
+        }
+    }
+    word.to_owned()
 }
 
 const fn level_code(level: Level) -> u8 {
@@ -551,9 +583,10 @@ pub fn reconfigure(level: Level, hosts: bool) {
         return;
     };
     let previous = writer.level();
+    let previous_hosts = writer.hosts();
     writer.level.store(level_code(level), Ordering::Relaxed);
     writer.hosts.store(hosts, Ordering::Relaxed);
-    if previous != level || hosts != writer.hosts() {
+    if previous != level || previous_hosts != hosts {
         record(
             Event::info("log.reconfigured")
                 .detail(format!("level={} hosts={hosts}", level.as_str())),
@@ -604,17 +637,47 @@ pub fn sanitize(text: &str) -> String {
         .collect()
 }
 
+const WORD_TRIM: [char; 6] = ['\'', '"', '(', ')', ',', ';'];
+
+/// The address a word names when it is a whole http(s)/ftp(s) URL: user information and
+/// fragment removed, query replaced.
+fn redact_url(text: &str) -> Option<String> {
+    let mut url = url::Url::parse(text).ok()?;
+    if !matches!(url.scheme(), "http" | "https" | "ftp" | "ftps") {
+        return None;
+    }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    if url.query().is_some() {
+        url.set_query(Some("REDACTED"));
+    }
+    url.set_fragment(None);
+    Some(url.to_string())
+}
+
+/// Byte offset of a URL that starts inside the word (`url=https://...`, `[https://...]`,
+/// `Referer:https://...`), past the first byte.
+fn embedded_url_start(word: &str) -> Option<usize> {
+    let lower = word.to_ascii_lowercase();
+    ["http://", "https://", "ftp://", "ftps://"]
+        .iter()
+        .filter_map(|scheme| {
+            lower
+                .match_indices(scheme)
+                .map(|(index, _)| index)
+                .find(|index| *index > 0)
+        })
+        .min()
+}
+
 fn redact_word(word: &str) -> String {
-    let trimmed = word.trim_matches(['\'', '"', '(', ')', ',', ';']);
-    if let Ok(mut url) = url::Url::parse(trimmed) {
-        if matches!(url.scheme(), "http" | "https" | "ftp" | "ftps") {
-            let _ = url.set_username("");
-            let _ = url.set_password(None);
-            if url.query().is_some() {
-                url.set_query(Some("REDACTED"));
-            }
-            url.set_fragment(None);
-            return url.to_string();
+    if let Some(redacted) = redact_url(word.trim_matches(WORD_TRIM)) {
+        return redacted;
+    }
+    if let Some(index) = embedded_url_start(word) {
+        let (head, tail) = word.split_at(index);
+        if let Some(redacted) = redact_url(tail.trim_matches(WORD_TRIM)) {
+            return format!("{head}{redacted}");
         }
     }
     // A long opaque token is treated as a credential and never written.
@@ -680,6 +743,8 @@ struct Sink {
     jobs: HashMap<String, Rotating>,
     reported_drops: u64,
     reported_write_failures: u64,
+    /// Earliest time a stream that failed to open is tried again.
+    retry_at: Instant,
 }
 
 impl Sink {
@@ -692,30 +757,52 @@ impl Sink {
             jobs: HashMap::new(),
             reported_drops: 0,
             reported_write_failures: 0,
+            retry_at: Instant::now(),
         }
     }
 
-    /// Opens the stream files, following the calendar day.
+    /// Opens the stream files, following the calendar day. A stream that could not be opened
+    /// is tried again (at most every `OPEN_RETRY`), so one locked or unwritable moment does not
+    /// silence the rest of the day; every failed attempt counts as a write failure.
     fn roll_day(&mut self, day: &str) {
-        if self.day == day {
+        let new_day = self.day != day;
+        if !new_day && self.events.is_some() && self.human.is_some() {
             return;
         }
-        self.day = day.to_owned();
-        self.events = Rotating::open(
-            &self.logs,
-            &format!("events-{day}"),
-            "jsonl",
-            FILE_LIMIT,
-            FILE_FAMILIES,
-        );
-        self.human = Rotating::open(
-            &self.logs,
-            &format!("ssdownload-{day}"),
-            "log",
-            FILE_LIMIT,
-            FILE_FAMILIES,
-        );
-        self.jobs.clear();
+        if !new_day && Instant::now() < self.retry_at {
+            return;
+        }
+        if new_day {
+            self.day = day.to_owned();
+            self.events = None;
+            self.human = None;
+            self.jobs.clear();
+            if let Ok(today) = chrono::NaiveDate::parse_from_str(day, "%Y%m%d") {
+                prune_day_files(&self.logs, today, RETENTION_DAYS);
+            }
+        }
+        if self.events.is_none() {
+            self.events = Rotating::open(
+                &self.logs,
+                &format!("events-{day}"),
+                "jsonl",
+                FILE_LIMIT,
+                FILE_FAMILIES,
+            );
+        }
+        if self.human.is_none() {
+            self.human = Rotating::open(
+                &self.logs,
+                &format!("ssdownload-{day}"),
+                "log",
+                FILE_LIMIT,
+                FILE_FAMILIES,
+            );
+        }
+        if self.events.is_none() || self.human.is_none() {
+            write_failures().fetch_add(1, Ordering::Relaxed);
+            self.retry_at = Instant::now() + OPEN_RETRY;
+        }
     }
 
     fn report_drops(&mut self, session: &Session) {
@@ -954,6 +1041,41 @@ impl Rotating {
     }
 }
 
+/// Removes the per-day session files (`events-YYYYMMDD[.N].jsonl`, `ssdownload-YYYYMMDD[.N].log`)
+/// whose day is more than `keep_days` before `today`. Other files in the directory, including
+/// the `jobs` folder, are never touched.
+fn prune_day_files(dir: &Path, today: chrono::NaiveDate, keep_days: i64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let cutoff = today - chrono::Duration::days(keep_days);
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(rest) = name
+            .strip_prefix("events-")
+            .filter(|_| name.ends_with(".jsonl"))
+            .or_else(|| {
+                name.strip_prefix("ssdownload-")
+                    .filter(|_| name.ends_with(".log"))
+            })
+        else {
+            continue;
+        };
+        let Some(digits) = rest.get(..8) else {
+            continue;
+        };
+        let Ok(day) = chrono::NaiveDate::parse_from_str(digits, "%Y%m%d") else {
+            continue;
+        };
+        if day < cutoff && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn prune_job_files(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -1055,6 +1177,25 @@ mod tests {
     }
 
     #[test]
+    fn urls_embedded_in_a_word_lose_their_query_and_credentials() {
+        let sanitized = sanitize(
+            "url=https://u:pw@cdn.example.com/a.mp4?sig=SECRET1 [https://cdn.example.com/b.mp4?sig=SECRET2] Referer:https://site.example/p?t=SECRET3#x {\"url\":\"https://site.example/q?k=SECRET4\"}",
+        );
+        for secret in ["SECRET1", "SECRET2", "SECRET3", "SECRET4", "pw@", "#x"] {
+            assert!(!sanitized.contains(secret), "{secret} leaked: {sanitized}");
+        }
+        assert!(
+            sanitized.contains("url=https://cdn.example.com/a.mp4?REDACTED"),
+            "{sanitized}"
+        );
+        assert!(
+            sanitized.contains("Referer:https://site.example/p?REDACTED"),
+            "{sanitized}"
+        );
+        assert_eq!(sanitize("Çıktı yolu: dosya.mp4"), "Çıktı yolu: dosya.mp4");
+    }
+
+    #[test]
     fn newlines_are_collapsed_and_long_credential_tokens_are_dropped() {
         let token = "A".repeat(80);
         let sanitized = sanitize(&format!("satır1\nsatır2 yetki {token} reddedildi"));
@@ -1133,6 +1274,104 @@ mod tests {
             prepared.host, None,
             "the host switch must strip the site name"
         );
+    }
+
+    #[test]
+    fn switching_host_recording_off_also_hides_hosts_inside_detail_urls() {
+        let (lines, _receiver) = sync_channel(4);
+        let writer = Writer {
+            level: AtomicU8::new(level_code(Level::Detailed)),
+            hosts: AtomicBool::new(false),
+            session: session(),
+            lines,
+            drops: AtomicU64::new(0),
+            logs: PathBuf::from("logs"),
+        };
+        let event = Event::info("job.stage").host("site.example").detail(
+            "GET https://cdn.site.example:8443/a/b.mp4?token=x failed url=http://other.example/p",
+        );
+        let prepared = writer.prepare(event).expect("INFO passes");
+        assert_eq!(prepared.host, None);
+        let detail = prepared.detail.expect("detail kept");
+        assert!(!detail.contains("site.example"), "{detail}");
+        assert!(!detail.contains("other.example"), "{detail}");
+        assert!(
+            detail.contains("https://host-hidden.invalid:8443/a/b.mp4?REDACTED"),
+            "{detail}"
+        );
+        assert!(detail.contains("failed"), "{detail}");
+
+        writer.hosts.store(true, Ordering::Relaxed);
+        let kept = writer
+            .prepare(Event::info("job.stage").detail("https://cdn.site.example/a"))
+            .unwrap();
+        assert_eq!(
+            kept.detail.as_deref(),
+            Some("https://cdn.site.example/a"),
+            "hosts stay when recording is on"
+        );
+    }
+
+    #[test]
+    fn day_files_older_than_the_retention_window_are_removed_and_nothing_else() {
+        let dir = temp_dir("retention");
+        fs::create_dir_all(dir.join("jobs")).unwrap();
+        let old = [
+            "events-20260101.jsonl",
+            "events-20260101.1.jsonl",
+            "ssdownload-20260101.log",
+            "ssdownload-20260101.4.log",
+        ];
+        let kept = [
+            "events-20260915.jsonl",
+            "ssdownload-20260915.log",
+            "events-20261014.jsonl",
+            "events-probe.jsonl",
+            "ssdownload.log",
+            "events-20260101.txt",
+            "notes.txt",
+        ];
+        for name in old.iter().chain(&kept) {
+            fs::write(dir.join(name), "x").unwrap();
+        }
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        prune_day_files(&dir, today, 30);
+        for name in old {
+            assert!(!dir.join(name).exists(), "{name} is past the window");
+        }
+        for name in kept {
+            assert!(dir.join(name).exists(), "{name} must stay");
+        }
+        assert!(dir.join("jobs").is_dir());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_day_file_that_failed_to_open_is_retried_and_counted() {
+        let dir = temp_dir("retry");
+        // A directory in place of the file makes the open fail.
+        fs::create_dir_all(dir.join("events-20260101.jsonl")).unwrap();
+        let mut sink = Sink::new(dir.clone());
+        let before = write_failure_count();
+        sink.roll_day("20260101");
+        assert!(sink.events.is_none() && sink.human.is_some());
+        assert!(
+            write_failure_count() > before,
+            "a failed open is a counted write failure"
+        );
+
+        // Inside the pause nothing is retried.
+        fs::remove_dir(dir.join("events-20260101.jsonl")).unwrap();
+        sink.roll_day("20260101");
+        assert!(sink.events.is_none(), "the retry waits for its pause");
+
+        sink.retry_at = Instant::now();
+        sink.roll_day("20260101");
+        assert!(
+            sink.events.is_some(),
+            "the rest of the day is not lost once the file can be opened"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

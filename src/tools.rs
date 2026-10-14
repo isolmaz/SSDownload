@@ -163,9 +163,9 @@ pub(crate) fn ensure(
     paths: &AppPaths,
     force_update: bool,
     network: &NetworkGovernor,
+    control: &TransferControl,
     progress: &mut dyn FnMut(ToolProgress),
 ) -> Result<Vec<ToolInfo>> {
-    let control = TransferControl::default();
     let _serial = ENSURE_LOCK
         .lock()
         .map_err(|_| anyhow!("Medya aracı kurulum kilidi bozuldu"))?;
@@ -201,19 +201,19 @@ pub(crate) fn ensure(
     );
     let yt_release = github_release(
         "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
-        &control,
+        control,
         network,
     )
     .context("yt-dlp sürüm bilgisi alınamadı")?;
     let deno_release = github_release(
         "https://api.github.com/repos/denoland/deno/releases/latest",
-        &control,
+        control,
         network,
     )
     .context("Deno sürüm bilgisi alınamadı")?;
     let ffmpeg_release = github_release(
         "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest",
-        &control,
+        control,
         network,
     )
     .context("FFmpeg sürüm bilgisi alınamadı")?;
@@ -241,7 +241,7 @@ pub(crate) fn ensure(
     let yt_checksum_text = fetch_text(
         &yt_sums.browser_download_url,
         "yt-dlp checksum",
-        &control,
+        control,
         network,
     )?;
     let yt_expected = checksum_for(&yt_checksum_text, &yt_asset.name)?;
@@ -253,7 +253,7 @@ pub(crate) fn ensure(
         &yt_path,
         &yt_expected,
         "yt-dlp",
-        &control,
+        control,
         network,
         progress,
     )?;
@@ -261,7 +261,7 @@ pub(crate) fn ensure(
     let deno_checksum_text = fetch_text(
         &deno_sums.browser_download_url,
         "Deno checksum",
-        &control,
+        control,
         network,
     )?;
     let deno_expected = checksum_for(&deno_checksum_text, &deno_asset.name)?;
@@ -271,7 +271,7 @@ pub(crate) fn ensure(
         &deno_zip,
         &deno_expected,
         "Deno",
-        &control,
+        control,
         network,
         progress,
     )?;
@@ -294,7 +294,7 @@ pub(crate) fn ensure(
     let ffmpeg_checksum_text = fetch_text(
         &ffmpeg_sums.browser_download_url,
         "FFmpeg checksum",
-        &control,
+        control,
         network,
     )?;
     let ffmpeg_expected = checksum_for(&ffmpeg_checksum_text, &ffmpeg_asset.name)?;
@@ -304,7 +304,7 @@ pub(crate) fn ensure(
         &ffmpeg_zip,
         &ffmpeg_expected,
         "FFmpeg",
-        &control,
+        control,
         network,
         progress,
     )?;
@@ -693,9 +693,8 @@ fn fetch_bytes(
     let mut easy = configured_easy(url, control, network)?;
     let mut data = Vec::new();
     let mut too_large = false;
-    if progress.is_some() {
-        easy.progress(true)?;
-    }
+    easy.timeout(Duration::from_secs(5 * 60))?;
+    easy.progress(true)?;
     let transfer_result = {
         let mut transfer = easy.transfer();
         transfer.write_function(|chunk| {
@@ -706,17 +705,18 @@ fn fetch_bytes(
             data.extend_from_slice(chunk);
             Ok(chunk.len())
         })?;
-        if progress.is_some() {
-            transfer.progress_function(|total, downloaded, _, _| {
-                if let Some(callback) = progress.as_deref_mut() {
-                    callback(downloaded.max(0.0) as u64, positive_total(total));
-                }
-                true
-            })?;
-        }
+        transfer.progress_function(|total, downloaded, _, _| {
+            if let Some(callback) = progress.as_deref_mut() {
+                callback(downloaded.max(0.0) as u64, positive_total(total));
+            }
+            !control.stop_requested()
+        })?;
         transfer.perform()
     };
     if let Err(error) = transfer_result {
+        if control.stop_requested() {
+            bail!("{}", tools_stopped());
+        }
         if too_large {
             bail!(
                 "{}",
@@ -779,13 +779,78 @@ fn configured_easy(
     easy.max_redirections(10)?;
     easy.fail_on_error(false)?;
     easy.connect_timeout(Duration::from_secs(30))?;
-    easy.timeout(Duration::from_secs(30 * 60))?;
+    // No total limit: a slow but moving download must be able to finish, a stalled one must not
+    // hang. Below 1 KiB/s for a minute aborts the attempt, which is then resumed.
+    easy.low_speed_limit(1024)?;
+    easy.low_speed_time(Duration::from_secs(60))?;
     easy.ssl_verify_peer(true)?;
     easy.ssl_verify_host(true)?;
     Ok(easy)
 }
 
+fn tools_stopped() -> &'static str {
+    crate::i18n::ui("Araç kurulumu durduruldu", "Tool installation stopped")
+}
+
+const DOWNLOAD_ATTEMPTS: u32 = 6;
+
+/// Downloads a staged file, resuming from the bytes already on disk after a dropped or stalled
+/// connection. The digest is always computed over the complete file, so a resumed prefix is
+/// never trusted without being verified.
 fn download_verified(
+    asset: &GithubAsset,
+    destination: &Path,
+    expected: &str,
+    label: &str,
+    control: &TransferControl,
+    network: &NetworkGovernor,
+    progress: &mut dyn FnMut(ToolProgress),
+) -> Result<()> {
+    let mut attempt = 1;
+    loop {
+        let error = match download_attempt(
+            asset,
+            destination,
+            expected,
+            label,
+            control,
+            network,
+            progress,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        let transport = error.downcast_ref::<curl::Error>();
+        let retryable =
+            !control.stop_requested() && attempt < DOWNLOAD_ATTEMPTS && transport.is_some();
+        if !retryable {
+            return Err(error);
+        }
+        // CURLE_RANGE_ERROR: the server ignored the Range request, so the prefix is useless.
+        if transport.is_some_and(|error| error.code() == 33) {
+            fs::remove_file(destination).ok();
+        }
+        emit(
+            progress,
+            label,
+            crate::i18n::ui(
+                "Bağlantı kesildi; indirme kaldığı yerden sürdürülüyor",
+                "Connection lost; resuming the download",
+            ),
+            0,
+            None,
+        );
+        for _ in 0..(attempt * 4) {
+            if control.stop_requested() {
+                return Err(error);
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        attempt += 1;
+    }
+}
+
+fn download_attempt(
     asset: &GithubAsset,
     destination: &Path,
     expected: &str,
@@ -798,12 +863,35 @@ fn download_verified(
         .parent()
         .ok_or_else(|| anyhow!("Geçersiz araç hedefi"))?;
     fs::create_dir_all(parent)?;
-    let mut file = File::create(destination)
-        .with_context(|| format!("{} oluşturulamadı", destination.display()))?;
-    let mut easy = configured_easy(&asset.browser_download_url, control, network)?;
     let mut hasher = Sha256::new();
-    let mut io_error = None;
     let mut seen = 0u64;
+    let existing = fs::metadata(destination).map(|m| m.len()).unwrap_or(0);
+    let mut file = if existing > 0 && (asset.size == 0 || existing < asset.size) {
+        let mut previous = File::open(destination)
+            .with_context(|| format!("{} okunamadı", destination.display()))?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let count = previous.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+            seen += count as u64;
+        }
+        fs::OpenOptions::new()
+            .append(true)
+            .open(destination)
+            .with_context(|| format!("{} açılamadı", destination.display()))?
+    } else {
+        File::create(destination)
+            .with_context(|| format!("{} oluşturulamadı", destination.display()))?
+    };
+    let resumed_from = seen;
+    let mut easy = configured_easy(&asset.browser_download_url, control, network)?;
+    if resumed_from > 0 {
+        easy.resume_from(resumed_from)?;
+    }
+    let mut io_error = None;
     let limit = if asset.size > 0 {
         asset.size.min(1024 * 1024 * 1024)
     } else {
@@ -840,13 +928,18 @@ fn download_verified(
                 progress,
                 label,
                 crate::i18n::ui("İndiriliyor", "Downloading"),
-                downloaded.max(0.0) as u64,
-                positive_total(total).or_else(|| (asset.size > 0).then_some(asset.size)),
+                resumed_from.saturating_add(downloaded.max(0.0) as u64),
+                (asset.size > 0)
+                    .then_some(asset.size)
+                    .or_else(|| positive_total(total)),
             );
-            true
+            !control.stop_requested()
         })?;
         transfer.perform()
     };
+    if control.stop_requested() {
+        bail!("{}", tools_stopped());
+    }
     if oversized {
         bail!(
             "{}",
@@ -1159,13 +1252,21 @@ fn command_output_timeout(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
-    let mut child = command.spawn()?;
+    let mut child = command.spawn().map_err(|error| {
+        crate::error_codes::coded(
+            crate::error_codes::TOL_003,
+            format!("{} başlatılamadı: {error}", executable.display()),
+        )
+    })?;
     let job = match ProcessJob::assign(&child) {
         Ok(job) => job,
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(error);
+            return Err(crate::error_codes::coded(
+                crate::error_codes::TOL_003,
+                format!("{error:#}"),
+            ));
         }
     };
     let stdout = child

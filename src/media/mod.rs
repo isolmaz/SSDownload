@@ -42,8 +42,8 @@ use postprocess::*;
 use probe::*;
 use process::*;
 use selection::*;
-pub(crate) use session::sweep_stale_cookie_jars;
 use session::*;
+pub(crate) use session::{scoped_cookie_applies, sweep_stale_cookie_jars};
 use workspace::*;
 pub(crate) use workspace::{
     cancel_source_refresh, finish_source_refresh, has_partial_output, prepare_source_refresh,
@@ -55,6 +55,8 @@ const MAX_INSPECT_OUTPUT: usize = 128 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 32 * 1024;
 /// A downloaded stream must show progress within this window or its transfer is reconnected.
 const STALL_LIMIT: Duration = Duration::from_secs(180);
+/// A post-processor (merge, remux, audio conversion of a long file) is silent while FFmpeg works.
+const POSTPROCESS_STALL_LIMIT: Duration = Duration::from_secs(60 * 60);
 /// How often a stream may be re-downloaded after a skipped fragment or a stall.
 const FRAGMENT_RESTARTS: u32 = 2;
 const STALL_RESTARTS: u32 = 3;
@@ -163,6 +165,14 @@ fn inspect_document_with_tools(
         let detail = useful_error(&captured.stderr, &secrets.redactions);
         // The extractor text stays verbatim; the code tells the user (and support) which
         // stage failed without hiding the original diagnostic.
+        if drm_protected(&captured.stderr) {
+            crate::logging::record(crate::logging::Event::failure(
+                "inspect.drm",
+                crate::error_codes::MED_003,
+                detail,
+            ));
+            crate::bail_code!(crate::error_codes::MED_003);
+        }
         if is_forbidden(&detail) {
             crate::logging::record(crate::logging::Event::failure(
                 "inspect.blocked",
@@ -170,6 +180,15 @@ fn inspect_document_with_tools(
                 detail.clone(),
             ));
             crate::bail_code!(crate::error_codes::MED_007, "{detail}");
+        }
+        if site_access_blocked(&captured.stderr) {
+            let short = useful_error(&final_error_text(&captured.stderr), &secrets.redactions);
+            crate::logging::record(crate::logging::Event::failure(
+                "inspect.access",
+                crate::error_codes::MED_008,
+                detail,
+            ));
+            crate::bail_code!(crate::error_codes::MED_008, "{short}");
         }
         crate::logging::record(crate::logging::Event::failure(
             "inspect.failed",
@@ -182,7 +201,11 @@ fn inspect_document_with_tools(
         );
     }
     if captured.stdout.len() > MAX_INSPECT_OUTPUT {
-        crate::bail_code!(crate::error_codes::MED_011);
+        crate::bail_code!(
+            crate::error_codes::MED_006,
+            "Medya analizi çıktısı {} MB sınırını aştı",
+            MAX_INSPECT_OUTPUT / (1024 * 1024)
+        );
     }
     let value: Value = serde_json::from_slice(&captured.stdout)
         .context("yt-dlp geçerli JSON medya bilgisi döndürmedi")?;
@@ -270,6 +293,27 @@ pub(crate) fn download(
     }
     validate_track_selection(request, &info)?;
     validate_container_selection(request, &info)?;
+    let live = info.is_live;
+    if live {
+        crate::logging::record_job(
+            job_id,
+            crate::logging::Event::warn("download.live")
+                .detail(format!("{} canlı yayın kaydı", crate::error_codes::MED_009)),
+        );
+    }
+    // A live source has no end the app can predict: say so on every progress update instead of
+    // the plain "Downloading media" that would read as a stuck download.
+    let mut report = |mut update: TransferProgress| {
+        if live && update.phase == crate::i18n::ui("Medya indiriliyor", "Downloading media") {
+            update.phase = crate::i18n::ui(
+                "Canlı yayın kaydediliyor; yayın bitene kadar sürer",
+                "Recording a live stream; it runs until the stream ends",
+            )
+            .into();
+        }
+        progress(update);
+    };
+    let progress: &mut dyn FnMut(TransferProgress) = &mut report;
     let yt_dlp = &toolchain.yt_dlp;
     let deno = &toolchain.deno;
     let ffmpeg = &toolchain.ffmpeg;
@@ -379,6 +423,11 @@ pub(crate) fn download(
             "--audio-format".into(),
             conversion.unwrap_or("best").into(),
         ]);
+        // yt-dlp's default MP3 quality is VBR 5 (about 130 kbps); the best source audio is kept
+        // at V0. Other conversions take no VBR scale.
+        if conversion == Some("mp3") {
+            base_args.extend(["--audio-quality".into(), "0".into()]);
+        }
     }
     if !request.subtitle_tracks.is_empty() {
         let manual = request.subtitle_tracks.iter().any(|track| !track.automatic);
@@ -497,7 +546,12 @@ pub(crate) fn download(
         match outcome {
             MonitorOutcome::RestartForSpeed => {
                 restart_count = restart_count.saturating_add(1);
-                discard_fragmented_restart(request, &output_plan, &known_good, job_id)?;
+                discard_fragmented_restart(
+                    failure_stages.fragmented,
+                    &output_plan,
+                    &known_good,
+                    job_id,
+                )?;
                 continue;
             }
             MonitorOutcome::Stalled => {
@@ -509,7 +563,12 @@ pub(crate) fn download(
                 // state: the next run can conclude a never-downloaded fragment is
                 // done and publish a hole. Start the fragments again from known-good
                 // files instead of resuming inside the chain.
-                discard_fragmented_restart(request, &output_plan, &known_good, job_id)?;
+                discard_fragmented_restart(
+                    failure_stages.fragmented,
+                    &output_plan,
+                    &known_good,
+                    job_id,
+                )?;
                 progress(TransferProgress {
                     phase: crate::i18n::ui_owned!(
                         format!(
@@ -581,7 +640,14 @@ pub(crate) fn download(
                     // Retry the identical selection once, preserving context and partial files.
                     if !compatibility_retry && is_forbidden(&error) && completed_files.is_empty() {
                         compatibility_retry = true;
-                        progress(TransferProgress { phase:"Sunucu 403 döndürdü; aynı kaynak tarayıcı uyumlu bağlantıyla bir kez deneniyor".into(), ..TransferProgress::default() });
+                        progress(TransferProgress {
+                            phase: crate::i18n::ui(
+                                "Sunucu 403 döndürdü; aynı kaynak tarayıcı uyumlu bağlantıyla bir kez deneniyor",
+                                "The server returned 403; retrying the same source once with a browser-compatible connection",
+                            )
+                            .into(),
+                            ..TransferProgress::default()
+                        });
                         continue;
                     }
                     let redacted = useful_error(&error, &secrets.redactions);
@@ -592,11 +658,25 @@ pub(crate) fn download(
                             available_qualities(&info)
                         );
                     }
+                    let visible = non_debug_lines(&error);
+                    let phase = classify_download_error(
+                        &useful_error(&visible, &secrets.redactions),
+                        request,
+                    )
+                    .0;
+                    let summary = useful_error(&final_error_text(&visible), &secrets.redactions);
+                    crate::logging::record_job(
+                        job_id,
+                        crate::logging::Event::warn("download.failed_output").detail(redacted),
+                    );
+                    if site_access_blocked(&visible) {
+                        crate::bail_code!(crate::error_codes::MED_008, "{summary}");
+                    }
                     bail!(
                         "{} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {}/1): {}",
-                        classify_download_error(&redacted, request).0,
+                        phase,
                         u8::from(compatibility_retry),
-                        redacted
+                        summary
                     );
                 }
                 break;
@@ -878,6 +958,10 @@ fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
         "--ignore-config".into(),
         "--no-plugin-dirs".into(),
         "--no-exec".into(),
+        // Without it the frozen tool writes stdout/stderr in the Windows ANSI code page and drops
+        // everything outside it, while every reader here decodes UTF-8.
+        "--encoding".into(),
+        "utf-8".into(),
         "--config-locations".into(),
         "-".into(),
         "--no-cache-dir".into(),
@@ -899,6 +983,66 @@ fn is_forbidden(error: &str) -> bool {
     error.contains("HTTP Error 403") || error.contains("HTTP Error: 403")
 }
 
+/// Phrases of yt-dlp's final `ERROR:` line when the origin refuses the media for this viewer
+/// (region, removal, privacy, membership, sign-in) as opposed to a transport or tool failure.
+const SITE_ACCESS_PHRASES: &[&str] = &[
+    "video unavailable",
+    "not available in your country",
+    "geo restrict",
+    "geo-restrict",
+    "private video",
+    "video is private",
+    "has been removed",
+    "has been terminated",
+    "members-only",
+    "members only",
+    "join this channel",
+    "sign in",
+    "log in",
+    "login required",
+    "age-restricted",
+    "confirm your age",
+];
+
+fn site_access_blocked(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let line = line.trim_start();
+        if !line.starts_with("ERROR:") {
+            return false;
+        }
+        let lower = line.to_ascii_lowercase();
+        SITE_ACCESS_PHRASES
+            .iter()
+            .any(|phrase| lower.contains(phrase))
+    })
+}
+
+/// The tool's output without its `[debug]` trace (version header, argument echo, request log).
+fn non_debug_lines(text: &str) -> String {
+    text.replace('\r', "\n")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("[debug]"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The failure a user can act on: from the last `ERROR:` line to the end, bounded. The verbose
+/// trace around it is kept in the log only.
+fn final_error_text(text: &str) -> String {
+    let text = text.trim();
+    let start = text.rfind("ERROR:").unwrap_or(0);
+    bounded_tail(text[start..].trim(), 2048)
+}
+
+/// yt-dlp drops DRM formats and, when nothing else remains, ends with an `ERROR: ... This video
+/// is DRM protected` line instead of JSON; a per-format warning about skipped formats is not it.
+fn drm_protected(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("ERROR:") && line.to_ascii_lowercase().contains("drm protected")
+    })
+}
+
 /// yt-dlp reports a hole in the stream instead of failing the download: "[download] fragment not
 /// found; Skipping fragment 5". A resumed `.part` file keeps that hole forever, so the attempt
 /// that produced it must be thrown away rather than continued.
@@ -907,14 +1051,12 @@ fn is_forbidden(error: &str) -> bool {
 /// this attempt's own outputs back to the known-good set; completed playlist entries
 /// (`known_good`) are kept, so multi-entry playlists lose only the unfinished entry.
 fn discard_fragmented_restart(
-    request: &AddRequest,
+    fragmented: bool,
     output_plan: &OutputPlan,
     known_good: &HashSet<PathBuf>,
     job_id: &str,
 ) -> Result<()> {
-    let lowered = request.url.to_ascii_lowercase();
-    let path = lowered.split('?').next().unwrap_or(&lowered);
-    if !(path.ends_with(".m3u8") || path.ends_with(".mpd")) {
+    if !fragmented {
         return Ok(());
     }
     let discarded = discard_attempt_outputs(output_plan, known_good)?;
@@ -1099,11 +1241,52 @@ const MAX_FAILURE_STAGE_URLS: usize = 256;
 #[derive(Default)]
 struct DownloadFailureStages {
     urls: Vec<(String, &'static str)>,
+    /// A selected stream is delivered as HLS/DASH fragments, whatever the page address looks like.
+    fragmented: bool,
+}
+
+/// Whether any stream the selector picks is fragmented (HLS/DASH), judged from the extractor's
+/// own protocol for the selected formats; the address suffix only covers a bare manifest URL.
+fn selection_is_fragmented(inspection: &Value, request: &AddRequest, selector: &str) -> bool {
+    if media_manifest_url(&request.url) {
+        return true;
+    }
+    let roots: Vec<&Value> = match inspection.get("entries").and_then(Value::as_array) {
+        Some(entries) => entries.iter().filter(|entry| !entry.is_null()).collect(),
+        None => vec![inspection],
+    };
+    roots.into_iter().any(|root| {
+        let Some(ids) = media_info_from_json(root)
+            .ok()
+            .and_then(|info| selected_format_ids(selector, &info).ok())
+        else {
+            return false;
+        };
+        root.get("formats")
+            .and_then(Value::as_array)
+            .is_some_and(|formats| {
+                formats.iter().any(|format| {
+                    format
+                        .get("format_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| ids.iter().any(|selected| selected == id))
+                        && (format.get("protocol").and_then(Value::as_str).is_some_and(
+                            |protocol| protocol.contains("m3u8") || protocol.contains("dash"),
+                        ) || format
+                            .get("fragments")
+                            .and_then(Value::as_array)
+                            .is_some_and(|fragments| !fragments.is_empty()))
+                })
+            })
+    })
 }
 
 impl DownloadFailureStages {
     fn from_inspection(inspection: &Value, request: &AddRequest, selector: &str) -> Self {
-        let mut stages = Self::default();
+        let mut stages = Self {
+            fragmented: selection_is_fragmented(inspection, request, selector),
+            ..Self::default()
+        };
         if media_manifest_url(&request.url) {
             if let Ok(url) = Url::parse(&request.url) {
                 stages.add(url, "manifest_root");
@@ -1301,6 +1484,52 @@ fn iso639_2(value: &str) -> String {
         "et" | "est" => "est",
         "hy" | "hye" | "arm" => "hye",
         "ka" | "kat" | "geo" => "kat",
+        "af" | "afr" => "afr",
+        "sq" | "sqi" | "alb" => "sqi",
+        "am" | "amh" => "amh",
+        "eu" | "eus" | "baq" => "eus",
+        "be" | "bel" => "bel",
+        "bn" | "ben" => "ben",
+        "bs" | "bos" => "bos",
+        "ca" | "cat" => "cat",
+        "cy" | "cym" | "wel" => "cym",
+        "eo" | "epo" => "epo",
+        "ga" | "gle" => "gle",
+        "gl" | "glg" => "glg",
+        "gu" | "guj" => "guj",
+        "is" | "isl" | "ice" => "isl",
+        "kk" | "kaz" => "kaz",
+        "km" | "khm" => "khm",
+        "kn" | "kan" => "kan",
+        "ky" | "kir" => "kir",
+        "la" | "lat" => "lat",
+        "lo" | "lao" => "lao",
+        "mk" | "mkd" | "mac" => "mkd",
+        "ml" | "mal" => "mal",
+        "mn" | "mon" => "mon",
+        "mr" | "mar" => "mar",
+        "ms" | "msa" | "may" => "msa",
+        "mt" | "mlt" => "mlt",
+        "my" | "mya" | "bur" => "mya",
+        "nb" | "nob" => "nob",
+        "ne" | "nep" => "nep",
+        "nn" | "nno" => "nno",
+        "pa" | "pan" => "pan",
+        "ps" | "pus" => "pus",
+        "si" | "sin" => "sin",
+        "so" | "som" => "som",
+        "sw" | "swa" => "swa",
+        "ta" | "tam" => "tam",
+        "te" | "tel" => "tel",
+        "tl" | "tgl" => "tgl",
+        "ur" | "urd" => "urd",
+        "uz" | "uzb" => "uzb",
+        // Deprecated two-letter codes that extractors still report.
+        "iw" => "heb",
+        "in" => "ind",
+        "ji" | "yi" | "yid" => "yid",
+        "jw" | "jv" | "jav" => "jav",
+        "mo" => "ron",
         other => other,
     }
     .to_string()
@@ -2295,9 +2524,24 @@ mod output_validation_tests {
 #[cfg(test)]
 mod extractor_error_tests {
     use super::{
-        available_qualities, format_unavailable, fragment_loss, iso639_2, tag_language,
-        useful_error,
+        available_qualities, drm_protected, format_unavailable, fragment_loss, iso639_2,
+        tag_language, useful_error,
     };
+
+    #[test]
+    fn a_fully_drm_protected_video_is_recognized_from_the_extractor_error() {
+        // yt-dlp 2026.08.19 raise_no_formats(): no JSON is produced for an all-DRM video.
+        assert!(drm_protected(
+            "[youtube] Extracting URL: https://example.test/watch\nERROR: [example] abc123: This video is DRM protected"
+        ));
+        // A warning about skipped formats accompanies videos that still download.
+        assert!(!drm_protected(
+            "WARNING: [youtube] abc: Some tv client https formats have been skipped as they are DRM protected.\nERROR: [youtube] abc: Sign in to confirm you're not a bot"
+        ));
+        assert!(!drm_protected(
+            "ERROR: Unsupported URL: https://example.test/"
+        ));
+    }
 
     #[test]
     fn a_lost_fragment_is_recognized_and_a_clean_run_is_not() {
@@ -2323,6 +2567,19 @@ mod extractor_error_tests {
         assert!(watch.stalled());
         watch.touch();
         assert!(!watch.stalled());
+    }
+
+    #[test]
+    fn a_silent_postprocessor_is_not_a_stalled_transfer() {
+        // FFmpeg merging or converting a long file prints nothing and opens no connection; only
+        // the post-processing limit applies between yt-dlp's started and finished markers.
+        let mut watch = super::ActivityWatch::new(std::time::Duration::from_millis(20), Vec::new());
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        assert!(watch.stalled());
+        watch.observe("SSDOWNLOAD_POSTPROCESS\tstarted");
+        assert!(!watch.stalled());
+        watch.observe("SSDOWNLOAD_POSTPROCESS\tfinished");
+        assert!(watch.stalled());
     }
 
     #[test]
@@ -2354,6 +2611,26 @@ mod extractor_error_tests {
         assert_eq!(tag_language("tr", Some("mkv")), "tr");
         assert_eq!(tag_language("tr", None), "tr");
         assert_eq!(iso639_2("xyz"), "xyz");
+    }
+
+    #[test]
+    fn mp4_language_tags_survive_the_output_check_for_dubbed_audio_languages() {
+        // A two-letter tag never reaches an MP4 file, so the selected language would read back
+        // as undetermined and fail output validation after a complete download.
+        for code in [
+            "ta", "bn-IN", "te", "ml", "mr", "gu", "kn", "pa", "ur", "ca", "af", "sw", "ms", "iw",
+            "in", "ji", "jw", "nb", "sq", "eu", "is", "mk",
+        ] {
+            let tag = tag_language(code, Some("mp4"));
+            assert_eq!(tag.len(), 3, "{code} -> {tag}");
+            assert_eq!(
+                super::language_key(&tag),
+                super::language_key(code),
+                "{code} -> {tag}"
+            );
+        }
+        assert_eq!(tag_language("ta", Some("mp4")), "tam");
+        assert_eq!(tag_language("iw", Some("mp4")), "heb");
     }
 
     #[test]

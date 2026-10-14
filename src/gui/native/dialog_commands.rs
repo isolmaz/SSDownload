@@ -2,6 +2,29 @@
 
 use super::*;
 
+/// Parses a numeric field, naming the field instead of surfacing the parser's
+/// untranslated "invalid digit found in string".
+fn parse_number<T: std::str::FromStr>(value: &str, label: &str) -> anyhow::Result<T> {
+    value.trim().parse().map_err(|_| {
+        anyhow::anyhow!(crate::i18n::ui_owned!(
+            format!("{label} geçerli bir sayı olmalıdır."),
+            format!("{label} must be a valid number.")
+        ))
+    })
+}
+
+/// Asks before a list entry is deleted. "No" is the default button and Escape
+/// answers it, and a dialog closed from under the box counts as "No" too.
+unsafe fn confirm_removal(hwnd: HWND, body: &str) -> bool {
+    let answer = message(
+        hwnd,
+        body,
+        crate::i18n::ui("Silmeyi onayla", "Confirm deletion"),
+        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+    );
+    answer == IDYES && IsWindow(hwnd) != 0
+}
+
 pub(super) unsafe fn queue_command(
     hwnd: HWND,
     app: &App,
@@ -34,11 +57,28 @@ pub(super) unsafe fn queue_command(
             })?,
             name: text(f.name).trim().into(),
         },
-        Q_DELETE => Action::DeleteQueue {
-            id: selected.clone().ok_or_else(|| {
+        Q_DELETE => {
+            let id = selected.clone().ok_or_else(|| {
                 anyhow::anyhow!(crate::i18n::ui("Bir kuyruk seçin", "Select a queue"))
-            })?,
-        },
+            })?;
+            let name = snapshot
+                .settings
+                .queues
+                .iter()
+                .find(|q| q.id == id)
+                .map(|q| q.name.clone())
+                .unwrap_or_default();
+            if !confirm_removal(
+                hwnd,
+                &crate::i18n::ui_owned!(
+                    format!("\"{name}\" kuyruğu silinsin mi?"),
+                    format!("Delete the queue \"{name}\"?")
+                ),
+            ) {
+                return Ok(());
+            }
+            Action::DeleteQueue { id }
+        }
         Q_MOVE_JOB => Action::MoveToQueue {
             ids: vec![f.job_id.clone().ok_or_else(|| {
                 anyhow::anyhow!(crate::i18n::ui(
@@ -80,7 +120,10 @@ pub(super) unsafe fn queue_command(
                 })?;
             queue.name = text(f.name).trim().into();
             queue.enabled = check(f.enabled);
-            queue.concurrency = text(f.concurrency).trim().parse()?;
+            queue.concurrency = parse_number(
+                &text(f.concurrency),
+                crate::i18n::ui("Eşzamanlılık", "Concurrency"),
+            )?;
             queue.windows.clear();
             for line in text(f.windows)
                 .lines()
@@ -105,8 +148,10 @@ pub(super) unsafe fn queue_command(
                 } else {
                     fields[0]
                         .split(',')
-                        .map(str::parse)
-                        .collect::<std::result::Result<Vec<u8>, _>>()?
+                        .map(|day| {
+                            parse_number::<u8>(day, crate::i18n::ui("Gün numarası", "Day number"))
+                        })
+                        .collect::<anyhow::Result<Vec<u8>>>()?
                 };
                 queue.windows.push(crate::model::QueueWindow {
                     weekdays,
@@ -114,7 +159,7 @@ pub(super) unsafe fn queue_command(
                     end: end.into(),
                 });
             }
-            let limit: u64 = text(f.quota).trim().parse()?;
+            let limit: u64 = parse_number(&text(f.quota), crate::i18n::ui("Kota", "Quota"))?;
             queue.quota = if limit == 0 {
                 None
             } else {
@@ -122,14 +167,24 @@ pub(super) unsafe fn queue_command(
                 quota.limit_bytes = limit;
                 Some(quota)
             };
-            let countdown_seconds = text(f.delay).trim().parse::<u32>()?;
+            let countdown_seconds: u32 =
+                parse_number(&text(f.delay), crate::i18n::ui("Geri sayım", "Countdown"))?;
             queue.completion = match combo_index(f.completion) {
                 0 => CompletionAction::None,
                 1 => CompletionAction::Notify,
                 2 => CompletionAction::ShutdownComputer { countdown_seconds },
                 3 => CompletionAction::RunProgram {
                     program: PathBuf::from(text(f.program).trim()),
-                    arguments: serde_json::from_str(&text(f.arguments))?,
+                    arguments: serde_json::from_str(&text(f.arguments)).map_err(|error| {
+                        anyhow::anyhow!(crate::i18n::ui_owned!(
+                            format!(
+                                "Program bağımsız değişkenleri bir JSON metin dizisi olmalı, örn. [\"-x\"]: {error}"
+                            ),
+                            format!(
+                                "Program arguments must be a JSON array of strings, e.g. [\"-x\"]: {error}"
+                            )
+                        ))
+                    })?,
                     countdown_seconds,
                 },
                 _ => anyhow::bail!(crate::i18n::ui(
@@ -147,6 +202,7 @@ pub(super) unsafe fn queue_command(
     Ok(())
 }
 pub(super) unsafe fn rule_command(
+    hwnd: HWND,
     app: &App,
     f: &mut RuleFields,
     id: i32,
@@ -201,8 +257,12 @@ pub(super) unsafe fn rule_command(
                 include_subdomains: check(f.subdomains),
                 kinds,
                 destination: PathBuf::from(text(f.dir).trim()),
-                priority: text(f.priority).trim().parse()?,
-                enabled: true,
+                priority: parse_number(&text(f.priority), crate::i18n::ui("Öncelik", "Priority"))?,
+                // The dialog has no switch for it: an update keeps the rule's state.
+                enabled: selected
+                    .as_ref()
+                    .and_then(|id| settings.folder_rules.iter().find(|r| &r.id == id))
+                    .is_none_or(|existing| existing.enabled),
             };
             if let Some(old) = settings.folder_rules.iter_mut().find(|r| r.id == rule.id) {
                 *old = rule;
@@ -217,6 +277,21 @@ pub(super) unsafe fn rule_command(
                     "Select the rule to delete",
                 ))
             })?;
+            let host = settings
+                .folder_rules
+                .iter()
+                .find(|r| r.id == selected)
+                .map(|r| r.host.clone())
+                .unwrap_or_default();
+            if !confirm_removal(
+                hwnd,
+                &crate::i18n::ui_owned!(
+                    format!("\"{host}\" kuralı silinsin mi?"),
+                    format!("Delete the rule for \"{host}\"?")
+                ),
+            ) {
+                return Ok(());
+            }
             settings.folder_rules.retain(|r| r.id != selected);
         }
         _ => return Ok(()),
@@ -226,6 +301,7 @@ pub(super) unsafe fn rule_command(
     Ok(())
 }
 pub(super) unsafe fn sync_command(
+    hwnd: HWND,
     app: &App,
     f: &mut SyncFields,
     id: i32,
@@ -275,6 +351,21 @@ pub(super) unsafe fn sync_command(
                     "Select the record to remove",
                 ))
             })?;
+            let url = settings
+                .synchronization_policies
+                .iter()
+                .find(|p| p.id == selected)
+                .map(|p| p.url.clone())
+                .unwrap_or_default();
+            if !confirm_removal(
+                hwnd,
+                &crate::i18n::ui_owned!(
+                    format!("\"{url}\" eşitleme kaydı silinsin mi?"),
+                    format!("Delete the sync record for \"{url}\"?")
+                ),
+            ) {
+                return Ok(());
+            }
             settings
                 .synchronization_policies
                 .retain(|p| p.id != selected);
@@ -300,7 +391,10 @@ pub(super) unsafe fn sync_command(
             }
             policy.url = url;
             policy.destination = destination;
-            policy.interval_minutes = text(f.interval).trim().parse()?;
+            policy.interval_minutes = parse_number(
+                &text(f.interval),
+                crate::i18n::ui("Kontrol aralığı", "Check interval"),
+            )?;
             policy.enabled = check(f.enabled);
             policy.overwrite = check(f.overwrite);
             if let Some(old) = settings
@@ -331,9 +425,15 @@ pub(super) unsafe fn crawler_command(
                 return Ok(());
             }
             let mut policy = app.snapshot().settings.crawler_policy.clone();
-            policy.max_depth = text(f.depth).trim().parse()?;
-            policy.max_pages = text(f.pages).trim().parse()?;
-            policy.max_candidates = text(f.candidates).trim().parse()?;
+            policy.max_depth = parse_number(&text(f.depth), crate::i18n::ui("Derinlik", "Depth"))?;
+            policy.max_pages = parse_number(
+                &text(f.pages),
+                crate::i18n::ui("En fazla sayfa", "Maximum pages"),
+            )?;
+            policy.max_candidates = parse_number(
+                &text(f.candidates),
+                crate::i18n::ui("En fazla aday", "Maximum candidates"),
+            )?;
             crate::validation::validate_crawler_policy(&policy)?;
             let request = SiteCrawlRequest {
                 url: text(f.url).trim().into(),
@@ -413,6 +513,15 @@ pub(super) unsafe fn media_generation_current(dlg: &DialogUi, f: &MediaFields) -
 }
 
 pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
+    if id == D_ERROR {
+        // A click on the error line copies the whole message, which the row
+        // itself may have had to cut short.
+        let message = text(dlg.error);
+        if _code as u32 == STN_CLICKED && !message.is_empty() {
+            set_clipboard_text(&message);
+        }
+        return;
+    }
     if id == IDCANCEL || id == D_CANCEL {
         DestroyWindow(dlg.hwnd);
         return;
@@ -581,26 +690,42 @@ Use the existing jobs, or download new copies?"
                             _ => return,
                         }
                     }
+                    let batch = requests.len();
+                    let mut added = 0usize;
                     let mut remaining = requests.into_iter();
                     while let Some(request) = remaining.next() {
                         let url = request.url.clone();
-                        if let Err(e) = dlg.app.dispatch(Action::Add { request }) {
-                            let pending = std::iter::once(url)
-                                .chain(remaining.map(|request| request.url))
-                                .collect::<Vec<_>>()
-                                .join("\r\n");
-                            set_text(f.urls, &pending);
-                            set_dialog_error(
-                                dlg.hwnd,
-                                dlg.error,
-                                &crate::i18n::ui_owned!(
-                                    format!("İndirme eklenemedi: {e:#}"),
-                                    format!("The download could not be added: {e:#}")
-                                ),
-                                null_mut(),
-                            );
-                            return;
+                        match dlg.app.dispatch_result(Action::Add { request }) {
+                            Ok(result) => added += result.job_ids.len(),
+                            Err(e) => {
+                                let pending = std::iter::once(url)
+                                    .chain(remaining.map(|request| request.url))
+                                    .collect::<Vec<_>>()
+                                    .join("\r\n");
+                                set_text(f.urls, &pending);
+                                set_dialog_error(
+                                    dlg.hwnd,
+                                    dlg.error,
+                                    &crate::i18n::ui_owned!(
+                                        format!("İndirme eklenemedi: {e:#}"),
+                                        format!("The download could not be added: {e:#}")
+                                    ),
+                                    null_mut(),
+                                );
+                                return;
+                            }
                         }
+                    }
+                    // Every addition posted its own "1 added" line and the last
+                    // one would stay on the status bar; one line states the batch.
+                    if batch > 1 {
+                        dlg.app.message(
+                            crate::i18n::ui_owned!(
+                                format!("{added} indirme eklendi"),
+                                format!("{added} download(s) added")
+                            ),
+                            false,
+                        );
                     }
                     DestroyWindow(dlg.hwnd);
                 }
@@ -690,55 +815,47 @@ Use the existing jobs, or download new copies?"
                 crate::update::check_now(dlg.app.clone());
             }
             ID_SETTINGS_INSTALL_EXTENSION => {
-                let app = dlg.app.clone();
                 let spawned = std::thread::Builder::new()
                     .name("extension-install".into())
-                    .spawn(move || {
-                        let mut next = app.snapshot().settings;
-                        next.extension_offer_seen = true;
-                        if let Err(error) = app.update_settings_quiet(next) {
-                            crate::logging::record(crate::logging::Event::warn("gui.extension_install_save").detail(format!("{error:#}")));
+                    .spawn(|| {
+                        if let Err(error) = crate::extension::register_external() {
+                            crate::gui::report_update_error(&crate::i18n::ui_owned!(
+                                format!("Eklenti Chrome/Edge için kaydedilemedi: {error:#}"),
+                                format!("The extension could not be registered with Chrome/Edge: {error:#}")
+                            ));
+                            return;
                         }
-                        let existing = crate::extension::policies_installed().unwrap_or(false);
-                        match crate::extension::install_policies() {
-                            Ok(report) if report.needs_elevation => {
-                                if confirm_elevated(
-                                    crate::i18n::ui(
-                                        "Chrome politika anahtarı yönetici izni gerektiriyor.\n\nYönetici onayıyla yeniden denensin mi?",
-                                        "The Chrome policy key requires administrator rights.\n\nRetry with administrator approval?",
-                                    ),
-                                    crate::i18n::ui(
-                                        "SSDownload tarayıcı eklentisi",
-                                        "SSDownload browser extension",
-                                    ),
-                                ) {
-                                    let _ = crate::extension::run_elevated("--install-extension");
-                                }
+                        if crate::extension::remove_legacy_policies()
+                            == crate::extension::LegacyCleanup::NeedsElevation
+                            && confirm_elevated(
+                                crate::i18n::ui(
+                                    "Eski bir SSDownload sürümünün yazdığı Chrome/Edge politika kaydı eklentiyi engelliyor.\n\nYönetici onayıyla kaldırılsın mı?",
+                                    "A Chrome/Edge policy entry written by an older SSDownload version blocks the extension.\n\nRemove it with administrator approval?",
+                                ),
+                                crate::i18n::ui(
+                                    "SSDownload tarayıcı eklentisi",
+                                    "SSDownload browser extension",
+                                ),
+                            )
+                        {
+                            if let Err(error) =
+                                crate::extension::run_elevated("--remove-extension-policies")
+                            {
+                                crate::gui::report_update_error(&format!("{error:#}"));
                             }
-                            Ok(report) => {
-                                // Chrome blocks self-hosted policies on unmanaged
-                                // devices, and a leftover entry evicts a manually
-                                // loaded copy: offer the cleanup.
-                                if existing
-                                    && crate::extension::policies_removal_needs_elevation()
-                                    && confirm_elevated(
-                                        crate::i18n::ui(
-                                            "Daha önce yazılmış Chrome politika kaydı eklentiyi engelliyor.\n\nYönetici onayıyla kaldırılsın mı?",
-                                            "A previously written Chrome policy entry blocks the extension.\n\nRemove it with administrator approval?",
-                                        ),
-                                        crate::i18n::ui(
-                                            "SSDownload tarayıcı eklentisi",
-                                            "SSDownload browser extension",
-                                        ),
-                                    )
-                                {
-                                    let _ =
-                                        crate::extension::run_elevated("--remove-extension-policies");
-                                }
-                                crate::gui::report_update_text(&report.summary());
-                            }
-                            Err(error) => crate::gui::report_update_error(&crate::i18n::ui_owned!(format!("Eklenti politikaları yazılamadı: {error:#}"), format!("The extension policies could not be written: {error:#}"))),
                         }
+                        let opened = crate::install::open_web_store().is_ok();
+                        crate::gui::report_update_text(if opened {
+                            crate::i18n::ui(
+                                "Eklenti Chrome ve Edge'e eklendi: tarayıcıyı bir sonraki açışınızda çıkan uyarıda \"Eklentiyi etkinleştir\"e tıklayın.\n\nChrome Web Mağazası sayfası da açıldı; eklentiyi oradan hemen ekleyebilirsiniz.",
+                                "The extension was added to Chrome and Edge: click \"Enable extension\" on the notice the next time you open the browser.\n\nThe Chrome Web Store page is open too; you can add the extension there right away.",
+                            )
+                        } else {
+                            crate::i18n::ui(
+                                "Eklenti Chrome ve Edge'e eklendi: tarayıcıyı bir sonraki açışınızda çıkan uyarıda \"Eklentiyi etkinleştir\"e tıklayın.",
+                                "The extension was added to Chrome and Edge: click \"Enable extension\" on the notice the next time you open the browser.",
+                            )
+                        });
                     });
                 if let Err(error) = spawned {
                     crate::logging::record(
@@ -828,7 +945,7 @@ Use the existing jobs, or download new copies?"
             };
         }
         DialogKind::Rules(f) => {
-            match rule_command(&dlg.app, f, id, _code) {
+            match rule_command(dlg.hwnd, &dlg.app, f, id, _code) {
                 Ok(()) => set_text(dlg.error, ""),
                 Err(e) => set_dialog_error(dlg.hwnd, dlg.error, &format!("{e:#}"), null_mut()),
             };
@@ -840,7 +957,7 @@ Use the existing jobs, or download new copies?"
             };
         }
         DialogKind::Synchronization(f) => {
-            match sync_command(&dlg.app, f, id, _code) {
+            match sync_command(dlg.hwnd, &dlg.app, f, id, _code) {
                 Ok(()) => set_text(dlg.error, ""),
                 Err(e) => set_dialog_error(dlg.hwnd, dlg.error, &format!("{e:#}"), null_mut()),
             };
@@ -1000,8 +1117,17 @@ Use the existing jobs, or download new copies?"
             L_REMOVE => {
                 let index = SendMessageW(f.list, LB_GETCURSEL, 0, 0);
                 if index >= 0 && (index as usize) < f.logins.len() {
-                    f.logins.remove(index as usize);
-                    refresh_login_list(f);
+                    let host = f.logins[index as usize].host.clone();
+                    if confirm_removal(
+                        dlg.hwnd,
+                        &crate::i18n::ui_owned!(
+                            format!("\"{host}\" girişi silinsin mi?"),
+                            format!("Delete the login for \"{host}\"?")
+                        ),
+                    ) {
+                        f.logins.remove(index as usize);
+                        refresh_login_list(f);
+                    }
                 }
             }
             L_SAVE => {
@@ -1408,13 +1534,8 @@ pub(super) unsafe fn collect_settings(
     value.notify_completion = check(f.notify);
     value.dark_mode = check(f.dark);
     value.update_check_enabled = check(f.update_check);
-    if UiMode::parse(&value.ui_mode).is_simple() {
-        // The rows the simple dialog does not show are not read back and not
-        // validated: they keep the values the profile already carries, so a
-        // value typed on the advanced page can never fail a check whose field
-        // the user cannot see.
-        return Ok(value);
-    }
+    // Both modes show these two rows (on the general page in the simple one),
+    // so both read them back.
     let max_active = parse_u8_range(
         &text(f.max_active),
         1,
@@ -1429,6 +1550,15 @@ pub(super) unsafe fn collect_settings(
         crate::i18n::ui("Dosya aralığı bağlantısı", "Connections per file"),
     )
     .map_err(|e| (e, f.connections))?;
+    if UiMode::parse(&value.ui_mode).is_simple() {
+        // The other rows the simple dialog does not show are not read back and
+        // not validated: they keep the values the profile already carries, so a
+        // value typed on the advanced page can never fail a check whose field
+        // the user cannot see.
+        value.max_active = max_active;
+        value.connections = connections;
+        return Ok(value);
+    }
     let media_fragment_connections = parse_u8_range(
         &text(f.media_fragments),
         1,

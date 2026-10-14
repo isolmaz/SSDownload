@@ -33,6 +33,9 @@ pub(super) struct AlertUi {
     pub(super) text_width: i32,
     pub(super) body_height: i32,
     pub(super) dark: bool,
+    /// The body is taller than the screen allows: it lives in a read-only
+    /// multiline edit with a scroll bar instead of a static.
+    pub(super) scroll: bool,
 }
 /// The buttons a flag set asks for, in the order MessageBoxW shows them, plus
 /// the default button and the id Escape returns.
@@ -69,13 +72,17 @@ pub(super) unsafe fn alert_plan(flags: MESSAGEBOX_STYLE) -> (Vec<(i32, &'static 
     };
     let index = (((flags & MB_DEFMASK) >> 8) as usize).min(buttons.len() - 1);
     let default = buttons[index].0;
-    // Escape keeps MessageBoxW's contract: the cancel button when there is one,
-    // otherwise the default button.
-    let escape = buttons
-        .iter()
-        .find(|(id, _)| *id == IDCANCEL)
-        .map_or(default, |(id, _)| *id);
+    let escape = alert_escape(&buttons, default);
     (buttons, default, escape)
+}
+/// What Escape and the close button answer: the cancel button when there is one;
+/// otherwise "No" of a yes/no question, so a stray Escape never confirms what
+/// the question offers; otherwise the default button.
+pub(super) fn alert_escape(buttons: &[(i32, &str)], default: i32) -> i32 {
+    [IDCANCEL, IDNO]
+        .into_iter()
+        .find(|wanted| buttons.iter().any(|(id, _)| id == wanted))
+        .unwrap_or(default)
 }
 pub(super) unsafe fn alert_icon(flags: MESSAGEBOX_STYLE) -> HICON {
     let resource = match flags & MB_ICONMASK {
@@ -111,6 +118,32 @@ pub(super) unsafe fn wrapped_height(font: HFONT, body: &str, width: i32) -> i32 
     SelectObject(dc, previous);
     ReleaseDC(null_mut(), dc);
     rect.bottom
+}
+/// The tallest body an alert may have: 70% of the work area, less the space the
+/// frame, the margins and the button row take.
+pub(super) fn alert_body_cap(work_height: i32, chrome: i32) -> i32 {
+    (work_height * 7 / 10 - chrome).max(1)
+}
+/// Work-area height of the monitor the alert will appear on (the owner's, else
+/// the main window's, else the primary one).
+pub(super) unsafe fn alert_work_height(owner: HWND) -> i32 {
+    let anchor = if !owner.is_null() && IsWindow(owner) != 0 {
+        owner
+    } else {
+        FindWindowW(wide(CLASS_MAIN).as_ptr(), null())
+    };
+    let monitor = if anchor.is_null() {
+        MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
+    } else {
+        MonitorFromWindow(anchor, MONITOR_DEFAULTTOPRIMARY)
+    };
+    let mut info: MONITORINFO = zeroed();
+    info.cbSize = size_of::<MONITORINFO>() as u32;
+    if !monitor.is_null() && GetMonitorInfoW(monitor, &mut info) != 0 {
+        info.rcWork.bottom - info.rcWork.top
+    } else {
+        768
+    }
 }
 /// The scheme of the window an alert belongs to; a missing owner falls back to
 /// the application's main window so the alert still follows the setting.
@@ -187,14 +220,33 @@ pub(super) unsafe fn alert_layout(ui: &AlertUi) {
 pub(super) unsafe fn alert_create(ui: &mut AlertUi) {
     // The static holds and draws the body, the way MessageBoxW's does; the
     // window paint only fills the surface.
-    ui.body_handle = control(
-        ui.hwnd,
-        "STATIC",
-        &ui.body,
-        WS_CHILD | WS_VISIBLE, // SS_LEFT: left aligned and word wrapped
-        0,
-        ALERT_BODY_ID,
-    );
+    ui.body_handle = if ui.scroll {
+        // An edit shows a line break only as CR LF.
+        let text = ui.body.replace("\r\n", "\n").replace('\n', "\r\n");
+        control(
+            ui.hwnd,
+            "EDIT",
+            &text,
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WS_VSCROLL
+                | ES_MULTILINE as u32
+                | ES_READONLY as u32
+                | ES_AUTOVSCROLL as u32,
+            WS_EX_CLIENTEDGE,
+            ALERT_BODY_ID,
+        )
+    } else {
+        control(
+            ui.hwnd,
+            "STATIC",
+            &ui.body,
+            WS_CHILD | WS_VISIBLE, // SS_LEFT: left aligned and word wrapped
+            0,
+            ALERT_BODY_ID,
+        )
+    };
     apply_font(ui.body_handle, ui.font);
     if !ui.icon.is_null() {
         ui.icon_handle = control(
@@ -269,7 +321,7 @@ pub(super) unsafe extern "system" fn alert_proc(
             }
             0
         }
-        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT => {
             SetTextColor(
                 wparam as HDC,
                 if ui.dark {
@@ -336,10 +388,7 @@ pub(super) unsafe fn run_alert_buttons(
     let (plan, default, escape) = match buttons {
         Some(custom) if !custom.is_empty() => {
             let default = custom[0].0;
-            let escape = custom
-                .iter()
-                .find(|(id, _)| *id == IDCANCEL)
-                .map_or(default, |(id, _)| *id);
+            let escape = alert_escape(custom, default);
             (custom.to_vec(), default, escape)
         }
         _ => alert_plan(flags),
@@ -359,8 +408,21 @@ pub(super) unsafe fn run_alert_buttons(
     let icon_size = scale(32, dpi);
     let icon_column = if icon.is_null() { 0 } else { icon_size + gap };
     let text_width = scale(340, dpi);
-    let body_height =
+    let wrapped =
         wrapped_height(font, body, text_width).max(if icon.is_null() { 0 } else { icon_size });
+    // Caption, borders and the button row come out of the space the body may take.
+    let cap = alert_body_cap(
+        alert_work_height(owner),
+        2 * margin + gap + row + scale(48, dpi),
+    )
+    .max(icon_size);
+    let scroll = wrapped > cap;
+    let body_height = wrapped.min(cap);
+    let text_width = if scroll {
+        text_width + GetSystemMetrics(SM_CXVSCROLL) + scale(8, dpi)
+    } else {
+        text_width
+    };
     let client_width = text_width + icon_column + 2 * margin;
     let client_height = margin + body_height + gap + row + margin;
     let style = WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
@@ -399,6 +461,7 @@ pub(super) unsafe fn run_alert_buttons(
         text_width,
         body_height,
         dark,
+        scroll,
     }));
     let hwnd = CreateWindowExW(
         ex_style,
@@ -495,5 +558,39 @@ pub(super) unsafe fn message(owner: HWND, body: &str, title: &str, flags: MESSAG
     match run_alert(owner, body, title, flags) {
         Some(value) => value,
         None => MessageBoxW(owner, wide(body).as_ptr(), wide(title).as_ptr(), flags),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{alert_body_cap, alert_escape};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDCANCEL, IDNO, IDOK, IDYES};
+
+    #[test]
+    fn body_cap_is_seventy_percent_of_the_work_area_minus_the_chrome() {
+        assert_eq!(alert_body_cap(1000, 100), 600);
+        // A tiny work area still leaves a usable (positive) height.
+        assert_eq!(alert_body_cap(100, 500), 1);
+    }
+
+    #[test]
+    fn escape_answers_cancel_when_the_alert_has_one() {
+        let buttons = [(IDYES, "Yes"), (IDNO, "No"), (IDCANCEL, "Cancel")];
+        assert_eq!(alert_escape(&buttons, IDYES), IDCANCEL);
+    }
+
+    #[test]
+    fn escape_never_confirms_a_yes_no_question() {
+        let buttons = [(IDYES, "Yes"), (IDNO, "No")];
+        // Yes is the default button, yet a stray Escape or the close button must
+        // not answer it.
+        assert_eq!(alert_escape(&buttons, IDYES), IDNO);
+    }
+
+    #[test]
+    fn escape_falls_back_to_the_default_button_otherwise() {
+        assert_eq!(alert_escape(&[(IDOK, "OK")], IDOK), IDOK);
+        let custom = [(IDOK, "OK"), (100, "Copy"), (101, "Notes")];
+        assert_eq!(alert_escape(&custom, IDOK), IDOK);
     }
 }

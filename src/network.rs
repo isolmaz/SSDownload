@@ -1139,13 +1139,26 @@ fn proxy_accept_loop(listener: TcpListener, shared: Arc<ProxyShared>) {
     }
 }
 
+/// The loopback proxy's capability credential is missing, duplicated or wrong. Answered
+/// with 407 so a client that waits for the challenge retries with its credentials.
+#[derive(Debug)]
+struct ProxyAuthRejected(&'static str);
+
+impl std::fmt::Display for ProxyAuthRejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for ProxyAuthRejected {}
+
 fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
     let _ = client.set_read_timeout(Some(PROXY_HEAD_TIMEOUT));
     let parsed =
         match read_proxy_head(&mut client).and_then(|head| parse_proxy_request(&shared, &head)) {
             Ok(request) => request,
             Err(error) => {
-                let status = if error.to_string().contains("kimlik") {
+                let status = if error.is::<ProxyAuthRejected>() {
                     407
                 } else {
                     400
@@ -1294,7 +1307,7 @@ fn parse_proxy_request(shared: &ProxyShared, frame: &ProxyFrame) -> Result<Proxy
         let value = value.trim();
         if name.eq_ignore_ascii_case("proxy-authorization") {
             if proxy_authorization.replace(value.to_string()).is_some() {
-                bail!("Yerel ağ aracısı kimlik başlığı yinelenmiş");
+                return Err(ProxyAuthRejected("Yerel ağ aracısı kimlik başlığı yinelenmiş").into());
             }
             continue;
         }
@@ -1314,7 +1327,7 @@ fn parse_proxy_request(shared: &ProxyShared, frame: &ProxyFrame) -> Result<Proxy
         .as_deref()
         .is_some_and(|value| capability_matches(shared, value))
     {
-        bail!("Yerel ağ aracısı kimliği doğrulanamadı");
+        return Err(ProxyAuthRejected("Yerel ağ aracısı kimliği doğrulanamadı").into());
     }
 
     if method == "CONNECT" {
@@ -1602,8 +1615,49 @@ fn capability_matches(shared: &ProxyShared, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::NetworkGovernor;
-    use std::time::{Duration, Instant};
+    use super::{ExternalProxy, NetworkGovernor};
+    use crate::model::TransferControl;
+    use std::{
+        io::{Read, Write},
+        net::TcpStream,
+        time::{Duration, Instant},
+    };
+
+    fn proxy_reply(proxy: &ExternalProxy, request: &str) -> String {
+        let address = proxy
+            .proxy_url()
+            .rsplit('@')
+            .next()
+            .expect("proxy address")
+            .to_owned();
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        reply
+    }
+
+    #[test]
+    fn the_loopback_proxy_challenges_a_missing_or_wrong_credential_with_407() {
+        let proxy =
+            ExternalProxy::spawn(NetworkGovernor::new(2), TransferControl::default()).unwrap();
+        let missing = proxy_reply(
+            &proxy,
+            "CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n",
+        );
+        assert!(missing.starts_with("HTTP/1.1 407 "), "{missing}");
+        assert!(missing.contains("Proxy-Authenticate: Basic"), "{missing}");
+        let wrong = proxy_reply(
+            &proxy,
+            "CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\nProxy-Authorization: Basic c3Nkb3dubG9hZDp3cm9uZw==\r\n\r\n",
+        );
+        assert!(wrong.starts_with("HTTP/1.1 407 "), "{wrong}");
+        let malformed = proxy_reply(&proxy, "NOT A REQUEST\r\n\r\n");
+        assert!(malformed.starts_with("HTTP/1.1 400 "), "{malformed}");
+    }
 
     #[test]
     fn a_full_host_waits_for_a_slot_before_the_proxy_refuses() {

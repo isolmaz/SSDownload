@@ -313,6 +313,18 @@ fn web_video_mp4_policy_never_falls_back_to_silent_transcoding() {
 }
 
 #[test]
+fn dolby_codec_names_from_the_extractor_match_the_probed_output() {
+    // yt-dlp reports RFC 6381 names from HLS/DASH manifests; FFprobe names the same streams
+    // ac3, eac3 and hevc, and both spellings must pass the MP4 policy and the output check.
+    assert!(mp4_audio_codec("ec-3") && mp4_audio_codec("ac-3") && mp4_audio_codec("eac3"));
+    assert!(mp4_video_codec("dvh1.05.06") && mp4_video_codec("dvhe.08.07"));
+    assert!(codec_equivalent("ec-3", "eac3"));
+    assert!(codec_equivalent("ac-3", "ac3"));
+    assert!(codec_equivalent("dvh1.05.06", "hevc"));
+    assert!(!codec_equivalent("ec-3", "ac3"));
+}
+
+#[test]
 fn yt_dlp_policy_disables_user_configuration_and_plugins() {
     let arguments = common_args(
         Path::new(r"C:\tools\deno.exe"),
@@ -323,6 +335,9 @@ fn yt_dlp_policy_disables_user_configuration_and_plugins() {
         .windows(2)
         .any(|pair| pair == ["--ignore-config", "--no-plugin-dirs"]));
     assert!(arguments.contains(&"--no-exec".into()));
+    assert!(arguments
+        .windows(2)
+        .any(|pair| pair == ["--encoding", "utf-8"]));
     assert!(arguments.contains(&"--no-playlist".into()));
     assert!(arguments.contains(&"--config-locations".into()));
     assert!(arguments.contains(&"-".into()));
@@ -354,6 +369,80 @@ fn media_publication_moves_only_the_final_file_out_of_private_workspace() {
 }
 
 #[test]
+fn published_name_keeps_dots_that_belong_to_the_title() {
+    let extension = std::ffi::OsStr::new("mp4");
+    assert_eq!(
+        with_media_extension(Path::new(r"C:\d\Python 3.12 guide"), extension),
+        PathBuf::from(r"C:\d\Python 3.12 guide.mp4")
+    );
+    assert_eq!(
+        with_media_extension(Path::new(r"C:\d\Mr. Robot S01E02"), extension),
+        PathBuf::from(r"C:\d\Mr. Robot S01E02.mp4")
+    );
+    // A name that already carries a container extension is retargeted, not doubled.
+    assert_eq!(
+        with_media_extension(Path::new(r"C:\d\clip.WEBM"), extension),
+        PathBuf::from(r"C:\d\clip.mp4")
+    );
+    assert_eq!(
+        without_media_extension(Path::new(r"C:\d\Vol. 2 best of")),
+        PathBuf::from(r"C:\d\Vol. 2 best of")
+    );
+    assert_eq!(
+        without_media_extension(Path::new(r"C:\d\list.m3u8")),
+        PathBuf::from(r"C:\d\list")
+    );
+
+    let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("Python 3.12 guide");
+    let request = AddRequest {
+        url: "https://example.test/watch".into(),
+        kind: DownloadKind::Video,
+        ..AddRequest::default()
+    };
+    let plan = OutputPlan::new(&output, &request, None).unwrap();
+    let staged = plan.workspace.join("media.mkv");
+    fs::write(&staged, b"test media").unwrap();
+    let published = plan
+        .publish(&output, false, &HashSet::new(), Some(&staged))
+        .unwrap();
+    assert_eq!(published, root.join("Python 3.12 guide.mkv"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn discarding_a_failed_playlist_attempt_keeps_workspace_state_and_finished_items() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-playlist-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("list");
+    let request = AddRequest {
+        url: "https://example.test/playlist".into(),
+        kind: DownloadKind::Video,
+        playlist: true,
+        ..AddRequest::default()
+    };
+    let plan = OutputPlan::new(&output, &request, None).unwrap();
+    let finished = plan.workspace.join("001 - First.mp4");
+    let partial = plan.workspace.join("002 - Second.mp4.part");
+    fs::write(&finished, b"done").unwrap();
+    fs::write(&partial, b"partial").unwrap();
+    // The tool reports the extended-length form of the workspace path.
+    let keep = HashSet::from([finished.canonicalize().unwrap()]);
+
+    let (removed, bytes) = discard_attempt_outputs(&plan, &keep).unwrap();
+
+    assert_eq!((removed, bytes), (1, 7));
+    assert!(finished.exists());
+    assert!(!partial.exists());
+    verify_workspace(&plan.workspace, &plan.owner).unwrap();
+    assert!(plan.workspace.join(".request").exists());
+    remove_workspace(&plan.workspace, &plan.owner).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn incomplete_playlist_cannot_be_published() {
     let root =
         std::env::temp_dir().join(format!("ssdownload-playlist-test-{}", uuid::Uuid::new_v4()));
@@ -372,6 +461,24 @@ fn incomplete_playlist_cannot_be_published() {
     assert!(plan.workspace.exists());
     remove_workspace(&plan.workspace, &plan.owner).unwrap();
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_capture_that_outlives_its_budget_reports_the_timeout_code() {
+    let args = vec!["/C".into(), "ping -n 10 127.0.0.1 > nul".into()];
+    let error = run_capture(
+        Path::new("cmd.exe"),
+        &args,
+        b"",
+        Duration::from_millis(300),
+        &TransferControl::default(),
+    )
+    .err()
+    .expect("the capture must time out");
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::MED_011)
+    );
 }
 
 #[test]
@@ -395,4 +502,106 @@ fn cancellation_terminates_the_owned_media_process_tree() {
     )
     .unwrap();
     assert!(matches!(result, MonitorOutcome::Cancelled));
+}
+
+#[test]
+fn site_refusals_map_to_one_final_line_without_the_debug_trace() {
+    let stderr = "[debug] Python 3.10.11 (OpenSSL 1.1.1t  7 Feb 2023)\n\
+        [debug] Command-line config: ['--fragment-retries', '20']\n\
+        [youtube] Extracting URL: https://example.test/watch\n\
+        ERROR: [youtube] abc: Video unavailable. This video is not available in your country";
+    assert!(site_access_blocked(stderr));
+    assert!(!site_access_blocked(
+        "ERROR: [generic] Requested format is not available. Use --list-formats"
+    ));
+    assert!(!site_access_blocked(
+        "WARNING: Sign in to see more\nERROR: HTTP Error 404"
+    ));
+    let visible = non_debug_lines(stderr);
+    assert!(!visible.contains("OpenSSL") && !visible.contains("--fragment-retries"));
+    assert_eq!(
+        final_error_text(&visible),
+        "ERROR: [youtube] abc: Video unavailable. This video is not available in your country"
+    );
+    // A carriage return inside the tool's line separates its error from the progress text.
+    assert_eq!(
+        final_error_text(&non_debug_lines("ERROR: \r[download] Got error: gone\n")),
+        "ERROR: \n[download] Got error: gone"
+    );
+}
+
+#[test]
+fn fragmented_resume_follows_the_selected_format_protocol_not_the_page_address() {
+    let inspection = json!({"id":"x","title":"t","webpage_url":"https://example.test/watch?v=1","formats":[
+        {"format_id":"hls-720","protocol":"m3u8_native","vcodec":"avc1","acodec":"aac","height":720},
+        {"format_id":"http-360","protocol":"https","vcodec":"avc1","acodec":"aac","height":360}
+    ]});
+    let page = AddRequest {
+        url: "https://example.test/watch?v=1".into(),
+        kind: DownloadKind::Video,
+        ..AddRequest::default()
+    };
+    assert!(selection_is_fragmented(&inspection, &page, "hls-720"));
+    assert!(!selection_is_fragmented(&inspection, &page, "http-360"));
+    let manifest = AddRequest {
+        url: "https://example.test/master.m3u8?t=1".into(),
+        ..page
+    };
+    assert!(selection_is_fragmented(&inspection, &manifest, "http-360"));
+}
+
+#[test]
+fn maybe_drm_formats_are_kept_and_true_drm_is_not() {
+    let info = media_info_from_json(&json!({"formats": [
+        {"format_id":"maybe","vcodec":"avc1","acodec":"aac","has_drm":"maybe"},
+        {"format_id":"locked","vcodec":"avc1","acodec":"aac","has_drm":true}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        info.formats
+            .iter()
+            .map(|f| f.id.as_str())
+            .collect::<Vec<_>>(),
+        ["maybe"]
+    );
+}
+
+#[test]
+fn playlist_items_separate_request_fingerprints_but_unset_keeps_the_stored_value() {
+    let mut request = AddRequest {
+        url: "https://example.test/list".into(),
+        kind: DownloadKind::Video,
+        playlist: true,
+        ..AddRequest::default()
+    };
+    let all = request_fingerprint(&request).unwrap();
+    assert!(!serde_json::to_string(&fingerprint_value(&request, true))
+        .unwrap()
+        .contains("playlist_items"));
+    request.playlist_items = Some("1-3".into());
+    let first = request_fingerprint(&request).unwrap();
+    request.playlist_items = Some("4-6".into());
+    let second = request_fingerprint(&request).unwrap();
+    assert_ne!(all, first);
+    assert_ne!(first, second);
+}
+
+#[test]
+fn startup_sweep_removes_cookie_jars_and_extractor_document_leases_only() {
+    let root = std::env::temp_dir().join(format!("ssdownload-sweep-test-{}", uuid::Uuid::new_v4()));
+    let info = root.join(format!("{INFO_LEASE_PREFIX}one"));
+    let pinned = root.join(format!("{PINNED_LEASE_PREFIX}two"));
+    fs::create_dir_all(&info).unwrap();
+    fs::create_dir_all(&pinned).unwrap();
+    fs::write(info.join("source.info.json"), b"{}").unwrap();
+    let jar = root.join("ssdownload-cookie-three.txt");
+    fs::write(&jar, b"jar").unwrap();
+    let other = root.join("unrelated.txt");
+    fs::write(&other, b"keep").unwrap();
+
+    sweep_stale_session_files(&root);
+
+    assert!(!info.exists() && !pinned.exists() && !jar.exists());
+    assert!(other.exists());
+    fs::remove_dir_all(root).unwrap();
 }

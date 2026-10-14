@@ -26,6 +26,6 @@ Supported version: the latest [release](https://github.com/isolmaz/SSDownload/re
 - The signature is Ed25519 over the exact bytes of `version.json`, verified against the public key embedded in the app (`FEED_PUBLIC_KEY` in [`src/update.rs`](src/update.rs)). The private key never enters this repository.
 - The downloaded Setup must match the SHA-256 in the signed feed before it runs. Only newer `major.minor.patch` versions are offered, and nothing installs without your consent.
 - The update flow never deletes files: superseded or rejected downloads move to `<profile>\update-quarantine\`.
-- The Chrome extension's self-hosted update manifest (`update.xml`) and CRX are assets of the same releases; the extension ID is fixed by the `key` in `browser/chromium/manifest.json`.
+- The browser extension is distributed through the Chrome Web Store; Chrome and Edge install and update it from there. Its ID is fixed by the `key` in `browser/chromium/manifest.json`, and the store item keeps that ID.
 
 The Windows binaries are not Authenticode-signed yet, so SmartScreen may warn when you run a downloaded copy. Compare its SHA-256 with the value on the release page.

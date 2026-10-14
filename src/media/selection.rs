@@ -310,15 +310,17 @@ pub(super) fn validate_container_selection(request: &AddRequest, info: &MediaInf
 pub(super) fn mp4_video_codec(codec: &str) -> bool {
     let codec = codec.to_ascii_lowercase();
     [
-        "avc", "h264", "hevc", "h265", "hev1", "hvc1", "av01", "av1", "mpeg4", "mp4v",
+        "avc", "h264", "hevc", "h265", "hev1", "hvc1", "dvh1", "dvhe", "av01", "av1", "mpeg4",
+        "mp4v",
     ]
     .iter()
     .any(|prefix| codec.starts_with(prefix))
 }
 
+/// Accepts both FFmpeg names (`ac3`, `eac3`) and the RFC 6381 names yt-dlp reports (`ac-3`, `ec-3`).
 pub(super) fn mp4_audio_codec(codec: &str) -> bool {
     let codec = codec.to_ascii_lowercase();
-    ["aac", "mp4a", "alac", "mp3", "ac3", "eac3"]
+    ["aac", "mp4a", "alac", "mp3", "ac3", "ac-3", "eac3", "ec-3"]
         .iter()
         .any(|prefix| codec.starts_with(prefix))
 }
