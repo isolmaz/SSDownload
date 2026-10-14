@@ -1,6 +1,7 @@
 /target/
 /artifacts/
 /.qa/
+/AGENTS.md
 *.log
 *.key
 *.pem
