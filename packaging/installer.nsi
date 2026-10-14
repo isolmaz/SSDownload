@@ -189,8 +189,11 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
 
   ; Missing media components are fetched now; already installed ones return at once without a
   ; network request. A failure does not fail the installation: the app retries on its start.
+  ; The generic text stays on screen while the command runs; its raw command line is not shown.
   DetailPrint "$(DETAIL_COMPONENTS)"
+  SetDetailsPrint none
   ExecWait '$\"$INSTDIR\ssdownload.exe$\" --setup-tools' $0
+  SetDetailsPrint both
   ${If} $0 != 0
     DetailPrint "$(WARN_COMPONENTS)"
     IfSilent +2
