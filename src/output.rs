@@ -14,9 +14,15 @@ fn wide(path: &Path) -> Vec<u16> {
 pub(crate) fn identity(path: &Path) -> Result<String> {
     let parent = path
         .parent()
-        .context("Çıktı klasörü bulunamadı")?
+        .context(crate::i18n::ui(
+            "Çıktı klasörü bulunamadı",
+            "The output folder was not found",
+        ))?
         .canonicalize()?;
-    let full = parent.join(path.file_name().context("Dosya adı eksik")?);
+    let full = parent.join(path.file_name().context(crate::i18n::ui(
+        "Dosya adı eksik",
+        "The file name is missing",
+    ))?);
     Ok(hex::encode(Sha256::digest(
         full.to_string_lossy().to_lowercase().as_bytes(),
     )))
@@ -32,7 +38,10 @@ impl OutputLock {
             .collect();
         let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
         if handle.is_null() {
-            return Err(std::io::Error::last_os_error()).context("Çıktı kilidi açılamadı");
+            return Err(std::io::Error::last_os_error()).context(crate::i18n::ui(
+                "Çıktı kilidi açılamadı",
+                "The output lock could not be opened",
+            ));
         }
         let wait = unsafe { WaitForSingleObject(handle, 0) };
         if wait == WAIT_FAILED {
@@ -42,13 +51,29 @@ impl OutputLock {
                 CloseHandle(handle);
             }
             let code = error.raw_os_error().unwrap_or(-1);
-            bail!("Dosya kilidi beklemesi Windows hatasıyla sonuçlandı (Win32 hata kodu {code}: {error}).");
+            bail!(
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!(
+                        "Dosya kilidi beklemesi Windows hatasıyla sonuçlandı (Win32 hata kodu {code}: {error})."
+                    ),
+                    format!(
+                        "Waiting for the file lock failed with a Windows error (Win32 error code {code}: {error})."
+                    )
+                )
+            );
         }
         if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
             unsafe {
                 CloseHandle(handle);
             }
-            bail!("Bu dosya başka bir SSDownload işlemi tarafından kullanılıyor.");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Bu dosya başka bir SSDownload işlemi tarafından kullanılıyor.",
+                    "This file is in use by another SSDownload process."
+                )
+            );
         }
         Ok(Self(handle))
     }
@@ -112,10 +137,19 @@ pub(crate) fn publish(source: &Path, desired: &Path) -> Result<PathBuf> {
                 std::thread::sleep(LOCK_RETRY_STEP * attempt);
                 continue;
             }
-            return Err(error).context("Tamamlanan dosya güvenle taşınamadı");
+            return Err(error).context(crate::i18n::ui(
+                "Tamamlanan dosya güvenle taşınamadı",
+                "The completed file could not be moved safely",
+            ));
         }
     }
-    bail!("Bu klasörde boş bir çıktı adı bulunamadı.")
+    bail!(
+        "{}",
+        crate::i18n::ui(
+            "Bu klasörde boş bir çıktı adı bulunamadı.",
+            "No free output name was found in this folder."
+        )
+    )
 }
 
 pub(crate) fn numbered(path: &Path, index: usize) -> PathBuf {
@@ -133,7 +167,10 @@ pub(crate) fn numbered(path: &Path, index: usize) -> PathBuf {
 }
 
 pub(crate) fn require_space(output: &Path, required: u64) -> Result<()> {
-    let parent = output.parent().context("Hedef klasör eksik")?;
+    let parent = output.parent().context(crate::i18n::ui(
+        "Hedef klasör eksik",
+        "The target folder is missing",
+    ))?;
     let mut available = 0u64;
     if unsafe {
         windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(

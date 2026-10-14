@@ -29,7 +29,13 @@ pub(super) fn format_selector(request: &AddRequest, info: &MediaInfo) -> Result<
         .filter(|s| !s.is_empty())
     {
         let format = info.formats.iter().find(|f| f.id == id).ok_or_else(|| {
-            anyhow!("Seçilen kalite/biçim kullanılabilir DRM'siz formatlar arasında değil: {id}")
+            anyhow!(
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Seçilen kalite/biçim kullanılabilir DRM'siz formatlar arasında değil: {id}"),
+                    format!("The selected quality/format is not among the available DRM-free formats: {id}")
+                )
+            )
         })?;
         if format.has_drm {
             crate::logging::record(
@@ -44,11 +50,17 @@ pub(super) fn format_selector(request: &AddRequest, info: &MediaInfo) -> Result<
         }
         return match request.kind {
             DownloadKind::Video if stream_absent(format.video_codec.as_deref()) => {
-                bail!("Seçilen format video akışı içermiyor")
+                bail!(crate::i18n::ui(
+                    "Seçilen format video akışı içermiyor",
+                    "The selected format has no video stream"
+                ))
             }
             DownloadKind::Audio => {
                 if stream_absent(format.audio_codec.as_deref()) {
-                    bail!("Seçilen format ses akışı içermiyor");
+                    bail!(crate::i18n::ui(
+                        "Seçilen format ses akışı içermiyor",
+                        "The selected format has no audio stream"
+                    ));
                 }
                 Ok(id.to_string())
             }
@@ -166,7 +178,10 @@ pub(super) fn best_mp4_video<'a>(
                 .cmp(&(right.height.unwrap_or(0), right.width.unwrap_or(0)))
         })
         .ok_or_else(|| {
-            anyhow!("Seçilen çözünürlükte MP4 uyumlu görüntü codec'i bulunamadı; MKV seçin")
+            anyhow!(crate::i18n::ui(
+                "Seçilen çözünürlükte MP4 uyumlu görüntü codec'i bulunamadı; MKV seçin",
+                "No MP4-compatible video codec was found at the selected resolution; choose MKV"
+            ))
         })
 }
 
@@ -183,7 +198,12 @@ pub(super) fn best_mp4_audio<'a>(
                 format.filesize.unwrap_or(0),
             )
         })
-        .ok_or_else(|| anyhow!("Seçilen dilde MP4 uyumlu ses codec'i bulunamadı; MKV seçin"))
+        .ok_or_else(|| {
+            anyhow!(crate::i18n::ui(
+                "Seçilen dilde MP4 uyumlu ses codec'i bulunamadı; MKV seçin",
+                "No MP4-compatible audio codec was found in the selected language; choose MKV"
+            ))
+        })
 }
 
 pub(super) fn automatic_mp4_selector(request: &AddRequest, info: &MediaInfo) -> Result<String> {
@@ -230,7 +250,11 @@ pub(super) fn automatic_mp4_selector(request: &AddRequest, info: &MediaInfo) -> 
     }
     crate::bail_code!(
         crate::error_codes::MED_014,
-        "Kaynakta MP4 kapsayıcısına kayıpsız aktarılabilen bir akış birleşimi yok; MKV seçin"
+        "{}",
+        crate::i18n::ui(
+            "Kaynakta MP4 kapsayıcısına kayıpsız aktarılabilen bir akış birleşimi yok; MKV seçin",
+            "The source has no stream combination that can be remuxed into MP4 without loss; choose MKV"
+        )
     )
 }
 
@@ -273,7 +297,12 @@ pub(super) fn validate_container_selection(request: &AddRequest, info: &MediaInf
             info.formats
                 .iter()
                 .find(|format| format.id == *id)
-                .ok_or_else(|| anyhow!("Seçilen biçim MP4 uyumluluğu için bulunamadı"))?,
+                .ok_or_else(|| {
+                    anyhow!(crate::i18n::ui(
+                        "Seçilen biçim MP4 uyumluluğu için bulunamadı",
+                        "The selected format was not found for MP4 compatibility"
+                    ))
+                })?,
         );
     }
     if let Some(id) = &request.audio_format_id {
@@ -283,7 +312,14 @@ pub(super) fn validate_container_selection(request: &AddRequest, info: &MediaInf
         selected.push(exact_audio_format(info, &audio.id)?);
     }
     if selected.iter().any(|format| !format_compatible(format)) {
-        crate::bail_code!(crate::error_codes::MED_014, "Seçilen codec birleşimi MP4 kapsayıcısına kayıpsız aktarılamıyor; MKV seçin. Sessiz yeniden kodlama yapılmadı");
+        crate::bail_code!(
+            crate::error_codes::MED_014,
+            "{}",
+            crate::i18n::ui(
+                "Seçilen codec birleşimi MP4 kapsayıcısına kayıpsız aktarılamıyor; MKV seçin. Sessiz yeniden kodlama yapılmadı",
+                "The selected codec combination cannot be remuxed into MP4 without loss; choose MKV. No silent re-encoding was done"
+            )
+        );
     }
     if !selected.is_empty() {
         return Ok(());
@@ -302,7 +338,14 @@ pub(super) fn validate_container_selection(request: &AddRequest, info: &MediaInf
                 })
         });
     if !video_available || !audio_available {
-        crate::bail_code!(crate::error_codes::MED_014, "Kaynakta MP4 kapsayıcısına kayıpsız aktarılabilen görüntü/ses birleşimi yok; MKV seçin. Sessiz yeniden kodlama yapılmadı");
+        crate::bail_code!(
+            crate::error_codes::MED_014,
+            "{}",
+            crate::i18n::ui(
+                "Kaynakta MP4 kapsayıcısına kayıpsız aktarılabilen görüntü/ses birleşimi yok; MKV seçin. Sessiz yeniden kodlama yapılmadı",
+                "The source has no video/audio combination that can be remuxed into MP4 without loss; choose MKV. No silent re-encoding was done"
+            )
+        );
     }
     Ok(())
 }

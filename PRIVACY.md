@@ -28,7 +28,7 @@ The installer also registers the extension with Chrome and Edge (`HKCU\Software\
 - When you start a download, it sends the download or page address, the request headers the browser used (Referer, Origin, Accept, Accept-Language, User-Agent) and, for a video handover, the page markup (used only for a local error report).
 - No `Cookie` or `Authorization` header is copied from network observation. A site's cookies are read **only after you allow it for that site** (**Allow session cookies for this site**) and the permission can be withdrawn at any time.
 - Taking over browser downloads is off by default; incognito downloads always stay in the browser.
-- The extension contains no remote code and stores only its on/off state, the sites where you hid the button and short-lived per-tab discovery state.
+- The extension contains no remote code and stores only its on/off state, the interface language the app reported (English or Turkish), the sites where you hid the button and short-lived per-tab discovery state.
 
 ### Extension permissions
 
@@ -39,7 +39,7 @@ The installer also registers the extension with Chrome and Edge (`HKCU\Software\
 | `downloads` | Optional takeover of ordinary browser downloads (off by default). A download is removed from the browser list only after the app accepts it. |
 | `tabs`, `webNavigation` | Identify the tab, frame and document a video belongs to, so the picker opens for the player you used. |
 | `webRequest` | Notice media manifests (HLS/DASH) the page loads. Nothing is blocked or modified. |
-| `storage` | The on/off state, hidden-button sites and short-lived discovery state. |
+| `storage` | The on/off state, the app's interface language, hidden-button sites and short-lived discovery state. |
 | `alarms` | Resume an interrupted browser transfer and refresh the completed-downloads badge for a while after a handover. |
 | `cookies` (optional) | Requested only when you allow session cookies for one site. |
 | Access to `http://*/*` and `https://*/*` | Media discovery must run on the page you choose. Page data goes nowhere except the local app. |

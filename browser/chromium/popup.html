@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>SSDownload</title>
@@ -26,13 +26,14 @@
 </head>
 <body>
 <header><img src="icons/icon32.png" width="18" height="18" alt=""><strong>SSDownload</strong><span id="state"></span></header>
-<label class="switch"><span>Algılama</span><input type="checkbox" id="detection"></label>
-<label class="switch"><span id="site-label">Bu sitede düğmeyi gösterme</span><input type="checkbox" id="hide-site"></label>
-<h2>Bu sayfadaki medya</h2>
+<label class="switch"><span data-i18n="popupDetection"></span><input type="checkbox" id="detection"></label>
+<label class="switch"><span id="site-label" data-i18n="popupHideOnThisSite"></span><input type="checkbox" id="hide-site"></label>
+<h2 data-i18n="popupMediaHeading"></h2>
 <ul id="media"></ul>
-<p class="empty" id="empty" hidden>Bu sayfada seçilebilir medya bulunamadı. Videoyu oynatıp tekrar açın.</p>
+<p class="empty" id="empty" data-i18n="popupNoMedia" hidden></p>
 <p class="status" id="status"></p>
-<footer><button id="open-app" class="primary">Uygulamayı aç</button><button id="close">Kapat</button></footer>
+<footer><button id="open-app" class="primary" data-i18n="popupOpenApp"></button><button id="close" data-i18n="popupClose"></button></footer>
+<script src="i18n.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

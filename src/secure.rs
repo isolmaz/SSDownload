@@ -16,7 +16,10 @@ const PREFIX: &str = "dpapi-v1:";
 /// not outlive this function. Mirrors `unseal`, which zeroes the decrypted buffer.
 pub fn seal(value: String) -> Result<String> {
     let mut bytes = value.into_bytes();
-    let len: u32 = bytes.len().try_into().context("Kuyruk kaydı çok büyük")?;
+    let len: u32 = bytes.len().try_into().context(crate::i18n::ui(
+        "Kuyruk kaydı çok büyük",
+        "The queue record is too large",
+    ))?;
     let input = CRYPT_INTEGER_BLOB {
         cbData: len,
         pbData: bytes.as_mut_ptr(),
@@ -40,7 +43,10 @@ pub fn seal(value: String) -> Result<String> {
     let error = (ok == 0).then(std::io::Error::last_os_error);
     wipe(&mut bytes);
     if let Some(error) = error {
-        return Err(error).context("Kuyruk verisi Windows DPAPI ile korunamadı");
+        return Err(error).context(crate::i18n::ui(
+            "Kuyruk verisi Windows DPAPI ile korunamadı",
+            "The queue data could not be protected with Windows DPAPI",
+        ));
     }
     let encoded = unsafe {
         STANDARD.encode(std::slice::from_raw_parts(
@@ -56,9 +62,18 @@ pub fn seal(value: String) -> Result<String> {
 
 pub fn unseal(value: &str) -> Result<String> {
     let Some(encoded) = value.strip_prefix(PREFIX) else {
-        bail!("Desteklenmeyen veya korunmamış kuyruk kaydı");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Desteklenmeyen veya korunmamış kuyruk kaydı",
+                "Unsupported or unprotected queue record"
+            )
+        );
     };
-    let mut bytes = STANDARD.decode(encoded).context("Kuyruk kaydı bozuk")?;
+    let mut bytes = STANDARD.decode(encoded).context(crate::i18n::ui(
+        "Kuyruk kaydı bozuk",
+        "The queue record is corrupted",
+    ))?;
     let input = CRYPT_INTEGER_BLOB {
         cbData: bytes.len().try_into()?,
         pbData: bytes.as_mut_ptr(),
@@ -79,8 +94,10 @@ pub fn unseal(value: &str) -> Result<String> {
         )
     };
     if ok == 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("Kuyruk kaydı açılamadı; kayıt bu Windows kullanıcısına ait olmayabilir");
+        return Err(std::io::Error::last_os_error()).context(crate::i18n::ui(
+            "Kuyruk kaydı açılamadı; kayıt bu Windows kullanıcısına ait olmayabilir",
+            "The queue record could not be opened; it may belong to a different Windows user",
+        ));
     }
     let result = unsafe {
         String::from_utf8(
@@ -94,7 +111,10 @@ pub fn unseal(value: &str) -> Result<String> {
         LocalFree(output.pbData.cast());
     }
     wipe(&mut bytes);
-    result.context("Kuyruk kaydı geçerli UTF-8 değil")
+    result.context(crate::i18n::ui(
+        "Kuyruk kaydı geçerli UTF-8 değil",
+        "The queue record is not valid UTF-8",
+    ))
 }
 
 /// Zeroes a buffer with volatile writes the optimizer cannot remove as dead stores.

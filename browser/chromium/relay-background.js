@@ -6,6 +6,7 @@
 (function installBrowserRelay() {
   const relayApi = globalThis.browser || chrome;
   const relayPromiseApi = typeof globalThis.browser !== "undefined";
+  const { t } = SSDownloadI18n;
   const RELAY_HOST = "com.ssdownload.desktop";
   const CONTROL_CHANNEL = "ssdownload-relay-control";
   const INTERNAL_CHANNEL = "ssdownload-relay-internal";
@@ -36,12 +37,12 @@
   function uuid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
   function safeDocument(value) { return typeof value === "string" && value.length > 0 && value.length <= 128; }
   function nativeError(error) {
-    const message = String(error?.message || error || "Bilinmeyen yerel bağlantı hatası");
+    const message = String(error?.message || error || t("relayUnknownNativeError"));
     // Chrome's "Access to the specified native messaging host is forbidden." also contains
     // the not-found wording, so a refused extension identity is recognised first.
-    if (/forbidden/i.test(message)) return "SSDownload yerel bağlantısı bu eklentiye izin vermiyor (eklenti kimliği izinli değil).";
-    if (/native messaging host.*not found|specified native messaging host|no such native application/i.test(message)) return "SSDownload uygulaması bu bilgisayarda bulunamadı.";
-    return `SSDownload kalıcı yerel bağlantısı kesildi: ${message}`;
+    if (/forbidden/i.test(message)) return t("relayNativeForbidden");
+    if (/native messaging host.*not found|specified native messaging host|no such native application/i.test(message)) return t("relayNativeMissing");
+    return t("relayNativeDisconnected", message);
   }
 
   // Relay progress reaches the session log through the same bounded relay module the
@@ -63,13 +64,13 @@
   }
 
   function pauseAfterNativeDisconnect(failure) {
-    const reason = `Yerel tarayıcı bağlantısı koptu; aktarım açıkça duraklatıldı: ${failure.message}`.slice(0, 500);
+    const reason = t("relayPausedNativeDisconnect", failure.message).slice(0, 500);
     for (const state of jobs.values()) {
       if (state.paused || state.stopping) continue;
       abortAndPause(state, reason).catch(error => {
         state.stopping = true;
         state.autoResume = false;
-        state.reason = `Tarayıcı fetch durması doğrulanamadı; bağlantı izinleri güvenli olarak tutuluyor: ${String(error?.message || error)}`.slice(0, 500);
+        state.reason = t("relayStopUnverified", String(error?.message || error)).slice(0, 500);
         saveJobs().catch(() => {});
       });
     }
@@ -95,16 +96,16 @@
         if (nativePort !== port) return;
         const current = nativeCurrent;
         nativeCurrent = null;
-        if (!current) { resetPort(new Error("Beklenmeyen Native Messaging yanıtı")); return; }
+        if (!current) { resetPort(new Error(t("relayUnexpectedNativeReply"))); return; }
         nativeQueueBytes -= current.bytes;
-        if (!response || typeof response.ok !== "boolean") current.reject(new Error("Yerel uygulama geçersiz yanıt verdi"));
+        if (!response || typeof response.ok !== "boolean") current.reject(new Error(t("nativeInvalidReply")));
         else current.resolve(response);
         drainNative();
       });
       port.onDisconnect.addListener(() => {
         if (nativePort !== port) return;
         const error = relayApi.runtime.lastError;
-        resetPort(new Error(error?.message || "Native Messaging host kapandı"));
+        resetPort(new Error(error?.message || t("relayNativeHostClosed")));
       });
       return port;
     } catch (error) { throw new Error(nativeError(error)); }
@@ -129,11 +130,11 @@
       const message = { version: 2, action };
       const bytes = nativeEncoder.encode(JSON.stringify(message)).byteLength + 4;
       if (bytes > MAX_NATIVE_FRAME_BYTES) {
-        reject(new Error("Yerel aktarım iletisi 1 MiB sınırını aşıyor"));
+        reject(new Error(t("relayMessageTooLarge")));
         return;
       }
       if (nativeQueue.length + (nativeCurrent ? 1 : 0) >= 64 || nativeQueueBytes + bytes > MAX_NATIVE_QUEUE_BYTES) {
-        reject(new Error("Tarayıcı aktarım kuyruğu 8 MiB sınırına ulaştı"));
+        reject(new Error(t("relayQueueFull")));
         return;
       }
       nativeQueueBytes += bytes;
@@ -144,10 +145,10 @@
 
   async function transferCommand(command) {
     const response = await persistentNative({ type: "browser_transfer", command });
-    if (!response.ok) throw new Error(String(response.message || "Tarayıcı aktarımı reddedildi"));
+    if (!response.ok) throw new Error(String(response.message || t("relayRefused")));
     const transfer = response.result?.browser_transfer;
     if (!transfer || transfer.job_id !== command.id || transfer.max_chunk_bytes !== MAX_CHUNK_BYTES || !Array.isArray(transfer.streams)) {
-      throw new Error("Masaüstü tarayıcı aktarım yanıtı uyumsuz");
+      throw new Error(t("relayReplyIncompatible"));
     }
     return transfer;
   }
@@ -172,7 +173,7 @@
         if (!value.paused) {
           value.stopping = true;
           value.autoResume = false;
-          value.reason = "Tarayıcı bağlantısı yeniden başlatıldı; etkin fetch işlemi açıkça durduruluyor.";
+          value.reason = t("relayRestartedStopping");
           interrupted = true;
         }
         jobs.set(value.jobId, value);
@@ -187,7 +188,7 @@
 
   async function saveJobs() {
     const values = Array.from(jobs.values()).slice(-8).map(({request, requestOps, ...value}) => ({...value, request}));
-    if (JSON.stringify(values).length > MAX_SAVED_BYTES) throw new Error("Tarayıcı aktarım sürdürme kaydı çok büyük");
+    if (JSON.stringify(values).length > MAX_SAVED_BYTES) throw new Error(t("relayResumeRecordTooLarge"));
     await call(relayApi.storage.session, "set", { browserRelayJobs: values });
     closeIdlePort();
   }
@@ -222,9 +223,10 @@
   function policyPaused(reason) {
     const text = String(reason || "");
     // Current desktops tag the stop with SSD-TRF-013 (code first, localized
-    // sentence after); older builds sent only the Turkish sentence. Both count.
+    // sentence after); older builds sent only the sentence, in the desktop's language
+    // (Turkish or English: src/error_codes.rs TRF_013). Both count.
     return globalThis.SSDownloadErrorCodes?.splitCode?.(text)?.code === "SSD-TRF-013"
-      || /kuyruk kotası, zaman veya eşzamanlılık sınırında durduruldu/i.test(text);
+      || /kuyruk kotası, zaman veya eşzamanlılık sınırında durduruldu|queue quota, time, or concurrency limit/i.test(text);
   }
 
   function scheduleAutomaticResume() {
@@ -245,7 +247,7 @@
       const frames = await call(relayApi.webNavigation, "getAllFrames", { tabId: state.tabId });
       frame = frames?.find(value => value.frameId === state.frameId);
       if (!tab || !frame || (frame.documentId && frame.documentId !== state.documentId) || !/^https?:/.test(frame.url || "")) {
-        throw new Error("Kaynak frame veya belge artık aynı değil");
+        throw new Error(t("relaySourceFrameChanged"));
       }
     } catch (error) {
       state.autoResume = false;
@@ -259,8 +261,9 @@
     } catch (error) {
       const reason = String(error?.message || error);
       // The desktop words these refusals in its interface language (the engine's Turkish/English
-      // pairs); both wordings end the job's automatic resumption, never just the Turkish one.
-      if (/İş bulunamadı|ayrılamaz|yetkilendirilmeli|Deneysel tarayıcı aktarımı|cannot be set aside|must be authorized|Experimental browser transfer/i.test(reason)) {
+      // pairs, src/engine/mod.rs); both wordings end the job's automatic resumption, never just
+      // the Turkish one.
+      if (/İş bulunamadı|ayrılamaz|yetkilendirilmeli|Deneysel tarayıcı aktarımı|Job not found|cannot be set aside|must be authorized|Experimental browser transfer/i.test(reason)) {
         jobs.delete(state.jobId);
       } else {
         state.reason = reason.slice(0, 500);
@@ -282,7 +285,7 @@
     if (!matches) {
       await transferCommand({ operation: "pause", id: state.jobId, token: transfer.token }).catch(() => {});
       state.autoResume = false;
-      state.reason = "Yeniden başlayan iş kaynak frame/belge ile eşleşmiyor";
+      state.reason = t("relayResumedJobMismatch");
       return;
     }
     state.token = transfer.token;
@@ -299,16 +302,16 @@
     try {
       const accepted = await sendFrame(state, { channel: INTERNAL_CHANNEL, command: "start", jobId: state.jobId,
         token: state.token, runToken: state.runToken, documentId: state.documentId, request: state.request, streams: transfer.streams });
-      if (!accepted?.ok) throw new Error(String(accepted?.error || "Kaynak belge aktarımı kabul etmedi"));
+      if (!accepted?.ok) throw new Error(String(accepted?.error || t("relaySourceRejected")));
       relayStage("resume", state);
     } catch (error) {
-      const reason = `Kaynak belgeye ulaşılamadı: ${String(error?.message || error)}`;
+      const reason = t("relaySourceUnreachable", String(error?.message || error));
       try {
         await pauseState(state, reason);
       } catch (stopError) {
         state.stopping = true;
         state.autoResume = false;
-        state.reason = `Tarayıcı fetch durması doğrulanamadı; bağlantı izinleri güvenli olarak tutuluyor: ${String(stopError?.message || stopError)}`.slice(0, 500);
+        state.reason = t("relayStopUnverified", String(stopError?.message || stopError)).slice(0, 500);
         await saveJobs().catch(() => {});
       }
     }
@@ -330,7 +333,7 @@
     const settled = await sendFrame(state, {
       channel: INTERNAL_CHANNEL, command: "abort", jobId: state.jobId, runToken: state.runToken, reason
     });
-    if (!settled?.ok && !settled?.settled) throw new Error(String(settled?.error || "Kaynak fetch işlemi durmayı doğrulamadı"));
+    if (!settled?.ok && !settled?.settled) throw new Error(String(settled?.error || t("relayAbortUnconfirmed")));
   }
 
   async function endTrackedRequests(state) {
@@ -348,7 +351,7 @@
     state.paused = true;
     state.stopping = false;
     state.autoResume = automatic;
-    state.reason = String(reason || "Tarayıcı aktarımı duraklatıldı").slice(0, 500);
+    state.reason = String(reason || t("relayPaused")).slice(0, 500);
     await saveJobs().catch(() => {});
     relayStage("pause", state, { level: automatic ? "warn" : "info", outcome: automatic ? "retry" : "ok", reason: state.reason });
     if (automatic) scheduleAutomaticResume();
@@ -369,10 +372,10 @@
     for (const state of jobs.values()) {
       if (state.paused || !state.stopping) continue;
       try {
-        await abortAndPause(state, state.reason || "Tarayıcı bağlantısı yeniden başlatıldı");
+        await abortAndPause(state, state.reason || t("relayRestarted"));
       } catch (error) {
         state.stopping = true;
-        state.reason = `Tarayıcı fetch durması doğrulanamadı; bağlantı izinleri güvenli olarak tutuluyor: ${String(error?.message || error)}`.slice(0, 500);
+        state.reason = t("relayStopUnverified", String(error?.message || error)).slice(0, 500);
         await saveJobs().catch(() => {});
       }
     }
@@ -382,29 +385,29 @@
     await ready;
     const tabId = Number(message.tabId), frameId = Number(message.frameId);
     if (!uuid(message.jobId) || !Number.isInteger(tabId) || tabId < 0 || !Number.isInteger(frameId) || frameId < 0 || !safeDocument(message.documentId)) {
-      throw new Error("Tarayıcı aktarım hedefi geçersiz");
+      throw new Error(t("relayTargetInvalid"));
     }
     const tab = await call(relayApi.tabs, "get", tabId);
-    if (!tab || typeof tab.url !== "string" || !/^https?:/.test(tab.url)) throw new Error("Kaynak sekmesi artık açık değil");
+    if (!tab || typeof tab.url !== "string" || !/^https?:/.test(tab.url)) throw new Error(t("relayTabClosed"));
 
     const frames = await call(relayApi.webNavigation, "getAllFrames", {tabId});
     const frame = frames?.find(value => value.frameId === frameId);
-    if (!frame || (frame.documentId && frame.documentId !== message.documentId) || !/^https?:/.test(frame.url || "")) throw new Error("Kaynak frame veya belge artık aynı değil");
+    if (!frame || (frame.documentId && frame.documentId !== message.documentId) || !/^https?:/.test(frame.url || "")) throw new Error(t("relaySourceFrameChanged"));
 
     const previous = jobs.get(message.jobId);
-    if (!previous && jobs.size >= 8) throw new Error("Aynı anda en fazla sekiz tarayıcı aktarımı tutulabilir");
+    if (!previous && jobs.size >= 8) throw new Error(t("relayTooManyJobs"));
     const sameBinding = previous && previous.tabId === tabId && previous.frameId === frameId && previous.documentId === message.documentId;
     const capabilities = await persistentNative({ type: "capabilities" });
-    if (!capabilities.ok) throw new Error(String(capabilities.message || "Masaüstü özellikleri okunamadı"));
+    if (!capabilities.ok) throw new Error(String(capabilities.message || t("relayCapabilitiesUnreadable")));
     const authorized = transferJobs(capabilities).some(job => job?.id === message.jobId);
-    if (!authorized && !sameBinding) throw new Error("Bu iş masaüstündeki Kaynak adresini yenile eylemiyle yetkilendirilmedi");
+    if (!authorized && !sameBinding) throw new Error(t("relayJobNotAuthorized"));
 
-    if (previous && !previous.paused) await pauseState(previous, "Yeni açık aktarım isteği önceki tarayıcı çalışmasını durdurdu");
+    if (previous && !previous.paused) await pauseState(previous, t("relayReplacedByNewRequest"));
     const transfer = await transferCommand({ operation: "begin", id: message.jobId, total: null, etag: null, restart: message.restart === true });
     if (typeof transfer.token !== "string" || transfer.token.length !== 64
         || !Number.isSafeInteger(transfer.sender_generation) || transfer.sender_generation <= 0
         || !transfer.request || typeof transfer.request.url !== "string") {
-      throw new Error("Masaüstü aktarım yetkisi veya kaynak isteği eksik");
+      throw new Error(t("relayGrantMissing"));
     }
     const identity = transfer.request.source_identity;
     const matches = identity
@@ -413,7 +416,7 @@
       : !transfer.request.page_url || samePage(transfer.request.page_url, frame.url);
     if (!matches) {
       await transferCommand({operation:"pause",id:message.jobId,token:transfer.token}).catch(()=>{});
-      throw new Error("Yetkili iş seçilen kaynak frame/belge ile eşleşmiyor");
+      throw new Error(t("relayAuthorizedJobMismatch"));
     }
     const state = {
       jobId: message.jobId, tabId, frameId, documentId: message.documentId,
@@ -425,11 +428,11 @@
       await saveJobs();
       const accepted = await sendFrame(state, { channel: INTERNAL_CHANNEL, command: "start", jobId: state.jobId,
         token: state.token, runToken: state.runToken, documentId: state.documentId, request: state.request, streams: transfer.streams });
-      if (!accepted?.ok) throw new Error(String(accepted?.error || "Kaynak belge aktarımı kabul etmedi"));
+      if (!accepted?.ok) throw new Error(String(accepted?.error || t("relaySourceRejected")));
       relayStage("start", state);
     } catch (error) {
       relayStage("failed", state, { level: "warn", outcome: "failed", code: "SSD-EXT-007", reason: String(error?.message || error) });
-      await pauseState(state, `Kaynak belgeye ulaşılamadı: ${error.message}`);
+      await pauseState(state, t("relaySourceUnreachable", error.message));
       throw error;
     }
     return { ok: true, jobId: state.jobId, state: "running", sourceRequired: true, popupRequired: false };
@@ -453,7 +456,7 @@
     const state = jobs.get(message.jobId);
     if (!state || state.paused || (!allowStopping && state.stopping) || message.runToken !== state.runToken || message.token !== state.token || message.documentId !== state.documentId
         || sender.tab?.id !== state.tabId || Number(sender.frameId || 0) !== state.frameId
-        || (sender.documentId && sender.documentId !== state.documentId)) throw new Error("Tarayıcı aktarım göndereni veya yetkisi geçersiz");
+        || (sender.documentId && sender.documentId !== state.documentId)) throw new Error(t("relaySenderInvalid"));
     return state;
   }
 
@@ -462,7 +465,7 @@
     const state = assertContent(message, sender, message.command === "end_request");
     switch (message.command) {
       case "open": {
-        if (!Number.isInteger(message.streamId) || message.streamId <= 0 || message.streamId > 63) throw new Error("Akış kimliği geçersiz");
+        if (!Number.isInteger(message.streamId) || message.streamId <= 0 || message.streamId > 63) throw new Error(t("relayStreamIdInvalid"));
         return transferCommand({ operation: "open_stream", id: state.jobId, token: state.token, stream_id: message.streamId,
           role: message.role, format_id: message.formatId ?? null, language: message.language ?? null,
           total: Number.isSafeInteger(message.total) && message.total >= 0 ? message.total : null,
@@ -473,26 +476,26 @@
         if (!Number.isInteger(message.streamId) || message.streamId <= 0 || !Number.isSafeInteger(message.sequence) || message.sequence < 0
             || !Number.isSafeInteger(message.offset) || message.offset < 0 || typeof message.data !== "string"
             || message.data.length > Math.ceil(MAX_CHUNK_BYTES / 3) * 4 || !/^[a-f0-9]{64}$/.test(message.sha256)
-            || checkpointText.length > MAX_CHECKPOINT_BYTES) throw new Error("Tarayıcı aktarım parçası geçersiz");
+            || checkpointText.length > MAX_CHECKPOINT_BYTES) throw new Error(t("relayChunkInvalid"));
         return transferCommand({ operation: "chunk", id: state.jobId, token: state.token, stream_id: message.streamId,
           sequence: message.sequence, offset: message.offset, data: message.data, sha256: message.sha256,
           client_checkpoint: message.clientCheckpoint ?? null });
       }
       case "seal":
-        if (!Number.isInteger(message.streamId) || message.streamId <= 0 || !/^[a-f0-9]{64}$/.test(message.sha256)) throw new Error("Akış mühürleme bilgisi geçersiz");
+        if (!Number.isInteger(message.streamId) || message.streamId <= 0 || !/^[a-f0-9]{64}$/.test(message.sha256)) throw new Error(t("relaySealInvalid"));
         return transferCommand({ operation: "seal_stream", id: state.jobId, token: state.token, stream_id: message.streamId, sha256: message.sha256 });
       case "status": return transferCommand({ operation: "status", id: state.jobId, token: state.token });
       case "begin_request": {
-        if (!validRequestId(message.requestId)) throw new Error("Tarayıcı bağlantı kimliği geçersiz");
+        if (!validRequestId(message.requestId)) throw new Error(t("relayRequestIdInvalid"));
         return queueRequestOperation(state, async () => {
-          if (state.stopping || state.paused || jobs.get(state.jobId) !== state) throw new Error("Tarayıcı aktarımı durduruluyor");
+          if (state.stopping || state.paused || jobs.get(state.jobId) !== state) throw new Error(t("relayStopping"));
           if (!(state.requestIds || []).includes(message.requestId)) {
-            if ((state.requestIds || []).length >= 64) throw new Error("Tarayıcı bağlantı izni sayısı sınırı aşıldı");
+            if ((state.requestIds || []).length >= 64) throw new Error(t("relayPermitLimit"));
             // Persist intent before native dispatch: a lost Begin response must still be
             // reconciled by this exact ID rather than risking an untracked grant.
             state.requestIds = [...(state.requestIds || []), message.requestId];
             await saveJobs();
-            if (state.stopping || state.paused || jobs.get(state.jobId) !== state) throw new Error("Tarayıcı aktarımı durduruluyor");
+            if (state.stopping || state.paused || jobs.get(state.jobId) !== state) throw new Error(t("relayStopping"));
           }
           const result = await transferCommand({ operation: "begin_request", id: state.jobId, token: state.token,
             generation: state.generation, request_id: message.requestId });
@@ -504,7 +507,7 @@
         });
       }
       case "end_request": {
-        if (!validRequestId(message.requestId)) throw new Error("Tarayıcı bağlantı kimliği geçersiz");
+        if (!validRequestId(message.requestId)) throw new Error(t("relayRequestIdInvalid"));
         return queueRequestOperation(state, async () => {
           const result = await transferCommand({ operation: "end_request", id: state.jobId, token: state.token,
             generation: state.generation, request_id: message.requestId });
@@ -524,20 +527,20 @@
       case "failed": {
         // The content worker sends this only after its fetch/reader finally blocks have
         // cancelled or consumed every body and ended their exact permits.
-        const reason = String(message.error || "Kaynak sayfa aktarımı tamamlayamadı");
+        const reason = String(message.error || t("relayPageTransferFailed"));
         state.stopping = true;
         await endTrackedRequests(state);
         await completePause(state, reason, policyPaused(reason));
         return { job_id: state.jobId, paused: true, automatic_resume: state.autoResume === true };
       }
-      default: throw new Error("Bilinmeyen tarayıcı aktarım iç komutu");
+      default: throw new Error(t("relayUnknownInternalCommand"));
     }
   }
 
   async function uiControl(message, sender) {
     await ready;
     if (sender.id !== relayApi.runtime.id || typeof sender.url !== "string" || !sender.url.startsWith(relayApi.runtime.getURL(""))) {
-      throw new Error("Tarayıcı aktarımı yalnız eklenti arayüzünden başlatılabilir");
+      throw new Error(t("relayUiOnly"));
     }
     if (message.command === "start") return startRelay(message).finally(closeIdlePort);
     if (message.command === "status") {
@@ -549,24 +552,24 @@
       if (!state) return {ok:true,state:"inactive"};
       if (state.paused && state.autoResume) {
         state.autoResume = false;
-        state.reason = message.command === "cancel" ? "Kullanıcı iptal etti" : "Kullanıcı tarayıcı aktarımını duraklattı";
+        state.reason = message.command === "cancel" ? t("relayUserCancelled") : t("relayUserPaused");
         if (message.command === "cancel") jobs.delete(state.jobId);
         await saveJobs();
         if (message.command === "cancel") relayStage("cancel", state, { reason: state.reason });
         return {ok:true,state:message.command === "cancel" ? "cancelled" : "paused"};
       }
       if (message.command === "cancel") {
-        await abortContent(state, "Kullanıcı iptal etti");
+        await abortContent(state, t("relayUserCancelled"));
         await endTrackedRequests(state);
         await transferCommand({operation:"cancel",id:state.jobId,token:state.token});
         jobs.delete(state.jobId); await saveJobs();
-        relayStage("cancel", state, { reason: "Kullanıcı iptal etti" });
+        relayStage("cancel", state, { reason: t("relayUserCancelled") });
         return {ok:true,state:"cancelled"};
       }
-      await pauseState(state,"Kullanıcı tarayıcı aktarımını duraklattı");
+      await pauseState(state,t("relayUserPaused"));
       return {ok:true,state:"paused"};
     }
-    throw new Error("Bilinmeyen tarayıcı aktarım komutu");
+    throw new Error(t("relayUnknownCommand"));
   }
 
   relayApi.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -599,7 +602,7 @@
         terminateClosedTab(state, reason).catch(error => {
           state.stopping = true;
           state.autoResume = false;
-          state.reason = `Tarayıcı sekmesi kapandı ancak bağlantı izinleri sonlandırılamadı: ${String(error?.message || error)}`.slice(0, 500);
+          state.reason = t("relayTabClosedPermitsFailed", String(error?.message || error)).slice(0, 500);
           saveJobs().catch(() => {});
         });
       } else {
@@ -609,7 +612,7 @@
           relayStage("failed", state, { level: "warn", outcome: "failed", code: "SSD-EXT-007", reason: String(error?.message || error) });
           state.stopping = true;
           state.autoResume = false;
-          state.reason = `Tarayıcı fetch durması doğrulanamadı; bağlantı izinleri güvenli olarak tutuluyor: ${String(error?.message || error)}`.slice(0, 500);
+          state.reason = t("relayStopUnverified", String(error?.message || error)).slice(0, 500);
           // While the recorded document is still the one this tab shows, the record
           // stays pausable and cancelable: a retry reaches the same frame. Once the
           // document has moved on no frame round-trip can ever settle it, so the
@@ -629,7 +632,7 @@
             if (jobs.get(state.jobId) === state) jobs.delete(state.jobId);
             await saveJobs();
           } catch (stopError) {
-            state.reason = `Belge kapandı ancak masaüstü izinleri sonlandırılamadı: ${String(stopError?.message || stopError)}`.slice(0, 500);
+            state.reason = t("relayDocumentClosedPermitsFailed", String(stopError?.message || stopError)).slice(0, 500);
             await saveJobs().catch(() => {});
           }
         });
@@ -639,11 +642,11 @@
   }
 
   relayApi.tabs.onRemoved.addListener(tabId => {
-    invalidateTabBindings(tabId, "Kaynak sekmesi kapandı; aktarım açıkça duraklatıldı", true);
+    invalidateTabBindings(tabId, t("relayTabClosedPaused"), true);
   });
   relayApi.tabs.onUpdated.addListener((tabId, change) => {
     if (!change.url && change.status !== "loading") return;
-    invalidateTabBindings(tabId, "Kaynak sekmesi başka bir belgeye geçti; aktarım açıkça duraklatıldı");
+    invalidateTabBindings(tabId, t("relayTabNavigatedPaused"));
   });
 
   // Trusted worker-internal surface. The discovery background runs in the same

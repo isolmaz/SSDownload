@@ -211,7 +211,13 @@ impl NetworkGovernor {
     fn acquire(&self, scope: LeaseScope, control: &TransferControl) -> Result<ConnectionLease> {
         loop {
             if control.stop_requested() {
-                bail!("Ağ bağlantısı kapasite beklerken durduruldu");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "Ağ bağlantısı kapasite beklerken durduruldu",
+                        "The network connection was stopped while waiting for capacity"
+                    )
+                );
             }
             let mut state = self.lock_state();
             if can_acquire(&state, &scope, 1) {
@@ -242,12 +248,22 @@ impl NetworkGovernor {
     ) -> Result<ConnectionLease> {
         loop {
             if control.stop_requested() {
-                bail!("FTP bağlantısı kapasite beklerken durduruldu");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "FTP bağlantısı kapasite beklerken durduruldu",
+                        "The FTP connection was stopped while waiting for capacity"
+                    )
+                );
             }
             let mut state = self.lock_state();
             if state.per_host_limit < 2 {
                 bail!(
-                    "FTP aktarımı aynı anda denetim ve veri soketi gerektirir; sunucu başına bağlantı sınırı en az 2 olmalıdır"
+                    "{}",
+                    crate::i18n::ui(
+                        "FTP aktarımı aynı anda denetim ve veri soketi gerektirir; sunucu başına bağlantı sınırı en az 2 olmalıdır",
+                        "An FTP transfer needs a control and a data socket at the same time; the per-server connection limit must be at least 2"
+                    )
                 );
             }
             let scope = LeaseScope::Host(host.clone());
@@ -406,11 +422,20 @@ pub(crate) fn canonical_host(url: &Url) -> Result<String> {
     // Do not derive identity from `host_str()`: its IPv6 serialization includes
     // brackets, while a DNS name needs trailing-dot normalization. `Url` has
     // already applied IDNA and parsed address literals structurally.
-    match url.host().context("Ağ adresinde sunucu adı yok")? {
+    match url.host().context(crate::i18n::ui(
+        "Ağ adresinde sunucu adı yok",
+        "The network address has no host name",
+    ))? {
         Host::Domain(domain) => {
             let host = domain.trim_end_matches('.').to_ascii_lowercase();
             if host.is_empty() {
-                bail!("Ağ adresinde sunucu adı yok");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "Ağ adresinde sunucu adı yok",
+                        "The network address has no host name"
+                    )
+                );
             }
             Ok(host)
         }
@@ -580,7 +605,13 @@ impl CurlSocketCallbacks {
         ] {
             let code = unsafe { curl_sys::curl_easy_setopt(easy.raw(), option, value) };
             if code != curl_sys::CURLE_OK {
-                bail!("libcurl soket yaşam döngüsü aracılığı etkinleştirilemedi");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "libcurl soket yaşam döngüsü aracılığı etkinleştirilemedi",
+                        "The libcurl socket lifecycle hook could not be enabled"
+                    )
+                );
             }
         }
         for option in [
@@ -590,7 +621,13 @@ impl CurlSocketCallbacks {
         ] {
             let code = unsafe { curl_sys::curl_easy_setopt(easy.raw(), option, data) };
             if code != curl_sys::CURLE_OK {
-                bail!("libcurl soket yaşam döngüsü verisi ayarlanamadı");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "libcurl soket yaşam döngüsü verisi ayarlanamadı",
+                        "The libcurl socket lifecycle data could not be set"
+                    )
+                );
             }
         }
         Ok(())
@@ -636,7 +673,10 @@ extern "C" fn curl_open_socket(
         }
         let state = &*(data as *const CurlSocketState);
         if purpose != curl_sys::CURLSOCKTYPE_IPCXN {
-            state.fail("libcurl desteklenmeyen bir soket türü istedi");
+            state.fail(crate::i18n::ui(
+                "libcurl desteklenmeyen bir soket türü istedi",
+                "libcurl requested an unsupported socket type",
+            ));
             return curl_sys::CURL_SOCKET_BAD;
         }
         let family = (*address).family;
@@ -644,7 +684,10 @@ extern "C" fn curl_open_socket(
         if !matches!(family, value if value == AF_INET as i32 || value == AF_INET6 as i32)
             || socktype != SOCK_STREAM
         {
-            state.fail("libcurl desteklenmeyen ağ soketi türü istedi");
+            state.fail(crate::i18n::ui(
+                "libcurl desteklenmeyen ağ soketi türü istedi",
+                "libcurl requested an unsupported network socket type",
+            ));
             return curl_sys::CURL_SOCKET_BAD;
         }
 
@@ -656,14 +699,20 @@ extern "C" fn curl_open_socket(
         let mut entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                state.fail(&format!("Ağ bağlantısı açılamadı: {error:#}"));
+                state.fail(&crate::i18n::ui_owned!(
+                    format!("Ağ bağlantısı açılamadı: {error:#}"),
+                    format!("The network connection could not be opened: {error:#}")
+                ));
                 return curl_sys::CURL_SOCKET_BAD;
             }
         };
 
         let socket = socket(family, socktype, (*address).protocol);
         if socket == INVALID_SOCKET {
-            state.fail("Ağ soketi açılamadı");
+            state.fail(crate::i18n::ui(
+                "Ağ soketi açılamadı",
+                "The network socket could not be opened",
+            ));
             drop(entry);
             return curl_sys::CURL_SOCKET_BAD;
         }
@@ -678,7 +727,10 @@ extern "C" fn curl_open_socket(
                     drop(entry);
                     WSASetLastError(error);
                     if state.control.stop_requested() {
-                        state.fail("Ağ bağlantısı açılırken durduruldu");
+                        state.fail(crate::i18n::ui(
+                            "Ağ bağlantısı açılırken durduruldu",
+                            "The network connection was stopped while opening",
+                        ));
                     }
                     return curl_sys::CURL_SOCKET_BAD;
                 }
@@ -695,7 +747,10 @@ extern "C" fn curl_open_socket(
             drop(sockets);
             let _ = closesocket(socket as _);
             drop(entry);
-            state.fail("libcurl soket tanıtıcısını yeniden kullandı");
+            state.fail(crate::i18n::ui(
+                "libcurl soket tanıtıcısını yeniden kullandı",
+                "libcurl reused a socket handle",
+            ));
             return curl_sys::CURL_SOCKET_BAD;
         }
         sockets.insert(socket, entry);
@@ -715,7 +770,10 @@ extern "C" fn curl_socket_options(
         }
         let state = &*(data as *const CurlSocketState);
         if purpose != curl_sys::CURLSOCKTYPE_IPCXN {
-            state.fail("libcurl desteklenmeyen soket seçeneği istedi");
+            state.fail(crate::i18n::ui(
+                "libcurl desteklenmeyen soket seçeneği istedi",
+                "libcurl requested an unsupported socket option",
+            ));
             return CURL_SOCKOPT_ERROR;
         }
         let preconnected = state
@@ -728,7 +786,10 @@ extern "C" fn curl_socket_options(
             Some(true) => CURL_SOCKOPT_ALREADY_CONNECTED,
             Some(false) => CURL_SOCKOPT_OK,
             None => {
-                state.fail("libcurl kayıtsız soket seçeneği istedi");
+                state.fail(crate::i18n::ui(
+                    "libcurl kayıtsız soket seçeneği istedi",
+                    "libcurl requested an unregistered socket option",
+                ));
                 CURL_SOCKOPT_ERROR
             }
         }
@@ -849,7 +910,13 @@ impl CurlSocketState {
 
     fn try_open_entry(&self) -> Result<SocketEntry> {
         if self.control.stop_requested() {
-            bail!("Ağ bağlantısı açılmadan durduruldu");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Ağ bağlantısı açılmadan durduruldu",
+                    "The network connection was stopped before opening"
+                )
+            );
         }
         if let Some(lease) = self
             .primed
@@ -869,7 +936,10 @@ impl CurlSocketState {
                 .governor
                 .try_acquire_host(host.clone())
                 .map(SocketEntry::lease)
-                .context("Aynı libcurl aktarımı ek bağlantı kapasitesini bekleyemez"),
+                .context(crate::i18n::ui(
+                    "Aynı libcurl aktarımı ek bağlantı kapasitesini bekleyemez",
+                    "The same libcurl transfer cannot wait for additional connection capacity",
+                )),
             CurlScope::Host(host) => self
                 .governor
                 .acquire_host(host.clone(), &self.control)
@@ -878,7 +948,10 @@ impl CurlSocketState {
                 .governor
                 .try_acquire_wildcard()
                 .map(SocketEntry::lease)
-                .context("Aynı libcurl aktarımı ek bağlantı kapasitesini bekleyemez"),
+                .context(crate::i18n::ui(
+                    "Aynı libcurl aktarımı ek bağlantı kapasitesini bekleyemez",
+                    "The same libcurl transfer cannot wait for additional connection capacity",
+                )),
             CurlScope::Wildcard => self
                 .governor
                 .acquire_wildcard(&self.control)
@@ -889,7 +962,13 @@ impl CurlSocketState {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if sockets.len() >= 2 {
-                    bail!("FTP iki eşzamanlı soket sınırını aştı");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "FTP iki eşzamanlı soket sınırını aştı",
+                            "FTP exceeded the limit of two concurrent sockets"
+                        )
+                    );
                 }
                 Ok(SocketEntry::ftp_reservation())
             }
@@ -968,14 +1047,20 @@ impl ExternalProxy {
         control: TransferControl,
         headroom: usize,
     ) -> Result<Self> {
-        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-            .context("Yerel medya aracısı başlatılamadı")?;
-        listener
-            .set_nonblocking(true)
-            .context("Yerel medya aracısı dinleme kipine alınamadı")?;
-        let address = listener
-            .local_addr()
-            .context("Yerel medya aracısı adresi okunamadı")?;
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).context(
+            crate::i18n::ui(
+                "Yerel medya aracısı başlatılamadı",
+                "The local media proxy could not be started",
+            ),
+        )?;
+        listener.set_nonblocking(true).context(crate::i18n::ui(
+            "Yerel medya aracısı dinleme kipine alınamadı",
+            "The local media proxy could not be set to listening mode",
+        ))?;
+        let address = listener.local_addr().context(crate::i18n::ui(
+            "Yerel medya aracısı adresi okunamadı",
+            "The local media proxy address could not be read",
+        ))?;
         let capability = Uuid::new_v4().simple().to_string().into_bytes();
         let proxy_url = format!(
             "http://ssdownload:{}@{}:{}",
@@ -998,7 +1083,10 @@ impl ExternalProxy {
         let accept_thread = thread::Builder::new()
             .name("media-network-proxy".into())
             .spawn(move || proxy_accept_loop(listener, server))
-            .context("Yerel medya aracısı iş parçacığı başlatılamadı")?;
+            .context(crate::i18n::ui(
+                "Yerel medya aracısı iş parçacığı başlatılamadı",
+                "The local media proxy thread could not be started",
+            ))?;
         Ok(Self {
             shared,
             accept_thread: Some(accept_thread),
@@ -1096,12 +1184,23 @@ fn proxy_accept_loop(listener: TcpListener, shared: Arc<ProxyShared>) {
                 // Otherwise a transient WouldBlock is treated as EOF and can
                 // make an HTTP client observe a curl 52 empty reply.
                 if stream.set_nonblocking(false).is_err() {
-                    let _ = write_proxy_error(stream, 503, "Yerel ağ aracısı başlatılamadı");
+                    let _ = write_proxy_error(
+                        stream,
+                        503,
+                        crate::i18n::ui(
+                            "Yerel ağ aracısı başlatılamadı",
+                            "The local network proxy could not be started",
+                        ),
+                    );
                     continue;
                 }
                 if shared.active_clients.fetch_add(1, Ordering::AcqRel) >= PROXY_CLIENT_LIMIT {
                     shared.active_clients.fetch_sub(1, Ordering::AcqRel);
-                    let _ = write_proxy_error(stream, 503, "Yerel ağ aracısı dolu");
+                    let _ = write_proxy_error(
+                        stream,
+                        503,
+                        crate::i18n::ui("Yerel ağ aracısı dolu", "The local network proxy is full"),
+                    );
                 } else {
                     let worker_shared = Arc::clone(&shared);
                     match thread::Builder::new()
@@ -1163,13 +1262,27 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
                 } else {
                     400
                 };
-                let _ = write_proxy_error(client, status, "Yerel ağ aracısı isteği reddedildi");
+                let _ = write_proxy_error(
+                    client,
+                    status,
+                    crate::i18n::ui(
+                        "Yerel ağ aracısı isteği reddedildi",
+                        "The local network proxy rejected the request",
+                    ),
+                );
                 return;
             }
         };
     let _ = client.set_read_timeout(None);
     if shared.stopping.load(Ordering::Acquire) || shared.control.stop_requested() {
-        let _ = write_proxy_error(client, 503, "Yerel ağ aracısı durduruldu");
+        let _ = write_proxy_error(
+            client,
+            503,
+            crate::i18n::ui(
+                "Yerel ağ aracısı durduruldu",
+                "The local network proxy was stopped",
+            ),
+        );
         return;
     }
 
@@ -1191,14 +1304,28 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
                         shared.governor.usage_summary(&parsed.host)
                     )),
             );
-            let _ = write_proxy_error(client, 503, "Ağ bağlantısı kapasitesi dolu");
+            let _ = write_proxy_error(
+                client,
+                503,
+                crate::i18n::ui(
+                    "Ağ bağlantısı kapasitesi dolu",
+                    "Network connection capacity is full",
+                ),
+            );
             return;
         }
     };
     let mut upstream = match connect_target(&parsed.host, parsed.port, &shared) {
         Ok(stream) => stream,
         Err(_) => {
-            let _ = write_proxy_error(client, 502, "Uzak ağ bağlantısı açılamadı");
+            let _ = write_proxy_error(
+                client,
+                502,
+                crate::i18n::ui(
+                    "Uzak ağ bağlantısı açılamadı",
+                    "The remote network connection could not be opened",
+                ),
+            );
             return;
         }
     };
@@ -1206,7 +1333,14 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
     let registration = match TunnelRegistration::new(&shared, &client, &upstream) {
         Ok(registration) => registration,
         Err(_) => {
-            let _ = write_proxy_error(client, 503, "Yerel ağ aracısı tünel açamadı");
+            let _ = write_proxy_error(
+                client,
+                503,
+                crate::i18n::ui(
+                    "Yerel ağ aracısı tünel açamadı",
+                    "The local network proxy could not open the tunnel",
+                ),
+            );
             return;
         }
     };
@@ -1218,7 +1352,14 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
             return;
         }
     } else if upstream.write_all(&parsed.forward_head).is_err() {
-        let _ = write_proxy_error(client, 502, "Uzak ağ isteği gönderilemedi");
+        let _ = write_proxy_error(
+            client,
+            502,
+            crate::i18n::ui(
+                "Uzak ağ isteği gönderilemedi",
+                "The remote network request could not be sent",
+            ),
+        );
         return;
     }
     if !parsed.trailing.is_empty() && upstream.write_all(&parsed.trailing).is_err() {
@@ -1246,14 +1387,27 @@ fn read_proxy_head(client: &mut TcpStream) -> Result<ProxyFrame> {
     let mut buffer = Vec::with_capacity(2048);
     let mut chunk = [0u8; 4096];
     loop {
-        let read = client
-            .read(&mut chunk)
-            .context("Yerel ağ aracısı isteği okunamadı")?;
+        let read = client.read(&mut chunk).context(crate::i18n::ui(
+            "Yerel ağ aracısı isteği okunamadı",
+            "The local network proxy request could not be read",
+        ))?;
         if read == 0 {
-            bail!("Yerel ağ aracısı isteği erken kapandı");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Yerel ağ aracısı isteği erken kapandı",
+                    "The local network proxy request closed early"
+                )
+            );
         }
         if buffer.len().saturating_add(read) > PROXY_HEAD_LIMIT {
-            bail!("Yerel ağ aracısı başlık sınırı aşıldı");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Yerel ağ aracısı başlık sınırı aşıldı",
+                    "The local network proxy header limit was exceeded"
+                )
+            );
         }
         buffer.extend_from_slice(&chunk[..read]);
         if let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
@@ -1267,23 +1421,40 @@ fn read_proxy_head(client: &mut TcpStream) -> Result<ProxyFrame> {
 }
 
 fn parse_proxy_request(shared: &ProxyShared, frame: &ProxyFrame) -> Result<ProxyRequest> {
-    let head = std::str::from_utf8(&frame.head).context("Yerel ağ aracısı başlığı UTF-8 değil")?;
+    let head = std::str::from_utf8(&frame.head).context(crate::i18n::ui(
+        "Yerel ağ aracısı başlığı UTF-8 değil",
+        "The local network proxy header is not UTF-8",
+    ))?;
     let mut lines = head.strip_suffix("\r\n\r\n").unwrap_or(head).split("\r\n");
-    let request_line = lines
-        .next()
-        .context("Yerel ağ aracısı istek satırı eksik")?;
+    let request_line = lines.next().context(crate::i18n::ui(
+        "Yerel ağ aracısı istek satırı eksik",
+        "The local network proxy request line is missing",
+    ))?;
     let mut fields = request_line.split_ascii_whitespace();
-    let method = fields.next().context("Yerel ağ aracısı yöntemi eksik")?;
-    let target = fields.next().context("Yerel ağ aracısı hedefi eksik")?;
-    let version = fields
-        .next()
-        .context("Yerel ağ aracısı HTTP sürümü eksik")?;
+    let method = fields.next().context(crate::i18n::ui(
+        "Yerel ağ aracısı yöntemi eksik",
+        "The local network proxy method is missing",
+    ))?;
+    let target = fields.next().context(crate::i18n::ui(
+        "Yerel ağ aracısı hedefi eksik",
+        "The local network proxy target is missing",
+    ))?;
+    let version = fields.next().context(crate::i18n::ui(
+        "Yerel ağ aracısı HTTP sürümü eksik",
+        "The local network proxy HTTP version is missing",
+    ))?;
     if fields.next().is_some()
         || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
         || method.is_empty()
         || !method.bytes().all(|byte| byte.is_ascii_uppercase())
     {
-        bail!("Yerel ağ aracısı istek satırı geçersiz");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Yerel ağ aracısı istek satırı geçersiz",
+                "The local network proxy request line is invalid"
+            )
+        );
     }
 
     let mut proxy_authorization = None;
@@ -1293,21 +1464,32 @@ fn parse_proxy_request(shared: &ProxyShared, frame: &ProxyFrame) -> Result<Proxy
         if line.is_empty() {
             continue;
         }
-        let (name, value) = line
-            .split_once(':')
-            .context("Yerel ağ aracısı başlığı geçersiz")?;
+        let (name, value) = line.split_once(':').context(crate::i18n::ui(
+            "Yerel ağ aracısı başlığı geçersiz",
+            "The local network proxy header is invalid",
+        ))?;
         if name.is_empty()
             || !is_http_token(name)
             || value
                 .bytes()
                 .any(|byte| byte == 0 || byte == 0x7f || (byte < 0x20 && byte != b'\t'))
         {
-            bail!("Yerel ağ aracısı başlığı geçersiz");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Yerel ağ aracısı başlığı geçersiz",
+                    "The local network proxy header is invalid"
+                )
+            );
         }
         let value = value.trim();
         if name.eq_ignore_ascii_case("proxy-authorization") {
             if proxy_authorization.replace(value.to_string()).is_some() {
-                return Err(ProxyAuthRejected("Yerel ağ aracısı kimlik başlığı yinelenmiş").into());
+                return Err(ProxyAuthRejected(crate::i18n::ui(
+                    "Yerel ağ aracısı kimlik başlığı yinelenmiş",
+                    "The local network proxy authentication header is duplicated",
+                ))
+                .into());
             }
             continue;
         }
@@ -1315,7 +1497,13 @@ fn parse_proxy_request(shared: &ProxyShared, frame: &ProxyFrame) -> Result<Proxy
         {
             for option in value.split(',').map(str::trim) {
                 if !is_http_token(option) {
-                    bail!("Yerel ağ aracısı bağlantı başlığı geçersiz");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Yerel ağ aracısı bağlantı başlığı geçersiz",
+                            "The local network proxy connection header is invalid"
+                        )
+                    );
                 }
                 connection_options.push(option.to_ascii_lowercase());
             }
@@ -1327,7 +1515,11 @@ fn parse_proxy_request(shared: &ProxyShared, frame: &ProxyFrame) -> Result<Proxy
         .as_deref()
         .is_some_and(|value| capability_matches(shared, value))
     {
-        return Err(ProxyAuthRejected("Yerel ağ aracısı kimliği doğrulanamadı").into());
+        return Err(ProxyAuthRejected(crate::i18n::ui(
+            "Yerel ağ aracısı kimliği doğrulanamadı",
+            "The local network proxy authentication failed",
+        ))
+        .into());
     }
 
     if method == "CONNECT" {
@@ -1341,19 +1533,29 @@ fn parse_proxy_request(shared: &ProxyShared, frame: &ProxyFrame) -> Result<Proxy
         });
     }
 
-    let target_url = Url::parse(target).context("Yerel ağ aracısı HTTP hedefi geçersiz")?;
+    let target_url = Url::parse(target).context(crate::i18n::ui(
+        "Yerel ağ aracısı HTTP hedefi geçersiz",
+        "The local network proxy HTTP target is invalid",
+    ))?;
     if target_url.scheme() != "http"
         || target_url.host_str().is_none()
         || !target_url.username().is_empty()
         || target_url.password().is_some()
         || target_url.fragment().is_some()
     {
-        bail!("Yerel ağ aracısı yalnız HTTP veya CONNECT hedefi kabul eder");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Yerel ağ aracısı yalnız HTTP veya CONNECT hedefi kabul eder",
+                "The local network proxy accepts only HTTP or CONNECT targets"
+            )
+        );
     }
     let host = canonical_host(&target_url)?;
-    let port = target_url
-        .port_or_known_default()
-        .context("Yerel ağ aracısı HTTP bağlantı noktası geçersiz")?;
+    let port = target_url.port_or_known_default().context(crate::i18n::ui(
+        "Yerel ağ aracısı HTTP bağlantı noktası geçersiz",
+        "The local network proxy HTTP port is invalid",
+    ))?;
     let mut path = target_url.path().to_string();
     if path.is_empty() {
         path.push('/');
@@ -1362,10 +1564,10 @@ fn parse_proxy_request(shared: &ProxyShared, frame: &ProxyFrame) -> Result<Proxy
         path.push('?');
         path.push_str(query);
     }
-    let authority = match target_url
-        .host()
-        .context("Yerel ağ aracısı HTTP sunucusu eksik")?
-    {
+    let authority = match target_url.host().context(crate::i18n::ui(
+        "Yerel ağ aracısı HTTP sunucusu eksik",
+        "The local network proxy HTTP host is missing",
+    ))? {
         Host::Domain(value) => value.to_owned(),
         Host::Ipv4(value) => value.to_string(),
         Host::Ipv6(value) => format!("[{value}]"),
@@ -1430,48 +1632,84 @@ fn proxy_authority(value: &str) -> Result<(String, u16)> {
             .bytes()
             .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
     {
-        bail!("Yerel ağ aracısı CONNECT hedefi geçersiz");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Yerel ağ aracısı CONNECT hedefi geçersiz",
+                "The local network proxy CONNECT target is invalid"
+            )
+        );
     }
 
     // `Url::port()` deliberately erases a scheme's explicit default (for
     // example CONNECT `example.test:80`), but CONNECT requires an explicit
     // authority port. Split it before asking `Url` to validate the host.
     let (host_text, port_text, bracketed) = if let Some(rest) = value.strip_prefix('[') {
-        let end = rest
-            .find(']')
-            .context("Yerel ağ aracısı CONNECT IPv6 hedefi geçersiz")?;
+        let end = rest.find(']').context(crate::i18n::ui(
+            "Yerel ağ aracısı CONNECT IPv6 hedefi geçersiz",
+            "The local network proxy CONNECT IPv6 target is invalid",
+        ))?;
         let host = &rest[..end];
-        let port = rest[end + 1..]
-            .strip_prefix(':')
-            .context("Yerel ağ aracısı CONNECT bağlantı noktası eksik")?;
+        let port = rest[end + 1..].strip_prefix(':').context(crate::i18n::ui(
+            "Yerel ağ aracısı CONNECT bağlantı noktası eksik",
+            "The local network proxy CONNECT port is missing",
+        ))?;
         if port.contains(':') {
-            bail!("Yerel ağ aracısı CONNECT bağlantı noktası geçersiz");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Yerel ağ aracısı CONNECT bağlantı noktası geçersiz",
+                    "The local network proxy CONNECT port is invalid"
+                )
+            );
         }
         (host, port, true)
     } else {
-        let (host, port) = value
-            .rsplit_once(':')
-            .context("Yerel ağ aracısı CONNECT bağlantı noktası eksik")?;
+        let (host, port) = value.rsplit_once(':').context(crate::i18n::ui(
+            "Yerel ağ aracısı CONNECT bağlantı noktası eksik",
+            "The local network proxy CONNECT port is missing",
+        ))?;
         if host.is_empty() || host.contains(':') {
-            bail!("Yerel ağ aracısı CONNECT hedefi geçersiz");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Yerel ağ aracısı CONNECT hedefi geçersiz",
+                    "The local network proxy CONNECT target is invalid"
+                )
+            );
         }
         (host, port, false)
     };
-    let port: u16 = port_text
-        .parse()
-        .context("Yerel ağ aracısı CONNECT bağlantı noktası geçersiz")?;
+    let port: u16 = port_text.parse().context(crate::i18n::ui(
+        "Yerel ağ aracısı CONNECT bağlantı noktası geçersiz",
+        "The local network proxy CONNECT port is invalid",
+    ))?;
     if port == 0 {
-        bail!("Yerel ağ aracısı CONNECT bağlantı noktası geçersiz");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Yerel ağ aracısı CONNECT bağlantı noktası geçersiz",
+                "The local network proxy CONNECT port is invalid"
+            )
+        );
     }
     let authority = if bracketed {
         format!("[{host_text}]")
     } else {
         host_text.to_owned()
     };
-    let target = Url::parse(&format!("http://{authority}/"))
-        .context("Yerel ağ aracısı CONNECT hedefi geçersiz")?;
+    let target = Url::parse(&format!("http://{authority}/")).context(crate::i18n::ui(
+        "Yerel ağ aracısı CONNECT hedefi geçersiz",
+        "The local network proxy CONNECT target is invalid",
+    ))?;
     if target.username() != "" || target.password().is_some() || target.path() != "/" {
-        bail!("Yerel ağ aracısı CONNECT hedefi geçersiz");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Yerel ağ aracısı CONNECT hedefi geçersiz",
+                "The local network proxy CONNECT target is invalid"
+            )
+        );
     }
     Ok((canonical_host(&target)?, port))
 }
@@ -1481,7 +1719,13 @@ fn connect_target(host: &str, port: u16, shared: &ProxyShared) -> Result<TcpStre
         .last_outbound_at
         .store(now_epoch_ms(), Ordering::Release);
     if shared.stopping.load(Ordering::Acquire) || shared.control.stop_requested() {
-        bail!("Uzak ağ bağlantısı durduruldu");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Uzak ağ bağlantısı durduruldu",
+                "The remote network connection was stopped"
+            )
+        );
     }
     // The configured outbound proxy (direct, HTTP CONNECT or SOCKS5) opens the tunnel.
     crate::proxy::current().connect(host, port, PROXY_CONNECT_TIMEOUT)

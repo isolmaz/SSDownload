@@ -7,6 +7,9 @@ use std::sync::OnceLock;
 /// profile never writes into the default location.
 static ACTIVE_BASE: OnceLock<PathBuf> = OnceLock::new();
 
+/// The queue database file name inside the profile directory.
+pub(crate) const DATABASE_FILE: &str = "queue.sqlite3";
+
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     pub base_dir: PathBuf,
@@ -29,14 +32,19 @@ impl AppPaths {
             .unwrap_or_else(|| base_dir.join("Downloads"))
             .join("SSDownload");
         let value = Self {
-            database: base_dir.join("queue.sqlite3"),
+            database: base_dir.join(DATABASE_FILE),
             tools_dir: base_dir.join("tools"),
             base_dir,
             download_dir,
         };
-        std::fs::create_dir_all(&value.base_dir).context("Uygulama veri klasörü oluşturulamadı")?;
-        std::fs::create_dir_all(&value.tools_dir)
-            .context("Medya bileşenleri klasörü oluşturulamadı")?;
+        std::fs::create_dir_all(&value.base_dir).context(crate::i18n::ui(
+            "Uygulama veri klasörü oluşturulamadı",
+            "The application data folder could not be created",
+        ))?;
+        std::fs::create_dir_all(&value.tools_dir).context(crate::i18n::ui(
+            "Medya bileşenleri klasörü oluşturulamadı",
+            "The media components folder could not be created",
+        ))?;
         Ok(value)
     }
     pub fn pipe_name(&self) -> String {
@@ -51,7 +59,7 @@ impl AppPaths {
 }
 
 /// Resolves the application profile directory without constructing `AppPaths`.
-fn profile_base_dir(override_dir: Option<&Path>) -> PathBuf {
+pub(crate) fn profile_base_dir(override_dir: Option<&Path>) -> PathBuf {
     override_dir
         .map(Path::to_path_buf)
         .or_else(|| std::env::var_os("SSDOWNLOAD_HOME").map(PathBuf::from))
@@ -70,7 +78,10 @@ pub fn cookie_jar_dir() -> Result<PathBuf> {
         .cloned()
         .unwrap_or_else(|| profile_base_dir(None));
     let dir = base.join("cookie-jar");
-    std::fs::create_dir_all(&dir).context("Çerez klasörü oluşturulamadı")?;
+    std::fs::create_dir_all(&dir).context(crate::i18n::ui(
+        "Çerez klasörü oluşturulamadı",
+        "The cookie folder could not be created",
+    ))?;
     Ok(dir)
 }
 

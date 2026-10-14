@@ -49,7 +49,7 @@ scripts/             Local checks, error-code generator and release scripts
 
 ## Conventions
 
-- Match the surrounding code. Identifiers, comments and documentation are in English; interface text goes through `crate::i18n::ui("Türkçe", "English")` with both languages.
+- Match the surrounding code. Identifiers, comments and documentation are in English; interface text goes through `crate::i18n::ui("Türkçe", "English")` with both languages. The browser extension's text lives in `browser/chromium/i18n.js` (`t("key")`, English and Turkish with the same keys and `{0}` placeholders; the extension follows the app's language and `node --test browser/tests/*.test.js` checks both languages).
 - Threads are named `std::thread`s (no async runtime). Only the engine thread changes jobs, settings and the store; everything else sends it a command or reads a snapshot.
 - Start helper programs with argument arrays, never through a shell. Validate input at trust boundaries with the helpers in `src/validation.rs`.
 - User-visible failures use `bail_code!` with a permanent `SSD-<area>-<number>` code. Codes are never renumbered or reused: edit the table in `scripts/generate-error-codes.py` and run it; it rewrites `src/error_codes.rs` and `browser/chromium/codes.js`.

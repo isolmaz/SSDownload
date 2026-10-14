@@ -439,11 +439,25 @@ pub struct QueuePolicy {
     pub quota: Option<QueueQuota>,
     pub completion: CompletionAction,
 }
+impl QueuePolicy {
+    /// The name to show. The built-in queue keeps its stored Turkish name and is shown in the interface language
+    /// until the user renames it.
+    pub fn display_name(&self) -> &str {
+        if self.id == DEFAULT_QUEUE_ID && self.name == DEFAULT_QUEUE_NAME {
+            crate::i18n::ui(DEFAULT_QUEUE_NAME, "Default")
+        } else {
+            &self.name
+        }
+    }
+}
+
+const DEFAULT_QUEUE_NAME: &str = "Varsayılan";
+
 impl Default for QueuePolicy {
     fn default() -> Self {
         Self {
             id: DEFAULT_QUEUE_ID.into(),
-            name: "Varsayılan".into(),
+            name: DEFAULT_QUEUE_NAME.into(),
             enabled: true,
             concurrency: 3,
             windows: Vec::new(),
@@ -546,7 +560,7 @@ pub struct Settings {
     pub logging_hosts: bool,
     /// Desktop surface depth: `simple` | `advanced`.
     pub ui_mode: String,
-    /// Interface language: `tr` (default) | `en`.
+    /// Interface language: `tr` | `en`. A new profile starts with the Windows display language.
     pub ui_language: String,
     /// Developer mode: suppresses the first-run wizard and keeps the
     /// diagnostics, media-tools and raw tool-name surfaces visible.
@@ -693,6 +707,18 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// The settings of a profile that has none stored yet: the defaults, in the Windows display
+    /// language. `Default` stays Turkish, so a stored value that predates `ui_language` reads
+    /// as it always did.
+    pub(crate) fn first_run() -> Self {
+        Self {
+            ui_language: crate::i18n::system_language().into(),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSnapshot {
     pub revision: u64,
@@ -733,6 +759,9 @@ pub struct Capabilities {
     /// Number of completed jobs in the queue; the extension badges an increase.
     #[serde(default)]
     pub completed_jobs: u64,
+    /// The interface language of the app (`"tr"` or `"en"`); the extension shows its own text in it.
+    #[serde(default)]
+    pub language: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

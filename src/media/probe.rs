@@ -3,9 +3,12 @@
 use super::*;
 
 pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaInfo) -> Result<()> {
-    let streams = value["streams"]
-        .as_array()
-        .ok_or_else(|| anyhow!("Medya doğrulaması: akış bulunamadı"))?;
+    let streams = value["streams"].as_array().ok_or_else(|| {
+        anyhow!(crate::i18n::ui(
+            "Medya doğrulaması: akış bulunamadı",
+            "Media verification: no streams found"
+        ))
+    })?;
     if request.kind != DownloadKind::Audio && request.container.as_deref() == Some("mp4") {
         for stream in streams {
             let compatible = match stream["codec_type"].as_str() {
@@ -14,7 +17,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 _ => true,
             };
             if !compatible {
-                bail!("Medya doğrulaması: gerçek codec MP4 uyumluluk koşulunu karşılamıyor; MKV seçin. Yeniden kodlama yapılmadı");
+                bail!(crate::i18n::ui("Medya doğrulaması: gerçek codec MP4 uyumluluk koşulunu karşılamıyor; MKV seçin. Yeniden kodlama yapılmadı", "Media verification: the actual codec does not meet the MP4 compatibility requirement; choose MKV. No re-encoding was done"));
             }
         }
     }
@@ -24,10 +27,16 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
         })
     };
     if request.kind != DownloadKind::Audio && !has("video") {
-        bail!("Medya doğrulaması: görüntü akışı eksik");
+        bail!(crate::i18n::ui(
+            "Medya doğrulaması: görüntü akışı eksik",
+            "Media verification: the video stream is missing"
+        ));
     }
     if request.kind == DownloadKind::Audio && has("video") {
-        bail!("Medya doğrulaması: yalnız ses çıktısında beklenmeyen görüntü akışı var");
+        bail!(crate::i18n::ui(
+            "Medya doğrulaması: yalnız ses çıktısında beklenmeyen görüntü akışı var",
+            "Media verification: unexpected video stream in an audio-only output"
+        ));
     }
     if !has("audio")
         && (request.kind == DownloadKind::Audio
@@ -35,7 +44,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             || audio_offered(info)
             || info.formats.is_empty())
     {
-        bail!("Medya doğrulaması: seçilen ses akışı eksik; kaynağın gerçekten sessiz olduğu doğrulanamadı. Ana HLS/DASH listesini seçin");
+        bail!(crate::i18n::ui("Medya doğrulaması: seçilen ses akışı eksik; kaynağın gerçekten sessiz olduğu doğrulanamadı. Ana HLS/DASH listesini seçin", "Media verification: the selected audio stream is missing; it could not be confirmed that the source is truly silent. Pick the main HLS/DASH playlist"));
     }
     if request.kind != DownloadKind::Audio {
         if let Some(id) = &request.video_format_id {
@@ -44,31 +53,45 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 .iter()
                 .find(|format| format.id == *id)
                 .ok_or_else(|| {
-                    anyhow!("Medya doğrulaması: seçilen görüntü biçimi metadata içinde yok")
+                    anyhow!(crate::i18n::ui(
+                        "Medya doğrulaması: seçilen görüntü biçimi metadata içinde yok",
+                        "Media verification: the selected video format is not in the metadata"
+                    ))
                 })?;
             let video = streams
                 .iter()
                 .find(|stream| stream["codec_type"] == "video")
-                .ok_or_else(|| anyhow!("Medya doğrulaması: seçilen görüntü akışı çıktıda yok"))?;
+                .ok_or_else(|| {
+                    anyhow!(crate::i18n::ui(
+                        "Medya doğrulaması: seçilen görüntü akışı çıktıda yok",
+                        "Media verification: the selected video stream is not in the output"
+                    ))
+                })?;
             if selected
                 .height
                 .is_some_and(|height| video["height"].as_u64() != Some(height as u64))
             {
-                bail!("Medya doğrulaması: seçilen görüntü yüksekliği çıktıda eşleşmiyor");
+                bail!(crate::i18n::ui(
+                    "Medya doğrulaması: seçilen görüntü yüksekliği çıktıda eşleşmiyor",
+                    "Media verification: the selected video height does not match in the output"
+                ));
             }
             if let (Some(expected), Some(actual)) = (
                 selected.video_codec.as_deref(),
                 video["codec_name"].as_str(),
             ) {
                 if !codec_equivalent(expected, actual) {
-                    bail!("Medya doğrulaması: seçilen görüntü codec'i çıktıda eşleşmiyor");
+                    bail!(crate::i18n::ui(
+                        "Medya doğrulaması: seçilen görüntü codec'i çıktıda eşleşmiyor",
+                        "Media verification: the selected video codec does not match in the output"
+                    ));
                 }
             }
             if let Some(expected) = selected.fps {
                 let actual = rational_value(&video["avg_frame_rate"])
                     .or_else(|| rational_value(&video["r_frame_rate"]));
                 if actual.is_none_or(|actual| (actual - expected).abs() > 0.05) {
-                    bail!("Medya doğrulaması: seçilen görüntü kare hızı çıktıda eşleşmiyor");
+                    bail!(crate::i18n::ui("Medya doğrulaması: seçilen görüntü kare hızı çıktıda eşleşmiyor", "Media verification: the selected video frame rate does not match in the output"));
                 }
             }
             if selected
@@ -80,7 +103,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                     Some("smpte2084" | "arib-std-b67")
                 )
             {
-                bail!("Medya doğrulaması: seçilen HDR/dinamik aralık çıktıda doğrulanamadı");
+                bail!(crate::i18n::ui("Medya doğrulaması: seçilen HDR/dinamik aralık çıktıda doğrulanamadı", "Media verification: the selected HDR/dynamic range could not be verified in the output"));
             }
         }
         if let Some(exact) = request.exact_height {
@@ -88,14 +111,17 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 .iter()
                 .any(|s| s["codec_type"] == "video" && s["height"].as_u64() == Some(exact as u64))
             {
-                bail!("Medya doğrulaması: seçilen kesin çözünürlük çıktıda yok");
+                bail!(crate::i18n::ui(
+                    "Medya doğrulaması: seçilen kesin çözünürlük çıktıda yok",
+                    "Media verification: the selected exact resolution is not in the output"
+                ));
             }
         }
         if let Some(max) = request.max_height {
             if streams.iter().any(|s| {
                 s["codec_type"] == "video" && s["height"].as_u64().is_some_and(|h| h > max as u64)
             }) {
-                bail!("Medya doğrulaması: istenen çözünürlük bu kaynakta kullanılamıyor");
+                bail!(crate::i18n::ui("Medya doğrulaması: istenen çözünürlük bu kaynakta kullanılamıyor", "Media verification: the requested resolution is not available from this source"));
             }
         }
     }
@@ -105,19 +131,25 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
         .collect::<Vec<_>>();
     if !request.audio_tracks.is_empty() {
         if audio_streams.len() != request.audio_tracks.len() {
-            bail!("Medya doğrulaması: seçilen ses parçalarının tamamı çıktıda yok");
+            bail!(crate::i18n::ui(
+                "Medya doğrulaması: seçilen ses parçalarının tamamı çıktıda yok",
+                "Media verification: not all selected audio tracks are in the output"
+            ));
         }
         for (index, (stream, selected)) in
             audio_streams.iter().zip(&request.audio_tracks).enumerate()
         {
             let selected_format = exact_audio_format(info, &selected.id)?;
             if let Some(expected) = selected_format.audio_codec.as_deref() {
-                let actual = stream["codec_name"]
-                    .as_str()
-                    .ok_or_else(|| anyhow!("Medya doğrulaması: seçilen ses codec'i çıktıda yok"))?;
+                let actual = stream["codec_name"].as_str().ok_or_else(|| {
+                    anyhow!(crate::i18n::ui(
+                        "Medya doğrulaması: seçilen ses codec'i çıktıda yok",
+                        "Media verification: the selected audio codec is not in the output"
+                    ))
+                })?;
                 if !codec_equivalent(expected, actual) {
                     bail!(
-                        "Medya doğrulaması: ses parçası sırası/codec'i seçilen akışla eşleşmiyor"
+                        crate::i18n::ui("Medya doğrulaması: ses parçası sırası/codec'i seçilen akışla eşleşmiyor", "Media verification: the audio track order/codec does not match the selected stream")
                     );
                 }
             }
@@ -128,31 +160,40 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                     .ok_or_else(|| {
                         crate::error_codes::coded(
                             crate::error_codes::MED_016,
-                            "Medya doğrulaması: seçilen ses dil etiketi çıktıda yok",
+                            crate::i18n::ui("Medya doğrulaması: seçilen ses dil etiketi çıktıda yok", "Media verification: the selected audio language tag is not in the output"),
                         )
                     })?;
                 if language_key(actual) != language_key(language) {
-                    bail!("Medya doğrulaması: ses parçası sırası/dili seçilen akışla eşleşmiyor");
+                    bail!(crate::i18n::ui("Medya doğrulaması: ses parçası sırası/dili seçilen akışla eşleşmiyor", "Media verification: the audio track order/language does not match the selected stream"));
                 }
             }
             let is_default = stream["disposition"]["default"].as_i64() == Some(1);
             if is_default != (index == 0) {
-                bail!("Medya doğrulaması: çoklu ses varsayılan akış işareti doğrulanamadı");
+                bail!(crate::i18n::ui("Medya doğrulaması: çoklu ses varsayılan akış işareti doğrulanamadı", "Media verification: the default-stream flag of the multiple audio tracks could not be verified"));
             }
         }
     } else if request.audio_format_id.is_some() || request.audio_language.is_some() {
         if audio_streams.len() != 1 {
-            bail!("Medya doğrulaması: seçilen tek ses parçası doğrulanamadı");
+            bail!(crate::i18n::ui(
+                "Medya doğrulaması: seçilen tek ses parçası doğrulanamadı",
+                "Media verification: the selected single audio track could not be verified"
+            ));
         }
         let audio = audio_streams[0];
         if let Some(id) = &request.audio_format_id {
             let selected_format = exact_audio_format(info, id)?;
             if let Some(expected) = selected_format.audio_codec.as_deref() {
-                let actual = audio["codec_name"]
-                    .as_str()
-                    .ok_or_else(|| anyhow!("Medya doğrulaması: seçilen ses codec'i çıktıda yok"))?;
+                let actual = audio["codec_name"].as_str().ok_or_else(|| {
+                    anyhow!(crate::i18n::ui(
+                        "Medya doğrulaması: seçilen ses codec'i çıktıda yok",
+                        "Media verification: the selected audio codec is not in the output"
+                    ))
+                })?;
                 if !codec_equivalent(expected, actual) {
-                    bail!("Medya doğrulaması: seçilen ses codec'i çıktıda eşleşmiyor");
+                    bail!(crate::i18n::ui(
+                        "Medya doğrulaması: seçilen ses codec'i çıktıda eşleşmiyor",
+                        "Media verification: the selected audio codec does not match in the output"
+                    ));
                 }
             }
         }
@@ -163,11 +204,14 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 .ok_or_else(|| {
                     crate::error_codes::coded(
                         crate::error_codes::MED_016,
-                        "Medya doğrulaması: seçilen ses dil etiketi çıktıda yok",
+                        crate::i18n::ui("Medya doğrulaması: seçilen ses dil etiketi çıktıda yok", "Media verification: the selected audio language tag is not in the output"),
                     )
                 })?;
             if language_key(actual) != language_key(language) {
-                bail!("Medya doğrulaması: ses dili seçilen dille eşleşmiyor");
+                bail!(crate::i18n::ui(
+                    "Medya doğrulaması: ses dili seçilen dille eşleşmiyor",
+                    "Media verification: the audio language does not match the selected language"
+                ));
             }
         }
     }
@@ -193,10 +237,21 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             {
                 crate::bail_code!(
                     crate::error_codes::TRF_012,
-                    "Medya doğrulaması: görüntü {:.1} sn, ses {} {:.1} sn; akış uzunlukları uyuşmuyor (eksik ya da yinelenen parça).",
-                    video.1 - video.0,
-                    index + 1,
-                    audio.1 - audio.0
+                    "{}",
+                    crate::i18n::ui_owned!(
+                        format!(
+                            "Medya doğrulaması: görüntü {:.1} sn, ses {} {:.1} sn; akış uzunlukları uyuşmuyor (eksik ya da yinelenen parça).",
+                            video.1 - video.0,
+                            index + 1,
+                            audio.1 - audio.0
+                        ),
+                        format!(
+                            "Media verification: video {:.1} s, audio {} {:.1} s; the stream lengths do not match (missing or duplicated fragment).",
+                            video.1 - video.0,
+                            index + 1,
+                            audio.1 - audio.0
+                        )
+                    )
                 );
             }
         }
@@ -208,7 +263,10 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
         .collect::<Vec<_>>();
     if !request.subtitle_tracks.is_empty() {
         if subtitle_streams.len() != request.subtitle_tracks.len() {
-            bail!("Medya doğrulaması: seçilen altyazı akışlarının tamamı çıktıda yok");
+            bail!(crate::i18n::ui(
+                "Medya doğrulaması: seçilen altyazı akışlarının tamamı çıktıda yok",
+                "Media verification: not all selected subtitle streams are in the output"
+            ));
         }
         for selected in &request.subtitle_tracks {
             if !subtitle_streams.iter().any(|stream| {
@@ -217,15 +275,27 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                     .is_some_and(|actual| language_key(actual) == language_key(&selected.language))
             }) {
                 bail!(
-                    "Medya doğrulaması: seçilen altyazı çıktıda yok: {}",
-                    selected.language
+                    "{}",
+                    crate::i18n::ui_owned!(
+                        format!(
+                            "Medya doğrulaması: seçilen altyazı çıktıda yok: {}",
+                            selected.language
+                        ),
+                        format!(
+                            "Media verification: the selected subtitle is not in the output: {}",
+                            selected.language
+                        )
+                    )
                 );
             }
         }
     }
     if !request.external_subtitles.is_empty() {
         if subtitle_streams.len() != request.external_subtitles.len() {
-            bail!("Medya doğrulaması: seçilen harici altyazıların tamamı çıktıda yok");
+            bail!(crate::i18n::ui(
+                "Medya doğrulaması: seçilen harici altyazıların tamamı çıktıda yok",
+                "Media verification: not all selected external subtitles are in the output"
+            ));
         }
         for (index, selected) in request.external_subtitles.iter().enumerate() {
             let stream = subtitle_streams[index];
@@ -233,11 +303,14 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 .as_str()
                 .is_none_or(|actual| language_key(actual) != language_key(&selected.language))
             {
-                bail!("Medya doğrulaması: harici altyazı dili/sırası seçilen track ile eşleşmiyor");
+                bail!(crate::i18n::ui("Medya doğrulaması: harici altyazı dili/sırası seçilen track ile eşleşmiyor", "Media verification: the external subtitle language/order does not match the selected track"));
             }
             let is_default = stream["disposition"]["default"].as_i64() == Some(1);
             if is_default != selected.is_default {
-                bail!("Medya doğrulaması: harici altyazı varsayılan işareti eşleşmiyor");
+                bail!(crate::i18n::ui(
+                    "Medya doğrulaması: harici altyazı varsayılan işareti eşleşmiyor",
+                    "Media verification: the external subtitle default flag does not match"
+                ));
             }
         }
     }
@@ -251,7 +324,13 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 .as_str()
                 .is_some_and(|l| language_key(l) == language_key(language))
         }) {
-            bail!("Medya doğrulaması: seçilen altyazı çıktıda yok: {language}");
+            bail!(
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Medya doğrulaması: seçilen altyazı çıktıda yok: {language}"),
+                    format!("Media verification: the selected subtitle is not in the output: {language}")
+                )
+            );
         }
     }
 
@@ -275,7 +354,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             let actual = output_span
                 .map(|(start, end)| end - start)
                 .filter(|duration| duration.is_finite() && *duration > 0.0)
-                .ok_or_else(|| anyhow!("Medya doğrulaması: kaynak süresi biliniyor ancak çıktı zaman damgaları okunamadı"))?;
+                .ok_or_else(|| anyhow!(crate::i18n::ui("Medya doğrulaması: kaynak süresi biliniyor ancak çıktı zaman damgaları okunamadı", "Media verification: the source duration is known but the output timestamps could not be read")))?;
             let tolerance = info.duration_tolerance.unwrap_or(0.5).clamp(0.25, 10.0);
             // Extractors can truncate source duration to whole seconds. That
             // uncertainty extends the upper bound only; it must never excuse
@@ -287,7 +366,19 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 0.0
             };
             if actual < expected - tolerance || actual > expected + tolerance + quantization {
-                bail!("Medya doğrulaması: çıktı süresi kaynakla eşleşmiyor (erken bitiş toleransı {tolerance:.3} sn; geç bitiş {:.3} sn)", tolerance + quantization);
+                bail!(
+                    "{}",
+                    crate::i18n::ui_owned!(
+                        format!(
+                            "Medya doğrulaması: çıktı süresi kaynakla eşleşmiyor (erken bitiş toleransı {tolerance:.3} sn; geç bitiş {:.3} sn)",
+                            tolerance + quantization
+                        ),
+                        format!(
+                            "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {:.3} s)",
+                            tolerance + quantization
+                        )
+                    )
+                );
             }
         }
     }
@@ -396,7 +487,10 @@ pub(super) fn verify_media_output(
         control,
     )?;
     if !result.status.success() {
-        bail!("Medya doğrulaması: çıktı okunamadı");
+        bail!(crate::i18n::ui(
+            "Medya doğrulaması: çıktı okunamadı",
+            "Media verification: the output could not be read"
+        ));
     }
     let probe: Value = serde_json::from_slice(&result.stdout)?;
     validate_probe(&probe, request, info)?;
@@ -427,7 +521,10 @@ pub(super) fn verify_media_output(
             control,
         )?;
         if !decoded.status.success() || !decoded.stderr.trim().is_empty() {
-            bail!("Tam medya doğrulaması: ses/görüntü baştan sona çözülemedi");
+            bail!(crate::i18n::ui(
+                "Tam medya doğrulaması: ses/görüntü baştan sona çözülemedi",
+                "Full media verification: the audio/video could not be decoded from start to end"
+            ));
         }
         return Ok(());
     }
@@ -481,7 +578,10 @@ pub(super) fn verify_media_output(
         ]);
         let decoded = run_capture(&tools.ffmpeg, &args, b"", Duration::from_secs(60), control)?;
         if !decoded.status.success() || !decoded.stderr.trim().is_empty() {
-            bail!("Medya doğrulaması: örneklenen başlangıç/orta/bitiş bölümü çözülemedi");
+            bail!(crate::i18n::ui(
+                "Medya doğrulaması: örneklenen başlangıç/orta/bitiş bölümü çözülemedi",
+                "Media verification: the sampled start/middle/end section could not be decoded"
+            ));
         }
     }
     Ok(())

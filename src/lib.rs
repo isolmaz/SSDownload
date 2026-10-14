@@ -6,7 +6,7 @@ pub mod engine;
 pub mod error_codes;
 pub mod extension;
 pub mod gui;
-pub(crate) mod i18n;
+pub mod i18n;
 pub mod install;
 pub mod logging;
 pub mod media;

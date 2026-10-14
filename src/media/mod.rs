@@ -79,7 +79,10 @@ pub(crate) fn inspect_controlled(
 ) -> Result<MediaInfo> {
     validate_web_url(&request.url)?;
     if control.stop_requested() {
-        bail!("Kaynak hazırlığı durduruldu");
+        bail!(crate::i18n::ui(
+            "Kaynak hazırlığı durduruldu",
+            "Source preparation was stopped"
+        ));
     }
     let toolchain = tools::verified_toolchain(paths, control)?;
     inspect_with_tools(request, &toolchain, control, network)
@@ -134,7 +137,10 @@ fn inspect_document_with_tools(
     if !captured.status.success() && local_tunnel_refused(&captured.stderr) {
         for _ in 0..40 {
             if control.stop_requested() {
-                bail!("Kaynak hazırlığı durduruldu");
+                bail!(crate::i18n::ui(
+                    "Kaynak hazırlığı durduruldu",
+                    "Source preparation was stopped"
+                ));
             }
             thread::sleep(Duration::from_millis(50));
         }
@@ -197,18 +203,33 @@ fn inspect_document_with_tools(
         ));
         crate::bail_code!(
             crate::error_codes::MED_006,
-            "Medya analizi başarısız: {detail}"
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("Medya analizi başarısız: {detail}"),
+                format!("Media analysis failed: {detail}")
+            )
         );
     }
     if captured.stdout.len() > MAX_INSPECT_OUTPUT {
         crate::bail_code!(
             crate::error_codes::MED_006,
-            "Medya analizi çıktısı {} MB sınırını aştı",
-            MAX_INSPECT_OUTPUT / (1024 * 1024)
+            "{}",
+            crate::i18n::ui_owned!(
+                format!(
+                    "Medya analizi çıktısı {} MB sınırını aştı",
+                    MAX_INSPECT_OUTPUT / (1024 * 1024)
+                ),
+                format!(
+                    "The media analysis output exceeded the {} MB limit",
+                    MAX_INSPECT_OUTPUT / (1024 * 1024)
+                )
+            )
         );
     }
-    let value: Value = serde_json::from_slice(&captured.stdout)
-        .context("yt-dlp geçerli JSON medya bilgisi döndürmedi")?;
+    let value: Value = serde_json::from_slice(&captured.stdout).context(crate::i18n::ui(
+        "yt-dlp geçerli JSON medya bilgisi döndürmedi",
+        "yt-dlp did not return valid JSON media information",
+    ))?;
     let info = media_info_from_json(&value)?;
     validate_single_selection(&info, request.playlist)?;
     Ok((value, info))
@@ -216,7 +237,14 @@ fn inspect_document_with_tools(
 
 fn validate_single_selection(info: &MediaInfo, playlist: bool) -> Result<()> {
     if !playlist && info.playlist_count.is_some_and(|count| count > 1) {
-        crate::bail_code!(crate::error_codes::MED_010, "Sayfa birden fazla bağımsız video içeriyor; fragman veya reklam seçilmemesi için videoyu tarayıcıda oynatıp video üzerindeki düğmeyi kullanın");
+        crate::bail_code!(
+            crate::error_codes::MED_010,
+            "{}",
+            crate::i18n::ui(
+                "Sayfa birden fazla bağımsız video içeriyor; fragman veya reklam seçilmemesi için videoyu tarayıcıda oynatıp video üzerindeki düğmeyi kullanın",
+                "The page contains more than one independent video; to avoid picking a trailer or ad, play the video in the browser and use the button on the video"
+            )
+        );
     }
     Ok(())
 }
@@ -276,7 +304,13 @@ pub(crate) fn download(
                         } else {
                             "keşif"
                         };
-                        anyhow!("{phase} aşamasında {error:#}")
+                        anyhow!(
+                            "{}",
+                            crate::i18n::ui_owned!(
+                                format!("{} aşamasında {error:#}", failure_stage_label(phase)),
+                                format!("{} stage: {error:#}", failure_stage_label(phase))
+                            )
+                        )
                     })?;
             let selector = format_selector(request, &info)?;
             let failure_stages =
@@ -487,10 +521,16 @@ pub(crate) fn download(
     let mut stall_restarts = 0u32;
     loop {
         if control.is_cancelled() {
-            bail!("İndirme iptal edildi");
+            bail!(crate::i18n::ui(
+                "İndirme iptal edildi",
+                "The download was cancelled"
+            ));
         }
         if control.is_paused() {
-            bail!("İndirme duraklatıldı");
+            bail!(crate::i18n::ui(
+                "İndirme duraklatıldı",
+                "The download was paused"
+            ));
         }
         let launch_limit = control.speed_limit();
         let mut args = base_args.clone();
@@ -586,7 +626,10 @@ pub(crate) fn download(
             MonitorOutcome::Exited(status) => {
                 if status.success() {
                     if let Some(error) = running.input_error.take() {
-                        return Err(error).context("Medya isteği gönderilemedi");
+                        return Err(error).context(crate::i18n::ui(
+                            "Medya isteği gönderilemedi",
+                            "Could not send the media request",
+                        ));
                     }
                 }
                 // A skipped fragment leaves a permanent hole: discard this attempt's own files so
@@ -622,8 +665,17 @@ pub(crate) fn download(
                         if fragment_restarts > FRAGMENT_RESTARTS {
                             crate::bail_code!(
                                 crate::error_codes::TRF_011,
-                                "Kaynak parçaları tekrar tekrar düşürdü; akış {} kez baştan indirildi ve bütünlük sağlanamadı. Kaynağı daha sonra yeniden deneyin.",
-                                fragment_restarts
+                                "{}",
+                                crate::i18n::ui_owned!(
+                                    format!(
+                                        "Kaynak parçaları tekrar tekrar düşürdü; akış {} kez baştan indirildi ve bütünlük sağlanamadı. Kaynağı daha sonra yeniden deneyin.",
+                                        fragment_restarts
+                                    ),
+                                    format!(
+                                        "The source kept dropping fragments; the stream was restarted {} time(s) and integrity could not be ensured. Try the source again later.",
+                                        fragment_restarts
+                                    )
+                                )
                             );
                         }
                         continue;
@@ -654,8 +706,17 @@ pub(crate) fn download(
                     if format_unavailable(&redacted) {
                         crate::bail_code!(
                             crate::error_codes::MED_015,
-                            "Seçilen kalite indirme anında kaynağın listesinde yok; kaynak yenilenmiş olabilir. Kaynağı yeniden çözümleyip var olan bir kaliteyi seçin. {}",
-                            available_qualities(&info)
+                            "{}",
+                            crate::i18n::ui_owned!(
+                                format!(
+                                    "Seçilen kalite indirme anında kaynağın listesinde yok; kaynak yenilenmiş olabilir. Kaynağı yeniden çözümleyip var olan bir kaliteyi seçin. {}",
+                                    available_qualities(&info)
+                                ),
+                                format!(
+                                    "The selected quality was not in the source's list at download time; the source may have been refreshed. Analyze the source again and pick an available quality. {}",
+                                    available_qualities(&info)
+                                )
+                            )
                         );
                     }
                     let visible = non_debug_lines(&error);
@@ -673,10 +734,21 @@ pub(crate) fn download(
                         crate::bail_code!(crate::error_codes::MED_008, "{summary}");
                     }
                     bail!(
-                        "{} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {}/1): {}",
-                        phase,
-                        u8::from(compatibility_retry),
-                        summary
+                        "{}",
+                        crate::i18n::ui_owned!(
+                            format!(
+                                "{} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {}/1): {}",
+                                failure_stage_label(phase),
+                                u8::from(compatibility_retry),
+                                summary
+                            ),
+                            format!(
+                                "Media download failed at the {} stage (compatibility attempt: {}/1): {}",
+                                failure_stage_label(phase),
+                                u8::from(compatibility_retry),
+                                summary
+                            )
+                        )
                     );
                 }
                 break;
@@ -719,7 +791,10 @@ pub(crate) fn verify_external_result(
     full_verification: bool,
 ) -> Result<u64> {
     if !path.is_file() {
-        bail!("Doğrulanacak tarayıcı medya çıktısı bulunamadı");
+        bail!(crate::i18n::ui(
+            "Doğrulanacak tarayıcı medya çıktısı bulunamadı",
+            "The browser media output to verify was not found"
+        ));
     }
     validate_options(request)?;
     let control = TransferControl::default();
@@ -758,14 +833,23 @@ pub(crate) fn mux_browser_streams(
 ) -> Result<()> {
     validate_options(request)?;
     if output.exists() {
-        bail!("Tarayıcı medya hedefi zaten var; mevcut kullanıcı dosyasının üzerine yazılmadı");
+        bail!(crate::i18n::ui(
+            "Tarayıcı medya hedefi zaten var; mevcut kullanıcı dosyasının üzerine yazılmadı",
+            "The browser media target already exists; the existing user file was not overwritten"
+        ));
     }
     for stream in streams {
         if !stream.path.is_file() {
-            bail!("Tarayıcı medya akışı çalışma dosyasında bulunamadı");
+            bail!(crate::i18n::ui(
+                "Tarayıcı medya akışı çalışma dosyasında bulunamadı",
+                "The browser media stream was not found in the working file"
+            ));
         }
         if !matches!(stream.role.as_str(), "video" | "audio" | "subtitle") {
-            bail!("Tarayıcı bilinmeyen bir medya akışı rolü gönderdi");
+            bail!(crate::i18n::ui(
+                "Tarayıcı bilinmeyen bir medya akışı rolü gönderdi",
+                "The browser sent an unknown media stream role"
+            ));
         }
     }
     let videos = streams
@@ -781,10 +865,16 @@ pub(crate) fn mux_browser_streams(
         .filter(|stream| stream.role == "subtitle")
         .collect::<Vec<_>>();
     if request.kind != DownloadKind::Audio && videos.len() != 1 {
-        bail!("Tarayıcı aktarımında tam bir seçili görüntü akışı bulunamadı");
+        bail!(crate::i18n::ui(
+            "Tarayıcı aktarımında tam bir seçili görüntü akışı bulunamadı",
+            "The browser transfer does not contain exactly one selected video stream"
+        ));
     }
     if request.kind == DownloadKind::Audio && !videos.is_empty() {
-        bail!("Tarayıcı yalnız ses aktarımında görüntü akışı gönderdi");
+        bail!(crate::i18n::ui(
+            "Tarayıcı yalnız ses aktarımında görüntü akışı gönderdi",
+            "The browser sent a video stream in an audio-only transfer"
+        ));
     }
     let expected_audio = if !request.audio_tracks.is_empty() {
         request.audio_tracks.len()
@@ -798,7 +888,10 @@ pub(crate) fn mux_browser_streams(
         audios.len()
     };
     if audios.len() != expected_audio {
-        bail!("Tarayıcı aktarımında seçilen ses akışlarının tamamı bulunamadı");
+        bail!(crate::i18n::ui(
+            "Tarayıcı aktarımında seçilen ses akışlarının tamamı bulunamadı",
+            "Not all selected audio streams were found in the browser transfer"
+        ));
     }
     for (index, stream) in audios.iter().enumerate() {
         let expected_id = request
@@ -807,7 +900,10 @@ pub(crate) fn mux_browser_streams(
             .map(|selection| selection.id.as_str())
             .or(request.audio_format_id.as_deref());
         if expected_id.is_some() && stream.format_id.as_deref() != expected_id {
-            bail!("Tarayıcı ses akışı seçilen format kimliğiyle eşleşmiyor");
+            bail!(crate::i18n::ui(
+                "Tarayıcı ses akışı seçilen format kimliğiyle eşleşmiyor",
+                "The browser audio stream does not match the selected format id"
+            ));
         }
         let expected_language = request
             .audio_tracks
@@ -819,15 +915,22 @@ pub(crate) fn mux_browser_streams(
                 language_key(actual) != language_key(expected_language.unwrap())
             })
         {
-            bail!("Tarayıcı ses akışı seçilen dille eşleşmiyor");
+            bail!(crate::i18n::ui(
+                "Tarayıcı ses akışı seçilen dille eşleşmiyor",
+                "The browser audio stream does not match the selected language"
+            ));
         }
     }
     if let Some(id) = &request.video_format_id {
-        let video = videos
-            .first()
-            .context("Tarayıcı aktarımında seçilen görüntü akışı bulunamadı")?;
+        let video = videos.first().context(crate::i18n::ui(
+            "Tarayıcı aktarımında seçilen görüntü akışı bulunamadı",
+            "The selected video stream was not found in the browser transfer",
+        ))?;
         if video.format_id.as_deref() != Some(id.as_str()) {
-            bail!("Tarayıcı görüntü akışı seçilen format kimliğiyle eşleşmiyor");
+            bail!(crate::i18n::ui(
+                "Tarayıcı görüntü akışı seçilen format kimliğiyle eşleşmiyor",
+                "The browser video stream does not match the selected format id"
+            ));
         }
     }
     let expected_subtitles = if !request.external_subtitles.is_empty() {
@@ -838,13 +941,17 @@ pub(crate) fn mux_browser_streams(
         request.subtitle_languages.len()
     };
     if subtitles.len() != expected_subtitles {
-        bail!("Tarayıcı aktarımında seçilen altyazı akışlarının tamamı bulunamadı");
+        bail!(crate::i18n::ui(
+            "Tarayıcı aktarımında seçilen altyazı akışlarının tamamı bulunamadı",
+            "Not all selected subtitle streams were found in the browser transfer"
+        ));
     }
 
     let tools = tools::verified_toolchain(paths, control)?;
-    let parent = output
-        .parent()
-        .context("Tarayıcı medya hedef klasörü eksik")?;
+    let parent = output.parent().context(crate::i18n::ui(
+        "Tarayıcı medya hedef klasörü eksik",
+        "The browser media target folder is missing",
+    ))?;
     fs::create_dir_all(parent)?;
     let staged = parent.join(format!(".browser-mux-{}.tmp", uuid::Uuid::new_v4()));
     let mut args = vec![
@@ -941,13 +1048,25 @@ pub(crate) fn mux_browser_streams(
     if !result.status.success() || !result.stderr.trim().is_empty() {
         let _ = fs::remove_file(&staged);
         bail!(
-            "Tarayıcı medya akışları kayıpsız birleştirilemedi: {}",
-            bounded_tail(&result.stderr, 4096)
+            "{}",
+            crate::i18n::ui_owned!(
+                format!(
+                    "Tarayıcı medya akışları kayıpsız birleştirilemedi: {}",
+                    bounded_tail(&result.stderr, 4096)
+                ),
+                format!(
+                    "The browser media streams could not be merged losslessly: {}",
+                    bounded_tail(&result.stderr, 4096)
+                )
+            )
         );
     }
     if let Err(error) = fs::rename(&staged, output) {
         let _ = fs::remove_file(&staged);
-        return Err(error).context("Tarayıcı medya çıktısı hedefe alınamadı");
+        return Err(error).context(crate::i18n::ui(
+            "Tarayıcı medya çıktısı hedefe alınamadı",
+            "Could not move the browser media output to its target",
+        ));
     }
     Ok(())
 }
@@ -1093,14 +1212,21 @@ fn available_qualities(info: &MediaInfo) -> String {
     heights.sort_unstable();
     heights.dedup();
     if heights.is_empty() {
-        return "Analizde çözünürlük bilgisi yok.".into();
+        return crate::i18n::ui(
+            "Analizde çözünürlük bilgisi yok.",
+            "The analysis has no resolution information.",
+        )
+        .into();
     }
     let list = heights
         .iter()
         .map(|height| format!("{height}p"))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("Analizde görülen çözünürlükler: {list}")
+    crate::i18n::ui_owned!(
+        format!("Analizde görülen çözünürlükler: {list}"),
+        format!("Resolutions seen in the analysis: {list}")
+    )
 }
 
 /// yt-dlp could not satisfy the requested selection: the manifest resolved for the download no
@@ -1202,6 +1328,7 @@ pub(crate) fn classify_download_error(
     {
         "medya parçası"
     } else if lower.contains("seçilen ses")
+        || lower.contains("selected audio")
         || ((!request.audio_tracks.is_empty()
             || request.audio_format_id.is_some()
             || request.expected_audio == Some(true))
@@ -1209,17 +1336,20 @@ pub(crate) fn classify_download_error(
     {
         "seçilen ses"
     } else if lower.contains("alt liste")
+        || lower.contains("sub-playlist")
         || lower.contains("representation")
         || lower.contains("variant playlist")
     {
         "alt liste"
-    } else if lower.contains("medya analizi başarısız") {
+    } else if lower.contains("medya analizi başarısız") || lower.contains("media analysis failed")
+    {
         if media_manifest_url(&request.url) {
             "ana liste"
         } else {
             "keşif"
         }
     } else if lower.contains("ana liste")
+        || lower.contains("main playlist")
         || lower.contains("m3u8")
         || lower.contains("mpd")
         || lower.contains("manifest")
@@ -1424,6 +1554,23 @@ fn media_manifest_url(value: &str) -> bool {
                 .map(|(_, extension)| extension.to_ascii_lowercase())
         })
         .is_some_and(|extension| matches!(extension.as_str(), "m3u8" | "mpd"))
+}
+
+/// The wording of a failure stage returned by [`classify_download_error`]. The stage keys are
+/// stable Turkish identifiers (the diagnostics and the classifier match them); only this display
+/// text is localized, and the classifier recognizes both languages' wording.
+fn failure_stage_label(stage: &str) -> &'static str {
+    match stage {
+        "keşif" => crate::i18n::ui("keşif", "discovery"),
+        "ana liste" => crate::i18n::ui("ana liste", "main playlist"),
+        "alt liste" => crate::i18n::ui("alt liste", "sub-playlist"),
+        "seçilen ses" => crate::i18n::ui("seçilen ses", "selected audio"),
+        "altyazı" => crate::i18n::ui("altyazı", "subtitle"),
+        "başlatma parçası" => crate::i18n::ui("başlatma parçası", "initialization segment"),
+        "medya parçası" => crate::i18n::ui("medya parçası", "media segment"),
+        "doğrulama" => crate::i18n::ui("doğrulama", "verification"),
+        _ => crate::i18n::ui("medya kaynağı", "media source"),
+    }
 }
 
 fn marked_download_failure_phase(error: &str) -> Option<&'static str> {
@@ -1749,19 +1896,22 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
     if !request.audio_tracks.is_empty()
         && (request.audio_format_id.is_some() || request.audio_language.is_some())
     {
-        bail!("Çoklu ses seçimi eski tek ses seçimiyle birlikte kullanılamaz");
+        bail!(crate::i18n::ui("Çoklu ses seçimi eski tek ses seçimiyle birlikte kullanılamaz", "Multiple audio selection cannot be used together with the legacy single audio selection"));
     }
     if !request.subtitle_tracks.is_empty()
         && (!request.subtitle_languages.is_empty() || request.subtitle_mode.is_some())
     {
-        bail!("Açık altyazı seçimi eski altyazı seçimiyle birlikte kullanılamaz");
+        bail!(crate::i18n::ui("Açık altyazı seçimi eski altyazı seçimiyle birlikte kullanılamaz", "Explicit subtitle selection cannot be used together with the legacy subtitle selection"));
     }
     if !request.external_subtitles.is_empty()
         && (!request.subtitle_tracks.is_empty()
             || !request.subtitle_languages.is_empty()
             || request.subtitle_mode.is_some())
     {
-        bail!("HTML track altyazıları ile çıkarıcı altyazıları aynı istekte karıştırılamaz");
+        bail!(crate::i18n::ui(
+            "HTML track altyazıları ile çıkarıcı altyazıları aynı istekte karıştırılamaz",
+            "HTML track subtitles and extractor subtitles cannot be mixed in one request"
+        ));
     }
     if let Some(id) = &request.video_format_id {
         let video = info
@@ -1769,7 +1919,7 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
             .iter()
             .find(|format| format.id == *id && !stream_absent(format.video_codec.as_deref()))
             .ok_or_else(|| {
-                anyhow!("Seçilen görüntü biçimi artık bulunmuyor; başka biçime otomatik geçilmedi")
+                anyhow!(crate::i18n::ui("Seçilen görüntü biçimi artık bulunmuyor; başka biçime otomatik geçilmedi", "The selected video format is no longer available; no automatic switch to another format was made"))
             })?;
         if request
             .exact_height
@@ -1785,7 +1935,11 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
         {
             crate::bail_code!(
                 crate::error_codes::MED_012,
-                "Seçilen {height}p kalitesi artık bulunmuyor; başka kaliteye otomatik geçilmedi"
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Seçilen {height}p kalitesi artık bulunmuyor; başka kaliteye otomatik geçilmedi"),
+                    format!("The selected {height}p quality is no longer available; no automatic switch to another quality was made")
+                )
             );
         }
     }
@@ -1801,8 +1955,14 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
             if audio.language.as_deref().map(language_key) != Some(language_key(language)) {
                 crate::bail_code!(
                     crate::error_codes::MED_012,
-                    "Seçilen ses parçasının dili değişti: {}",
-                    selection.id
+                    "{}",
+                    crate::i18n::ui_owned!(
+                        format!("Seçilen ses parçasının dili değişti: {}", selection.id),
+                        format!(
+                            "The language of the selected audio track changed: {}",
+                            selection.id
+                        )
+                    )
                 );
             }
         }
@@ -1811,7 +1971,10 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
         let audio = exact_audio_format(info, id)?;
         if let Some(language) = &request.audio_language {
             if audio.language.as_deref().map(language_key) != Some(language_key(language)) {
-                bail!("Seçilen ses parçasının dili değişti");
+                bail!(crate::i18n::ui(
+                    "Seçilen ses parçasının dili değişti",
+                    "The language of the selected audio track changed"
+                ));
             }
         }
     } else if let Some(language) = &request.audio_language {
@@ -1830,8 +1993,17 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
         validate_subtitle_selection(selection)?;
         if !subtitle_languages.insert(language_key(&selection.language)) {
             bail!(
-                "Aynı dil için manuel ve otomatik altyazı birlikte veya yinelenerek seçilemez: {}",
-                selection.language
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!(
+                        "Aynı dil için manuel ve otomatik altyazı birlikte veya yinelenerek seçilemez: {}",
+                        selection.language
+                    ),
+                    format!(
+                        "Manual and automatic subtitles for the same language cannot be selected together or twice: {}",
+                        selection.language
+                    )
+                )
             );
         }
         if !info.subtitle_tracks.iter().any(|track| {
@@ -1839,8 +2011,14 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
         }) {
             crate::bail_code!(
                 crate::error_codes::MED_012,
-                "Seçilen altyazı artık bulunmuyor: {}",
-                selection.language
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Seçilen altyazı artık bulunmuyor: {}", selection.language),
+                    format!(
+                        "The selected subtitle is no longer available: {}",
+                        selection.language
+                    )
+                )
             );
         }
     }
@@ -1860,7 +2038,11 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
         if !exists {
             crate::bail_code!(
                 crate::error_codes::MED_012,
-                "Seçilen altyazı bulunamadı: {language}"
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Seçilen altyazı bulunamadı: {language}"),
+                    format!("The selected subtitle was not found: {language}")
+                )
             );
         }
     }
@@ -1875,19 +2057,33 @@ fn exact_audio_format<'a>(info: &'a MediaInfo, id: &str) -> Result<&'a MediaForm
                 && stream_absent(format.video_codec.as_deref())
                 && !stream_absent(format.audio_codec.as_deref())
         })
-        .ok_or_else(|| anyhow!("Seçilen ses parçası artık bulunmuyor: {id}"))
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Seçilen ses parçası artık bulunmuyor: {id}"),
+                    format!("The selected audio track is no longer available: {id}")
+                )
+            )
+        })
 }
 
 fn validate_audio_selection(selection: &AudioSelection) -> Result<()> {
-    validate_format_id(&selection.id, "Ses format kimliği")?;
+    validate_format_id(
+        &selection.id,
+        crate::i18n::ui("Ses format kimliği", "Audio format id"),
+    )?;
     if let Some(language) = &selection.language {
-        validate_language(language, "Ses dili")?;
+        validate_language(language, crate::i18n::ui("Ses dili", "Audio language"))?;
     }
     Ok(())
 }
 
 fn validate_subtitle_selection(selection: &SubtitleSelection) -> Result<()> {
-    validate_language(&selection.language, "Altyazı dili")
+    validate_language(
+        &selection.language,
+        crate::i18n::ui("Altyazı dili", "Subtitle language"),
+    )
 }
 
 fn selected_tracks_format(request: &AddRequest, info: &MediaInfo) -> Result<String> {
@@ -1911,7 +2107,10 @@ fn selected_tracks_format(request: &AddRequest, info: &MediaInfo) -> Result<Stri
         .unwrap_or_default();
     if !request.audio_tracks.is_empty() {
         if request.kind != DownloadKind::Video {
-            bail!("Çoklu ses seçimi yalnız video çıktısında kullanılabilir");
+            bail!(crate::i18n::ui(
+                "Çoklu ses seçimi yalnız video çıktısında kullanılabilir",
+                "Multiple audio selection is only available for video output"
+            ));
         }
         if let Some(selected) = request
             .video_format_id
@@ -1919,7 +2118,7 @@ fn selected_tracks_format(request: &AddRequest, info: &MediaInfo) -> Result<Stri
             .and_then(|id| info.formats.iter().find(|format| format.id == *id))
         {
             if stream_present(selected.audio_codec.as_deref()) {
-                bail!("Ayrı ses parçaları yalnız ses içermeyen bir görüntü biçimiyle birleştirilebilir");
+                bail!(crate::i18n::ui("Ayrı ses parçaları yalnız ses içermeyen bir görüntü biçimiyle birleştirilebilir", "Separate audio tracks can only be merged with a video format that has no audio"));
             }
         }
         return Ok(std::iter::once(video)
@@ -1949,7 +2148,10 @@ fn selected_tracks_format(request: &AddRequest, info: &MediaInfo) -> Result<Stri
             .formats
             .iter()
             .find(|format| format.id == *id)
-            .context("Seçilen görüntü biçimi bulunamadı")?;
+            .context(crate::i18n::ui(
+                "Seçilen görüntü biçimi bulunamadı",
+                "The selected video format was not found",
+            ))?;
         if stream_present(selected.audio_codec.as_deref()) || !audio_offered(info) {
             return Ok(id.clone());
         }
@@ -1971,7 +2173,7 @@ fn reject_unsafe_media_headers(headers: &std::collections::BTreeMap<String, Stri
     if headers.keys().any(|name| {
         name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
     }) {
-        bail!("Authorization veya Cookie başlığı tek medya başlık bloğuyla ana kaynak, alt liste ve parça sunucularına güvenle sınırlandırılamaz. Kaynak kapsamlı oturum çerezleri veya imzalı bağlantı kullanın.");
+        bail!(crate::i18n::ui("Authorization veya Cookie başlığı tek medya başlık bloğuyla ana kaynak, alt liste ve parça sunucularına güvenle sınırlandırılamaz. Kaynak kapsamlı oturum çerezleri veya imzalı bağlantı kullanın.", "An Authorization or Cookie header cannot be safely limited to the main source, sub-playlist and segment servers with a single media header block. Use source-scoped session cookies or a signed link."));
     }
     Ok(())
 }
@@ -1983,7 +2185,10 @@ fn validate_format_id(value: &str, label: &str) -> Result<()> {
             .chars()
             .all(|character| character.is_alphanumeric() || matches!(character, '-' | '_' | '.'))
     {
-        bail!("{label} geçersiz");
+        bail!(
+            "{}",
+            crate::i18n::ui_owned!(format!("{label} geçersiz"), format!("{label} is invalid"))
+        );
     }
     Ok(())
 }
@@ -1995,21 +2200,33 @@ fn validate_language(value: &str, label: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
     {
-        bail!("{label} geçersiz");
+        bail!(
+            "{}",
+            crate::i18n::ui_owned!(format!("{label} geçersiz"), format!("{label} is invalid"))
+        );
     }
     Ok(())
 }
 
 fn validate_external_subtitles(values: &[ExternalSubtitle]) -> Result<()> {
     if values.iter().filter(|subtitle| subtitle.is_default).count() > 1 {
-        bail!("Yalnız bir harici altyazı varsayılan olabilir");
+        bail!(crate::i18n::ui(
+            "Yalnız bir harici altyazı varsayılan olabilir",
+            "Only one external subtitle can be the default"
+        ));
     }
     let mut identities = BTreeSet::new();
     for subtitle in values {
         validate_web_url(&subtitle.url)?;
-        validate_language(&subtitle.language, "Harici altyazı dili")?;
+        validate_language(
+            &subtitle.language,
+            crate::i18n::ui("Harici altyazı dili", "External subtitle language"),
+        )?;
         if !matches!(subtitle.kind.as_str(), "subtitles" | "captions") {
-            bail!("Harici track türü yalnız subtitles veya captions olabilir");
+            bail!(crate::i18n::ui(
+                "Harici track türü yalnız subtitles veya captions olabilir",
+                "The external track kind can only be subtitles or captions"
+            ));
         }
         if subtitle.label.len() > 200
             || subtitle
@@ -2017,7 +2234,10 @@ fn validate_external_subtitles(values: &[ExternalSubtitle]) -> Result<()> {
                 .bytes()
                 .any(|byte| matches!(byte, 0 | b'\r' | b'\n'))
         {
-            bail!("Harici altyazı etiketi geçersiz");
+            bail!(crate::i18n::ui(
+                "Harici altyazı etiketi geçersiz",
+                "The external subtitle label is invalid"
+            ));
         }
         crate::validation::validate_headers(&subtitle.headers)?;
         reject_unsafe_media_headers(&subtitle.headers)?;
@@ -2025,7 +2245,10 @@ fn validate_external_subtitles(values: &[ExternalSubtitle]) -> Result<()> {
             validate_web_url(referer)?;
         }
         if !identities.insert((&subtitle.url, &subtitle.language, &subtitle.kind)) {
-            bail!("Aynı harici altyazı birden fazla kez seçilemez");
+            bail!(crate::i18n::ui(
+                "Aynı harici altyazı birden fazla kez seçilemez",
+                "The same external subtitle cannot be selected more than once"
+            ));
         }
     }
     Ok(())
@@ -2047,7 +2270,13 @@ fn audio_conversion(request: &AddRequest) -> Result<Option<&'static str>> {
         "m4a" => Ok(Some("m4a")),
         "opus" => Ok(Some("opus")),
         "flac" => Ok(Some("flac")),
-        other => bail!("Desteklenmeyen ses çıktısı: {other}. Kullanılabilir seçenekler: original, MP3, M4A, Opus, FLAC"),
+        other => bail!(
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("Desteklenmeyen ses çıktısı: {other}. Kullanılabilir seçenekler: original, MP3, M4A, Opus, FLAC"),
+                format!("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC")
+            )
+        ),
     }
 }
 
@@ -2061,7 +2290,13 @@ fn validate_subtitle_languages(values: &[String]) -> Result<String> {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'*'))
         {
-            bail!("Geçersiz altyazı dili seçimi: {value}");
+            bail!(
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Geçersiz altyazı dili seçimi: {value}"),
+                    format!("Invalid subtitle language selection: {value}")
+                )
+            );
         }
         valid.push(value);
     }

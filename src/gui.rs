@@ -63,5 +63,11 @@ pub(crate) fn foreground_monitor() -> Option<[i32; 4]> {
 
 #[cfg(not(windows))]
 pub fn run(_app: crate::app::App, _start_hidden: bool) -> anyhow::Result<()> {
-    anyhow::bail!("SSDownload masaüstü arayüzü yalnızca Windows'ta kullanılabilir")
+    anyhow::bail!(
+        "{}",
+        crate::i18n::ui(
+            "SSDownload masaüstü arayüzü yalnızca Windows'ta kullanılabilir",
+            "The SSDownload desktop interface is available only on Windows"
+        )
+    )
 }

@@ -36,7 +36,10 @@ fn wide(path: &Path) -> Vec<u16> {
     crate::winpath::wide_long(path)
 }
 fn receipt_path(paths: &AppPaths, id: &str) -> Result<PathBuf> {
-    uuid::Uuid::parse_str(id).context("İş kimliği geçersiz")?;
+    uuid::Uuid::parse_str(id).context(crate::i18n::ui(
+        "İş kimliği geçersiz",
+        "The job id is invalid",
+    ))?;
     Ok(paths
         .base_dir
         .join("completions")
@@ -73,17 +76,29 @@ fn file_identity(path: &Path) -> Result<[u32; 3]> {
 }
 fn reject_link(path: &Path) -> Result<()> {
     if fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        bail!("Dosya yolu yönlendirme içeriyor: {}", path.display());
+        bail!(
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("Dosya yolu yönlendirme içeriyor: {}", path.display()),
+                format!("The file path contains a redirection: {}", path.display())
+            )
+        );
     }
     Ok(())
 }
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("Kayıt klasörü eksik")?;
+    let parent = path.parent().context(crate::i18n::ui(
+        "Kayıt klasörü eksik",
+        "The record folder is missing",
+    ))?;
     fs::create_dir_all(parent)?;
     // Rust filesystem calls support long paths, but raw Win32 calls require
     // the extended-length prefix for both sides of the atomic replacement.
     let parent = parent.canonicalize()?;
-    let path = parent.join(path.file_name().context("Record filename is missing")?);
+    let path = parent.join(path.file_name().context(crate::i18n::ui(
+        "Kayıt dosya adı eksik",
+        "Record filename is missing",
+    ))?);
     let temp = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
     let mut file = OpenOptions::new()
         .write(true)
@@ -121,7 +136,13 @@ fn read_receipt(paths: &AppPaths, id: &str) -> Result<Option<Receipt>> {
     }
     let value: Receipt = serde_json::from_str(&secure::unseal(&fs::read_to_string(path)?)?)?;
     if value.owner != id {
-        bail!("Tamamlama kaydının sahibi eşleşmiyor");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Tamamlama kaydının sahibi eşleşmiyor",
+                "The completion record owner does not match"
+            )
+        );
     }
     Ok(Some(value))
 }
@@ -132,7 +153,13 @@ pub(crate) fn recovered(paths: &AppPaths, id: &str) -> Result<Option<TransferRes
     if value.target.exists() && file_identity(&value.target)? == value.identity {
         for entry in &value.files {
             if file_identity(&value.target.join(&entry.relative))? != entry.identity {
-                bail!("Tamamlanan playlist dosyası değişmiş");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "Tamamlanan playlist dosyası değişmiş",
+                        "The completed playlist file has changed"
+                    )
+                );
             }
         }
         return Ok(Some(TransferResult {
@@ -158,7 +185,7 @@ pub(crate) fn recovered(paths: &AppPaths, id: &str) -> Result<Option<TransferRes
         return recovered(paths, id);
     }
     if !value.source.exists() {
-        bail!("Tamamlama kaydındaki dosya kayıp/değişmiş; otomatik yeniden indirme durduruldu");
+        bail!("{}", crate::i18n::ui("Tamamlama kaydındaki dosya kayıp/değişmiş; otomatik yeniden indirme durduruldu", "The file in the completion record is missing or changed; automatic re-download was stopped"));
     }
     Ok(None)
 }
@@ -168,7 +195,10 @@ pub(crate) fn claim(path: &Path, id: &str) -> Result<()> {
         .write(true)
         .create_new(true)
         .open(&marker)
-        .context("Bu çıktı adı başka bir iş için ayrılmış")?;
+        .context(crate::i18n::ui(
+            "Bu çıktı adı başka bir iş için ayrılmış",
+            "This output name is reserved for another job",
+        ))?;
     file.write_all(id.as_bytes())?;
     file.sync_all()?;
     unsafe {
@@ -187,7 +217,13 @@ pub(crate) fn release(path: &Path, id: &str) -> Result<()> {
         return Ok(());
     }
     if fs::read_to_string(&marker)? != id {
-        bail!("Çıktı rezervasyonu başka bir işe ait")
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Çıktı rezervasyonu başka bir işe ait",
+                "The output reservation belongs to another job"
+            )
+        )
     }
     fs::remove_file(marker)?;
     Ok(())
@@ -201,7 +237,10 @@ pub(crate) fn work_dir(output: &Path, id: &str) -> PathBuf {
         .join(id)
 }
 pub(crate) fn prepare_work(job: &Job) -> Result<PathBuf> {
-    let path = job.work_dir.as_ref().context("İş çalışma klasörü eksik")?;
+    let path = job.work_dir.as_ref().context(crate::i18n::ui(
+        "İş çalışma klasörü eksik",
+        "The job work folder is missing",
+    ))?;
     for ancestor in path.ancestors().take(3) {
         if ancestor.exists() {
             reject_link(ancestor)?;
@@ -212,13 +251,25 @@ pub(crate) fn prepare_work(job: &Job) -> Result<PathBuf> {
         reject_link(path)?;
         match fs::read_to_string(&marker) {
             Ok(owner) if owner == job.id => {}
-            Ok(_) => bail!("Çalışma dosyaları başka bir işe ait"),
+            Ok(_) => bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Çalışma dosyaları başka bir işe ait",
+                    "The work files belong to another job"
+                )
+            ),
             // A crash between creating the folder and writing its marker leaves an empty
             // folder; nothing in it can belong to another job, so it is adopted. A folder
             // with content but no marker stays untouched.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if fs::read_dir(path)?.next().is_some() {
-                    bail!("Çalışma klasörünün sahipliği kanıtlanamadı; dosyalar korundu")
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Çalışma klasörünün sahipliği kanıtlanamadı; dosyalar korundu",
+                            "Ownership of the work folder could not be proven; files were kept"
+                        )
+                    )
                 }
                 atomic_write(&marker, job.id.as_bytes())?;
             }
@@ -234,7 +285,10 @@ pub(crate) fn prepare_work(job: &Job) -> Result<PathBuf> {
             SetFileAttributesW(wide(root).as_ptr(), attributes | FILE_ATTRIBUTE_HIDDEN);
         }
     }
-    Ok(path.join(job.path.file_name().context("Dosya adı eksik")?))
+    Ok(path.join(job.path.file_name().context(crate::i18n::ui(
+        "Dosya adı eksik",
+        "The file name is missing",
+    ))?))
 }
 fn inventory(root: &Path, path: &Path, entries: &mut Vec<Entry>) -> Result<()> {
     reject_link(path)?;
@@ -263,8 +317,14 @@ pub(crate) fn publish(
     let desired = job
         .path
         .parent()
-        .context("Hedef klasör eksik")?
-        .join(result.path.file_name().context("Çıktı adı eksik")?);
+        .context(crate::i18n::ui(
+            "Hedef klasör eksik",
+            "The target folder is missing",
+        ))?
+        .join(result.path.file_name().context(crate::i18n::ui(
+            "Çıktı adı eksik",
+            "The output name is missing",
+        ))?);
     let identity = file_identity(&result.path)?;
     for index in 0..10000 {
         let target = if index == 0 {
@@ -311,10 +371,16 @@ pub(crate) fn publish(
         let error = std::io::Error::last_os_error();
         release(&target, &job.id)?;
         if !target.exists() {
-            return Err(error).context("Son dosya taşınamadı");
+            return Err(error).context(crate::i18n::ui(
+                "Son dosya taşınamadı",
+                "The final file could not be moved",
+            ));
         }
     }
-    bail!("Boş çıktı adı bulunamadı")
+    bail!(
+        "{}",
+        crate::i18n::ui("Boş çıktı adı bulunamadı", "No free output name was found")
+    )
 }
 pub(crate) fn cleanup_work(job: &Job) -> Result<()> {
     let Some(path) = &job.work_dir else {
@@ -323,7 +389,13 @@ pub(crate) fn cleanup_work(job: &Job) -> Result<()> {
     if path.exists() {
         reject_link(path)?;
         if fs::read_to_string(path.join(".job"))? != job.id {
-            bail!("Çalışma klasörü sahipliği doğrulanamadı")
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Çalışma klasörü sahipliği doğrulanamadı",
+                    "Work folder ownership could not be verified"
+                )
+            )
         }
         let mut entries = Vec::new();
         inventory(path, path, &mut entries)?;
@@ -347,7 +419,13 @@ pub(crate) fn remove(paths: &AppPaths, job: &Job, delete_final: bool) -> Result<
         if let Some(receipt) = read_receipt(paths, &job.id)? {
             if receipt.target.exists() {
                 if file_identity(&receipt.target)? != receipt.identity {
-                    bail!("Son dosya değişmiş; silinmedi")
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Son dosya değişmiş; silinmedi",
+                            "The final file has changed; it was not deleted"
+                        )
+                    )
                 }
                 if receipt.directory {
                     for entry in &receipt.files {
@@ -356,12 +434,20 @@ pub(crate) fn remove(paths: &AppPaths, job: &Job, delete_final: bool) -> Result<
                             continue;
                         }
                         if file_identity(&file)? != entry.identity {
-                            bail!("Playlist dosyası değişmiş; silinmedi")
+                            bail!(
+                                "{}",
+                                crate::i18n::ui(
+                                    "Playlist dosyası değişmiş; silinmedi",
+                                    "The playlist file has changed; it was not deleted"
+                                )
+                            )
                         }
                         fs::remove_file(file)?;
                     }
-                    fs::remove_dir(&receipt.target)
-                        .context("Klasörde başka dosyalar var; klasör korundu")?;
+                    fs::remove_dir(&receipt.target).context(crate::i18n::ui(
+                        "Klasörde başka dosyalar var; klasör korundu",
+                        "The folder contains other files; it was kept",
+                    ))?;
                 } else {
                     fs::remove_file(&receipt.target)?;
                 }
@@ -371,7 +457,7 @@ pub(crate) fn remove(paths: &AppPaths, job: &Job, delete_final: bool) -> Result<
         {
             reject_link(&job.path)?;
             if job.path.is_dir() {
-                bail!("Eski playlist'in sahiplik kaydı yok; klasörden elle silin")
+                bail!("{}", crate::i18n::ui("Eski playlist'in sahiplik kaydı yok; klasörden elle silin", "The old playlist has no ownership record; delete it from the folder manually"))
             }
             fs::remove_file(&job.path)?;
         }

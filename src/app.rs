@@ -508,6 +508,17 @@ impl App {
                             .iter()
                             .filter(|job| job.state == JobState::Completed)
                             .count() as u64,
+                        language: if snapshot
+                            .settings
+                            .ui_language
+                            .trim()
+                            .eq_ignore_ascii_case("en")
+                        {
+                            "en"
+                        } else {
+                            "tr"
+                        }
+                        .to_owned(),
                     });
                     return Ok(result);
                 }

@@ -45,7 +45,10 @@ fn spawn_owned(command: &mut Command, executable: &Path) -> Result<(Child, Proce
     let mut child = command.spawn().map_err(|error| {
         crate::error_codes::coded(
             crate::error_codes::TOL_003,
-            format!("{} başlatılamadı: {error}", executable.display()),
+            crate::i18n::ui_owned!(
+                format!("{} başlatılamadı: {error}", executable.display()),
+                format!("{} could not be started: {error}", executable.display())
+            ),
         )
     })?;
     match ProcessJob::assign(&child) {
@@ -81,14 +84,18 @@ pub(super) fn run_capture_with_proxy(
         .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     let (mut child, job) = spawn_owned(&mut command, executable)?;
     let input_thread = write_input(&mut child, input)?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("yt-dlp stdout alınamadı"))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("yt-dlp stderr alınamadı"))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        anyhow!(crate::i18n::ui(
+            "yt-dlp stdout alınamadı",
+            "Could not capture yt-dlp stdout"
+        ))
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        anyhow!(crate::i18n::ui(
+            "yt-dlp stderr alınamadı",
+            "Could not capture yt-dlp stderr"
+        ))
+    })?;
     let out_thread = thread::spawn(move || {
         let mut bytes = Vec::new();
         let _ = stdout
@@ -109,23 +116,41 @@ pub(super) fn run_capture_with_proxy(
             let _ = err_thread.join();
             let _ = input_thread.join();
             if control.stop_requested() {
-                bail!("Kaynak hazırlığı durduruldu");
+                bail!(crate::i18n::ui(
+                    "Kaynak hazırlığı durduruldu",
+                    "Source preparation was stopped"
+                ));
             }
             crate::bail_code!(
                 crate::error_codes::MED_011,
-                "Medya analizi {} saniye içinde tamamlanmadı",
-                timeout.as_secs()
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!(
+                        "Medya analizi {} saniye içinde tamamlanmadı",
+                        timeout.as_secs()
+                    ),
+                    format!(
+                        "The media analysis did not finish within {} seconds",
+                        timeout.as_secs()
+                    )
+                )
             );
         }
         thread::sleep(Duration::from_millis(50));
     };
     // Whatever still runs now is an orphan holding the pipes; the readers would wait on it.
     job.terminate();
-    let input_result = input_thread
-        .join()
-        .unwrap_or_else(|_| Err(std::io::Error::other("Medya girdi işçisi durdu")));
+    let input_result = input_thread.join().unwrap_or_else(|_| {
+        Err(std::io::Error::other(crate::i18n::ui(
+            "Medya girdi işçisi durdu",
+            "The media input worker stopped",
+        )))
+    });
     if status.success() {
-        input_result.context("Medya isteği gönderilemedi")?;
+        input_result.context(crate::i18n::ui(
+            "Medya isteği gönderilemedi",
+            "Could not send the media request",
+        ))?;
     }
     let stdout = out_thread.join().unwrap_or_default();
     let stderr = err_thread.join().unwrap_or_default();
@@ -192,14 +217,18 @@ impl RunningDownload {
             .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         let (mut child, job) = spawn_owned(&mut command, executable)?;
         let stdin_thread = Some(write_input(&mut child, input)?);
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("yt-dlp stdout alınamadı"))?;
-        let stderr_pipe = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow!("yt-dlp stderr alınamadı"))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            anyhow!(crate::i18n::ui(
+                "yt-dlp stdout alınamadı",
+                "Could not capture yt-dlp stdout"
+            ))
+        })?;
+        let stderr_pipe = child.stderr.take().ok_or_else(|| {
+            anyhow!(crate::i18n::ui(
+                "yt-dlp stderr alınamadı",
+                "Could not capture yt-dlp stderr"
+            ))
+        })?;
         let (sender, lines) = mpsc::sync_channel(256);
         let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_overflow = overflow.clone();
@@ -207,7 +236,7 @@ impl RunningDownload {
             for line in bounded_lines(stdout, MAX_ERROR_BYTES) {
                 match line {
                     Ok(line) => {
-                        if line.ends_with(" [satır kesildi]") {
+                        if line_was_truncated(&line) {
                             reader_overflow.store(true, std::sync::atomic::Ordering::Relaxed);
                             continue;
                         }
@@ -265,7 +294,12 @@ impl RunningDownload {
         if let Some(thread) = self.stdin_thread.take() {
             self.input_error = thread
                 .join()
-                .unwrap_or_else(|_| Err(std::io::Error::other("Medya girdi işçisi durdu")))
+                .unwrap_or_else(|_| {
+                    Err(std::io::Error::other(crate::i18n::ui(
+                        "Medya girdi işçisi durdu",
+                        "The media input worker stopped",
+                    )))
+                })
                 .err();
         }
         if let Some(thread) = self.stdout_thread.take() {
@@ -415,7 +449,7 @@ pub(super) fn monitor_download(
                 handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
             }
             if running.overflow.load(std::sync::atomic::Ordering::Acquire) {
-                bail!("Medya çıktı kuyruğu sınırı aşıldı; eksik playlist yayınlanmadı")
+                bail!(crate::i18n::ui("Medya çıktı kuyruğu sınırı aşıldı; eksik playlist yayınlanmadı", "The media output queue limit was exceeded; the incomplete playlist was not published"))
             }
             return Ok(MonitorOutcome::Exited(status));
         }
@@ -495,8 +529,12 @@ pub(super) fn completed_file_bytes(files: &HashSet<PathBuf>) -> u64 {
         .fold(0u64, u64::saturating_add)
 }
 pub(super) fn path_bytes(path: &Path) -> Result<u64> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("Tamamlanan medya bulunamadı: {}", path.display()))?;
+    let metadata = fs::metadata(path).with_context(|| {
+        crate::i18n::ui_owned!(
+            format!("Tamamlanan medya bulunamadı: {}", path.display()),
+            format!("The completed media was not found: {}", path.display())
+        )
+    })?;
     if metadata.is_file() {
         return Ok(metadata.len());
     }
@@ -581,7 +619,11 @@ pub(super) fn useful_error(stderr: &str, secrets: &[String]) -> String {
         .join("\n");
     result = redact_url_credentials(&result);
     if result.is_empty() {
-        "yt-dlp ayrıntı vermeden başarısız oldu".into()
+        crate::i18n::ui(
+            "yt-dlp ayrıntı vermeden başarısız oldu",
+            "yt-dlp failed without giving details",
+        )
+        .into()
     } else {
         bounded_tail(&result, MAX_ERROR_BYTES)
     }
@@ -629,6 +671,17 @@ pub(super) fn bounded_tail(value: &str, max: usize) -> String {
     format!("…{}", &value[start..])
 }
 
+/// Suffix of a line that `bounded_lines` cut at its byte limit (user-visible in error text).
+fn truncation_marker() -> &'static str {
+    crate::i18n::ui(" [satır kesildi]", " [line truncated]")
+}
+
+/// Whether `bounded_lines` cut this line; both languages' markers count, as the interface
+/// language can change while a tool keeps running.
+fn line_was_truncated(line: &str) -> bool {
+    line.ends_with(" [satır kesildi]") || line.ends_with(" [line truncated]")
+}
+
 pub(super) fn bounded_lines<R: Read>(
     reader: R,
     limit: usize,
@@ -648,7 +701,7 @@ pub(super) fn bounded_lines<R: Read>(
                     Ok(format!(
                         "{}{}",
                         String::from_utf8_lossy(&line),
-                        if truncated { " [satır kesildi]" } else { "" }
+                        if truncated { truncation_marker() } else { "" }
                     ))
                 });
             }
@@ -667,7 +720,7 @@ pub(super) fn bounded_lines<R: Read>(
                 return Some(Ok(format!(
                     "{}{}",
                     String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']),
-                    if truncated { " [satır kesildi]" } else { "" }
+                    if truncated { truncation_marker() } else { "" }
                 )));
             }
         }

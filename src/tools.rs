@@ -166,10 +166,19 @@ pub(crate) fn ensure(
     control: &TransferControl,
     progress: &mut dyn FnMut(ToolProgress),
 ) -> Result<Vec<ToolInfo>> {
-    let _serial = ENSURE_LOCK
-        .lock()
-        .map_err(|_| anyhow!("Medya aracı kurulum kilidi bozuldu"))?;
-    fs::create_dir_all(&paths.tools_dir).context("Medya bileşenleri klasörü oluşturulamadı")?;
+    let _serial = ENSURE_LOCK.lock().map_err(|_| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui(
+                "Medya aracı kurulum kilidi bozuldu",
+                "The media tool installation lock is corrupted"
+            )
+        )
+    })?;
+    fs::create_dir_all(&paths.tools_dir).context(crate::i18n::ui(
+        "Medya bileşenleri klasörü oluşturulamadı",
+        "The media components folder could not be created",
+    ))?;
 
     let _process_lock = crate::output::OutputLock::acquire(&paths.tools_dir.join("update"))?;
     if let Err(error) = cleanup_versions(paths) {
@@ -204,19 +213,28 @@ pub(crate) fn ensure(
         control,
         network,
     )
-    .context("yt-dlp sürüm bilgisi alınamadı")?;
+    .context(crate::i18n::ui(
+        "yt-dlp sürüm bilgisi alınamadı",
+        "The yt-dlp version information could not be retrieved",
+    ))?;
     let deno_release = github_release(
         "https://api.github.com/repos/denoland/deno/releases/latest",
         control,
         network,
     )
-    .context("Deno sürüm bilgisi alınamadı")?;
+    .context(crate::i18n::ui(
+        "Deno sürüm bilgisi alınamadı",
+        "The Deno version information could not be retrieved",
+    ))?;
     let ffmpeg_release = github_release(
         "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest",
         control,
         network,
     )
-    .context("FFmpeg sürüm bilgisi alınamadı")?;
+    .context(crate::i18n::ui(
+        "FFmpeg sürüm bilgisi alınamadı",
+        "The FFmpeg version information could not be retrieved",
+    ))?;
 
     let yt_asset = exact_asset(&yt_release, "yt-dlp.exe")?;
     let yt_sums = exact_asset(&yt_release, "SHA2-256SUMS")?;
@@ -231,12 +249,23 @@ pub(crate) fn ensure(
                 || a.name.eq_ignore_ascii_case("checksums.sha256.txt")
         })
         .cloned()
-        .ok_or_else(|| anyhow!("FFmpeg yayını upstream SHA-256 checksum dosyası içermiyor"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::i18n::ui(
+                    "FFmpeg yayını upstream SHA-256 checksum dosyası içermiyor",
+                    "The FFmpeg release does not include an upstream SHA-256 checksum file"
+                )
+            )
+        })?;
 
     let install_id = format!("{}-{}", unix_seconds(), Uuid::new_v4().simple());
     let staging = paths.tools_dir.join(format!(".staging-{install_id}"));
     let mut cleanup = CleanupDir::new(staging.clone());
-    fs::create_dir_all(&staging).context("Geçici araç kurulum klasörü oluşturulamadı")?;
+    fs::create_dir_all(&staging).context(crate::i18n::ui(
+        "Geçici araç kurulum klasörü oluşturulamadı",
+        "The temporary tool installation folder could not be created",
+    ))?;
 
     let yt_checksum_text = fetch_text(
         &yt_sums.browser_download_url,
@@ -286,10 +315,20 @@ pub(crate) fn ensure(
         Some(deno_asset.size),
     );
     let deno_dir = staging.join("deno");
-    extract_zip_safely(&deno_zip, &deno_dir).context("Deno arşivi açılamadı")?;
+    extract_zip_safely(&deno_zip, &deno_dir).context(crate::i18n::ui(
+        "Deno arşivi açılamadı",
+        "The Deno archive could not be extracted",
+    ))?;
     fs::remove_file(&deno_zip).ok();
-    let deno_path = find_file_named(&deno_dir, "deno.exe")
-        .ok_or_else(|| anyhow!("Deno arşivinde deno.exe bulunamadı"))?;
+    let deno_path = find_file_named(&deno_dir, "deno.exe").ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui(
+                "Deno arşivinde deno.exe bulunamadı",
+                "deno.exe was not found in the Deno archive"
+            )
+        )
+    })?;
 
     let ffmpeg_checksum_text = fetch_text(
         &ffmpeg_sums.browser_download_url,
@@ -319,12 +358,29 @@ pub(crate) fn ensure(
         Some(ffmpeg_asset.size),
     );
     let ffmpeg_dir = staging.join("ffmpeg");
-    extract_zip_safely(&ffmpeg_zip, &ffmpeg_dir).context("FFmpeg arşivi açılamadı")?;
+    extract_zip_safely(&ffmpeg_zip, &ffmpeg_dir).context(crate::i18n::ui(
+        "FFmpeg arşivi açılamadı",
+        "The FFmpeg archive could not be extracted",
+    ))?;
     fs::remove_file(&ffmpeg_zip).ok();
-    let ffmpeg_path = find_file_named(&ffmpeg_dir, "ffmpeg.exe")
-        .ok_or_else(|| anyhow!("FFmpeg arşivinde ffmpeg.exe bulunamadı"))?;
-    let ffprobe_path = find_file_named(&ffmpeg_dir, "ffprobe.exe")
-        .ok_or_else(|| anyhow!("FFmpeg arşivinde ffprobe.exe bulunamadı"))?;
+    let ffmpeg_path = find_file_named(&ffmpeg_dir, "ffmpeg.exe").ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui(
+                "FFmpeg arşivinde ffmpeg.exe bulunamadı",
+                "ffmpeg.exe was not found in the FFmpeg archive"
+            )
+        )
+    })?;
+    let ffprobe_path = find_file_named(&ffmpeg_dir, "ffprobe.exe").ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui(
+                "FFmpeg arşivinde ffprobe.exe bulunamadı",
+                "ffprobe.exe was not found in the FFmpeg archive"
+            )
+        )
+    })?;
 
     let files = code_file_manifest(&staging, &PathBuf::from("versions").join(&install_id))?;
     emit(
@@ -349,15 +405,18 @@ pub(crate) fn ensure(
     let version_root = paths.tools_dir.join("versions");
     fs::create_dir_all(&version_root)?;
     let final_dir = version_root.join(&install_id);
-    fs::rename(&staging, &final_dir)
-        .context("Doğrulanmış araç kurulumu etkinleştirme alanına taşınamadı")?;
+    fs::rename(&staging, &final_dir).context(crate::i18n::ui(
+        "Doğrulanmış araç kurulumu etkinleştirme alanına taşınamadı",
+        "The verified tool installation could not be moved to the activation area",
+    ))?;
     cleanup.disarm();
     let mut final_cleanup = CleanupDir::new(final_dir.clone());
 
     let rel = |path: &Path| -> Result<PathBuf> {
-        let inner = path
-            .strip_prefix(&staging)
-            .context("Araç yolu kurulum klasörü dışında")?;
+        let inner = path.strip_prefix(&staging).context(crate::i18n::ui(
+            "Araç yolu kurulum klasörü dışında",
+            "The tool path is outside the installation folder",
+        ))?;
         Ok(PathBuf::from("versions").join(&install_id).join(inner))
     };
     let manifest = InstallManifest {
@@ -410,10 +469,17 @@ pub(crate) fn ensure(
         &final_dir.join("sbom.cdx.json"),
         &serde_json::to_vec_pretty(&inventory)?,
     )?;
-    write_manifest_file(&final_dir.join("install-manifest.json"), &manifest)
-        .context("Sürüm ve lisans provenans kaydı yazılamadı")?;
+    write_manifest_file(&final_dir.join("install-manifest.json"), &manifest).context(
+        crate::i18n::ui(
+            "Sürüm ve lisans provenans kaydı yazılamadı",
+            "The version and license provenance record could not be written",
+        ),
+    )?;
     if let Err(error) = activate_manifest(paths, &manifest) {
-        return Err(error).context("Yeni araç kurulumu etkinleştirilemedi; önceki kurulum korundu");
+        return Err(error).context(crate::i18n::ui(
+            "Yeni araç kurulumu etkinleştirilemedi; önceki kurulum korundu",
+            "The new tool installation could not be activated; the previous installation was kept",
+        ));
     }
     final_cleanup.disarm();
     if let Err(error) = cleanup_versions(paths) {
@@ -463,7 +529,10 @@ pub(crate) fn verified_toolchain(
         );
         crate::error_codes::coded(
             crate::error_codes::TOL_001,
-            "Video ve ses desteği henüz hazır değil; uygulama gerekli bileşenleri kendisi indirir.",
+            crate::i18n::ui(
+                "Video ve ses desteği henüz hazır değil; uygulama gerekli bileşenleri kendisi indirir.",
+                "Video and audio support is not ready yet; the app downloads the required components itself.",
+            ),
         )
     })?;
     let key = hex::encode(Sha256::digest(serde_json::to_vec(&manifest)?));
@@ -477,14 +546,25 @@ pub(crate) fn verified_toolchain(
         }
     }
     let files = lock_verified_files(paths, &manifest, control).context(
-        "Kurulu medya bileşenlerinin bütünlüğü doğrulanamadı; uygulama bunları yeniden indirir",
+        crate::i18n::ui(
+            "Kurulu medya bileşenlerinin bütünlüğü doğrulanamadı; uygulama bunları yeniden indirir",
+            "The integrity of the installed media components could not be verified; the app downloads them again",
+        ),
     )?;
     let executable = |name: &str| -> Result<PathBuf> {
         let component = manifest
             .components
             .iter()
             .find(|c| c.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| anyhow!("{name} etkin araç manifestinde bulunamadı"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui_owned!(
+                        format!("{name} etkin araç manifestinde bulunamadı"),
+                        format!("{name} was not found in the active tool manifest")
+                    )
+                )
+            })?;
         Ok(paths.tools_dir.join(&component.path).canonicalize()?)
     };
     let ffmpeg = executable("FFmpeg")?;
@@ -530,8 +610,11 @@ fn lock_verified_files(
         {
             crate::bail_code!(
                 crate::error_codes::TOL_002,
-                "{} değiştirilmiş veya bozulmuş",
-                recorded.path.display()
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("{} değiştirilmiş veya bozulmuş", recorded.path.display()),
+                    format!("{} was modified or corrupted", recorded.path.display())
+                )
             );
         }
         files.push(file);
@@ -628,8 +711,17 @@ fn github_release(
     serde_json::from_slice(&bytes).map_err(|error| {
         let body = String::from_utf8_lossy(&bytes);
         anyhow!(
-            "GitHub geçersiz sürüm yanıtı döndürdü: {error}; {}",
-            bounded(&body, 2048)
+            "{}",
+            crate::i18n::ui_owned!(
+                format!(
+                    "GitHub geçersiz sürüm yanıtı döndürdü: {error}; {}",
+                    bounded(&body, 2048)
+                ),
+                format!(
+                    "GitHub returned an invalid release response: {error}; {}",
+                    bounded(&body, 2048)
+                )
+            )
         )
     })
 }
@@ -642,9 +734,17 @@ fn exact_asset(release: &GithubRelease, name: &str) -> Result<GithubAsset> {
         .cloned()
         .ok_or_else(|| {
             anyhow!(
-                "{} yayınında gerekli {} varlığı bulunamadı",
-                release.tag_name,
-                name
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!(
+                        "{} yayınında gerekli {} varlığı bulunamadı",
+                        release.tag_name, name
+                    ),
+                    format!(
+                        "The required {} asset was not found in release {}",
+                        name, release.tag_name
+                    )
+                )
             )
         })
 }
@@ -668,7 +768,13 @@ fn choose_ffmpeg_asset(release: &GithubRelease) -> Result<GithubAsset> {
         .min_by_key(|a| if a.name.contains("shared") { 0 } else { 1 })
         .cloned()
         .ok_or_else(|| {
-            anyhow!("BtbN latest yayınında Windows x64 LGPL FFmpeg ZIP varlığı bulunamadı")
+            anyhow!(
+                "{}",
+                crate::i18n::ui(
+                    "BtbN latest yayınında Windows x64 LGPL FFmpeg ZIP varlığı bulunamadı",
+                    "No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release"
+                )
+            )
         })
 }
 
@@ -678,9 +784,18 @@ fn fetch_text(
     control: &TransferControl,
     network: &NetworkGovernor,
 ) -> Result<String> {
-    let bytes = fetch_bytes(url, 8 * 1024 * 1024, None, control, network)
-        .with_context(|| format!("{label} indirilemedi"))?;
-    String::from_utf8(bytes).with_context(|| format!("{label} UTF-8 değil"))
+    let bytes = fetch_bytes(url, 8 * 1024 * 1024, None, control, network).with_context(|| {
+        crate::i18n::ui_owned!(
+            format!("{label} indirilemedi"),
+            format!("{label} could not be downloaded")
+        )
+    })?;
+    String::from_utf8(bytes).with_context(|| {
+        crate::i18n::ui_owned!(
+            format!("{label} UTF-8 değil"),
+            format!("{label} is not UTF-8")
+        )
+    })
 }
 
 fn fetch_bytes(
@@ -726,7 +841,10 @@ fn fetch_bytes(
                 )
             );
         }
-        return Err(error).context("HTTPS aktarımı başarısız");
+        return Err(error).context(crate::i18n::ui(
+            "HTTPS aktarımı başarısız",
+            "The HTTPS transfer failed",
+        ));
     }
     let status = easy.response_code()?;
     if !(200..300).contains(&status) {
@@ -859,16 +977,23 @@ fn download_attempt(
     network: &NetworkGovernor,
     progress: &mut dyn FnMut(ToolProgress),
 ) -> Result<()> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| anyhow!("Geçersiz araç hedefi"))?;
+    let parent = destination.parent().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui("Geçersiz araç hedefi", "Invalid tool destination")
+        )
+    })?;
     fs::create_dir_all(parent)?;
     let mut hasher = Sha256::new();
     let mut seen = 0u64;
     let existing = fs::metadata(destination).map(|m| m.len()).unwrap_or(0);
     let mut file = if existing > 0 && (asset.size == 0 || existing < asset.size) {
-        let mut previous = File::open(destination)
-            .with_context(|| format!("{} okunamadı", destination.display()))?;
+        let mut previous = File::open(destination).with_context(|| {
+            crate::i18n::ui_owned!(
+                format!("{} okunamadı", destination.display()),
+                format!("{} could not be read", destination.display())
+            )
+        })?;
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let count = previous.read(&mut buffer)?;
@@ -881,10 +1006,19 @@ fn download_attempt(
         fs::OpenOptions::new()
             .append(true)
             .open(destination)
-            .with_context(|| format!("{} açılamadı", destination.display()))?
+            .with_context(|| {
+                crate::i18n::ui_owned!(
+                    format!("{} açılamadı", destination.display()),
+                    format!("{} could not be opened", destination.display())
+                )
+            })?
     } else {
-        File::create(destination)
-            .with_context(|| format!("{} oluşturulamadı", destination.display()))?
+        File::create(destination).with_context(|| {
+            crate::i18n::ui_owned!(
+                format!("{} oluşturulamadı", destination.display()),
+                format!("{} could not be created", destination.display())
+            )
+        })?
     };
     let resumed_from = seen;
     let mut easy = configured_easy(&asset.browser_download_url, control, network)?;
@@ -951,9 +1085,17 @@ fn download_attempt(
     }
     if let Err(error) = transfer_result {
         if let Some(io_error) = io_error.take() {
-            return Err(io_error).context("Araç indirmesi diske yazılamadı");
+            return Err(io_error).context(crate::i18n::ui(
+                "Araç indirmesi diske yazılamadı",
+                "The tool download could not be written to disk",
+            ));
         }
-        return Err(error).with_context(|| format!("{label} HTTPS indirmesi başarısız"));
+        return Err(error).with_context(|| {
+            crate::i18n::ui_owned!(
+                format!("{label} HTTPS indirmesi başarısız"),
+                format!("{label} HTTPS download failed")
+            )
+        });
     }
     let status = easy.response_code()?;
     if !(200..300).contains(&status) {
@@ -1061,9 +1203,12 @@ fn extract_zip_safely(archive_path: &Path, destination: &Path) -> Result<()> {
     let mut expanded = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        expanded = expanded
-            .checked_add(entry.size())
-            .ok_or_else(|| anyhow!("Arşiv boyutu taştı"))?;
+        expanded = expanded.checked_add(entry.size()).ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::i18n::ui("Arşiv boyutu taştı", "The archive size overflowed")
+            )
+        })?;
         if expanded > MAX_ARCHIVE_EXPANDED {
             bail!(
                 "{}",
@@ -1073,9 +1218,15 @@ fn extract_zip_safely(archive_path: &Path, destination: &Path) -> Result<()> {
                 )
             );
         }
-        let enclosed = entry
-            .enclosed_name()
-            .ok_or_else(|| anyhow!("Arşiv güvenli olmayan yol içeriyor: {}", entry.name()))?;
+        let enclosed = entry.enclosed_name().ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Arşiv güvenli olmayan yol içeriyor: {}", entry.name()),
+                    format!("The archive contains an unsafe path: {}", entry.name())
+                )
+            )
+        })?;
         if enclosed.components().any(|c| {
             matches!(
                 c,
@@ -1209,8 +1360,13 @@ fn find_file_named(root: &Path, filename: &str) -> Option<PathBuf> {
 }
 
 fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<String> {
-    let output = command_output_timeout(executable, args, Duration::from_secs(20))
-        .with_context(|| format!("{name} başlatılamadı"))?;
+    let output =
+        command_output_timeout(executable, args, Duration::from_secs(20)).with_context(|| {
+            crate::i18n::ui_owned!(
+                format!("{name} başlatılamadı"),
+                format!("{name} could not be started")
+            )
+        })?;
     if !output.status.success() {
         bail!(
             "{}",
@@ -1230,7 +1386,15 @@ fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<Stri
     let line = text
         .lines()
         .find(|line| !line.trim().is_empty())
-        .ok_or_else(|| anyhow!("{name} sürüm çıktısı boş"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("{name} sürüm çıktısı boş"),
+                    format!("The {name} version output is empty")
+                )
+            )
+        })?;
     Ok(line.trim().to_string())
 }
 
@@ -1255,7 +1419,10 @@ fn command_output_timeout(
     let mut child = command.spawn().map_err(|error| {
         crate::error_codes::coded(
             crate::error_codes::TOL_003,
-            format!("{} başlatılamadı: {error}", executable.display()),
+            crate::i18n::ui_owned!(
+                format!("{} başlatılamadı: {error}", executable.display()),
+                format!("{} could not be started: {error}", executable.display())
+            ),
         )
     })?;
     let job = match ProcessJob::assign(&child) {
@@ -1269,14 +1436,24 @@ fn command_output_timeout(
             ));
         }
     };
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("Alt süreç stdout alınamadı"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("Alt süreç stderr alınamadı"))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui(
+                "Alt süreç stdout alınamadı",
+                "The child process stdout could not be captured"
+            )
+        )
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui(
+                "Alt süreç stderr alınamadı",
+                "The child process stderr could not be captured"
+            )
+        )
+    })?;
     let out_thread = thread::spawn(move || {
         let mut v = Vec::new();
         let _ = stdout.take(1024 * 1024).read_to_end(&mut v);
@@ -1353,7 +1530,10 @@ fn activate_manifest(paths: &AppPaths, manifest: &InstallManifest) -> Result<()>
     if result == 0 {
         let error = std::io::Error::last_os_error();
         fs::remove_file(&temporary).ok();
-        return Err(error).context("Etkin araç manifesti atomik olarak değiştirilemedi");
+        return Err(error).context(crate::i18n::ui(
+            "Etkin araç manifesti atomik olarak değiştirilemedi",
+            "The active tool manifest could not be replaced atomically",
+        ));
     }
     Ok(())
 }
@@ -1411,7 +1591,15 @@ fn read_manifest(path: &Path) -> Result<InstallManifest> {
             .components
             .iter()
             .find(|component| component.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| anyhow!("Araç manifestinde {name} eksik"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui_owned!(
+                        format!("Araç manifestinde {name} eksik"),
+                        format!("{name} is missing from the tool manifest")
+                    )
+                )
+            })?;
         if !component
             .path
             .file_name()

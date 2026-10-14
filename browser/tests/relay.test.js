@@ -5,8 +5,17 @@ const fs=require("node:fs");
 const path=require("node:path");
 const test=require("node:test");
 const vm=require("node:vm");
+const {i18nApi,loadI18n}=require("./i18n-harness");
 const context=vm.createContext({Uint8Array,Uint32Array,atob,btoa});
+loadI18n(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-sha256.js"),"utf8"),context);
+// relay-background.js runs in its own context after i18n.js, like the service worker's importScripts list.
+function runRelayBackground(globals){
+  globals.browser.i18n||=i18nApi();
+  const relayContext=vm.createContext(globals);
+  loadI18n(relayContext);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),relayContext);
+}
 const Sha256=context.SSDownloadRelaySha256;
 const expected=bytes=>createHash("sha256").update(bytes).digest("hex");
 
@@ -47,7 +56,7 @@ for (const command of ["pause", "cancel"]) test(`relay ${command} remains retrya
       onNativeMessage({ok:true,result:{browser_transfer:{job_id:message.action.command.id,max_chunk_bytes:524288,streams:[]}}});
     });
   }};}},storage:{session:{async get(){return {browserRelayJobs:[]};},async set(){}}},tabs:{async get(){return {id:7,url:"https://site.example/watch"};},async sendMessage(){return {ok:true};},onRemoved:{addListener(){}},onUpdated:{addListener(){}}},webNavigation:{async getAllFrames(){return [{frameId:0,documentId:"document",url:"https://site.example/watch"}];}}};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),{browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
+  runRelayBackground({browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
   const control=command=>new Promise(resolve=>listener({channel:"ssdownload-relay-control",command,jobId},{id:"owned",url:"chrome-extension://owned/popup.html"},resolve));
   const begun=await new Promise(resolve=>listener({channel:"ssdownload-relay-control",command:"start",jobId,tabId:7,frameId:0,documentId:"document",restart:false},{id:"owned",url:"chrome-extension://owned/popup.html"},resolve));
   assert.equal(begun.state,"running");
@@ -61,7 +70,8 @@ for (const command of ["pause", "cancel"]) test(`relay ${command} remains retrya
   assert.equal((await control("status")).state,command==="pause"?"paused":"inactive");
 });
 
-test("policy-stopped relay resumes automatically on the same source document",async()=>{
+// An older desktop sends only the sentence, in its interface language; both wordings are the TRF-013 policy stop.
+for(const [language,sentence] of [["Turkish","Tarayıcı aktarımı kuyruk kotası, zaman veya eşzamanlılık sınırında durduruldu."],["English","Browser transfer stopped at the queue quota, time, or concurrency limit"]]) test(`policy-stopped relay resumes automatically on the same source document (${language} desktop sentence)`,async()=>{
   const jobId="12345678-1234-4234-8234-123456789abc";
   const originalToken="a".repeat(64), resumedToken="c".repeat(64);
   const request={url:"https://media.example/file.bin",source_identity:{frame_id:0,document_id:"document",page_url:"https://site.example/watch"}};
@@ -81,11 +91,11 @@ test("policy-stopped relay resumes automatically on the same source document",as
     webNavigation:{async getAllFrames(){return [{frameId:0,documentId:"document",url:"https://site.example/watch"}];}},
     alarms:{create(){},onAlarm:{addListener(){}}}
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),{browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask,setTimeout(callback){resumeTimer=callback;return 1;}});
+  runRelayBackground({browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask,setTimeout(callback){resumeTimer=callback;return 1;}});
   const send=(message,sender)=>new Promise(resolve=>listener(message,sender,resolve));
   const begun=await send({channel:"ssdownload-relay-control",command:"start",jobId,tabId:7,frameId:0,documentId:"document",restart:false},{id:"owned",url:"chrome-extension://owned/popup.html"});
   assert.equal(begun.state,"running");
-  const stopped=await send({channel:"ssdownload-relay-internal",command:"failed",jobId,token:originalToken,runToken:initialStart.runToken,documentId:"document",error:"Tarayıcı aktarımı kuyruk kotası, zaman veya eşzamanlılık sınırında durduruldu."},{id:"owned",tab:{id:7},frameId:0,documentId:"document"});
+  const stopped=await send({channel:"ssdownload-relay-internal",command:"failed",jobId,token:originalToken,runToken:initialStart.runToken,documentId:"document",error:sentence},{id:"owned",tab:{id:7},frameId:0,documentId:"document"});
   assert.equal(stopped.automatic_resume,true);
   const paused=await send({channel:"ssdownload-relay-control",command:"status",jobId},{id:"owned",url:"chrome-extension://owned/popup.html"});
   assert.equal(paused.state,"paused");assert.equal(paused.automaticResume,true);
@@ -96,7 +106,7 @@ test("policy-stopped relay resumes automatically on the same source document",as
   assert.equal(running.state,"running");assert.equal(running.automaticResume,false);
 });
 
-for(const [language,refusal] of [["Turkish","Bu iş tarayıcı aktarımı için ayrılamaz."],["English","This job cannot be set aside for a browser transfer."]]) test(`a desktop refusal in ${language} ends the automatic resumption of a paused relay`,async()=>{
+for(const [language,refusal] of [["Turkish","Bu iş tarayıcı aktarımı için ayrılamaz."],["English","This job cannot be set aside for a browser transfer."],["Turkish job-gone","İş bulunamadı"],["English job-gone","Job not found"]]) test(`a desktop refusal in ${language} ends the automatic resumption of a paused relay`,async()=>{
   const jobId="12345678-1234-4234-8234-123456789abc";
   const token="a".repeat(64),request={url:"https://media.example/file.bin",source_identity:{frame_id:0,document_id:"document",page_url:"https://site.example/watch"}};
   let listener,onNativeMessage,resumeTimer,beginCount=0,initialStart;
@@ -114,7 +124,7 @@ for(const [language,refusal] of [["Turkish","Bu iş tarayıcı aktarımı için 
     webNavigation:{async getAllFrames(){return [{frameId:0,documentId:"document",url:"https://site.example/watch"}];}},
     alarms:{create(){},onAlarm:{addListener(){}}}
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),{browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask,setTimeout(callback){resumeTimer=callback;return 1;}});
+  runRelayBackground({browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask,setTimeout(callback){resumeTimer=callback;return 1;}});
   const owner={id:"owned",url:"chrome-extension://owned/popup.html"};
   const send=(message,sender=owner)=>new Promise(resolve=>listener(message,sender,resolve));
   assert.equal((await send({channel:"ssdownload-relay-control",command:"start",jobId,tabId:7,frameId:0,documentId:"document",restart:false})).state,"running");
@@ -145,7 +155,7 @@ test("native host disconnect pauses each relay through a replacement host",async
     tabs:{async get(){return {id:7,url:"https://site.example/watch"};},async sendMessage(_tabId,message){if(message.command==="abort")aborted=true;return {ok:true};},onRemoved:{addListener(){}},onUpdated:{addListener(){}}},
     webNavigation:{async getAllFrames(){return [{frameId:0,documentId:"document",url:"https://site.example/watch"}];}}
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),{browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
+  runRelayBackground({browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
   const send=message=>new Promise(resolve=>listener(message,{id:"owned",url:"chrome-extension://owned/popup.html"},resolve));
   assert.equal((await send({channel:"ssdownload-relay-control",command:"start",tabId:7,frameId:0,documentId:"document",jobId,restart:false})).state,"running");
   firstPort=ports[0];firstPort.close();
@@ -165,7 +175,7 @@ test("relay reports a refused extension identity instead of a missing registrati
     tabs:{async get(){return {id:7,url:"https://site.example/watch"};},onRemoved:{addListener(){}},onUpdated:{addListener(){}}},
     webNavigation:{async getAllFrames(){return [{frameId:0,documentId:"document",url:"https://site.example/watch"}];}}
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),{browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
+  runRelayBackground({browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
   const reply=await new Promise(resolve=>listener({channel:"ssdownload-relay-control",command:"start",jobId:"12345678-1234-4234-8234-123456789abc",tabId:7,frameId:0,documentId:"document",restart:false},{id:"owned",url:"chrome-extension://owned/popup.html"},resolve));
   assert.match(reply.error,/izin vermiyor/);
   assert.doesNotMatch(reply.error,/bulunamadı/);
@@ -189,7 +199,7 @@ test("the persistent native port is released once the last relay job is gone",as
     tabs:{async get(){return {id:7,url:"https://site.example/watch"};},async sendMessage(){return {ok:true};},onRemoved:{addListener(){}},onUpdated:{addListener(){}}},
     webNavigation:{async getAllFrames(){return [{frameId:0,documentId:"document",url:"https://site.example/watch"}];}}
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),{browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
+  runRelayBackground({browser,URL,TextEncoder,crypto:require("node:crypto").webcrypto,queueMicrotask});
   const owner={id:"owned",url:"chrome-extension://owned/popup.html"};
   const send=message=>new Promise(resolve=>listener(message,owner,resolve));
   assert.equal((await send({channel:"ssdownload-relay-control",command:"start",jobId,tabId:7,frameId:0,documentId:"document",restart:false})).state,"running");
@@ -201,7 +211,7 @@ test("the persistent native port is released once the last relay job is gone",as
 test("relay controls accept own extension tabs but reject web content and other extensions",async()=>{
   let listener;
   const browser={runtime:{id:"owned",getURL:value=>`chrome-extension://owned/${value}`,onMessage:{addListener:value=>{listener=value;}}},storage:{session:{async get(){return {browserRelayJobs:[]};}}},tabs:{onRemoved:{addListener(){}},onUpdated:{addListener(){}}}};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),{browser,URL,TextEncoder});
+  runRelayBackground({browser,URL,TextEncoder});
   const status=sender=>new Promise(resolve=>listener({channel:"ssdownload-relay-control",command:"status",jobId:"none"},sender,resolve));
   const permitted=await status({id:"owned",url:"chrome-extension://owned/popup.html",tab:{id:7}});
   assert.equal(permitted.state,"inactive");

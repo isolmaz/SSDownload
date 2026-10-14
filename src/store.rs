@@ -29,7 +29,13 @@ impl Store {
                 moved.push(format!(".corrupt-{stamp}"));
                 let moved = std::path::PathBuf::from(moved);
                 std::fs::rename(path, &moved).with_context(|| {
-                    format!("Bozuk veritabanı kenara alınamadı: {}", path.display())
+                    crate::i18n::ui_owned!(
+                        format!("Bozuk veritabanı kenara alınamadı: {}", path.display()),
+                        format!(
+                            "The damaged database could not be moved aside: {}",
+                            path.display()
+                        )
+                    )
                 })?;
                 for suffix in ["-wal", "-shm"] {
                     let mut side = path.as_os_str().to_os_string();
@@ -56,11 +62,24 @@ impl Store {
     fn initialize(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
-                format!("Veritabanı klasörü oluşturulamadı: {}", parent.display())
+                crate::i18n::ui_owned!(
+                    format!("Veritabanı klasörü oluşturulamadı: {}", parent.display()),
+                    format!(
+                        "The database folder could not be created: {}",
+                        parent.display()
+                    )
+                )
             })?;
         }
-        let connection = Connection::open(path)
-            .with_context(|| format!("İndirme veritabanı açılamadı: {}", path.display()))?;
+        let connection = Connection::open(path).with_context(|| {
+            crate::i18n::ui_owned!(
+                format!("İndirme veritabanı açılamadı: {}", path.display()),
+                format!(
+                    "The download database could not be opened: {}",
+                    path.display()
+                )
+            )
+        })?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
@@ -161,7 +180,8 @@ impl Store {
             match decode_job(&payload).and_then(|job| {
                 anyhow::ensure!(
                     job.id == id && uuid::Uuid::parse_str(&id).is_ok(),
-                    "İş kimliği geçersiz"
+                    "{}",
+                    crate::i18n::ui("İş kimliği geçersiz", "The job id is invalid")
                 );
                 Ok(job)
             }) {
@@ -295,7 +315,10 @@ impl Store {
         jobs: &[Job],
         settings: &Settings,
     ) -> Result<()> {
-        let settings_payload = serde_json::to_string(settings).context("Ayarlar kodlanamadı")?;
+        let settings_payload = serde_json::to_string(settings).context(crate::i18n::ui(
+            "Ayarlar kodlanamadı",
+            "The settings could not be encoded",
+        ))?;
         let encoded = jobs
             .iter()
             .map(|job| Ok((job, encode_job(job)?)))
@@ -379,13 +402,25 @@ fn is_corrupt_database(error: &anyhow::Error) -> bool {
 }
 
 fn encode_job(job: &Job) -> Result<String> {
-    let json = serde_json::to_string(job).context("İş kaydı kodlanamadı")?;
-    secure::seal(json).context("İş kaydı şifrelenemedi")
+    let json = serde_json::to_string(job).context(crate::i18n::ui(
+        "İş kaydı kodlanamadı",
+        "The job record could not be encoded",
+    ))?;
+    secure::seal(json).context(crate::i18n::ui(
+        "İş kaydı şifrelenemedi",
+        "The job record could not be encrypted",
+    ))
 }
 
 fn decode_job(payload: &str) -> Result<Job> {
-    let json = secure::unseal(payload).context("İş kaydı çözülemedi")?;
-    serde_json::from_str(&json).context("İş kaydı okunamadı")
+    let json = secure::unseal(payload).context(crate::i18n::ui(
+        "İş kaydı çözülemedi",
+        "The job record could not be decrypted",
+    ))?;
+    serde_json::from_str(&json).context(crate::i18n::ui(
+        "İş kaydı okunamadı",
+        "The job record could not be read",
+    ))
 }
 
 #[cfg(test)]

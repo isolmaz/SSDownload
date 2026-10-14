@@ -66,7 +66,7 @@ pub(super) unsafe fn queue_command(
                 .queues
                 .iter()
                 .find(|q| q.id == id)
-                .map(|q| q.name.clone())
+                .map(|q| q.display_name().to_owned())
                 .unwrap_or_default();
             if !confirm_removal(
                 hwnd,
@@ -118,7 +118,11 @@ pub(super) unsafe fn queue_command(
                         "Select the queue to update",
                     ))
                 })?;
-            queue.name = text(f.name).trim().into();
+            // The built-in queue's shown name is a translation of its stored one: unchanged text keeps it.
+            let typed = text(f.name);
+            if typed.trim() != queue.display_name() {
+                queue.name = typed.trim().into();
+            }
             queue.enabled = check(f.enabled);
             queue.concurrency = parse_number(
                 &text(f.concurrency),

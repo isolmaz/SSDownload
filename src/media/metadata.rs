@@ -29,7 +29,7 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
             let title = entry
                 .get("title")
                 .and_then(Value::as_str)
-                .unwrap_or("adsız öğe");
+                .unwrap_or(crate::i18n::ui("adsız öğe", "untitled item"));
             crate::logging::record(crate::logging::Event::failure(
                 "inspect.drm",
                 crate::error_codes::MED_004,
@@ -37,7 +37,11 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
             ));
             crate::bail_code!(
                 crate::error_codes::MED_004,
-                "Liste DRM korumalı bir öğe içeriyor ve güvenle indirilemez: {title}"
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Liste DRM korumalı bir öğe içeriyor ve güvenle indirilemez: {title}"),
+                    format!("The list contains a DRM-protected item and cannot be downloaded safely: {title}")
+                )
             );
         }
     }
@@ -110,7 +114,7 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
     Ok(MediaInfo {
         title: string_field(root, "title")
             .or_else(|| string_field(root, "playlist_title"))
-            .unwrap_or_else(|| "Adsız medya".into()),
+            .unwrap_or_else(|| crate::i18n::ui("Adsız medya", "Untitled media").into()),
         webpage_url: string_field(root, "webpage_url")
             .or_else(|| string_field(root, "original_url"))
             .unwrap_or_default(),
@@ -175,10 +179,10 @@ pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
             let codecs = match (video, audio) {
                 (Some(v), Some(a)) => format!("{v} + {a}"),
                 (Some(v), None) if stream_absent(audio_codec.as_deref()) => {
-                    format!("{v}, yalnız video")
+                    crate::i18n::ui_owned!(format!("{v}, yalnız video"), format!("{v}, video only"))
                 }
                 (None, Some(a)) if stream_absent(video_codec.as_deref()) => {
-                    format!("{a}, yalnız ses")
+                    crate::i18n::ui_owned!(format!("{a}, yalnız ses"), format!("{a}, audio only"))
                 }
                 (Some(codec), None) | (None, Some(codec)) => codec.to_string(),
                 _ => String::new(),

@@ -259,8 +259,10 @@ impl BrowserTransferSender {
             )
         };
         if handle.is_null() {
-            return Err(std::io::Error::last_os_error())
-                .context("Tarayıcı aktarım gönderici işlemi açılamadı");
+            return Err(std::io::Error::last_os_error()).context(crate::i18n::ui(
+                "Tarayıcı aktarım gönderici işlemi açılamadı",
+                "The browser transfer sender process could not be opened",
+            ));
         }
         let sender = Self(handle);
         if process_started_at(sender.0)? != started_at || !sender.is_alive() {
@@ -306,8 +308,10 @@ fn process_started_at(handle: HANDLE) -> Result<u64> {
     let mut kernel = zero();
     let mut user = zero();
     if unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("Tarayıcı aktarım gönderici başlangıcı okunamadı");
+        return Err(std::io::Error::last_os_error()).context(crate::i18n::ui(
+            "Tarayıcı aktarım gönderici başlangıcı okunamadı",
+            "The browser transfer sender start time could not be read",
+        ));
     }
     Ok(u64::from(created.dwLowDateTime) | (u64::from(created.dwHighDateTime) << 32))
 }
@@ -359,7 +363,7 @@ struct Actor {
 impl Engine {
     pub fn open(paths: AppPaths) -> Result<Self> {
         let mut store = Store::open(&paths.database)?;
-        let mut settings = store.load_settings()?.unwrap_or_default();
+        let mut settings = store.load_settings()?.unwrap_or_else(Settings::first_run);
         let mut settings_migrated = false;
         if settings.download_dir.as_os_str().is_empty() {
             settings.download_dir = paths.download_dir.clone();
@@ -425,12 +429,13 @@ impl Engine {
         if !queue_migrations.is_empty() {
             store.save_jobs(&queue_migrations)?;
         }
+        let mut removed_ids = BTreeSet::new();
         for job in &mut jobs {
             if let Some(delete) = job.remove_requested {
                 match crate::recovery::remove(&paths, job, delete) {
                     Ok(()) => {
                         store.delete_job(&job.id)?;
-                        job.phase = "Kaldırıldı".into();
+                        removed_ids.insert(job.id.clone());
                     }
                     Err(error) => {
                         job.state = JobState::Cancelled;
@@ -445,7 +450,9 @@ impl Engine {
                         job.downloaded = done.bytes;
                         job.total = Some(done.bytes);
                         job.state = JobState::Completed;
-                        job.phase = "Tamamlandı (kurtarıldı)".into();
+                        job.phase =
+                            crate::i18n::ui("Tamamlandı (kurtarıldı)", "Completed (recovered)")
+                                .into();
                         job.request.forget_session();
                         store.save_job(job)?;
                         crate::logging::record_job(
@@ -475,7 +482,7 @@ impl Engine {
                 }
             }
         }
-        jobs.retain(|job| job.phase != "Kaldırıldı");
+        jobs.retain(|job| !removed_ids.contains(&job.id));
         // Completed records keep no session material (see `AddRequest::forget_session`).
         let mut forgotten = Vec::new();
         for job in jobs
@@ -566,7 +573,10 @@ impl Engine {
                 }
                 .run();
             })
-            .context("İndirme motoru başlatılamadı")?;
+            .context(crate::i18n::ui(
+                "İndirme motoru başlatılamadı",
+                "The download engine could not be started",
+            ))?;
         Ok(Self {
             inner: Arc::new(EngineInner {
                 sender,
@@ -779,10 +789,23 @@ impl Engine {
         self.inner
             .sender
             .send(Message::Command(make(sender)))
-            .map_err(|_| anyhow!("İndirme motoru kapalı"))?;
+            .map_err(|_| {
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui("İndirme motoru kapalı", "The download engine is closed")
+                )
+            })?;
         receiver
             .recv()
-            .map_err(|_| anyhow!("İndirme motoru yanıt vermedi"))?
+            .map_err(|_| {
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui(
+                        "İndirme motoru yanıt vermedi",
+                        "The download engine did not respond"
+                    )
+                )
+            })?
             .map_err(anyhow::Error::msg)
     }
 }
@@ -1010,8 +1033,15 @@ impl Actor {
             .clone()
             .or_else(|| matching_folder(&self.settings.folder_rules, &url, request.kind))
             .unwrap_or_else(|| self.settings.download_dir.clone());
-        std::fs::create_dir_all(&directory)
-            .with_context(|| format!("İndirme klasörü oluşturulamadı: {}", directory.display()))?;
+        std::fs::create_dir_all(&directory).with_context(|| {
+            crate::i18n::ui_owned!(
+                format!("İndirme klasörü oluşturulamadı: {}", directory.display()),
+                format!(
+                    "The download folder could not be created: {}",
+                    directory.display()
+                )
+            )
+        })?;
         let suggested = request
             .filename
             .as_deref()
@@ -1109,7 +1139,11 @@ impl Actor {
         let now = local.timestamp();
         let mut changed = Vec::new();
         for id in &ids {
-            let mut job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
+            let mut job = self
+                .jobs
+                .get(id)
+                .cloned()
+                .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
             if job.state == JobState::Completed || job.remove_requested.is_some() {
                 bail!(
                     "{}",
@@ -1208,7 +1242,10 @@ impl Actor {
         };
         let mut changed = Vec::new();
         for (offset, id) in ids.iter().enumerate() {
-            let job = self.jobs.get_mut(id).context("İş bulunamadı")?;
+            let job = self
+                .jobs
+                .get_mut(id)
+                .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
             // Keep the selection's own order: the first id ends up first.
             job.priority = if top {
                 bound + (ids.len() - offset) as i64
@@ -1243,10 +1280,10 @@ impl Actor {
         let at = order
             .iter()
             .position(|id| id == target)
-            .context("İş bulunamadı")?;
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         for (offset, id) in ids.iter().enumerate() {
             if !self.jobs.contains_key(id) {
-                bail!("İş bulunamadı");
+                bail!("{}", crate::i18n::ui("İş bulunamadı", "Job not found"));
             }
             order.insert(at + offset, id.clone());
         }
@@ -1267,7 +1304,10 @@ impl Actor {
     }
 
     fn start_now(&mut self, id: &str) -> Result<()> {
-        let job = self.jobs.get_mut(id).context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get_mut(id)
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         if job.state.is_terminal() && job.state != JobState::Failed
             || job.remove_requested.is_some()
             || job.browser_transfer_authorized
@@ -1293,7 +1333,10 @@ impl Actor {
     }
 
     fn set_open_when_done(&mut self, id: &str, value: bool) -> Result<()> {
-        let job = self.jobs.get_mut(id).context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get_mut(id)
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         job.open_when_done = value;
         let job = job.clone();
         self.store.save_job(&job)?;
@@ -1304,7 +1347,11 @@ impl Actor {
     /// Renames a completed download in its own folder, never over an existing file,
     /// and moves the publication journal with it.
     fn rename(&mut self, id: &str, name: &str) -> Result<()> {
-        let job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         if job.state != JobState::Completed || !job.path.is_file() {
             bail!(
                 "{}",
@@ -1337,7 +1384,10 @@ impl Actor {
         if let Err(error) = crate::recovery::retarget(&self.paths, id, &target) {
             self.warning = Some(error.to_string());
         }
-        let job = self.jobs.get_mut(id).context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get_mut(id)
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         job.path = target;
         job.name = name;
         let job = job.clone();
@@ -1413,7 +1463,10 @@ impl Actor {
         }
         let mut changed = Vec::new();
         for id in &ids {
-            let job = self.jobs.get_mut(id).context("İş bulunamadı")?;
+            let job = self
+                .jobs
+                .get_mut(id)
+                .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
             job.request.speed_limit_kib = (kib > 0).then_some(kib);
             changed.push(job.clone());
         }
@@ -1448,12 +1501,16 @@ impl Actor {
         self.transition(ids, false)
     }
     fn remove(&mut self, id: &str, delete_file: bool) -> Result<()> {
-        let mut job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
+        let mut job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         let queue_id = job_queue_id(&job).to_owned();
         job.legacy_completed |= job.work_dir.is_none() && job.state == JobState::Completed;
         job.remove_requested = Some(delete_file);
         job.state = JobState::Cancelled;
-        job.phase = "Kaldırılıyor".into();
+        job.phase = crate::i18n::ui("Kaldırılıyor", "Removing").into();
         self.store.save_job(&job)?;
         self.jobs.insert(id.into(), job.clone());
         self.retry_at.remove(id);
@@ -1498,7 +1555,11 @@ impl Actor {
         self.finish_remove(id, delete_file)
     }
     fn finish_remove(&mut self, id: &str, delete_file: bool) -> Result<()> {
-        let job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         let result = crate::recovery::remove(&self.paths, &job, delete_file);
         if let Err(error) = result {
             if let Some(job) = self.jobs.get_mut(id) {
@@ -1516,7 +1577,10 @@ impl Actor {
         self.store.delete_job(id)?;
         self.jobs.remove(id);
         if let Err(error) = crate::recovery::forget(&self.paths, id) {
-            self.warning = Some(format!("Eski tamamlama kaydı silinemedi: {error}"));
+            self.warning = Some(crate::i18n::ui_owned!(
+                format!("Eski tamamlama kaydı silinemedi: {error}"),
+                format!("The old completion record could not be deleted: {error}")
+            ));
         }
         self.publish();
         Ok(())
@@ -1547,7 +1611,10 @@ impl Actor {
         for (id, _) in completed {
             self.jobs.remove(&id);
             if let Err(error) = crate::recovery::forget(&self.paths, &id) {
-                self.warning = Some(format!("Eski tamamlama kaydı silinemedi: {error}"));
+                self.warning = Some(crate::i18n::ui_owned!(
+                    format!("Eski tamamlama kaydı silinemedi: {error}"),
+                    format!("The old completion record could not be deleted: {error}")
+                ));
             }
         }
         self.publish();
@@ -1612,9 +1679,15 @@ impl Actor {
             );
         }
         std::fs::create_dir_all(&settings.download_dir).with_context(|| {
-            format!(
-                "İndirme klasörü oluşturulamadı: {}",
-                settings.download_dir.display()
+            crate::i18n::ui_owned!(
+                format!(
+                    "İndirme klasörü oluşturulamadı: {}",
+                    settings.download_dir.display()
+                ),
+                format!(
+                    "The download folder could not be created: {}",
+                    settings.download_dir.display()
+                )
             )
         })?;
         let local = Local::now();
@@ -1671,7 +1744,11 @@ impl Actor {
 
     fn begin_source_refresh(&mut self, id: &str) -> Result<SourceRefreshTicket> {
         let now = Utc::now().timestamp();
-        let mut job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
+        let mut job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         if job.state == JobState::Completed
             || job.remove_requested.is_some()
             || self.active.contains_key(id)
@@ -1697,7 +1774,10 @@ impl Actor {
                     .clone()
                     .filter(|value| !value.is_empty())
             })
-            .context("Bu iş için yenilenebilecek kaynak sayfası kaydedilmemiş.")?;
+            .context(crate::i18n::ui(
+                "Bu iş için yenilenebilecek kaynak sayfası kaydedilmemiş.",
+                "No refreshable source page was saved for this job.",
+            ))?;
         crate::validation::validate_url(&page_url, true)?;
         let generation = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1).max(1);
@@ -1710,7 +1790,11 @@ impl Actor {
         job.state = JobState::AwaitingSource;
         job.speed = 0;
         job.eta = None;
-        job.phase = "Kaynak adresinin yenilenmesi bekleniyor".into();
+        job.phase = crate::i18n::ui(
+            "Kaynak adresinin yenilenmesi bekleniyor",
+            "Waiting for the source address to be refreshed",
+        )
+        .into();
         job.updated_at = now;
         self.store.save_job(&job)?;
         let ticket = SourceRefreshTicket {
@@ -1756,7 +1840,10 @@ impl Actor {
             .source_refresh
             .get(&id)
             .cloned()
-            .context("Kaynak yenileme isteği bulunamadı")?;
+            .context(crate::i18n::ui(
+                "Kaynak yenileme isteği bulunamadı",
+                "The source refresh request was not found",
+            ))?;
         if grant.token != token || grant.expires_at <= now {
             self.source_refresh.remove(&id);
             bail!(
@@ -1776,7 +1863,11 @@ impl Actor {
                 )
             );
         }
-        let job = self.jobs.get(&id).cloned().context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get(&id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         if job.state != JobState::AwaitingSource || job.remove_requested.is_some() {
             bail!(
                 "{}",
@@ -1842,7 +1933,13 @@ impl Actor {
                     }
                 }))
                 .unwrap_or_else(|_| {
-                    Err(anyhow!("Kaynak yenileme işçisi beklenmedik şekilde durdu"))
+                    Err(anyhow!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Kaynak yenileme işçisi beklenmedik şekilde durdu",
+                            "The source refresh worker stopped unexpectedly"
+                        )
+                    ))
                 })
                 .map_err(|error| {
                     let message = safe_error(&error_request, &format!("{error:#}"));
@@ -1853,7 +1950,10 @@ impl Actor {
                     result,
                 }));
             })
-            .context("Kaynak yenileme işçisi başlatılamadı")?;
+            .context(crate::i18n::ui(
+                "Kaynak yenileme işçisi başlatılamadı",
+                "The source refresh worker could not be started",
+            ))?;
         Ok((
             generation,
             ActiveSourceRefresh {
@@ -1883,12 +1983,14 @@ impl Actor {
             .source_refresh
             .get(&active.id)
             .cloned()
-            .context("Kaynak yenileme isteği artık geçerli değil")?;
-        let job = self
-            .jobs
-            .get(&active.id)
-            .cloned()
-            .context("İş artık bulunamadı")?;
+            .context(crate::i18n::ui(
+                "Kaynak yenileme isteği artık geçerli değil",
+                "The source refresh request is no longer valid",
+            ))?;
+        let job = self.jobs.get(&active.id).cloned().context(crate::i18n::ui(
+            "İş artık bulunamadı",
+            "The job is no longer found",
+        ))?;
         if self.stopping
             || grant.generation != generation
             || grant.token != active.token
@@ -1911,7 +2013,12 @@ impl Actor {
         let output = refresh_output_path(&job)?;
         let state_path = append_path_suffix(&output, ".ssdownload.state");
         let state_backup = (!active.restart && state_path.exists())
-            .then(|| fs::read(&state_path).context("Kaynak kimliği kaydı yedeklenemedi"))
+            .then(|| {
+                fs::read(&state_path).context(crate::i18n::ui(
+                    "Kaynak kimliği kaydı yedeklenemedi",
+                    "The source identity record could not be backed up",
+                ))
+            })
             .transpose()?;
 
         let (media_staged, direct_staged) = match &prepared {
@@ -1944,9 +2051,17 @@ impl Actor {
         updated.phase = if updated.state == JobState::Scheduled {
             updated.state.label().into()
         } else if active.restart {
-            "Kaynak yenilendi; önceki parçalar arşivlendi, baştan başlayacak".into()
+            crate::i18n::ui(
+                "Kaynak yenilendi; önceki parçalar arşivlendi, baştan başlayacak",
+                "The source was refreshed; the previous parts were archived and the download will start over",
+            )
+            .into()
         } else {
-            "Kaynak yenilendi; indirme yeniden planlandı.".into()
+            crate::i18n::ui(
+                "Kaynak yenilendi; indirme yeniden planlandı.",
+                "The source was refreshed; the download was rescheduled.",
+            )
+            .into()
         };
         updated.updated_at = now;
         if let Err(save_error) = self.store.save_job(&updated) {
@@ -1974,17 +2089,30 @@ impl Actor {
                 }
             }
             if let Some(error) = rollback_error {
-                return Err(save_error).context(format!(
-                    "Kaynak yenileme kaydedilemedi ve çalışma durumu geri alınamadı: {error:#}"
+                return Err(save_error).context(crate::i18n::ui_owned!(
+                    format!(
+                        "Kaynak yenileme kaydedilemedi ve çalışma durumu geri alınamadı: {error:#}"
+                    ),
+                    format!(
+                        "The source refresh could not be saved and the work state could not be restored: {error:#}"
+                    )
                 ));
             }
-            return Err(save_error).context("Kaynak yenileme atomik olarak kaydedilemedi");
+            return Err(save_error).context(crate::i18n::ui(
+                "Kaynak yenileme atomik olarak kaydedilemedi",
+                "The source refresh could not be saved atomically",
+            ));
         }
 
         let finalization_error = if media_staged {
             media::finish_source_refresh(&output).err().map(|error| {
-                format!(
-                    "Kaynak yenileme kaydedildi ancak medya çalışma kaydı henüz tamamlanamadı: {error:#}"
+                crate::i18n::ui_owned!(
+                    format!(
+                        "Kaynak yenileme kaydedildi ancak medya çalışma kaydı henüz tamamlanamadı: {error:#}"
+                    ),
+                    format!(
+                        "The source refresh was saved but the media work record is not finished yet: {error:#}"
+                    )
                 )
             })
         } else {
@@ -1993,11 +2121,16 @@ impl Actor {
         if let Some(message) = &finalization_error {
             updated.state = JobState::Paused;
             updated.error = Some(message.clone());
-            updated.phase = "Kaynak yenileme kaydı tamamlanamadı; iş güvenle duraklatıldı".into();
+            updated.phase = crate::i18n::ui(
+                "Kaynak yenileme kaydı tamamlanamadı; iş güvenle duraklatıldı",
+                "The source refresh record could not be finished; the job was safely paused",
+            )
+            .into();
             updated.updated_at = Utc::now().timestamp();
             if let Err(error) = self.store.save_job(&updated) {
-                self.warning = Some(format!(
-                    "{message} Ayrıca güvenli duraklatma kaydedilemedi: {error:#}"
+                self.warning = Some(crate::i18n::ui_owned!(
+                    format!("{message} Ayrıca güvenli duraklatma kaydedilemedi: {error:#}"),
+                    format!("{message} The safe pause could not be saved either: {error:#}")
                 ));
             }
         }
@@ -2050,7 +2183,7 @@ impl Actor {
             .queues
             .iter_mut()
             .find(|queue| queue.id == id)
-            .context("Kuyruk bulunamadı")?;
+            .context(crate::i18n::ui("Kuyruk bulunamadı", "Queue not found"))?;
         queue.name = name.trim().to_owned();
         crate::validation::validate_queue(queue)?;
         settings.settings_revision = settings.settings_revision.wrapping_add(1).max(1);
@@ -2165,7 +2298,11 @@ impl Actor {
                     )
                 );
             }
-            let mut job = self.jobs.get(&id).cloned().context("İş bulunamadı")?;
+            let mut job = self
+                .jobs
+                .get(&id)
+                .cloned()
+                .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
             source_queues.insert(job_queue_id(&job).to_owned());
             job.request.queue_id = Some(queue_id.into());
             if !reconcile_job_scheduling_state_at(&self.settings, &mut job, &local) {
@@ -2198,7 +2335,7 @@ impl Actor {
             .queues
             .iter_mut()
             .find(|saved| saved.id == queue.id)
-            .context("Kuyruk bulunamadı")?;
+            .context(crate::i18n::ui("Kuyruk bulunamadı", "Queue not found"))?;
         if let (Some(incoming), Some(authoritative)) = (&mut queue.quota, &saved.quota) {
             incoming.consumed_bytes = authoritative.consumed_bytes;
             incoming.period_key = authoritative.period_key.clone();
@@ -2259,7 +2396,11 @@ impl Actor {
         self.completion_events.push(CompletionEvent {
             queue_id: queue_id.into(),
             occurred_at: Utc::now().timestamp(),
-            message: "Bitiş eylemi kullanıcı tarafından iptal edildi.".into(),
+            message: crate::i18n::ui(
+                "Bitiş eylemi kullanıcı tarafından iptal edildi.",
+                "The completion action was cancelled by the user.",
+            )
+            .into(),
         });
         self.trim_completion_events();
         self.publish();
@@ -2281,7 +2422,11 @@ impl Actor {
                 )
             );
         }
-        let mut job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
+        let mut job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         if job.state == JobState::Completed
             || job.remove_requested.is_some()
             || self.active.contains_key(id)
@@ -2404,7 +2549,11 @@ impl Actor {
                 )
             );
         }
-        let job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         if job.remove_requested.is_some()
             || job.state == JobState::Completed
             || self.active.contains_key(id)
@@ -2436,7 +2585,10 @@ impl Actor {
             );
         }
         validate_browser_request_id(request_id)?;
-        let job = self.jobs.get(id).context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get(id)
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         if job.remove_requested.is_some()
             || job.state == JobState::Completed
             || self.active.contains_key(id)
@@ -2453,7 +2605,10 @@ impl Actor {
             .browser_transfers
             .get_mut(id)
             .filter(|transfer| transfer.generation == generation)
-            .context("İş için etkin tarayıcı aktarımı yok.")?;
+            .context(crate::i18n::ui(
+                "İş için etkin tarayıcı aktarımı yok.",
+                "There is no active browser transfer for this job.",
+            ))?;
         if transfer.sender_exited || !transfer.sender.is_alive() {
             transfer.sender_exited = true;
             bail!(
@@ -2502,7 +2657,10 @@ impl Actor {
             .browser_transfers
             .get_mut(id)
             .filter(|transfer| transfer.generation == generation)
-            .context("İş için etkin tarayıcı aktarımı yok.")?;
+            .context(crate::i18n::ui(
+                "İş için etkin tarayıcı aktarımı yok.",
+                "There is no active browser transfer for this job.",
+            ))?;
         if let Some(lease) = transfer.requests.remove(request_id) {
             // Dropping only after the browser reports body consumption/cancel
             // closes this conservative wildcard reservation.
@@ -2533,7 +2691,11 @@ impl Actor {
                 )
             );
         }
-        let mut job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
+        let mut job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         if total.is_some_and(|total| downloaded > total) || downloaded < job.downloaded {
             bail!(
                 "{}",
@@ -2582,9 +2744,17 @@ impl Actor {
                 && self.active_host_counts().get(&host).copied().unwrap_or(0)
                     <= self.settings.per_host_limit.max(1) as usize;
         job.phase = if accepts_more {
-            "Tarayıcıdan güvenli aktarım alınıyor".into()
+            crate::i18n::ui(
+                "Tarayıcıdan güvenli aktarım alınıyor",
+                "Receiving the browser transfer securely",
+            )
+            .into()
         } else {
-            "Tarayıcı aktarımı kuyruk kotası, zaman veya eşzamanlılık sınırında durdu".into()
+            crate::i18n::ui(
+                "Tarayıcı aktarımı kuyruk kotası, zaman veya eşzamanlılık sınırında durdu",
+                "The browser transfer stopped at the queue quota, time, or concurrency limit",
+            )
+            .into()
         };
         if !accepts_more {
             job.state = job_scheduling_state_at(&self.settings, &job.request, &local);
@@ -2611,8 +2781,13 @@ impl Actor {
         self.browser_orphans
             .extend(std::mem::take(&mut transfer.requests).into_values());
         if retained > 0 {
-            self.warning = Some(format!(
-                "Tarayıcı isteği kapanmadan iş durdu; {retained} ağ izni Chrome'un durduğu doğrulanana kadar güvenli olarak tutuluyor"
+            self.warning = Some(crate::i18n::ui_owned!(
+                format!(
+                    "Tarayıcı isteği kapanmadan iş durdu; {retained} ağ izni Chrome'un durduğu doğrulanana kadar güvenli olarak tutuluyor"
+                ),
+                format!(
+                    "The job stopped before the browser request closed; {retained} network permit(s) are kept safely until Chrome is confirmed stopped"
+                )
             ));
         }
         Some(transfer)
@@ -2633,7 +2808,10 @@ impl Actor {
             );
         }
         self.remove_browser_transfer(id);
-        let job = self.jobs.get_mut(id).context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get_mut(id)
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         // With no granted request there is no Fetch body whose authorization
         // must survive the native sender. Revoke this generation instead of
         // leaving a later native connection able to revive it implicitly.
@@ -2641,7 +2819,11 @@ impl Actor {
         job.state = JobState::Paused;
         job.speed = 0;
         job.eta = None;
-        job.phase = "Tarayıcı aktarım göndericisi kapandı; yetki geri alındı".into();
+        job.phase = crate::i18n::ui(
+            "Tarayıcı aktarım göndericisi kapandı; yetki geri alındı",
+            "The browser transfer sender exited; the authorization was revoked",
+        )
+        .into();
         job.updated_at = Utc::now().timestamp();
         self.store.save_job(job)?;
         self.publish();
@@ -2663,11 +2845,18 @@ impl Actor {
             );
         }
         self.remove_browser_transfer(id);
-        let job = self.jobs.get_mut(id).context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get_mut(id)
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         job.state = JobState::Paused;
         job.speed = 0;
         job.eta = None;
-        job.phase = "Tarayıcı aktarımı duraklatıldı".into();
+        job.phase = crate::i18n::ui(
+            "Tarayıcı aktarımı duraklatıldı",
+            "The browser transfer was paused",
+        )
+        .into();
         job.updated_at = Utc::now().timestamp();
         self.store.save_job(job)?;
         self.publish();
@@ -2683,7 +2872,10 @@ impl Actor {
             return Ok(());
         }
         self.remove_browser_transfer(id);
-        let job = self.jobs.get_mut(id).context("İş bulunamadı")?;
+        let job = self
+            .jobs
+            .get_mut(id)
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
         job.state = JobState::Paused;
         job.speed = 0;
         job.eta = None;
@@ -2719,12 +2911,23 @@ impl Actor {
                 )
             );
         }
-        let job = self.jobs.get(id).cloned().context("İş bulunamadı")?;
-        let work = job.work_dir.as_ref().context("İş çalışma klasörü eksik")?;
-        let canonical_work =
-            std::fs::canonicalize(work).context("İş çalışma klasörü bulunamadı")?;
-        let canonical_path =
-            std::fs::canonicalize(&path).context("Tarayıcı aktarım dosyası bulunamadı")?;
+        let job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
+        let work = job.work_dir.as_ref().context(crate::i18n::ui(
+            "İş çalışma klasörü eksik",
+            "The job work folder is missing",
+        ))?;
+        let canonical_work = std::fs::canonicalize(work).context(crate::i18n::ui(
+            "İş çalışma klasörü bulunamadı",
+            "The job work folder was not found",
+        ))?;
+        let canonical_path = std::fs::canonicalize(&path).context(crate::i18n::ui(
+            "Tarayıcı aktarım dosyası bulunamadı",
+            "The browser transfer file was not found",
+        ))?;
         if !canonical_path.starts_with(&canonical_work) || !canonical_path.is_file() {
             bail!(
                 "{}",
@@ -2765,7 +2968,10 @@ impl Actor {
             .iter()
             .find(|policy| policy.id == id)
             .cloned()
-            .context("Senkronizasyon bulunamadı")?;
+            .context(crate::i18n::ui(
+                "Senkronizasyon bulunamadı",
+                "Synchronization not found",
+            ))?;
         self.start_synchronization(policy)
     }
 
@@ -2816,7 +3022,10 @@ impl Actor {
                     result,
                 }));
             })
-            .context("Senkronizasyon işçisi başlatılamadı")?;
+            .context(crate::i18n::ui(
+                "Senkronizasyon işçisi başlatılamadı",
+                "The synchronization worker could not be started",
+            ))?;
         self.synchronization_running.insert(id);
         Ok(())
     }
@@ -2857,7 +3066,10 @@ impl Actor {
                 self.completion_events.push(CompletionEvent {
                     queue_id: queue_id.into(),
                     occurred_at: Utc::now().timestamp(),
-                    message: format!("{} kuyruğu tamamlandı.", queue.name),
+                    message: crate::i18n::ui_owned!(
+                        format!("{} kuyruğu tamamlandı.", queue.display_name()),
+                        format!("The {} queue has finished.", queue.display_name())
+                    ),
                 });
                 self.completion_armed.remove(queue_id);
                 self.trim_completion_events();
@@ -2915,19 +3127,36 @@ impl Actor {
             CompletionAction::ShutdownComputer { .. } => std::process::Command::new("shutdown.exe")
                 .args(["/s", "/t", "0", "/d", "p:0:0"])
                 .spawn()
-                .map(|_| "Bilgisayarı kapatma isteği Windows'a gönderildi.".to_owned()),
+                .map(|_| {
+                    crate::i18n::ui(
+                        "Bilgisayarı kapatma isteği Windows'a gönderildi.",
+                        "The shutdown request was sent to Windows.",
+                    )
+                    .to_owned()
+                }),
             CompletionAction::RunProgram {
                 program, arguments, ..
             } => std::process::Command::new(program)
                 .args(arguments)
                 .spawn()
-                .map(|_| "Kuyruk bitiş programı başlatıldı.".to_owned()),
+                .map(|_| {
+                    crate::i18n::ui(
+                        "Kuyruk bitiş programı başlatıldı.",
+                        "The queue completion program was started.",
+                    )
+                    .to_owned()
+                }),
             _ => return,
         };
         self.completion_events.push(CompletionEvent {
             queue_id: countdown.queue_id,
             occurred_at: Utc::now().timestamp(),
-            message: outcome.unwrap_or_else(|error| format!("Bitiş eylemi başlatılamadı: {error}")),
+            message: outcome.unwrap_or_else(|error| {
+                crate::i18n::ui_owned!(
+                    format!("Bitiş eylemi başlatılamadı: {error}"),
+                    format!("The completion action could not be started: {error}")
+                )
+            }),
         });
         self.trim_completion_events();
         self.publish();
@@ -2983,9 +3212,7 @@ impl Actor {
                 // progress event no longer costs a DPAPI seal and a synchronous commit.
                 if active.last_persist.elapsed() >= Duration::from_secs(1) {
                     if let Err(error) = self.store.save_job_and_settings(job, &self.settings) {
-                        self.persistence_error = Some(format!(
-                            "Kuyruk kaydedilemedi: {error}. İndirmeler durduruldu."
-                        ));
+                        self.persistence_error = Some(queue_save_stopped(&error));
                     }
                     active.last_persist = Instant::now();
                 }
@@ -3045,9 +3272,7 @@ impl Actor {
                             job.eta = None;
                             job.updated_at = Utc::now().timestamp();
                             if let Err(error) = self.store.save_job(job) {
-                                self.persistence_error = Some(format!(
-                                    "Kuyruk kaydedilemedi: {error}. İndirmeler durduruldu."
-                                ));
+                                self.persistence_error = Some(queue_save_stopped(&error));
                             }
                         }
                     }
@@ -3062,9 +3287,7 @@ impl Actor {
                             job.phase = state.label().into();
                             job.updated_at = local.timestamp();
                             if let Err(error) = self.store.save_job(job) {
-                                self.persistence_error = Some(format!(
-                                    "Kuyruk kaydedilemedi: {error}. İndirmeler durduruldu."
-                                ));
+                                self.persistence_error = Some(queue_save_stopped(&error));
                             }
                         }
                     }
@@ -3327,7 +3550,11 @@ impl Actor {
             }
             Err(error) => {
                 job.state = JobState::Paused;
-                job.phase = "Tamamlama kaydı bekliyor".into();
+                job.phase = crate::i18n::ui(
+                    "Tamamlama kaydı bekliyor",
+                    "Waiting for the completion record",
+                )
+                .into();
                 self.jobs.insert(id.into(), job);
                 self.persistence_error = Some(crate::i18n::ui_owned!(
                     format!("Kuyruk kaydedilemedi: {error}. Son dosya kurtarma kaydı korundu."),
@@ -3340,7 +3567,10 @@ impl Actor {
     fn persist_job(&mut self, id: &str) {
         if let Some(job) = self.jobs.get(id) {
             if let Err(error) = self.store.save_job(job) {
-                self.persistence_error = Some(format!("Kuyruk kaydedilemedi: {error}"));
+                self.persistence_error = Some(crate::i18n::ui_owned!(
+                    format!("Kuyruk kaydedilemedi: {error}"),
+                    format!("The queue could not be saved: {error}")
+                ));
             }
         }
     }
@@ -3363,15 +3593,21 @@ impl Actor {
         }
         for (id, generation) in grantless {
             if let Err(error) = self.revoke_exited_browser_transfer(&id, generation) {
-                self.persistence_error = Some(format!(
-                    "Kapanan tarayıcı aktarımı duraklatılamadı: {error}"
+                self.persistence_error = Some(crate::i18n::ui_owned!(
+                    format!("Kapanan tarayıcı aktarımı duraklatılamadı: {error}"),
+                    format!("The closed browser transfer could not be paused: {error}")
                 ));
                 self.publish();
             }
         }
         if newly_orphaned > 0 {
-            self.warning = Some(format!(
-                "Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar {newly_orphaned} ağ izni güvenli olarak tutuluyor"
+            self.warning = Some(crate::i18n::ui_owned!(
+                format!(
+                    "Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar {newly_orphaned} ağ izni güvenli olarak tutuluyor"
+                ),
+                format!(
+                    "The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed"
+                )
             ));
         }
     }
@@ -3416,7 +3652,9 @@ impl Actor {
                         job.downloaded = done.bytes;
                         job.total = Some(done.bytes);
                         job.state = JobState::Completed;
-                        job.phase = "Tamamlandı (kurtarıldı)".into();
+                        job.phase =
+                            crate::i18n::ui("Tamamlandı (kurtarıldı)", "Completed (recovered)")
+                                .into();
                         job.request.forget_session();
                     }
                 }
@@ -3560,9 +3798,7 @@ impl Actor {
             job.updated_at = Utc::now().timestamp();
             self.completion_armed.remove(job_queue_id(job));
             if let Err(error) = self.store.save_job(job) {
-                self.persistence_error = Some(format!(
-                    "Kuyruk kaydedilemedi: {error}. İndirmeler durduruldu."
-                ));
+                self.persistence_error = Some(queue_save_stopped(&error));
             }
         }
         self.publish();
@@ -3618,14 +3854,14 @@ impl Actor {
             let request = &self
                 .jobs
                 .get(id)
-                .ok_or_else(|| anyhow!("İş bulunamadı"))?
+                .ok_or_else(|| anyhow!("{}", crate::i18n::ui("İş bulunamadı", "Job not found")))?
                 .request;
             self.connection_allocation(id, request)
         };
         let job = self
             .jobs
             .get_mut(id)
-            .ok_or_else(|| anyhow!("İş bulunamadı"))?;
+            .ok_or_else(|| anyhow!("{}", crate::i18n::ui("İş bulunamadı", "Job not found")))?;
         let forced = std::mem::take(&mut job.force_start);
         if job.work_dir.is_none() {
             let marker = crate::recovery::claim_path(&job.path);
@@ -3684,7 +3920,15 @@ impl Actor {
                         &mut progress,
                     )
                 }))
-                .unwrap_or_else(|_| Err(anyhow!("İndirme işçisi beklenmedik şekilde durdu")))
+                .unwrap_or_else(|_| {
+                    Err(anyhow!(
+                        "{}",
+                        crate::i18n::ui(
+                            "İndirme işçisi beklenmedik şekilde durdu",
+                            "The download worker stopped unexpectedly"
+                        )
+                    ))
+                })
                 .map_err(|error| transfer_failure(&job_copy.request, error));
                 let _ = sender.send(Message::Worker(WorkerEvent::Finished {
                     id: worker_id,
@@ -3692,7 +3936,10 @@ impl Actor {
                     result,
                 }));
             })
-            .context("İndirme işçisi başlatılamadı")?;
+            .context(crate::i18n::ui(
+                "İndirme işçisi başlatılamadı",
+                "The download worker could not be started",
+            ))?;
         self.active.insert(
             id.into(),
             ActiveJob {
@@ -3787,7 +4034,7 @@ impl Actor {
                 job.phase = if state == JobState::Scheduled {
                     state.label().into()
                 } else {
-                    "Sınır nedeniyle sırada".into()
+                    crate::i18n::ui("Sınır nedeniyle sırada", "Queued because of a limit").into()
                 };
                 job.updated_at = now;
                 changed.push(job.clone());
@@ -4009,15 +4256,25 @@ impl Actor {
             warnings.push(warning.clone());
         }
         if !self.browser_orphans.is_empty() {
-            warnings.push(format!(
-                "{} doğrulanmamış tarayıcı ağ izni kapasitede tutuluyor; Chrome'un isteği kapattığı kanıtlanmadan serbest bırakılmaz",
-                self.browser_orphans.len()
+            let count = self.browser_orphans.len();
+            warnings.push(crate::i18n::ui_owned!(
+                format!(
+                    "{count} doğrulanmamış tarayıcı ağ izni kapasitede tutuluyor; Chrome'un isteği kapattığı kanıtlanmadan serbest bırakılmaz"
+                ),
+                format!(
+                    "{count} unverified browser network permit(s) are held in capacity; they are not released until Chrome is proven to have closed the request"
+                )
             ));
         }
         if self.network_limit_pending {
-            warnings.push(format!(
-                "Sunucu başına {} bağlantı sınırı yeni bağlantılara uygulanıyor; açık aktarım soketleri kapanana kadar tam olarak yürürlükte değil",
-                self.settings.per_host_limit
+            let limit = self.settings.per_host_limit;
+            warnings.push(crate::i18n::ui_owned!(
+                format!(
+                    "Sunucu başına {limit} bağlantı sınırı yeni bağlantılara uygulanıyor; açık aktarım soketleri kapanana kadar tam olarak yürürlükte değil"
+                ),
+                format!(
+                    "The limit of {limit} connections per server applies to new connections; it is not fully in effect until open transfer sockets close"
+                )
             ));
         }
         value.warning = (!warnings.is_empty()).then(|| warnings.join("\n"));
@@ -4047,7 +4304,11 @@ impl Actor {
                 job.state = JobState::Queued;
                 job.speed = 0;
                 job.eta = None;
-                job.phase = "Uygulama yeniden açılınca devam edecek".into();
+                job.phase = crate::i18n::ui(
+                    "Uygulama yeniden açılınca devam edecek",
+                    "Will continue when the app is reopened",
+                )
+                .into();
                 job.updated_at = now;
                 changed.push(job.clone());
             }
@@ -4071,7 +4332,13 @@ impl Actor {
             refresh.control.cancel();
             let _ = refresh.handle.join();
             if let Some(reply) = refresh.reply.take() {
-                respond(reply, Err(anyhow!("İndirme motoru kapalı")));
+                respond(
+                    reply,
+                    Err(anyhow!(
+                        "{}",
+                        crate::i18n::ui("İndirme motoru kapalı", "The download engine is closed")
+                    )),
+                );
             }
         }
         if let Err(error) = self.store.flush() {
@@ -4389,7 +4656,10 @@ fn validate_request_headers(request: &AddRequest) -> Result<()> {
         .into_iter()
         .flatten()
     {
-        let parsed = Url::parse(value).context("Sayfa adresi geçersiz")?;
+        let parsed = Url::parse(value).context(crate::i18n::ui(
+            "Sayfa adresi geçersiz",
+            "The page address is invalid",
+        ))?;
         if !matches!(parsed.scheme(), "http" | "https") {
             bail!(
                 "{}",
@@ -4522,19 +4792,33 @@ fn processing_phase(phase: &str) -> bool {
         || phase.contains("mux")
 }
 
+/// The persistence failure that stops downloads, in the interface language.
+fn queue_save_stopped(error: &impl std::fmt::Display) -> String {
+    crate::i18n::ui_owned!(
+        format!("Kuyruk kaydedilemedi: {error}. İndirmeler durduruldu."),
+        format!("The queue could not be saved: {error}. Downloads were stopped.")
+    )
+}
+
 fn safe_error(request: &AddRequest, message: &str) -> String {
-    let mut value = message.replace(&request.url, "[kaynak adresi]");
+    let mut value = message.replace(
+        &request.url,
+        crate::i18n::ui("[kaynak adresi]", "[source address]"),
+    );
     for secret in request
         .headers
         .values()
         .chain(request.session_cookies.iter().map(|cookie| &cookie.value))
     {
         if !secret.is_empty() {
-            value = value.replace(secret, "[gizli]");
+            value = value.replace(secret, crate::i18n::ui("[gizli]", "[hidden]"));
         }
     }
     if let Some(value_to_hide) = request.referer.as_deref() {
-        value = value.replace(value_to_hide, "[yönlendiren]");
+        value = value.replace(
+            value_to_hide,
+            crate::i18n::ui("[yönlendiren]", "[referrer]"),
+        );
     }
     // The head carries the yt-dlp argument list (which selection was requested) and the tail the
     // traceback, so both get room: an earlier 300/650 split dropped exactly the part that says
@@ -4550,8 +4834,9 @@ fn safe_error(request: &AddRequest, message: &str) -> String {
             .nth(1199)
             .map_or(0, |(index, _)| index);
         value = format!(
-            "{}\n[... hata ayrıntısı kısaltıldı ...]\n{}",
+            "{}\n[... {} ...]\n{}",
             &value[..head_end],
+            crate::i18n::ui("hata ayrıntısı kısaltıldı", "error detail truncated"),
             &value[tail_start..]
         );
     }

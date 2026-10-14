@@ -1,5 +1,6 @@
 use crate::{
     app::App,
+    i18n::{ui, ui_owned},
     model::{Action, AppSnapshot, BridgeResponse, Settings},
     paths::AppPaths,
 };
@@ -73,6 +74,14 @@ const PIPE_RECONNECT_WINDOW: Duration = Duration::from_millis(250);
 pub const MAIN_WINDOW_CLASS: &str = "SSDownload.MainWindow";
 pub const WM_RAISE_WINDOW: u32 = WM_APP + 36;
 
+/// The reply to a request that speaks another protocol version than this build.
+fn unsupported_version(version: u32) -> String {
+    ui_owned!(
+        format!("Desteklenmeyen iletişim sürümü: {version}"),
+        format!("Unsupported protocol version: {version}")
+    )
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireRequest {
@@ -105,9 +114,16 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn win32_error(context: &str) -> anyhow::Error {
+fn win32_error(tr: &'static str, en: &'static str) -> anyhow::Error {
     let code = unsafe { GetLastError() };
-    anyhow!("{context} (Windows hata kodu {code})")
+    let context = ui(tr, en);
+    anyhow!(
+        "{}",
+        ui_owned!(
+            format!("{context} (Windows hata kodu {code})"),
+            format!("{context} (Windows error code {code})")
+        )
+    )
 }
 
 fn token_user_sid(token: windows_sys::Win32::Foundation::HANDLE) -> Result<Vec<u8>> {
@@ -116,7 +132,10 @@ fn token_user_sid(token: windows_sys::Win32::Foundation::HANDLE) -> Result<Vec<u
         GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut needed);
     }
     if needed == 0 {
-        return Err(win32_error("Kullanıcı güvenlik kimliği okunamadı"));
+        return Err(win32_error(
+            "Kullanıcı güvenlik kimliği okunamadı",
+            "The user security ID could not be read",
+        ));
     }
     let mut data = vec![0u8; needed as usize];
     if unsafe {
@@ -129,7 +148,10 @@ fn token_user_sid(token: windows_sys::Win32::Foundation::HANDLE) -> Result<Vec<u
         )
     } == 0
     {
-        return Err(win32_error("Kullanıcı güvenlik kimliği okunamadı"));
+        return Err(win32_error(
+            "Kullanıcı güvenlik kimliği okunamadı",
+            "The user security ID could not be read",
+        ));
     }
     Ok(data)
 }
@@ -137,14 +159,20 @@ fn token_user_sid(token: windows_sys::Win32::Foundation::HANDLE) -> Result<Vec<u
 fn current_user_sid_string() -> Result<String> {
     let mut token = ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(win32_error("Kullanıcı erişim belirteci açılamadı"));
+        return Err(win32_error(
+            "Kullanıcı erişim belirteci açılamadı",
+            "The user access token could not be opened",
+        ));
     }
     let token = OwnedHandle(token);
     let data = token_user_sid(token.0)?;
     let user = unsafe { data.as_ptr().cast::<TOKEN_USER>().read_unaligned() };
     let mut sid_text = ptr::null_mut();
     if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut sid_text) } == 0 {
-        return Err(win32_error("Kullanıcı güvenlik kimliği dönüştürülemedi"));
+        return Err(win32_error(
+            "Kullanıcı güvenlik kimliği dönüştürülemedi",
+            "The user security ID could not be converted",
+        ));
     }
     let mut length = 0;
     unsafe {
@@ -154,7 +182,10 @@ fn current_user_sid_string() -> Result<String> {
     }
     let result = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, length) });
     unsafe { LocalFree(sid_text.cast()) };
-    result.context("Kullanıcı güvenlik kimliği geçersiz UTF-16 içeriyor")
+    result.context(ui(
+        "Kullanıcı güvenlik kimliği geçersiz UTF-16 içeriyor",
+        "The user security ID contains invalid UTF-16",
+    ))
 }
 
 fn pipe_security() -> Result<PipeSecurity> {
@@ -171,7 +202,10 @@ fn pipe_security() -> Result<PipeSecurity> {
         )
     } == 0
     {
-        return Err(win32_error("Named pipe güvenlik tanımı oluşturulamadı"));
+        return Err(win32_error(
+            "Named pipe güvenlik tanımı oluşturulamadı",
+            "The named pipe security descriptor could not be created",
+        ));
     }
     Ok(PipeSecurity(descriptor))
 }
@@ -203,6 +237,7 @@ fn create_pipe(name: &str, security: &PipeSecurity, first: bool) -> Result<Owned
     if handle == INVALID_HANDLE_VALUE {
         Err(win32_error(
             "SSDownload yerel iletişim kanalı oluşturulamadı",
+            "The SSDownload local communication channel could not be created",
         ))
     } else {
         Ok(OwnedHandle(handle))
@@ -211,12 +246,18 @@ fn create_pipe(name: &str, security: &PipeSecurity, first: bool) -> Result<Owned
 
 fn same_user_client(pipe: windows_sys::Win32::Foundation::HANDLE) -> Result<bool> {
     if unsafe { ImpersonateNamedPipeClient(pipe) } == 0 {
-        return Err(win32_error("Named pipe istemcisi doğrulanamadı"));
+        return Err(win32_error(
+            "Named pipe istemcisi doğrulanamadı",
+            "The named pipe client could not be verified",
+        ));
     }
     let result = (|| {
         let mut client_token = ptr::null_mut();
         if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut client_token) } == 0 {
-            return Err(win32_error("İstemci erişim belirteci okunamadı"));
+            return Err(win32_error(
+                "İstemci erişim belirteci okunamadı",
+                "The client access token could not be read",
+            ));
         }
         let client_token = OwnedHandle(client_token);
         let client_data = token_user_sid(client_token.0)?;
@@ -225,7 +266,10 @@ fn same_user_client(pipe: windows_sys::Win32::Foundation::HANDLE) -> Result<bool
         // OpenProcessToken while impersonating still addresses this server process's primary token.
         let mut server_token = ptr::null_mut();
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut server_token) } == 0 {
-            return Err(win32_error("Sunucu erişim belirteci okunamadı"));
+            return Err(win32_error(
+                "Sunucu erişim belirteci okunamadı",
+                "The server access token could not be read",
+            ));
         }
         let server_token = OwnedHandle(server_token);
         let server_data = token_user_sid(server_token.0)?;
@@ -235,7 +279,10 @@ fn same_user_client(pipe: windows_sys::Win32::Foundation::HANDLE) -> Result<bool
         })
     })();
     if unsafe { RevertToSelf() } == 0 {
-        return Err(win32_error("Named pipe kimliğinden çıkılamadı"));
+        return Err(win32_error(
+            "Named pipe kimliğinden çıkılamadı",
+            "The named pipe identity could not be reverted",
+        ));
     }
     result
 }
@@ -246,12 +293,18 @@ fn same_user_client(pipe: windows_sys::Win32::Foundation::HANDLE) -> Result<bool
 fn same_user_process(pid: u32) -> Result<bool> {
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
-        return Err(win32_error("Named pipe sunucu süreci açılamadı"));
+        return Err(win32_error(
+            "Named pipe sunucu süreci açılamadı",
+            "The named pipe server process could not be opened",
+        ));
     }
     let process = OwnedHandle(process);
     let mut endpoint_token = ptr::null_mut();
     if unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut endpoint_token) } == 0 {
-        return Err(win32_error("Sunucu erişim belirteci okunamadı"));
+        return Err(win32_error(
+            "Sunucu erişim belirteci okunamadı",
+            "The server access token could not be read",
+        ));
     }
     let endpoint_token = OwnedHandle(endpoint_token);
     let endpoint_data = token_user_sid(endpoint_token.0)?;
@@ -259,7 +312,10 @@ fn same_user_process(pid: u32) -> Result<bool> {
 
     let mut own_token = ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut own_token) } == 0 {
-        return Err(win32_error("Kullanıcı erişim belirteci açılamadı"));
+        return Err(win32_error(
+            "Kullanıcı erişim belirteci açılamadı",
+            "The user access token could not be opened",
+        ));
     }
     let own_token = OwnedHandle(own_token);
     let own_data = token_user_sid(own_token.0)?;
@@ -288,13 +344,25 @@ fn wait_for_message(
             )
         } == 0
         {
-            return Err(win32_error("Named pipe verisi okunamadı"));
+            return Err(win32_error(
+                "Named pipe verisi okunamadı",
+                "The named pipe data could not be read",
+            ));
         }
         let size = available.max(message_left) as usize;
         if size > MAX_PIPE_MESSAGE {
             bail!(
-                "Yerel iletişim iletisi {} bayt sınırını aşıyor",
-                MAX_PIPE_MESSAGE
+                "{}",
+                ui_owned!(
+                    format!(
+                        "Yerel iletişim iletisi {} bayt sınırını aşıyor",
+                        MAX_PIPE_MESSAGE
+                    ),
+                    format!(
+                        "The local message exceeds the {} byte limit",
+                        MAX_PIPE_MESSAGE
+                    )
+                )
             );
         }
         if size > 0 {
@@ -310,7 +378,10 @@ fn wait_for_message(
                 )
             } == 0
             {
-                return Err(win32_error("Named pipe iletisi okunamadı"));
+                return Err(win32_error(
+                    "Named pipe iletisi okunamadı",
+                    "The named pipe message could not be read",
+                ));
             }
             data.truncate(read as usize);
             return Ok(data);
@@ -325,8 +396,17 @@ fn wait_for_message(
 fn write_message(handle: windows_sys::Win32::Foundation::HANDLE, data: &[u8]) -> Result<()> {
     if data.len() > MAX_PIPE_MESSAGE {
         bail!(
-            "Yerel iletişim yanıtı {} bayt sınırını aşıyor",
-            MAX_PIPE_MESSAGE
+            "{}",
+            ui_owned!(
+                format!(
+                    "Yerel iletişim yanıtı {} bayt sınırını aşıyor",
+                    MAX_PIPE_MESSAGE
+                ),
+                format!(
+                    "The local reply exceeds the {} byte limit",
+                    MAX_PIPE_MESSAGE
+                )
+            )
         );
     }
     let mut written = 0u32;
@@ -340,10 +420,19 @@ fn write_message(handle: windows_sys::Win32::Foundation::HANDLE, data: &[u8]) ->
         )
     } == 0
     {
-        return Err(win32_error("Named pipe yanıtı yazılamadı"));
+        return Err(win32_error(
+            "Named pipe yanıtı yazılamadı",
+            "The named pipe reply could not be written",
+        ));
     }
     if written as usize != data.len() {
-        bail!("Named pipe yanıtı eksik yazıldı");
+        bail!(
+            "{}",
+            ui(
+                "Named pipe yanıtı eksik yazıldı",
+                "The named pipe reply was written incompletely"
+            )
+        );
     }
     Ok(())
 }
@@ -372,7 +461,10 @@ fn connect_pipe(paths: &AppPaths) -> Result<OwnedHandle> {
             // read can return a partial message. `CallNamedPipeW` sets this mode implicitly.
             let mode = PIPE_READMODE_MESSAGE;
             if unsafe { SetNamedPipeHandleState(pipe.0, &mode, ptr::null(), ptr::null()) } == 0 {
-                return Err(win32_error("Named pipe okuma kipi ayarlanamadı"));
+                return Err(win32_error(
+                    "Named pipe okuma kipi ayarlanamadı",
+                    "The named pipe read mode could not be set",
+                ));
             }
             return Ok(pipe);
         }
@@ -399,7 +491,10 @@ fn connect_pipe(paths: &AppPaths) -> Result<OwnedHandle> {
 fn pipe_server_process_id(pipe: HANDLE) -> Result<u32> {
     let mut pid = 0u32;
     if unsafe { GetNamedPipeServerProcessId(pipe, &mut pid) } == 0 || pid == 0 {
-        return Err(win32_error("Named pipe sunucu süreci belirlenemedi"));
+        return Err(win32_error(
+            "Named pipe sunucu süreci belirlenemedi",
+            "The named pipe server process could not be determined",
+        ));
     }
     Ok(pid)
 }
@@ -422,10 +517,19 @@ pub fn instance_process_id(paths: &AppPaths) -> Option<u32> {
 fn grant_foreground(pipe: HANDLE) -> Result<()> {
     let desktop_pid = pipe_server_process_id(pipe)?;
     if !same_user_process(desktop_pid)? {
-        bail!("Named pipe sunucusu geçerli kullanıcıya ait değil");
+        bail!(
+            "{}",
+            ui(
+                "Named pipe sunucusu geçerli kullanıcıya ait değil",
+                "The named pipe server does not belong to the current user"
+            )
+        );
     }
     if unsafe { AllowSetForegroundWindow(desktop_pid) } == 0 {
-        return Err(win32_error("Ön plan izni masaüstüne devredilemedi"));
+        return Err(win32_error(
+            "Ön plan izni masaüstüne devredilemedi",
+            "The foreground permission could not be passed to the desktop",
+        ));
     }
     Ok(())
 }
@@ -443,14 +547,20 @@ fn process_pipe_client(app: &App, pipe: windows_sys::Win32::Foundation::HANDLE) 
     // Impersonation uses the identity of the last message successfully read.
     let input = wait_for_message(pipe, PIPE_IO_TIMEOUT)?;
     if !same_user_client(pipe)? {
-        bail!("Named pipe istemcisi geçerli kullanıcıya ait değil");
+        bail!(
+            "{}",
+            ui(
+                "Named pipe istemcisi geçerli kullanıcıya ait değil",
+                "The named pipe client does not belong to the current user"
+            )
+        );
     }
     let mut response_offset = 0;
     let response = match serde_json::from_slice::<WireRequest>(&input) {
         Ok(request) if request.version != PROTOCOL_VERSION => BridgeResponse {
             result: None,
             ok: false,
-            message: format!("Desteklenmeyen iletişim sürümü: {}", request.version),
+            message: unsupported_version(request.version),
             snapshot: None,
         },
         Ok(request) => match request.action {
@@ -476,7 +586,7 @@ fn process_pipe_client(app: &App, pipe: windows_sys::Win32::Foundation::HANDLE) 
                     Ok(result) => BridgeResponse {
                         result: Some(result),
                         ok: true,
-                        message: "İstek kabul edildi".into(),
+                        message: ui("İstek kabul edildi", "Request accepted").into(),
                         snapshot: include_snapshot.then(|| {
                             if media_only {
                                 redact_snapshot(app.snapshot_page(0, 0))
@@ -496,14 +606,17 @@ fn process_pipe_client(app: &App, pipe: windows_sys::Win32::Foundation::HANDLE) 
             None => BridgeResponse {
                 result: None,
                 ok: true,
-                message: "SSDownload çalışıyor".into(),
+                message: ui("SSDownload çalışıyor", "SSDownload is running").into(),
                 snapshot: None,
             },
         },
         Err(error) => BridgeResponse {
             result: None,
             ok: false,
-            message: format!("Geçersiz yerel iletişim iletisi: {error}"),
+            message: ui_owned!(
+                format!("Geçersiz yerel iletişim iletisi: {error}"),
+                format!("Invalid local message: {error}")
+            ),
             snapshot: None,
         },
     };
@@ -517,13 +630,20 @@ fn process_pipe_client(app: &App, pipe: windows_sys::Win32::Foundation::HANDLE) 
                 snapshot.next_offset = Some(response_offset + keep);
                 if keep == 0 {
                     response.ok = false;
-                    response.message = "Tek iş izin verilen ileti boyutunu aşıyor".into();
+                    response.message = ui(
+                        "Tek iş izin verilen ileti boyutunu aşıyor",
+                        "A single job exceeds the allowed message size",
+                    )
+                    .into();
                     response.snapshot = None;
                     output = serde_json::to_vec(&response)?;
                     continue;
                 }
-                response.message =
-                    "Durum özeti son işleri gösteriyor; tüm geçmiş masaüstünde mevcut.".into();
+                response.message = ui(
+                    "Durum özeti son işleri gösteriyor; tüm geçmiş masaüstünde mevcut.",
+                    "The status summary shows the latest jobs; the full history is available on the desktop.",
+                )
+                .into();
             } else if let Some(media) = &mut snapshot.media {
                 if media.formats.len() > 1 {
                     media.formats.truncate(media.formats.len() / 2);
@@ -616,7 +736,10 @@ pub fn start(app: App) -> Result<()> {
                     }
                 }
             })
-            .context("Yerel iletişim iş parçacığı başlatılamadı")?;
+            .context(ui(
+                "Yerel iletişim iş parçacığı başlatılamadı",
+                "The local communication thread could not be started",
+            ))?;
     }
     Ok(())
 }
@@ -668,7 +791,10 @@ fn transact(paths: &AppPaths, action: Option<&Action>) -> Result<BridgeResponse>
         );
     }
     output.truncate(read as usize);
-    serde_json::from_slice(&output).context("SSDownload yerel iletişim yanıtı geçersiz")
+    serde_json::from_slice(&output).context(ui(
+        "SSDownload yerel iletişim yanıtı geçersiz",
+        "The SSDownload local communication reply is invalid",
+    ))
 }
 
 /// Sends any local application action to the already-running per-user instance.
@@ -706,7 +832,10 @@ fn send_browser_media(paths: &AppPaths, action: &Action) -> Result<BridgeRespons
     write_message(pipe.0, &input)?;
     // Nothing is retried from here on: the desktop may already hold the handoff.
     let output = wait_for_message(pipe.0, PIPE_IO_TIMEOUT)?;
-    serde_json::from_slice(&output).context("SSDownload yerel iletişim yanıtı geçersiz")
+    serde_json::from_slice(&output).context(ui(
+        "SSDownload yerel iletişim yanıtı geçersiz",
+        "The SSDownload local communication reply is invalid",
+    ))
 }
 
 fn redact_snapshot(snapshot: AppSnapshot) -> AppSnapshot {
@@ -780,12 +909,18 @@ fn browser_response(mut response: BridgeResponse, include_media: bool) -> Bridge
 }
 
 fn validate_http_url(value: &str) -> Result<()> {
-    let parsed = url::Url::parse(value).context("URL geçersiz")?;
+    let parsed = url::Url::parse(value).context(ui("URL geçersiz", "The URL is invalid"))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         crate::bail_code!(crate::error_codes::MED_005);
     }
     if parsed.host_str().is_none() {
-        bail!("URL bir sunucu adı içermiyor");
+        bail!(
+            "{}",
+            ui(
+                "URL bir sunucu adı içermiyor",
+                "The URL does not contain a host name"
+            )
+        );
     }
     Ok(())
 }
@@ -798,7 +933,13 @@ fn validate_browser_headers(headers: &std::collections::BTreeMap<String, String>
             .sum::<usize>()
             > 64 * 1024
     {
-        bail!("Oturum üstbilgileri çok büyük");
+        bail!(
+            "{}",
+            ui(
+                "Oturum üstbilgileri çok büyük",
+                "The session headers are too large"
+            )
+        );
     }
     const ALLOWED_HEADERS: &[&str] = &["user-agent", "accept", "accept-language", "origin"];
     if headers
@@ -832,14 +973,20 @@ fn validate_browser_add(request: &mut crate::model::AddRequest) -> Result<()> {
                 || cookie.path.len() > 2048
         })
     {
-        bail!("Oturum çerezleri sınırı aşıyor");
+        bail!(
+            "{}",
+            ui(
+                "Oturum çerezleri sınırı aşıyor",
+                "The session cookies exceed the limit"
+            )
+        );
     }
     if request
         .filename
         .as_ref()
         .is_some_and(|name| name.len() > MAX_BROWSER_FILENAME)
     {
-        bail!("Dosya adı çok uzun");
+        bail!("{}", ui("Dosya adı çok uzun", "The file name is too long"));
     }
     // Page markup is report material, not a transfer input: what the extension
     // hands over stays inside this bound so a report (or any later reader) can
@@ -849,7 +996,13 @@ fn validate_browser_add(request: &mut crate::model::AddRequest) -> Result<()> {
         .as_ref()
         .is_some_and(|html| html.len() > MAX_PAGE_HTML)
     {
-        bail!("Sayfa işaretlemesi çok büyük");
+        bail!(
+            "{}",
+            ui(
+                "Sayfa işaretlemesi çok büyük",
+                "The page markup is too large"
+            )
+        );
     }
     // A browser extension cannot select arbitrary local filesystem destinations.
     request.directory = None;
@@ -862,14 +1015,22 @@ fn validate_browser_action(action: &mut Action) -> Result<()> {
         Action::CompleteSourceRefresh {
             id, token, request, ..
         } => {
-            uuid::Uuid::parse_str(id).context("İş kimliği geçersiz")?;
+            uuid::Uuid::parse_str(id)
+                .context(ui("İş kimliği geçersiz", "The job ID is invalid"))?;
             if token.is_empty() || token.len() > 128 {
-                bail!("Kaynak yenileme yetkisi geçersiz");
+                bail!(
+                    "{}",
+                    ui(
+                        "Kaynak yenileme yetkisi geçersiz",
+                        "The source refresh authorization is invalid"
+                    )
+                );
             }
             validate_browser_add(request)?;
         }
         Action::BeginSourceRefresh { id } => {
-            uuid::Uuid::parse_str(id).context("İş kimliği geçersiz")?;
+            uuid::Uuid::parse_str(id)
+                .context(ui("İş kimliği geçersiz", "The job ID is invalid"))?;
         }
         Action::Capabilities => {}
         // Extension events are bounded relay data, not an application command; the
@@ -883,11 +1044,23 @@ fn validate_browser_action(action: &mut Action) -> Result<()> {
                     ..
                 },
         } if sender_pid.is_some() || sender_started_at.is_some() => {
-            bail!("Tarayıcı aktarım gönderici kimliği eklentiye açık değil")
+            bail!(
+                "{}",
+                ui(
+                    "Tarayıcı aktarım gönderici kimliği eklentiye açık değil",
+                    "The browser transfer sender identity is not exposed to the extension"
+                )
+            )
         }
         Action::BrowserTransfer {
             command: crate::browser_transfer::Command::Release { .. },
-        } => bail!("Tarayıcı aktarım gönderici serbest bırakma komutu eklentiye açık değil"),
+        } => bail!(
+            "{}",
+            ui(
+                "Tarayıcı aktarım gönderici serbest bırakma komutu eklentiye açık değil",
+                "The browser transfer sender release command is not exposed to the extension"
+            )
+        ),
         Action::BrowserTransfer { command } => command.validate_frame()?,
         Action::Inspect { request } => {
             validate_http_url(&request.url)?;
@@ -900,7 +1073,7 @@ fn validate_browser_action(action: &mut Action) -> Result<()> {
             launch_id, request, ..
         } => {
             if launch_id.is_empty() || launch_id.len() > 128 {
-                bail!("Geçersiz istek kimliği");
+                bail!("{}", ui("Geçersiz istek kimliği", "Invalid request ID"));
             }
             validate_browser_add(request)?;
             // The native picker owns the queued job's idempotency key: an
@@ -913,7 +1086,11 @@ fn validate_browser_action(action: &mut Action) -> Result<()> {
             if !request_id.is_empty() && request_id.len() <= 128 => {}
         _ => crate::bail_code!(
             crate::error_codes::BRG_004,
-            "Bu işlem tarayıcı eklentisine açık değil"
+            "{}",
+            ui(
+                "Bu işlem tarayıcı eklentisine açık değil",
+                "This operation is not available to the browser extension"
+            )
         ),
     }
     Ok(())
@@ -962,8 +1139,10 @@ fn launch_origin_allowed() -> bool {
 
 fn spawn_background(paths: &AppPaths) -> Result<()> {
     use std::os::windows::process::CommandExt;
-    let executable =
-        std::env::current_exe().context("SSDownload çalıştırılabilir dosyası bulunamadı")?;
+    let executable = std::env::current_exe().context(ui(
+        "SSDownload çalıştırılabilir dosyası bulunamadı",
+        "The SSDownload executable was not found",
+    ))?;
     Command::new(executable)
         .arg("--background")
         .arg("--data-dir")
@@ -973,7 +1152,10 @@ fn spawn_background(paths: &AppPaths) -> Result<()> {
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
         .spawn()
-        .context("SSDownload arka planda başlatılamadı")?;
+        .context(ui(
+            "SSDownload arka planda başlatılamadı",
+            "SSDownload could not be started in the background",
+        ))?;
     Ok(())
 }
 
@@ -994,7 +1176,15 @@ fn ensure_desktop_ready(paths: &AppPaths) -> Result<BridgeResponse> {
                     }
                     Err(_) => {
                         return Err(anyhow!(
-                            "SSDownload başlatıldı ancak yerel iletişim hazır olmadı: {first_error}"
+                            "{}",
+                            ui_owned!(
+                                format!(
+                                    "SSDownload başlatıldı ancak yerel iletişim hazır olmadı: {first_error}"
+                                ),
+                                format!(
+                                    "SSDownload started but local communication did not become ready: {first_error}"
+                                )
+                            )
                         ))
                     }
                 }
@@ -1020,24 +1210,38 @@ fn read_native_message(input: &mut impl Read) -> Result<Option<Vec<u8>>> {
             Ok(0) if offset == 0 => return Ok(None),
             Ok(0) => crate::bail_code!(
                 crate::error_codes::BRG_002,
-                "Native Messaging uzunluk başlığı yarım kaldı"
+                "{}",
+                ui(
+                    "Native Messaging uzunluk başlığı yarım kaldı",
+                    "The Native Messaging length header was cut off"
+                )
             ),
             Ok(count) => offset += count,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error).context("Native Messaging girdisi okunamadı"),
+            Err(error) => {
+                return Err(error).context(ui(
+                    "Native Messaging girdisi okunamadı",
+                    "The Native Messaging input could not be read",
+                ))
+            }
         }
     }
     let length = u32::from_le_bytes(length) as usize;
     if length == 0 || length > MAX_NATIVE_MESSAGE {
         crate::bail_code!(
             crate::error_codes::BRG_002,
-            "Native Messaging iletisi geçersiz boyutta: {length}"
+            "{}",
+            ui_owned!(
+                format!("Native Messaging iletisi geçersiz boyutta: {length}"),
+                format!("The Native Messaging message has an invalid size: {length}")
+            )
         );
     }
     let mut body = vec![0u8; length];
-    input
-        .read_exact(&mut body)
-        .context("Native Messaging iletisi yarım kaldı")?;
+    input.read_exact(&mut body).context(ui(
+        "Native Messaging iletisi yarım kaldı",
+        "The Native Messaging message was cut off",
+    ))?;
     Ok(Some(body))
 }
 
@@ -1065,8 +1269,10 @@ fn process_started_at(handle: HANDLE) -> Result<u64> {
     let mut kernel = zero();
     let mut user = zero();
     if unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("Native Messaging gönderici başlangıcı okunamadı");
+        return Err(std::io::Error::last_os_error()).context(ui(
+            "Native Messaging gönderici başlangıcı okunamadı",
+            "The Native Messaging sender start time could not be read",
+        ));
     }
     Ok(u64::from(created.dwLowDateTime) | (u64::from(created.dwHighDateTime) << 32))
 }
@@ -1157,7 +1363,10 @@ pub fn native_host(paths: &AppPaths) -> Result<()> {
             Err(error) => BridgeResponse {
                 result: None,
                 ok: false,
-                message: format!("Geçersiz Native Messaging iletisi: {error}"),
+                message: ui_owned!(
+                    format!("Geçersiz Native Messaging iletisi: {error}"),
+                    format!("Invalid Native Messaging message: {error}")
+                ),
                 snapshot: None,
             },
             Ok(request) if request.version != PROTOCOL_VERSION => {
@@ -1169,7 +1378,7 @@ pub fn native_host(paths: &AppPaths) -> Result<()> {
                 BridgeResponse {
                     result: None,
                     ok: false,
-                    message: format!("Desteklenmeyen iletişim sürümü: {}", request.version),
+                    message: unsupported_version(request.version),
                     snapshot: None,
                 }
             }
@@ -1259,7 +1468,17 @@ fn registry_set_default(key_path: &str, value: &Path) -> Result<()> {
         )
     };
     if status != 0 {
-        bail!("Native host kayıt defteri anahtarı oluşturulamadı (Windows hata kodu {status})");
+        bail!(
+            "{}",
+            ui_owned!(
+                format!(
+                    "Native host kayıt defteri anahtarı oluşturulamadı (Windows hata kodu {status})"
+                ),
+                format!(
+                    "The native host registry key could not be created (Windows error code {status})"
+                )
+            )
+        );
     }
     let value = wide(&value.to_string_lossy());
     let status = unsafe {
@@ -1274,7 +1493,17 @@ fn registry_set_default(key_path: &str, value: &Path) -> Result<()> {
     };
     unsafe { RegCloseKey(key) };
     if status != 0 {
-        bail!("Native host kayıt defteri değeri yazılamadı (Windows hata kodu {status})");
+        bail!(
+            "{}",
+            ui_owned!(
+                format!(
+                    "Native host kayıt defteri değeri yazılamadı (Windows hata kodu {status})"
+                ),
+                format!(
+                    "The native host registry value could not be written (Windows error code {status})"
+                )
+            )
+        );
     }
     Ok(())
 }
@@ -1285,7 +1514,17 @@ fn registry_delete_tree(key_path: &str) -> Result<()> {
     if status == 0 || status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
         Ok(())
     } else {
-        bail!("Native host kayıt defteri anahtarı silinemedi (Windows hata kodu {status})")
+        bail!(
+            "{}",
+            ui_owned!(
+                format!(
+                    "Native host kayıt defteri anahtarı silinemedi (Windows hata kodu {status})"
+                ),
+                format!(
+                    "The native host registry key could not be deleted (Windows error code {status})"
+                )
+            )
+        )
     }
 }
 
@@ -1303,15 +1542,19 @@ pub fn register(executable: &Path, paths: &AppPaths) -> Result<()> {
     let _lock = crate::output::OutputLock::acquire(&manifest_root().join("registration"))?;
     let owned_root = installation_root(executable)?;
     let executable = executable.canonicalize().with_context(|| {
-        format!(
-            "Çalıştırılabilir dosya bulunamadı: {}",
-            executable.display()
+        ui_owned!(
+            format!(
+                "Çalıştırılabilir dosya bulunamadı: {}",
+                executable.display()
+            ),
+            format!("The executable was not found: {}", executable.display())
         )
     })?;
     // Browser launchers do not reliably accept Rust's extended-length Windows prefix.
-    let executable = executable
-        .to_str()
-        .context("Native host yolu geçerli Unicode değil")?;
+    let executable = executable.to_str().context(ui(
+        "Native host yolu geçerli Unicode değil",
+        "The native host path is not valid Unicode",
+    ))?;
     let executable = if let Some(path) = executable.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{path}")
     } else {
@@ -1321,7 +1564,10 @@ pub fn register(executable: &Path, paths: &AppPaths) -> Result<()> {
             .to_string()
     };
     let root = owned_root;
-    std::fs::create_dir_all(&root).context("Native Messaging klasörü oluşturulamadı")?;
+    std::fs::create_dir_all(&root).context(ui(
+        "Native Messaging klasörü oluşturulamadı",
+        "The Native Messaging folder could not be created",
+    ))?;
     let chromium_manifest = root.join(format!("{HOST_NAME}.chromium.json"));
     let chrome = serde_json::json!({
         "name": HOST_NAME,
@@ -1334,7 +1580,10 @@ pub fn register(executable: &Path, paths: &AppPaths) -> Result<()> {
             .collect::<Vec<_>>()
     });
     crate::recovery::atomic_write(&chromium_manifest, &serde_json::to_vec_pretty(&chrome)?)
-        .context("Chrome Native Messaging manifesti yazılamadı")?;
+        .context(ui(
+            "Chrome Native Messaging manifesti yazılamadı",
+            "The Chrome Native Messaging manifest could not be written",
+        ))?;
 
     crate::recovery::atomic_write(
         &root.join("profile.json"),
@@ -1352,7 +1601,13 @@ pub fn unregister(executable: &Path, paths: &AppPaths) -> Result<()> {
     let _lock = crate::output::OutputLock::acquire(&manifest_root().join("registration"))?;
     let root = installation_root(executable)?;
     if registered_profile(executable)?.is_some_and(|p| p != paths.base_dir) {
-        bail!("Bu kurulum farklı bir veri profili için kayıtlı; diğer profilin kaydı korunuyor")
+        bail!(
+            "{}",
+            ui(
+                "Bu kurulum farklı bir veri profili için kayıtlı; diğer profilin kaydı korunuyor",
+                "This installation is registered for a different data profile; the other profile's registration is kept"
+            )
+        )
     }
     let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
     let chromium_manifest = root.join(format!("{HOST_NAME}.chromium.json"));
@@ -1388,7 +1643,13 @@ pub fn registered_profile(executable: &Path) -> Result<Option<PathBuf>> {
     }
     let profile: PathBuf = serde_json::from_slice(&std::fs::read(path)?)?;
     if !profile.is_absolute() {
-        bail!("Native host profil yolu geçersiz")
+        bail!(
+            "{}",
+            ui(
+                "Native host profil yolu geçersiz",
+                "The native host profile path is invalid"
+            )
+        )
     }
     Ok(Some(profile))
 }

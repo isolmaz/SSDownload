@@ -2,6 +2,9 @@
 
 const api = globalThis.browser || chrome;
 const isPromiseApi = typeof globalThis.browser !== "undefined";
+// Every user-visible text goes through i18n.js (loaded first by service-worker.js); the
+// language is the desktop app's, learned from its capabilities reply.
+const { t } = SSDownloadI18n;
 const HOST = "com.ssdownload.desktop";
 const MAX_MEDIA_PER_TAB = 200;
 const REQUEST_CONTEXT_MAX_AGE = 120000;
@@ -27,7 +30,7 @@ const manifestTasks = new Map();
 const observationLimits = new Set();
 let manifestActive = 0;
 let detectionEnabled = true;
-let capabilityState = { status:"unknown", usageModes:null, sourceRefreshJobs:[], checkedAt:0, error:"Masaüstü özellikleri henüz doğrulanmadı." };
+let capabilityState = { status:"unknown", usageModes:null, sourceRefreshJobs:[], checkedAt:0, error:t("capabilitiesNotVerified") };
 let capabilityTask = null;
 // Signature of the last capability state broadcast to the tabs; a refresh that
 // computes the same signature changes nothing for them and is not re-broadcast.
@@ -82,8 +85,11 @@ function invoke(target, method, ...args) {
 
 // The toolbar action opens popup.html, where the global switch is flipped; the badge
 // and tooltip are the always-visible reading of that switch.
-const TOGGLE_ON = { text: "AÇIK", color: "#16803a", title: "SSDownload: açık — ayarlar için tıklayın" };
-const TOGGLE_OFF = { text: "KAPALI", color: "#5f6368", title: "SSDownload: kapalı — ayarlar için tıklayın" };
+function toggleState() {
+  return detectionEnabled
+    ? { text: t("stateOn"), color: "#16803a", title: t("actionTitleOn") }
+    : { text: t("stateOff"), color: "#5f6368", title: t("actionTitleOff") };
+}
 // Completed downloads since the popup was last opened; the badge shows the count.
 let pendingCompletions = 0, completedBaseline = null, lastHandoffAt = 0;
 const COMPLETION_POLL_WINDOW = 3 * 60 * 60 * 1000;
@@ -99,9 +105,10 @@ function noteHandoff() {
 }
 function actionState() {
   if (detectionEnabled && pendingCompletions > 0) {
-    return { text: String(Math.min(pendingCompletions, 99)), color: "#34c759", title: `SSDownload: ${pendingCompletions} indirme tamamlandı` };
+    return { text: String(Math.min(pendingCompletions, 99)), color: "#34c759",
+      title: pendingCompletions === 1 ? t("actionTitleOneCompleted") : t("actionTitleCompleted", pendingCompletions) };
   }
-  return detectionEnabled ? TOGGLE_ON : TOGGLE_OFF;
+  return toggleState();
 }
 function noteCompletedJobs(count) {
   if (!Number.isInteger(count) || count < 0) return;
@@ -230,7 +237,7 @@ function noteNativeReply(action, response) {
   }
   if ((action.type === "inspect" || action.type === "inspect_status") && response?.ok !== true) {
     logEvent("ext.inspect.fail", { level: "warn", outcome: "failed", code: replyCode(response) || "SSD-EXT-010",
-      host: urlHost(action.request?.url), detail: String(response?.message || "inceleme yanıtsız kaldı") });
+      host: urlHost(action.request?.url), detail: String(response?.message || t("logInspectNoReply")) });
   }
 }
 
@@ -244,6 +251,10 @@ async function loadPrivacySetting() {
 }
 let sessionError = null;
 const sessionReady = (async () => {
+  // The app's language the previous worker stored: everything below, and every worker
+  // text produced before the desktop answers, speaks it.
+  await SSDownloadI18n.load();
+  refreshLanguageBoundState();
   await loadPrivacySetting();
   const saved = await invoke(api.storage.session, "get", ["discovery", "downloadTickets", "browserLaunches", "completion"]);
   for (const [key, value] of (saved.downloadTickets || [])) if(validTicket(key,value))tickets.set(key,value);
@@ -265,7 +276,7 @@ const sessionReady = (async () => {
   // A later successful load clears an earlier failure: the flag reports the
   // session's current health, not the first problem it ever hit.
   () => { sessionError = null; },
-  () => { sessionError = "Geçici keşif belleği yüklenemedi; sayfayı yeniden tarayın."; }
+  () => { sessionError = t("sessionLoadFailed"); }
 );
 let sessionWrite = Promise.resolve();
 function boundedEntries(entries, budget) {
@@ -313,7 +324,7 @@ function writeSession() {
       // A later successful save clears an earlier failure so a transient storage
       // error does not stick to every status the worker reports.
       .then(() => { sessionError = null; })
-      .catch(() => { sessionError = "Geçici keşif belleği kaydedilemedi; arka plan işçisi kapanınca liste kaybolabilir."; });
+      .catch(() => { sessionError = t("sessionSaveFailed"); });
 }
 
 function safeUrl(value) {
@@ -360,11 +371,11 @@ function classify(url, type) {
   const mime = String(type || "").toLowerCase();
   if (technicalResource(url, mime)) return null;
   if (/\.(ts|m4s|cmfv|cmfa)$/.test(path) || /(?:^|[\/_-])(?:init|segment|frag(?:ment)?)[-_.0-9]*\.(mp4|m4v|m4a)$/.test(path) || mime === "video/mp2t") return null;
-  if (mime.includes("application/vnd.apple.mpegurl") || mime.includes("application/x-mpegurl") || /\.m3u8(?:$|[?#])/.test(url.toLowerCase())) return { kind: "hls", label: "HLS yayını" };
-  if (mime.includes("application/dash+xml") || /\.mpd(?:$|[?#])/.test(url.toLowerCase())) return { kind: "dash", label: "DASH yayını" };
-  if (mime.startsWith("video/") || /\.(mp4|m4v|webm|mov|mkv)(?:$|[?#])/.test(url.toLowerCase())) return { kind: "video", label: mime || "Video" };
-  if (mime.startsWith("audio/") || /\.(mp3|m4a|aac|ogg|opus|flac|wav)(?:$|[?#])/.test(url.toLowerCase())) return { kind: "audio", label: mime || "Ses" };
-  if (/\.(zip|rar|7z|pdf|exe|msi|iso|dmg|apk|epub|docx?|xlsx?|pptx?|csv|txt)$/.test(path) || /^(application\/(pdf|zip|x-7z-compressed|x-rar-compressed|octet-stream|vnd\.openxmlformats-officedocument.*))$/.test(mime)) return {kind:"file",label:"Dosya"};
+  if (mime.includes("application/vnd.apple.mpegurl") || mime.includes("application/x-mpegurl") || /\.m3u8(?:$|[?#])/.test(url.toLowerCase())) return { kind: "hls", label: t("kindHls") };
+  if (mime.includes("application/dash+xml") || /\.mpd(?:$|[?#])/.test(url.toLowerCase())) return { kind: "dash", label: t("kindDash") };
+  if (mime.startsWith("video/") || /\.(mp4|m4v|webm|mov|mkv)(?:$|[?#])/.test(url.toLowerCase())) return { kind: "video", label: mime || t("kindVideo") };
+  if (mime.startsWith("audio/") || /\.(mp3|m4a|aac|ogg|opus|flac|wav)(?:$|[?#])/.test(url.toLowerCase())) return { kind: "audio", label: mime || t("kindAudio") };
+  if (/\.(zip|rar|7z|pdf|exe|msi|iso|dmg|apk|epub|docx?|xlsx?|pptx?|csv|txt)$/.test(path) || /^(application\/(pdf|zip|x-7z-compressed|x-rar-compressed|octet-stream|vnd\.openxmlformats-officedocument.*))$/.test(mime)) return {kind:"file",label:t("kindFile")};
   return null;
 }
 
@@ -423,7 +434,7 @@ async function linkManifest(tabId, item, values) {
       try {
         for (;;) {
           const {done, value} = await reader.read(); if (done) break;
-          size += value.byteLength; if (size > 512 * 1024) throw new Error("Manifest sınırı");
+          size += value.byteLength; if (size > 512 * 1024) throw new Error("manifest size limit");
           text += decoder.decode(value, {stream:true});
         }
         text += decoder.decode();
@@ -497,7 +508,7 @@ function videoRecords(tabId) {
       const descriptiveFrameTitle=descriptiveTitle(frameTitle,frame.url);
       const onePlayer=frame.players.filter(p=>p.urls.length || p.active || p.played).length===1;
       const distinctPlayerTitle=player.title && player.title!==frameTitle && player.title!==frame.tabTitle && !/^(?:video|player|embed|master|index|manifest|stream|hls|dash)$/i.test(player.title.trim());
-      const title = player.explicitTitle ? player.title : onePlayer && descriptiveFrameTitle ? frameTitle : onePlayer ? (frame.tabTitle || player.title) : distinctPlayerTitle ? player.title : `Video ${player.id}`;
+      const title = player.explicitTitle ? player.title : onePlayer && descriptiveFrameTitle ? frameTitle : onePlayer ? (frame.tabTitle || player.title) : distinctPlayerTitle ? player.title : t("playerTitleFallback", player.id);
       const titleSource=player.explicitTitle?"element":onePlayer&&descriptiveFrameTitle?"frame":onePlayer&&frame.tabTitle?"tab":distinctPlayerTitle?"player":"generic";
       const videoId = `${frame.frameId}:${frame.documentId}:${player.id}`;
       const base={videoId,playerId:player.id,documentId:frame.documentId,title,titleSource,filename:title,thumbnail:player.poster,
@@ -509,7 +520,7 @@ function videoRecords(tabId) {
           result.push({...candidate,...base,videoId,candidateId:`${videoId}:candidate:${candidate.generation||candidate.url}`,
             downloadable:!blocked && candidate.downloadable===true,selectable:!blocked && candidate.downloadable===true,
             requiresConfirmation:true,ambiguous:true,associationUncertainty:"multiple-observed-roots",inferred:false,
-            note:blocked?`Oynatıcı sayfası HTTP ${frame.responseStatus} döndürdü.`:"Bu oynatıcıyla birden fazla yayın ilişkili olabilir; yalnız açık seçimle kullanın."});
+            note:blocked?t("noteBlockedPlayerPage",frame.responseStatus):t("noteAmbiguousStreams")});
         }
         continue;
       }
@@ -521,13 +532,13 @@ function videoRecords(tabId) {
         if(duplicate) { (duplicate.aliases ||= []).push(videoId); continue; }
         result.push({...chosen,...base,downloadable:true,selectable:true,requiresConfirmation:ad||preview,ambiguous:false,inferred,
           candidateId:ad?`${videoId}:candidate:${chosen.generation||chosen.url}`:undefined,
-          associationUncertainty:ad?"suspected-ad":null,note:ad?"Bağımsız reklam belirtileri taşıyor; yalnız açık seçimle kullanın.":""});
+          associationUncertainty:ad?"suspected-ad":null,note:ad?t("noteSuspectedAd"):""});
       // No network media was captured for this player (MSE/blob players such as YouTube serve
       // fragments that never appear as a resource request). The page address itself stays
       // usable: the application resolves it with its media engine, exactly like the
       // "download this page" context menu entry does.
       } else if (!preview) result.push({...base,url:frame.url,kind:"page",downloadable:!blockedFrame,selectable:!blockedFrame,ambiguous:false,inferred:false,
-        associationUncertainty:null,note:blockedFrame?`Oynatıcı sayfası HTTP ${frame.responseStatus} döndürdü; bu sayfadaki kaynak bölüm videosu olarak doğrulanamadı.`:"Oynatıcının akış isteği yakalanamadı; indirme, sayfa adresi uygulamada çözümlenerek yapılacak. Sonuç alınamazsa videoyu oynatıp Yenile'ye basın."});
+        associationUncertainty:null,note:blockedFrame?t("noteBlockedPlayerPageUnverified",frame.responseStatus):t("notePageCandidate")});
     }
     // A document may render its player without ever creating a media element: a JS
     // player mounted into a container, an embed iframe, a player library script. The
@@ -543,12 +554,12 @@ function videoRecords(tabId) {
     if (result.length === produced && signalled && !previewsOnly && !observedUrls.has(frame.url)) {
       const blocked = frame.responseStatus >= 400;
       const frameName = descriptiveTitle(frame.pageTitle, frame.url), tabName = descriptiveTitle(frame.tabTitle, frame.url);
-      const title = frameName || tabName || "Video";
+      const title = frameName || tabName || t("videoTitleFallback");
       result.push({videoId:`${frame.frameId}:${frame.documentId}:page`,playerId:null,documentId:frame.documentId,title,
         titleSource:frameName?"frame":tabName?"tab":"generic",filename:title,thumbnail:null,pageUrl:frame.url,frameId:frame.frameId,
         tracks:[],duration:null,adSignals:[],suspectedAd:false,played:false,active:false,preview:false,
         url:frame.url,kind:"page",downloadable:!blocked,selectable:!blocked,ambiguous:false,inferred:false,associationUncertainty:null,
-        note:blocked?`Oynatıcı sayfası HTTP ${frame.responseStatus} döndürdü; bu sayfadaki kaynak bölüm videosu olarak doğrulanamadı.`:"Oynatıcının akış isteği yakalanamadı; indirme, sayfa adresi uygulamada çözümlenerek yapılacak. Sonuç alınamazsa videoyu oynatıp Yenile'ye basın."});
+        note:blocked?t("noteBlockedPlayerPageUnverified",frame.responseStatus):t("notePageCandidate")});
     }
     // An embed address the document loads is its own resolvable page candidate: the
     // application opens it exactly like a player page. A discovered item that already
@@ -556,12 +567,12 @@ function videoRecords(tabId) {
     for (const embed of embeds) {
       if (observedUrls.has(embed.url)) continue;
       const host = safeUrl(embed.url)?.hostname || "";
-      const title = (embed.title || host || "Gömülü oynatıcı").slice(0,180);
+      const title = (embed.title || host || t("embedTitleFallback")).slice(0,180);
       result.push({videoId:`${frame.frameId}:${frame.documentId}:embed:${String(embed.url).slice(0,240)}`,playerId:null,documentId:frame.documentId,
         title,titleSource:embed.title?"element":"generic",filename:embed.title?title:"",thumbnail:null,pageUrl:frame.url,frameId:frame.frameId,
         tracks:[],duration:null,adSignals:[],suspectedAd:false,played:false,active:false,preview:false,
         url:embed.url,kind:"page",downloadable:true,selectable:true,ambiguous:false,inferred:false,associationUncertainty:null,
-        note:"Gömülü oynatıcı adresi uygulamada çözümlenerek indirilecek."});
+        note:t("noteEmbed")});
     }
   }
   for (const item of roots) {
@@ -809,12 +820,12 @@ api.webRequest.onHeadersReceived.addListener(async (details) => {
   if (technicalResource(details.url, mime) || ["init","segment"].includes(relatedRole(details.tabId,details.frameId,details.url))) return;
   if (details.statusCode < 200 || details.statusCode >= 300) return;
   const suggested = dispositionFilename(details.responseHeaders);
-  let classification = classify(details.url, mime) || (suggested && safeUrl(details.url) ? {kind:"file",label:"Dosya"} : null);
+  let classification = classify(details.url, mime) || (suggested && safeUrl(details.url) ? {kind:"file",label:t("kindFile")} : null);
   if(classification?.kind==="file" && mime==="application/octet-stream" && !suggested && !/\.(?:zip|rar|7z|exe|msi|iso|dmg|apk|pdf)(?:$|[?#])/i.test(details.url)) classification=null;
   if (!classification) {
     if (likelyDrmUrl(details.url)) {
       const current = tabStatus.get(details.tabId) || {};
-      tabStatus.set(details.tabId, { ...current, drmCue: "Sayfa bir lisans/DRM uç noktasına erişti. DRM korumalı içerik desteklenmez." });
+      tabStatus.set(details.tabId, { ...current, drmCue: t("drmCueLicense") });
       saveSession();
     }
     return;
@@ -867,26 +878,18 @@ function nativeErrorMessage(error) {
   const message = String(error && error.message ? error.message : error);
   // Chrome words a refused extension identity "Access to the specified native messaging host is
   // forbidden.", which contains the not-found wording below: it has to be recognised first.
-  if (/forbidden/i.test(message)) {
-    return "SSDownload yerel bağlantısı bu eklentiye izin vermiyor (eklenti kimliği izinli değil). SSDownload'ın sunduğu eklenti sürümünü kurun (Tarayıcı Kurulumu); ardından tarayıcıyı yeniden başlatın.";
-  }
-  if (APP_MISSING.test(message)) {
-    return "SSDownload uygulaması bu bilgisayarda bulunamadı. Eklenti, Windows için ücretsiz SSDownload uygulamasıyla çalışır: \"Uygulamayı indir\" ile kurun. Kuruluysa uygulamada Araçlar → Tarayıcı kurulumu'nu açın ve tarayıcıyı yeniden başlatın.";
-  }
-  if (/SSD-BRG-005/.test(message)) {
-    return "SSDownload çalışmıyor. Araç çubuğu penceresindeki \"Uygulamayı aç\" ile başlatın.";
-  }
-  if (/access.*denied/i.test(message)) {
-    return "SSDownload yerel bağlantısına erişim reddedildi. Uygulamayı ve tarayıcıyı aynı Windows kullanıcısıyla çalıştırın.";
-  }
-  return `SSDownload bağlantı hatası: ${message}`;
+  if (/forbidden/i.test(message)) return t("nativeForbidden");
+  if (APP_MISSING.test(message)) return t("nativeAppMissing");
+  if (/SSD-BRG-005/.test(message)) return t("nativeNotRunning");
+  if (/access.*denied/i.test(message)) return t("nativeAccessDenied");
+  return t("nativeConnectionError", message);
 }
 
 async function sendNative(action) {
   try {
     const request = action ? { version: 2, action } : { version: 2 };
     const response = await invoke(api.runtime, "sendNativeMessage", HOST, request);
-    if (!response || typeof response.ok !== "boolean") throw new Error("Yerel uygulama geçersiz yanıt verdi");
+    if (!response || typeof response.ok !== "boolean") throw new Error(t("nativeInvalidReply"));
     return response;
   } catch (error) {
     throw new Error(nativeErrorMessage(error));
@@ -936,7 +939,7 @@ function validateCapabilities(response) {
   const value=response?.result?.capabilities, modes=value?.usage_modes;
   if(!response || response.ok!==true || value?.protocol!==2 || value?.capability_version!==3
     || !modes || typeof modes.video!=="boolean" || typeof modes.file!=="boolean" || typeof modes.audio!=="boolean") {
-    throw new Error("Masaüstü uygulamasının özellik protokolü uyumsuz. SSDownload masaüstü uygulamasını güncelleyin.");
+    throw new Error(t("capabilityProtocolMismatch"));
   }
   // Authorized source refreshes are the only jobs the browser transfer may start;
   // the desktop lists them here and re-checks the identity on every start.
@@ -948,6 +951,27 @@ function validateCapabilities(response) {
     usageModes:{video:modes.video,file:modes.file,audio:modes.audio},
     sourceRefreshJobs,onboardingVersion:Number(value.onboarding_version)||0,settingsRevision:Number(value.settings_revision)||0,
     completedJobs:Number.isInteger(value.completed_jobs)?value.completed_jobs:null,checkedAt:Date.now(),error:null};
+}
+// The texts that were computed once and are kept (not rebuilt on every use) are the only
+// ones a language change has to refresh by hand.
+function refreshLanguageBoundState() {
+  if (capabilityState.status === "unknown") capabilityState.error = t("capabilitiesNotVerified");
+}
+// The desktop's language is the extension's: the capabilities reply carries it, the store
+// keeps it for the popup and the page tiles (which follow storage.onChanged), and the
+// worker's own surfaces - badge title and context menus - are redrawn here. An app that
+// predates the field keeps the last known language.
+function languageChanged() {
+  refreshLanguageBoundState();
+  applyActionState();
+  createMenus().catch(() => {});
+}
+function adoptAppLanguage(value) {
+  if (!SSDownloadI18n.LANGUAGES.includes(value)) return;
+  const before = SSDownloadI18n.language();
+  if (!SSDownloadI18n.setLanguage(value)) return;
+  invoke(api.storage.local, "set", { [SSDownloadI18n.STORAGE_KEY]: value }).catch(() => {});
+  if (SSDownloadI18n.language() !== before) languageChanged();
 }
 async function broadcastCapabilities() {
   if(!api.tabs?.query || !api.tabs?.sendMessage) return;
@@ -972,6 +996,7 @@ async function refreshCapabilities() {
       // names the real problem instead of reading as a protocol mismatch.
       if(response && response.ok===false) throw new Error(String(response.message||""));
       capabilityState=validateCapabilities(response);
+      adoptAppLanguage(response.result.capabilities.language);
       if (capabilityState.completedJobs !== null) noteCompletedJobs(capabilityState.completedJobs);
     } catch(error) {
       const raw=String(error?.message||error);
@@ -1069,9 +1094,9 @@ function hasSessionConsent(scopes, site, storeId) {
 async function currentCookieStore(tabId) {
   const tab = await invoke(api.tabs, "get", tabId);
   if (typeof tab?.cookieStoreId === "string" && tab.cookieStoreId) return tab.cookieStoreId;
-  if (typeof api.cookies?.getAllCookieStores !== "function") throw new Error("Bu Chrome sürümünde geçerli sekmenin çerez deposu doğrulanamıyor.");
+  if (typeof api.cookies?.getAllCookieStores !== "function") throw new Error(t("cookieStoreUnverifiable"));
   const matches = (await invoke(api.cookies, "getAllCookieStores")).filter(store => typeof store?.id === "string" && store.id && Array.isArray(store.tabIds) && store.tabIds.includes(tabId));
-  if (matches.length !== 1) throw new Error("Geçerli sekmenin çerez deposu tek olarak doğrulanamadı.");
+  if (matches.length !== 1) throw new Error(t("cookieStoreAmbiguous"));
   return matches[0].id;
 }
 function cookieTargets(item) {
@@ -1081,16 +1106,16 @@ function cookieTargets(item) {
     add(context?.url);
     for (const redirect of context?.redirects || []) add(redirect?.url);
   }
-  if (targets.length > 64) throw new Error("Seçili kaynak zinciri için çerez hedefi sınırı aşıldı.");
+  if (targets.length > 64) throw new Error(t("cookieTargetLimit"));
   return targets;
 }
 // Cookie consent is granted only through the explicit context-menu gesture and is
 // scoped to one site origin and one cookie store. Nothing is read by default.
 async function grantSessionConsent(tabId, pageUrl) {
   const site = siteOf(pageUrl);
-  if (!site) throw new Error("Oturum izni için geçerli bir sayfa adresi gerekli.");
+  if (!site) throw new Error(t("sessionGrantNeedsPage"));
   const granted = await invoke(api.permissions, "request", { permissions: ["cookies"] });
-  if (!granted?.granted && granted !== true) throw new Error("Çerez izni verilmedi; site oturumu kullanılamaz.");
+  if (!granted?.granted && granted !== true) throw new Error(t("cookiePermissionDenied"));
   const storeId = await currentCookieStore(tabId);
   const scopes = (await invoke(api.storage.local, "get", { sessionScopes: [] })).sessionScopes || [];
   const next = [...scopes.filter(scope => !(scope?.site === site && scope?.storeId === storeId)), { site, storeId, grantedAt: Date.now() }];
@@ -1100,7 +1125,7 @@ async function grantSessionConsent(tabId, pageUrl) {
 }
 async function revokeSessionConsent(tabId, pageUrl) {
   const site = siteOf(pageUrl) || siteOf((await invoke(api.tabs, "get", tabId))?.url);
-  if (!site) throw new Error("Oturum izni kaldırmak için geçerli bir sayfa adresi gerekli.");
+  if (!site) throw new Error(t("sessionRevokeNeedsPage"));
   const scopes = (await invoke(api.storage.local, "get", { sessionScopes: [] })).sessionScopes || [];
   await invoke(api.storage.local, "set", { sessionScopes: scopes.filter(scope => scope?.site !== site) });
   logEvent("ext.session.consent", { level: "info", outcome: "ok", host: new URL(site).hostname, detail: "revoked" });
@@ -1119,7 +1144,7 @@ async function sessionMetadata(tabId, item) {
   const referer = observed.referer || null;
   const page = safeUrl(item.pageUrl)?.href || null;
   if (item.requestContext?.observedAt && Date.now() - item.requestContext.observedAt > REQUEST_CONTEXT_MAX_AGE) {
-    const error = new Error("Kaynağın istek bağlamı eskidi. Videoyu yeniden oynatıp yeniden deneyin.");
+    const error = new Error(t("requestContextExpired"));
     error.code = "SSD-EXT-005";
     throw error;
   }
@@ -1132,7 +1157,7 @@ async function sessionMetadata(tabId, item) {
   try {
     granted = await invoke(api.permissions, "contains", { permissions: ["cookies"] });
   } catch (_) {
-    const error = new Error("Site oturum izni sorgulanamadı. Tarayıcıyı yeniden başlatıp izni bu sekmede yeniden verin.");
+    const error = new Error(t("sessionPermissionQueryFailed"));
     error.code = "SSD-EXT-001";
     throw error;
   }
@@ -1141,15 +1166,15 @@ async function sessionMetadata(tabId, item) {
   if (!Array.isArray(scopes) || !scopes.some(scope => scope?.site === site)) return { headers, referer };
   const storeId = await currentCookieStore(tabId);
   if (!hasSessionConsent(scopes, site, storeId)) {
-    const error = new Error("Site oturum izni bu sekmenin çerez deposu için verilmiş değil. İzni bu sekmede yeniden verin.");
+    const error = new Error(t("sessionPermissionWrongStore"));
     error.code = "SSD-EXT-001";
     throw error;
   }
-  if (typeof api.cookies?.getPartitionKey !== "function") throw new Error("Bu Chrome sürümünde bölümlenmiş oturum kapsamı doğrulanamıyor. Tarayıcıyı güncelleyin veya site oturumu iznini kaldırın.");
+  if (typeof api.cookies?.getPartitionKey !== "function") throw new Error(t("partitionedScopeUnverifiable"));
   const partitionResult = await invoke(api.cookies, "getPartitionKey", { tabId, frameId: Number.isInteger(item.frameId) ? item.frameId : 0 });
   const partition = partitionResult?.partitionKey || partitionResult;
   const partitionKey = partitionSite(partition);
-  if (!partitionKey) throw new Error("Bu Chrome bölümünün oturum kapsamı güvenle aktarılamıyor.");
+  if (!partitionKey) throw new Error(t("partitionScopeUntransferable"));
   const cookies = new Map();
   for (const target of cookieTargets(item)) {
     const ordinary = await invoke(api.cookies, "getAll", { url: target, storeId });
@@ -1161,7 +1186,7 @@ async function sessionMetadata(tabId, item) {
         http_only: Boolean(cookie.httpOnly), host_only: Boolean(cookie.hostOnly), expires: cookie.expirationDate || null,
         store_id: storeId, partition_key: cookie.partitionKey ? partitionKey : null };
       cookies.set(JSON.stringify([value.name, value.domain, value.path, value.partition_key]), value);
-      if (cookies.size > 500) throw new Error("Seçili kaynak zincirinin çerez sınırı aşıldı.");
+      if (cookies.size > 500) throw new Error(t("cookieLimit"));
     }
   }
   return { headers, referer, session_cookies: [...cookies.values()] };
@@ -1190,10 +1215,10 @@ async function mediaRequest(tabId, item, session, kind, pageHtml) {
 // the user acted on, or an explicitly chosen candidate, reaches this function.
 async function openMediaPicker(tabId, item, frameId, requestedKind) {
   noteHandoff();
-  if (!detectionEnabled) throw new Error("SSDownload kapalı. Açmak için araç çubuğundaki simgeye tıklayın.");
+  if (!detectionEnabled) throw new Error(t("extensionOff"));
   await refreshCapabilities();
   const kind = requestedKind === "audio" || item.kind === "audio" ? "audio" : "video";
-  if (!modeAllows(kind)) throw new Error(capabilityState.error || (kind === "audio" ? "Ses kullanım modu kapalı." : "Video kullanım modu kapalı."));
+  if (!modeAllows(kind)) throw new Error(capabilityState.error || (kind === "audio" ? t("audioModeOff") : t("videoModeOff")));
   const source = publicSource(tabId, item);
   const frame = Number.isInteger(frameId) ? frameId : (Number.isInteger(source.frameId) ? source.frameId : 0);
   const session = await sessionMetadata(tabId, source);
@@ -1201,7 +1226,7 @@ async function openMediaPicker(tabId, item, frameId, requestedKind) {
   const launch_id = launchIdFor(tabId, source, frame);
   try {
     const response = await sendNative({ type: "browser_media", launch_id, session_consent: Boolean(session.session_cookies?.length), request });
-    if (!response.ok) throw new Error(String(response.message || "") || "Masaüstü indirme penceresi açılamadı.");
+    if (!response.ok) throw new Error(String(response.message || "") || t("pickerOpenFailed"));
     logEvent("ext.media.open", { level: "info", outcome: "ok", host: urlHost(source.url) });
     return response;
   } catch (error) {
@@ -1250,13 +1275,13 @@ function relayFrameContext(tabId, job) {
     const wanted = safeUrl(job.pageUrl)?.href || null;
     const frames = Array.isArray(list) ? list : [];
     const match = (wanted ? frames.find(frame => frame.url === wanted) : null) || frames.find(frame => frame.frameId === 0);
-    if (!match || typeof match.documentId !== "string" || !match.documentId) throw new Error("Aktarım için kaynak sekmesi ve belgesi bulunamadı. İndirilecek sayfayı bu sekmede açıp yeniden deneyin.");
+    if (!match || typeof match.documentId !== "string" || !match.documentId) throw new Error(t("relayTargetNotFound"));
     return { jobId: job.id, tabId, frameId: match.frameId, documentId: match.documentId, restart: false };
   });
 }
 async function startRelayForJob(tabId, job, restart) {
   const control = globalThis.SSDownloadRelayControl;
-  if (!control?.start) throw new Error("Tarayıcı aktarımı bu eklenti sürümünde kullanılamıyor.");
+  if (!control?.start) throw new Error(t("relayUnavailable"));
   const context = await relayFrameContext(tabId, job);
   const result = await control.start({ ...context, restart: restart === true });
   logEvent("ext.relay.start", { level: "info", outcome: "ok", host: urlHost(job.pageUrl), detail: restart ? "restart" : "start" });
@@ -1273,8 +1298,8 @@ const candidateMenus = new Map(), relayMenus = new Map();
 const CANDIDATE_MENU_GROUP = 24;
 let menuTask = null, menuSignature = null;
 function menuCandidateLabel(item) {
-  const title = String(item.title || item.filename || urlHost(item.url) || "Kaynak").slice(0, 60);
-  const flags = [item.preview ? "önizleme" : null, item.suspectedAd ? "reklam şüphesi" : null, item.ambiguous ? "belirsiz" : null].filter(Boolean).join(", ");
+  const title = String(item.title || item.filename || urlHost(item.url) || t("candidateFallbackTitle")).slice(0, 60);
+  const flags = [item.preview ? t("candidateFlagPreview") : null, item.suspectedAd ? t("candidateFlagSuspectedAd") : null, item.ambiguous ? t("candidateFlagAmbiguous") : null].filter(Boolean).join(", ");
   return flags ? `${title} · ${flags}` : title;
 }
 async function activeTabId() {
@@ -1291,7 +1316,7 @@ async function createMenus() {
   const selectable = active === null ? [] : selectableRecords(active).slice(0, MAX_MEDIA_PER_TAB);
   const candidates = selectable.map(item => publicSource(active, item));
   const relays = capabilityState.status==="ready" ? (capabilityState.sourceRefreshJobs||[]) : [];
-  const signature=JSON.stringify([capabilityState.status,capabilityState.usageModes,capabilityState.siteEntries===true,detectionEnabled,active,selectable.length,
+  const signature=JSON.stringify([SSDownloadI18n.language(),capabilityState.status,capabilityState.usageModes,capabilityState.siteEntries===true,detectionEnabled,active,selectable.length,
     candidates.map(item=>[item.candidateId||item.videoId||item.url,item.title||"",item.kind]),
     relays.map(job=>[job.id,job.title,job.pageUrl])]);
   if(signature===menuSignature)return;
@@ -1299,19 +1324,19 @@ async function createMenus() {
   await invoke(api.contextMenus, "removeAll");
   candidateMenus.clear();relayMenus.clear();
   const entries = [];
-  if(modeAllows("file")) entries.push({ id:"ssdownload-link",title:"Bağlantıyı SSDownload ile indir",contexts:["link"] });
+  if(modeAllows("file")) entries.push({ id:"ssdownload-link",title:t("menuDownloadLink"),contexts:["link"] });
   if(modeAllows("video")) {
-    entries.push({id:"ssdownload-video",title:"Videoyu SSDownload ile indir",contexts:["video"]});
+    entries.push({id:"ssdownload-video",title:t("menuDownloadVideo"),contexts:["video"]});
     // The page's own entry is the desktop's privilege, never an extension default: a
     // desktop that does not offer site entries never sees the item registered at all.
-    if(capabilityState.siteEntries===true) entries.push({id:"ssdownload-page",title:"Sayfayı SSDownload ile indir",contexts:["page"]});
+    if(capabilityState.siteEntries===true) entries.push({id:"ssdownload-page",title:t("menuDownloadPage"),contexts:["page"]});
   }
-  if(modeAllows("audio")) entries.push({id:"ssdownload-audio",title:"Sesi SSDownload ile indir",contexts:["audio"]});
-  if(modeAllows("media")) entries.push({id:"ssdownload-media",title:"İndirme penceresini aç…",contexts:["page","video","audio"]});
+  if(modeAllows("audio")) entries.push({id:"ssdownload-audio",title:t("menuDownloadAudio"),contexts:["audio"]});
+  if(modeAllows("media")) entries.push({id:"ssdownload-media",title:t("menuOpenPicker"),contexts:["page","video","audio"]});
   if(candidates.length && active !== null) {
     candidateMenus.set(active, candidates);
     const contexts = ["page","video","audio"];
-    entries.push({id:"ssdownload-candidates",title:`Kaynak seç (${candidates.length})…`,contexts});
+    entries.push({id:"ssdownload-candidates",title:t("menuChooseSource",candidates.length),contexts});
     candidates.forEach((item,index)=>{
       if(index && index % CANDIDATE_MENU_GROUP === 0) entries.push({id:`ssdownload-candidate-sep:${index}`,parentId:"ssdownload-candidates",type:"separator",contexts});
       entries.push({id:`ssdownload-candidate:${index}`,parentId:"ssdownload-candidates",title:`${index+1}. ${menuCandidateLabel(item)}`,contexts});
@@ -1320,15 +1345,15 @@ async function createMenus() {
   if(relays.length && active !== null) {
     relayMenus.set(active, relays);
     const contexts = ["page","video","audio","link"];
-    entries.push({id:"ssdownload-relay",title:"Tarayıcı aktarımı (kaynak yenileme)…",contexts});
+    entries.push({id:"ssdownload-relay",title:t("menuBrowserTransfer"),contexts});
     relays.forEach((job,index)=>{
       entries.push({id:`ssdownload-relay:${index}`,parentId:"ssdownload-relay",title:job.title||job.id,contexts});
-      entries.push({id:`ssdownload-relay-restart:${index}`,parentId:"ssdownload-relay",title:`${job.title||job.id} · yeniden başlat`,contexts});
+      entries.push({id:`ssdownload-relay-restart:${index}`,parentId:"ssdownload-relay",title:t("menuRelayRestart",job.title||job.id),contexts});
     });
   }
-  entries.push({id:"ssdownload-session-grant",title:"Bu site için oturum çerezlerine izin ver",contexts:["page","video","audio","link"]});
-  entries.push({id:"ssdownload-session-revoke",title:"Site oturum iznini kaldır",contexts:["page","video","audio","link"]});
-  entries.push({id:"ssdownload-app",title:"SSDownload uygulamasını aç",contexts:["page","video","audio","link"]});
+  entries.push({id:"ssdownload-session-grant",title:t("menuSessionGrant"),contexts:["page","video","audio","link"]});
+  entries.push({id:"ssdownload-session-revoke",title:t("menuSessionRevoke"),contexts:["page","video","audio","link"]});
+  entries.push({id:"ssdownload-app",title:t("menuOpenApp"),contexts:["page","video","audio","link"]});
   for (const entry of entries) {
     try {
       api.contextMenus.create(entry, () => { if (api.runtime.lastError) menuSignature = null; });
@@ -1361,12 +1386,12 @@ async function runGuarded(tabId, purpose, task, host) {
     await sessionReady;
     // The switch gates every submission, not just page discovery; the toolbar
     // icon is the only place to turn it back on.
-    if (!detectionEnabled) throw new Error("SSDownload kapalı. Açmak için araç çubuğundaki simgeye tıklayın.");
+    if (!detectionEnabled) throw new Error(t("extensionOff"));
     await refreshCapabilities();
-    if(!modeAllows(purpose)) throw new Error(capabilityState.error || "Bu kullanım modu masaüstü ayarlarında kapalı.");
+    if(!modeAllows(purpose)) throw new Error(capabilityState.error || t("usageModeOffInDesktop"));
     const response = await task();
-    if (response && response.ok === false) throw new Error(response.message || "İşlem tamamlanamadı.");
-    tabStatus.set(tabId, { message: response?.message || (response?.duplicate ? "Bu indirme zaten kuyruğa eklendi." : null), error: false });
+    if (response && response.ok === false) throw new Error(response.message || t("operationFailed"));
+    tabStatus.set(tabId, { message: response?.message || (response?.duplicate ? t("alreadyQueued") : null), error: false });
     logEvent("ext.menu.submit", { level: "info", outcome: "ok", host, detail: purpose });
     return response;
   } catch (error) {
@@ -1385,15 +1410,15 @@ function selectableRecords(tabId) {
 // candidate submenu instead of silently taking the first entry.
 function mediaCandidate(tabId, info, tab, kind) {
   const target = safeUrl(info.linkUrl || info.srcUrl || info.pageUrl || tab?.url)?.href || null;
-  if (!target) throw new Error("Burada indirilebilir bir kaynak bulunamadı.");
+  if (!target) throw new Error(t("noSourceHere"));
   const records = selectableRecords(tabId);
   const exact = records.find(item => item.url === target);
   if (exact) return exact;
   const audioOnly = kind === "audio" ? records.filter(item => item.kind === "audio" || (item.tracks || []).some(track => track.kind === "audio")) : records;
   const usable = audioOnly.length ? audioOnly : records;
   if (usable.length === 1) return usable[0];
-  if (!usable.length) throw new Error("Bu sayfada indirilebilir kaynak bulunamadı. Videoyu oynatıp yeniden deneyin.");
-  throw new Error("Bu sayfada birden fazla kaynak var. Sağ tıklayıp Kaynak seç menüsünden indirilecek kaynağı seçin.");
+  if (!usable.length) throw new Error(t("noSourceOnPage"));
+  throw new Error(t("multipleSourcesOnPage"));
 }
 // The toolbar icon opens popup.html; detection is switched there.
 if (api.alarms?.create) {
@@ -1434,7 +1459,7 @@ api.contextMenus.onClicked.addListener((info, tab) => {
   const target = info.linkUrl || info.srcUrl || pageUrl;
   if (menuId.startsWith("ssdownload-candidate:")) {
     const chosen = candidateMenus.get(tabId)?.[Number(menuId.slice("ssdownload-candidate:".length))];
-    if (!chosen) { notifyTab(tabId, "Kaynak listesi yenilendi. Menüyü yeniden açın.", true); return; }
+    if (!chosen) { notifyTab(tabId, t("candidateListRefreshed"), true); return; }
     const chosenKind = chosen.kind === "audio" ? "audio" : "video";
     runGuarded(tabId, chosenKind, () => openMediaPicker(tabId, { ...chosen, confirmed: true }, chosen.frameId, chosenKind), urlHost(chosen.url)).catch(() => {});
     return;
@@ -1443,16 +1468,16 @@ api.contextMenus.onClicked.addListener((info, tab) => {
     const restart = menuId.startsWith("ssdownload-relay-restart:");
     const index = Number(menuId.slice((restart ? "ssdownload-relay-restart:" : "ssdownload-relay:").length));
     const job = relayMenus.get(tabId)?.[index];
-    if (!job) { notifyTab(tabId, "Kaynak yenileme listesi yenilendi. Menüyü yeniden açın.", true); return; }
+    if (!job) { notifyTab(tabId, t("relayListRefreshed"), true); return; }
     runGuarded(tabId, "relay", () => startRelayForJob(tabId, job, restart), urlHost(job.pageUrl)).catch(() => {});
     return;
   }
   if (menuId === "ssdownload-session-grant") {
-    grantSessionConsent(tabId, pageUrl || target).then(result => notifyTab(tabId, `${result.site} için oturum çerezleri bu indirmede kullanılabilir.`)).catch(error => notifyTab(tabId, error.message, true));
+    grantSessionConsent(tabId, pageUrl || target).then(result => notifyTab(tabId, t("sessionGranted", result.site))).catch(error => notifyTab(tabId, error.message, true));
     return;
   }
   if (menuId === "ssdownload-session-revoke") {
-    revokeSessionConsent(tabId, pageUrl || target).then(result => notifyTab(tabId, `${result.site} için site oturum izni kaldırıldı.`)).catch(error => notifyTab(tabId, error.message, true));
+    revokeSessionConsent(tabId, pageUrl || target).then(result => notifyTab(tabId, t("sessionRevoked", result.site))).catch(error => notifyTab(tabId, error.message, true));
     return;
   }
   if (menuId === "ssdownload-app") {
@@ -1490,7 +1515,7 @@ async function handleContentMessage(message, sender) {
       siteEntries:capabilityState.siteEntries===true,observerToken,error:capabilityState.error};
   }
   if (!detectionEnabled) {
-    if (message.event === "download-video" || message.event === "download-page") throw new Error("SSDownload kapalı. Açmak için araç çubuğundaki simgeye tıklayın.");
+    if (message.event === "download-video" || message.event === "download-page") throw new Error(t("extensionOff"));
     return;
   }
   if (Array.isArray(message.players)) {
@@ -1515,7 +1540,7 @@ async function handleContentMessage(message, sender) {
       });
       const signals=Array.isArray(p.adSignals)?[...new Set(p.adSignals.filter(value=>allowedAdSignals.has(value)))]:Array.from({length:Math.min(3,Number(p.adSignals)||0)},(_,index)=>`legacy-${index}`);
       const duration=Number(p.duration);
-      return {id,title:String(p.title || sender.tab.title || "Video").slice(0,180),
+      return {id,title:String(p.title || sender.tab.title || t("videoTitleFallback")).slice(0,180),
         urls:(p.urls || []).filter(u => typeof u === "string" && u.length <= 16384 && (u.startsWith("blob:") || !!safeUrl(u))).slice(0,20), poster:safeUrl(p.poster)?.href || null,
         explicitTitle:p.explicitTitle === true, titleSource:p.titleSource==="element"?"element":"page", visible:p.visible!==false, played:p.played===true,
         active:p.active === true, adSignals:signals.slice(0,6),tracks,duration:Number.isFinite(duration)&&duration>=0&&duration<=604800?duration:null,
@@ -1580,7 +1605,7 @@ async function handleContentMessage(message, sender) {
   if (message.event === "play") playTimes.set(tabId, Date.now());
   if (message.event === "drm") {
     const current = tabStatus.get(tabId) || {};
-    tabStatus.set(tabId, { ...current, drmCue: "Sayfa Encrypted Media Extensions kullandı. DRM korumalı akış SSDownload tarafından desteklenmez." });
+    tabStatus.set(tabId, { ...current, drmCue: t("drmCueEme") });
   }
   saveSession();
   if (Array.isArray(message.sources)) {
@@ -1600,19 +1625,19 @@ async function handleContentMessage(message, sender) {
         record(tabId, {
           url: sourceUrl,
           kind: source.kind,
-          label: source.kind === "webrtc" ? "WebRTC canlı akışı" : "Tarayıcı blob/MSE kaynağı",
+          label: source.kind === "webrtc" ? t("kindWebrtc") : t("kindBlob"),
           contentType: String(source.contentType || ""),
           filename: "",
           source: "page",
           ...sourceIdentity,
           pageUrl,
           downloadable: false,
-          note: source.kind === "webrtc" ? "WebRTC doğrudan indirilemez." : "Blob adresi doğrudan indirilemez; sayfayı analiz edin.",
+          note: source.kind === "webrtc" ? t("noteWebrtc") : t("noteBlob"),
           drmHint: false
         });
         continue;
       }
-      const classification = classify(sourceUrl, source.contentType) || (source.kind === "file" && safeUrl(sourceUrl) ? {kind:"file",label:"Dosya"} : null);
+      const classification = classify(sourceUrl, source.contentType) || (source.kind === "file" && safeUrl(sourceUrl) ? {kind:"file",label:t("kindFile")} : null);
       if (classification) {
         const observed=observedSourceContext(tabId, sender, sourceUrl, pageUrl || safeUrl(sender.url)?.href);
         const playerOwnsSource=!!sourcePlayer && sourcePlayer.urls.includes(sourceUrl);
@@ -1637,12 +1662,12 @@ async function handleContentMessage(message, sender) {
     const mediaKind=message.mediaKind==="audio"?"audio":"video";
     await refreshCapabilities();
     if(!modeAllows(mediaKind)) {
-      throw new Error(capabilityState.error||`${mediaKind==="audio"?"Ses":"Video"} kullanım modu kapalı.`);
+      throw new Error(capabilityState.error||(mediaKind==="audio"?t("audioModeOff"):t("videoModeOff")));
     }
     const frameId = sender.frameId || 0;
     const frame = frames.get(`${tabId}\n${frameId}`);
     const player=frame?.players.find(value=>value.id===String(message.playerId||""));
-    if(!player) throw new Error("Bu oynatıcı artık sayfada bulunamadı. Videoyu oynatıp yeniden deneyin.");
+    if(!player) throw new Error(t("playerGone"));
     // videoRecords already resolved this frame's players against their own document: it
     // keeps every record in the frame/document it was observed in, follows manifest
     // ancestry, infers the single manifest of a lone blob player and falls back to that
@@ -1657,11 +1682,11 @@ async function handleContentMessage(message, sender) {
     const item = own.length === 1 && own[0].downloadable === true
       && !own[0].ambiguous && !own[0].suspectedAd && !own[0].preview ? own[0] : null;
     if (!item) {
-      if (own.some(value => value.ambiguous)) throw new Error("Bu oynatıcıyla birden fazla yayın ilişkili. Sağ tıklayıp Kaynak seç menüsünden indirilecek kaynağı seçin.");
-      if (own.some(value => value.suspectedAd || value.preview)) throw new Error("Bu oynatıcı bir reklam veya önizleme olabilir; yalnız sağ tıklayıp Kaynak seç menüsünden indirilebilir.");
+      if (own.some(value => value.ambiguous)) throw new Error(t("playerAmbiguous"));
+      if (own.some(value => value.suspectedAd || value.preview)) throw new Error(t("playerAdOrPreview"));
       const blocked = own.find(value => value.downloadable !== true && value.note);
       if (blocked) throw new Error(blocked.note);
-      throw new Error("Bu oynatıcı için indirilebilir kaynak bulunamadı. Videoyu oynatıp yeniden deneyin.");
+      throw new Error(t("playerNoSource"));
     }
     // The requested kind travels with the handoff: without it the picker would open a
     // video request for the audio affordance of the same player.
@@ -1673,16 +1698,16 @@ async function handleContentMessage(message, sender) {
     const mediaKind="video";
     await refreshCapabilities();
     if(!modeAllows(mediaKind)) {
-      throw new Error(capabilityState.error||"Video kullanım modu kapalı.");
+      throw new Error(capabilityState.error||t("videoModeOff"));
     }
     // A content script that still holds the old markup after a refresh is not an offer the
     // desktop made: the page handoff exists only while the capability says so.
     if(capabilityState.siteEntries!==true) {
-      throw new Error("Sayfa düzeyi indirme masaüstü ayarlarında kapalı.");
+      throw new Error(t("pageDownloadOff"));
     }
     const frameId = sender.frameId || 0;
     const frame = frames.get(`${tabId}\n${frameId}`);
-    if (!frame) throw new Error("Bu sayfa artık izlenmiyor. Sayfayı yenileyip yeniden deneyin.");
+    if (!frame) throw new Error(t("pageNotTracked"));
     // The gesture names the document itself, so only this frame's own page candidate
     // qualifies: another frame's address, another player's stream and an inferred blob
     // relation are never substituted for it. A document discovery never confirmed a player
@@ -1690,8 +1715,8 @@ async function handleContentMessage(message, sender) {
     // record, and its refusal states what discovery knows instead of handing the page
     // address over as if it were the film.
     const page=videoRecords(tabId).find(item=>item.playerId===null && item.kind==="page" && item.frameId===frameId && item.url===frame.url);
-    if (!page) throw new Error("Bu sayfada oynatıcıya ait bir kaynak doğrulanamadı. Videoyu oynatıp yeniden deneyin.");
-    if (page.downloadable !== true) throw new Error(page.note || "Bu sayfa indirilebilir bir kaynak olarak doğrulanamadı.");
+    if (!page) throw new Error(t("pageNoVerifiedSource"));
+    if (page.downloadable !== true) throw new Error(page.note || t("pageNotDownloadable"));
     const response = await openMediaPicker(tabId, page, frameId, mediaKind);
     tabStatus.set(tabId, { message: null, error: false });
     return { ok: true, request_id: response?.result?.request_id || null };
@@ -1775,9 +1800,9 @@ async function handlePopupMessage(message) {
     }
     case "open-media": {
       const tab = await popupTab();
-      if (!tab) throw new Error("Etkin sekme bulunamadı.");
+      if (!tab) throw new Error(t("popupNoActiveTab"));
       const item = selectableRecords(tab.id).slice(0, MAX_MEDIA_PER_TAB)[Number(message.index)];
-      if (!item) throw new Error("Kaynak listesi yenilendi. Pencereyi yeniden açın.");
+      if (!item) throw new Error(t("popupListRefreshed"));
       const chosen = publicSource(tab.id, item);
       const kind = chosen.kind === "audio" ? "audio" : "video";
       await runGuarded(tab.id, kind, () => openMediaPicker(tab.id, { ...chosen, confirmed: true }, chosen.frameId, kind), urlHost(chosen.url));
@@ -1785,21 +1810,21 @@ async function handlePopupMessage(message) {
     }
     case "open-app": {
       const response = await sendNative({ type: "show_window" });
-      if (!response.ok) throw new Error(String(response.message || "SSDownload açılamadı."));
+      if (!response.ok) throw new Error(String(response.message || t("popupAppOpenFailed")));
       return { ok: true };
     }
-    default: throw new Error("Bilinmeyen komut");
+    default: throw new Error(t("popupUnknownCommand"));
   }
 }
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if(message?.channel==="ssdownload-popup") {
-    if(!isPopupSender(sender)){sendResponse({error:"Geçersiz gönderici"});return true;}
+    if(!isPopupSender(sender)){sendResponse({error:t("popupInvalidSender")});return true;}
     handlePopupMessage(message).then(result=>sendResponse(result||{ok:true}),error=>sendResponse({error:String(error?.message||error)}));
     return true;
   }
   if(message?.channel==="ssdownload-content") {
-    if(!isExtensionContent(sender)){sendResponse({error:"Geçersiz içerik göndericisi"});return true;}
+    if(!isExtensionContent(sender)){sendResponse({error:t("popupInvalidContentSender")});return true;}
     handleContentMessage(message,sender).then(result=>sendResponse(result||{ok:true}),error=>sendResponse({error:String(error?.message||error)}));
     return true;
   }
@@ -1807,7 +1832,7 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ------------------------------------------------------- browser download takeover
-// Off unless the desktop enables "Tarayıcı indirmelerini devral" (capability
+// Off unless the desktop enables "Take over browser downloads" (capability
 // browser_takeover). An ordinary http(s) file download is paused, handed to the desktop
 // as a file job and erased from Chrome only after the desktop accepted it; a refusal or
 // an unreachable desktop resumes it in Chrome. Incognito, blob/data and extension-made

@@ -1,7 +1,14 @@
 #![windows_subsystem = "windows"]
 
 use anyhow::{bail, Context, Result};
-use ssdownload::{app::App, bridge, extension, gui, install, model::*, paths::AppPaths};
+use ssdownload::{
+    app::App,
+    bridge, extension, gui,
+    i18n::{self, ui},
+    install,
+    model::*,
+    paths::AppPaths,
+};
 use std::{
     io::{self, Write},
     path::PathBuf,
@@ -25,7 +32,8 @@ use windows_sys::Win32::{
     },
 };
 
-const HELP:&str="SSDownload — yerel Windows dosya/video/ses yöneticisi\n\nssdownload.exe                         Masaüstünü aç\n  --background                          Sistem tepsisinde başlat\n  --data-dir DIZIN                      Ayrı kullanıcı veri klasörü\n  --add URL                             Kuyruğa ekle\n    --kind auto|file|video|audio\n    --output DIZIN --name DOSYA\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id BENZERSIZ_KIMLIK\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle DIL --playlist --referer URL --start-at UNIX_VEYA_RFC3339\n  --request-json DOSYA                   AddRequest JSON ile ekle\n  --action-json DOSYA                    Eylem JSON'u çalıştır (ör. site taraması)\n  --inspect URL                          Video/ses bilgilerini JSON yaz\n  --status [--status-offset 0 --status-limit 100]   Sayfalı durum JSON\n  --diagnose [--diagnose-hours 24]      Olay günlüğü özeti JSON (site, kod, sonuç)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings DOSYA                   Settings JSON kaydet\n  --install-tools [--update-tools]       Doğrulanmış medya araçlarını kur\n  --browser-setup                        Tarayıcı kurulumunu aç\n  --remove-extension-policies            Eski tarayıcı eklenti politikasını kaldır\n  --register-host | --unregister-host    Native Messaging kaydı\n  --enable-autostart | --disable-autostart   Oturum açılışında başlatma\n  --quit                                 Etkin uygulamayı kapat\n  --debug                                Geliştirici modu (sihirbazı ve otomatik araç kurulumunu atlar)\n  --version | --help\n\nDRM desteklenmez. Ağ/oturum sınırları siteye bağlıdır.\n";
+const HELP_EN: &str = "SSDownload — native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n";
+const HELP_TR: &str = "SSDownload — yerel Windows dosya/video/ses yöneticisi\n\nssdownload.exe                         Masaüstünü aç\n  --background                          Sistem tepsisinde başlat\n  --data-dir DIZIN                      Ayrı kullanıcı veri klasörü\n  --add URL                             Kuyruğa ekle\n    --kind auto|file|video|audio\n    --output DIZIN --name DOSYA\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id BENZERSIZ_KIMLIK\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle DIL --playlist --referer URL --start-at UNIX_VEYA_RFC3339\n  --request-json DOSYA                   AddRequest JSON ile ekle\n  --action-json DOSYA                    Eylem JSON'u çalıştır (ör. site taraması)\n  --inspect URL                          Video/ses bilgilerini JSON yaz\n  --status [--status-offset 0 --status-limit 100]   Sayfalı durum JSON\n  --diagnose [--diagnose-hours 24]      Olay günlüğü özeti JSON (site, kod, sonuç)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings DOSYA                   Settings JSON kaydet\n  --install-tools [--update-tools]       Doğrulanmış medya araçlarını kur\n  --browser-setup                        Tarayıcı kurulumunu aç\n  --remove-extension-policies            Eski tarayıcı eklenti politikasını kaldır\n  --register-host | --unregister-host    Native Messaging kaydı\n  --enable-autostart | --disable-autostart   Oturum açılışında başlatma\n  --quit                                 Etkin uygulamayı kapat\n  --debug                                Geliştirici modu (sihirbazı ve otomatik araç kurulumunu atlar)\n  --version | --help\n\nDRM desteklenmez. Ağ/oturum sınırları siteye bağlıdır.\n";
 
 /// How long a second launch keeps trying to hand its request to the instance that already
 /// holds the single-instance mutex. That instance stays healthy while it loads its queue and
@@ -38,8 +46,21 @@ const INSTANCE_HANDOFF_MIN_SLEEP: Duration = Duration::from_millis(100);
 /// Backoff cap, so a busy instance is polled at a steady pace instead of spinning.
 const INSTANCE_HANDOFF_MAX_SLEEP: Duration = Duration::from_millis(500);
 
+/// The library keeps `i18n::ui_owned!` to itself, so the binary selects the same way: only the
+/// chosen branch is formatted.
+macro_rules! ui_owned {
+    ($tr:expr, $en:expr $(,)?) => {{
+        let text: String = if i18n::english() { $en } else { $tr };
+        text
+    }};
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The CLI and the native host never open the app, so they read the profile's language here,
+    // before anything is printed. Arguments that name no usable profile address the default one;
+    // a profile without settings follows the Windows language.
+    i18n::apply_profile_language(profile_dir(&args).ok().flatten().as_deref());
     let native = bridge::is_native_invocation(&args);
     let cli = native
         || args.iter().any(|arg| {
@@ -70,7 +91,10 @@ fn main() {
                 }
             }
         } else {
-            let text = wide(&format!("SSDownload başlatılamadı:\n\n{error:#}"));
+            let text = wide(&ui_owned!(
+                format!("SSDownload başlatılamadı:\n\n{error:#}"),
+                format!("SSDownload could not start:\n\n{error:#}")
+            ));
             unsafe {
                 MessageBoxW(
                     std::ptr::null_mut(),
@@ -90,7 +114,7 @@ fn run(args: &[String]) -> Result<()> {
         std::env::set_var("SSDOWNLOAD_DEBUG", "1");
     }
     if has(args, "--help") {
-        write_stdout(HELP)?;
+        write_stdout(ui(HELP_TR, HELP_EN))?;
         return Ok(());
     }
     if has(args, "--version") {
@@ -101,11 +125,7 @@ fn run(args: &[String]) -> Result<()> {
         ))?;
         return Ok(());
     }
-    let mut data_dir = value(args, "--data-dir")?.map(PathBuf::from);
-    if bridge::is_native_invocation(args) {
-        data_dir = bridge::registered_profile(&std::env::current_exe()?)?;
-    }
-    let paths = AppPaths::discover(data_dir.as_deref())?;
+    let paths = AppPaths::discover(profile_dir(args)?.as_deref())?;
     if bridge::is_native_invocation(args) {
         return bridge::native_host(&paths);
     }
@@ -119,7 +139,11 @@ fn run(args: &[String]) -> Result<()> {
         print_response(BridgeResponse {
             result: None,
             ok: true,
-            message: "Native Messaging kaydı tamamlandı.".into(),
+            message: ui(
+                "Native Messaging kaydı tamamlandı.",
+                "Native Messaging registration completed.",
+            )
+            .into(),
             snapshot: None,
         })?;
         return Ok(());
@@ -129,7 +153,11 @@ fn run(args: &[String]) -> Result<()> {
         print_response(BridgeResponse {
             result: None,
             ok: true,
-            message: "Native Messaging kaydı kaldırıldı.".into(),
+            message: ui(
+                "Native Messaging kaydı kaldırıldı.",
+                "Native Messaging registration removed.",
+            )
+            .into(),
             snapshot: None,
         })?;
         return Ok(());
@@ -149,8 +177,10 @@ fn run(args: &[String]) -> Result<()> {
     }
     if let Some(action) = parse_action(args)? {
         if matches!(action, Action::Quit) {
-            let response =
-                bridge::send(&paths, &action).context("Çalışan SSDownload örneği bulunamadı")?;
+            let response = bridge::send(&paths, &action).context(ui(
+                "Çalışan SSDownload örneği bulunamadı",
+                "No running SSDownload instance was found",
+            ))?;
             if response.ok {
                 wait_for_instance_exit(&paths)?;
             }
@@ -183,16 +213,28 @@ fn run(args: &[String]) -> Result<()> {
                     break;
                 }
                 if Instant::now() > deadline {
-                    bail!("İşlem arka planda sürüyor; --status ile izleyebilirsiniz. CLI bekleme süresi doldu.");
+                    bail!(
+                        "{}",
+                        ui(
+                            "İşlem arka planda sürüyor; --status ile izleyebilirsiniz. CLI bekleme süresi doldu.",
+                            "The operation is still running in the background; follow it with --status. The CLI wait time ran out."
+                        )
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(300));
                 let status_action = if wait_inspect {
                     Action::InspectStatus {
-                        request_id: inspect_id.clone().context("Kaynak istek kimliği eksik")?,
+                        request_id: inspect_id.clone().context(ui(
+                            "Kaynak istek kimliği eksik",
+                            "The source request ID is missing",
+                        ))?,
                     }
                 } else {
                     Action::ToolsStatus {
-                        request_id: tools_id.clone().context("Araç işlem kimliği eksik")?,
+                        request_id: tools_id.clone().context(ui(
+                            "Araç işlem kimliği eksik",
+                            "The tools operation ID is missing",
+                        ))?,
                     }
                 };
                 response = bridge::send(&paths, &status_action)?;
@@ -209,10 +251,9 @@ fn run(args: &[String]) -> Result<()> {
                 }
                 if wait_inspect && snapshot.media.is_none() {
                     response.ok = false;
-                    response.message = snapshot
-                        .inspect_error
-                        .clone()
-                        .unwrap_or_else(|| "Medya çözümlenemedi.".into());
+                    response.message = snapshot.inspect_error.clone().unwrap_or_else(|| {
+                        ui("Medya çözümlenemedi.", "The media could not be analyzed.").into()
+                    });
                 }
             }
         }
@@ -228,7 +269,10 @@ fn run(args: &[String]) -> Result<()> {
     ));
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr()) };
     if handle.is_null() {
-        return Err(std::io::Error::last_os_error()).context("Tek örnek kilidi oluşturulamadı");
+        return Err(std::io::Error::last_os_error()).context(ui(
+            "Tek örnek kilidi oluşturulamadı",
+            "The single-instance lock could not be created",
+        ));
     }
     let exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
     let _guard = InstanceGuard(handle);
@@ -276,18 +320,29 @@ fn run(args: &[String]) -> Result<()> {
                     );
                 }
             })
-            .context("Çalışan örneğe devir iş parçacığı başlatılamadı")?;
+            .context(ui(
+                "Çalışan örneğe devir iş parçacığı başlatılamadı",
+                "The handover thread to the running instance could not be started",
+            ))?;
         let pipe = match outcome.recv_timeout(INSTANCE_HANDOFF_TIMEOUT) {
             Ok(Handover::Accepted) => return Ok(()),
-            Ok(Handover::Unanswered { attempts, error }) if error.is_empty() => {
-                format!("yerel iletişim kanalı {attempts} kez denendi")
-            }
-            Ok(Handover::Unanswered { attempts, error }) => {
-                format!("yerel iletişim kanalı {attempts} kez denendi, son yanıt: {error}")
-            }
-            Err(_) => format!(
-                "yerel iletişim kanalı {} saniye boyunca yanıtsız kaldı",
-                INSTANCE_HANDOFF_TIMEOUT.as_secs()
+            Ok(Handover::Unanswered { attempts, error }) if error.is_empty() => ui_owned!(
+                format!("yerel iletişim kanalı {attempts} kez denendi"),
+                format!("the local channel was tried {attempts} times")
+            ),
+            Ok(Handover::Unanswered { attempts, error }) => ui_owned!(
+                format!("yerel iletişim kanalı {attempts} kez denendi, son yanıt: {error}"),
+                format!("the local channel was tried {attempts} times, last reply: {error}")
+            ),
+            Err(_) => ui_owned!(
+                format!(
+                    "yerel iletişim kanalı {} saniye boyunca yanıtsız kaldı",
+                    INSTANCE_HANDOFF_TIMEOUT.as_secs()
+                ),
+                format!(
+                    "the local channel did not answer for {} seconds",
+                    INSTANCE_HANDOFF_TIMEOUT.as_secs()
+                )
             ),
         };
         // Its main window proves the instance is up and merely busy, so the launch is handed
@@ -296,13 +351,23 @@ fn run(args: &[String]) -> Result<()> {
         if !background && raise_instance_window(&paths) {
             return Ok(());
         }
+        let window = if background {
+            ui(
+                "arka plan isteği için pencere yükseltilmez",
+                "the window is not raised for a background request",
+            )
+        } else {
+            ui(
+                "ana pencere de bulunamadı",
+                "the main window was not found either",
+            )
+        };
         bail!(
-            "SSDownload çalışıyor ancak yanıt vermiyor ({pipe}; {}).",
-            if background {
-                "arka plan isteği için pencere yükseltilmez"
-            } else {
-                "ana pencere de bulunamadı"
-            }
+            "{}",
+            ui_owned!(
+                format!("SSDownload çalışıyor ancak yanıt vermiyor ({pipe}; {window})."),
+                format!("SSDownload is running but not responding ({pipe}; {window}).")
+            )
         );
     }
     let app = App::open(paths)?;
@@ -312,17 +377,29 @@ fn run(args: &[String]) -> Result<()> {
     result
 }
 
+/// The profile directory this invocation addresses: the native host uses the profile its
+/// registration recorded, every other invocation `--data-dir`. `None` is the default profile.
+fn profile_dir(args: &[String]) -> Result<Option<PathBuf>> {
+    if bridge::is_native_invocation(args) {
+        return bridge::registered_profile(&std::env::current_exe()?);
+    }
+    Ok(value(args, "--data-dir")?.map(PathBuf::from))
+}
 fn parse_action(args: &[String]) -> Result<Option<Action>> {
     if let Some(file) = value(args, "--action-json")? {
-        let action: Action =
-            serde_json::from_slice(&std::fs::read(file).context("İşlem JSON dosyası okunamadı")?)
-                .context("Geçersiz işlem JSON'u")?;
+        let action: Action = serde_json::from_slice(&std::fs::read(file).context(ui(
+            "İşlem JSON dosyası okunamadı",
+            "The action JSON file could not be read",
+        ))?)
+        .context(ui("Geçersiz işlem JSON'u", "Invalid action JSON"))?;
         return Ok(Some(action));
     }
     if let Some(file) = value(args, "--request-json")? {
-        let request: AddRequest =
-            serde_json::from_slice(&std::fs::read(file).context("İstek JSON dosyası okunamadı")?)
-                .context("Geçersiz AddRequest JSON")?;
+        let request: AddRequest = serde_json::from_slice(&std::fs::read(file).context(ui(
+            "İstek JSON dosyası okunamadı",
+            "The request JSON file could not be read",
+        ))?)
+        .context(ui("Geçersiz AddRequest JSON", "Invalid AddRequest JSON"))?;
         return Ok(Some(Action::Add { request }));
     }
     if let Some(url) = value(args, "--add")? {
@@ -331,7 +408,13 @@ fn parse_action(args: &[String]) -> Result<Option<Action>> {
             "file" => DownloadKind::File,
             "video" => DownloadKind::Video,
             "audio" => DownloadKind::Audio,
-            _ => bail!("Tür auto/file/video/audio olmalı."),
+            _ => bail!(
+                "{}",
+                ui(
+                    "Tür auto/file/video/audio olmalı.",
+                    "The kind must be auto/file/video/audio."
+                )
+            ),
         };
         let start_at = if let Some(value) = value(args, "--start-at")? {
             Some(
@@ -340,7 +423,10 @@ fn parse_action(args: &[String]) -> Result<Option<Action>> {
                     .or_else(|_| {
                         chrono::DateTime::parse_from_rfc3339(value).map(|time| time.timestamp())
                     })
-                    .context("Başlangıç zamanı Unix saniyesi veya RFC3339 olmalı")?,
+                    .context(ui(
+                        "Başlangıç zamanı Unix saniyesi veya RFC3339 olmalı",
+                        "The start time must be Unix seconds or RFC3339",
+                    ))?,
             )
         } else {
             None
@@ -357,14 +443,20 @@ fn parse_action(args: &[String]) -> Result<Option<Action>> {
             max_height: value(args, "--max-height")?
                 .map(str::parse)
                 .transpose()
-                .context("Çözünürlük sayı olmalı")?,
+                .context(ui(
+                    "Çözünürlük sayı olmalı",
+                    "The resolution must be a number",
+                ))?,
             request_id: value(args, "--request-id")?.map(str::to_owned),
             subtitle_languages: values(args, "--subtitle")?,
             playlist: has(args, "--playlist"),
             connections: value(args, "--connections")?
                 .map(str::parse)
                 .transpose()
-                .context("Bağlantı sayısı sayı olmalı")?,
+                .context(ui(
+                    "Bağlantı sayısı sayı olmalı",
+                    "The connection count must be a number",
+                ))?,
             checksum: value(args, "--sha256")?.map(str::to_owned),
             start_at,
             ..Default::default()
@@ -449,7 +541,10 @@ fn ensure_running(paths: &AppPaths) -> Result<()> {
         .stderr(Stdio::null())
         .creation_flags(0x08000000)
         .spawn()
-        .context("SSDownload arka planda başlatılamadı")?;
+        .context(ui(
+            "SSDownload arka planda başlatılamadı",
+            "SSDownload could not be started in the background",
+        ))?;
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(20) {
         if let Ok(response) = bridge::send(paths, &Action::Status) {
@@ -459,7 +554,13 @@ fn ensure_running(paths: &AppPaths) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(150));
     }
-    bail!("SSDownload başlatıldı ancak yerel iletişim hazır olmadı.")
+    bail!(
+        "{}",
+        ui(
+            "SSDownload başlatıldı ancak yerel iletişim hazır olmadı.",
+            "SSDownload started but the local channel did not become ready."
+        )
+    )
 }
 fn wait_for_instance_exit(paths: &AppPaths) -> Result<()> {
     let name = wide(&format!(
@@ -477,13 +578,22 @@ fn wait_for_instance_exit(paths: &AppPaths) -> Result<()> {
             if unsafe { GetLastError() } == ERROR_FILE_NOT_FOUND {
                 return Ok(());
             }
-            return Err(std::io::Error::last_os_error()).context("Uygulamanın kapanışı izlenemedi");
+            return Err(std::io::Error::last_os_error()).context(ui(
+                "Uygulamanın kapanışı izlenemedi",
+                "The application's shutdown could not be monitored",
+            ));
         }
         unsafe {
             CloseHandle(handle);
         }
         if Instant::now() >= deadline {
-            bail!("Uygulama kapanıyor; çalışan indirmelerin durması bekleniyor.");
+            bail!(
+                "{}",
+                ui(
+                    "Uygulama kapanıyor; çalışan indirmelerin durması bekleniyor.",
+                    "The application is closing; waiting for the running downloads to stop."
+                )
+            );
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -559,19 +669,26 @@ fn write_stdout(text: &str) -> Result<()> {
     {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(error) => Err(error).context("Komut satırı çıktısı yazılamadı"),
+        Err(error) => Err(error).context(ui(
+            "Komut satırı çıktısı yazılamadı",
+            "The command-line output could not be written",
+        )),
     }
 }
 fn has(args: &[String], flag: &str) -> bool {
     args.iter().any(|arg| arg == flag)
 }
+fn missing_value(flag: &str) -> String {
+    ui_owned!(
+        format!("{flag} için değer eksik"),
+        format!("Missing value for {flag}")
+    )
+}
 fn value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>> {
     if let Some(index) = args.iter().position(|arg| arg == flag) {
-        let value = args
-            .get(index + 1)
-            .with_context(|| format!("{flag} için değer eksik"))?;
+        let value = args.get(index + 1).with_context(|| missing_value(flag))?;
         if value.starts_with("--") {
-            bail!("{flag} için değer eksik");
+            bail!("{}", missing_value(flag));
         }
         Ok(Some(value))
     } else {
@@ -582,11 +699,9 @@ fn values(args: &[String], flag: &str) -> Result<Vec<String>> {
     let mut result = Vec::new();
     for (index, arg) in args.iter().enumerate() {
         if arg == flag {
-            let value = args
-                .get(index + 1)
-                .with_context(|| format!("{flag} için değer eksik"))?;
+            let value = args.get(index + 1).with_context(|| missing_value(flag))?;
             if value.starts_with("--") {
-                bail!("{flag} için değer eksik");
+                bail!("{}", missing_value(flag));
             }
             result.push(value.clone());
         }
@@ -675,7 +790,13 @@ fn validate_arguments(args: &[String]) -> Result<()> {
             value(&args[position..], item)?;
             position += 2;
         } else {
-            bail!("Bilinmeyen seçenek: {item}. --help kullanın.");
+            bail!(
+                "{}",
+                ui_owned!(
+                    format!("Bilinmeyen seçenek: {item}. --help kullanın."),
+                    format!("Unknown option: {item}. Use --help.")
+                )
+            );
         }
     }
     // `--update-tools` accompanies `--install-tools`; on its own it is the command.
@@ -683,7 +804,13 @@ fn validate_arguments(args: &[String]) -> Result<()> {
         command_count += 1;
     }
     if command_count > 1 {
-        bail!("Bir çağrıda yalnızca bir işlem seçin.");
+        bail!(
+            "{}",
+            ui(
+                "Bir çağrıda yalnızca bir işlem seçin.",
+                "Choose only one operation per call."
+            )
+        );
     }
     Ok(())
 }
@@ -694,7 +821,7 @@ fn diagnose_from_log(args: &[String]) -> Result<()> {
     let hours: i64 = value(args, "--diagnose-hours")?
         .unwrap_or("24")
         .parse()
-        .context("Saat sayı olmalı")?;
+        .context(ui("Saat sayı olmalı", "Hours must be a number"))?;
     let summary = ssdownload::diagnose::summary(&paths, hours.clamp(1, 24 * 30))?;
     write_stdout(&format!("{}\n", serde_json::to_string_pretty(&summary)?))?;
     Ok(())

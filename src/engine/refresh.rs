@@ -130,11 +130,10 @@ pub(super) fn preserve_refresh_contract(previous: &AddRequest, next: &mut AddReq
 
 pub(super) fn refresh_output_path(job: &Job) -> Result<PathBuf> {
     match &job.work_dir {
-        Some(directory) => Ok(directory.join(
-            job.path
-                .file_name()
-                .context("Kaynak yenileme çıktı adı eksik")?,
-        )),
+        Some(directory) => Ok(directory.join(job.path.file_name().context(crate::i18n::ui(
+            "Kaynak yenileme çıktı adı eksik",
+            "The source refresh output name is missing",
+        ))?)),
         None => Ok(job.path.clone()),
     }
 }
@@ -196,12 +195,18 @@ pub(super) fn archive_refresh_artifacts(
         let archive_root = work
             .parent()
             .and_then(Path::parent)
-            .context("Kaynak yenileme arşiv klasörü bulunamadı")?
+            .context(crate::i18n::ui(
+                "Kaynak yenileme arşiv klasörü bulunamadı",
+                "The source refresh archive folder was not found",
+            ))?
             .join("refresh-archives")
             .join(&job.id);
         fs::create_dir_all(&archive_root)?;
         let saved = archive_root.join(archive_id);
-        fs::rename(work, &saved).context("Önceki çalışma verisi arşivlenemedi")?;
+        fs::rename(work, &saved).context(crate::i18n::ui(
+            "Önceki çalışma verisi arşivlenemedi",
+            "The previous work data could not be archived",
+        ))?;
         return Ok(Some(RefreshArchive {
             moves: vec![(work.clone(), saved)],
         }));
@@ -239,7 +244,10 @@ pub(super) fn archive_refresh_artifacts(
     }
     let archive_root = output
         .parent()
-        .context("Kaynak yenileme çıktı klasörü eksik")?
+        .context(crate::i18n::ui(
+            "Kaynak yenileme çıktı klasörü eksik",
+            "The source refresh output folder is missing",
+        ))?
         .join(".ssdownload-work")
         .join("refresh-archives")
         .join(&job.id)
@@ -250,7 +258,10 @@ pub(super) fn archive_refresh_artifacts(
         let saved = archive_root.join(format!("artifact-{index:03}"));
         if let Err(error) = fs::rename(&original, &saved) {
             let _ = restore_refresh_archive(&archive);
-            return Err(error).context("Önceki çalışma eseri arşivlenemedi");
+            return Err(error).context(crate::i18n::ui(
+                "Önceki çalışma eseri arşivlenemedi",
+                "The previous work artifact could not be archived",
+            ));
         }
         archive.moves.push((original, saved));
     }

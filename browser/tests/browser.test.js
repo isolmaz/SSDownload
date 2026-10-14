@@ -9,6 +9,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+const { i18nApi, loadI18n } = require("./i18n-harness");
 
 const extensionDir = path.resolve(__dirname, "..", "chromium");
 const source = (name) => fs.readFileSync(path.join(extensionDir, name), "utf8");
@@ -20,7 +21,7 @@ function event() {
 
 const nativeCapabilities={ok:true,result:{capabilities:{protocol:2,capability_version:3,site_entries:true,usage_modes:{video:true,file:true,audio:true},onboarding_version:1,settings_revision:1,source_refresh_jobs:[]}}};
 
-function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map() } = {}) {
+function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map(), browserLanguage = "tr" } = {}) {
   const events = {
     headers: event(), beforeHeaders: event(), removed: event(), updated: event(), installed: event(), startup: event(),
     menu: event(), message: event(), activated: event(), alarm: event(), download: event(), suspend: event()
@@ -35,6 +36,7 @@ function backgroundHarness({ native = async request => request?.action?.type==="
   const timers = new Map();
   let nextTimer = 0;
   const browser = {
+    i18n: i18nApi(browserLanguage),
     storage: {
       local: {
         async get(defaults) { return { ...defaults, ...storage.local }; },
@@ -104,6 +106,7 @@ function backgroundHarness({ native = async request => request?.action?.type==="
   const scheduleTimer = (callback, delay) => { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; };
   const cancelTimer = id => { timers.delete(id); };
   const context = vm.createContext({ browser, URL, crypto: webcrypto, TextEncoder, Uint8Array, Promise, Map, Set, Array, Object, Number, String, RegExp, JSON, Error, Date, queueMicrotask, setTimeout: scheduleTimer, clearTimeout: cancelTimer });
+  loadI18n(context);
   for (const name of ["codes.js", "events.js", "background.js"]) vm.runInContext(source(name), context, { filename: name });
   // `publicState` and `hlsChildren` were removed from the worker as dead code; the
   // harness evaluates the same views against the worker's own globals, so every
@@ -871,14 +874,36 @@ test("the discovery session is written once after a burst and flushed when the w
   assert.equal(pending(), 0);
 });
 
-function popupHarness(reply) {
+function popupHarness(reply, { browserLanguage = "tr", local = {} } = {}) {
   const elements = {};
-  const el = id => elements[id] ||= { id, textContent: "", checked: false, disabled: false, hidden: false, listeners: {},
-    addEventListener(name, listener) { this.listeners[name] = listener; }, append() {} };
-  const context = vm.createContext({ document: { getElementById: el, createElement: () => ({ append() {}, addEventListener() {} }) },
-    browser: { runtime: { lastError: null, sendMessage(message, callback) { callback(reply(message)); } } }, window: { close() {} }, Promise, Object, Array });
+  // Elements keep what was appended to them, and writing textContent empties them like the DOM does.
+  const node = extra => {
+    let text = "";
+    return { ...extra, children: [], checked: false, disabled: false, hidden: false, listeners: {}, attributes: {},
+      get textContent() { return text; }, set textContent(value) { text = String(value); this.children.length = 0; },
+      addEventListener(name, listener) { this.listeners[name] = listener; }, append(...nodes) { this.children.push(...nodes); },
+      getAttribute(name) { return this.attributes[name] ?? null; } };
+  };
+  const el = id => elements[id] ||= node({ id });
+  // The real popup.html says which elements carry a static text; the double finds them there.
+  const staticNodes = [...source("popup.html").matchAll(/<[a-z0-9]+\b[^>]*\bdata-i18n="([^"]+)"[^>]*>/g)].map(match => {
+    const node = el(/\bid="([^"]+)"/.exec(match[0])?.[1] ?? `static:${match[1]}`);
+    node.attributes["data-i18n"] = match[1];
+    return node;
+  });
+  const storage = { local: { ...local } };
+  let storageListener = null;
+  const document = { getElementById: el, createElement: () => node(), documentElement: { lang: "" },
+    querySelectorAll: selector => selector === "[data-i18n]" ? staticNodes : [] };
+  const context = vm.createContext({ document,
+    browser: { i18n: i18nApi(browserLanguage),
+      storage: { local: { async get(defaults) { return { ...defaults, ...storage.local }; } }, onChanged: { addListener(listener) { storageListener = listener; } } },
+      runtime: { lastError: null, sendMessage(message, callback) { callback(reply(message)); } } }, window: { close() {} }, Promise, Object, Array });
+  loadI18n(context);
   vm.runInContext(source("popup.js"), context, { filename: "popup.js" });
-  return { el };
+  // The service worker stores the app's language; the popup follows storage.onChanged.
+  const storeLanguage = value => { storage.local.uiLanguage = value; storageListener({ uiLanguage: { newValue: value } }, "local"); };
+  return { el, document, staticNodes, storeLanguage };
 }
 
 test("the popup keeps its state and says why a switch failed instead of drawing everything off", async () => {
@@ -1191,8 +1216,10 @@ function contentHarness(options = {}) {
   const runtimeMessages = event();
   const context = vm.createContext({
     browser: {
+      i18n: i18nApi(options.browserLanguage),
       runtime: { sendMessage(value) { sent.push(value); const reply = options.reply; return Promise.resolve(typeof reply === "function" ? reply(value) : reply); }, onMessage: runtimeMessages },
-      storage: { local: { get() { return Promise.resolve({ detectionEnabled: true }); } }, onChanged: { addListener(listener) { storageListener = listener; } } }
+      // The worker stores the desktop's language next to the switch; `storedLanguage` is what it stored.
+      storage: { local: { get() { return Promise.resolve({ detectionEnabled: true, ...(options.storedLanguage ? { uiLanguage: options.storedLanguage } : {}) }); } }, onChanged: { addListener(listener) { storageListener = listener; } } }
     },
     URL, document, window, location: { href: "https://site.example/watch", origin: "https://site.example" }, innerHeight: 800, innerWidth: 1280,
     MutationObserver: Observer, PerformanceObserver: Observer,
@@ -1200,6 +1227,7 @@ function contentHarness(options = {}) {
     setInterval(callback, delay) { timers.push({ callback, delay }); return timers.length; },
     JSON, String, Map, Array, Object
   });
+  loadI18n(context);
   vm.runInContext(source("content.js"), context, { filename: "content.js" });
   return { context, sent, listeners, runtimeMessages, buttons, document, window, gesture, storageListener: () => storageListener,
     fireTimers() { for (const timer of timers.splice(0)) timer.callback(); } };
@@ -1867,4 +1895,218 @@ test("content log messages are accepted only from extension senders", async () =
   await new Promise(resolve => setImmediate(resolve));
   await vm.runInContext("SSDownloadEvents.flush()", h.context);
   assert.equal(h.logs.flat().length, 0);
+});
+
+// ----------------------------------------------------------------- interface language
+// The extension speaks the desktop app's language: the capabilities reply names it, the worker
+// stores it, and the popup, the page tiles, the menus and the badge follow. Until the app has
+// said anything, the browser's UI language decides.
+const capabilitiesIn = language => ({ ok: true, result: { capabilities: { ...nativeCapabilities.result.capabilities, ...(language === undefined ? {} : { language }) } } });
+const popupState = h => new Promise(resolve => h.events.message.listeners.at(-1)({ channel: "ssdownload-popup", command: "state" },
+  { id: "test-extension", url: "chrome-extension://test-extension/popup.html" }, resolve));
+const lastAction = (h, method) => h.actionCalls.filter(call => call.method === method).at(-1);
+const probeNow = async h => { vm.runInContext("capabilityState.checkedAt = 0", h.context); await vm.runInContext("refreshCapabilities()", h.context); await h.settle(); };
+
+test("the desktop's language switches the context menus and the badge title, and back", async () => {
+  let language = "en";
+  const h = backgroundHarness({ native: async request => request?.action?.type === "capabilities" ? capabilitiesIn(language) : { ok: true, message: "ok" } });
+  await h.settle();
+  const titles = () => h.menuEntries.map(entry => entry.title);
+  assert.ok(titles().includes("Download link with SSDownload"), "the link entry is English once the desktop says so");
+  assert.ok(titles().includes("Download video with SSDownload"));
+  assert.ok(titles().includes("Download page with SSDownload"));
+  assert.ok(titles().includes("Download audio with SSDownload"));
+  assert.ok(titles().includes("Open the download picker…"));
+  assert.ok(titles().includes("Allow session cookies for this site"));
+  assert.ok(titles().includes("Remove site session permission"));
+  assert.ok(titles().includes("Open SSDownload"));
+  assert.ok(!titles().some(title => /SSDownload ile|indir/.test(title)), "no Turkish title is left in an English menu");
+  assert.equal(h.storage.local.uiLanguage, "en", "the worker stores the language for the popup and the pages");
+  assert.equal(lastAction(h, "setBadgeText").text, "ON");
+  assert.equal(lastAction(h, "setTitle").title, "SSDownload: on — click for settings");
+
+  language = "tr";
+  await probeNow(h);
+  assert.ok(titles().includes("Bağlantıyı SSDownload ile indir"), "the menus are rebuilt in Turkish");
+  assert.ok(titles().includes("Videoyu SSDownload ile indir"));
+  assert.ok(titles().includes("SSDownload uygulamasını aç"));
+  assert.ok(!titles().some(title => /\b(?:Download|Open|Allow|Remove|Choose)\b/.test(title)), "no English title is left in a Turkish menu");
+  assert.equal(h.storage.local.uiLanguage, "tr");
+  assert.equal(lastAction(h, "setBadgeText").text, "AÇIK");
+  assert.match(lastAction(h, "setTitle").title, /açık — ayarlar için tıklayın/);
+
+  language = "en";
+  await probeNow(h);
+  assert.ok(titles().includes("Download link with SSDownload"));
+  assert.equal(lastAction(h, "setBadgeText").text, "ON");
+});
+
+test("the candidate submenu, completed-download title and refusals follow the desktop's language", async () => {
+  const h = backgroundHarness({ local: { uiLanguage: "en" }, native: async request => request?.action?.type === "capabilities" ? capabilitiesIn("en") : { ok: true, message: "ok" } });
+  const players = [{ id: "a", title: "Film", urls: ["https://cdn.example/a.mp4"], active: true }, { id: "b", title: "Clip", urls: ["https://cdn.example/b.mp4"], active: true, adSignals: ["player-identity", "request-host"] }];
+  await h.content({ channel: "ssdownload-content", event: "scan", documentId: "d", pageUrl: "https://site.example/watch", players,
+    sources: players.map(player => ({ url: player.urls[0], contentType: "video/mp4", playerId: player.id })) });
+  h.runTimers(250);
+  await h.settle();
+  assert.ok(h.menuEntries.some(entry => entry.id === "ssdownload-candidates" && entry.title === "Choose source (2)…"));
+  assert.ok(h.menuEntries.some(entry => entry.id === "ssdownload-candidate:1" && /· suspected ad$/.test(entry.title)), "the candidate flags are English too");
+  vm.runInContext("noteCompletedJobs(0); noteCompletedJobs(1)", h.context);
+  await h.settle();
+  assert.equal(lastAction(h, "setTitle").title, "SSDownload: 1 download completed");
+  vm.runInContext("noteCompletedJobs(3)", h.context);
+  await h.settle();
+  assert.equal(lastAction(h, "setTitle").title, "SSDownload: 3 downloads completed");
+  await popupToggle(h);
+  const refused = await new Promise(resolve => h.events.message.listeners.at(-1)({ channel: "ssdownload-content", event: "download-video", mediaKind: "video", playerId: "a", documentId: "d", pageUrl: "https://site.example/watch" },
+    { id: "test-extension", url: "https://site.example/watch", tab: { id: 7 }, frameId: 0 }, resolve));
+  assert.equal(refused.error, "SSDownload is off. Click the toolbar icon to turn it on.");
+});
+
+test("a missing app is described in the language the app last reported, else in the browser's", async () => {
+  const missing = async () => { throw new Error("Native messaging host not found"); };
+  const cases = [
+    { stored: "en", browser: "tr", expected: /app was not found on this computer/, appMissing: true },
+    { stored: "tr", browser: "en", expected: /uygulaması bu bilgisayarda bulunamadı/, appMissing: true },
+    { stored: undefined, browser: "en", expected: /app was not found on this computer/, appMissing: true },
+    { stored: undefined, browser: "tr", expected: /uygulaması bu bilgisayarda bulunamadı/, appMissing: true },
+    { stored: undefined, browser: "en-GB", expected: /app was not found on this computer/, appMissing: true },
+    { stored: undefined, browser: "tr-TR", expected: /uygulaması bu bilgisayarda bulunamadı/, appMissing: true },
+    { stored: undefined, browser: "de", expected: /app was not found on this computer/, appMissing: true }
+  ];
+  for (const { stored, browser, expected, appMissing } of cases) {
+    const h = backgroundHarness({ native: missing, browserLanguage: browser, local: stored ? { uiLanguage: stored } : {} });
+    await h.settle();
+    const state = await popupState(h);
+    assert.match(state.capabilityError, expected, JSON.stringify({ stored, browser }));
+    assert.equal(state.appMissing, appMissing);
+    await h.menu("ssdownload-app");
+    const status = JSON.parse(vm.runInContext("JSON.stringify(tabStatus.get(7)||null)", h.context));
+    assert.match(String(status?.message), expected);
+  }
+  const english = backgroundHarness({ native: missing, local: { uiLanguage: "en" } });
+  await english.settle();
+  const refused = backgroundHarness({ native: async () => { throw new Error("Access to the specified native messaging host is forbidden."); }, local: { uiLanguage: "en" } });
+  await refused.settle();
+  assert.match((await popupState(refused)).capabilityError, /does not allow this extension/);
+  assert.doesNotMatch((await popupState(refused)).capabilityError, /was not found/);
+  const closed = backgroundHarness({ native: async request => request?.action?.type === "capabilities" ? { ok: false, message: "SSD-BRG-005 SSDownload uygulamasına ulaşılamadı" } : { ok: true }, local: { uiLanguage: "en" } });
+  await closed.settle();
+  assert.match((await popupState(closed)).capabilityError, /SSDownload is not running\. Start it with "Open the app" in the toolbar popup\./);
+});
+
+test("an app that reports no valid language leaves the stored one alone, also across a worker restart", async () => {
+  let reply = capabilitiesIn("en");
+  const native = async request => request?.action?.type === "capabilities" ? reply : { ok: true, message: "ok" };
+  const first = backgroundHarness({ native });
+  await first.settle();
+  assert.equal(first.storage.local.uiLanguage, "en");
+  for (const unknown of [undefined, "xx", null, 5]) {
+    reply = capabilitiesIn(unknown);
+    await probeNow(first);
+    assert.equal(first.storage.local.uiLanguage, "en", "an old app, or garbage, never resets the language: " + String(unknown));
+    assert.ok(first.menuEntries.some(entry => entry.title === "Download link with SSDownload"));
+  }
+  // A restarted worker reads the stored language before the desktop has answered.
+  const gone = async () => { throw new Error("Native messaging host not found"); };
+  const restarted = backgroundHarness({ native: gone, local: first.storage.local, session: first.storage.session });
+  await restarted.settle();
+  assert.match((await popupState(restarted)).capabilityError, /was not found on this computer/);
+});
+
+test("the language reaches the popup: texts, state reading, buttons and the source kinds", async () => {
+  const media = [{ index: 0, label: "Film", kind: "video" }, { index: 1, label: "Song", kind: "audio" }];
+  let state = { detectionEnabled: true, host: "site.example", siteHidden: false, media, capabilityError: null, appMissing: false };
+  const h = popupHarness(() => state, { local: { uiLanguage: "en" } });
+  await new Promise(resolve => setImmediate(resolve));
+  const texts = () => Object.fromEntries(h.staticNodes.map(node => [node.id, node.textContent]));
+  assert.equal(h.document.documentElement.lang, "en");
+  assert.equal(h.el("state").textContent, "ON");
+  assert.equal(h.el("site-label").textContent, "Hide the button on site.example");
+  assert.equal(h.el("open-app").textContent, "Open the app");
+  assert.equal(h.el("close").textContent, "Close");
+  assert.equal(h.el("empty").textContent, "No selectable media found on this page. Play the video and open this again.");
+  assert.ok(Object.values(texts()).includes("Detection") && Object.values(texts()).includes("Media on this page"));
+  assert.deepEqual(h.el("media").children.map(item => item.children[0].children[1].textContent), ["video", "audio"]);
+  assert.ok(h.staticNodes.every(node => node.textContent !== ""), "every data-i18n element received a text");
+
+  // The worker stores another language: the popup redraws everything, including what the worker words.
+  state = { ...state, detectionEnabled: false, appMissing: true, capabilityError: "Uygulama bulunamadı" };
+  h.storeLanguage("tr");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.document.documentElement.lang, "tr");
+  assert.equal(h.el("state").textContent, "KAPALI");
+  assert.equal(h.el("site-label").textContent, "site.example için düğmeyi gösterme");
+  assert.equal(h.el("open-app").textContent, "Uygulamayı indir");
+  assert.equal(h.el("close").textContent, "Kapat");
+  assert.equal(h.el("empty").textContent, "Bu sayfada seçilebilir medya bulunamadı. Videoyu oynatıp tekrar açın.");
+  assert.deepEqual(h.el("media").children.map(item => item.children[0].children[1].textContent), ["video", "ses"]);
+  assert.equal(h.el("status").textContent, "Uygulama bulunamadı");
+  state = { ...state, host: "", appMissing: false };
+  h.storeLanguage("en");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.el("site-label").textContent, "Hide the button on this site");
+  assert.equal(h.el("open-app").textContent, "Open the app");
+});
+
+test("the popup's missing-app status, picker progress and failure texts are English for an English app", async () => {
+  const worker = backgroundHarness({ native: async () => { throw new Error("Specified native messaging host not found."); }, local: { uiLanguage: "en" } });
+  await worker.settle();
+  const ask = message => new Promise(resolve => worker.events.message.listeners.at(-1)({ channel: "ssdownload-popup", ...message },
+    { id: "test-extension", url: "chrome-extension://test-extension/popup.html" }, resolve));
+  const reply = await ask({ command: "state" });
+  assert.equal(reply.appMissing, true);
+  assert.match(reply.capabilityError, /free SSDownload app for Windows: install it with "Download the app"/);
+  assert.match(reply.capabilityError, /Tools → Browser setup/);
+  const unknown = await ask({ command: "no-such-command" });
+  assert.equal(unknown.error, "Unknown command");
+  const stranger = await new Promise(resolve => worker.events.message.listeners.at(-1)({ channel: "ssdownload-popup", command: "state" }, { id: "other" }, resolve));
+  assert.equal(stranger.error, "Invalid sender");
+  const failing = popupHarness(message => message.command === "state" ? { detectionEnabled: true, host: "", siteHidden: false, media: [{ index: 0, label: "Film", kind: "video" }] } : { error: "No active tab was found." }, { local: { uiLanguage: "en" } });
+  await new Promise(resolve => setImmediate(resolve));
+  const click = failing.el("media").children[0].children[0].listeners.click;
+  const pending = click();
+  assert.equal(failing.el("status").textContent, "Opening the desktop picker…");
+  await pending;
+  assert.equal(failing.el("status").textContent, "No active tab was found.");
+  const silent = popupHarness(() => undefined, { local: { uiLanguage: "en" } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(silent.el("status").textContent, "The extension background did not respond.");
+});
+
+test("the in-page tiles follow the stored language live and fall back to the browser's", async () => {
+  const ready = { status: "ready", usageModes: { video: true, file: true, audio: true }, siteEntries: true };
+  const media = tag => ({ srcObject: null, currentSrc: "/movie.mp4", src: "/movie.mp4", tagName: tag, getAttribute() { return null; }, querySelectorAll() { return []; },
+    getBoundingClientRect() { return { left: 10, top: 20, right: 650, bottom: 380, width: 640, height: 360 }; }, checkVisibility() { return true; } });
+  const labels = h => h.buttons.map(button => button.textContent);
+  const draw = async options => { const h = contentHarness({ reply: ready, ...options }); await vm.runInContext("refreshUsageModes()", h.context); await new Promise(resolve => setImmediate(resolve)); return h; };
+
+  const video = await draw({ storedLanguage: "en", nodes: { "video, audio": [media("VIDEO")] } });
+  assert.deepEqual(labels(video), ["Download this video"]);
+  video.storageListener()({ uiLanguage: { newValue: "tr" } }, "local");
+  assert.deepEqual(labels(video), ["Bu videoyu indir"], "a language written to storage repaints the tile at once");
+  video.storageListener()({ uiLanguage: { newValue: "en" } }, "local");
+  assert.deepEqual(labels(video), ["Download this video"]);
+
+  const audio = await draw({ storedLanguage: "en", nodes: { "video, audio": [media("AUDIO")] } });
+  assert.deepEqual(labels(audio), ["Download this audio"]);
+  audio.storageListener()({ uiLanguage: { newValue: "tr" } }, "local");
+  assert.deepEqual(labels(audio), ["Bu sesi indir"]);
+
+  const page = await draw({ storedLanguage: "en", nodes: { "video, audio": [], iframe: [{ src: "https://player.example/embed/one" }] } });
+  assert.deepEqual(labels(page), ["Download page with SSDownload"]);
+  page.storageListener()({ uiLanguage: { newValue: "tr" } }, "local");
+  assert.deepEqual(labels(page), ["Sayfayı SSDownload ile indir"]);
+
+  // No stored language: the browser's decides.
+  assert.deepEqual(labels(await draw({ browserLanguage: "en-US", nodes: { "video, audio": [media("VIDEO")] } })), ["Download this video"]);
+  assert.deepEqual(labels(await draw({ browserLanguage: "tr", nodes: { "video, audio": [media("VIDEO")] } })), ["Bu videoyu indir"]);
+  assert.deepEqual(labels(await draw({ browserLanguage: "tr", storedLanguage: "en", nodes: { "video, audio": [media("VIDEO")] } })), ["Download this video"], "the app's language beats the browser's");
+
+  // The page's own status line and the tile title are what the worker words; the tile only
+  // adds the text of the one case the worker has not answered yet.
+  const unverified = contentHarness({ reply: new Promise(() => {}), storedLanguage: "en" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(vm.runInContext("usageModeTitle()", unverified.context), "Desktop capabilities have not been verified yet.");
+  unverified.storageListener()({ uiLanguage: { newValue: "tr" } }, "local");
+  assert.equal(vm.runInContext("usageModeTitle()", unverified.context), "Masaüstü özellikleri henüz doğrulanmadı.");
 });

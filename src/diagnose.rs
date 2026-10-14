@@ -52,7 +52,10 @@ pub fn summary(paths: &AppPaths, hours: i64) -> Result<Summary> {
     let mut events: BTreeMap<String, u64> = BTreeMap::new();
     let mut files = Vec::new();
     if logs.is_dir() {
-        for entry in std::fs::read_dir(&logs).context("Günlük klasörü okunamadı")? {
+        for entry in std::fs::read_dir(&logs).context(crate::i18n::ui(
+            "Günlük klasörü okunamadı",
+            "The log folder could not be read",
+        ))? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with("events-") && name.ends_with(".jsonl") {
@@ -265,7 +268,13 @@ fn restrict_to_http(easy: &mut crate::network::GovernedEasy) -> Result<()> {
     ] {
         let code = unsafe { curl_sys::curl_easy_setopt(easy.raw(), option, protocol) };
         if code != curl_sys::CURLE_OK {
-            bail!("Sayfa okuması için aktarım protokol sınırı uygulanamadı");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Sayfa okuması için aktarım protokol sınırı uygulanamadı",
+                    "The transfer protocol limit for reading the page could not be applied"
+                )
+            );
         }
     }
     Ok(())
@@ -316,7 +325,10 @@ fn bounded_markup(html: &str) -> String {
         end -= 1;
     }
     let mut out = html[..end].to_owned();
-    out.push_str("\n<!-- sayfa işaretlemesi kısaltıldı -->");
+    out.push_str(crate::i18n::ui(
+        "\n<!-- sayfa işaretlemesi kısaltıldı -->",
+        "\n<!-- page markup truncated -->",
+    ));
     out
 }
 
@@ -360,7 +372,10 @@ pub fn report(
                 "bytes": bytes,
                 "source": context.page_html_source,
                 "status": context.page_html_status,
-                "note": "Sayfa işaretlemesi oturuma bağlı veri içerebilir; rapor yalnız bu klasörde durur.",
+                "note": crate::i18n::ui(
+                    "Sayfa işaretlemesi oturuma bağlı veri içerebilir; rapor yalnız bu klasörde durur.",
+                    "The page markup may contain session-bound data; the report stays only in this folder.",
+                ),
             })),
         }))?,
     ));
@@ -466,11 +481,25 @@ fn write_package(
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&target, bytes)
-            .with_context(|| format!("Teşhis paketi yazılamadı: {}", target.display()))?;
+        std::fs::write(&target, bytes).with_context(|| {
+            crate::i18n::ui_owned!(
+                format!("Teşhis paketi yazılamadı: {}", target.display()),
+                format!(
+                    "The diagnostics package could not be written: {}",
+                    target.display()
+                )
+            )
+        })?;
     }
-    let file = std::fs::File::create(&zip_path)
-        .with_context(|| format!("Teşhis paketi oluşturulamadı: {}", zip_path.display()))?;
+    let file = std::fs::File::create(&zip_path).with_context(|| {
+        crate::i18n::ui_owned!(
+            format!("Teşhis paketi oluşturulamadı: {}", zip_path.display()),
+            format!(
+                "The diagnostics package could not be created: {}",
+                zip_path.display()
+            )
+        )
+    })?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -478,7 +507,10 @@ fn write_package(
         zip.start_file(name.as_str(), options)?;
         std::io::Write::write_all(&mut zip, bytes)?;
     }
-    zip.finish().context("Teşhis paketi tamamlanamadı")?;
+    zip.finish().context(crate::i18n::ui(
+        "Teşhis paketi tamamlanamadı",
+        "The diagnostics package could not be completed",
+    ))?;
     Ok(Package {
         folder,
         zip: zip_path,

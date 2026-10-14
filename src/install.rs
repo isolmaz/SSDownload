@@ -1,4 +1,8 @@
-use crate::{bridge, paths::AppPaths};
+use crate::{
+    bridge,
+    i18n::{ui, ui_owned},
+    paths::AppPaths,
+};
 use anyhow::{bail, Context, Result};
 use std::{
     ffi::{OsStr, OsString},
@@ -15,34 +19,55 @@ const RUN_VALUE: &str = "SSDownload";
 const SETUP_FILE: &str = "browser-setup.html";
 
 pub fn register_current(paths: &AppPaths) -> Result<()> {
-    let executable = std::env::current_exe().context("Çalıştırılabilir dosya yolu alınamadı")?;
+    let executable = std::env::current_exe().context(ui(
+        "Çalıştırılabilir dosya yolu alınamadı",
+        "The executable path could not be read",
+    ))?;
     if !executable.is_file() {
         bail!(
-            "Çalıştırılabilir dosya bulunamadı: {}",
-            executable.display()
+            "{}",
+            ui_owned!(
+                format!(
+                    "Çalıştırılabilir dosya bulunamadı: {}",
+                    executable.display()
+                ),
+                format!("The executable was not found: {}", executable.display())
+            )
         );
     }
-    bridge::register(&executable, paths).context("Tarayıcı native messaging kaydı yapılamadı")?;
-    crate::extension::register_external()
-        .context("Tarayıcı eklentisi Chrome/Edge için kaydedilemedi")?;
+    bridge::register(&executable, paths).context(ui(
+        "Tarayıcı native messaging kaydı yapılamadı",
+        "The browser Native Messaging registration could not be made",
+    ))?;
+    crate::extension::register_external().context(ui(
+        "Tarayıcı eklentisi Chrome/Edge için kaydedilemedi",
+        "The browser extension could not be registered for Chrome/Edge",
+    ))?;
 
     // The installer and portable archive place the unpacked extensions beside the executable.
     // In a source checkout browser_root also finds the repository directory. Generating this
     // page here keeps every displayed path tied to the executable that was actually registered.
     if let Some(root) = browser_root(&executable) {
-        write_browser_setup(&root, paths).context("Tarayıcı kurulum sayfası hazırlanamadı")?;
+        write_browser_setup(&root, paths).context(ui(
+            "Tarayıcı kurulum sayfası hazırlanamadı",
+            "The browser setup page could not be prepared",
+        ))?;
     }
     Ok(())
 }
 
 pub fn unregister_current(paths: &AppPaths) -> Result<()> {
-    bridge::unregister(&std::env::current_exe()?, paths)
-        .context("Tarayıcı native messaging kaydı kaldırılamadı")?;
+    bridge::unregister(&std::env::current_exe()?, paths).context(ui(
+        "Tarayıcı native messaging kaydı kaldırılamadı",
+        "The browser Native Messaging registration could not be removed",
+    ))?;
     // Another SSDownload copy may still own the browser connection; the
     // extension stays installed for it.
     if !bridge::host_registered() {
-        crate::extension::unregister_external()
-            .context("Tarayıcı eklentisi kaydı kaldırılamadı")?;
+        crate::extension::unregister_external().context(ui(
+            "Tarayıcı eklentisi kaydı kaldırılamadı",
+            "The browser extension registration could not be removed",
+        ))?;
     }
     Ok(())
 }
@@ -99,16 +124,30 @@ pub fn set_autostart(paths: &AppPaths, enabled: bool) -> Result<()> {
 }
 
 pub fn open_browser_setup(paths: &AppPaths) -> Result<()> {
-    let executable = std::env::current_exe().context("Çalıştırılabilir dosya yolu alınamadı")?;
-    let root = browser_root(&executable).context(
+    let executable = std::env::current_exe().context(ui(
+        "Çalıştırılabilir dosya yolu alınamadı",
+        "The executable path could not be read",
+    ))?;
+    let root = browser_root(&executable).context(ui(
         "Tarayıcı eklentisi dosyaları bulunamadı. Kurulumu onarın veya taşınabilir paketi yeniden açın.",
-    )?;
-    bridge::register(&executable, paths).context("Tarayıcı bağlantısı kaydedilemedi")?;
-    crate::extension::register_external()
-        .context("Tarayıcı eklentisi Chrome/Edge için kaydedilemedi")?;
-    let page =
-        write_browser_setup(&root, paths).context("Tarayıcı kurulum sayfası hazırlanamadı")?;
-    shell_open(&page).context("Tarayıcı kurulum sayfası açılamadı")
+        "The browser extension files were not found. Repair the installation or unpack the portable package again.",
+    ))?;
+    bridge::register(&executable, paths).context(ui(
+        "Tarayıcı bağlantısı kaydedilemedi",
+        "The browser connection could not be registered",
+    ))?;
+    crate::extension::register_external().context(ui(
+        "Tarayıcı eklentisi Chrome/Edge için kaydedilemedi",
+        "The browser extension could not be registered for Chrome/Edge",
+    ))?;
+    let page = write_browser_setup(&root, paths).context(ui(
+        "Tarayıcı kurulum sayfası hazırlanamadı",
+        "The browser setup page could not be prepared",
+    ))?;
+    shell_open(&page).context(ui(
+        "Tarayıcı kurulum sayfası açılamadı",
+        "The browser setup page could not be opened",
+    ))
 }
 
 /// Applies Mark-of-the-Web provenance to a completed download.
@@ -119,14 +158,35 @@ pub fn open_browser_setup(paths: &AppPaths) -> Result<()> {
 pub fn mark_download(path: &Path, source: &str) -> Result<()> {
     let source = source.trim();
     if source.is_empty() {
-        bail!("İndirme kaynak adresi boş olamaz");
+        bail!(
+            "{}",
+            ui(
+                "İndirme kaynak adresi boş olamaz",
+                "The download source address cannot be empty"
+            )
+        );
     }
     if source.len() > 16 * 1024 || source.chars().any(|c| matches!(c, '\r' | '\n' | '\0')) {
-        bail!("İndirme kaynak adresi güvenli bir Zone.Identifier değeri değil");
+        bail!(
+            "{}",
+            ui(
+                "İndirme kaynak adresi güvenli bir Zone.Identifier değeri değil",
+                "The download source address is not a safe Zone.Identifier value"
+            )
+        );
     }
-    let mut parsed = url::Url::parse(source).context("İndirme kaynak adresi geçersiz")?;
+    let mut parsed = url::Url::parse(source).context(ui(
+        "İndirme kaynak adresi geçersiz",
+        "The download source address is invalid",
+    ))?;
     if !matches!(parsed.scheme(), "http" | "https" | "ftp" | "ftps") {
-        bail!("İndirme kaynağı desteklenen bir İnternet adresi değil");
+        bail!(
+            "{}",
+            ui(
+                "İndirme kaynağı desteklenen bir İnternet adresi değil",
+                "The download source is not a supported Internet address"
+            )
+        );
     }
     let _ = parsed.set_username("");
     let _ = parsed.set_password(None);
@@ -141,26 +201,51 @@ pub fn mark_download(path: &Path, source: &str) -> Result<()> {
 }
 
 fn mark_download_path(path: &Path, body: &[u8]) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("İşaretlenecek indirme bulunamadı: {}", path.display()))?;
+    let metadata = fs::symlink_metadata(path).with_context(|| {
+        ui_owned!(
+            format!("İşaretlenecek indirme bulunamadı: {}", path.display()),
+            format!("The download to mark was not found: {}", path.display())
+        )
+    })?;
     if metadata.file_type().is_symlink() {
         bail!(
-            "İndirme işareti sembolik bağlantıya uygulanamaz: {}",
-            path.display()
+            "{}",
+            ui_owned!(
+                format!(
+                    "İndirme işareti sembolik bağlantıya uygulanamaz: {}",
+                    path.display()
+                ),
+                format!(
+                    "The download mark cannot be applied to a symbolic link: {}",
+                    path.display()
+                )
+            )
         );
     }
     if metadata.is_dir() {
-        for entry in fs::read_dir(path).context("Playlist klasörü okunamadı")? {
+        for entry in fs::read_dir(path).context(ui(
+            "Playlist klasörü okunamadı",
+            "The playlist folder could not be read",
+        ))? {
             mark_download_path(&entry?.path(), body)?;
         }
         return Ok(());
     }
     if !metadata.is_file() {
-        bail!("İndirme normal bir dosya değil: {}", path.display());
+        bail!(
+            "{}",
+            ui_owned!(
+                format!("İndirme normal bir dosya değil: {}", path.display()),
+                format!("The download is not a regular file: {}", path.display())
+            )
+        );
     }
 
     use std::os::windows::io::AsRawHandle;
-    let file = std::fs::File::open(path).context("İndirilen dosyanın birimi açılamadı")?;
+    let file = std::fs::File::open(path).context(ui(
+        "İndirilen dosyanın birimi açılamadı",
+        "The volume of the downloaded file could not be opened",
+    ))?;
     let mut flags = 0;
     let ok = unsafe {
         windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW(
@@ -175,7 +260,10 @@ fn mark_download_path(path: &Path, body: &[u8]) -> Result<()> {
         )
     };
     if ok == 0 {
-        return Err(std::io::Error::last_os_error()).context("Dosya sistemi yetenekleri okunamadı");
+        return Err(std::io::Error::last_os_error()).context(ui(
+            "Dosya sistemi yetenekleri okunamadı",
+            "The file system capabilities could not be read",
+        ));
     }
     // FAT/exFAT cannot store alternate streams; never create a misleading sidecar there.
     if flags & windows_sys::Win32::System::SystemServices::FILE_NAMED_STREAMS == 0 {
@@ -191,17 +279,25 @@ fn mark_download_path(path: &Path, body: &[u8]) -> Result<()> {
         .truncate(true)
         .open(&stream_path)
         .with_context(|| {
-            format!(
-                "Windows indirme kaynağı işareti yazılamadı: {}",
-                path.display()
+            ui_owned!(
+                format!(
+                    "Windows indirme kaynağı işareti yazılamadı: {}",
+                    path.display()
+                ),
+                format!(
+                    "The Windows download source mark could not be written: {}",
+                    path.display()
+                )
             )
         })?;
-    stream
-        .write_all(body)
-        .context("Zone.Identifier verisi yazılamadı")?;
-    stream
-        .flush()
-        .context("Zone.Identifier verisi kaydedilemedi")?;
+    stream.write_all(body).context(ui(
+        "Zone.Identifier verisi yazılamadı",
+        "The Zone.Identifier data could not be written",
+    ))?;
+    stream.flush().context(ui(
+        "Zone.Identifier verisi kaydedilemedi",
+        "The Zone.Identifier data could not be saved",
+    ))?;
     Ok(())
 }
 
@@ -223,8 +319,15 @@ fn browser_root(executable: &Path) -> Option<PathBuf> {
 
 fn write_browser_setup(browser_root: &Path, paths: &AppPaths) -> Result<PathBuf> {
     let chromium = browser_root.join("chromium");
-    let chromium_url = url::Url::from_directory_path(&chromium)
-        .map_err(|_| anyhow::anyhow!("Chrome eklenti klasörü URL'ye dönüştürülemedi"))?;
+    let chromium_url = url::Url::from_directory_path(&chromium).map_err(|_| {
+        anyhow::anyhow!(
+            "{}",
+            ui(
+                "Chrome eklenti klasörü URL'ye dönüştürülemedi",
+                "The Chrome extension folder could not be converted to a URL"
+            )
+        )
+    })?;
     let chromium_path = html_escape(&chromium.display().to_string());
     let chromium_url = html_escape(chromium_url.as_str());
 
@@ -278,7 +381,10 @@ h1{{margin:0 0 8px;font-size:30px}}header p{{margin:0;line-height:1.55}}section{
 
     let page = paths.base_dir.join(SETUP_FILE);
     let temporary = paths.base_dir.join(format!("{SETUP_FILE}.tmp"));
-    std::fs::write(&temporary, html.as_bytes()).context("Geçici kurulum sayfası yazılamadı")?;
+    std::fs::write(&temporary, html.as_bytes()).context(ui(
+        "Geçici kurulum sayfası yazılamadı",
+        "The temporary setup page could not be written",
+    ))?;
     std::fs::rename(&temporary, &page)
         .or_else(|first_error| {
             if page.exists() {
@@ -288,7 +394,10 @@ h1{{margin:0 0 8px;font-size:30px}}header p{{margin:0;line-height:1.55}}section{
                 Err(first_error)
             }
         })
-        .context("Tarayıcı kurulum sayfası atomik olarak yerleştirilemedi")?;
+        .context(ui(
+            "Tarayıcı kurulum sayfası atomik olarak yerleştirilemedi",
+            "The browser setup page could not be placed atomically",
+        ))?;
     Ok(page)
 }
 
@@ -307,7 +416,13 @@ pub fn open_web_store() -> Result<()> {
         )
     };
     if result as isize <= 32 {
-        bail!("ShellExecuteW başarısız oldu (kod {})", result as isize);
+        bail!(
+            "{}",
+            ui_owned!(
+                format!("ShellExecuteW başarısız oldu (kod {})", result as isize),
+                format!("ShellExecuteW failed (code {})", result as isize)
+            )
+        );
     }
     Ok(())
 }
@@ -330,7 +445,13 @@ fn shell_open(path: &Path) -> Result<()> {
         )
     };
     if result as isize <= 32 {
-        bail!("ShellExecuteW başarısız oldu (kod {})", result as isize);
+        bail!(
+            "{}",
+            ui_owned!(
+                format!("ShellExecuteW başarısız oldu (kod {})", result as isize),
+                format!("ShellExecuteW failed (code {})", result as isize)
+            )
+        );
     }
     Ok(())
 }

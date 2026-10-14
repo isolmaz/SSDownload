@@ -3,7 +3,10 @@
 use super::*;
 
 pub(crate) fn verify_file_result(path: &Path, checksum: Option<&str>) -> Result<u64> {
-    let metadata = fs::metadata(path).context("Aktarım dosyası okunamadı")?;
+    let metadata = fs::metadata(path).context(crate::i18n::ui(
+        "Aktarım dosyası okunamadı",
+        "The transfer file could not be read",
+    ))?;
     if !metadata.is_file() {
         bail!(
             "{}",
@@ -35,8 +38,12 @@ pub(crate) fn verify_file_result(path: &Path, checksum: Option<&str>) -> Result<
 }
 
 pub(super) fn digest_file(path: &Path) -> Result<String> {
-    let mut file =
-        File::open(path).with_context(|| format!("Dosya okunamadı: {}", path.display()))?;
+    let mut file = File::open(path).with_context(|| {
+        crate::i18n::ui_owned!(
+            format!("Dosya okunamadı: {}", path.display()),
+            format!("The file could not be read: {}", path.display())
+        )
+    })?;
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -76,7 +83,10 @@ pub(super) fn synchronized_version_path(destination: &Path, sha256: &str) -> Res
     let stem = destination
         .file_stem()
         .and_then(|value| value.to_str())
-        .context("Senkronizasyon hedef dosya adı geçersiz")?;
+        .context(crate::i18n::ui(
+            "Senkronizasyon hedef dosya adı geçersiz",
+            "The synchronization target file name is invalid",
+        ))?;
     let name = match destination.extension().and_then(|value| value.to_str()) {
         Some(extension) => format!("{stem}.{sha256}.{extension}"),
         None => format!("{stem}.{sha256}"),
@@ -96,8 +106,10 @@ pub(super) fn replace_sync_file(source: &Path, destination: &Path) -> Result<()>
         )
     };
     if result == 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("Senkronizasyon dosyası atomik yayımlanamadı");
+        return Err(std::io::Error::last_os_error()).context(crate::i18n::ui(
+            "Senkronizasyon dosyası atomik yayımlanamadı",
+            "The synchronization file could not be published atomically",
+        ));
     }
     Ok(())
 }
@@ -108,9 +120,10 @@ pub(super) fn perform_synchronization(
 ) -> Result<SyncOutcome> {
     crate::validation::validate_url(&policy.url, true)?;
     let destination = &policy.destination;
-    let parent = destination
-        .parent()
-        .context("Senkronizasyon hedef klasörü eksik")?;
+    let parent = destination.parent().context(crate::i18n::ui(
+        "Senkronizasyon hedef klasörü eksik",
+        "The synchronization target folder is missing",
+    ))?;
     fs::create_dir_all(parent)?;
     if destination.exists() && destination.is_dir() {
         bail!(
@@ -127,7 +140,10 @@ pub(super) fn perform_synchronization(
         .write(true)
         .create_new(true)
         .open(temporary.path())
-        .context("Senkronizasyon geçici dosyası oluşturulamadı")?;
+        .context(crate::i18n::ui(
+            "Senkronizasyon geçici dosyası oluşturulamadı",
+            "The synchronization temporary file could not be created",
+        ))?;
     let sync_control = TransferControl::default();
     let mut easy = network.wildcard_easy(&sync_control)?;
     easy.url(&policy.url)?;
@@ -145,7 +161,13 @@ pub(super) fn perform_synchronization(
         )
     } != curl_sys::CURLE_OK
     {
-        bail!("libcurl yönlendirme protokolleri kısıtlanamadı");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "libcurl yönlendirme protokolleri kısıtlanamadı",
+                "The libcurl redirect protocols could not be restricted"
+            )
+        );
     }
     easy.fail_on_error(false)?;
     easy.connect_timeout(Duration::from_secs(30))?;
@@ -224,7 +246,10 @@ pub(super) fn perform_synchronization(
         );
     }
     if let Some(error) = write_error {
-        return Err(error).context("Senkronizasyon verisi diske yazılamadı");
+        return Err(error).context(crate::i18n::ui(
+            "Senkronizasyon verisi diske yazılamadı",
+            "The synchronization data could not be written to disk",
+        ));
     }
     if let Err(error) = perform {
         if let Some(network_error) = easy.network_error() {
@@ -318,8 +343,10 @@ pub(super) fn perform_synchronization(
     if policy.overwrite {
         replace_sync_file(temporary.path(), &target)?;
     } else {
-        fs::rename(temporary.path(), &target)
-            .context("Senkronizasyon sürümü güvenle yayımlanamadı")?;
+        fs::rename(temporary.path(), &target).context(crate::i18n::ui(
+            "Senkronizasyon sürümü güvenle yayımlanamadı",
+            "The synchronization version could not be published safely",
+        ))?;
     }
     temporary.published();
     Ok(SyncOutcome {

@@ -1,6 +1,9 @@
 "use strict";
 
 const extensionApi = globalThis.browser || chrome;
+// Every user-visible text goes through i18n.js (the first content script). The language is the
+// desktop app's, stored by the service worker and followed live from storage below.
+const { t } = SSDownloadI18n;
 // Reloading the unpacked extension invalidates the content script of every page that
 // stayed open; `sendMessage` then throws synchronously ("Extension context
 // invalidated") from whichever callback runs next. Failures are handled per call site,
@@ -48,7 +51,9 @@ let usageModes = null;
 // exactly like the context menu that is not registered without it.
 let siteEntries = false;
 let observeLimitSent = false;
-let usageModeError = "Masaüstü özellikleri henüz doğrulanmadı.";
+// null until the worker has answered once; the tile title then says the desktop is unverified.
+let usageModeError = null;
+function usageModeTitle() { return usageModeError === null ? t("capabilitiesNotVerified") : usageModeError; }
 let mediaRoots = [document];
 // A player that loops, stays muted and started without the user asking is a preview or an
 // ad on any site; the report carries those three facts so the background can decide. The
@@ -106,7 +111,7 @@ function collectPlayerSignals() {
 }
 function pageUrl() { return /^https?:/.test(location.href) ? location.href : /^https?:/.test(document.baseURI) ? document.baseURI : document.referrer; }
 function pageTitle() {
-  return document.querySelector?.('meta[property="og:title"]')?.content || document.title || "Video";
+  return document.querySelector?.('meta[property="og:title"]')?.content || document.title || t("videoTitleFallback");
 }
 // The error report carries this document's own markup, serialized on demand at the moment a
 // handoff asks for it. The extension's own affordances are not the page, and a script or
@@ -269,7 +274,7 @@ async function handOver(buildRequest) {
   try {
     const reply = await sendToExtension(buildRequest());
     if (reply && reply.error) showPageStatus(String(reply.error), true);
-  } catch (error) { try { showPageStatus("Eklenti bağlantısı kurulamadı", true); } catch (_) {} }
+  } catch (error) { try { showPageStatus(t("extensionConnectionFailed"), true); } catch (_) {} }
 }
 
 // The affordance is not the page's surface. A page keeps its own handlers on `window` and
@@ -430,7 +435,6 @@ function createTile(activate) {
 // page-level tile: the same affordance and the same click path as a media-anchored
 // tile, carrying the product's own wording for a page candidate and never its address.
 // It hands the document itself over, exactly like the context menu's page entry.
-const PAGE_TILE_LABEL = "Sayfayı SSDownload ile indir";
 const PAGE_TILE_MARGIN = 8;
 let pageOverlay = null;
 
@@ -535,8 +539,8 @@ function updatePageOverlay(descriptions) {
     pageOverlay = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-page",mediaKind:"video",documentId,pageUrl:pageUrl(),pageTitle:pageTitle(),players:players(),sources:collectSources(),playerSignals:collectPlayerSignals()})));
     document.documentElement.appendChild(pageOverlay);
   }
-  tileLabels.get(pageOverlay).textContent = PAGE_TILE_LABEL;
-  pageOverlay.title = usageModeError || "";
+  tileLabels.get(pageOverlay).textContent = t("tilePage");
+  pageOverlay.title = usageModeTitle();
   hideTile(pageOverlay, false);
   placePageTile(pageOverlay);
 }
@@ -548,7 +552,7 @@ function updateOverlays() {
   // counted, so no overlay failure can become an unhandled rejection anywhere.
   try { paintOverlays(); }
   catch (_) {
-    if (++overlayFailures === 1) { try { showPageStatus("SSDownload sayfa arayüzü güncellenemedi", true); } catch (_) {} }
+    if (++overlayFailures === 1) { try { showPageStatus(t("pageUiUpdateFailed"), true); } catch (_) {} }
   }
 }
 function paintOverlays() {
@@ -569,8 +573,8 @@ function paintOverlays() {
       document.documentElement.appendChild(button); overlays.set(node, button);
     }
     // Only the label child is rewritten: `textContent` on the tile would drop the glyph.
-    tileLabels.get(button).textContent=mediaKind==="audio"?"Bu sesi indir":"Bu videoyu indir";
-    button.title=usageModeError||"";
+    tileLabels.get(button).textContent=mediaKind==="audio"?t("tileAudio"):t("tileVideo");
+    button.title=usageModeTitle();
     const rect = node.getBoundingClientRect();
     const description=descriptions.find(p=>p.id===playerIds.get(node)?.id);
     const minimumHeight=mediaKind==="audio"?24:60;
@@ -750,9 +754,12 @@ if (extensionApi.storage?.local) {
   // A site the user hid in the popup keeps discovery but shows no overlay button.
   const siteHidden=hosts=>Array.isArray(hosts)&&hosts.includes(location.hostname);
   let hostHidden=false;
-  Promise.resolve(extensionApi.storage.local.get({detectionEnabled:true,hiddenHosts:[]})).then(saved=>{detectionOn=saved.detectionEnabled!==false;hostHidden=siteHidden(saved.hiddenHosts);overlayEnabled=detectionOn&&!hostHidden;if(overlayEnabled){lastScan="";report("scan");}observerControl();updateOverlays();}).catch(()=>{});
+  Promise.resolve(extensionApi.storage.local.get({detectionEnabled:true,hiddenHosts:[],[SSDownloadI18n.STORAGE_KEY]:null})).then(saved=>{SSDownloadI18n.setLanguage(saved[SSDownloadI18n.STORAGE_KEY]);detectionOn=saved.detectionEnabled!==false;hostHidden=siteHidden(saved.hiddenHosts);overlayEnabled=detectionOn&&!hostHidden;if(overlayEnabled){lastScan="";report("scan");}observerControl();updateOverlays();}).catch(()=>{});
   extensionApi.storage.onChanged?.addListener((changes,area)=>{
-    if(area!=="local" || (!changes.detectionEnabled && !changes.hiddenHosts)) return;
+    if(area!=="local") return;
+    // The desktop's language, stored by the worker: tiles are repainted in it at once.
+    if(changes[SSDownloadI18n.STORAGE_KEY]) { SSDownloadI18n.setLanguage(changes[SSDownloadI18n.STORAGE_KEY].newValue); updateOverlays(); }
+    if(!changes.detectionEnabled && !changes.hiddenHosts) return;
     if(changes.detectionEnabled) detectionOn=changes.detectionEnabled.newValue!==false;
     if(changes.hiddenHosts) hostHidden=siteHidden(changes.hiddenHosts.newValue);
     overlayEnabled=detectionOn&&!hostHidden;

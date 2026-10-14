@@ -3,6 +3,8 @@
 // Incremental SHA-256 with a small serializable state.  WebCrypto's digest API
 // requires the entire input, so it cannot be used for multi-gigabyte relays.
 (function installRelaySha256(root) {
+  // The texts of the errors that reach the transfer log; i18n.js is loaded before this file.
+  const t = (key, ...args) => root.SSDownloadI18n.t(key, ...args);
   const K = new Uint32Array([
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
     0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
@@ -30,9 +32,9 @@
     restore(saved) {
       if (!saved || saved.v !== 1 || !Array.isArray(saved.h) || saved.h.length !== 8
           || !saved.h.every(Number.isInteger) || !Number.isSafeInteger(saved.bytes) || saved.bytes < 0
-          || typeof saved.tail !== "string" || saved.tail.length > 88) throw new Error("Geçersiz SHA-256 sürdürme kaydı");
+          || typeof saved.tail !== "string" || saved.tail.length > 88) throw new Error(t("sha256ResumeRecordInvalid"));
       const binary = atob(saved.tail);
-      if (binary.length >= 64 || binary.length !== saved.bytes % 64) throw new Error("SHA-256 sürdürme kuyruğu geçersiz");
+      if (binary.length >= 64 || binary.length !== saved.bytes % 64) throw new Error(t("sha256ResumeTailInvalid"));
       this.h.set(saved.h.map(value => value >>> 0));
       this.bytes = saved.bytes;
       this.bufferLength = binary.length;
@@ -50,7 +52,7 @@
 
     update(input) {
       const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-      if (!Number.isSafeInteger(this.bytes + bytes.length)) throw new Error("SHA-256 uzunluğu desteklenen sınırı aştı");
+      if (!Number.isSafeInteger(this.bytes + bytes.length)) throw new Error(t("sha256LengthExceeded"));
       this.bytes += bytes.length;
       let offset = 0;
       if (this.bufferLength) {

@@ -48,17 +48,26 @@ pub(super) fn postprocess_selected_streams(
             control,
         )?;
         if !probe.status.success() {
-            bail!("Seçilen ses akışları etiketlenmeden doğrulanamadı");
+            bail!(crate::i18n::ui(
+                "Seçilen ses akışları etiketlenmeden doğrulanamadı",
+                "The selected audio streams could not be verified without tagging"
+            ));
         }
         let metadata: Value = serde_json::from_slice(&probe.stdout)?;
         let audio = metadata["streams"]
             .as_array()
-            .context("Ses akış bilgisi yok")?
+            .context(crate::i18n::ui(
+                "Ses akış bilgisi yok",
+                "There is no audio stream information",
+            ))?
             .iter()
             .filter(|stream| stream["codec_type"] == "audio")
             .collect::<Vec<_>>();
         if audio.len() != audio_count {
-            bail!("Seçilen ses akış sayısı çıktı ile eşleşmiyor");
+            bail!(crate::i18n::ui(
+                "Seçilen ses akış sayısı çıktı ile eşleşmiyor",
+                "The number of selected audio streams does not match the output"
+            ));
         }
         for (index, stream) in audio.iter().enumerate() {
             if let (Some(expected), Some(actual)) = (
@@ -68,12 +77,15 @@ pub(super) fn postprocess_selected_streams(
                     .filter(|value| !matches!(*value, "und" | "unknown" | "")),
             ) {
                 if language_key(expected) != language_key(actual) {
-                    bail!("Ses çıktısının mevcut dil etiketi seçilen dille çelişiyor; etiket değiştirilmedi");
+                    bail!(crate::i18n::ui("Ses çıktısının mevcut dil etiketi seçilen dille çelişiyor; etiket değiştirilmedi", "The existing language tag of the audio output conflicts with the selected language; the tag was not changed"));
                 }
             }
         }
     }
-    let parent = path.parent().context("Medya çalışma klasörü eksik")?;
+    let parent = path.parent().context(crate::i18n::ui(
+        "Medya çalışma klasörü eksik",
+        "The media working folder is missing",
+    ))?;
     let mut subtitles = Vec::with_capacity(request.external_subtitles.len());
     for (index, selected) in request.external_subtitles.iter().enumerate() {
         let subtitle_path = parent.join(format!("external-subtitle-{index}.txt"));
@@ -97,7 +109,10 @@ pub(super) fn postprocess_selected_streams(
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
-        .context("Medya dosya türü eksik")?;
+        .context(crate::i18n::ui(
+            "Medya dosya türü eksik",
+            "The media file type is missing",
+        ))?;
     let staged = parent.join(format!("selected-output.{extension}"));
     if staged.exists() {
         fs::remove_file(&staged)?;
@@ -177,8 +192,17 @@ pub(super) fn postprocess_selected_streams(
     )?;
     if !muxed.status.success() || !muxed.stderr.trim().is_empty() {
         bail!(
-            "Seçilen ses/altyazı akışları kayıpsız birleştirilemedi: {}",
-            bounded_tail(&muxed.stderr, 4096)
+            "{}",
+            crate::i18n::ui_owned!(
+                format!(
+                    "Seçilen ses/altyazı akışları kayıpsız birleştirilemedi: {}",
+                    bounded_tail(&muxed.stderr, 4096)
+                ),
+                format!(
+                    "The selected audio/subtitle streams could not be merged losslessly: {}",
+                    bounded_tail(&muxed.stderr, 4096)
+                )
+            )
         );
     }
     verify_media_output(&staged, request, info, tools, control)?;
@@ -189,7 +213,10 @@ pub(super) fn postprocess_selected_streams(
     fs::rename(path, &backup)?;
     if let Err(error) = fs::rename(&staged, path) {
         let _ = fs::rename(&backup, path);
-        return Err(error).context("Seçilen akış çıktısı çalışma dosyasına alınamadı");
+        return Err(error).context(crate::i18n::ui(
+            "Seçilen akış çıktısı çalışma dosyasına alınamadı",
+            "Could not move the selected stream output into the working file",
+        ));
     }
     fs::remove_file(backup)?;
     for subtitle in subtitles {
@@ -207,7 +234,10 @@ pub(super) fn download_external_subtitle(
     network: &NetworkGovernor,
 ) -> Result<()> {
     const MAX_SUBTITLE_BYTES: usize = 8 * 1024 * 1024;
-    let target = Url::parse(&selected.url).context("Harici altyazı adresi geçersiz")?;
+    let target = Url::parse(&selected.url).context(crate::i18n::ui(
+        "Harici altyazı adresi geçersiz",
+        "The external subtitle URL is invalid",
+    ))?;
     // The cookies belong to the handoff page, not to the selected subtitle resource: its own
     // Referer stays a network observation only.
     validate_scoped_cookies(cookies, page_url)?;
@@ -263,29 +293,50 @@ pub(super) fn download_external_subtitle(
     if let Err(error) = performed {
         let _ = fs::remove_file(path);
         if control.stop_requested() {
-            bail!("Harici altyazı indirmesi durduruldu");
+            bail!(crate::i18n::ui(
+                "Harici altyazı indirmesi durduruldu",
+                "The external subtitle download was stopped"
+            ));
         }
         if oversized {
-            bail!("Harici altyazı güvenlik boyutu sınırını aştı");
+            bail!(crate::i18n::ui(
+                "Harici altyazı güvenlik boyutu sınırını aştı",
+                "The external subtitle exceeded the safety size limit"
+            ));
         }
         if write_failed {
-            bail!("Harici altyazı çalışma dosyasına yazılamadı");
+            bail!(crate::i18n::ui(
+                "Harici altyazı çalışma dosyasına yazılamadı",
+                "Could not write the external subtitle to the working file"
+            ));
         }
-        return Err(error).context("Harici altyazı indirilemedi");
+        return Err(error).context(crate::i18n::ui(
+            "Harici altyazı indirilemedi",
+            "Could not download the external subtitle",
+        ));
     }
     file.flush()?;
     let status = easy.response_code()?;
     if (300..400).contains(&status) {
         fs::remove_file(path)?;
-        bail!("Harici altyazı başka sunucuya yönlendirildi; hedefe özel başlıklar güvenle aktarılamadı");
+        bail!(crate::i18n::ui("Harici altyazı başka sunucuya yönlendirildi; hedefe özel başlıklar güvenle aktarılamadı", "The external subtitle was redirected to another server; target-specific headers could not be forwarded safely"));
     }
     if !(200..300).contains(&status) {
         fs::remove_file(path)?;
-        bail!("Harici altyazı sunucusu HTTP {status} döndürdü");
+        bail!(
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("Harici altyazı sunucusu HTTP {status} döndürdü"),
+                format!("The external subtitle server returned HTTP {status}")
+            )
+        );
     }
     if received == 0 {
         fs::remove_file(path)?;
-        bail!("Harici altyazı boş döndü");
+        bail!(crate::i18n::ui(
+            "Harici altyazı boş döndü",
+            "The external subtitle came back empty"
+        ));
     }
     Ok(())
 }
@@ -297,34 +348,61 @@ pub(super) fn validate_external_subtitle_file(
     source_tolerance: Option<f64>,
 ) -> Result<()> {
     let bytes = fs::read(path)?;
-    let text = std::str::from_utf8(&bytes).context("Harici altyazı UTF-8 değil")?;
+    let text = std::str::from_utf8(&bytes).context(crate::i18n::ui(
+        "Harici altyazı UTF-8 değil",
+        "The external subtitle is not UTF-8",
+    ))?;
     let is_vtt = text.trim_start_matches('\u{feff}').starts_with("WEBVTT");
     let mut cues = 0usize;
     let mut last_end = 0.0f64;
     for line in text.lines().filter(|line| line.contains("-->")) {
-        let (start, end) = line
-            .split_once("-->")
-            .context("Harici altyazı zaman satırı geçersiz")?;
-        let start = parse_clock_timestamp(start.trim())
-            .ok_or_else(|| anyhow!("Harici altyazı başlangıç zamanı geçersiz"))?;
+        let (start, end) = line.split_once("-->").context(crate::i18n::ui(
+            "Harici altyazı zaman satırı geçersiz",
+            "The external subtitle timing line is invalid",
+        ))?;
+        let start = parse_clock_timestamp(start.trim()).ok_or_else(|| {
+            anyhow!(crate::i18n::ui(
+                "Harici altyazı başlangıç zamanı geçersiz",
+                "The external subtitle start time is invalid"
+            ))
+        })?;
         let end_token = end.split_ascii_whitespace().next().unwrap_or("");
-        let end = parse_clock_timestamp(end_token)
-            .ok_or_else(|| anyhow!("Harici altyazı bitiş zamanı geçersiz"))?;
+        let end = parse_clock_timestamp(end_token).ok_or_else(|| {
+            anyhow!(crate::i18n::ui(
+                "Harici altyazı bitiş zamanı geçersiz",
+                "The external subtitle end time is invalid"
+            ))
+        })?;
         if start < 0.0 || end <= start {
-            bail!("Harici altyazı zaman aralığı geçersiz");
+            bail!(crate::i18n::ui(
+                "Harici altyazı zaman aralığı geçersiz",
+                "The external subtitle time range is invalid"
+            ));
         }
         cues += 1;
         last_end = last_end.max(end);
     }
     if cues == 0 || (!is_vtt && !looks_like_srt(text)) {
-        bail!("Harici track geçerli VTT veya SRT altyazısı değil");
+        bail!(crate::i18n::ui(
+            "Harici track geçerli VTT veya SRT altyazısı değil",
+            "The external track is not a valid VTT or SRT subtitle"
+        ));
     }
     if let Some(duration) = source_duration.filter(|value| value.is_finite() && *value > 0.0) {
         let tolerance = source_tolerance.unwrap_or(0.5).clamp(0.25, 10.0);
         if last_end > duration + tolerance {
             bail!(
-                "Harici altyazı zamanları medya süresinin dışında: {}",
-                selected.language
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!(
+                        "Harici altyazı zamanları medya süresinin dışında: {}",
+                        selected.language
+                    ),
+                    format!(
+                        "The external subtitle timings fall outside the media duration: {}",
+                        selected.language
+                    )
+                )
             );
         }
     }
@@ -371,26 +449,41 @@ pub(crate) fn validate_options(request: &AddRequest) -> Result<()> {
         .as_deref()
         .is_some_and(|c| !matches!(c, "mp4" | "mkv"))
     {
-        bail!("Video kapsayıcısı MP4 veya MKV olmalıdır");
+        bail!(crate::i18n::ui(
+            "Video kapsayıcısı MP4 veya MKV olmalıdır",
+            "The video container must be MP4 or MKV"
+        ));
     }
     if request.max_height.is_some_and(|h| h == 0 || h > 16384) {
-        bail!("Çözünürlük geçersiz");
+        bail!(crate::i18n::ui(
+            "Çözünürlük geçersiz",
+            "The resolution is invalid"
+        ));
     }
     if request.exact_height.is_some_and(|h| h == 0 || h > 16384) {
-        bail!("Kesin çözünürlük geçersiz");
+        bail!(crate::i18n::ui(
+            "Kesin çözünürlük geçersiz",
+            "The exact resolution is invalid"
+        ));
     }
     if request
         .subtitle_mode
         .as_deref()
         .is_some_and(|m| !matches!(m, "manual" | "automatic"))
     {
-        bail!("Altyazı türü geçersiz");
+        bail!(crate::i18n::ui(
+            "Altyazı türü geçersiz",
+            "The subtitle type is invalid"
+        ));
     }
     if let Some(id) = &request.video_format_id {
-        validate_format_id(id, "Görüntü format kimliği")?;
+        validate_format_id(
+            id,
+            crate::i18n::ui("Görüntü format kimliği", "Video format id"),
+        )?;
     }
     if let Some(id) = &request.audio_format_id {
-        validate_format_id(id, "Ses format kimliği")?;
+        validate_format_id(id, crate::i18n::ui("Ses format kimliği", "Audio format id"))?;
     }
     for selection in &request.audio_tracks {
         validate_audio_selection(selection)?;
@@ -412,27 +505,42 @@ pub(crate) fn validate_options(request: &AddRequest) -> Result<()> {
             || request.audio_language.is_some()
             || !request.audio_tracks.is_empty())
     {
-        bail!("Format kimliği ile ayrı kalite/ses seçimi birlikte kullanılamaz");
+        bail!(crate::i18n::ui(
+            "Format kimliği ile ayrı kalite/ses seçimi birlikte kullanılamaz",
+            "A format id and a separate quality/audio selection cannot be used together"
+        ));
     }
     if !request.audio_tracks.is_empty()
         && (request.audio_format_id.is_some() || request.audio_language.is_some())
     {
-        bail!("Çoklu ses seçimi eski tek ses alanlarıyla birlikte kullanılamaz");
+        bail!(crate::i18n::ui(
+            "Çoklu ses seçimi eski tek ses alanlarıyla birlikte kullanılamaz",
+            "Multiple audio selection cannot be used together with the legacy single audio fields"
+        ));
     }
     if !request.subtitle_tracks.is_empty()
         && (!request.subtitle_languages.is_empty() || request.subtitle_mode.is_some())
     {
-        bail!("Açık altyazı seçimi eski altyazı alanlarıyla birlikte kullanılamaz");
+        bail!(crate::i18n::ui(
+            "Açık altyazı seçimi eski altyazı alanlarıyla birlikte kullanılamaz",
+            "Explicit subtitle selection cannot be used together with the legacy subtitle fields"
+        ));
     }
     if !request.external_subtitles.is_empty()
         && (!request.subtitle_tracks.is_empty()
             || !request.subtitle_languages.is_empty()
             || request.subtitle_mode.is_some())
     {
-        bail!("Harici altyazılar çıkarıcı altyazı seçimleriyle birlikte kullanılamaz");
+        bail!(crate::i18n::ui(
+            "Harici altyazılar çıkarıcı altyazı seçimleriyle birlikte kullanılamaz",
+            "External subtitles cannot be used together with extractor subtitle selections"
+        ));
     }
     if request.subtitle_mode.is_some() && request.subtitle_languages.is_empty() {
-        bail!("Altyazı türü seçildi ancak altyazı dili seçilmedi");
+        bail!(crate::i18n::ui(
+            "Altyazı türü seçildi ancak altyazı dili seçilmedi",
+            "A subtitle type was selected but no subtitle language was selected"
+        ));
     }
     if let Some(items) = &request.playlist_items {
         if items.is_empty()
@@ -441,7 +549,10 @@ pub(crate) fn validate_options(request: &AddRequest) -> Result<()> {
                 .chars()
                 .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | ':'))
         {
-            bail!("Playlist öğeleri 1-10,15 biçiminde olmalı");
+            bail!(crate::i18n::ui(
+                "Playlist öğeleri 1-10,15 biçiminde olmalı",
+                "Playlist items must be in the form 1-10,15"
+            ));
         }
     }
     if request.playlist
@@ -450,7 +561,10 @@ pub(crate) fn validate_options(request: &AddRequest) -> Result<()> {
             || !request.audio_tracks.is_empty()
             || !request.external_subtitles.is_empty())
     {
-        bail!("Playlist için öğeye özel biçim/ses/harici altyazı seçimi kullanılamaz");
+        bail!(crate::i18n::ui(
+            "Playlist için öğeye özel biçim/ses/harici altyazı seçimi kullanılamaz",
+            "Per-item format/audio/external subtitle selection cannot be used for a playlist"
+        ));
     }
     if request.kind != DownloadKind::File {
         reject_unsafe_media_headers(&request.headers)?;
@@ -462,7 +576,10 @@ pub(crate) fn validate_options(request: &AddRequest) -> Result<()> {
         || !request.subtitle_tracks.is_empty()
         || !request.external_subtitles.is_empty();
     if request.kind == DownloadKind::Audio && has_subtitles {
-        bail!("Altyazı gömme yalnız video çıktısında desteklenir");
+        bail!(crate::i18n::ui(
+            "Altyazı gömme yalnız video çıktısında desteklenir",
+            "Subtitle embedding is only supported for video output"
+        ));
     }
     Ok(())
 }

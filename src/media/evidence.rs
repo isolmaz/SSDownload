@@ -404,7 +404,10 @@ pub(super) fn capture_media_source(
     let mut streaming = false;
     for (entry_index, root) in roots {
         if control.stop_requested() {
-            bail!("Manifest kaynak kanıtı alınırken işlem durduruldu");
+            bail!(crate::i18n::ui(
+                "Manifest kaynak kanıtı alınırken işlem durduruldu",
+                "Operation stopped while collecting manifest source evidence"
+            ));
         }
         let Ok(item_info) = media_info_from_json(&root) else {
             return Ok(unavailable());
@@ -858,7 +861,10 @@ pub(super) fn pin_selected_dash_format(
     let mut resources = Vec::with_capacity(fragments.len());
     for (sequence, fragment) in fragments.iter().enumerate() {
         if control.stop_requested() {
-            bail!("Manifest kaynak kanıtı alınırken işlem durduruldu");
+            bail!(crate::i18n::ui(
+                "Manifest kaynak kanıtı alınırken işlem durduruldu",
+                "Operation stopped while collecting manifest source evidence"
+            ));
         }
         let Some(mut object) = fragment.as_object().cloned() else {
             return Ok(None);
@@ -937,8 +943,14 @@ pub(super) fn manifest_snapshot(
     let Some(timeout) = budget.request_timeout() else {
         return Ok(None);
     };
-    let source = Url::parse(&request.url).context("Ana manifest adresi geçersiz")?;
-    let target_url = Url::parse(target).context("Seçilen alt manifest adresi geçersiz")?;
+    let source = Url::parse(&request.url).context(crate::i18n::ui(
+        "Ana manifest adresi geçersiz",
+        "The main manifest URL is invalid",
+    ))?;
+    let target_url = Url::parse(target).context(crate::i18n::ui(
+        "Seçilen alt manifest adresi geçersiz",
+        "The selected sub-manifest URL is invalid",
+    ))?;
     let same_origin = source.scheme() == target_url.scheme()
         && source.host_str() == target_url.host_str()
         && source.port_or_known_default() == target_url.port_or_known_default();
@@ -1027,13 +1039,19 @@ pub(super) fn manifest_snapshot(
         })?;
         if transfer.perform().is_err() {
             if control.stop_requested() {
-                bail!("Manifest kaynak kanıtı alınırken işlem durduruldu");
+                bail!(crate::i18n::ui(
+                    "Manifest kaynak kanıtı alınırken işlem durduruldu",
+                    "Operation stopped while collecting manifest source evidence"
+                ));
             }
             return Ok(None);
         }
     }
     if control.stop_requested() {
-        bail!("Manifest kaynak kanıtı alınırken işlem durduruldu");
+        bail!(crate::i18n::ui(
+            "Manifest kaynak kanıtı alınırken işlem durduruldu",
+            "Operation stopped while collecting manifest source evidence"
+        ));
     }
     if oversized || !budget.account_bytes(body.len()) {
         return Ok(None);
@@ -1042,7 +1060,10 @@ pub(super) fn manifest_snapshot(
     if !(200..300).contains(&status) {
         return Ok(None);
     }
-    let text = std::str::from_utf8(&body).context("Manifest UTF-8 değil")?;
+    let text = std::str::from_utf8(&body).context(crate::i18n::ui(
+        "Manifest UTF-8 değil",
+        "The manifest is not UTF-8",
+    ))?;
     if !text.trim_start().starts_with("#EXTM3U")
         || text.lines().any(|line| {
             let line = line.trim_start();
@@ -1088,7 +1109,10 @@ pub(super) fn rewrite_hls_uri_attributes(line: &str, base: &Url) -> Result<Strin
     while let Some(start) = rest.find("URI=\"") {
         let value_start = start + 5;
         let Some(value_end) = rest[value_start..].find('"') else {
-            bail!("HLS URI alanı kapatılmamış");
+            bail!(crate::i18n::ui(
+                "HLS URI alanı kapatılmamış",
+                "The HLS URI attribute is not closed"
+            ));
         };
         output.push_str(&rest[..value_start]);
         output.push_str(&resolve_hls_uri(
@@ -1106,12 +1130,18 @@ pub(super) fn resolve_hls_uri(value: &str, base: &Url) -> Result<String> {
     if value.starts_with("data:") {
         return Ok(value.to_string());
     }
-    let resolved = base.join(value).context("HLS parça adresi çözümlenemedi")?;
+    let resolved = base.join(value).context(crate::i18n::ui(
+        "HLS parça adresi çözümlenemedi",
+        "Could not resolve the HLS segment URL",
+    ))?;
     if !matches!(resolved.scheme(), "http" | "https")
         || !resolved.username().is_empty()
         || resolved.password().is_some()
     {
-        bail!("HLS parça adresi güvenli HTTP/HTTPS kapsamının dışında");
+        bail!(crate::i18n::ui(
+            "HLS parça adresi güvenli HTTP/HTTPS kapsamının dışında",
+            "The HLS segment URL is outside the safe HTTP/HTTPS scope"
+        ));
     }
     Ok(resolved.into())
 }
@@ -1177,7 +1207,10 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
             return Ok(selected);
         }
     }
-    bail!("Seçilen medya akışları kaynak kanıtı için kesin olarak çözümlenemedi")
+    bail!(crate::i18n::ui(
+        "Seçilen medya akışları kaynak kanıtı için kesin olarak çözümlenemedi",
+        "The selected media streams could not be resolved conclusively for source evidence"
+    ))
 }
 
 pub(super) fn selector_filter_u32(selector: &str, marker: &str) -> Option<u32> {
@@ -1192,12 +1225,20 @@ pub(super) fn selector_filter_text(selector: &str, marker: &str) -> Option<Strin
 
 pub(super) fn read_media_source_state(workspace: &Path) -> Result<MediaSourceState> {
     let state: MediaSourceState = serde_json::from_slice(
-        &fs::read(workspace.join(MEDIA_SOURCE_FILE))
-            .context("Medya kaynak/parça kimliği kaydı okunamadı")?,
+        &fs::read(workspace.join(MEDIA_SOURCE_FILE)).context(crate::i18n::ui(
+            "Medya kaynak/parça kimliği kaydı okunamadı",
+            "Could not read the media source/segment identity record",
+        ))?,
     )
-    .context("Medya kaynak/parça kimliği kaydı bozuk")?;
+    .context(crate::i18n::ui(
+        "Medya kaynak/parça kimliği kaydı bozuk",
+        "The media source/segment identity record is corrupt",
+    ))?;
     if state.version != MEDIA_SOURCE_STATE_VERSION {
-        bail!("Medya kaynak/parça kimliği kayıt sürümü desteklenmiyor")
+        bail!(crate::i18n::ui(
+            "Medya kaynak/parça kimliği kayıt sürümü desteklenmiyor",
+            "The media source/segment identity record version is not supported"
+        ))
     }
     Ok(state)
 }
@@ -1224,7 +1265,10 @@ pub(super) fn value_contains_exact_marker(value: &Value, marker: &str) -> bool {
 
 pub(super) fn validate_pinned_source(source: &PinnedMediaSource) -> Result<()> {
     if source.manifests.is_empty() && source.dash_formats.is_empty() {
-        bail!("Doğrulanmış medya kaynak paketi seçili akış içermiyor");
+        bail!(crate::i18n::ui(
+            "Doğrulanmış medya kaynak paketi seçili akış içermiyor",
+            "The verified media source bundle does not contain the selected stream"
+        ));
     }
     let mut manifest_markers = HashSet::new();
     for manifest in &source.manifests {
@@ -1232,25 +1276,37 @@ pub(super) fn validate_pinned_source(source: &PinnedMediaSource) -> Result<()> {
             || !manifest_markers.insert(manifest.marker.as_str())
             || !value_contains_exact_marker(&source.inspection, &manifest.marker)
         {
-            bail!("Doğrulanmış HLS manifest paketi seçili akışla eşleşmiyor");
+            bail!(crate::i18n::ui(
+                "Doğrulanmış HLS manifest paketi seçili akışla eşleşmiyor",
+                "The verified HLS manifest bundle does not match the selected stream"
+            ));
         }
     }
     let mut dash_identities = HashSet::new();
     for pinned in &source.dash_formats {
         if !dash_identities.insert((pinned.entry_index, pinned.format_id.as_str())) {
-            bail!("Doğrulanmış DASH paketi yinelenen akış içeriyor");
+            bail!(crate::i18n::ui(
+                "Doğrulanmış DASH paketi yinelenen akış içeriyor",
+                "The verified DASH bundle contains a duplicate stream"
+            ));
         }
         let Some(format) =
             selected_format(&source.inspection, pinned.entry_index, &pinned.format_id)
         else {
-            bail!("Doğrulanmış DASH paketi seçili akışı içermiyor");
+            bail!(crate::i18n::ui(
+                "Doğrulanmış DASH paketi seçili akışı içermiyor",
+                "The verified DASH bundle does not contain the selected stream"
+            ));
         };
         let protocol = format
             .get("protocol")
             .and_then(Value::as_str)
             .unwrap_or_default();
         let Some(fragments) = format.get("fragments").and_then(Value::as_array) else {
-            bail!("Doğrulanmış DASH paketi sonlu parça listesi içermiyor");
+            bail!(crate::i18n::ui(
+                "Doğrulanmış DASH paketi sonlu parça listesi içermiyor",
+                "The verified DASH bundle does not contain a finite segment list"
+            ));
         };
         if !protocol.contains("dash")
             || protocol.contains("generator")
@@ -1261,23 +1317,36 @@ pub(super) fn validate_pinned_source(source: &PinnedMediaSource) -> Result<()> {
                 fragment.get("path").is_some() || dash_fragment_url(fragment, None).is_none()
             })
         {
-            bail!("Doğrulanmış DASH paketi sabitlenmiş sonlu parça grafiği içermiyor");
+            bail!(crate::i18n::ui(
+                "Doğrulanmış DASH paketi sabitlenmiş sonlu parça grafiği içermiyor",
+                "The verified DASH bundle does not contain a pinned finite segment graph"
+            ));
         }
         if format.get("url").and_then(Value::as_str)
             != fragments[0].get("url").and_then(Value::as_str)
         {
-            bail!("Doğrulanmış DASH paketinin akış adresi parça grafiğiyle eşleşmiyor");
+            bail!(crate::i18n::ui(
+                "Doğrulanmış DASH paketinin akış adresi parça grafiğiyle eşleşmiyor",
+                "The verified DASH bundle's stream URL does not match its segment graph"
+            ));
         }
     }
     Ok(())
 }
 
 pub(super) fn load_pinned_source_file(path: &Path) -> Result<PinnedMediaSource> {
-    let sealed = fs::read_to_string(path).context("Doğrulanmış medya kaynak paketi okunamadı")?;
-    let opened =
-        crate::secure::unseal(&sealed).context("Doğrulanmış medya kaynak paketi açılamadı")?;
-    let source: PinnedMediaSource =
-        serde_json::from_str(&opened).context("Doğrulanmış medya kaynak paketi bozuk")?;
+    let sealed = fs::read_to_string(path).context(crate::i18n::ui(
+        "Doğrulanmış medya kaynak paketi okunamadı",
+        "Could not read the verified media source bundle",
+    ))?;
+    let opened = crate::secure::unseal(&sealed).context(crate::i18n::ui(
+        "Doğrulanmış medya kaynak paketi açılamadı",
+        "Could not open the verified media source bundle",
+    ))?;
+    let source: PinnedMediaSource = serde_json::from_str(&opened).context(crate::i18n::ui(
+        "Doğrulanmış medya kaynak paketi bozuk",
+        "The verified media source bundle is corrupt",
+    ))?;
     validate_pinned_source(&source)?;
     Ok(source)
 }
@@ -1303,7 +1372,10 @@ pub(super) fn load_pinned_source_for_request(
         return Ok(None);
     }
     let pending: PendingMediaSourceState = serde_json::from_slice(&fs::read(&pending_path)?)
-        .context("Yenilenen HLS kaynak geçiş kaydı bozuk")?;
+        .context(crate::i18n::ui(
+            "Yenilenen HLS kaynak geçiş kaydı bozuk",
+            "The refreshed HLS source handover record is corrupt",
+        ))?;
     if pending.version == MEDIA_SOURCE_STATE_VERSION
         && pending.previous_request == current.request
         && pending.next.request == fingerprint

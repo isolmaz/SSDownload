@@ -31,7 +31,6 @@ InstallDir "$LOCALAPPDATA\Programs\SSDownload"
 InstallDirRegKey HKCU "${PRODUCT_KEY}" "InstallLocation"
 ShowInstDetails show
 ShowUninstDetails show
-BrandingText "SSDownload ${VERSION} — kullanıcı başına kurulum"
 
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "SSDownload"
@@ -40,12 +39,18 @@ VIAddVersionKey /LANG=1033 "FileDescription" "SSDownload per-user installer"
 VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 SSDownload contributors"
+VIAddVersionKey /LANG=1055 "ProductName" "SSDownload"
+VIAddVersionKey /LANG=1055 "CompanyName" "SSDownload Project"
+VIAddVersionKey /LANG=1055 "FileDescription" "SSDownload kullanıcı başına yükleyici"
+VIAddVersionKey /LANG=1055 "FileVersion" "${VERSION}"
+VIAddVersionKey /LANG=1055 "ProductVersion" "${VERSION}"
+VIAddVersionKey /LANG=1055 "LegalCopyright" "Copyright (c) 2026 SSDownload contributors"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "${STAGE_DIR}\app.ico"
 !define MUI_UNICON "${STAGE_DIR}\app.ico"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\ssdownload.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "SSDownload uygulamasını başlat"
+!define MUI_FINISHPAGE_RUN_TEXT "$(FINISH_RUN_TEXT)"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${STAGE_DIR}\LICENSE.txt"
@@ -58,8 +63,29 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 SSDownload contr
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_UNPAGE_FINISH
 
-!insertmacro MUI_LANGUAGE "Turkish"
+; The first language is the fallback for a Windows display language the installer does not
+; have, so English comes first and Turkish is chosen for a Turkish Windows.
 !insertmacro MUI_LANGUAGE "English"
+!insertmacro MUI_LANGUAGE "Turkish"
+
+LangString BRANDING_TEXT ${LANG_ENGLISH} "SSDownload ${VERSION} — per-user installation"
+LangString BRANDING_TEXT ${LANG_TURKISH} "SSDownload ${VERSION} — kullanıcı başına kurulum"
+BrandingText "$(BRANDING_TEXT)"
+
+LangString FINISH_RUN_TEXT ${LANG_ENGLISH} "Start SSDownload"
+LangString FINISH_RUN_TEXT ${LANG_TURKISH} "SSDownload uygulamasını başlat"
+LangString SEC_CORE_NAME ${LANG_ENGLISH} "SSDownload (required)"
+LangString SEC_CORE_NAME ${LANG_TURKISH} "SSDownload (gerekli)"
+LangString SEC_AUTOSTART_NAME ${LANG_ENGLISH} "Start with Windows"
+LangString SEC_AUTOSTART_NAME ${LANG_TURKISH} "Windows ile başlat"
+LangString ERR_INSTALL_DIR ${LANG_ENGLISH} "Choose an empty folder or an existing SSDownload installation folder. Other files will not be overwritten."
+LangString ERR_INSTALL_DIR ${LANG_TURKISH} "Boş bir klasör veya mevcut SSDownload kurulum klasörünü seçin. Diğer dosyaların üzerine yazılmayacak."
+LangString ERR_WINDOWS_64 ${LANG_ENGLISH} "SSDownload requires 64-bit Windows 10 or 11."
+LangString ERR_WINDOWS_64 ${LANG_TURKISH} "SSDownload, 64-bit Windows 10 veya 11 gerektirir."
+LangString ERR_REGISTER_HOST ${LANG_ENGLISH} "The browser Native Messaging registration could not be created (exit code $0). Setup could not be completed."
+LangString ERR_REGISTER_HOST ${LANG_TURKISH} "Tarayıcı Native Messaging kaydı oluşturulamadı (çıkış kodu $0). Kurulum tamamlanamadı."
+LangString SHORTCUT_UNINSTALL ${LANG_ENGLISH} "Uninstall SSDownload"
+LangString SHORTCUT_UNINSTALL ${LANG_TURKISH} "SSDownload kaldır"
 
 Function ValidateInstallDirectory
   IfFileExists "$INSTDIR\ssdownload.install" valid_directory
@@ -70,7 +96,7 @@ Function ValidateInstallDirectory
     StrCmp $1 ".." next_directory_entry
     FindClose $0
     IfSilent unsafe_directory
-    MessageBox MB_ICONSTOP "Boş bir klasör veya mevcut SSDownload kurulum klasörünü seçin. Diğer dosyaların üzerine yazılmayacak."
+    MessageBox MB_ICONSTOP "$(ERR_INSTALL_DIR)"
   unsafe_directory:
     SetErrorLevel 2
     Abort
@@ -86,13 +112,13 @@ Function .onVerifyInstDir
   Call ValidateInstallDirectory
 FunctionEnd
 
-Section "SSDownload (gerekli)" SEC_CORE
+Section "$(SEC_CORE_NAME)" SEC_CORE
   SectionIn RO
   SetShellVarContext current
   Call ValidateInstallDirectory
 
   ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "SSDownload, 64-bit Windows 10 veya 11 gerektirir."
+    MessageBox MB_ICONSTOP "$(ERR_WINDOWS_64)"
     Abort
   ${EndIf}
 
@@ -134,7 +160,11 @@ Section "SSDownload (gerekli)" SEC_CORE
 
   CreateDirectory "$SMPROGRAMS\SSDownload"
   CreateShortcut "$SMPROGRAMS\SSDownload\SSDownload.lnk" "$INSTDIR\ssdownload.exe" "" "$INSTDIR\app.ico" 0 SW_SHOWNORMAL
-  CreateShortcut "$SMPROGRAMS\SSDownload\SSDownload kaldır.lnk" "$INSTDIR\Uninstall.exe"
+  ; The uninstall shortcut is named in the installer's language; an earlier install may have
+  ; left it under the other language's name.
+  Delete "$SMPROGRAMS\SSDownload\SSDownload kaldır.lnk"
+  Delete "$SMPROGRAMS\SSDownload\Uninstall SSDownload.lnk"
+  CreateShortcut "$SMPROGRAMS\SSDownload\$(SHORTCUT_UNINSTALL).lnk" "$INSTDIR\Uninstall.exe"
 
   WriteRegStr HKCU "${PRODUCT_KEY}" "DisplayName" "SSDownload"
   WriteRegStr HKCU "${PRODUCT_KEY}" "DisplayVersion" "${VERSION}"
@@ -149,12 +179,12 @@ Section "SSDownload (gerekli)" SEC_CORE
   ; Registration is a required installer operation, not a copy-only approximation.
   ExecWait '$\"$INSTDIR\ssdownload.exe$\" --register-host' $0
   ${If} $0 != 0
-    MessageBox MB_ICONSTOP "Tarayıcı Native Messaging kaydı oluşturulamadı (çıkış kodu $0). Kurulum tamamlanamadı."
+    MessageBox MB_ICONSTOP "$(ERR_REGISTER_HOST)"
     Abort
   ${EndIf}
 SectionEnd
 
-Section /o "Windows ile başlat" SEC_AUTOSTART
+Section /o "$(SEC_AUTOSTART_NAME)" SEC_AUTOSTART
   SetShellVarContext current
   ExecWait '$\"$INSTDIR\ssdownload.exe$\" --enable-autostart' $0
 SectionEnd
@@ -183,7 +213,9 @@ Section "Uninstall"
   DeleteRegKey HKCU "${PRODUCT_KEY}"
 
   Delete "$SMPROGRAMS\SSDownload\SSDownload.lnk"
+  ; The uninstaller may run in another language than the installer did: remove both names.
   Delete "$SMPROGRAMS\SSDownload\SSDownload kaldır.lnk"
+  Delete "$SMPROGRAMS\SSDownload\Uninstall SSDownload.lnk"
   RMDir "$SMPROGRAMS\SSDownload"
 
   Delete /REBOOTOK "$INSTDIR\ssdownload.exe"

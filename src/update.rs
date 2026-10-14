@@ -94,7 +94,7 @@ fn publish_progress(value: Option<UpdateProgress>) {
 #[derive(Debug, Default)]
 pub(crate) struct UpdateOutcome {
     pub(crate) success: bool,
-    /// User-facing Turkish text. Includes the quarantine path when applicable.
+    /// User-facing text in the interface language. Includes the quarantine path when applicable.
     pub(crate) message: String,
     pub(crate) quarantine: Option<PathBuf>,
     /// True when the installer was deliberately skipped (dry-run mode, or a portable copy
@@ -320,20 +320,35 @@ fn restrict_transport(easy: &mut crate::network::GovernedEasy, staging: bool) ->
 
 /// Verifies `document` against a base64 Ed25519 signature from the release feed.
 fn verify_feed_signature(document: &[u8], signature: &[u8]) -> Result<()> {
-    let encoded = std::str::from_utf8(signature).context("İmza belgesi UTF-8 değil")?;
-    let raw = STANDARD
-        .decode(encoded.trim())
-        .context("İmza belgesi base64 değil")?;
-    let key = STANDARD
-        .decode(FEED_PUBLIC_KEY)
-        .context("Gömülü açık anahtar geçersiz")?;
-    let key: [u8; 32] = key
-        .try_into()
-        .map_err(|_| anyhow!("Gömülü açık anahtar 32 bayt değil"))?;
-    let verifying = ed25519_dalek::VerifyingKey::from_bytes(&key)
-        .context("Gömülü açık anahtar bir Ed25519 anahtarı değil")?;
-    let signature = ed25519_dalek::Signature::from_slice(&raw)
-        .context("İmza 64 baytlık bir Ed25519 imzası değil")?;
+    let encoded = std::str::from_utf8(signature).context(crate::i18n::ui(
+        "İmza belgesi UTF-8 değil",
+        "The signature document is not UTF-8",
+    ))?;
+    let raw = STANDARD.decode(encoded.trim()).context(crate::i18n::ui(
+        "İmza belgesi base64 değil",
+        "The signature document is not base64",
+    ))?;
+    let key = STANDARD.decode(FEED_PUBLIC_KEY).context(crate::i18n::ui(
+        "Gömülü açık anahtar geçersiz",
+        "The embedded public key is invalid",
+    ))?;
+    let key: [u8; 32] = key.try_into().map_err(|_| {
+        anyhow!(
+            "{}",
+            crate::i18n::ui(
+                "Gömülü açık anahtar 32 bayt değil",
+                "The embedded public key is not 32 bytes"
+            )
+        )
+    })?;
+    let verifying = ed25519_dalek::VerifyingKey::from_bytes(&key).context(crate::i18n::ui(
+        "Gömülü açık anahtar bir Ed25519 anahtarı değil",
+        "The embedded public key is not an Ed25519 key",
+    ))?;
+    let signature = ed25519_dalek::Signature::from_slice(&raw).context(crate::i18n::ui(
+        "İmza 64 baytlık bir Ed25519 imzası değil",
+        "The signature is not a 64-byte Ed25519 signature",
+    ))?;
     verifying.verify_strict(document, &signature).map_err(|_| {
         crate::error_codes::coded(
             crate::error_codes::UPD_002,

@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+const { i18nApi, loadI18n } = require("./i18n-harness");
 
 const extensionDir = path.resolve(__dirname, "..", "chromium");
 const source = name => fs.readFileSync(path.join(extensionDir, name), "utf8");
@@ -24,6 +25,7 @@ function backgroundHarness({session={},local={},native=async request=>request.ac
   const storage={session:{...session},local:{...local}}, menus=[];
   const nativeRequests=[];
   const browser={
+    i18n:i18nApi(),
     storage:{local:{async get(defaults){return {...defaults,...storage.local};},async set(value){Object.assign(storage.local,value);}},
       session:{async get(keys){return Object.fromEntries(keys.map(key=>[key,storage.session[key]]));},async set(value){Object.assign(storage.session,value);}}},
     webRequest:{onBeforeSendHeaders:events.before,onBeforeRedirect:events.redirect,onHeadersReceived:events.headers},
@@ -38,6 +40,7 @@ function backgroundHarness({session={},local={},native=async request=>request.ac
   };
   const context=vm.createContext({browser,URL,crypto:webcrypto,TextEncoder,Uint8Array,Promise,Map,Set,Array,Object,Number,String,RegExp,JSON,Error,Date,
     queueMicrotask,setTimeout(callback){queueMicrotask(callback);return 1;},clearTimeout(){}});
+  loadI18n(context);
   vm.runInContext(source("background.js"),context,{filename:"background.js"});
   // `publicState` was removed from the worker as dead code; the harness evaluates
   // the same discovery view against the worker's own globals, so every existing
@@ -295,9 +298,10 @@ test("content discovery keeps only actual track children of their player",async(
     querySelectorAll(selector){if(selector==="video, audio")return [media];if(selector==="track[src]")return [track,unrelated];return [];},addEventListener(){}};
   class Observer{constructor(callback){this.callback=callback;}observe(){}}
   const runtimeEvent=event();
-  const context=vm.createContext({browser:{runtime:{sendMessage(message){sent.push(message);return Promise.resolve(message.event==="usage-modes"?{status:"ready",usageModes:{video:true,file:true,audio:true}}:{});},onMessage:runtimeEvent}},
+  const context=vm.createContext({browser:{i18n:i18nApi(),runtime:{sendMessage(message){sent.push(message);return Promise.resolve(message.event==="usage-modes"?{status:"ready",usageModes:{video:true,file:true,audio:true}}:{});},onMessage:runtimeEvent}},
     URL,document,location:{href:"https://site.example/watch",origin:"https://site.example"},MutationObserver:Observer,PerformanceObserver:Observer,
     setTimeout,clearTimeout,setInterval(){return 1;},JSON,String,Number,Map,WeakMap,WeakSet,Array,Object,Date,Math});
+  loadI18n(context);
   vm.runInContext(source("content.js"),context,{filename:"content.js"});
   const players=JSON.parse(vm.runInContext("JSON.stringify(players())",context));
   const sources=JSON.parse(vm.runInContext("JSON.stringify(collectSources())",context));

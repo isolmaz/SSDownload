@@ -90,11 +90,20 @@ impl SensitiveInputs {
 /// only names the top-level site a partitioned cookie was collected under.
 pub(super) fn page_context(value: &str) -> Result<Url> {
     if value.bytes().any(|b| matches!(b, 0 | b'\r' | b'\n')) {
-        bail!("Kaynak sayfa bağlamı geçersiz satır karakteri içeriyor");
+        bail!(crate::i18n::ui(
+            "Kaynak sayfa bağlamı geçersiz satır karakteri içeriyor",
+            "The source page context contains an invalid line character"
+        ));
     }
-    let parsed = Url::parse(value).context("Kaynak sayfa bağlamı tam bir kaynak adresi değil")?;
+    let parsed = Url::parse(value).context(crate::i18n::ui(
+        "Kaynak sayfa bağlamı tam bir kaynak adresi değil",
+        "The source page context is not a complete URL",
+    ))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        bail!("Kaynak sayfa bağlamı geçerli bir web adresi değil");
+        bail!(crate::i18n::ui(
+            "Kaynak sayfa bağlamı geçerli bir web adresi değil",
+            "The source page context is not a valid web address"
+        ));
     }
     Ok(parsed)
 }
@@ -104,7 +113,10 @@ pub(super) fn validate_scoped_cookies(
     page_url: Option<&str>,
 ) -> Result<()> {
     if cookies.len() > 500 {
-        bail!("Seçili kaynak zincirinin çerez sınırı aşıldı");
+        bail!(crate::i18n::ui(
+            "Seçili kaynak zincirinin çerez sınırı aşıldı",
+            "The cookie limit for the selected source chain was exceeded"
+        ));
     }
     // An empty page is the same as no page: only a partitioned cookie needs it, and a
     // supplied page is validated before it authorizes one. The network Referer is a
@@ -136,29 +148,43 @@ pub(super) fn validate_scoped_cookies(
                 .bytes()
                 .any(|byte| matches!(byte, 0 | b'\r' | b'\n' | b'\t'))
         {
-            bail!("Oturum çerezi güvenli Netscape dosyasına dönüştürülemedi");
+            bail!(crate::i18n::ui(
+                "Oturum çerezi güvenli Netscape dosyasına dönüştürülemedi",
+                "The session cookie could not be converted to a safe Netscape file"
+            ));
         }
         let domain = cookie.domain.trim_start_matches('.').to_ascii_lowercase();
-        let parsed_domain = Url::parse(&format!("https://{domain}/"))
-            .context("Oturum çerezi sunucu kapsamı geçersiz")?;
+        let parsed_domain = Url::parse(&format!("https://{domain}/")).context(crate::i18n::ui(
+            "Oturum çerezi sunucu kapsamı geçersiz",
+            "The session cookie's host scope is invalid",
+        ))?;
         if domain.is_empty()
             || parsed_domain.host_str() != Some(domain.as_str())
             || parsed_domain.port().is_some()
         {
-            bail!("Oturum çerezi sunucu kapsamı geçersiz");
+            bail!(crate::i18n::ui(
+                "Oturum çerezi sunucu kapsamı geçersiz",
+                "The session cookie's host scope is invalid"
+            ));
         }
         if !cookie.path.starts_with('/') {
-            bail!("Oturum çerezi yol kapsamı geçersiz");
+            bail!(crate::i18n::ui(
+                "Oturum çerezi yol kapsamı geçersiz",
+                "The session cookie's path scope is invalid"
+            ));
         }
 
         let store_id = cookie.store_id.as_deref();
         if store_id.is_some_and(str::is_empty) {
-            bail!("Oturum çerezi depo kapsamı geçersiz");
+            bail!(crate::i18n::ui(
+                "Oturum çerezi depo kapsamı geçersiz",
+                "The session cookie's store scope is invalid"
+            ));
         }
         match store {
             None => store = Some(store_id),
             Some(previous) if previous != store_id => {
-                bail!("Farklı tarayıcı çerez depoları tek medya isteğinde birleştirilemez")
+                bail!(crate::i18n::ui("Farklı tarayıcı çerez depoları tek medya isteğinde birleştirilemez", "Cookies from different browser cookie stores cannot be combined in one media request"))
             }
             Some(_) => {}
         }
@@ -166,10 +192,15 @@ pub(super) fn validate_scoped_cookies(
         let partition_key = cookie.partition_key.as_deref();
         if let Some(key) = partition_key {
             if partition.is_some_and(|previous| previous != key) {
-                bail!("Bir medya isteğinde farklı partition çerezleri birleştirilemez");
+                bail!(crate::i18n::ui(
+                    "Bir medya isteğinde farklı partition çerezleri birleştirilemez",
+                    "Cookies from different partitions cannot be combined in one media request"
+                ));
             }
-            let top =
-                Url::parse(key).context("Çerez partition anahtarı tam bir kaynak adresi değil")?;
+            let top = Url::parse(key).context(crate::i18n::ui(
+                "Çerez partition anahtarı tam bir kaynak adresi değil",
+                "The cookie partition key is not a complete URL",
+            ))?;
             if !matches!(top.scheme(), "http" | "https")
                 || top.host_str().is_none()
                 || top.username() != ""
@@ -178,11 +209,15 @@ pub(super) fn validate_scoped_cookies(
                 || top.query().is_some()
                 || top.fragment().is_some()
             {
-                bail!("Çerez partition anahtarı tam bir kaynak adresi değil");
+                bail!(crate::i18n::ui(
+                    "Çerez partition anahtarı tam bir kaynak adresi değil",
+                    "The cookie partition key is not a complete URL"
+                ));
             }
-            let page = page
-                .as_ref()
-                .context("Partition çerezi için kaynak sayfa bağlamı eksik")?;
+            let page = page.as_ref().context(crate::i18n::ui(
+                "Partition çerezi için kaynak sayfa bağlamı eksik",
+                "The source page context is missing for the partitioned cookie",
+            ))?;
             let top_host = top.host_str().unwrap_or_default();
             let page_host = page.host_str().unwrap_or_default();
             if top.scheme() != page.scheme()
@@ -191,7 +226,10 @@ pub(super) fn validate_scoped_cookies(
                         .to_ascii_lowercase()
                         .ends_with(&format!(".{}", top_host.to_ascii_lowercase())))
             {
-                bail!("Çerez partition anahtarı kaynak sayfa bağlamıyla eşleşmiyor");
+                bail!(crate::i18n::ui(
+                    "Çerez partition anahtarı kaynak sayfa bağlamıyla eşleşmiyor",
+                    "The cookie partition key does not match the source page context"
+                ));
             }
             partition = Some(key);
         }
@@ -201,7 +239,7 @@ pub(super) fn validate_scoped_cookies(
             .insert(identity, partition_key)
             .is_some_and(|previous| previous != partition_key)
         {
-            bail!("Aynı çerez için partition ve partitionsız değerler güvenle birleştirilemiyor");
+            bail!(crate::i18n::ui("Aynı çerez için partition ve partitionsız değerler güvenle birleştirilemiyor", "Partitioned and unpartitioned values for the same cookie cannot be combined safely"));
         }
     }
     Ok(())
@@ -318,10 +356,10 @@ pub(super) fn write_input(
     child: &mut Child,
     input: &[u8],
 ) -> Result<thread::JoinHandle<std::io::Result<()>>> {
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("Medya standart girdisi açılamadı")?;
+    let mut stdin = child.stdin.take().context(crate::i18n::ui(
+        "Medya standart girdisi açılamadı",
+        "Could not open the media standard input",
+    ))?;
     let input = input.to_vec();
     Ok(thread::Builder::new()
         .name("media-input".into())
@@ -330,11 +368,20 @@ pub(super) fn write_input(
 
 pub(super) fn validate_web_url(value: &str) -> Result<()> {
     if value.bytes().any(|b| matches!(b, 0 | b'\r' | b'\n')) {
-        bail!("URL geçersiz satır karakteri içeriyor");
+        bail!(crate::i18n::ui(
+            "URL geçersiz satır karakteri içeriyor",
+            "The URL contains an invalid line character"
+        ));
     }
-    let parsed = Url::parse(value).context("Geçerli bir medya URL'si girin")?;
+    let parsed = Url::parse(value).context(crate::i18n::ui(
+        "Geçerli bir medya URL'si girin",
+        "Enter a valid media URL",
+    ))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        bail!("Yalnızca HTTP/HTTPS medya adresleri destekleniyor");
+        bail!(crate::i18n::ui(
+            "Yalnızca HTTP/HTTPS medya adresleri destekleniyor",
+            "Only HTTP/HTTPS media addresses are supported"
+        ));
     }
     Ok(())
 }

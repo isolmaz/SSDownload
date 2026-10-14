@@ -1,6 +1,6 @@
 # SSDownload guide
 
-Everything beyond the [README](../README.md): installation details, every menu, setting and shortcut, recovery and the command line. The interface is Turkish by default; menu names below are given in English with the Turkish label in parentheses where it helps.
+Everything beyond the [README](../README.md): installation details, every menu, setting and shortcut, recovery and the command line. A new installation starts in the Windows display language (Turkish on a Turkish Windows, English otherwise) and can be switched in **Settings → General**; the command line and the browser extension follow it. Menu names below are given in English with the Turkish label in parentheses where it helps.
 
 - [Install](#install)
 - [Browser extension](#browser-extension)
@@ -22,12 +22,12 @@ Everything beyond the [README](../README.md): installation details, every menu, 
 
 ## Browser extension
 
-The Chrome/Edge extension adds the overlay button on videos, the right-click entries and optional download takeover. It talks only to the desktop app on the same computer. Its own text (button, popup and messages) is currently Turkish only.
+The Chrome/Edge extension adds the overlay button on videos, the right-click entries and optional download takeover. It talks only to the desktop app on the same computer. Its own text (button, popup, menus and messages) is English or Turkish and follows the app's interface language (**Settings → General**); until the app has reported it (not installed, not running, an older version), the browser's language decides: Turkish in a Turkish browser, English otherwise.
 
 - **Automatic:** Setup (and `register-native-host.cmd` for the portable ZIP) registers the [Chrome Web Store extension](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham) with Chrome and Edge for your Windows user. The next time the browser starts it shows a "New extension added" notice: click **Enable extension**. Close every browser window first if the notice does not appear. If you remove the extension in the browser, it stays removed. Uninstalling SSDownload removes the registration, and the browser then removes the extension.
 - **Settings → General → Install the extension in browsers** repeats the registration and opens the Chrome Web Store page, where **Add to Chrome** installs it at once. It also removes the force-install policy entries that versions up to 1.6.1 wrote, because Chrome blocks the extension while one exists. If those entries need administrator rights, the app asks first (`ssdownload-cli --remove-extension-policies`).
 - **Without the store:** open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, choose **Load unpacked** and select the `browser\chromium` folder next to `ssdownload.exe` (installed copies: `%LOCALAPPDATA%\Programs\SSDownload\browser\chromium`). **Tools → Browser setup** opens that folder and the steps. The bundled copy has the same extension ID, so the browser connects it to the app the same way.
-- **Toolbar popup:** the discovery switch (`AÇIK`/`KAPALI`), **Hide the button on this site** (discovery and context entries stay), the page's media list (each entry opens the desktop picker) and **Open the app**. When the app cannot be reached, the popup says why. After a handover the icon badge counts completed downloads. Browsing alone never starts SSDownload: only an action you take (download, picker, Open the app) does.
+- **Toolbar popup:** the discovery switch (`ON`/`OFF` in English, `AÇIK`/`KAPALI` in Turkish), **Hide the button on this site** (discovery and context entries stay), the page's media list (each entry opens the desktop picker) and **Open the app**. When the app cannot be reached, the popup says why. After a handover the icon badge counts completed downloads. Browsing alone never starts SSDownload: only an action you take (download, picker, Open the app) does.
 - **Extension without the app** (installed from the store first, or on macOS/Linux): it adds no video button, no context entries and takes over no downloads; browser downloads continue as usual. The popup says the app was not found and its main button becomes **Download the app**, which opens the download page. SSDownload itself runs on Windows only.
 - If the browser cannot connect, check that the app and extension versions match and register the copy you use (`register-native-host.cmd` or reinstall).
 
@@ -63,7 +63,7 @@ Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt
 
 | Tab | Controls |
 |---|---|
-| **General** | Simple/Advanced surface and interface language (Turkish or English); download folder; usage profiles; clipboard detection; start with Windows; minimize to tray; completion notification; dark title bar and controls; site entries in the browser; daily working hours; update check; extension install. |
+| **General** | Simple/Advanced surface and interface language (Turkish or English; the browser extension follows it); download folder; usage profiles; clipboard detection; start with Windows; minimize to tray; completion notification; dark title bar and controls; site entries in the browser; daily working hours; update check; extension install. |
 | **Advanced** | Concurrent jobs (1–16); connections per file (1–16); media fragment concurrency (1–16); per-host jobs and connections (1–16); global speed limit (KiB/s, 0 = unlimited); retry count (0–20); experimental browser transfer; event log level and host recording. |
 | **Network** | Proxy: the Windows setting, none, or manual `http://` / `socks5://` with an optional user name and password; a scheduled speed limit (daily window and KiB/s). |
 | **Behaviour** | Keep Windows awake while downloading; completion sound; completion card; browser download takeover; hold on a metered connection; the Ctrl+Shift+D hotkey; double-click action; history retention in days (0 keeps everything). |

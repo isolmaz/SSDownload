@@ -53,15 +53,24 @@ impl OutputPlan {
         let fingerprint = request_fingerprint(request)?;
         let owner = crate::output::identity(output)?;
         let workspace = workspace_path(output, &owner);
-        let parent = workspace.parent().context("Çalışma klasörü eksik")?;
+        let parent = workspace.parent().context(crate::i18n::ui(
+            "Çalışma klasörü eksik",
+            "The working folder is missing",
+        ))?;
         if parent.exists() && fs::symlink_metadata(parent)?.file_attributes() & 0x400 != 0 {
-            bail!("Çalışma klasörü yönlendirme içeriyor");
+            bail!(crate::i18n::ui(
+                "Çalışma klasörü yönlendirme içeriyor",
+                "The working folder contains a redirect"
+            ));
         }
         if workspace.exists() {
             verify_workspace(&workspace, &owner)?;
             reconcile_media_workspace(&workspace, &fingerprint, evidence)?;
         } else {
-            fs::create_dir_all(workspace.parent().context("Çalışma klasörü eksik")?)?;
+            fs::create_dir_all(workspace.parent().context(crate::i18n::ui(
+                "Çalışma klasörü eksik",
+                "The working folder is missing",
+            ))?)?;
             fs::create_dir(&workspace)?;
             fs::write(workspace.join(".owner"), &owner)?;
             if let Some(evidence) = evidence {
@@ -103,7 +112,10 @@ impl OutputPlan {
         let root = self.workspace.canonicalize()?;
         let resolved = path.canonicalize()?;
         if !resolved.starts_with(&root) || !resolved.is_file() {
-            bail!("Medya aracı beklenen klasör dışında bir çıktı döndürdü");
+            bail!(crate::i18n::ui(
+                "Medya aracı beklenen klasör dışında bir çıktı döndürdü",
+                "The media tool returned an output outside the expected folder"
+            ));
         }
         Ok(resolved)
     }
@@ -118,22 +130,36 @@ impl OutputPlan {
         verify_workspace(&self.workspace, &self.owner)?;
         let final_path = if playlist {
             if completed.is_empty() {
-                bail!("Tamamlanan playlist dosyası bulunamadı");
+                bail!(crate::i18n::ui(
+                    "Tamamlanan playlist dosyası bulunamadı",
+                    "The completed playlist file was not found"
+                ));
             }
             let ready = self.workspace.join("ready");
             fs::create_dir_all(&ready)?;
             for path in completed {
                 let path = self.checked_output(path)?;
-                let target = ready.join(path.file_name().context("Dosya adı eksik")?);
+                let target = ready.join(path.file_name().context(crate::i18n::ui(
+                    "Dosya adı eksik",
+                    "The file name is missing",
+                ))?);
                 if !target.exists() {
                     fs::rename(&path, &target)?;
                 }
             }
             crate::output::publish(&ready, &without_media_extension(output))?
         } else {
-            let path = self.checked_output(last.context("Tamamlanan medya dosyası bulunamadı")?)?;
-            let target =
-                with_media_extension(output, path.extension().context("Medya dosya türü eksik")?);
+            let path = self.checked_output(last.context(crate::i18n::ui(
+                "Tamamlanan medya dosyası bulunamadı",
+                "The completed media file was not found",
+            ))?)?;
+            let target = with_media_extension(
+                output,
+                path.extension().context(crate::i18n::ui(
+                    "Medya dosya türü eksik",
+                    "The media file type is missing",
+                ))?,
+            );
             crate::output::publish(&path, &target)?
         };
         // This is a private, ownership-checked tree. Partial files remain here on pause/failure.
@@ -157,12 +183,20 @@ pub(super) struct SourceInfoLease {
 
 impl SourceInfoLease {
     pub(super) fn from_pinned_workspace(workspace: &Path) -> Result<Self> {
-        let sealed = fs::read_to_string(workspace.join(MEDIA_PINNED_FILE))
-            .context("Doğrulanmış medya kaynak paketi okunamadı")?;
-        let serialized =
-            crate::secure::unseal(&sealed).context("Doğrulanmış medya kaynak paketi açılamadı")?;
+        let sealed =
+            fs::read_to_string(workspace.join(MEDIA_PINNED_FILE)).context(crate::i18n::ui(
+                "Doğrulanmış medya kaynak paketi okunamadı",
+                "Could not read the verified media source bundle",
+            ))?;
+        let serialized = crate::secure::unseal(&sealed).context(crate::i18n::ui(
+            "Doğrulanmış medya kaynak paketi açılamadı",
+            "Could not open the verified media source bundle",
+        ))?;
         let mut source: PinnedMediaSource =
-            serde_json::from_str(&serialized).context("Doğrulanmış medya kaynak paketi bozuk")?;
+            serde_json::from_str(&serialized).context(crate::i18n::ui(
+                "Doğrulanmış medya kaynak paketi bozuk",
+                "The verified media source bundle is corrupt",
+            ))?;
         let root = crate::paths::cookie_jar_dir()?
             .join(format!("{PINNED_LEASE_PREFIX}{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root)?;
@@ -170,12 +204,19 @@ impl SourceInfoLease {
             for (index, manifest) in source.manifests.iter().enumerate() {
                 let path = root.join(format!("manifest-{index}.m3u8"));
                 fs::write(&path, manifest.body.as_bytes())?;
-                let url = Url::from_file_path(&path)
-                    .map_err(|_| anyhow!("Doğrulanmış manifest dosya adresine dönüştürülemedi"))?;
+                let url = Url::from_file_path(&path).map_err(|_| {
+                    anyhow!(crate::i18n::ui(
+                        "Doğrulanmış manifest dosya adresine dönüştürülemedi",
+                        "The verified manifest could not be converted to a file URL"
+                    ))
+                })?;
                 replace_marker(&mut source.inspection, &manifest.marker, url.as_str());
             }
             if value_contains_marker(&source.inspection) {
-                bail!("Doğrulanmış medya kaynak paketi eksik manifest içeriyor");
+                bail!(crate::i18n::ui(
+                    "Doğrulanmış medya kaynak paketi eksik manifest içeriyor",
+                    "The verified media source bundle has a missing manifest"
+                ));
             }
             let info_path = root.join("source.info.json");
             fs::write(&info_path, serde_json::to_vec(&source.inspection)?)?;
@@ -238,15 +279,20 @@ pub(super) fn value_contains_marker(value: &Value) -> bool {
 
 pub(super) fn promote_pinned_source(workspace: &Path) -> Result<()> {
     let pending = workspace.join(MEDIA_PINNED_PENDING_FILE);
-    let sealed =
-        fs::read(&pending).context("Yenilenen doğrulanmış medya kaynak paketi bulunamadı")?;
+    let sealed = fs::read(&pending).context(crate::i18n::ui(
+        "Yenilenen doğrulanmış medya kaynak paketi bulunamadı",
+        "The refreshed verified media source bundle was not found",
+    ))?;
     // Validate that the pending payload is both DPAPI-protected and structurally
     // complete before making it current. The plaintext exists only in memory.
-    let opened = crate::secure::unseal(
-        std::str::from_utf8(&sealed).context("Doğrulanmış medya kaynak paketi metin değil")?,
-    )?;
-    let source: PinnedMediaSource =
-        serde_json::from_str(&opened).context("Yenilenen doğrulanmış medya kaynak paketi bozuk")?;
+    let opened = crate::secure::unseal(std::str::from_utf8(&sealed).context(crate::i18n::ui(
+        "Doğrulanmış medya kaynak paketi metin değil",
+        "The verified media source bundle is not text",
+    ))?)?;
+    let source: PinnedMediaSource = serde_json::from_str(&opened).context(crate::i18n::ui(
+        "Yenilenen doğrulanmış medya kaynak paketi bozuk",
+        "The refreshed verified media source bundle is corrupt",
+    ))?;
     validate_pinned_source(&source)?;
     crate::recovery::atomic_write(&workspace.join(MEDIA_PINNED_FILE), &sealed)?;
     fs::remove_file(pending)?;
@@ -262,7 +308,13 @@ pub(super) fn reconcile_media_workspace(
     match evidence {
         Some(evidence) => {
             let current = read_media_source_state(workspace).map_err(|error| {
-                anyhow!("Mevcut HLS/DASH parçalarının uyumluluk kanıtı yok veya bozuk; eserler korundu. Açık yeniden başlatma gerekir: {error:#}")
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui_owned!(
+                        format!("Mevcut HLS/DASH parçalarının uyumluluk kanıtı yok veya bozuk; eserler korundu. Açık yeniden başlatma gerekir: {error:#}"),
+                        format!("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}")
+                    )
+                )
             })?;
             if current.request == fingerprint && current.evidence == *evidence {
                 crate::recovery::atomic_write(
@@ -275,17 +327,17 @@ pub(super) fn reconcile_media_workspace(
             }
             let pending: PendingMediaSourceState = serde_json::from_slice(
                 &fs::read(workspace.join(MEDIA_SOURCE_PENDING_FILE)).context(
-                    "Yenilenen HLS/DASH kaynağının atomik geçiş kaydı bulunamadı; eserler korundu",
+                    crate::i18n::ui("Yenilenen HLS/DASH kaynağının atomik geçiş kaydı bulunamadı; eserler korundu", "The atomic handover record of the refreshed HLS/DASH source was not found; work files were kept"),
                 )?,
             )
-            .context("Yenilenen HLS/DASH kaynağının atomik geçiş kaydı bozuk")?;
+            .context(crate::i18n::ui("Yenilenen HLS/DASH kaynağının atomik geçiş kaydı bozuk", "The atomic handover record of the refreshed HLS/DASH source is corrupt"))?;
             if pending.version != MEDIA_SOURCE_STATE_VERSION
                 || pending.previous_request != current.request
                 || pending.next.request != fingerprint
                 || pending.next.evidence != *evidence
                 || pending.next.evidence.live
             {
-                bail!("Yenilenen HLS/DASH kaynak/akış/parça çizelgesi mevcut çalışmayla eşleşmiyor; eserler korundu. Açık yeniden başlatma gerekir");
+                bail!(crate::i18n::ui("Yenilenen HLS/DASH kaynak/akış/parça çizelgesi mevcut çalışmayla eşleşmiyor; eserler korundu. Açık yeniden başlatma gerekir", "The refreshed HLS/DASH source/stream/segment timeline does not match the existing work; work files were kept. An explicit restart is required"));
             }
             promote_pinned_source(workspace)?;
             write_media_source_state(workspace, &pending.next)?;
@@ -298,10 +350,10 @@ pub(super) fn reconcile_media_workspace(
         }
         None => {
             if source_path.exists() {
-                bail!("Mevcut çalışma HLS/DASH parça kanıtı içeriyor ancak yeni kaynak tam parça çizelgesi sunmuyor; eserler korundu. Açık yeniden başlatma gerekir");
+                bail!(crate::i18n::ui("Mevcut çalışma HLS/DASH parça kanıtı içeriyor ancak yeni kaynak tam parça çizelgesi sunmuyor; eserler korundu. Açık yeniden başlatma gerekir", "The existing work has HLS/DASH segment evidence but the new source offers no complete segment timeline; work files were kept. An explicit restart is required"));
             }
             if fs::read_to_string(workspace.join(".request"))? != fingerprint {
-                bail!("Bu hedefin geçici dosyaları başka bir indirmeye ait. Yeni bir dosya adı seçin.");
+                bail!(crate::i18n::ui("Bu hedefin geçici dosyaları başka bir indirmeye ait. Yeni bir dosya adı seçin.", "The temporary files for this target belong to another download. Choose a new file name."));
             }
             Ok(())
         }
@@ -320,11 +372,20 @@ pub(super) fn verify_workspace(path: &Path, owner: &str) -> Result<()> {
     if fs::symlink_metadata(path)?.file_attributes() & 0x400 != 0
         || fs::read_to_string(path.join(".owner"))? != owner
     {
-        bail!("Çalışma klasörünün SSDownload'a ait olduğu doğrulanamadı");
+        bail!(crate::i18n::ui(
+            "Çalışma klasörünün SSDownload'a ait olduğu doğrulanamadı",
+            "Could not verify that the working folder belongs to SSDownload"
+        ));
     }
-    let parent = path.parent().context("Çalışma klasörü eksik")?;
+    let parent = path.parent().context(crate::i18n::ui(
+        "Çalışma klasörü eksik",
+        "The working folder is missing",
+    ))?;
     if fs::symlink_metadata(parent)?.file_attributes() & 0x400 != 0 {
-        bail!("Çalışma klasörü yönlendirme içeriyor");
+        bail!(crate::i18n::ui(
+            "Çalışma klasörü yönlendirme içeriyor",
+            "The working folder contains a redirect"
+        ));
     }
     Ok(())
 }
@@ -359,7 +420,10 @@ pub(super) fn discard_attempt_outputs(
         let path = entry.path();
         let meta = fs::symlink_metadata(&path)?;
         if meta.file_attributes() & 0x400 != 0 {
-            bail!("Çalışma klasörü yönlendirme içeriyor");
+            bail!(crate::i18n::ui(
+                "Çalışma klasörü yönlendirme içeriyor",
+                "The working folder contains a redirect"
+            ));
         }
         if !meta.is_file() {
             continue;
@@ -395,7 +459,10 @@ pub(super) fn remove_workspace(path: &Path, owner: &str) -> Result<()> {
             let entry = entry?;
             let meta = fs::symlink_metadata(entry.path())?;
             if meta.file_attributes() & 0x400 != 0 {
-                bail!("Çalışma klasörü yönlendirme içeriyor");
+                bail!(crate::i18n::ui(
+                    "Çalışma klasörü yönlendirme içeriyor",
+                    "The working folder contains a redirect"
+                ));
             }
             if meta.is_dir() {
                 check_tree(&entry.path())?;
@@ -442,10 +509,16 @@ pub(crate) fn prepare_source_refresh(
     network: &NetworkGovernor,
 ) -> Result<PreparedSourceRefresh> {
     if control.stop_requested() {
-        bail!("Kaynak hazırlığı durduruldu");
+        bail!(crate::i18n::ui(
+            "Kaynak hazırlığı durduruldu",
+            "Source preparation was stopped"
+        ));
     }
     if selection_fingerprint(previous)? != selection_fingerprint(next)? {
-        bail!("Kaynak yenilemesi seçilen görüntü/ses/altyazı kimliğini değiştiremez");
+        bail!(crate::i18n::ui(
+            "Kaynak yenilemesi seçilen görüntü/ses/altyazı kimliğini değiştiremez",
+            "A source refresh cannot change the selected video/audio/subtitle identity"
+        ));
     }
     // The engine's job-level archive owns explicit restart and its rollback.
     // Media preparation stays pure and does not move retained work.
@@ -472,16 +545,22 @@ pub(crate) fn prepare_source_refresh(
     }
     verify_workspace(&workspace, &owner)?;
     let current = read_media_source_state(&workspace).map_err(|error| {
-        anyhow!("Mevcut HLS/DASH parçalarının kalıcı kaynak/akış/parça kanıtı yok; eserler korundu. Açık yeniden başlatma gerekir: {error:#}")
+        anyhow!(
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("Mevcut HLS/DASH parçalarının kalıcı kaynak/akış/parça kanıtı yok; eserler korundu. Açık yeniden başlatma gerekir: {error:#}"),
+                format!("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}")
+            )
+        )
     })?;
     let previous_fingerprint = request_fingerprint(previous)?;
     if current.request != previous_fingerprint
         || current.evidence.selection != selection_fingerprint(previous)?
     {
-        bail!("Mevcut HLS/DASH çalışma alanı önceki iş ve seçim kimliğiyle eşleşmiyor; eserler korundu");
+        bail!(crate::i18n::ui("Mevcut HLS/DASH çalışma alanı önceki iş ve seçim kimliğiyle eşleşmiyor; eserler korundu", "The existing HLS/DASH workspace does not match the previous job and selection identity; work files were kept"));
     }
     if current.evidence.live {
-        bail!("Canlı HLS/DASH çizelgesi zamanla değişebildiği için mevcut parçalar yenilenen kaynakla birleştirilemez; eserler korundu. Açık yeniden başlatma gerekir");
+        bail!(crate::i18n::ui("Canlı HLS/DASH çizelgesi zamanla değişebildiği için mevcut parçalar yenilenen kaynakla birleştirilemez; eserler korundu. Açık yeniden başlatma gerekir", "A live HLS/DASH timeline can change over time, so the existing segments cannot be combined with the refreshed source; work files were kept. An explicit restart is required"));
     }
 
     let inspect_request = InspectRequest {
@@ -497,23 +576,29 @@ pub(crate) fn prepare_source_refresh(
     let (inspection, info) =
         inspect_document_with_tools(&inspect_request, &toolchain, control, network)?;
     if control.stop_requested() {
-        bail!("Kaynak hazırlığı durduruldu");
+        bail!(crate::i18n::ui(
+            "Kaynak hazırlığı durduruldu",
+            "Source preparation was stopped"
+        ));
     }
     validate_track_selection(next, &info)?;
     validate_container_selection(next, &info)?;
     let selector = format_selector(next, &info)?;
     let capture = capture_media_source(next, &inspection, &info, &selector, control, network)?;
     let next_evidence = capture.evidence.context(
-        "Yenilenen kaynak desteklenen, tam ve bütçe içinde doğrulanmış bir sonlu HLS/DASH parça çizelgesi sunmuyor; eserler korundu. Açık yeniden başlatma gerekir",
+        crate::i18n::ui("Yenilenen kaynak desteklenen, tam ve bütçe içinde doğrulanmış bir sonlu HLS/DASH parça çizelgesi sunmuyor; eserler korundu. Açık yeniden başlatma gerekir", "The refreshed source does not offer a supported, complete, budget-verified finite HLS/DASH segment timeline; work files were kept. An explicit restart is required"),
     )?;
     let pinned = capture.pinned.context(
-        "Yenilenen kaynak indiriciye sabitlenebilen HLS/DASH parça bilgisi sunmuyor; eserler korundu. Açık yeniden başlatma gerekir",
+        crate::i18n::ui("Yenilenen kaynak indiriciye sabitlenebilen HLS/DASH parça bilgisi sunmuyor; eserler korundu. Açık yeniden başlatma gerekir", "The refreshed source does not offer HLS/DASH segment information that can be pinned for the downloader; work files were kept. An explicit restart is required"),
     )?;
     if current.evidence != next_evidence {
-        bail!("Yenilenen HLS/DASH kaynağı seçilen akışların parça kimlik veya zaman çizelgesini değiştirdi; eserler korundu. Açık yeniden başlatma gerekir");
+        bail!(crate::i18n::ui("Yenilenen HLS/DASH kaynağı seçilen akışların parça kimlik veya zaman çizelgesini değiştirdi; eserler korundu. Açık yeniden başlatma gerekir", "The refreshed HLS/DASH source changed the segment identity or timeline of the selected streams; work files were kept. An explicit restart is required"));
     }
     if control.stop_requested() {
-        bail!("Kaynak hazırlığı durduruldu");
+        bail!(crate::i18n::ui(
+            "Kaynak hazırlığı durduruldu",
+            "Source preparation was stopped"
+        ));
     }
     let pending = PendingMediaSourceState {
         version: MEDIA_SOURCE_STATE_VERSION,
@@ -571,7 +656,10 @@ pub(crate) fn finish_source_refresh(output: &Path) -> Result<()> {
         || pending.previous_request != current.request
         || pending.next.evidence.live
     {
-        bail!("HLS/DASH kaynak yenileme geçiş kaydı mevcut çalışma alanıyla eşleşmiyor")
+        bail!(crate::i18n::ui(
+            "HLS/DASH kaynak yenileme geçiş kaydı mevcut çalışma alanıyla eşleşmiyor",
+            "The HLS/DASH source refresh handover record does not match the existing workspace"
+        ))
     }
     promote_pinned_source(&workspace)?;
     write_media_source_state(&workspace, &pending.next)?;

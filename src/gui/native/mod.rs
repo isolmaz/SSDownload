@@ -4852,7 +4852,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                     queues,
                     MF_STRING | if current { MF_CHECKED } else { 0 },
                     (ID_QUEUE_BASE + index as i32) as usize,
-                    wide(&queue.name).as_ptr(),
+                    wide(queue.display_name()).as_ptr(),
                 );
             }
             AppendMenuW(
@@ -7244,7 +7244,7 @@ unsafe fn refresh_queue_controls(
     for queue in &snapshot.settings.queues {
         let value = wide(&format!(
             "{}{}",
-            queue.name,
+            queue.display_name(),
             if queue.enabled {
                 ""
             } else {
@@ -7263,7 +7263,7 @@ unsafe fn refresh_queue_controls(
     Ok(())
 }
 unsafe fn populate_queue_fields(f: &QueueFields, queue: &QueuePolicy) -> anyhow::Result<()> {
-    set_text(f.name, &queue.name);
+    set_text(f.name, queue.display_name());
     set_text(f.concurrency, &queue.concurrency.to_string());
     set_check(f.enabled, queue.enabled);
     set_text(
