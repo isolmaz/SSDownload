@@ -227,13 +227,22 @@ if ($releaseIsDraft) {
 }
 
 # Read the feed exactly as an installed copy does: anonymously. A private repository or a
-# missing asset answers 404 here, which the application reports as SSD-UPD-001.
-$publicFeed = & curl.exe --silent --show-error --location --fail "$feedBase/version.json"
-if ($LASTEXITCODE -ne 0) { throw "The published feed $feedBase/version.json is not publicly readable" }
-$publicVersion = (($publicFeed -join "`n") | ConvertFrom-Json).version
-if ($publicVersion -ne $Version) {
-    throw "The public feed serves version $publicVersion instead of $Version"
+# missing asset answers 404 here, which the application reports as SSD-UPD-001. The
+# "latest" redirect may still name the previous release for a moment after publishing.
+$feedProblem = ''
+for ($attempt = 1; $attempt -le 12; $attempt++) {
+    $publicFeed = & curl.exe --silent --show-error --location --fail "$feedBase/version.json"
+    if ($LASTEXITCODE -ne 0) {
+        $feedProblem = "The published feed $feedBase/version.json is not publicly readable"
+    }
+    else {
+        $publicVersion = (($publicFeed -join "`n") | ConvertFrom-Json).version
+        if ($publicVersion -eq $Version) { $feedProblem = ''; break }
+        $feedProblem = "The public feed serves version $publicVersion instead of $Version"
+    }
+    Start-Sleep -Seconds 10
 }
+if ($feedProblem) { throw "$feedProblem (checked for two minutes)" }
 
 Write-Host ''
 Write-Host 'Published:'

@@ -11,7 +11,6 @@
 use std::{
     path::Path,
     sync::atomic::{AtomicU8, Ordering},
-    time::Duration,
 };
 
 /// The active interface language: `0` Turkish (the default), `1` English.
@@ -77,28 +76,8 @@ pub(crate) fn system_language() -> &'static str {
     language_of_langid(unsafe { GetUserDefaultUILanguage() })
 }
 
-/// The `ui_language` saved in a profile database, or `None` when the file is missing, cannot
-/// be read, or holds no settings yet. The connection is read-only: a running app keeps its
-/// write lock and the file stays untouched. The query mirrors `Store::load_settings`.
 fn stored_language(database: &Path) -> Option<String> {
-    use rusqlite::{Connection, OpenFlags, OptionalExtension};
-    let connection = Connection::open_with_flags(
-        database,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    connection.busy_timeout(Duration::from_millis(250)).ok()?;
-    let payload = connection
-        .query_row(
-            "SELECT payload FROM settings WHERE singleton = 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .ok()??;
-    serde_json::from_str::<crate::model::Settings>(&payload)
-        .ok()
-        .map(|settings| settings.ui_language)
+    crate::store::Store::stored_settings(database).map(|settings| settings.ui_language)
 }
 
 /// Applies the interface language of the profile in `data_dir` (`None`: the default profile)

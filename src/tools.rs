@@ -158,15 +158,10 @@ pub fn status(paths: &AppPaths) -> Vec<ToolInfo> {
 }
 
 /// Installs missing tools without a running application, for the installer. The saved proxy
-/// and per-host limit apply when a profile exists; a fresh profile is not created here, so
-/// first-run onboarding stays with the application.
+/// and per-host limit apply when they can be read; the profile database is only read, so
+/// its repair, any warning about it and first-run onboarding stay with the application.
 pub fn install_missing(paths: &AppPaths) -> Result<()> {
-    let settings = if paths.database.exists() {
-        crate::store::Store::open(&paths.database)?.load_settings()?
-    } else {
-        None
-    }
-    .unwrap_or_default();
+    let settings = crate::store::Store::stored_settings(&paths.database).unwrap_or_default();
     // Like the engine: a proxy that cannot be applied leaves the connection direct.
     let _ = crate::proxy::configure(&settings.proxy);
     let network = NetworkGovernor::new(settings.per_host_limit);

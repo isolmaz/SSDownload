@@ -189,15 +189,18 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
 
   ; Missing media components are fetched now; already installed ones return at once without a
   ; network request. A failure does not fail the installation: the app retries on its start.
+  ; A silent install is the app's own update, which waits for Setup before it restarts the
+  ; app; the app installs anything missing itself right after that restart.
   ; The generic text stays on screen while the command runs; its raw command line is not shown.
-  DetailPrint "$(DETAIL_COMPONENTS)"
-  SetDetailsPrint none
-  ExecWait '$\"$INSTDIR\ssdownload.exe$\" --setup-tools' $0
-  SetDetailsPrint both
-  ${If} $0 != 0
-    DetailPrint "$(WARN_COMPONENTS)"
-    IfSilent +2
-    MessageBox MB_ICONEXCLAMATION "$(WARN_COMPONENTS)"
+  ${IfNot} ${Silent}
+    DetailPrint "$(DETAIL_COMPONENTS)"
+    SetDetailsPrint none
+    ExecWait '$\"$INSTDIR\ssdownload.exe$\" --setup-tools' $0
+    SetDetailsPrint both
+    ${If} $0 != 0
+      DetailPrint "$(WARN_COMPONENTS)"
+      MessageBox MB_ICONEXCLAMATION "$(WARN_COMPONENTS)"
+    ${EndIf}
   ${EndIf}
 SectionEnd
 
