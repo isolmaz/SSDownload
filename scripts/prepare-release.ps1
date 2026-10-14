@@ -70,6 +70,13 @@ if (-not $expectedKey) { throw 'FEED_PUBLIC_KEY is missing from src/update.rs' }
 if ($expectedKey -cne $feedPublicKey) {
     throw "The update signing key does not match FEED_PUBLIC_KEY in src/update.rs; the published feed could not be verified by the application."
 }
+# The application only ever reads DEFAULT_FEED_BASE, so a release published to any other
+# repository is invisible to every installed copy.
+$feedBase = "https://github.com/$Repository/releases/latest/download"
+$expectedFeedBase = [regex]::Match($updateSource, '(?m)^const DEFAULT_FEED_BASE: &str = "([^"]+)";').Groups[1].Value
+if ($expectedFeedBase -ne $feedBase) {
+    throw "Release feed $feedBase does not match DEFAULT_FEED_BASE in src/update.rs ($expectedFeedBase); installed copies would never see this release."
+}
 
 $Dist = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($ProjectRoot, $OutputDirectory))
 if (Test-Path -LiteralPath $Dist) {
@@ -90,7 +97,6 @@ foreach ($input in $Inputs) {
 # reads the newest release's copy of the feed, while the Setup URL must stay
 # resolvable after a later release becomes "latest", so the two bases differ:
 # the feed is read from /latest/download and the asset is pinned to its tag.
-$feedBase = "https://github.com/$Repository/releases/latest/download"
 $releaseBase = "https://github.com/$Repository/releases/download/v$Version"
 $setupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Dist $SetupName)).Hash.ToLowerInvariant()
 $feed = [ordered]@{
@@ -219,6 +225,24 @@ if ($releaseIsDraft) {
     & gh release edit $releaseTag --repo $Repository --draft=false
     if ($LASTEXITCODE -ne 0) { throw "gh release edit --draft=false failed; the draft $releaseTag is complete but unpublished" }
 }
+
+# Read the feed exactly as an installed copy does: anonymously. A private repository or a
+# missing asset answers 404 here, which the application reports as SSD-UPD-001. The
+# "latest" redirect may still name the previous release for a moment after publishing.
+$feedProblem = ''
+for ($attempt = 1; $attempt -le 12; $attempt++) {
+    $publicFeed = & curl.exe --silent --show-error --location --fail "$feedBase/version.json"
+    if ($LASTEXITCODE -ne 0) {
+        $feedProblem = "The published feed $feedBase/version.json is not publicly readable"
+    }
+    else {
+        $publicVersion = (($publicFeed -join "`n") | ConvertFrom-Json).version
+        if ($publicVersion -eq $Version) { $feedProblem = ''; break }
+        $feedProblem = "The public feed serves version $publicVersion instead of $Version"
+    }
+    Start-Sleep -Seconds 10
+}
+if ($feedProblem) { throw "$feedProblem (checked for two minutes)" }
 
 Write-Host ''
 Write-Host 'Published:'

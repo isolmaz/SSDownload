@@ -204,6 +204,30 @@ impl Store {
         Ok(jobs)
     }
 
+    /// The settings saved in a profile database, or `None` when the file is missing, cannot be
+    /// read, or holds no readable settings. The connection is read-only: a running app keeps
+    /// its write lock and the file stays untouched, unlike `load_settings`, which repairs.
+    pub(crate) fn stored_settings(database: &Path) -> Option<Settings> {
+        use rusqlite::{Connection, OpenFlags};
+        let connection = Connection::open_with_flags(
+            database,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .ok()?;
+        connection
+            .busy_timeout(std::time::Duration::from_millis(250))
+            .ok()?;
+        let payload = connection
+            .query_row(
+                "SELECT payload FROM settings WHERE singleton = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()??;
+        serde_json::from_str(&payload).ok()
+    }
+
     pub(crate) fn load_settings(&mut self) -> Result<Option<Settings>> {
         let payload = self
             .connection

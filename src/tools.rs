@@ -157,6 +157,24 @@ pub fn status(paths: &AppPaths) -> Vec<ToolInfo> {
     value
 }
 
+/// Installs missing tools without a running application, for the installer. The saved proxy
+/// and per-host limit apply when they can be read; the profile database is only read, so
+/// its repair, any warning about it and first-run onboarding stay with the application.
+pub fn install_missing(paths: &AppPaths) -> Result<()> {
+    let settings = crate::store::Store::stored_settings(&paths.database).unwrap_or_default();
+    // Like the engine: a proxy that cannot be applied leaves the connection direct.
+    let _ = crate::proxy::configure(&settings.proxy);
+    let network = NetworkGovernor::new(settings.per_host_limit);
+    ensure(
+        paths,
+        false,
+        &network,
+        &TransferControl::default(),
+        &mut |_| {},
+    )?;
+    Ok(())
+}
+
 /// Installs a complete, verified private toolchain. The active manifest is switched only after
 /// every download, extraction and executable validation has succeeded.
 pub(crate) fn ensure(

@@ -17,7 +17,7 @@ Everything beyond the [README](../README.md): installation details, every menu, 
 - **Installer:** run `SSDownload-<version>-Setup.exe`. It installs per user (no administrator rights) into `%LOCALAPPDATA%\Programs\SSDownload`, adds a Start menu entry and registers the browser connection. Optionally it starts SSDownload with Windows.
 - **Portable:** extract `SSDownload-<version>-win64.zip` to a permanent folder, run `register-native-host.cmd` once for the browser connection and open `ssdownload.exe`. Moving the folder later requires running `register-native-host.cmd` again.
 - **Before upgrading,** exit through the tray menu. Installed copies update themselves: SSDownload checks the signed release feed at most once a day (Settings → General) and installs a verified update after you accept it (**Install**, **Later** or **Skip this version**; Esc means Later). If a silent install fails, the app reopens and reports why on its next start. A portable copy is not changed in place: the offer opens the release page so you can download the new ZIP.
-- **Media support** (yt-dlp, FFmpeg/ffprobe and Deno) installs itself on first start from the GitHub releases of yt-dlp, Deno and the BtbN FFmpeg builds, each file checked against its published SHA-256, and refreshes weekly. A failure never blocks startup; **Tools → Install media support** retries.
+- **Media support** (yt-dlp, FFmpeg/ffprobe and Deno) is downloaded by the installer (shown there as "missing components"); a portable copy, an installer that could not reach the network, or an automatic update (silent) installs anything missing on the app's next start instead. It comes from the GitHub releases of yt-dlp, Deno and the BtbN FFmpeg builds, each file checked against its published SHA-256, and refreshes weekly. A failure never blocks startup; **Tools → Install media support** retries.
 - The builds are not Authenticode-signed yet, so Windows SmartScreen may warn on first run. Compare the file with the SHA-256 on the release page before running it.
 
 ## Browser extension
@@ -111,6 +111,7 @@ The Simple surface shows only **General**; the other tabs keep their saved value
 | `--pause ID`, `--resume ID`, `--remove ID [--delete-file]`, `--pause-all`, `--resume-all`, `--clear-completed` | Queue control |
 | `--diagnose [--diagnose-hours 24]` | Event log summary |
 | `--install-tools [--update-tools]` | Install or refresh the verified media tools |
+| `--setup-tools` | Install missing media tools without starting the app (used by the installer) |
 | `--register-host`, `--unregister-host` | Browser connection registration |
 | `--remove-extension-policies`, `--browser-setup` | Remove the legacy extension policy; open the browser setup page |
 | `--enable-autostart`, `--disable-autostart` | Start with Windows |

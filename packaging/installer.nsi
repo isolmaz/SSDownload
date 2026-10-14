@@ -84,6 +84,10 @@ LangString ERR_WINDOWS_64 ${LANG_ENGLISH} "SSDownload requires 64-bit Windows 10
 LangString ERR_WINDOWS_64 ${LANG_TURKISH} "SSDownload, 64-bit Windows 10 veya 11 gerektirir."
 LangString ERR_REGISTER_HOST ${LANG_ENGLISH} "The browser Native Messaging registration could not be created (exit code $0). Setup could not be completed."
 LangString ERR_REGISTER_HOST ${LANG_TURKISH} "Tarayıcı Native Messaging kaydı oluşturulamadı (çıkış kodu $0). Kurulum tamamlanamadı."
+LangString DETAIL_COMPONENTS ${LANG_ENGLISH} "Downloading and installing missing components…"
+LangString DETAIL_COMPONENTS ${LANG_TURKISH} "Eksik bileşenler indiriliyor ve kuruluyor…"
+LangString WARN_COMPONENTS ${LANG_ENGLISH} "Missing components could not be downloaded. SSDownload will try again when it starts."
+LangString WARN_COMPONENTS ${LANG_TURKISH} "Eksik bileşenler indirilemedi. SSDownload açıldığında yeniden deneyecek."
 LangString SHORTCUT_UNINSTALL ${LANG_ENGLISH} "Uninstall SSDownload"
 LangString SHORTCUT_UNINSTALL ${LANG_TURKISH} "SSDownload kaldır"
 
@@ -182,6 +186,22 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
     MessageBox MB_ICONSTOP "$(ERR_REGISTER_HOST)"
     Abort
   ${EndIf}
+
+  ; Missing media components are fetched now; already installed ones return at once without a
+  ; network request. A failure does not fail the installation: the app retries on its start.
+  ; A silent install is the app's own update, which waits for Setup before it restarts the
+  ; app; the app installs anything missing itself right after that restart.
+  ; The generic text stays on screen while the command runs; its raw command line is not shown.
+  ${IfNot} ${Silent}
+    DetailPrint "$(DETAIL_COMPONENTS)"
+    SetDetailsPrint none
+    ExecWait '$\"$INSTDIR\ssdownload.exe$\" --setup-tools' $0
+    SetDetailsPrint both
+    ${If} $0 != 0
+      DetailPrint "$(WARN_COMPONENTS)"
+      MessageBox MB_ICONEXCLAMATION "$(WARN_COMPONENTS)"
+    ${EndIf}
+  ${EndIf}
 SectionEnd
 
 Section /o "$(SEC_AUTOSTART_NAME)" SEC_AUTOSTART
@@ -189,8 +209,8 @@ Section /o "$(SEC_AUTOSTART_NAME)" SEC_AUTOSTART
   ExecWait '$\"$INSTDIR\ssdownload.exe$\" --enable-autostart' $0
 SectionEnd
 
-LangString DESC_SEC_CORE ${LANG_TURKISH} "Uygulama, tarayıcı eklentileri, lisanslar, Başlat menüsü kısayolları ve Native Messaging kaydı."
-LangString DESC_SEC_CORE ${LANG_ENGLISH} "Application, browser extensions, licenses, Start Menu shortcuts, and Native Messaging registration."
+LangString DESC_SEC_CORE ${LANG_TURKISH} "Uygulama, tarayıcı eklentileri, lisanslar, Başlat menüsü kısayolları, Native Messaging kaydı ve eksik bileşenlerin indirilmesi."
+LangString DESC_SEC_CORE ${LANG_ENGLISH} "Application, browser extensions, licenses, Start Menu shortcuts, Native Messaging registration, and downloading missing components."
 LangString DESC_SEC_AUTOSTART ${LANG_TURKISH} "SSDownload uygulamasını oturum açıldığında arka planda başlatır."
 LangString DESC_SEC_AUTOSTART ${LANG_ENGLISH} "Starts SSDownload in the background when you sign in."
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN

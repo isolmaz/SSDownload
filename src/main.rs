@@ -32,8 +32,8 @@ use windows_sys::Win32::{
     },
 };
 
-const HELP_EN: &str = "SSDownload — native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n";
-const HELP_TR: &str = "SSDownload — yerel Windows dosya/video/ses yöneticisi\n\nssdownload.exe                         Masaüstünü aç\n  --background                          Sistem tepsisinde başlat\n  --data-dir DIZIN                      Ayrı kullanıcı veri klasörü\n  --add URL                             Kuyruğa ekle\n    --kind auto|file|video|audio\n    --output DIZIN --name DOSYA\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id BENZERSIZ_KIMLIK\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle DIL --playlist --referer URL --start-at UNIX_VEYA_RFC3339\n  --request-json DOSYA                   AddRequest JSON ile ekle\n  --action-json DOSYA                    Eylem JSON'u çalıştır (ör. site taraması)\n  --inspect URL                          Video/ses bilgilerini JSON yaz\n  --status [--status-offset 0 --status-limit 100]   Sayfalı durum JSON\n  --diagnose [--diagnose-hours 24]      Olay günlüğü özeti JSON (site, kod, sonuç)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings DOSYA                   Settings JSON kaydet\n  --install-tools [--update-tools]       Doğrulanmış medya araçlarını kur\n  --browser-setup                        Tarayıcı kurulumunu aç\n  --remove-extension-policies            Eski tarayıcı eklenti politikasını kaldır\n  --register-host | --unregister-host    Native Messaging kaydı\n  --enable-autostart | --disable-autostart   Oturum açılışında başlatma\n  --quit                                 Etkin uygulamayı kapat\n  --debug                                Geliştirici modu (sihirbazı ve otomatik araç kurulumunu atlar)\n  --version | --help\n\nDRM desteklenmez. Ağ/oturum sınırları siteye bağlıdır.\n";
+const HELP_EN: &str = "SSDownload — native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n";
+const HELP_TR: &str = "SSDownload — yerel Windows dosya/video/ses yöneticisi\n\nssdownload.exe                         Masaüstünü aç\n  --background                          Sistem tepsisinde başlat\n  --data-dir DIZIN                      Ayrı kullanıcı veri klasörü\n  --add URL                             Kuyruğa ekle\n    --kind auto|file|video|audio\n    --output DIZIN --name DOSYA\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id BENZERSIZ_KIMLIK\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle DIL --playlist --referer URL --start-at UNIX_VEYA_RFC3339\n  --request-json DOSYA                   AddRequest JSON ile ekle\n  --action-json DOSYA                    Eylem JSON'u çalıştır (ör. site taraması)\n  --inspect URL                          Video/ses bilgilerini JSON yaz\n  --status [--status-offset 0 --status-limit 100]   Sayfalı durum JSON\n  --diagnose [--diagnose-hours 24]      Olay günlüğü özeti JSON (site, kod, sonuç)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings DOSYA                   Settings JSON kaydet\n  --install-tools [--update-tools]       Doğrulanmış medya araçlarını kur\n  --setup-tools                          Eksik medya araçlarını uygulamayı başlatmadan kur\n  --browser-setup                        Tarayıcı kurulumunu aç\n  --remove-extension-policies            Eski tarayıcı eklenti politikasını kaldır\n  --register-host | --unregister-host    Native Messaging kaydı\n  --enable-autostart | --disable-autostart   Oturum açılışında başlatma\n  --quit                                 Etkin uygulamayı kapat\n  --debug                                Geliştirici modu (sihirbazı ve otomatik araç kurulumunu atlar)\n  --version | --help\n\nDRM desteklenmez. Ağ/oturum sınırları siteye bağlıdır.\n";
 
 /// How long a second launch keeps trying to hand its request to the instance that already
 /// holds the single-instance mutex. That instance stays healthy while it loads its queue and
@@ -147,6 +147,19 @@ fn run(args: &[String]) -> Result<()> {
             snapshot: None,
         })?;
         return Ok(());
+    }
+    if has(args, "--setup-tools") {
+        ssdownload::tools::install_missing(&paths)?;
+        return print_response(BridgeResponse {
+            result: None,
+            ok: true,
+            message: ui(
+                "Eksik bileşenler kuruldu.",
+                "Missing components are installed.",
+            )
+            .into(),
+            snapshot: None,
+        });
     }
     if has(args, "--unregister-host") {
         install::unregister_current(&paths)?;
@@ -719,6 +732,7 @@ fn validate_arguments(args: &[String]) -> Result<()> {
         "--clear-completed",
         "--install-tools",
         "--update-tools",
+        "--setup-tools",
         "--browser-setup",
         "--register-host",
         "--unregister-host",
@@ -770,6 +784,7 @@ fn validate_arguments(args: &[String]) -> Result<()> {
         "--clear-completed",
         "--set-settings",
         "--install-tools",
+        "--setup-tools",
         "--browser-setup",
         "--register-host",
         "--unregister-host",
