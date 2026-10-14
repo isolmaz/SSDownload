@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SSDownload",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Detect downloadable media and send files, video, and audio to SSDownload.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqrwiA1Uzun/qoRRisJGZt/TcBuuSdqcY6DYZkZp5gFoGO2uBdw4oe5NAFML07Z8ShZX0QrPm10iDLZkOyztESz6S039ZoFrVdy3S/sLM6tr1FqXViayDiy29Chcv844QeTAKsPI5ixVDB6kvcUFsWaXYFmsS6CslGSAPuFSRgeFOLBvc9kAy/EUcOqYDJP/SjU8t8UTtX8UuM9dwCX8MpeOJLrMPeVA8/bTDEg3+1mWf63RgNSKDqGf6gFZdevb/5DvD9NDGroY0a17GVX9iUN9Q4VCaeux8eKaLPa4FOlD1KlfERptxwho4pJBy5JcBY9PNw7U20CHgaPtetDrHZQIDAQAB",
   "permissions": [
