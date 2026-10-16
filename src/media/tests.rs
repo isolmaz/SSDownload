@@ -499,9 +499,180 @@ fn cancellation_terminates_the_owned_media_process_tree() {
         &mut |_| {},
         &mut completed,
         &mut last,
+        None,
     )
     .unwrap();
     assert!(matches!(result, MonitorOutcome::Cancelled));
+}
+
+/// FFmpeg records a live stream into a `.part` file without a single progress line; the gauge
+/// must read the size through the file while the writer still holds it open.
+#[test]
+fn live_gauge_measures_the_growing_part_file_while_it_is_open() {
+    let root = std::env::temp_dir().join(format!("ssdownload-live-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("media.info.json"), vec![0u8; 500]).unwrap();
+    let mut writer = File::create(root.join("media.mp4.part")).unwrap();
+    writer.write_all(&vec![1u8; 4096]).unwrap();
+    writer.flush().unwrap();
+
+    let mut gauge = LiveRecordingGauge::new(&root);
+    let start = Instant::now();
+    let at = |millis| start + Duration::from_millis(millis);
+    let first = gauge
+        .sample(100, at(0))
+        .expect("the first sample is immediate");
+    assert_eq!(first.downloaded, 100 + 4096);
+    assert_eq!(first.total, None);
+    assert!(
+        gauge.sample(100, at(500)).is_none(),
+        "samples are at most once per second"
+    );
+
+    writer.write_all(&vec![1u8; 8192]).unwrap();
+    writer.flush().unwrap();
+    let second = gauge.sample(100, at(2000)).expect("a second has passed");
+    assert_eq!(second.downloaded, 100 + 4096 + 8192);
+    assert_eq!(
+        second.speed, 4096,
+        "8 KiB over the two seconds between the sizes"
+    );
+
+    // FFmpeg writes a segment every few seconds: a pause no longer than the last gap between
+    // writes keeps the speed instead of dropping to zero.
+    let quiet = gauge
+        .sample(100, at(3000))
+        .expect("another second has passed");
+    assert_eq!(quiet.downloaded, 100 + 4096 + 8192);
+    assert_eq!(quiet.speed, 4096);
+
+    // A pause longer than that gap means the stream slowed: the speed falls.
+    let slower = gauge.sample(100, at(6000)).expect("more time has passed");
+    assert_eq!(slower.speed, 2048);
+
+    // Far overdue: the recording has stopped growing.
+    let stalled = gauge.sample(100, at(13000)).expect("more time has passed");
+    assert_eq!(stalled.speed, 0);
+    assert_eq!(stalled.downloaded, 100 + 4096 + 8192);
+
+    drop(writer);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// "Finish and keep" ends the tool like a cancellation but reports its own outcome, so the
+/// download keeps what was recorded instead of failing.
+#[test]
+fn a_finish_request_stops_the_tool_with_its_own_outcome() {
+    let args = vec!["/C".into(), "ping -n 10 127.0.0.1 > nul".into()];
+    let mut running =
+        RunningDownload::spawn_with_proxy(Path::new("cmd.exe"), &args, b"", None).unwrap();
+    let control = TransferControl::default();
+    control.finish_recording();
+    assert!(
+        !control.stop_requested(),
+        "the kept file must still be verified, which a stop would refuse"
+    );
+    let result = monitor_download(
+        &mut running,
+        &control,
+        0,
+        &mut |_| {},
+        &mut HashSet::new(),
+        &mut None,
+        None,
+    )
+    .unwrap();
+    assert!(matches!(result, MonitorOutcome::Finished));
+}
+
+/// The beginning is recorded only where yt-dlp answered with formats that start there; a
+/// site without them is recorded from now on.
+#[test]
+fn the_beginning_is_recorded_only_where_the_site_offers_it() {
+    let offered = json!({"is_live": true, "formats": [
+        {"format_id": "160p", "is_from_start": true},
+        {"format_id": "audio", "is_from_start": true}
+    ]});
+    assert!(from_start_formats(&offered));
+    let live_only = json!({"is_live": true, "formats": [{"format_id": "160p"}]});
+    assert!(!from_start_formats(&live_only));
+    let marked_false = json!({"formats": [{"format_id": "160p", "is_from_start": false}]});
+    assert!(!from_start_formats(&marked_false));
+    assert!(!from_start_formats(&json!({"title": "no formats"})));
+}
+
+/// A stopped recording keeps its `.part` outputs; the per-fragment pieces and empty files
+/// are not media to keep.
+#[test]
+fn a_stopped_recording_keeps_only_its_part_outputs() {
+    let root = std::env::temp_dir().join(format!("ssdownload-live-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("media.f140.m4a.part"), b"audio").unwrap();
+    fs::write(root.join("media.f299.mp4.part"), b"video").unwrap();
+    fs::write(root.join("media.f299.mp4.part-Frag7.part"), b"piece").unwrap();
+    fs::write(root.join("empty.mp4.part"), b"").unwrap();
+    fs::write(root.join("media.info.json"), b"{}").unwrap();
+
+    let parts = live_recording_parts(&root).unwrap();
+    assert_eq!(
+        parts,
+        vec![
+            root.join("media.f140.m4a.part"),
+            root.join("media.f299.mp4.part")
+        ]
+    );
+    let args = live_recording_remux_args(&parts, &root.join("media.mp4"), "mp4", Some(61.0333));
+    let maps: Vec<&str> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "-map")
+        .map(|pair| pair[1].as_str())
+        .collect();
+    assert_eq!(
+        maps,
+        ["0:v?", "0:a?", "1:v?", "1:a?"],
+        "timed metadata stays out"
+    );
+    assert_eq!(args.iter().filter(|arg| *arg == "-i").count(), 2);
+    assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
+    assert!(args.windows(2).any(|pair| pair == ["-f", "mp4"]));
+    assert!(
+        args.windows(2).any(|pair| pair == ["-t", "61.033"]),
+        "the cut-off final frame stays out"
+    );
+    let mkv = live_recording_remux_args(&parts, &root.join("media.mkv"), "mkv", None);
+    assert!(mkv.windows(2).any(|pair| pair == ["-f", "matroska"]));
+    assert!(!mkv.iter().any(|arg| arg == "-movflags"));
+    assert!(!mkv.iter().any(|arg| arg == "-t"));
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A live job's monitor reports the recorded size even though the tool prints nothing.
+#[test]
+fn monitor_reports_live_recording_size_from_a_silent_process() {
+    let root = std::env::temp_dir().join(format!("ssdownload-live-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("media.mp4.part"), vec![0u8; 2048]).unwrap();
+    let args = vec!["/C".into(), "ping -n 10 127.0.0.1 > nul".into()];
+    let mut running =
+        RunningDownload::spawn_with_proxy(Path::new("cmd.exe"), &args, b"", None).unwrap();
+    let control = TransferControl::default();
+    control.cancel();
+    let mut gauge = LiveRecordingGauge::new(&root);
+    let mut reported = Vec::new();
+
+    let result = monitor_download(
+        &mut running,
+        &control,
+        0,
+        &mut |update| reported.push(update.downloaded),
+        &mut HashSet::new(),
+        &mut None,
+        Some(&mut gauge),
+    )
+    .unwrap();
+    assert!(matches!(result, MonitorOutcome::Cancelled));
+    assert_eq!(reported, vec![2048]);
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

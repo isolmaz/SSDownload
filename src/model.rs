@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc,
     },
 };
@@ -198,6 +198,10 @@ pub struct AddRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed_limit_kib: Option<u64>,
     pub full_verification: bool,
+    /// A live stream is downloaded from its beginning instead of from the moment the job
+    /// starts. Left out of the record while false, so earlier jobs keep their fingerprint.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live_from_start: bool,
 }
 impl AddRequest {
     /// Drops the session material a finished job no longer needs: request headers, session
@@ -270,6 +274,7 @@ impl Default for AddRequest {
             speed_limit_kib: None,
             playlist_items: None,
             full_verification: false,
+            live_from_start: false,
         }
     }
 }
@@ -288,6 +293,8 @@ pub struct InspectRequest {
     /// network value, and neither substitutes for the other.
     pub page_url: Option<String>,
     pub playlist: bool,
+    /// Analyze a live stream as downloaded from its beginning (yt-dlp `--live-from-start`).
+    pub live_from_start: bool,
 }
 
 /// One browser-originated media handoff. The extension cannot open the selection UI
@@ -391,6 +398,9 @@ pub struct Job {
     /// The desktop opens the file once this job completes.
     #[serde(default)]
     pub open_when_done: bool,
+    /// The running download records a live stream, which can be finished early and kept.
+    #[serde(default)]
+    pub live: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -887,6 +897,11 @@ pub struct TransferResult {
 pub struct TransferControl {
     state: Arc<AtomicU8>,
     speed_limit: Arc<AtomicU64>,
+    /// The transfer records a live stream, set by the media download for the engine.
+    live: Arc<AtomicBool>,
+    /// End a live recording now and keep what was recorded. Kept apart from the stop state,
+    /// which would also stop the verification that runs on the kept file.
+    finish: Arc<AtomicBool>,
 }
 impl TransferControl {
     pub fn pause(&self) {
@@ -913,6 +928,18 @@ impl TransferControl {
     }
     pub fn speed_limit(&self) -> u64 {
         self.speed_limit.load(Ordering::Acquire)
+    }
+    pub fn mark_live(&self) {
+        self.live.store(true, Ordering::Release);
+    }
+    pub fn is_live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+    }
+    pub fn finish_recording(&self) {
+        self.finish.store(true, Ordering::Release);
+    }
+    pub fn finish_requested(&self) -> bool {
+        self.finish.load(Ordering::Acquire)
     }
 }
 
@@ -1076,6 +1103,10 @@ pub enum Action {
     },
     /// Starts a queued job now, regardless of the concurrency limits.
     StartNow {
+        id: String,
+    },
+    /// Ends a live recording now and keeps what it recorded.
+    FinishRecording {
         id: String,
     },
     /// Opens the file when the job completes.

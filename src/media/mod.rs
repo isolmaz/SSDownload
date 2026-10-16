@@ -120,6 +120,9 @@ fn inspect_document_with_tools(
         "--skip-download".into(),
         "--no-allow-unplayable-formats".into(),
     ]);
+    if request.live_from_start {
+        command_args.push("--live-from-start".into());
+    }
     // Mirrors the download-phase compatibility retry: generic:impersonate
     // covers only metadata of the generic extractor, so a bot-protected
     // origin that rejects the first attempt gets exactly one retry with the
@@ -267,12 +270,20 @@ pub(crate) fn download(
     if control.is_paused() {
         crate::bail_code!(crate::error_codes::TRF_009);
     }
+    let from_start;
+    let request = if request.live_from_start {
+        from_start = live_from_start_request(request);
+        &from_start
+    } else {
+        request
+    };
 
     let effective_referer = request.referer.as_deref();
     let toolchain = tools::verified_toolchain(paths, control)?;
-    let (mut info, source_capture, selector, failure_stages) =
+    let (mut info, source_capture, selector, failure_stages, from_start) =
         if let Some((pinned, evidence)) = load_pinned_source_for_request(output, request)? {
             let info = media_info_from_json(&pinned.inspection)?;
+            let from_start = from_start_formats(&pinned.inspection);
             let selector = format_selector(request, &info)?;
             let failure_stages =
                 DownloadFailureStages::from_inspection(&pinned.inspection, request, &selector);
@@ -285,39 +296,49 @@ pub(crate) fn download(
                 },
                 selector,
                 failure_stages,
+                from_start,
             )
         } else {
-            let inspect_request = InspectRequest {
+            let mut inspect_request = InspectRequest {
                 url: request.url.clone(),
                 headers: request.headers.clone(),
                 referer: effective_referer.map(str::to_string),
                 page_url: request.page_url.clone(),
                 session_cookies: request.session_cookies.clone(),
                 playlist: request.playlist,
+                live_from_start: request.live_from_start,
                 ..InspectRequest::default()
             };
-            let (inspection, info) =
-                inspect_document_with_tools(&inspect_request, &toolchain, control, network)
-                    .map_err(|error| {
-                        let phase = if media_manifest_url(&request.url) {
-                            "ana liste"
-                        } else {
-                            "keşif"
-                        };
-                        anyhow!(
-                            "{}",
-                            crate::i18n::ui_owned!(
-                                format!("{} aşamasında {error:#}", failure_stage_label(phase)),
-                                format!("{} stage: {error:#}", failure_stage_label(phase))
-                            )
-                        )
-                    })?;
+            let mut inspected =
+                inspect_document_with_tools(&inspect_request, &toolchain, control, network);
+            // Which sites keep a running stream from its beginning is yt-dlp's knowledge; where
+            // it finds none, the stream is recorded from now on instead of failing.
+            if inspected.is_err() && inspect_request.live_from_start && !control.stop_requested() {
+                inspect_request.live_from_start = false;
+                inspected =
+                    inspect_document_with_tools(&inspect_request, &toolchain, control, network);
+            }
+            let (inspection, info) = inspected.map_err(|error| {
+                let phase = if media_manifest_url(&request.url) {
+                    "ana liste"
+                } else {
+                    "keşif"
+                };
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui_owned!(
+                        format!("{} aşamasında {error:#}", failure_stage_label(phase)),
+                        format!("{} stage: {error:#}", failure_stage_label(phase))
+                    )
+                )
+            })?;
+            let from_start = from_start_formats(&inspection);
             let selector = format_selector(request, &info)?;
             let failure_stages =
                 DownloadFailureStages::from_inspection(&inspection, request, &selector);
             let capture =
                 capture_media_source(request, &inspection, &info, &selector, control, network)?;
-            (info, capture, selector, failure_stages)
+            (info, capture, selector, failure_stages, from_start)
         };
     if info.duration_tolerance.is_none() && !request.playlist {
         info.duration_tolerance = source_capture
@@ -329,6 +350,7 @@ pub(crate) fn download(
     validate_container_selection(request, &info)?;
     let live = info.is_live;
     if live {
+        control.mark_live();
         crate::logging::record_job(
             job_id,
             crate::logging::Event::warn("download.live")
@@ -339,10 +361,17 @@ pub(crate) fn download(
     // the plain "Downloading media" that would read as a stuck download.
     let mut report = |mut update: TransferProgress| {
         if live && update.phase == crate::i18n::ui("Medya indiriliyor", "Downloading media") {
-            update.phase = crate::i18n::ui(
-                "Canlı yayın kaydediliyor; yayın bitene kadar sürer",
-                "Recording a live stream; it runs until the stream ends",
-            )
+            update.phase = if request.live_from_start && !from_start {
+                crate::i18n::ui(
+                    "Site yayının başını sunmuyor; canlı yayın şu andan itibaren kaydediliyor",
+                    "The site does not offer the stream's beginning; recording it from now on",
+                )
+            } else {
+                crate::i18n::ui(
+                    "Canlı yayın kaydediliyor; yayın bitene kadar sürer",
+                    "Recording a live stream; it runs until the stream ends",
+                )
+            }
             .into();
         }
         progress(update);
@@ -389,6 +418,9 @@ pub(crate) fn download(
     // Retain the tool's request trace only in bounded, redacted failure output so
     // an HTTP status can be tied to the selected media graph node.
     base_args.push("--verbose".into());
+    if from_start {
+        base_args.push("--live-from-start".into());
+    }
     if let Some(source_info) = &source_info {
         base_args.extend([
             "--enable-file-urls".into(),
@@ -574,7 +606,9 @@ pub(crate) fn download(
             &mut secrets.redactions,
             control,
             network,
+            live,
         )?;
+        let mut live_gauge = live.then(|| LiveRecordingGauge::new(&output_plan.workspace));
         let outcome = monitor_download(
             &mut running,
             control,
@@ -582,6 +616,7 @@ pub(crate) fn download(
             progress,
             &mut completed_files,
             &mut last_path,
+            live_gauge.as_mut(),
         )?;
         match outcome {
             MonitorOutcome::RestartForSpeed => {
@@ -623,6 +658,21 @@ pub(crate) fn download(
             }
             MonitorOutcome::Paused => crate::bail_code!(crate::error_codes::TRF_009),
             MonitorOutcome::Cancelled => crate::bail_code!(crate::error_codes::TRF_008),
+            MonitorOutcome::Finished => {
+                progress(TransferProgress {
+                    downloaded: completed_file_bytes(&completed_files),
+                    phase: crate::i18n::ui(
+                        "Canlı kayıt bitirildi; kaydedilen kısım işleniyor",
+                        "Live recording finished; processing the recorded part",
+                    )
+                    .into(),
+                    ..TransferProgress::default()
+                });
+                let kept = keep_live_recording(&output_plan, request, &toolchain, control)?;
+                completed_files.insert(kept.clone());
+                last_path = Some(kept);
+                break;
+            }
             MonitorOutcome::Exited(status) => {
                 if status.success() {
                     if let Some(error) = running.input_error.take() {
@@ -1067,6 +1117,211 @@ pub(crate) fn mux_browser_streams(
             "Tarayıcı medya çıktısı hedefe alınamadı",
             "Could not move the browser media output to its target",
         ));
+    }
+    Ok(())
+}
+
+/// The request as it is downloaded from the stream's beginning. The picker chose its quality
+/// from the live formats, whose ids the beginning's formats do not share, so only the height
+/// carries over.
+fn live_from_start_request(request: &AddRequest) -> AddRequest {
+    let mut resolved = request.clone();
+    resolved.format_id = None;
+    resolved.video_format_id = None;
+    resolved.audio_format_id = None;
+    resolved.audio_language = None;
+    resolved.audio_tracks.clear();
+    resolved
+}
+
+/// Whether yt-dlp answered with formats that begin at a live stream's start: it keeps only
+/// those when asked for them and the site offers them.
+fn from_start_formats(inspection: &Value) -> bool {
+    inspection["formats"].as_array().is_some_and(|formats| {
+        formats
+            .iter()
+            .any(|format| format["is_from_start"].as_bool() == Some(true))
+    })
+}
+
+/// The partial files of a stopped live recording: the tool's `.part` outputs, never its
+/// per-fragment `.part-FragN` pieces.
+fn live_recording_parts(workspace: &Path) -> Result<Vec<PathBuf>> {
+    let mut parts = Vec::new();
+    for entry in fs::read_dir(workspace)? {
+        let path = entry?.path();
+        // `<part>-Frag<n>.part` is a fragment yt-dlp is still fetching for `<part>`.
+        let is_part = path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("part"))
+            && !path.to_string_lossy().contains(".part-Frag");
+        if is_part && fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0) {
+            parts.push(path);
+        }
+    }
+    parts.sort();
+    Ok(parts)
+}
+
+/// FFmpeg arguments that copy the audio and video of every part into one file. Live HLS
+/// carries timed metadata streams the MP4 container cannot hold, so only audio and video
+/// are mapped.
+fn live_recording_remux_args(
+    parts: &[PathBuf],
+    output: &Path,
+    container: &str,
+    keep_seconds: Option<f64>,
+) -> Vec<String> {
+    let mut args: Vec<String> = ["-y", "-v", "error", "-nostdin"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    for part in parts {
+        args.extend(["-i".into(), part.to_string_lossy().into_owned()]);
+    }
+    for index in 0..parts.len() {
+        args.extend([
+            "-map".into(),
+            format!("{index}:v?"),
+            "-map".into(),
+            format!("{index}:a?"),
+        ]);
+    }
+    if let Some(seconds) = keep_seconds {
+        args.extend(["-t".into(), format!("{seconds:.3}")]);
+    }
+    args.extend(["-c".into(), "copy".into()]);
+    if container == "mp4" {
+        args.extend(["-movflags".into(), "+faststart".into()]);
+    }
+    args.extend([
+        "-f".into(),
+        if container == "mkv" {
+            "matroska"
+        } else {
+            "mp4"
+        }
+        .into(),
+        output.to_string_lossy().into_owned(),
+    ]);
+    args
+}
+
+/// How long every stream of `file` runs, from the earliest start to the end of the shortest.
+fn recorded_seconds(
+    toolchain: &tools::VerifiedTools,
+    file: &Path,
+    control: &TransferControl,
+) -> Result<Option<f64>> {
+    let result = run_capture(
+        &toolchain.ffprobe,
+        &[
+            "-v".into(),
+            "error".into(),
+            "-show_streams".into(),
+            "-of".into(),
+            "json".into(),
+            file.to_string_lossy().into_owned(),
+        ],
+        b"",
+        Duration::from_secs(60),
+        control,
+    )?;
+    let probe: Value = serde_json::from_slice(&result.stdout).unwrap_or_default();
+    let spans: Vec<(f64, f64)> = probe["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(stream_time_span)
+        .collect();
+    let start = spans.iter().map(|span| span.0).reduce(f64::min);
+    let end = spans.iter().map(|span| span.1).reduce(f64::min);
+    Ok(start.zip(end).map(|(start, end)| end - start))
+}
+
+/// Turns what a stopped live recording wrote into one finished file in the workspace.
+fn keep_live_recording(
+    plan: &OutputPlan,
+    request: &AddRequest,
+    toolchain: &tools::VerifiedTools,
+    control: &TransferControl,
+) -> Result<PathBuf> {
+    // FFmpeg needs the extended form of the nested workspace path, which can exceed MAX_PATH.
+    let workspace = plan.workspace.canonicalize()?;
+    let parts = live_recording_parts(&workspace)?;
+    if parts.is_empty() {
+        bail!(crate::i18n::ui(
+            "Canlı kayıt bitirildi ama henüz kaydedilmiş bir bölüm yok",
+            "The live recording was finished, but nothing had been recorded yet"
+        ));
+    }
+    let container = match request.container.as_deref() {
+        Some("mkv") => "mkv",
+        _ => "mp4",
+    };
+    // The parts end at different moments (video and audio download apart), and a recorder
+    // stopped by force leaves its last frame incomplete. Their own durations are unreliable
+    // (fragmented parts carry the stream's absolute timestamps), so they are joined first and
+    // the joined file is cut to its shortest stream, minus the final second.
+    let joined = workspace.join("joined.mkv");
+    remux_live_recording(
+        toolchain,
+        &live_recording_remux_args(&parts, &joined, "mkv", None),
+        &joined,
+        control,
+    )?;
+    let keep_seconds = recorded_seconds(toolchain, &joined, control)?
+        .map(|seconds| seconds - 1.0)
+        .filter(|seconds| *seconds > 1.0);
+    let output = workspace.join(format!("media.{container}"));
+    remux_live_recording(
+        toolchain,
+        &live_recording_remux_args(
+            std::slice::from_ref(&joined),
+            &output,
+            container,
+            keep_seconds,
+        ),
+        &output,
+        control,
+    )?;
+    Ok(output)
+}
+
+fn remux_live_recording(
+    toolchain: &tools::VerifiedTools,
+    args: &[String],
+    output: &Path,
+    control: &TransferControl,
+) -> Result<()> {
+    let result = run_capture(
+        &toolchain.ffmpeg,
+        args,
+        b"",
+        Duration::from_secs(60 * 60),
+        control,
+    );
+    let written = result.as_ref().is_ok_and(|result| result.status.success())
+        && fs::metadata(output).is_ok_and(|m| m.len() > 0);
+    if !written {
+        // A half-written file under the final name would pass as already downloaded on retry.
+        let _ = fs::remove_file(output);
+    }
+    let result = result?;
+    if !written {
+        bail!(
+            "{}",
+            crate::i18n::ui_owned!(
+                format!(
+                    "Canlı kaydın kaydedilen kısmı dosyaya yazılamadı: {}",
+                    result.stderr.trim()
+                ),
+                format!(
+                    "The recorded part of the live stream could not be written to a file: {}",
+                    result.stderr.trim()
+                )
+            )
+        );
     }
     Ok(())
 }

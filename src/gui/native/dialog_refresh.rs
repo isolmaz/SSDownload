@@ -725,6 +725,7 @@ pub(super) unsafe fn populate_media(
     status: &str,
 ) {
     f.loaded_title = info.title.clone();
+    f.from_start_offered = info.is_live;
     if info
         .formats
         .iter()
@@ -1016,6 +1017,7 @@ pub(super) unsafe fn queue_media(
     }
     let mut request = f.base.clone();
     request.kind = kind;
+    request.live_from_start = f.from_start_offered && check(f.from_start);
     request.format_id = None;
     request.video_format_id = None;
     request.max_height = None;

@@ -550,6 +550,7 @@ mod tests {
             priority: 0,
             force_start: false,
             open_when_done: false,
+            live: false,
         }
     }
 

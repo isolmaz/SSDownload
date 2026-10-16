@@ -74,6 +74,7 @@ enum Command {
     Reorder(Vec<String>, bool, Reply<()>),
     MoveBefore(Vec<String>, String, Reply<()>),
     StartNow(String, Reply<()>),
+    FinishRecording(String, Reply<()>),
     SetOpenWhenDone(String, bool, Reply<()>),
     Rename(String, String, Reply<()>),
     RetryFailed(Reply<()>),
@@ -650,6 +651,9 @@ impl Engine {
     pub fn start_now(&self, id: &str) -> Result<()> {
         self.request(|reply| Command::StartNow(id.into(), reply))
     }
+    pub fn finish_recording(&self, id: &str) -> Result<()> {
+        self.request(|reply| Command::FinishRecording(id.into(), reply))
+    }
     pub fn set_open_when_done(&self, id: &str, value: bool) -> Result<()> {
         self.request(|reply| Command::SetOpenWhenDone(id.into(), value, reply))
     }
@@ -896,6 +900,7 @@ impl Actor {
                 respond(reply, self.move_before(ids, &target))
             }
             Command::StartNow(id, reply) => respond(reply, self.start_now(&id)),
+            Command::FinishRecording(id, reply) => respond(reply, self.finish_recording(&id)),
             Command::SetOpenWhenDone(id, value, reply) => {
                 respond(reply, self.set_open_when_done(&id, value))
             }
@@ -1112,6 +1117,7 @@ impl Actor {
             priority: 0,
             force_start: false,
             open_when_done: false,
+            live: false,
         };
         if let Err(error) = self.store.save_job(&job) {
             let _ = crate::recovery::release(&job.path, &id);
@@ -1329,6 +1335,29 @@ impl Actor {
         self.retry_at.remove(id);
         self.store.save_job(&job)?;
         self.publish();
+        Ok(())
+    }
+
+    /// Ends a running live recording now; the download keeps what it recorded.
+    fn finish_recording(&mut self, id: &str) -> Result<()> {
+        let audio = self
+            .jobs
+            .get(id)
+            .is_some_and(|job| job.request.kind == DownloadKind::Audio);
+        let recording = self.active.get(id).filter(|active| {
+            !audio && active.control.is_live() && matches!(active.desired, DesiredStop::None)
+        });
+        let Some(active) = recording else {
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Bu iş şu an canlı yayın kaydetmiyor",
+                    "This job is not recording a live stream right now"
+                )
+            );
+        };
+        active.control.finish_recording();
+        crate::logging::record_job(id, crate::logging::Event::info("job.live_finish"));
         Ok(())
     }
 
@@ -3199,6 +3228,7 @@ impl Actor {
                 job.speed = value.speed;
                 job.eta = value.eta;
                 job.phase = stage.clone();
+                job.live = active.control.is_live();
                 job.state = if processing_phase(&job.phase) {
                     JobState::Processing
                 } else {

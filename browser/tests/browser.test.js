@@ -1124,6 +1124,7 @@ function contentHarness(options = {}) {
   const documentEvents = {};
   const buttons = [];
   const timers = [];
+  const storageWrites = [];
   let storageListener = null;
   // A double keeps its listeners in registration order with the phase each asked for: the
   // shield's whole claim is where in the capture path a handler runs, so a dispatch that
@@ -1151,7 +1152,11 @@ function contentHarness(options = {}) {
       // A tile is laid out before it is placed: the double owes the button the size the
       // live overlay carries (147x36 as measured on the embedded player), so a placement
       // pass can weigh the spot its own footprint would cover.
-      offsetWidth: 147, offsetHeight: 36,
+      offsetWidth: 147, offsetHeight: 36, childNodes: children,
+      getBoundingClientRect() {
+        const left = parseFloat(this.style.left) || 0, top = parseFloat(this.style.top) || 0;
+        return { left, top, right: left + this.offsetWidth, bottom: top + this.offsetHeight, width: this.offsetWidth, height: this.offsetHeight };
+      },
       setAttribute(name, value) { this.attributes[name] = String(value); },
       getAttribute(name) { return this.attributes[name] ?? null; },
       appendChild(child) { children.push(child); child.parentNode = this; return child; },
@@ -1219,9 +1224,9 @@ function contentHarness(options = {}) {
       i18n: i18nApi(options.browserLanguage),
       runtime: { sendMessage(value) { sent.push(value); const reply = options.reply; return Promise.resolve(typeof reply === "function" ? reply(value) : reply); }, onMessage: runtimeMessages },
       // The worker stores the desktop's language next to the switch; `storedLanguage` is what it stored.
-      storage: { local: { get() { return Promise.resolve({ detectionEnabled: true, ...(options.storedLanguage ? { uiLanguage: options.storedLanguage } : {}) }); } }, onChanged: { addListener(listener) { storageListener = listener; } } }
+      storage: { local: { get() { return Promise.resolve({ detectionEnabled: true, ...(options.storedLanguage ? { uiLanguage: options.storedLanguage } : {}) }); }, set(value) { storageWrites.push(value); return Promise.resolve(); } }, onChanged: { addListener(listener) { storageListener = listener; } } }
     },
-    URL, document, window, location: { href: "https://site.example/watch", origin: "https://site.example" }, innerHeight: 800, innerWidth: 1280,
+    URL, document, window, location: { href: "https://site.example/watch", origin: "https://site.example", hostname: "site.example" }, innerHeight: 800, innerWidth: 1280,
     MutationObserver: Observer, PerformanceObserver: Observer,
     setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; }, clearTimeout() {},
     setInterval(callback, delay) { timers.push({ callback, delay }); return timers.length; },
@@ -1229,7 +1234,7 @@ function contentHarness(options = {}) {
   });
   loadI18n(context);
   vm.runInContext(source("content.js"), context, { filename: "content.js" });
-  return { context, sent, listeners, runtimeMessages, buttons, document, window, gesture, storageListener: () => storageListener,
+  return { context, sent, listeners, runtimeMessages, buttons, document, window, gesture, storageWrites, storageListener: () => storageListener,
     fireTimers() { for (const timer of timers.splice(0)) timer.callback(); } };
 }
 
@@ -1239,6 +1244,68 @@ test("the no-single-media command clears the in-page affordance", async () => {
   assert.equal(h.buttons.length, 1, "the ready state must publish one affordance");
   h.runtimeMessages.listeners[0]({ channel: "ssdownload-background", command: "no-single-media" });
   assert.equal(h.buttons.length, 0, "a rejected page must remove its affordance");
+});
+
+// The chevron at the tile's end is the tile's own menu: opening it hands nothing over, and its
+// entries withdraw the tile for this video, this page or this site.
+async function tileMenuHarness() {
+  const h = contentHarness({ reply: { status: "ready", usageModes: { video: true, file: true, audio: true } } });
+  await vm.runInContext("refreshUsageModes()", h.context);
+  const [tile] = h.buttons;
+  const trigger = tile.childNodes.find(node => node.attributes.role === "button");
+  const open = () => { h.gesture(trigger); return h.buttons.find(node => node.attributes.role === "menu"); };
+  const handoffs = () => h.sent.filter(message => message.event === "download-video" || message.event === "download-page");
+  return { h, tile, trigger, open, handoffs };
+}
+
+test("the tile's chevron opens the hide choices without downloading", async () => {
+  const { h, tile, trigger, open, handoffs } = await tileMenuHarness();
+  assert.ok(trigger, "the tile carries its menu trigger");
+  assert.equal(tile.textContent, "Bu videoyu indir", "the trigger adds no text to the tile's label");
+  const menu = open();
+  assert.ok(menu, "the trigger opens the menu");
+  assert.deepEqual(menu.childNodes.map(item => item.textContent), ["Bu videoda gizle", "Bu sayfada gizle", "Bu sitede gizle"]);
+  assert.equal(trigger.attributes["aria-expanded"], "true");
+  // The tile stands at 28 px (player top 20 + 8) and is 36 px tall; the menu keeps a 4 px gap.
+  assert.equal(menu.style.top, "68px", "the menu opens under the tile");
+  assert.deepEqual(handoffs(), [], "opening the menu must not hand anything over");
+  h.gesture(trigger);
+  assert.equal(h.buttons.includes(menu), false, "a second press closes the menu");
+  assert.equal(trigger.attributes["aria-expanded"], "false");
+});
+
+test("hiding on this video withdraws the tile and hands nothing over", async () => {
+  const { h, tile, open, handoffs } = await tileMenuHarness();
+  const menu = open();
+  h.gesture(menu.childNodes[0]);
+  assert.equal(h.buttons.includes(menu), false, "choosing an entry closes the menu");
+  assert.equal(tile.hidden, true, "the tile is withdrawn on this video");
+  await vm.runInContext("updateOverlays()", h.context);
+  assert.equal(tile.hidden, true, "a later repaint keeps it withdrawn");
+  assert.deepEqual(handoffs(), []);
+  assert.deepEqual(h.storageWrites, [], "a video choice stores nothing");
+});
+
+test("hiding on this site stores the host next to the popup's list", async () => {
+  const { h, tile, open } = await tileMenuHarness();
+  h.gesture(open().childNodes[2]);
+  await new Promise(resolve => setImmediate(resolve));
+  // The write is made in the content script's realm, so it is compared as data.
+  assert.deepEqual(JSON.parse(JSON.stringify(h.storageWrites)), [{ hiddenHosts: ["site.example"] }]);
+  assert.equal(tile.hidden, true, "the tile goes at once, before the stored list comes back");
+});
+
+test("a press elsewhere or Escape closes the tile menu, and Enter on the trigger opens it", async () => {
+  const { h, trigger, open } = await tileMenuHarness();
+  const elsewhere = h.document.createElement("div");
+  let menu = open();
+  h.gesture(elsewhere, "pointerdown");
+  assert.equal(h.buttons.includes(menu), false, "a press on the page closes the menu");
+  menu = open();
+  h.gesture(elsewhere, "keydown", { key: "Escape" });
+  assert.equal(h.buttons.includes(menu), false, "Escape closes the menu");
+  h.gesture(trigger, "keydown", { key: "Enter" });
+  assert.ok(h.buttons.find(node => node.attributes.role === "menu"), "the keyboard opens the menu too");
 });
 
 test("a player scrolled out of view sideways keeps no tile at the viewport edge", async () => {
