@@ -758,7 +758,7 @@ pub(super) unsafe fn paint_list_cell(ui: &MainUi, draw: &NMLVCUSTOMDRAW) {
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
     );
     if draw.iSubItem == 2 {
-        paint_row_progress(ui, dc, draw.nmcd.dwItemSpec, rect, 0x3c3a3a);
+        paint_row_progress(ui, dc, draw.nmcd.dwItemSpec, rect);
     }
     if !previous.is_null() {
         SelectObject(dc, previous);
@@ -792,20 +792,31 @@ pub(super) unsafe fn paint_list_cell(ui: &MainUi, draw: &NMLVCUSTOMDRAW) {
 /// The list's dark body. Cells are painted per subitem, and the empty area
 /// below the last row is painted here too: dark mode drops LVS_EX_GRIDLINES,
 /// so the default pass draws no lines there to leave alone.
-/// Colour of a row's progress bar: completed green, failed red, paused grey.
-fn progress_colour(job: &Job) -> u32 {
-    match job.state {
-        JobState::Completed => 0x59c734,
-        JobState::Failed | JobState::Cancelled => 0x303bff,
+/// Fill of a row's progress cell: completed green, failed red, waiting grey, running blue.
+/// White text stays readable on every one of them, in both schemes.
+fn progress_colour(state: JobState) -> u32 {
+    match state {
+        JobState::Completed => 0x107c10,
+        JobState::Failed | JobState::Cancelled => 0x1c2bc4,
         JobState::Paused | JobState::AwaitingSource | JobState::Scheduled | JobState::Queued => {
-            0x938e8e
+            0x6e6e6e
         }
-        _ => 0xe37100,
+        _ => 0xb85f00,
     }
 }
 
-/// A thin progress bar along the bottom of the progress cell of `row`.
-pub(super) unsafe fn paint_row_progress(ui: &MainUi, dc: HDC, row: usize, cell: RECT, track: u32) {
+/// Share of the progress cell to fill: finished and failed jobs fill all of it.
+fn progress_fraction(state: JobState, downloaded: u64, total: Option<u64>) -> Option<f64> {
+    match (state, total) {
+        (JobState::Completed | JobState::Failed | JobState::Cancelled, _) => Some(1.0),
+        (_, Some(total)) if total > 0 => Some((downloaded as f64 / total as f64).min(1.0)),
+        _ => None,
+    }
+}
+
+/// Fills the progress cell of `row` from the left by the job's progress and redraws the cell
+/// text in white over the filled part; the rest keeps the text the row already painted.
+pub(super) unsafe fn paint_row_progress(ui: &MainUi, dc: HDC, row: usize, cell: RECT) {
     let Some(job) = ui
         .visible_ids
         .get(row)
@@ -813,28 +824,53 @@ pub(super) unsafe fn paint_row_progress(ui: &MainUi, dc: HDC, row: usize, cell: 
     else {
         return;
     };
-    let fraction = match (job.state, job.total) {
-        (JobState::Completed, _) => 1.0,
-        (_, Some(total)) if total > 0 => (job.downloaded as f64 / total as f64).min(1.0),
-        _ => return,
+    let Some(fraction) = progress_fraction(job.state, job.downloaded, job.total) else {
+        return;
     };
-    let height = scale(3, ui.dpi);
-    let inset = scale(6, ui.dpi);
-    let bar = RECT {
-        left: cell.left + inset,
-        top: cell.bottom - height - scale(2, ui.dpi),
-        right: cell.right - inset,
-        bottom: cell.bottom - scale(2, ui.dpi),
+    // The last column and row of pixels are the grid lines.
+    let inner = RECT {
+        right: cell.right - 1,
+        bottom: cell.bottom - 1,
+        ..cell
     };
-    if bar.right <= bar.left {
+    let filled = RECT {
+        right: inner.left + ((inner.right - inner.left) as f64 * fraction).round() as i32,
+        ..inner
+    };
+    if filled.right <= filled.left {
         return;
     }
-    fill_solid(dc, &bar, track);
-    let filled = RECT {
-        right: bar.left + ((bar.right - bar.left) as f64 * fraction) as i32,
-        ..bar
-    };
-    fill_solid(dc, &filled, progress_colour(job));
+    fill_solid(dc, &filled, progress_colour(job.state));
+
+    let mut text = [0u16; 512];
+    let mut item: LVITEMW = zeroed();
+    item.iSubItem = 2;
+    item.pszText = text.as_mut_ptr();
+    item.cchTextMax = text.len() as i32;
+    SendMessageW(ui.list, LVM_GETITEMTEXTW, row, &mut item as *mut _ as isize);
+    let length = text
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(text.len()) as i32;
+    let saved = SaveDC(dc);
+    IntersectClipRect(dc, filled.left, filled.top, filled.right, filled.bottom);
+    let font = SendMessageW(ui.list, WM_GETFONT, 0, 0);
+    if font != 0 {
+        SelectObject(dc, font as HGDIOBJ);
+    }
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, 0xffffff);
+    let mut area = cell;
+    area.left += scale(6, ui.dpi);
+    area.right -= scale(3, ui.dpi);
+    DrawTextW(
+        dc,
+        text.as_mut_ptr(),
+        length,
+        &mut area,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+    );
+    RestoreDC(dc, saved);
 }
 
 /// Fills `rect` with any colour. `palette_brush` only knows the dark palette and
@@ -866,13 +902,7 @@ pub(super) unsafe fn light_list_custom_draw(ui: &MainUi, lparam: LPARAM) -> LRES
         };
     }
     if stage == CDDS_ITEMPOSTPAINT | CDDS_SUBITEM && draw.iSubItem == 2 {
-        paint_row_progress(
-            ui,
-            draw.nmcd.hdc,
-            draw.nmcd.dwItemSpec,
-            draw.nmcd.rc,
-            0xeae5e5,
-        );
+        paint_row_progress(ui, draw.nmcd.hdc, draw.nmcd.dwItemSpec, draw.nmcd.rc);
     }
     CDRF_DODEFAULT as LRESULT
 }
@@ -1761,7 +1791,61 @@ pub(super) unsafe extern "system" fn progress_proc(
 
 #[cfg(test)]
 mod tests {
-    use super::split_mnemonic;
+    use super::{progress_colour, progress_fraction, split_mnemonic};
+    use crate::model::JobState;
+
+    /// WCAG relative luminance of a COLORREF (0x00BBGGRR).
+    fn luminance(colour: u32) -> f64 {
+        let channel = |shift: u32| {
+            let value = ((colour >> shift) & 0xff) as f64 / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(0) + 0.7152 * channel(8) + 0.0722 * channel(16)
+    }
+
+    /// The progress cell text is redrawn in white over the fill, so every fill must keep
+    /// normal-text contrast (4.5:1) with white.
+    #[test]
+    fn white_cell_text_is_readable_on_every_progress_fill() {
+        for state in [
+            JobState::Queued,
+            JobState::Scheduled,
+            JobState::Connecting,
+            JobState::Downloading,
+            JobState::Processing,
+            JobState::Paused,
+            JobState::AwaitingSource,
+            JobState::Completed,
+            JobState::Failed,
+            JobState::Cancelled,
+        ] {
+            let contrast = 1.05 / (luminance(progress_colour(state)) + 0.05);
+            assert!(contrast >= 4.5, "{state:?} fill contrast {contrast:.2}");
+        }
+    }
+
+    #[test]
+    fn finished_and_failed_jobs_fill_the_whole_cell() {
+        for state in [JobState::Completed, JobState::Failed, JobState::Cancelled] {
+            assert_eq!(progress_fraction(state, 10, Some(100)), Some(1.0));
+            assert_eq!(progress_fraction(state, 0, None), Some(1.0));
+        }
+        assert_eq!(
+            progress_fraction(JobState::Downloading, 25, Some(100)),
+            Some(0.25)
+        );
+        assert_eq!(
+            progress_fraction(JobState::Paused, 300, Some(100)),
+            Some(1.0)
+        );
+        // A live recording has no total: nothing to fill until it ends.
+        assert_eq!(progress_fraction(JobState::Downloading, 5_000, None), None);
+        assert_eq!(progress_fraction(JobState::Queued, 0, Some(0)), None);
+    }
 
     #[test]
     fn mnemonic_index_counts_characters_not_bytes() {

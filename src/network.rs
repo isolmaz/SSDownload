@@ -32,6 +32,9 @@ pub(crate) const GLOBAL_CONNECTION_BUDGET: usize = 32;
 const TUNNEL_WAIT: Duration = Duration::from_secs(10);
 /// Slots a metadata inspection may take above the per-host bound.
 const INSPECTION_HEADROOM: usize = 2;
+/// Slots a live recording may take above the per-host bound, see
+/// `ExternalProxy::spawn_for_live_recording`.
+const LIVE_RECORDING_HEADROOM: usize = 2;
 const TUNNEL_WAIT_STEP: Duration = Duration::from_millis(50);
 const ACQUIRE_POLL: Duration = Duration::from_millis(50);
 const DEFAULT_CURL_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -1040,6 +1043,18 @@ impl ExternalProxy {
         control: TransferControl,
     ) -> Result<Self> {
         Self::spawn_with_headroom(governor, control, INSPECTION_HEADROOM)
+    }
+
+    /// A proxy for a live stream recording. Its reader keeps a socket to the playlist it
+    /// reloads and one or two to the segments, often on the same host, next to the tool's
+    /// own kept-alive socket; within the bare per-host bound its next request is refused
+    /// and the recording stalls. One stream is recorded at its own pace, so the few extra
+    /// slots do not add download pressure on the host.
+    pub(crate) fn spawn_for_live_recording(
+        governor: NetworkGovernor,
+        control: TransferControl,
+    ) -> Result<Self> {
+        Self::spawn_with_headroom(governor, control, LIVE_RECORDING_HEADROOM)
     }
 
     fn spawn_with_headroom(

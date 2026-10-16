@@ -1792,6 +1792,16 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 M_REMEMBER,
             );
             set_check(f.remember, f.auto_queue);
+            f.from_start = dialog_check(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui(
+                    "Yayının başından itibaren indir",
+                    "Download from the stream's beginning",
+                ),
+                M_FROM_START,
+            );
+            ShowWindow(f.from_start, SW_HIDE);
             f.thumbnail = control(
                 dlg.hwnd,
                 "STATIC",

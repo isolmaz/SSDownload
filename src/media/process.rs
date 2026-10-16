@@ -185,8 +185,13 @@ impl RunningDownload {
         redactions: &mut Vec<String>,
         control: &TransferControl,
         network: &NetworkGovernor,
+        live: bool,
     ) -> Result<Self> {
-        let proxy = ExternalProxy::spawn(network.clone(), control.clone())?;
+        let proxy = if live {
+            ExternalProxy::spawn_for_live_recording(network.clone(), control.clone())?
+        } else {
+            ExternalProxy::spawn(network.clone(), control.clone())?
+        };
         redactions.push(proxy.proxy_url().to_string());
         let input_len = input.len();
         let configured = proxy.append_ytdlp_configuration(input);
@@ -376,11 +381,92 @@ impl ActivityWatch {
     }
 }
 
+/// yt-dlp hands a live stream to FFmpeg, which reports no progress, so the size of the growing
+/// `.part` files in the workspace is the only measure of what has been recorded.
+pub(super) struct LiveRecordingGauge {
+    workspace: PathBuf,
+    sampled_at: Option<Instant>,
+    /// The size each time it changed, with when the change was first seen.
+    steps: VecDeque<(u64, Instant)>,
+}
+
+impl LiveRecordingGauge {
+    const INTERVAL: Duration = Duration::from_secs(1);
+    /// How far back the speed averages the size changes.
+    const SPEED_WINDOW: Duration = Duration::from_secs(5);
+
+    pub(super) fn new(workspace: &Path) -> Self {
+        Self {
+            workspace: workspace.to_path_buf(),
+            sampled_at: None,
+            steps: VecDeque::new(),
+        }
+    }
+
+    /// At most once per interval: the recorded size on top of `base` and the speed between
+    /// its recent changes. The file grows in steps, a segment or a write buffer at a time,
+    /// up to many seconds apart at a low bitrate; the speed holds between two steps, falls
+    /// once the next step is later than the last gap and is zero once it is far overdue.
+    pub(super) fn sample(&mut self, base: u64, now: Instant) -> Option<TransferProgress> {
+        if self
+            .sampled_at
+            .is_some_and(|at| now.duration_since(at) < Self::INTERVAL)
+        {
+            return None;
+        }
+        self.sampled_at = Some(now);
+        let bytes = part_file_bytes(&self.workspace);
+        if self.steps.back().is_none_or(|(last, _)| *last != bytes) {
+            self.steps.push_back((bytes, now));
+        }
+        while self.steps.len() > 2 && now.duration_since(self.steps[1].1) >= Self::SPEED_WINDOW {
+            self.steps.pop_front();
+        }
+        let (first, from) = self.steps[0];
+        let (last, to) = self.steps[self.steps.len() - 1];
+        let gap = to.duration_since(from);
+        let quiet = now.duration_since(to);
+        let seconds = gap.max(quiet).as_secs_f64();
+        let speed = if seconds > 0.0 && quiet <= gap.max(Self::SPEED_WINDOW) * 2 {
+            (last.saturating_sub(first) as f64 / seconds) as u64
+        } else {
+            0
+        };
+        Some(TransferProgress {
+            downloaded: base.saturating_add(bytes),
+            total: None,
+            speed,
+            eta: None,
+            phase: crate::i18n::ui("Medya indiriliyor", "Downloading media").into(),
+        })
+    }
+}
+
+fn part_file_bytes(directory: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("part"))
+        })
+        // fs::metadata opens the file; the directory entry (DirEntry::metadata) keeps the size
+        // from when FFmpeg opened it until FFmpeg closes it.
+        .filter_map(|path| fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .fold(0u64, u64::saturating_add)
+}
+
 pub(super) enum MonitorOutcome {
     RestartForSpeed,
     Stalled,
     Paused,
     Cancelled,
+    /// A live recording was ended by the user to keep what it has recorded.
+    Finished,
     Exited(ExitStatus),
 }
 pub(super) fn monitor_download(
@@ -390,6 +476,7 @@ pub(super) fn monitor_download(
     progress: &mut dyn FnMut(TransferProgress),
     completed_files: &mut HashSet<PathBuf>,
     last_path: &mut Option<PathBuf>,
+    mut live: Option<&mut LiveRecordingGauge>,
 ) -> Result<MonitorOutcome> {
     let mut pending_limit: Option<(u64, Instant)> = None;
     let mut seen_bytes = 0u64;
@@ -398,19 +485,40 @@ pub(super) fn monitor_download(
         pings.push(proxy.outbound_ping());
     }
     let mut activity = ActivityWatch::new(STALL_LIMIT, pings);
+    let mut live_bytes = None;
     loop {
         let mut active = false;
         while let Ok(line) = running.lines.try_recv() {
             active = true;
             activity.observe(&line);
+            // A live recording's size comes from the gauge alone; the tool's own counter
+            // covers one stream and would alternate with it.
+            if live.is_some() && line.starts_with(PROGRESS_PREFIX) {
+                continue;
+            }
             handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
         }
         if active {
             activity.touch();
         }
+        if let Some(gauge) = live.as_deref_mut() {
+            if let Some(update) =
+                gauge.sample(completed_file_bytes(completed_files), Instant::now())
+            {
+                if live_bytes != Some(update.downloaded) {
+                    live_bytes = Some(update.downloaded);
+                    activity.touch();
+                }
+                progress(update);
+            }
+        }
         if control.is_cancelled() {
             running.terminate();
             return Ok(MonitorOutcome::Cancelled);
+        }
+        if control.finish_requested() {
+            running.terminate();
+            return Ok(MonitorOutcome::Finished);
         }
         if control.is_paused() {
             running.terminate();

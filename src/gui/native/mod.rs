@@ -316,6 +316,7 @@ pub const ID_MOVE_BOTTOM: i32 = 1114;
 pub const ID_START_NOW: i32 = 1115;
 pub const ID_OPEN_WHEN_DONE: i32 = 1116;
 pub const ID_MINI_PANEL: i32 = 1117;
+pub const ID_FINISH_RECORDING: i32 = 1118;
 pub const ID_INSTALL_UPDATE: i32 = 1217;
 const ID_TRAY_ADD: i32 = 1304;
 const ID_TRAY_CLIPBOARD: i32 = 1305;
@@ -2202,6 +2203,14 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
     );
     append(
         jobs,
+        ID_FINISH_RECORDING,
+        crate::i18n::ui(
+            "&Canlı kaydı bitir ve kaydet",
+            "Finish live recordin&g and keep it",
+        ),
+    );
+    append(
+        jobs,
         ID_SPEED_LIMIT,
         crate::i18n::ui("&Hız sınırı...", "Speed &limit..."),
     );
@@ -2736,6 +2745,20 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         ID_START_NOW => {
             for id in selected_ids(ui) {
                 dispatch(ui, Action::StartNow { id });
+            }
+        }
+        ID_FINISH_RECORDING => {
+            let ids: Vec<String> = selected_ids(ui)
+                .into_iter()
+                .filter(|id| {
+                    ui.snapshot
+                        .jobs
+                        .iter()
+                        .any(|job| &job.id == id && recording_live(job))
+                })
+                .collect();
+            for id in ids {
+                dispatch(ui, Action::FinishRecording { id });
             }
         }
         ID_OPEN_WHEN_DONE => {
@@ -4147,6 +4170,15 @@ fn source_refresh_available(job: &Job) -> bool {
         && has_page
         && matches!(job.state, JobState::AwaitingSource | JobState::Failed)
 }
+/// A running download that records a live stream, which can be finished and kept now.
+/// Audio jobs are left out: what a recording keeps is the stream's own container, not the
+/// requested audio format.
+fn recording_live(job: &Job) -> bool {
+    job.live
+        && job.request.kind != DownloadKind::Audio
+        && job.remove_requested.is_none()
+        && job.state == JobState::Downloading
+}
 fn can_pause_or_resume(job: &Job) -> bool {
     job.remove_requested.is_none()
         && job.state != JobState::Completed
@@ -4228,6 +4260,10 @@ unsafe fn update_details(ui: &MainUi) {
         (
             ID_SOURCE_REFRESH,
             jobs.iter().any(|job| source_refresh_available(job)),
+        ),
+        (
+            ID_FINISH_RECORDING,
+            jobs.iter().any(|job| recording_live(job)),
         ),
     ] {
         // Job log and source refresh only exist in the menu.
@@ -4793,6 +4829,16 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                     ),
                     _ => crate::i18n::ui("Duraklat", "Pause"),
                 },
+            );
+        }
+        if recording_live(job) {
+            append(
+                menu,
+                ID_FINISH_RECORDING,
+                crate::i18n::ui(
+                    "Canlı kaydı bitir ve kaydet",
+                    "Finish live recording and keep it",
+                ),
             );
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
@@ -5492,6 +5538,7 @@ const M_MP3: i32 = 2313;
 const M_REMEMBER: i32 = 2314;
 const M_PLAYLIST_ITEMS: i32 = 2315;
 const M_THUMBNAIL: i32 = 2316;
+const M_FROM_START: i32 = 2317;
 /// A background thumbnail load hands its bitmap to the picker (lparam = HBITMAP).
 pub(super) const WM_THUMBNAIL: u32 = WM_APP + 40;
 
@@ -5702,6 +5749,9 @@ struct MediaFields {
     /// "Bir daha sorma" for this site: queue as soon as the analysis loads.
     auto_queue: bool,
     remember: HWND,
+    /// "From the stream's beginning": offered for a live stream on a site that keeps it.
+    from_start: HWND,
+    from_start_offered: bool,
     playlist_items: HWND,
     thumbnail: HWND,
     thumbnail_requested: bool,
@@ -6660,6 +6710,7 @@ unsafe fn show_media_dialog(owner: HWND, app: App, base: AddRequest) {
         referer: base.referer.clone(),
         page_url: base.page_url.clone(),
         playlist: base.playlist,
+        live_from_start: false,
     };
     if let Err(e) = app.dispatch(Action::Inspect { request }) {
         message(
@@ -6758,6 +6809,8 @@ unsafe fn show_media_picker(
                 host: host.clone(),
                 auto_queue: remembered.as_ref().is_some_and(|entry| entry.auto),
                 remember: null_mut(),
+                from_start: null_mut(),
+                from_start_offered: false,
                 playlist_items: null_mut(),
                 thumbnail: null_mut(),
                 thumbnail_requested: false,
@@ -7943,6 +7996,7 @@ mod tests {
             priority: 0,
             force_start: false,
             open_when_done: false,
+            live: false,
         };
         let downloading = JobState::Downloading.label();
         assert_eq!(

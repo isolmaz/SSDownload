@@ -693,6 +693,7 @@ impl App {
             Action::Reorder { ids, top } => self.inner.engine.reorder(ids, top)?,
             Action::MoveBefore { ids, target } => self.inner.engine.move_before(ids, target)?,
             Action::StartNow { id } => self.inner.engine.start_now(&id)?,
+            Action::FinishRecording { id } => self.inner.engine.finish_recording(&id)?,
             Action::SetOpenWhenDone { id, value } => {
                 self.inner.engine.set_open_when_done(&id, value)?
             }
@@ -772,6 +773,7 @@ impl App {
                     referer: request.referer.clone(),
                     page_url: request.page_url.clone(),
                     playlist: request.playlist,
+                    live_from_start: false,
                 };
                 self.begin_inspection(inspection, Some((launch_id, request, session_consent)))?;
             }

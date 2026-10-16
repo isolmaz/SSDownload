@@ -319,6 +319,11 @@ function ownTileEvent(event) {
     // Only the keys a tile acts on are the tile's; every other key stays the page's event.
     if (!OWN_TILE_KEYS.has(event.key)) return;
     paintTile(tile, event.type === "keydown" ? "pressed" : "idle");
+    // A button turns the key into a click; the menu trigger inside a tile is no button.
+    if (event.type === "keydown" && tile.tagName !== "BUTTON" && event.isTrusted === true && overlayEnabled) {
+      event.preventDefault();
+      ownTiles.get(tile).activate?.();
+    }
   } else if (event.type === "pointerdown") paintTile(tile, "pressed");
   else if (event.type === "pointerup") paintTile(tile, "hover");
   event.stopImmediatePropagation();
@@ -344,8 +349,24 @@ const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const tileLabels = new WeakMap();
 let tileSequence = 0;
 
+// The tile's menu trigger and the menu's entries carry their own faces.
+const TRIGGER_FACES = {
+  idle: { background: "transparent", boxShadow: "none", cursor: "pointer", opacity: "1" },
+  hover: { background: "rgba(255,255,255,.18)", boxShadow: "none", cursor: "pointer", opacity: "1" },
+  pressed: { background: "rgba(255,255,255,.3)", boxShadow: "none", cursor: "pointer", opacity: "1" }
+};
+const MENU_ITEM_FACES = {
+  idle: { background: "transparent", boxShadow: "none", cursor: "pointer", opacity: "1" },
+  hover: { background: "#EEF3FF", boxShadow: "none", cursor: "pointer", opacity: "1" },
+  pressed: { background: "#DCE6FF", boxShadow: "none", cursor: "pointer", opacity: "1" }
+};
+const TRIGGER_CSS = "display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;align-self:stretch;box-sizing:border-box;margin:-7px -12px -7px 2px;padding:0 9px;border:0;border-left:1px solid rgba(255,255,255,.35);border-radius:0 9px 9px 0;background:transparent;color:#fff;cursor:pointer;pointer-events:auto;outline:none";
+const MENU_CSS = "position:fixed;z-index:2147483647;display:flex;flex-direction:column;box-sizing:border-box;min-width:190px;margin:0;padding:4px;border:1px solid rgba(15,23,42,.12);border-radius:10px;background:#fff;color:#1F2937;-webkit-text-fill-color:#1F2937;font:500 13px/1.2 system-ui,sans-serif;text-align:left;text-transform:none;letter-spacing:normal;white-space:nowrap;direction:ltr;box-shadow:0 10px 28px rgba(15,23,42,.22);transform:none;visibility:visible;pointer-events:auto";
+const MENU_ITEM_CSS = "appearance:none;-webkit-appearance:none;display:block;box-sizing:border-box;width:100%;margin:0;padding:8px 12px;border:0;border-radius:7px;background:transparent;color:#1F2937;-webkit-text-fill-color:#1F2937;font:inherit;text-align:left;text-transform:none;text-decoration:none;letter-spacing:normal;white-space:nowrap;cursor:pointer;outline:none;box-shadow:none";
+
 function paintTile(button, state) {
-  const face = TILE_FACES[state] || TILE_FACES.idle;
+  const faces = ownTiles.get(button)?.faces || TILE_FACES;
+  const face = faces[state] || faces.idle;
   button.style.background = face.background;
   button.style.boxShadow = face.boxShadow;
   button.style.cursor = face.cursor;
@@ -356,6 +377,110 @@ function paintTile(button, state) {
 function hideTile(button, hidden) {
   button.hidden = hidden;
   button.style.display = hidden ? "none" : "inline-flex";
+  if (hidden && tileMenu?.tile === button) closeTileMenu();
+}
+
+// The tile's own menu hides it: on this video or this page until the document goes, or on
+// this site through the same stored list the popup's switch writes.
+const hiddenMedia = new WeakSet();
+let hiddenPage = "";
+function pageKey() { return String(location.href).split("#")[0]; }
+function pageHidden() { return hiddenPage !== "" && hiddenPage === pageKey(); }
+async function hideOnThisSite() {
+  hiddenPage = pageKey();
+  const host = location.hostname;
+  if (!host || !extensionApi.storage?.local) return;
+  try {
+    const saved = await extensionApi.storage.local.get({ hiddenHosts: [] });
+    const hosts = new Set(Array.isArray(saved.hiddenHosts) ? saved.hiddenHosts : []);
+    hosts.add(host);
+    await extensionApi.storage.local.set({ hiddenHosts: [...hosts].slice(-500) });
+  } catch (_) { showPageStatus(t("pageUiUpdateFailed"), true); }
+}
+function hideChoices(media) {
+  const choices = [];
+  if (media) choices.push({ label: media.tagName === "AUDIO" ? t("tileHideAudio") : t("tileHideVideo"), run: () => hiddenMedia.add(media) });
+  choices.push({ label: t("tileHidePage"), run: () => { hiddenPage = pageKey(); } });
+  choices.push({ label: t("tileHideSite"), hint: t("tileHideSiteHint"), run: hideOnThisSite });
+  return choices;
+}
+
+let tileMenu = null;
+function closeTileMenu() {
+  if (!tileMenu) return;
+  tileMenu.node.remove();
+  tileMenu.trigger.setAttribute("aria-expanded", "false");
+  tileMenu = null;
+}
+// Under the tile, or above it when the viewport has no room below; never past the right edge.
+function placeTileMenu() {
+  const box = tileMenu.tile.getBoundingClientRect();
+  const menu = tileMenu.node;
+  const width = menu.offsetWidth || 0, height = menu.offsetHeight || 0;
+  const below = box.bottom + 4, above = box.top - 4 - height;
+  menu.style.top = `${below + height > innerHeight && above >= 0 ? above : below}px`;
+  menu.style.left = `${Math.max(0, Math.min(box.left, innerWidth - width - 8))}px`;
+}
+function toggleTileMenu(tile, trigger, choices) {
+  const open = tileMenu?.tile === tile;
+  closeTileMenu();
+  if (open) return;
+  const menu = document.createElement("div");
+  menu.dataset.ssdownloadTile = "";
+  menu.setAttribute("role", "menu");
+  menu.style.cssText = MENU_CSS;
+  let first = null;
+  for (const choice of choices) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.textContent = choice.label;
+    if (choice.hint) item.title = choice.hint;
+    item.style.cssText = MENU_ITEM_CSS;
+    ownTiles.set(item, { activate: () => { closeTileMenu(); choice.run(); updateOverlays(); }, faces: MENU_ITEM_FACES });
+    item.addEventListener("pointerenter", () => paintTile(item, "hover"));
+    item.addEventListener("pointerleave", () => paintTile(item, "idle"));
+    item.addEventListener("focus", () => paintTile(item, "hover"));
+    item.addEventListener("blur", () => paintTile(item, "idle"));
+    menu.appendChild(item);
+    first = first || item;
+  }
+  document.documentElement.appendChild(menu);
+  trigger.setAttribute("aria-expanded", "true");
+  tileMenu = { tile, trigger, node: menu };
+  placeTileMenu();
+  first?.focus?.({ preventScroll: true });
+}
+if (typeof window !== "undefined") {
+  // A press anywhere else on the page, or Escape, closes the menu; the page keeps that event.
+  window.addEventListener("pointerdown", event => { if (tileMenu && !ownTileTarget(event)) closeTileMenu(); }, true);
+  window.addEventListener("keydown", event => { if (tileMenu && event.key === "Escape") closeTileMenu(); }, true);
+}
+
+// The chevron at the tile's right end opens the hide choices; the rest of the tile still downloads.
+function createMenuTrigger(tile, choices) {
+  const trigger = document.createElement("span");
+  trigger.setAttribute("role", "button");
+  trigger.setAttribute("tabindex", "0");
+  trigger.setAttribute("aria-haspopup", "menu");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.setAttribute("aria-label", t("tileOptions"));
+  trigger.title = t("tileOptions");
+  trigger.style.cssText = TRIGGER_CSS;
+  const chevron = document.createElementNS(SVG_NAMESPACE, "svg");
+  chevron.setAttribute("viewBox", "0 0 24 24");
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.setAttribute("focusable", "false");
+  chevron.style.cssText = "width:14px;height:14px;display:block;flex:0 0 auto;margin:0;padding:0;overflow:visible;pointer-events:none";
+  const path = document.createElementNS(SVG_NAMESPACE, "path");
+  path.setAttribute("d", "M6 9.5l6 6 6-6");
+  path.style.cssText = "fill:none;stroke:#fff;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round";
+  chevron.appendChild(path);
+  trigger.appendChild(chevron);
+  ownTiles.set(trigger, { activate: () => toggleTileMenu(tile, trigger, choices()), faces: TRIGGER_FACES });
+  trigger.addEventListener("pointerenter", () => paintTile(trigger, "hover"));
+  trigger.addEventListener("pointerleave", () => paintTile(trigger, "idle"));
+  return trigger;
 }
 
 // Arrow and tray paint from inline styles so a page rule such as `svg path { fill: currentColor }`
@@ -401,7 +526,7 @@ function downloadGlyph() {
 // Both kinds of tile are the same affordance: the application icon, one label child a
 // later pass rewrites without losing the glyph, the page's own hover, pressed, keyboard
 // and focus states, and the submission the shield calls for the user's gesture.
-function createTile(activate) {
+function createTile(activate, choices) {
   const button = document.createElement("button");
   button.type = "button";
   // The affordance is the extension's, not the page's: the marker lets a report of the
@@ -413,6 +538,7 @@ function createTile(activate) {
   labelNode.style.cssText = "display:block;flex:0 0 auto;margin:0;padding:0;color:#fff;-webkit-text-fill-color:#fff;font:inherit;line-height:1.2;white-space:nowrap;text-align:left;text-transform:none;letter-spacing:normal;pointer-events:none";
   button.appendChild(downloadGlyph());
   button.appendChild(labelNode);
+  if (choices) button.appendChild(createMenuTrigger(button, choices));
   tileLabels.set(button, labelNode);
   ownTiles.set(button, { activate });
   // Enter, leave and cancel are the phases the page may keep, so they stay on the tile; the
@@ -529,14 +655,14 @@ function updatePageOverlay(descriptions) {
   const producers = descriptions.filter(player => (player.urls.length || player.active || player.played) && !(player.visible === false && !player.active && !player.played));
   const signals = producers.length ? null : collectPlayerSignals();
   const signalled = !!signals && (signals.embeds.length > 0 || signals.containers === true || signals.playerScripts === true);
-  if (!signalled || siteEntries !== true || usageModes?.video !== true || documentBlocked()) {
+  if (!signalled || siteEntries !== true || usageModes?.video !== true || documentBlocked() || pageHidden()) {
     if (pageOverlay) hideTile(pageOverlay, true);
     return;
   }
   if (!pageOverlay) {
     // The document's own name travels with the gesture: the page candidate is named from
     // this report, so a message without it would leave the candidate to the tab name.
-    pageOverlay = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-page",mediaKind:"video",documentId,pageUrl:pageUrl(),pageTitle:pageTitle(),players:players(),sources:collectSources(),playerSignals:collectPlayerSignals()})));
+    pageOverlay = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-page",mediaKind:"video",documentId,pageUrl:pageUrl(),pageTitle:pageTitle(),players:players(),sources:collectSources(),playerSignals:collectPlayerSignals()})), () => hideChoices(null));
     document.documentElement.appendChild(pageOverlay);
   }
   tileLabels.get(pageOverlay).textContent = t("tilePage");
@@ -564,12 +690,12 @@ function paintOverlays() {
   }
   const media = [...queryMediaRoots("video, audio")].filter(node=>node.tagName==="AUDIO"?usageModes.audio:(usageModes.video||usageModes.audio));
   const descriptions=players();
-  for (const [node, button] of overlays) if (!media.includes(node)) { button.remove(); overlays.delete(node); }
+  for (const [node, button] of overlays) if (!media.includes(node)) { hideTile(button, true); button.remove(); overlays.delete(node); }
   for (const node of media) {
     const mediaKind=node.tagName==="AUDIO"||!usageModes.video?"audio":"video";
     let button = overlays.get(node);
     if (!button) {
-      button = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-video",mediaKind:node.tagName==="AUDIO"||!usageModes?.video?"audio":"video",playerId:playerIds.get(node)?.id,documentId,pageUrl:pageUrl(),players:players(),sources:collectSources()})));
+      button = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-video",mediaKind:node.tagName==="AUDIO"||!usageModes?.video?"audio":"video",playerId:playerIds.get(node)?.id,documentId,pageUrl:pageUrl(),players:players(),sources:collectSources()})), () => hideChoices(node));
       document.documentElement.appendChild(button); overlays.set(node, button);
     }
     // Only the label child is rewritten: `textContent` on the tile would drop the glyph.
@@ -583,13 +709,14 @@ function paintOverlays() {
     // for that case instead.
     const withdrawn = (description && !description.urls.length && !description.active && !description.played) || rect.width < 100 || rect.height < minimumHeight || rect.bottom < 0 || rect.top > innerHeight
       || rect.right < 0 || rect.left > innerWidth
-      || node.checkVisibility?.()===false || description?.adSignals.length>=2;
+      || node.checkVisibility?.()===false || description?.adSignals.length>=2 || hiddenMedia.has(node) || pageHidden();
     hideTile(button, withdrawn);
     if (button.disabled) paintTile(button, "disabled");
     button.style.left = `${Math.max(0, rect.left + 8)}px`;
     button.style.top = `${Math.max(0, rect.top + 8)}px`;
   }
   updatePageOverlay(descriptions);
+  if (tileMenu) placeTileMenu();
 }
 
 function absoluteUrl(value) {
@@ -710,6 +837,7 @@ extensionApi.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // per document.
   if(message && message.channel==="ssdownload-background" && message.command==="no-single-media") {
     overlayEnabled=false;
+    closeTileMenu();
     for (const button of overlays.values()) button.remove();
     overlays.clear();
     // The document-level tile is the same offer for the rejected page address.

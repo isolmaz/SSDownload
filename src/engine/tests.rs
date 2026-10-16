@@ -378,6 +378,7 @@ fn completion_requires_every_remaining_job_to_succeed() {
         priority: 0,
         force_start: false,
         open_when_done: false,
+        live: false,
     };
     let mut jobs = BTreeMap::new();
     jobs.insert("done".into(), make_job("done", JobState::Completed));
@@ -868,6 +869,7 @@ fn a_job_whose_destination_folder_was_deleted_recreates_it_before_starting() {
         priority: 0,
         force_start: false,
         open_when_done: false,
+        live: false,
     };
     let allocation = ConnectionAllocation {
         direct: 1,

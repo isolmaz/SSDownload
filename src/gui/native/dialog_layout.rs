@@ -1353,14 +1353,26 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // The format list owns everything between the picker rows and the
             // advanced block (or the button row when advanced is collapsed).
             let format_top = m + scale(176, dlg.dpi);
+            let from_start_row = if f.from_start_offered { line + gap } else { 0 };
             let format_bottom = if f.advanced {
                 advanced_top - gap
             } else {
                 by - scale(29, dlg.dpi) - gap
             } - line
-                - gap;
-            // The remembered-choice switch sits right under the format list.
+                - gap
+                - from_start_row;
+            // The remembered-choice switch sits right under the format list, and a live
+            // stream's beginning switch under that.
             MoveWindow(f.remember, m, format_bottom + gap, cw, line, 1);
+            MoveWindow(f.from_start, m, format_bottom + 2 * gap + line, cw, line, 1);
+            ShowWindow(
+                f.from_start,
+                if f.from_start_offered {
+                    SW_SHOW
+                } else {
+                    SW_HIDE
+                },
+            );
             MoveWindow(
                 f.format,
                 m,

@@ -120,6 +120,7 @@ pub(super) fn preserve_refresh_contract(previous: &AddRequest, next: &mut AddReq
     next.checksum = previous.checksum.clone();
     next.start_at = previous.start_at;
     next.full_verification = previous.full_verification;
+    next.live_from_start = previous.live_from_start;
     next.page_url = previous.page_url.clone();
     if let (Some(old), Some(new)) = (&previous.source_identity, &mut next.source_identity) {
         new.video_id = old.video_id.clone();
