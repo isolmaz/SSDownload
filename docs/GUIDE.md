@@ -36,18 +36,18 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 
 - **Files:** paste or drop links into **New download** (Ctrl+N), press Ctrl+V in the main window to add clipboard links, right-click a link in the browser → **Download link with SSDownload**, or let the extension take over ordinary browser downloads (**Settings → Behaviour → Take over browser downloads**, off by default; incognito, blob/data and extension downloads stay in the browser and a refused handover resumes there).
 - **Segmented and resumable:** large files download over several connections. A download resumes only when the server proves the file did not change (strong ETag, a SHA-256 you supplied, or the same `Last-Modified` and length); otherwise it restarts instead of mixing two versions. Finished files are published atomically and never overwrite an existing file (`name (1).ext`).
-- **Video and audio:** play the media and press the SSDownload button over it, use the extension's context entries, or use **File → Download video** (Ctrl+Shift+N) with the page address. The picker shows name, duration, thumbnail, quality (container, resolution, FPS, codec, HDR) and audio/subtitle tracks. **Download** turns the picker into that download's status view; closing it never cancels the download. A missing quality or track fails instead of being silently substituted, and the result is checked with ffprobe/FFmpeg before it is published.
+- **Video and audio:** play the media and press the SSDownload button over it, use the extension's context entries, or use **File → Video download** (Ctrl+Shift+N) with the page address. The picker shows name, duration, thumbnail, quality (container, resolution, FPS, codec, HDR) and audio/subtitle tracks. **Download** turns the picker into that download's status view; closing it never cancels the download. A missing quality or track fails instead of being silently substituted, and the result is checked with ffprobe/FFmpeg before it is published.
 - **Picker memory:** **Remember this choice for \<site\>** stores quality, container and audio-only per site; the next media from that site is queued directly. **MP3** queues the best audio as MP3 at the highest quality; a playlist accepts an item selection such as `1-10,15`.
 - **Live streams** (Twitch, Kick and similar) are recorded from the moment the download starts until the stream ends; the list shows the recorded size and speed instead of a percentage. A paused live recording cannot continue the same file.
 - **From the stream's beginning:** for a live stream the picker offers **Download from the stream's beginning**. Where the site keeps the running stream from its start (yt-dlp supports this on YouTube and Twitch, for example), the recording begins there and continues while the stream runs; elsewhere (Kick, for example) the stream is recorded from now on and the status says so.
-- **Finish live recording and keep it** (Download menu, or the right-click menu of a recording row) stops a running live video recording and publishes what was recorded so far as a normal file, without its last second (the frame being written when it stopped).
+- **Finish live recording and keep it** (Downloads menu, or the right-click menu of a recording row) stops a running live video recording and publishes what was recorded so far as a normal file, without its last second (the frame being written when it stopped).
 - **On sites with feeds or previews,** open the video's own page first. DRM-protected streams are not supported.
 - **Batch:** a numeric or letter range such as `https://host/img[001-120].jpg` expands into up to 1000 jobs; **File → Batch download** shows an example, **Import list** loads a plain-text URL list and **Export list** writes the selected addresses.
 - **Duplicates:** adding an address already in the queue asks once per batch: use the existing job, download a new copy, or cancel.
 - **Session cookies:** some downloads need the site's session. Grant **Allow session cookies for this site** in the extension for that one site; nothing is read without that gesture, and **Remove site session permission** withdraws it.
-- **Expired links:** a job whose signed address expired waits as **Waiting for source**; **Renew source address** (or the extension's browser transfer entry) resumes the same job with a fresh address.
+- **Expired links:** a job whose signed address expired waits as **Awaiting source**; **Refresh source address** (or the extension's browser transfer entry) resumes the same job with a fresh address.
 - **Order and priority:** drag rows or use Alt+Home / Alt+End; queued work starts in list order. **Start now** starts a job immediately, outside the concurrency limit.
-- **Mini panel and completion card:** **Download → Mini panel** (or the tray) opens a small list of active downloads that can be pinned on top. A finished download shows a card with **Open** and **Show in folder**.
+- **Mini panel and completion card:** **Downloads → Mini panel** (or the tray) opens a small list of active downloads that can be pinned on top. A finished download shows a card with **Open** and **Show in folder**.
 - **Tray:** progress on the icon; the menu has the mini panel, new download, add from clipboard, pause/resume all, speed-limit presets, shut down when done, a one-hour quiet mode, the download folder, updates, Settings and Exit.
 - **Holds:** a job waits when its disk has less than 256 MiB (or less than the remaining size) free, and optionally while Windows reports a metered connection. Windows is kept awake while downloads run (the display may still sleep).
 - **Simple and Advanced** (`Basit` / `Gelişmiş`) are chosen in the first-run wizard and in Settings. Advanced adds named queues with time windows and byte quotas, folder rules, a site crawler, periodic synchronization, site logins, the event and job logs and completion actions (notify, shut down, run a program).
@@ -56,9 +56,9 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 
 | Menu | Items |
 |---|---|
-| **File** (Dosya) | New download (Ctrl+N), Download video (Ctrl+Shift+N), Batch download, Import list, Export list, Exit |
-| **Download** (İndirme) | Pause / resume selected (Space), Remove selected (Delete), Pause all, Resume all, Clear completed, Retry failed, Mini panel, Open file (Enter), Open folder, Renew source address, Finish live recording and keep it, Speed limit, Select all (Ctrl+A) |
-| **Tools** (Araçlar) | Install media support, Browser setup, Settings; on the Advanced surface also Queue manager, Folder rules, Site crawler, Synchronization, Site logins, Event log, Job log, Diagnostics |
+| **File** (Dosya) | New download (Ctrl+N), Video download (Ctrl+Shift+N), Batch download, Import list, Export list, Exit |
+| **Downloads** (İndirme) | Pause / resume selected (Space), Remove selected (Delete), Pause all, Resume all, Clear completed, Retry failed, Mini panel, Open file (Enter), Open folder, Refresh source address, Finish live recording and keep it, Speed limit, Select all (Ctrl+A) |
+| **Tools** (Araçlar) | Install media support, Browser setup, Settings; on the Advanced surface also Queue manager, Folder rules, Site explorer, Sync manager, Site logins, Event log, Job log, Diagnostics |
 | **Help** (Yardım) | Check for updates, Keyboard shortcuts, Show the tour, About SSDownload |
 
 The progress column fills from the left as a job advances: blue while it runs, grey while it waits or is paused, green when it completed and red when it failed or was cancelled (those two fill the whole cell).
@@ -76,7 +76,7 @@ Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt
 
 The Simple surface shows only **General**; the other tabs keep their saved values.
 
-- **Speed limit:** **Download → Speed limit** sets KiB/s for the selected jobs (0 follows the global limit); the tray presets set the global limit.
+- **Speed limit:** **Downloads → Speed limit** sets KiB/s for the selected jobs (0 follows the global limit); the tray presets set the global limit.
 - **Site logins** (Advanced): host → user name and password, sent as HTTP Basic credentials only to that exact host over HTTPS (or HTTP when the entry allows it). A redirect to another host never carries them.
 - **Scheduling** uses local time; the start is inclusive, the end exclusive, `23:00–07:00` crosses midnight and equal endpoints mean all day. Manually paused work never resumes by itself.
 - **Profiles:** data lives in `%LOCALAPPDATA%\SSDownload`; `--data-dir <folder>` or the `SSDOWNLOAD_HOME` environment variable selects another profile. The most recently registered copy owns the browser connection.
@@ -92,7 +92,7 @@ The Simple surface shows only **General**; the other tabs keep their saved value
 | A second launch while SSDownload runs | The running copy comes to the front; no second instance starts. |
 | Download stays disabled after analysis | Read the error, fix the source or session, analyze again. |
 | A quality or track disappeared | Analyze again and choose an available option; nothing is substituted silently. |
-| Signed address expired | The job waits for **Renew source address** instead of failing. |
+| Signed address expired | The job waits for **Refresh source address** instead of failing. |
 | Merge fails or a work folder remains | Free space and resume; parts stay under `<destination>\.ssdownload-work\jobs\<job-id>`. |
 | Remove hits a sharing violation | Close the program holding the file and retry. |
 | The queue cannot be saved | Active jobs pause and new work waits while saving is retried. |
