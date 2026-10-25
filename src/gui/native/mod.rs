@@ -47,10 +47,10 @@ use windows_sys::Win32::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
         Input::KeyboardAndMouse::{
-            EnableWindow, GetFocus, IsWindowEnabled, RegisterHotKey, ReleaseCapture, SetCapture,
-            SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
-            TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN, VK_END, VK_F5, VK_HOME,
-            VK_MENU, VK_NEXT, VK_PRIOR, VK_UP,
+            EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, RegisterHotKey, ReleaseCapture,
+            SetCapture, SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT,
+            MOD_SHIFT, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN, VK_END,
+            VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP,
         },
         Shell::*,
         WindowsAndMessaging::*,
@@ -1476,6 +1476,8 @@ unsafe extern "system" fn main_proc(
         ui.taskbar = None;
         ui.tray_added = false;
         add_tray(ui);
+        // The new icon starts plain; the next tick rewrites its tooltip and progress.
+        ui.tray_key.clear();
         return 0;
     }
     match msg {
@@ -1777,7 +1779,10 @@ unsafe extern "system" fn main_proc(
                 {
                     update_details(ui);
                     if hdr.code == LVN_ITEMACTIVATE {
-                        if ui.snapshot.settings.double_click == "folder" {
+                        // Enter activates the item too; it always opens the file, and the
+                        // setting only picks what a double-click does.
+                        let by_enter = GetKeyState(VK_RETURN as i32) < 0;
+                        if ui.snapshot.settings.double_click == "folder" && !by_enter {
                             open_selected_folder(ui);
                         } else {
                             open_selected_file(ui);
@@ -1900,6 +1905,10 @@ unsafe extern "system" fn main_proc(
                 ui.drop_target = null_mut();
             }
             remove_tray(ui);
+            if !ui.tray_icon.is_null() {
+                DestroyIcon(ui.tray_icon);
+                ui.tray_icon = null_mut();
+            }
             if !ui.font.is_null() {
                 DeleteObject(ui.font);
             }
@@ -2137,7 +2146,7 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
     append(
         file,
         ID_EXPORT_LIST,
-        crate::i18n::ui("Listeyi &dışa aktar...", "E&xport list..."),
+        crate::i18n::ui("Listeyi &dışa aktar...", "Ex&port list..."),
     );
     AppendMenuW(file, MF_SEPARATOR, 0, null());
     append(file, ID_EXIT, crate::i18n::ui("Çı&kış", "E&xit"));
@@ -2164,7 +2173,7 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
     append(
         jobs,
         ID_PAUSE_ALL,
-        crate::i18n::ui("Tümünü du&raklat", "Pau&se all"),
+        crate::i18n::ui("Tümünü du&raklat", "Pa&use all"),
     );
     append(
         jobs,
@@ -2252,7 +2261,7 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
         append(
             tools,
             ID_SITE_LOGINS,
-            crate::i18n::ui("Site &girişleri...", "Site lo&gins..."),
+            crate::i18n::ui("Site gi&rişleri...", "Site lo&gins..."),
         );
         AppendMenuW(tools, MF_SEPARATOR, 0, null());
         append(
@@ -2278,7 +2287,7 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
     append(
         tools,
         ID_INSTALL_TOOLS,
-        crate::i18n::ui("Medya desteğini &kur...", "Install media &support..."),
+        crate::i18n::ui("Medya &desteğini kur...", "&Install media support..."),
     );
     append(
         tools,
@@ -2315,7 +2324,7 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
             help,
             ID_INSTALL_UPDATE,
             &crate::i18n::ui_owned!(
-                format!("Güncellemeyi &kur ({version})..."),
+                format!("Güncellemeyi k&ur ({version})..."),
                 format!("&Install update ({version})...")
             ),
         );
@@ -2392,6 +2401,10 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
             combo_add(ui.filter, crate::i18n::ui(tr, en));
         }
         combo_select(ui.filter, filter);
+        // The entries above carry no counts; forgetting the recorded ones makes
+        // the label update write them back.
+        ui.filter_counts.clear();
+        update_filter_labels(ui);
         for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
             let mut label = wide(crate::i18n::ui(tr, en));
             let column = LVCOLUMNW {
@@ -7040,10 +7053,7 @@ unsafe extern "system" fn dialog_proc(
         WM_DESTROY => {
             if let DialogKind::Media(f) = &dlg.kind {
                 // The picker opens where it was last left; its bitmap is released.
-                let image = SendMessageW(f.thumbnail, STM_GETIMAGE, IMAGE_BITMAP as usize, 0);
-                if image != 0 {
-                    DeleteObject(image as HGDIOBJ);
-                }
+                release_thumbnail(f.thumbnail);
                 let mut rect: RECT = zeroed();
                 if IsIconic(hwnd) == 0 && GetWindowRect(hwnd, &mut rect) != 0 {
                     let mut settings = dlg.app.snapshot().settings;
@@ -7235,6 +7245,15 @@ unsafe fn rebuild_dialog_controls(dlg: &mut DialogUi) {
     create_dialog_controls(dlg);
 }
 
+/// A bitmap set on an `SS_BITMAP` static stays owned by the caller; the control
+/// never deletes it.
+unsafe fn release_thumbnail(thumbnail: HWND) {
+    let image = SendMessageW(thumbnail, STM_GETIMAGE, IMAGE_BITMAP as usize, 0);
+    if image != 0 {
+        DeleteObject(image as HGDIOBJ);
+    }
+}
+
 /// Turns a picker into the job view of the download it just queued: the window
 /// keeps its place, its handoff and its size, and its title names what it is
 /// now showing.
@@ -7257,6 +7276,9 @@ unsafe fn begin_job_view(dlg: &mut DialogUi, job_ids: Vec<String>) {
             format!("Download — {} items", ids.len())
         ),
     };
+    if let DialogKind::Media(f) = &dlg.kind {
+        release_thumbnail(f.thumbnail);
+    }
     dlg.kind = DialogKind::Progress(Box::new(ProgressFields {
         ids: job_ids,
         selected: 0,
