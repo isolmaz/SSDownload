@@ -1333,7 +1333,7 @@ async function createMenus() {
   }
   if(modeAllows("audio")) entries.push({id:"ssdownload-audio",title:t("menuDownloadAudio"),contexts:["audio"]});
   if(modeAllows("media")) entries.push({id:"ssdownload-media",title:t("menuOpenPicker"),contexts:["page","video","audio"]});
-  if(candidates.length && active !== null) {
+  if(candidates.length && active !== null && capabilityState.appMissing!==true) {
     candidateMenus.set(active, candidates);
     const contexts = ["page","video","audio"];
     entries.push({id:"ssdownload-candidates",title:t("menuChooseSource",candidates.length),contexts});
@@ -1408,16 +1408,17 @@ async function runGuarded(tabId, purpose, task, host) {
 function selectableRecords(tabId) {
   return videoRecords(tabId).filter(item => item.selectable === true && item.downloadable === true);
 }
-// One exact source for a context-menu gesture. The acted-on address wins; a page with
-// exactly one selectable source is unambiguous; anything else must be chosen from the
-// candidate submenu instead of silently taking the first entry.
+// One exact source for a context-menu gesture. The acted-on address wins when exactly one
+// source has it; a page with exactly one selectable source is unambiguous; anything else
+// must be chosen from the candidate submenu instead of silently taking the first entry.
 function mediaCandidate(tabId, info, tab, kind) {
-  // A blob: source (MSE players) is no address the desktop can fetch, so the page stands in for it.
-  const target = [info.linkUrl, info.srcUrl, info.pageUrl, tab?.url].map(value => safeUrl(value)?.href).find(Boolean) || null;
+  // A blob: source (MSE players) is no address the desktop can fetch, so the frame the click was in
+  // stands in for it, then the top page.
+  const target = [info.linkUrl, info.srcUrl, info.frameUrl, info.pageUrl, tab?.url].map(value => safeUrl(value)?.href).find(Boolean) || null;
   if (!target) throw new Error(t("noSourceHere"));
   const records = selectableRecords(tabId);
-  const exact = records.find(item => item.url === target);
-  if (exact) return exact;
+  const exact = records.filter(item => item.url === target);
+  if (exact.length === 1) return exact[0];
   const audioOnly = kind === "audio" ? records.filter(item => item.kind === "audio" || (item.tracks || []).some(track => track.kind === "audio")) : records;
   const usable = audioOnly.length ? audioOnly : records;
   if (usable.length === 1) return usable[0];

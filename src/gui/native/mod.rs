@@ -5601,6 +5601,7 @@ struct WizardFields {
 }
 struct SettingsFields {
     value: Settings,
+    opened: Settings,
     dir: HWND,
     max_active: HWND,
     connections: HWND,
@@ -6432,6 +6433,7 @@ unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
         560,
         settings_logical_height(simple) + SETTINGS_FRAME,
         DialogKind::Settings(Box::new(SettingsFields {
+            opened: value.clone(),
             value,
             dir: null_mut(),
             max_active: null_mut(),
@@ -7095,7 +7097,16 @@ unsafe fn dialog_label(parent: HWND, font: HFONT, label: &str, id: i32) -> HWND 
     } else {
         id
     };
-    let h = control(parent, "STATIC", label, WS_CHILD | WS_VISIBLE, 0, id);
+    // Labels show file, queue and error names as well as captions, so an '&' in them is text,
+    // not a mnemonic.
+    let h = control(
+        parent,
+        "STATIC",
+        label,
+        WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+        0,
+        id,
+    );
     apply_font(h, font);
     h
 }
@@ -8154,5 +8165,27 @@ mod tests {
         assert!(!subtitle_default_selected(false, &previous, &first, true));
         assert!(subtitle_default_selected(false, &previous, &second, false));
         assert!(!subtitle_default_selected(false, &previous, &third, false));
+    }
+
+    #[test]
+    fn dialog_labels_draw_an_ampersand_as_text() {
+        use super::{control, dialog_label, SS_NOPREFIX};
+        use std::ptr::null_mut;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DestroyWindow, GetWindowLongPtrW, GWL_STYLE, WS_POPUP,
+        };
+
+        unsafe {
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            assert!(!parent.is_null(), "the hidden parent window is created");
+            let label = dialog_label(parent, null_mut(), "Tom & Jerry.mp4", 7);
+            let style = GetWindowLongPtrW(label, GWL_STYLE) as u32;
+            DestroyWindow(parent);
+            assert_ne!(
+                style & SS_NOPREFIX,
+                0,
+                "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
+            );
+        }
     }
 }
