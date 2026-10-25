@@ -46,7 +46,7 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 - **Duplicates:** adding an address already in the queue asks once per batch: use the existing job, download a new copy, or cancel.
 - **Session cookies:** some downloads need the site's session. Grant **Allow session cookies for this site** in the extension for that one site; nothing is read without that gesture, and **Remove site session permission** withdraws it.
 - **Expired links:** a job whose signed address expired waits as **Awaiting source**; **Refresh source address** (or the extension's browser transfer entry) resumes the same job with a fresh address.
-- **Order and priority:** drag rows or use Alt+Home / Alt+End; queued work starts in list order. **Start now** starts a job immediately, outside the concurrency limit.
+- **Order and priority:** drag rows or use Alt+Home / Alt+End; within a queue, queued work starts in list order, and several queues take turns. **Start now** starts a job immediately, outside the concurrency limit.
 - **Mini panel and completion card:** **Downloads → Mini panel** (or the tray) opens a small list of active downloads that can be pinned on top. A finished download shows a card with **Open** and **Show in folder**.
 - **Tray:** progress on the icon; the menu has the mini panel, new download, add from clipboard, pause/resume all, speed-limit presets, shut down when done, a one-hour quiet mode, the download folder, updates, Settings and Exit.
 - **Holds:** a job waits when its disk has less than 256 MiB (or less than the remaining size) free, and optionally while Windows reports a metered connection. Windows is kept awake while downloads run (the display may still sleep).
@@ -77,6 +77,7 @@ Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt
 The Basic level shows only **General**; the other tabs keep their saved values.
 
 - **Speed limit:** **Downloads → Speed limit** sets KiB/s for the selected jobs (0 follows the global limit); the tray presets set the global limit.
+- **Proxy:** the Windows setting is read at start and when the proxy setting is changed in Settings, and only its HTTP/HTTPS entry is used (no automatic configuration script and no SOCKS-only entry). FTP downloads go through a SOCKS5 proxy only; with an HTTP proxy they connect directly. An HTTP proxy password is sent with Basic authentication. If the proxy cannot be used at start (for example its saved password cannot be read), the app shows a warning and connects directly.
 - **Site logins** (Advanced): host → user name and password, sent as HTTP Basic credentials only to that exact host over HTTPS (or HTTP when the entry allows it). A redirect to another host never carries them.
 - **Scheduling** uses local time; the start is inclusive, the end exclusive, `23:00–07:00` crosses midnight and equal endpoints mean all day. Manually paused work never resumes by itself.
 - **Profiles:** data lives in `%LOCALAPPDATA%\SSDownload`; `--data-dir <folder>` or the `SSDOWNLOAD_HOME` environment variable selects another profile. The most recently registered copy owns the browser connection.

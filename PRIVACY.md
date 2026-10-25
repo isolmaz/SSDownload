@@ -14,7 +14,7 @@ SSDownload is a local Windows application. It has **no account, no sign-in, no c
 
 SSDownload connects only to:
 
-- **The sources you download from**, through your proxy if you set one. Site credentials and headers are never forwarded to a different host after a redirect.
+- **The sources you download from**, through your proxy if you set one (FTP only through a SOCKS5 proxy; if the proxy cannot be used at start, the app warns and connects directly). Site credentials and headers are never forwarded to a different host after a redirect.
 - **GitHub, for updates:** at most once a day it reads the signed `version.json` of the latest [release](https://github.com/isolmaz/SSDownload/releases) over HTTPS. Turn this off in **Settings → General**. An update is downloaded and installed only after you accept it.
 - **GitHub, for media support:** to install and weekly refresh the media tools from their GitHub releases over HTTPS — [yt-dlp](https://github.com/yt-dlp/yt-dlp), [Deno](https://github.com/denoland/deno) and the [BtbN FFmpeg builds](https://github.com/BtbN/FFmpeg-Builds). Each file must match the SHA-256 checksum published with that release.
 
