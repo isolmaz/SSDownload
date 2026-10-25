@@ -407,6 +407,64 @@ pub fn record_job(job_id: &str, event: Event) {
     }
 }
 
+/// The log session of the browser's native host. That process starts once per browser message and
+/// ends right after, so it writes from the calling thread (nothing waits in a queue when the
+/// process exits) and opens its session with the first event it records: a host that only relays
+/// traffic leaves no session banner. It appends to the day files of the desktop session, which
+/// open them shared; the `native-host` channel tells the two apart.
+pub struct HostLog {
+    database: PathBuf,
+    sink: Sink,
+    session: Session,
+    /// Read from the profile settings when the first event arrives.
+    config: Option<Config>,
+}
+
+impl HostLog {
+    pub fn new(paths: &AppPaths) -> Self {
+        Self {
+            database: paths.database.clone(),
+            sink: Sink::new(paths.base_dir.join("logs")),
+            session: Session {
+                id: uuid::Uuid::new_v4().to_string()[..8].to_owned(),
+                channel: "native-host",
+                version: env!("CARGO_PKG_VERSION"),
+            },
+            config: None,
+        }
+    }
+
+    pub fn record(&mut self, event: Event) {
+        let config = match self.config {
+            Some(config) => config,
+            None => {
+                let config = crate::store::Store::stored_settings(&self.database)
+                    .map(|settings| Config {
+                        level: Level::parse(&settings.logging_level).unwrap_or(Level::Detailed),
+                        hosts: settings.logging_hosts,
+                    })
+                    .unwrap_or_default();
+                self.config = Some(config);
+                let banner = Event::info("app.session").detail(format!(
+                    "channel={} version={} level={}",
+                    self.session.channel,
+                    self.session.version,
+                    config.level.as_str()
+                ));
+                self.write(config, banner);
+                config
+            }
+        };
+        self.write(config, event);
+    }
+
+    fn write(&mut self, config: Config, event: Event) {
+        if let Some(event) = filtered(config.level, config.hosts, event) {
+            self.sink.event_line(&self.session, &event);
+        }
+    }
+}
+
 impl Writer {
     fn level(&self) -> Level {
         level_from_code(self.level.load(Ordering::Relaxed))
@@ -418,27 +476,93 @@ impl Writer {
 
     /// Applies the level filter and the host privacy switch as configured right now.
     fn prepare(&self, event: Event) -> Option<Event> {
-        if !self.level().allows(event.level) {
-            return None;
-        }
-        if self.hosts() {
-            return Some(event);
-        }
-        let mut event = event;
-        event.host = None;
-        event.detail = event.detail.map(|detail| hide_hosts(&detail));
-        Some(event)
+        filtered(self.level(), self.hosts(), event)
     }
 }
 
-/// Replaces the host of every address in an already sanitized detail line, so the privacy
-/// switch that stops host recording does not leave the site name behind inside a URL.
-fn hide_hosts(detail: &str) -> String {
-    detail
+fn filtered(level: Level, hosts: bool, event: Event) -> Option<Event> {
+    if !level.allows(event.level) {
+        return None;
+    }
+    if hosts {
+        return Some(event);
+    }
+    let mut event = event;
+    let own_host = event.host.take();
+    event.detail = event
+        .detail
+        .map(|detail| hide_hosts(&detail, own_host.as_deref()));
+    Some(event)
+}
+
+const HIDDEN_HOST: &str = "host-hidden.invalid";
+
+/// Replaces the host of every address in an already sanitized detail line, and the host names
+/// that stand alone, so the privacy switch that stops host recording does not leave the site
+/// name behind inside a URL or an error message.
+fn hide_hosts(detail: &str, own_host: Option<&str>) -> String {
+    let addresses = detail
         .split(' ')
         .map(hide_word_host)
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    hide_bare_hosts(&addresses, own_host)
+}
+
+/// Hides the names that appear outside an address: the event's own host, which curl and the
+/// media tools repeat in their messages (also as a subdomain or before a port), and a dotted
+/// name after `host:`, the way curl reports `Could not resolve host: <name>`.
+fn hide_bare_hosts(detail: &str, own_host: Option<&str>) -> String {
+    let own_host = own_host
+        .filter(|host| !host.is_empty())
+        .map(str::to_ascii_lowercase);
+    let mut hidden = String::with_capacity(detail.len());
+    let mut copied = 0;
+    let mut name_start = None;
+    // The sentinel ends a name that runs to the end of the line.
+    for (index, character) in detail.char_indices().chain([(detail.len(), ' ')]) {
+        let in_name = character.is_ascii_alphanumeric() || character == '-' || character == '.';
+        match (in_name, name_start) {
+            (true, None) => name_start = Some(index),
+            (false, Some(start)) => {
+                name_start = None;
+                let name = detail[start..index].trim_end_matches('.');
+                if is_host_name(name, own_host.as_deref(), &detail[..start]) {
+                    hidden.push_str(&detail[copied..start]);
+                    hidden.push_str(HIDDEN_HOST);
+                    copied = start + name.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    hidden.push_str(&detail[copied..]);
+    hidden
+}
+
+fn is_host_name(name: &str, own_host: Option<&str>, before: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    own_host.is_some_and(|host| {
+        lower == host
+            || lower
+                .strip_suffix(host)
+                .is_some_and(|rest| rest.ends_with('.'))
+    }) || (name.contains('.') && follows_host_label(before))
+}
+
+/// Whether `before` ends with the word `host:`.
+fn follows_host_label(before: &str) -> bool {
+    let before = before.trim_end();
+    let Some(label_start) = before.len().checked_sub("host:".len()) else {
+        return false;
+    };
+    before
+        .get(label_start..)
+        .is_some_and(|label| label.eq_ignore_ascii_case("host:"))
+        && before[..label_start]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !character.is_alphanumeric())
 }
 
 fn hide_word_host(word: &str) -> String {
@@ -449,7 +573,7 @@ fn hide_word_host(word: &str) -> String {
         };
         if matches!(url.scheme(), "http" | "https" | "ftp" | "ftps")
             && url.host().is_some()
-            && url.set_host(Some("host-hidden.invalid")).is_ok()
+            && url.set_host(Some(HIDDEN_HOST)).is_ok()
         {
             return format!("{head}{url}");
         }
@@ -815,8 +939,10 @@ impl Sink {
         }
         let delta = total - self.reported_drops;
         self.reported_drops = total;
-        let event = Event::warn("log.dropped")
-            .detail(format!("{delta} olay kuyruk dolduğu için yazılamadı"));
+        let event = Event::warn("log.dropped").detail(crate::i18n::ui_owned!(
+            format!("{delta} olay kuyruk dolduğu için yazılamadı"),
+            format!("{delta} events were not written because the queue was full")
+        ));
         self.event_line(session, &event);
     }
 
@@ -830,8 +956,10 @@ impl Sink {
         }
         let delta = total - self.reported_write_failures;
         self.reported_write_failures = total;
-        let event = Event::warn("log.write_failed")
-            .detail(format!("{delta} günlük satırı diske yazılamadı"));
+        let event = Event::warn("log.write_failed").detail(crate::i18n::ui_owned!(
+            format!("{delta} günlük satırı diske yazılamadı"),
+            format!("{delta} log lines could not be written to disk")
+        ));
         self.event_line(session, &event);
     }
 
@@ -1447,6 +1575,185 @@ mod tests {
         assert!(kept <= JOB_FILE_KEEP, "kept {kept}");
         assert!(kept > 10, "kept {kept}");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bare_host_names_in_free_text_are_hidden_with_the_site_switch_off() {
+        let hide = |host: &str, detail: &str| {
+            filtered(
+                Level::Detailed,
+                false,
+                Event::info("job.fail").host(host).detail(detail),
+            )
+            .and_then(|event| event.detail)
+            .expect("the detail is kept")
+        };
+        assert_eq!(
+            hide(
+                "files.example.com",
+                "Could not resolve host: files.example.com"
+            ),
+            "Could not resolve host: host-hidden.invalid"
+        );
+        // Wherever the message puts the job's own host: quoted, in other case, before a port or
+        // a full stop, or as the parent of a subdomain.
+        assert_eq!(
+            hide(
+                "files.example.com",
+                "connect 'Files.Example.com':443 via cdn.files.example.com."
+            ),
+            "connect 'host-hidden.invalid':443 via host-hidden.invalid."
+        );
+        // A redirect can name another host than the job's; curl's own wording gives it away.
+        assert_eq!(
+            hide("site.example", "Could not resolve host: cdn.other.example"),
+            "Could not resolve host: host-hidden.invalid"
+        );
+        // Text that only looks similar stays readable.
+        let unrelated = "ghost: not.a.host; host: refused; saved site.example.org.bak";
+        assert_eq!(hide("site.example", unrelated), unrelated);
+
+        let kept = filtered(
+            Level::Detailed,
+            true,
+            Event::info("job.fail")
+                .host("files.example.com")
+                .detail("Could not resolve host: files.example.com"),
+        )
+        .expect("the event passes");
+        assert_eq!(
+            kept.detail.as_deref(),
+            Some("Could not resolve host: files.example.com"),
+            "names stay when recording is on"
+        );
+    }
+
+    fn read_events(root: &Path) -> Vec<serde_json::Value> {
+        let mut values = Vec::new();
+        let Ok(entries) = fs::read_dir(root.join("logs")) else {
+            return values;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("events-") && name.ends_with(".jsonl") {
+                for line in fs::read_to_string(entry.path()).unwrap().lines() {
+                    values.push(serde_json::from_str(line).expect("each line is one JSON event"));
+                }
+            }
+        }
+        values
+    }
+
+    #[test]
+    fn a_host_log_opens_its_session_with_the_first_event_and_shares_the_day_files() {
+        let root = temp_dir("host-log");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let mut host = HostLog::new(&paths);
+        assert!(
+            read_events(&root).is_empty(),
+            "a host that records nothing leaves no trace"
+        );
+
+        // The desktop session keeps the same day files open while the host appends to them.
+        let mut desktop = Sink::new(root.join("logs"));
+        desktop.event_line(&session(), &Event::info("job.stage"));
+        host.record(Event::failure(
+            "bridge.protocol_mismatch",
+            error_codes::BRG_006,
+            "client version 9",
+        ));
+        desktop.event_line(&session(), &Event::info("job.done"));
+        host.record(Event::warn("bridge.listen_failed"));
+
+        let events = read_events(&root);
+        let names: Vec<&str> = events
+            .iter()
+            .map(|event| event["event"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "job.stage",
+                "app.session",
+                "bridge.protocol_mismatch",
+                "job.done",
+                "bridge.listen_failed"
+            ]
+        );
+        assert_eq!(events[0]["channel"], "app");
+        for index in [1, 2, 4] {
+            assert_eq!(
+                events[index]["channel"], "native-host",
+                "{:?}",
+                events[index]
+            );
+            assert_eq!(events[index]["session"], events[1]["session"]);
+        }
+        assert_eq!(events[2]["code"], "SSD-BRG-006");
+        assert_eq!(events[2]["outcome"], "failed");
+
+        let human: String = fs::read_dir(root.join("logs"))
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".log"))
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect();
+        assert!(
+            human.contains("native-host | bridge.protocol_mismatch"),
+            "{human}"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_host_log_follows_the_level_and_site_switch_stored_in_the_profile() {
+        let root = temp_dir("host-log-settings");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let mut store = crate::store::Store::open(&paths.database).unwrap();
+        store
+            .save_settings(&crate::model::Settings {
+                logging_level: "normal".into(),
+                logging_hosts: false,
+                ..Default::default()
+            })
+            .unwrap();
+        drop(store);
+
+        let mut host = HostLog::new(&paths);
+        host.record(
+            Event::failure(
+                "bridge.browser_add_rejected",
+                error_codes::MED_005,
+                "Could not resolve host: files.example.com",
+            )
+            .host("files.example.com"),
+        );
+        host.record(Event::debug("bridge.noise"));
+
+        let events = read_events(&root);
+        let names: Vec<&str> = events
+            .iter()
+            .map(|event| event["event"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["app.session", "bridge.browser_add_rejected"],
+            "the debug event is below the stored level"
+        );
+        assert!(events[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("level=normal"));
+        assert!(events[1].get("host").is_none(), "{:?}", events[1]);
+        assert!(
+            !events[1]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("example.com"),
+            "{:?}",
+            events[1]
+        );
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

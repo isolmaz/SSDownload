@@ -13,6 +13,10 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::{Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, RecvTimeoutError},
+    },
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -280,21 +284,14 @@ fn run(args: &[String]) -> Result<()> {
             .next()
             .unwrap_or("SSDownload")
     ));
-    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr()) };
-    if handle.is_null() {
-        return Err(std::io::Error::last_os_error()).context(ui(
-            "Tek örnek kilidi oluşturulamadı",
-            "The single-instance lock could not be created",
-        ));
-    }
-    let exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-    let _guard = InstanceGuard(handle);
-    if exists {
+    let mut instance = claim_instance(&mutex_name)?;
+    if instance.is_none() {
         // Another instance owns this profile: hand the launch to it. An accepted response
         // ends the launch at once. Waiting on the attempts alone would not be bounded - the
         // pipe client waits for the instance without a read timeout, so one attempt can
         // outlive the whole budget - therefore the handover runs on its own thread and this
-        // one stops waiting on the deadline, whatever that attempt is doing.
+        // one stops waiting on the deadline, whatever that attempt is doing. An instance that
+        // is still exiting never answers; the wait ends in a normal start once its lock is free.
         let background = has(args, "--background");
         let action = if background {
             Action::Status
@@ -303,12 +300,17 @@ fn run(args: &[String]) -> Result<()> {
         };
         let (handover, outcome) = std::sync::mpsc::channel();
         let paths_for_handover = paths.clone();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
         std::thread::Builder::new()
             .name("ssdownload-handover".into())
             .spawn(move || {
                 let deadline = Instant::now() + INSTANCE_HANDOFF_TIMEOUT;
                 let mut attempts = 0u32;
                 loop {
+                    if stopped.load(Ordering::Relaxed) {
+                        return;
+                    }
                     attempts += 1;
                     let error = match bridge::send(&paths_for_handover, &action) {
                         Ok(response) if response.ok => {
@@ -337,52 +339,42 @@ fn run(args: &[String]) -> Result<()> {
                 "Çalışan örneğe devir iş parçacığı başlatılamadı",
                 "The handover thread to the running instance could not be started",
             ))?;
-        let pipe = match outcome.recv_timeout(INSTANCE_HANDOFF_TIMEOUT) {
-            Ok(Handover::Accepted) => return Ok(()),
-            Ok(Handover::Unanswered { attempts, error }) if error.is_empty() => ui_owned!(
-                format!("yerel iletişim kanalı {attempts} kez denendi"),
-                format!("the local channel was tried {attempts} times")
-            ),
-            Ok(Handover::Unanswered { attempts, error }) => ui_owned!(
-                format!("yerel iletişim kanalı {attempts} kez denendi, son yanıt: {error}"),
-                format!("the local channel was tried {attempts} times, last reply: {error}")
-            ),
-            Err(_) => ui_owned!(
-                format!(
-                    "yerel iletişim kanalı {} saniye boyunca yanıtsız kaldı",
-                    INSTANCE_HANDOFF_TIMEOUT.as_secs()
-                ),
-                format!(
-                    "the local channel did not answer for {} seconds",
-                    INSTANCE_HANDOFF_TIMEOUT.as_secs()
-                )
-            ),
-        };
-        // Its main window proves the instance is up and merely busy, so the launch is handed
-        // over instead of failed: raise it exactly as `Action::ShowWindow` does. The
-        // `--background` variant asks for `Action::Status` and has no window to raise.
-        if !background && raise_instance_window(&paths) {
-            return Ok(());
+        match await_handover(&outcome, &mutex_name, INSTANCE_HANDOFF_TIMEOUT)? {
+            Waited::Accepted => return Ok(()),
+            Waited::Vacant(guard) => {
+                stop.store(true, Ordering::Relaxed);
+                instance = Some(guard);
+            }
+            Waited::Unanswered(pipe) => {
+                // Its main window proves the instance is up and merely busy, so the launch is
+                // handed over instead of failed: raise it exactly as `Action::ShowWindow`
+                // does. The `--background` variant asks for `Action::Status` and has no
+                // window to raise.
+                if !background && raise_instance_window(&paths) {
+                    return Ok(());
+                }
+                let window = if background {
+                    ui(
+                        "arka plan isteği için pencere yükseltilmez",
+                        "the window is not raised for a background request",
+                    )
+                } else {
+                    ui(
+                        "ana pencere de bulunamadı",
+                        "the main window was not found either",
+                    )
+                };
+                bail!(
+                    "{}",
+                    ui_owned!(
+                        format!("SSDownload çalışıyor ancak yanıt vermiyor ({pipe}; {window})."),
+                        format!("SSDownload is running but not responding ({pipe}; {window}).")
+                    )
+                );
+            }
         }
-        let window = if background {
-            ui(
-                "arka plan isteği için pencere yükseltilmez",
-                "the window is not raised for a background request",
-            )
-        } else {
-            ui(
-                "ana pencere de bulunamadı",
-                "the main window was not found either",
-            )
-        };
-        bail!(
-            "{}",
-            ui_owned!(
-                format!("SSDownload çalışıyor ancak yanıt vermiyor ({pipe}; {window})."),
-                format!("SSDownload is running but not responding ({pipe}; {window}).")
-            )
-        );
     }
+    let _instance = instance;
     let app = App::open(paths)?;
     bridge::start(app.clone())?;
     let result = gui::run(app.clone(), has(args, "--background"));
@@ -621,6 +613,78 @@ enum Handover {
         /// Last answer or pipe error, so the failure can name what was tried.
         error: String,
     },
+}
+
+/// How a second launch's wait for the running instance ended.
+enum Waited {
+    /// The instance accepted the request; the launch is done.
+    Accepted,
+    /// The instance exited meanwhile: this launch holds the profile's lock and starts normally.
+    Vacant(InstanceGuard),
+    /// The instance stayed silent for the whole budget; the text says what was tried.
+    Unanswered(String),
+}
+
+/// Takes the single-instance lock of a profile; `None` means another instance holds it. The
+/// lock is a named mutex, which lives until its last handle closes, so a launch that finds it
+/// taken closes its own handle at once: a waiting launch must not keep the lock alive after
+/// the instance that owns it has exited.
+fn claim_instance(name: &[u16]) -> Result<Option<InstanceGuard>> {
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err(std::io::Error::last_os_error()).context(ui(
+            "Tek örnek kilidi oluşturulamadı",
+            "The single-instance lock could not be created",
+        ));
+    }
+    let taken = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let guard = InstanceGuard(handle);
+    Ok((!taken).then_some(guard))
+}
+
+/// Waits up to `budget` for the handover thread's verdict. Between its attempts the lock is
+/// tried again: an instance that is still exiting has closed its pipe but not yet its lock, and
+/// once the lock is free nobody is left to hand the launch to.
+fn await_handover(
+    outcome: &Receiver<Handover>,
+    mutex_name: &[u16],
+    budget: Duration,
+) -> Result<Waited> {
+    let deadline = Instant::now() + budget;
+    let silent = || {
+        ui_owned!(
+            format!(
+                "yerel iletişim kanalı {} saniye boyunca yanıtsız kaldı",
+                budget.as_secs()
+            ),
+            format!(
+                "the local channel did not answer for {} seconds",
+                budget.as_secs()
+            )
+        )
+    };
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let verdict = match outcome.recv_timeout(remaining.min(INSTANCE_HANDOFF_MAX_SLEEP)) {
+            Ok(Handover::Accepted) => return Ok(Waited::Accepted),
+            Ok(Handover::Unanswered { attempts, error }) if error.is_empty() => Some(ui_owned!(
+                format!("yerel iletişim kanalı {attempts} kez denendi"),
+                format!("the local channel was tried {attempts} times")
+            )),
+            Ok(Handover::Unanswered { attempts, error }) => Some(ui_owned!(
+                format!("yerel iletişim kanalı {attempts} kez denendi, son yanıt: {error}"),
+                format!("the local channel was tried {attempts} times, last reply: {error}")
+            )),
+            Err(RecvTimeoutError::Disconnected) => Some(silent()),
+            Err(RecvTimeoutError::Timeout) => (Instant::now() >= deadline).then(silent),
+        };
+        if let Some(guard) = claim_instance(mutex_name)? {
+            return Ok(Waited::Vacant(guard));
+        }
+        if let Some(pipe) = verdict {
+            return Ok(Waited::Unanswered(pipe));
+        }
+    }
 }
 
 /// Wait before the next handoff attempt: it doubles from `min` and is clamped to `max`, so
@@ -929,5 +993,129 @@ mod tests {
             attempts > 60 && attempts < 1000,
             "a {timeout:?} budget must be many tries, not a handful: {attempts}"
         );
+    }
+
+    fn scratch_lock() -> Vec<u16> {
+        wide(&format!("Local\\SSDownload-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// Owns a lock on another thread, the way a running instance does, until released.
+    struct Holder {
+        release: std::sync::mpsc::Sender<()>,
+        thread: std::thread::JoinHandle<()>,
+    }
+
+    impl Holder {
+        fn hold(name: &[u16]) -> Self {
+            let name = name.to_vec();
+            let (release, released) = std::sync::mpsc::channel();
+            let (ready, held) = std::sync::mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                let owner = claim_instance(&name).unwrap().expect("the lock is free");
+                ready.send(()).unwrap();
+                let _ = released.recv();
+                drop(owner);
+            });
+            held.recv().unwrap();
+            Self { release, thread }
+        }
+
+        fn release(self) {
+            self.release.send(()).unwrap();
+            self.thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_launch_that_finds_the_lock_taken_does_not_keep_it_alive() {
+        let name = scratch_lock();
+        let owner = claim_instance(&name)
+            .unwrap()
+            .expect("a free lock is taken");
+        assert!(claim_instance(&name).unwrap().is_none());
+        assert!(claim_instance(&name).unwrap().is_none());
+        drop(owner);
+        assert!(
+            claim_instance(&name).unwrap().is_some(),
+            "the failed claims left no handle behind, so the lock is free once its owner is gone"
+        );
+    }
+
+    #[test]
+    fn a_launch_waiting_for_an_exiting_instance_starts_once_its_lock_is_free() {
+        let name = scratch_lock();
+        let instance = Holder::hold(&name);
+        // The exiting instance has closed its pipe, so the handover thread never succeeds. Its
+        // lock goes after the wait found it taken at least once.
+        let (_handover, outcome) = std::sync::mpsc::channel();
+        let exiting = std::thread::spawn(move || {
+            std::thread::sleep(INSTANCE_HANDOFF_MAX_SLEEP + Duration::from_millis(300));
+            instance.release();
+        });
+        let started = Instant::now();
+        let waited = await_handover(&outcome, &name, Duration::from_secs(5)).unwrap();
+        assert!(
+            matches!(waited, Waited::Vacant(_)),
+            "the launch takes the free lock instead of reporting a silent instance"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        exiting.join().unwrap();
+    }
+
+    #[test]
+    fn a_free_lock_wins_over_a_late_unanswered_verdict() {
+        let name = scratch_lock();
+        let (handover, outcome) = std::sync::mpsc::channel();
+        handover
+            .send(Handover::Unanswered {
+                attempts: 3,
+                error: String::new(),
+            })
+            .unwrap();
+        assert!(matches!(
+            await_handover(&outcome, &name, Duration::from_secs(3)).unwrap(),
+            Waited::Vacant(_)
+        ));
+    }
+
+    #[test]
+    fn a_launch_gives_up_when_the_instance_keeps_its_lock_and_stays_silent() {
+        let name = scratch_lock();
+        let instance = Holder::hold(&name);
+        let (_handover, outcome) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        let waited = await_handover(&outcome, &name, Duration::from_millis(700)).unwrap();
+        match waited {
+            Waited::Unanswered(text) => assert!(!text.is_empty()),
+            _ => panic!("a silent instance that still holds its lock is reported"),
+        }
+        assert!(started.elapsed() >= Duration::from_millis(700));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        instance.release();
+    }
+
+    #[test]
+    fn an_accepted_handover_and_a_vanished_handover_thread_end_the_wait_at_once() {
+        let name = scratch_lock();
+        let instance = Holder::hold(&name);
+        let (handover, outcome) = std::sync::mpsc::channel();
+        handover.send(Handover::Accepted).unwrap();
+        assert!(matches!(
+            await_handover(&outcome, &name, Duration::from_secs(20)).unwrap(),
+            Waited::Accepted
+        ));
+
+        let (handover, outcome) = std::sync::mpsc::channel::<Handover>();
+        drop(handover);
+        let started = Instant::now();
+        assert!(matches!(
+            await_handover(&outcome, &name, Duration::from_secs(20)).unwrap(),
+            Waited::Unanswered(_)
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "a thread that is gone cannot answer, so the wait does not run to the deadline"
+        );
+        instance.release();
     }
 }

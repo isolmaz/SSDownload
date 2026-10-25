@@ -7,8 +7,8 @@ SSDownload is a local Windows application. It has **no account, no sign-in, no c
 - Your profile lives in `%LOCALAPPDATA%\SSDownload`: the download queue, settings, logs and the media tools.
 - The queue, completion journals, site logins and the proxy password are encrypted with Windows DPAPI, so only your Windows account can open them.
 - When a download completes, its cookies, request headers and page markup are removed from the stored record.
-- Logs record addresses without credentials, query string or fragment. Their level is set in Settings.
-- **Report problem** and **Tools → Diagnostics** write a folder and ZIP to your disk only when you ask. They are never uploaded; review them before sharing.
+- Logs record addresses without credentials, query string or fragment. Their level, and whether site names are kept, are set in Settings.
+- **Report problem** and **Tools → Diagnostics** write a folder and ZIP to your disk only when you ask. They are never uploaded; review them before sharing. A **Report problem** folder can hold the failing page's markup (`sayfa.html`) unredacted: the copy the browser handed over or, without one, the page read once by the app from its address without query or fragment, with no cookies, credentials or referer.
 
 ## Network connections
 

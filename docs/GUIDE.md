@@ -89,7 +89,7 @@ The Basic level shows only **General**; the other tabs keep their saved values.
 | Symptom | What to do |
 |---|---|
 | The browser cannot connect | Make sure the app and extension versions match; register the copy you use. |
-| A second launch while SSDownload runs | The running copy comes to the front; no second instance starts. |
+| A second launch while SSDownload runs | The running copy comes to the front; no second instance starts. If that copy is still closing, the new one starts as soon as it has exited. |
 | Download stays disabled after analysis | Read the error, fix the source or session, analyze again. |
 | A quality or track disappeared | Analyze again and choose an available option; nothing is substituted silently. |
 | Signed address expired | The job waits for **Refresh source address** instead of failing. |
@@ -102,8 +102,8 @@ The Basic level shows only **General**; the other tabs keep their saved values.
 ## Error codes and logs
 
 - Classified failures carry permanent `SSD-<area>-<number>` codes with Turkish and English messages. Areas: `BRG` browser bridge, `MED` media resolution, `NET` network, `TRF` transfer, `STO` storage, `RCV` recovery, `TOL` media tools, `UPD` updates, `EXT` extension. Codes are never renumbered or reused.
-- Logs live in `<profile>\logs\`: `events-YYYYMMDD.jsonl` and `ssdownload-YYYYMMDD.log`, rotating at 5 MB with five kept and removed after 30 days, plus per-job timelines in `logs\jobs\`. URLs are logged without credentials, query or fragment.
-- **Report problem** (on a failed analysis or job) and **Tools → Diagnostics** write a local folder and ZIP. Nothing is uploaded; look through it before sharing it in an issue.
+- Logs live in `<profile>\logs\`: `events-YYYYMMDD.jsonl` and `ssdownload-YYYYMMDD.log`, rotating at 5 MB with five kept and removed after 30 days, plus per-job timelines in `logs\jobs\`. The browser connection writes its refusals to the same files (channel `native-host`). URLs are logged without credentials, query or fragment; with **Log site names** off, site names are hidden as well, also inside error messages.
+- **Report problem** (on a failed analysis or job) and **Tools → Diagnostics** write a local folder and ZIP. Nothing is uploaded; look through it before sharing it in an issue. A **Report problem** folder can include the failing page's markup as `sayfa.html`, unredacted: the copy the browser handed over or, without one, the page read once by the app (address without query or fragment, no cookies, credentials or referer).
 
 ## Command line
 

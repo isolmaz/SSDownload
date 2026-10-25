@@ -663,13 +663,36 @@ fn download_setup(
     let hasher = hasher.into_inner();
     let actual = hex::encode(hasher.finalize());
     if !actual.eq_ignore_ascii_case(&manifest.sha256) {
-        bail!("{}",
+        crate::bail_code!(
+            crate::error_codes::UPD_003,
+            "{}",
             crate::i18n::ui_owned!(
                 format!("SHA-256 doğrulaması başarısız (beklenen {}, alınan {actual}). Dosya karantinaya taşındı.", manifest.sha256),
                 format!("SHA-256 verification failed (expected {}, received {actual}). The file was moved to quarantine.", manifest.sha256),
-            ));
+            )
+        );
     }
     Ok(())
+}
+
+/// The dialog text for a staged Setup whose digest differs from the signed feed.
+fn digest_mismatch_message(expected: &str, actual: &str, quarantine: Option<&Path>) -> String {
+    let moved = quarantine
+        .map(|folder| {
+            crate::i18n::ui_owned!(
+                format!("\n\nDosya şu klasöre taşındı (kendiniz inceleyip silebilirsiniz):\n{}", folder.display()),
+                format!("\n\nThe file was moved to this folder (you can inspect and delete it yourself):\n{}", folder.display())
+            )
+        })
+        .unwrap_or_default();
+    crate::error_codes::coded(
+        crate::error_codes::UPD_003,
+        crate::i18n::ui_owned!(
+            format!("SHA-256 özeti eşleşmedi. İndirilen kurulum dosyası güvenli değil.\nBeklenen: {expected}\nAlınan: {actual}{moved}"),
+            format!("SHA-256 digest does not match. The downloaded installer is not safe.\nExpected: {expected}\nReceived: {actual}{moved}")
+        ),
+    )
+    .to_string()
 }
 
 /// Name of the marker the install helper leaves in the profile when the silent Setup did not
@@ -852,10 +875,12 @@ fn report_install_failure(paths: &AppPaths) {
             });
         });
     if let Err(error) = spawned {
-        crate::logging::record(
-            crate::logging::Event::warn("update.check_spawn")
-                .detail(format!("Kurulum hatası bildirimi başlatılamadı: {error}")),
-        );
+        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
+            crate::i18n::ui_owned!(
+                format!("Kurulum hatası bildirimi başlatılamadı: {error}"),
+                format!("The install failure notice could not be started: {error}")
+            ),
+        ));
     }
 }
 
@@ -1090,17 +1115,7 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
         let folder = quarantine_file(ctx.paths, &destination).ok();
         return UpdateOutcome {
             success: false,
-            message: crate::i18n::ui_owned!(format!("SHA-256 özeti eşleşmedi. İndirilen kurulum dosyası güvenli değil.\nBeklenen: {}\nAlınan: {actual}{}",
-                manifest.sha256,
-                folder
-                    .as_ref()
-                    .map(|f| crate::i18n::ui_owned!(format!("\n\nDosya şu klasöre taşındı (kendiniz inceleyip silebilirsiniz):\n{}", f.display()), format!("\n\nThe file was moved to this folder (you can inspect and delete it yourself):\n{}", f.display())))
-                    .unwrap_or_default()), format!("SHA-256 digest does not match. The downloaded installer is not safe.\nExpected: {}\nReceived: {actual}{}",
-                            manifest.sha256,
-                            folder
-            .as_ref()
-            .map(|f| crate::i18n::ui_owned!(format!("\n\nDosya şu klasöre taşındı (kendiniz inceleyip silebilirsiniz):\n{}", f.display()), format!("\n\nThe file was moved to this folder (you can inspect and delete it yourself):\n{}", f.display())))
-            .unwrap_or_default())),
+            message: digest_mismatch_message(&manifest.sha256, &actual, folder.as_deref()),
             quarantine: folder,
             dry_run: ctx.dry_run,
         };
@@ -1293,7 +1308,10 @@ fn stamp_update_check(app: &crate::app::App) {
     stamped.last_update_check = chrono::Local::now().timestamp();
     if let Err(error) = app.update_settings_quiet(stamped) {
         crate::logging::record(crate::logging::Event::warn("update.settings_save").detail(
-            format!("Güncelleme denetim damgası kaydedilemedi: {error:#}"),
+            crate::i18n::ui_owned!(
+                format!("Güncelleme denetim damgası kaydedilemedi: {error:#}"),
+                format!("The update check time could not be saved: {error:#}")
+            ),
         ));
     }
 }
@@ -1358,8 +1376,14 @@ pub fn startup_check(app: crate::app::App) {
                         next.skipped_update_version = Some(manifest.version);
                         if let Err(error) = app.update_settings_quiet(next) {
                             crate::logging::record(
-                                crate::logging::Event::warn("update.settings_save")
-                                    .detail(format!("Atlanan sürüm kaydedilemedi: {error:#}")),
+                                crate::logging::Event::warn("update.settings_save").detail(
+                                    crate::i18n::ui_owned!(
+                                        format!("Atlanan sürüm kaydedilemedi: {error:#}"),
+                                        format!(
+                                            "The skipped version could not be saved: {error:#}"
+                                        )
+                                    ),
+                                ),
                             );
                         }
                     }
@@ -1368,11 +1392,12 @@ pub fn startup_check(app: crate::app::App) {
             }
         });
     if let Err(error) = spawned {
-        crate::logging::record(
-            crate::logging::Event::warn("update.check_spawn").detail(format!(
-                "Güncelleme denetim iş parçacığı başlatılamadı: {error}"
-            )),
-        );
+        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
+            crate::i18n::ui_owned!(
+                format!("Güncelleme denetim iş parçacığı başlatılamadı: {error}"),
+                format!("The update check thread could not be started: {error}")
+            ),
+        ));
     }
 }
 
@@ -1433,8 +1458,9 @@ pub fn check_now(app: crate::app::App) {
                                     if let Err(error) = app.update_settings_quiet(next) {
                                         crate::logging::record(
                                             crate::logging::Event::warn("update.settings_save")
-                                                .detail(format!(
-                                                    "Atlanan sürüm kaydedilemedi: {error:#}"
+                                                .detail(crate::i18n::ui_owned!(
+                                                    format!("Atlanan sürüm kaydedilemedi: {error:#}"),
+                                                    format!("The skipped version could not be saved: {error:#}")
                                                 )),
                                         );
                                     }
@@ -1464,11 +1490,12 @@ pub fn check_now(app: crate::app::App) {
             }
         });
     if let Err(error) = spawned {
-        crate::logging::record(
-            crate::logging::Event::warn("update.check_spawn").detail(format!(
-                "Güncelleme denetim iş parçacığı başlatılamadı: {error}"
-            )),
-        );
+        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
+            crate::i18n::ui_owned!(
+                format!("Güncelleme denetim iş parçacığı başlatılamadı: {error}"),
+                format!("The update check thread could not be started: {error}")
+            ),
+        ));
     }
 }
 
@@ -1897,6 +1924,53 @@ mod tests {
             "an oversized feed must carry its registry code, got: {text}"
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn a_downloaded_setup_with_another_digest_is_refused_with_its_registry_code() {
+        let (url, server) = serve_once(b"MZ this is not the signed installer".to_vec());
+        let root = std::env::temp_dir().join(format!("ssdownload-digest-{}", uuid::Uuid::new_v4()));
+        let manifest = UpdateManifest {
+            version: "9.9.9".into(),
+            url,
+            sha256: "0".repeat(64),
+            notes: String::new(),
+        };
+        let governor = NetworkGovernor::new(4);
+        let error = download_setup(
+            &manifest,
+            &root.join("Setup.exe"),
+            &governor,
+            &mut |_, _| {},
+            true,
+        )
+        .expect_err("a digest that differs from the signed feed is refused");
+        assert_eq!(
+            crate::error_codes::code_of(&error),
+            Some(crate::error_codes::UPD_003),
+            "{error:#}"
+        );
+        server.join().unwrap();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn the_digest_mismatch_dialog_carries_the_registry_code_and_both_digests() {
+        let expected = "a".repeat(64);
+        let actual = "b".repeat(64);
+        let folder = Path::new(r"C:\profile\update-quarantine\20260101-000000");
+        let text = digest_mismatch_message(&expected, &actual, Some(folder));
+        assert_eq!(
+            crate::error_codes::from_text(&text),
+            Some(crate::error_codes::UPD_003),
+            "{text}"
+        );
+        assert!(text.contains(&expected) && text.contains(&actual), "{text}");
+        assert!(text.contains(&folder.display().to_string()), "{text}");
+        assert!(
+            !digest_mismatch_message(&expected, &actual, None).contains("update-quarantine"),
+            "a missing quarantine folder is not named"
+        );
     }
 
     #[test]

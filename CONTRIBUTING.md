@@ -5,7 +5,7 @@ Bug reports and pull requests are welcome.
 ## Issues
 
 - Include the SSDownload version (**Help → About**), your Windows version and the `SSD-…` error code if one was shown.
-- Never attach cookies, signed download addresses or private files. A **Report problem** or **Diagnostics** ZIP is redacted, but look through it before sharing.
+- Never attach cookies, signed download addresses or private files. Addresses in a **Report problem** or **Diagnostics** ZIP are redacted, but the page markup (`sayfa.html`) is not; look through it before sharing.
 - Security problems go privately through **Security → Report a vulnerability**, not into an issue (see [SECURITY.md](SECURITY.md)).
 - Only report problems with content you have the right to download. DRM-protected streams are out of scope.
 

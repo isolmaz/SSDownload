@@ -8,11 +8,11 @@ Supported version: the latest [release](https://github.com/isolmaz/SSDownload/re
 
 ## Security model
 
-**Local only.** The app, its command line and the browser extension talk through a per-profile named pipe that only the current Windows user can open. Nothing listens on the network; the media tools reach the internet only through an authenticated loopback proxy owned by the app.
+**Local only.** The app, its command line and the browser extension talk through a per-profile named pipe that only the current Windows user can open. Clients open it at the identification level and write nothing until the process serving it is confirmed to run as the same user, so a pipe another user created under that name receives nothing. Nothing listens on the network; the media tools reach the internet only through an authenticated loopback proxy owned by the app.
 
 **Browser bridge.** The native messaging host accepts only the fixed extension ID `hgndggnlfpnflkmnbddmcnfniamckham`, length-limited JSON (1 MiB) and an allowlist of actions: add a download, analyze media and open the picker, renew a source address, relay a browser transfer, show the window and status queries. The browser can never choose an output path, delete files, change settings or quit the app.
 
-**Secrets at rest.** Queue records, completion journals, site logins and the proxy password are sealed with Windows DPAPI for the current user. Cookies, headers and page markup are removed from a job once it completes. Logs and error reports strip credentials, query strings and fragments from addresses.
+**Secrets at rest.** Queue records, completion journals, site logins and the proxy password are sealed with Windows DPAPI for the current user. Cookies, headers and page markup are removed from a job once it completes. Logs and error reports strip credentials, query strings and fragments from addresses. The page markup a **Report problem** folder may hold (`sayfa.html`) is kept as is, so review it before sharing.
 
 **Transfers.** HTTPS never downgrades on a redirect, and site headers or credentials never cross to another origin (only `Accept`, `Accept-Language` and `User-Agent` do). A download resumes only when the source proves it is unchanged. Files are published atomically, never replace an existing file and are never run automatically; downloaded files carry the Windows "downloaded from the internet" mark.
 
