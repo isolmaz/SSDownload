@@ -401,6 +401,16 @@ pub struct Job {
     /// The running download records a live stream, which can be finished early and kept.
     #[serde(default)]
     pub live: bool,
+    /// Order in which jobs were added; settles jobs created within the same second.
+    #[serde(default)]
+    pub sequence: u64,
+}
+
+impl Job {
+    /// Start and display order: a higher priority first, then creation order.
+    pub fn order_key(&self) -> (i64, i64, u64, &str) {
+        (-self.priority, self.created_at, self.sequence, &self.id)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -982,22 +992,27 @@ mod tests {
 
     #[test]
     fn concurrent_pause_and_cancel_never_restore_a_cancelled_job() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
         let control = TransferControl::default();
+        let cancelled = AtomicBool::new(false);
         thread::scope(|scope| {
             for _ in 0..8 {
-                let control = control.clone();
-                scope.spawn(move || {
+                scope.spawn(|| {
+                    // Pausing races the cancellation, then keeps going after it.
+                    while !cancelled.load(Ordering::Acquire) {
+                        control.pause();
+                    }
                     for _ in 0..1000 {
                         control.pause();
                     }
                 });
             }
-            let control = control.clone();
-            scope.spawn(move || control.cancel());
+            scope.spawn(|| {
+                control.cancel();
+                cancelled.store(true, Ordering::Release);
+            });
         });
-        // One final cancellation models remove/shutdown arriving after any
-        // in-flight pause messages and must always be preserved.
-        control.cancel();
         assert!(control.is_cancelled());
     }
 }

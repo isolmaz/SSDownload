@@ -45,12 +45,12 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 - **Batch:** a numeric or letter range such as `https://host/img[001-120].jpg` expands into up to 1000 jobs; **File → Batch download** shows an example, **Import list** loads a plain-text URL list and **Export list** writes the selected addresses.
 - **Duplicates:** adding an address already in the queue asks once per batch: use the existing job, download a new copy, or cancel.
 - **Session cookies:** some downloads need the site's session. Grant **Allow session cookies for this site** in the extension for that one site; nothing is read without that gesture, and **Remove site session permission** withdraws it.
-- **Expired links:** a job whose signed address expired waits as **Awaiting source**; **Refresh source address** (or the extension's browser transfer entry) resumes the same job with a fresh address.
+- **Expired links:** a job whose signed address expired waits as **Awaiting source**; **Refresh source address** (or the extension's browser transfer entry) resumes the same job with a fresh address. **Pause all** and **Start now** leave such a job waiting.
 - **Order and priority:** drag rows or use Alt+Home / Alt+End; within a queue, queued work starts in list order, and several queues take turns. **Start now** starts a job immediately, outside the concurrency limit.
 - **Mini panel and completion card:** **Downloads → Mini panel** (or the tray) opens a small list of active downloads that can be pinned on top. A finished download shows a card with **Open** and **Show in folder**.
 - **Tray:** progress on the icon; the menu has the mini panel, new download, add from clipboard, pause/resume all, speed-limit presets, shut down when done, a one-hour quiet mode, the download folder, updates, Settings and Exit.
 - **Holds:** a job waits when its disk has less than 256 MiB (or less than the remaining size) free, and optionally while Windows reports a metered connection. Windows is kept awake while downloads run (the display may still sleep).
-- **Basic and Advanced** (`Basit` / `Gelişmiş`) are chosen in the first-run wizard and in Settings (**Interface level**). Advanced adds named queues with time windows and byte quotas, folder rules, a site crawler, periodic synchronization, site logins, the event and job logs and completion actions (notify, shut down, run a program).
+- **Basic and Advanced** (`Basit` / `Gelişmiş`) are chosen in the first-run wizard and in Settings (**Interface level**). Advanced adds named queues with time windows and byte quotas, folder rules, a site crawler, periodic synchronization, site logins, the event and job logs and completion actions (notify, shut down, run a program; shutting down and running a program wait until every queue is idle).
 
 ## Menus and shortcuts
 

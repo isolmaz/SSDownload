@@ -332,9 +332,6 @@ struct Actor {
     source_refresh: HashMap<String, SourceRefreshGrant>,
     source_refresh_workers: HashMap<u64, ActiveSourceRefresh>,
     browser_transfers: BTreeMap<String, BrowserTransferLease>,
-    /// Requests removed before explicit browser completion remain counted rather
-    /// than treating native-host death as proof that Chrome stopped fetching.
-    browser_orphans: Vec<ConnectionLease>,
     /// The requested host cap is already applied to new acquisitions, while
     /// this records whether pre-existing actual sockets still need to drain.
     network_limit_pending: bool,
@@ -551,7 +548,6 @@ impl Engine {
                     source_refresh: HashMap::new(),
                     source_refresh_workers: HashMap::new(),
                     browser_transfers: BTreeMap::new(),
-                    browser_orphans: Vec::new(),
                     network_limit_pending: false,
                     queue_cursor: 0,
                     quota_accounted,
@@ -1086,6 +1082,13 @@ impl Actor {
         let local = Local::now();
         let now = local.timestamp();
         let state = job_scheduling_state_at(&self.settings, &request, &local);
+        let sequence = self
+            .jobs
+            .values()
+            .map(|job| job.sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
         let job = Job {
             id: id.clone(),
             request,
@@ -1118,6 +1121,7 @@ impl Actor {
             force_start: false,
             open_when_done: false,
             live: false,
+            sequence,
         };
         if let Err(error) = self.store.save_job(&job) {
             let _ = crate::recovery::release(&job.path, &id);
@@ -1169,13 +1173,16 @@ impl Actor {
                 );
             }
             if !pause && job.state == JobState::AwaitingSource {
-                bail!(
-                    "{}",
-                    crate::i18n::ui(
-                        "Bu iş devam etmeden önce kaynak adresi yenilenmeli.",
-                        "The source URL must be refreshed before this job can continue."
-                    )
-                )
+                return Err(source_refresh_required());
+            }
+            // A worker that is neither stopping nor stopped has nothing to resume.
+            if !pause
+                && self
+                    .active
+                    .get(id)
+                    .is_some_and(|active| matches!(active.desired, DesiredStop::None))
+            {
+                continue;
             }
             job.state = if pause {
                 JobState::Paused
@@ -1271,13 +1278,7 @@ impl Actor {
             return Ok(());
         }
         let mut order = self.jobs.values().collect::<Vec<_>>();
-        order.sort_by(|left, right| {
-            (-left.priority, left.created_at, &left.id).cmp(&(
-                -right.priority,
-                right.created_at,
-                &right.id,
-            ))
-        });
+        order.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
         let mut order = order
             .into_iter()
             .map(|job| job.id.clone())
@@ -1325,6 +1326,9 @@ impl Actor {
         }
         if self.active.contains_key(id) {
             return Ok(());
+        }
+        if job.state == JobState::AwaitingSource {
+            return Err(source_refresh_required());
         }
         job.force_start = true;
         job.state = JobState::Queued;
@@ -1509,7 +1513,10 @@ impl Actor {
         let ids = self
             .jobs
             .values()
-            .filter(|j| j.state != JobState::Completed && j.remove_requested.is_none())
+            .filter(|j| {
+                !matches!(j.state, JobState::Completed | JobState::AwaitingSource)
+                    && j.remove_requested.is_none()
+            })
             .map(|j| j.id.clone())
             .collect();
         self.transition(ids, true)
@@ -1611,6 +1618,7 @@ impl Actor {
                 format!("The old completion record could not be deleted: {error}")
             ));
         }
+        self.maybe_begin_completions();
         self.publish();
         Ok(())
     }
@@ -2804,22 +2812,10 @@ impl Actor {
         Ok(())
     }
 
+    /// Ends the transfer and with it every network permit it still holds. The extension's
+    /// late `end_request` for that generation is refused, so nothing else could release them.
     fn remove_browser_transfer(&mut self, id: &str) -> Option<BrowserTransferLease> {
-        let mut transfer = self.browser_transfers.remove(id)?;
-        let retained = transfer.requests.len();
-        self.browser_orphans
-            .extend(std::mem::take(&mut transfer.requests).into_values());
-        if retained > 0 {
-            self.warning = Some(crate::i18n::ui_owned!(
-                format!(
-                    "Tarayıcı isteği kapanmadan iş durdu; {retained} ağ izni Chrome'un durduğu doğrulanana kadar güvenli olarak tutuluyor"
-                ),
-                format!(
-                    "The job stopped before the browser request closed; {retained} network permit(s) are kept safely until Chrome is confirmed stopped"
-                )
-            ));
-        }
-        Some(transfer)
+        self.browser_transfers.remove(id)
     }
 
     fn revoke_exited_browser_transfer(&mut self, id: &str, generation: u64) -> Result<()> {
@@ -3066,6 +3062,14 @@ impl Actor {
                 self.settings.settings_revision.wrapping_add(1).max(1);
         }
         changed
+    }
+
+    /// A shutdown or program action waits for every queue to be idle, so a queue that finished
+    /// earlier is started by whichever job completes last, not only by its own.
+    fn maybe_begin_completions(&mut self) {
+        for queue_id in self.completion_armed.clone() {
+            self.maybe_begin_completion(&queue_id);
+        }
     }
 
     fn maybe_begin_completion(&mut self, queue_id: &str) {
@@ -3575,7 +3579,7 @@ impl Actor {
                             self.persistence_error = Some(error.to_string());
                         }
                     }
-                    self.maybe_begin_completion(&queue_id);
+                    self.maybe_begin_completions();
                 }
             }
             Err(error) => {
@@ -3799,7 +3803,7 @@ impl Actor {
                         host_counts.get(&host).copied().unwrap_or(0)
                             < self.settings.per_host_limit.max(1) as usize
                     })
-                    .min_by_key(|job| (-job.priority, job.created_at, job.id.clone()))
+                    .min_by(|left, right| left.order_key().cmp(&right.order_key()))
                     .map(|job| job.id.clone());
                 if let Some(id) = candidate {
                     self.queue_cursor = (index + 1) % queue_len.max(1);
@@ -4000,7 +4004,7 @@ impl Actor {
             .filter_map(|(id, _)| {
                 self.jobs.get(id).map(|job| {
                     (
-                        (-job.priority, job.created_at),
+                        (-job.priority, job.created_at, job.sequence),
                         id.clone(),
                         job_host(&job.request.url),
                     )
@@ -4285,17 +4289,6 @@ impl Actor {
         if let Some(warning) = &self.warning {
             warnings.push(warning.clone());
         }
-        if !self.browser_orphans.is_empty() {
-            let count = self.browser_orphans.len();
-            warnings.push(crate::i18n::ui_owned!(
-                format!(
-                    "{count} doğrulanmamış tarayıcı ağ izni kapasitede tutuluyor; Chrome'un isteği kapattığı kanıtlanmadan serbest bırakılmaz"
-                ),
-                format!(
-                    "{count} unverified browser network permit(s) are held in capacity; they are not released until Chrome is proven to have closed the request"
-                )
-            ));
-        }
         if self.network_limit_pending {
             let limit = self.settings.per_host_limit;
             warnings.push(crate::i18n::ui_owned!(
@@ -4559,13 +4552,7 @@ fn make_snapshot(
 ) -> EngineSnapshot {
     let mut jobs = jobs.values().cloned().collect::<Vec<_>>();
     // Queue order: explicit priority first (higher first), then creation order.
-    jobs.sort_by(|left, right| {
-        (-left.priority, left.created_at, &left.id).cmp(&(
-            -right.priority,
-            right.created_at,
-            &right.id,
-        ))
-    });
+    jobs.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
     EngineSnapshot {
         revision: 0,
         warning: None,
@@ -4820,6 +4807,16 @@ fn processing_phase(phase: &str) -> bool {
         || phase.contains("birleştir")
         || phase.contains("processing")
         || phase.contains("mux")
+}
+
+fn source_refresh_required() -> anyhow::Error {
+    anyhow!(
+        "{}",
+        crate::i18n::ui(
+            "Bu iş devam etmeden önce kaynak adresi yenilenmeli.",
+            "The source URL must be refreshed before this job can continue."
+        )
+    )
 }
 
 /// The persistence failure that stops downloads, in the interface language.

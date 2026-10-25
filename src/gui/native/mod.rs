@@ -8021,6 +8021,7 @@ mod tests {
             force_start: false,
             open_when_done: false,
             live: false,
+            sequence: 0,
         };
         let downloading = JobState::Downloading.label();
         assert_eq!(

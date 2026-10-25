@@ -870,20 +870,24 @@ Use the existing jobs, or download new copies?"
                 }
             }
             S_OK => match collect_settings(f) {
-                Ok(value) => match dlg.app.dispatch(Action::SetSettings { settings: value }) {
-                    Ok(()) => {
-                        DestroyWindow(dlg.hwnd);
-                    }
-                    Err(e) => set_dialog_error(
-                        dlg.hwnd,
-                        dlg.error,
-                        &crate::i18n::ui_owned!(
-                            format!("Ayarlar kaydedilemedi: {e:#}"),
-                            format!("Settings could not be saved: {e:#}")
+                Ok(value) => {
+                    match merge_dialog_settings(&f.value, value, dlg.app.snapshot().settings)
+                        .and_then(|settings| dlg.app.dispatch(Action::SetSettings { settings }))
+                    {
+                        Ok(()) => {
+                            DestroyWindow(dlg.hwnd);
+                        }
+                        Err(e) => set_dialog_error(
+                            dlg.hwnd,
+                            dlg.error,
+                            &crate::i18n::ui_owned!(
+                                format!("Ayarlar kaydedilemedi: {e:#}"),
+                                format!("Settings could not be saved: {e:#}")
+                            ),
+                            null_mut(),
                         ),
-                        null_mut(),
-                    ),
-                },
+                    }
+                }
                 Err((e, h)) => set_dialog_error(dlg.hwnd, dlg.error, &e, h),
             },
             D_CANCEL => {
@@ -1503,6 +1507,33 @@ Use the existing jobs, or download new copies?"
     }
 }
 
+/// The settings to save when the dialog is confirmed: the engine's `current` settings with only
+/// the fields the user changed in the dialog applied, so a change made elsewhere while the
+/// dialog was open (a tray toggle, a queue edit, an update-check stamp) is kept. `opened` is
+/// the dialog's value, `edited` the same value after the user's changes. The two fields the
+/// dialog mirrors into its own value as the user picks them are always the user's.
+fn merge_dialog_settings(
+    opened: &Settings,
+    edited: Settings,
+    current: Settings,
+) -> anyhow::Result<Settings> {
+    let opened = serde_json::to_value(opened)?;
+    let edited = serde_json::to_value(edited)?;
+    let mut merged = serde_json::to_value(current)?;
+    if let (Some(opened), Some(edited), Some(merged)) = (
+        opened.as_object(),
+        edited.as_object(),
+        merged.as_object_mut(),
+    ) {
+        for (key, value) in edited {
+            if opened.get(key) != Some(value) || matches!(key.as_str(), "ui_mode" | "ui_language") {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    Ok(serde_json::from_value(merged)?)
+}
+
 pub(super) unsafe fn collect_settings(
     f: &SettingsFields,
 ) -> std::result::Result<Settings, (String, HWND)> {
@@ -1715,4 +1746,55 @@ pub(super) unsafe fn collect_settings(
         )
     })?;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::CompletionAction;
+
+    #[test]
+    fn confirming_the_dialog_keeps_changes_made_elsewhere_while_it_was_open() {
+        let opened = Settings {
+            settings_revision: 3,
+            speed_limit_kib: 100,
+            history_days: 7,
+            ..Default::default()
+        };
+        let mut edited = opened.clone();
+        edited.close_to_tray = !opened.close_to_tray;
+        edited.history_days = 30;
+        edited.ui_language = "en".into();
+        let mut current = opened.clone();
+        current.settings_revision = 5;
+        current.last_update_check = 1_700_000_000;
+        current.speed_limit_kib = 512;
+        current.queues[0].completion = CompletionAction::Notify;
+
+        let merged = merge_dialog_settings(&opened, edited, current).unwrap();
+
+        assert_eq!(merged.close_to_tray, !opened.close_to_tray);
+        assert_eq!(merged.history_days, 30);
+        assert_eq!(merged.ui_language, "en");
+        assert_eq!(merged.last_update_check, 1_700_000_000);
+        assert_eq!(merged.speed_limit_kib, 512);
+        assert_eq!(merged.queues[0].completion, CompletionAction::Notify);
+        assert_eq!(merged.settings_revision, 5);
+    }
+
+    #[test]
+    fn the_modes_the_dialog_mirrors_are_applied_even_though_its_value_already_holds_them() {
+        let opened = Settings {
+            ui_mode: UiMode::Simple.as_str().into(),
+            ui_language: "en".into(),
+            ..Default::default()
+        };
+        let edited = opened.clone();
+        let current = Settings::default();
+
+        let merged = merge_dialog_settings(&opened, edited, current).unwrap();
+
+        assert_eq!(merged.ui_mode, UiMode::Simple.as_str());
+        assert_eq!(merged.ui_language, "en");
+    }
 }

@@ -86,6 +86,17 @@ fn reject_link(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Creates `temp` and fills it; a failed fill removes the partial file.
+fn write_temp(temp: &Path, fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>) -> Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(temp)?;
+    let filled = fill(&mut file);
+    drop(file);
+    if let Err(error) = filled {
+        let _ = fs::remove_file(temp);
+        return Err(error.into());
+    }
+    Ok(())
+}
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context(crate::i18n::ui(
         "Kayıt klasörü eksik",
@@ -100,13 +111,10 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         "Record filename is missing",
     ))?);
     let temp = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
+    write_temp(&temp, |file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    })?;
     let mut attempt = 0u32;
     loop {
         let ok = unsafe {
@@ -388,7 +396,15 @@ pub(crate) fn cleanup_work(job: &Job) -> Result<()> {
     };
     if path.exists() {
         reject_link(path)?;
-        if fs::read_to_string(path.join(".job"))? != job.id {
+        // A crash before the marker was written leaves an empty folder, which is nobody else's.
+        let owned = match fs::read_to_string(path.join(".job")) {
+            Ok(owner) => owner == job.id,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::read_dir(path)?.next().is_none()
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !owned {
             bail!(
                 "{}",
                 crate::i18n::ui(
@@ -551,6 +567,7 @@ mod tests {
             force_start: false,
             open_when_done: false,
             live: false,
+            sequence: 0,
         }
     }
 
@@ -650,6 +667,41 @@ mod tests {
         assert_eq!(fs::read(&job.path).unwrap(), b"existing user file");
         assert_eq!(fs::read(&published.path).unwrap(), b"new movie");
         acknowledge(&paths, &job).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_job_can_be_removed_when_a_crash_left_its_work_folder_without_a_marker() {
+        let (paths, root) = fixture();
+        let id = uuid::Uuid::new_v4().to_string();
+        let job = job(&root, id, "movie.mp4");
+        let work = job.work_dir.as_ref().unwrap();
+        fs::create_dir_all(work).unwrap();
+
+        remove(&paths, &job, false).unwrap();
+        assert!(!work.exists());
+
+        // Content without a marker cannot be proven to belong to this job.
+        fs::create_dir_all(work).unwrap();
+        fs::write(work.join("movie.mp4.ssdownload.part"), b"unknown").unwrap();
+        assert!(remove(&paths, &job, false).is_err());
+        assert!(work.join("movie.mp4.ssdownload.part").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_temporary_write_leaves_no_partial_file() {
+        let (_, root) = fixture();
+        let temp = root.join(".record.tmp");
+        let failed = write_temp(&temp, |file| {
+            file.write_all(b"partial")?;
+            Err(std::io::Error::other("disk full"))
+        });
+        assert!(failed.is_err());
+        assert!(!temp.exists());
+
+        write_temp(&temp, |file| file.write_all(b"whole")).unwrap();
+        assert_eq!(fs::read(&temp).unwrap(), b"whole");
         fs::remove_dir_all(root).unwrap();
     }
 }
