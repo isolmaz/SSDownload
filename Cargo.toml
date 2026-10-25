@@ -1,6 +1,6 @@
 [package]
 name = "ssdownload"
-version = "1.8.2"
+version = "1.8.3"
 edition = "2021"
 description = "Native Windows file, video and audio download manager"
 license = "MIT"

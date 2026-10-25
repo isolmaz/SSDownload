@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "ssdownload"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "anyhow",
  "base64",
