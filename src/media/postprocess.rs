@@ -2,6 +2,19 @@
 
 use super::*;
 
+/// Whether the selected audio or subtitle streams of the downloaded file need tagging or
+/// merging. A converted audio file is a new encoding: the source track's codec and language
+/// tag do not carry over to it, so there is nothing to tag or compare.
+pub(super) fn stream_postprocess_needed(request: &AddRequest) -> Result<bool> {
+    if audio_conversion(request)?.is_some() {
+        return Ok(false);
+    }
+    Ok(!request.audio_tracks.is_empty()
+        || request.audio_format_id.is_some()
+        || request.audio_language.is_some()
+        || !request.external_subtitles.is_empty())
+}
+
 pub(super) fn postprocess_selected_streams(
     path: &Path,
     request: &AddRequest,
@@ -10,26 +23,16 @@ pub(super) fn postprocess_selected_streams(
     control: &TransferControl,
     network: &NetworkGovernor,
 ) -> Result<bool> {
-    let single_audio = request.audio_format_id.is_some() || request.audio_language.is_some();
-    if request.audio_tracks.is_empty() && !single_audio && request.external_subtitles.is_empty() {
+    if !stream_postprocess_needed(request)? {
         return Ok(false);
     }
+    let single_audio = request.audio_format_id.is_some() || request.audio_language.is_some();
     let audio_count = if request.audio_tracks.is_empty() {
         usize::from(single_audio)
     } else {
         request.audio_tracks.len()
     };
-    let audio_language = |index: usize| {
-        request
-            .audio_tracks
-            .get(index)
-            .and_then(|selected| selected.language.as_deref())
-            .or_else(|| {
-                (request.audio_tracks.is_empty() && index == 0)
-                    .then_some(request.audio_language.as_deref())
-                    .flatten()
-            })
-    };
+    let audio_language = |index: usize| selected_audio_language(request, index);
     if audio_count > 0 {
         let probe = run_capture(
             &tools.ffprobe,
@@ -117,72 +120,7 @@ pub(super) fn postprocess_selected_streams(
     if staged.exists() {
         fs::remove_file(&staged)?;
     }
-    let mut args = vec![
-        "-v".into(),
-        "error".into(),
-        "-xerror".into(),
-        "-nostdin".into(),
-        "-protocol_whitelist".into(),
-        "file,pipe".into(),
-        "-i".into(),
-        path.to_string_lossy().into_owned(),
-    ];
-    for subtitle in &subtitles {
-        args.extend(["-i".into(), subtitle.to_string_lossy().into_owned()]);
-    }
-    args.extend(["-map".into(), "0:v?".into(), "-map".into(), "0:a?".into()]);
-    if subtitles.is_empty() {
-        args.extend(["-map".into(), "0:s?".into()]);
-    }
-    for index in 0..subtitles.len() {
-        args.extend(["-map".into(), format!("{}:0", index + 1)]);
-    }
-    args.extend([
-        "-map_metadata".into(),
-        "0".into(),
-        "-c".into(),
-        "copy".into(),
-    ]);
-    if !subtitles.is_empty() {
-        args.extend([
-            "-c:s".into(),
-            if request.container.as_deref() == Some("mp4") {
-                "mov_text"
-            } else {
-                "srt"
-            }
-            .into(),
-        ]);
-    }
-    for index in 0..audio_count {
-        if let Some(language) = audio_language(index) {
-            args.extend([
-                format!("-metadata:s:a:{index}"),
-                format!(
-                    "language={}",
-                    tag_language(language, request.container.as_deref())
-                ),
-            ]);
-        }
-        args.extend([
-            format!("-disposition:a:{index}"),
-            if index == 0 { "default" } else { "0" }.into(),
-        ]);
-    }
-    for (index, selected) in request.external_subtitles.iter().enumerate() {
-        args.extend([
-            format!("-metadata:s:s:{index}"),
-            format!(
-                "language={}",
-                tag_language(&selected.language, request.container.as_deref())
-            ),
-            format!("-metadata:s:s:{index}"),
-            format!("title={}", selected.label),
-            format!("-disposition:s:{index}"),
-            if selected.is_default { "default" } else { "0" }.into(),
-        ]);
-    }
-    args.push(staged.to_string_lossy().into_owned());
+    let args = selected_output_args(path, &subtitles, &staged, request, audio_count);
     let muxed = run_capture(
         &tools.ffmpeg,
         &args,
@@ -223,6 +161,99 @@ pub(super) fn postprocess_selected_streams(
         fs::remove_file(subtitle)?;
     }
     Ok(true)
+}
+
+/// The language the selection expects for the audio stream at `index`.
+fn selected_audio_language(request: &AddRequest, index: usize) -> Option<&str> {
+    request
+        .audio_tracks
+        .get(index)
+        .and_then(|selected| selected.language.as_deref())
+        .or_else(|| {
+            (request.audio_tracks.is_empty() && index == 0)
+                .then_some(request.audio_language.as_deref())
+                .flatten()
+        })
+}
+
+/// FFmpeg arguments that copy the downloaded file and the external subtitles into `staged`,
+/// tagging the selected audio and subtitle streams.
+pub(super) fn selected_output_args(
+    path: &Path,
+    subtitles: &[PathBuf],
+    staged: &Path,
+    request: &AddRequest,
+    audio_count: usize,
+) -> Vec<String> {
+    let mut args = vec![
+        "-v".into(),
+        "error".into(),
+        "-xerror".into(),
+        "-nostdin".into(),
+    ];
+    // The whitelist is an input option: every input needs its own.
+    for input in std::iter::once(path).chain(subtitles.iter().map(PathBuf::as_path)) {
+        args.extend([
+            "-protocol_whitelist".into(),
+            "file,pipe".into(),
+            "-i".into(),
+            input.to_string_lossy().into_owned(),
+        ]);
+    }
+    args.extend(["-map".into(), "0:v?".into(), "-map".into(), "0:a?".into()]);
+    if subtitles.is_empty() {
+        args.extend(["-map".into(), "0:s?".into()]);
+    }
+    for index in 0..subtitles.len() {
+        args.extend(["-map".into(), format!("{}:0", index + 1)]);
+    }
+    args.extend([
+        "-map_metadata".into(),
+        "0".into(),
+        "-c".into(),
+        "copy".into(),
+    ]);
+    if !subtitles.is_empty() {
+        args.extend([
+            "-c:s".into(),
+            if request.container.as_deref() == Some("mp4") {
+                "mov_text"
+            } else {
+                "srt"
+            }
+            .into(),
+        ]);
+    }
+    for index in 0..audio_count {
+        if let Some(language) = selected_audio_language(request, index) {
+            args.extend([
+                format!("-metadata:s:a:{index}"),
+                format!(
+                    "language={}",
+                    tag_language(language, request.container.as_deref())
+                ),
+            ]);
+        }
+        args.extend([
+            format!("-disposition:a:{index}"),
+            if index == 0 { "default" } else { "0" }.into(),
+        ]);
+    }
+    for (index, selected) in request.external_subtitles.iter().enumerate() {
+        args.extend([
+            format!("-metadata:s:s:{index}"),
+            format!(
+                "language={}",
+                tag_language(&selected.language, request.container.as_deref())
+            ),
+            format!("-metadata:s:s:{index}"),
+            format!("title={}", selected.label),
+            format!("-disposition:s:{index}"),
+            if selected.is_default { "default" } else { "0" }.into(),
+        ]);
+    }
+    args.push(staged.to_string_lossy().into_owned());
+    args
 }
 
 pub(super) fn download_external_subtitle(
@@ -489,7 +520,7 @@ pub(crate) fn validate_options(request: &AddRequest) -> Result<()> {
         validate_audio_selection(selection)?;
     }
     if let Some(language) = &request.audio_language {
-        validate_language(language, "Ses dili")?;
+        validate_language(language, crate::i18n::ui("Ses dili", "Audio language"))?;
     }
     for selection in &request.subtitle_tracks {
         validate_subtitle_selection(selection)?;

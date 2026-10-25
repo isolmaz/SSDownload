@@ -18,7 +18,7 @@ Supported version: the latest [release](https://github.com/isolmaz/SSDownload/re
 
 **Processes.** Helper programs are started with argument arrays, never through a shell, inside Windows job objects owned by the app, and they run only while a job needs them.
 
-**Media tools.** yt-dlp, Deno and FFmpeg are downloaded over HTTPS from their GitHub releases, checked against the SHA-256 published with each release, installed atomically and checked again before each use. A failed refresh keeps the working set.
+**Media tools.** yt-dlp, Deno and FFmpeg are downloaded over HTTPS from their GitHub releases, checked against the SHA-256 published with each release, installed atomically and checked again before each use. A failed refresh keeps the working set. yt-dlp may open `file:` addresses only in the manifests the app pinned itself; a site's media description that names a `file:` address, such as a network share, is refused.
 
 ## Updates
 

@@ -1170,6 +1170,8 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
             let height_max = selector_filter_u32(term, "height<=");
             let extension = selector_filter_text(term, "ext=");
             let language = selector_filter_text(term, "language=");
+            let video_codecs = selector_codec_prefixes(term, "vcodec");
+            let audio_codecs = selector_codec_prefixes(term, "acodec");
             let candidate = info.formats.iter().rev().find(|format| {
                 let kind = match base {
                     "bestvideo" => {
@@ -1195,6 +1197,18 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
                     && language.as_ref().is_none_or(|value| {
                         format.language.as_deref().map(language_key) == Some(language_key(value))
                     })
+                    && video_codecs.as_ref().is_none_or(|prefixes| {
+                        format
+                            .video_codec
+                            .as_deref()
+                            .is_some_and(|codec| starts_with_any(codec, prefixes))
+                    })
+                    && audio_codecs.as_ref().is_none_or(|prefixes| {
+                        format
+                            .audio_codec
+                            .as_deref()
+                            .is_some_and(|codec| starts_with_any(codec, prefixes))
+                    })
             });
             if let Some(candidate) = candidate {
                 selected.push(candidate.id.clone());
@@ -1215,6 +1229,19 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
 
 pub(super) fn selector_filter_u32(selector: &str, marker: &str) -> Option<u32> {
     selector_filter_text(selector, marker)?.parse().ok()
+}
+
+/// The prefixes of a `[<field>~='^(a|b)']` codec filter.
+pub(super) fn selector_codec_prefixes(term: &str, field: &str) -> Option<Vec<String>> {
+    let marker = format!("{field}~='^(");
+    let start = term.find(&marker)? + marker.len();
+    let prefixes = &term[start..];
+    Some(
+        prefixes[..prefixes.find(")'")?]
+            .split('|')
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 pub(super) fn selector_filter_text(selector: &str, marker: &str) -> Option<String> {

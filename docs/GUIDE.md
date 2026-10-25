@@ -76,7 +76,7 @@ Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt
 
 The Basic level shows only **General**; the other tabs keep their saved values.
 
-- **Speed limit:** **Downloads → Speed limit** sets KiB/s for the selected jobs (0 follows the global limit); the tray presets set the global limit.
+- **Speed limit:** **Downloads → Speed limit** sets KiB/s for the selected jobs (0 follows the global limit); the tray presets set the global limit. A running live recording keeps the limit it started with, because changing it would restart the capture.
 - **Proxy:** the Windows setting is read at start and when the proxy setting is changed in Settings, and only its HTTP/HTTPS entry is used (no automatic configuration script and no SOCKS-only entry). FTP downloads go through a SOCKS5 proxy only; with an HTTP proxy they connect directly. An HTTP proxy password is sent with Basic authentication. If the proxy cannot be used at start (for example its saved password cannot be read), the app shows a warning and connects directly.
 - **Site logins** (Advanced): host → user name and password, sent as HTTP Basic credentials only to that exact host over HTTPS (or HTTP when the entry allows it). A redirect to another host never carries them.
 - **Scheduling** uses local time; the start is inclusive, the end exclusive, `23:00–07:00` crosses midnight and equal endpoints mean all day. Manually paused work never resumes by itself.
