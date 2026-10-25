@@ -260,11 +260,13 @@ pub(super) fn reject_file_urls(document: &Value) -> Result<()> {
     match document {
         Value::Object(fields) => {
             for (key, field) in fields {
-                if matches!(key.as_str(), "url" | "manifest_url" | "fragment_base_url")
-                    && field
-                        .as_str()
-                        .and_then(|value| Url::parse(value).ok())
-                        .is_some_and(|url| url.scheme() == "file")
+                if matches!(
+                    key.as_str(),
+                    "url" | "manifest_url" | "fragment_base_url" | "path"
+                ) && field
+                    .as_str()
+                    .and_then(|value| Url::parse(value).ok())
+                    .is_some_and(|url| url.scheme() == "file")
                 {
                     bail!(crate::i18n::ui(
                         "Medya kaynağı yerel dosya veya ağ paylaşımı adresi içeriyor; güvenlik için indirilmedi",

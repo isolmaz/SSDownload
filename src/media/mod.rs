@@ -622,7 +622,6 @@ pub(crate) fn download(
                 restart_count = restart_count.saturating_add(1);
                 discard_fragmented_restart(
                     failure_stages.fragmented,
-                    live,
                     &output_plan,
                     &known_good,
                     job_id,
@@ -640,7 +639,6 @@ pub(crate) fn download(
                 // files instead of resuming inside the chain.
                 discard_fragmented_restart(
                     failure_stages.fragmented,
-                    live,
                     &output_plan,
                     &known_good,
                     job_id,
@@ -1461,16 +1459,14 @@ fn drm_protected(stderr: &str) -> bool {
 /// A fragmented (HLS/DASH) run killed mid-chain must not resume its fragment state:
 /// observed yt-dlp resume states can treat a never-fetched fragment as done. Discard
 /// this attempt's own outputs back to the known-good set; completed playlist entries
-/// (`known_good`) are kept, so multi-entry playlists lose only the unfinished entry. A live
-/// recording is never discarded: the stream cannot be fetched again.
+/// (`known_good`) are kept, so multi-entry playlists lose only the unfinished entry.
 fn discard_fragmented_restart(
     fragmented: bool,
-    live: bool,
     output_plan: &OutputPlan,
     known_good: &HashSet<PathBuf>,
     job_id: &str,
 ) -> Result<()> {
-    if !fragmented || live {
+    if !fragmented {
         return Ok(());
     }
     let discarded = discard_attempt_outputs(output_plan, known_good)?;
@@ -2443,7 +2439,12 @@ fn selected_tracks_format(request: &AddRequest, info: &MediaInfo) -> Result<Stri
     }
     if request.audio_language.is_some() {
         if request.container.as_deref() == Some("mp4") {
-            return Ok(format!("{video}+{}", best_mp4_audio(request, info)?.id));
+            let audio = best_mp4_audio(request, info)?;
+            return Ok(if request.playlist {
+                playlist_mp4_selector(request, true)
+            } else {
+                format!("{video}+{}", audio.id)
+            });
         }
         return Ok(format!(
             "{video}+bestaudio{language}/best{height}{language}"

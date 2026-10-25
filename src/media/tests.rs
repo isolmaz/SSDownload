@@ -482,12 +482,14 @@ fn a_capture_that_outlives_its_budget_reports_the_timeout_code() {
 }
 
 /// PowerShell starts `ping` as a grandchild and records its process id in `pid_file`. The
-/// owned job holds the whole tree, so ending the tool must end the grandchild as well.
+/// owned job holds the whole tree, so ending the tool must end the grandchild as well. The path
+/// reaches the script through the environment: PowerShell also ends a single-quoted string at a
+/// typographic quote, which a user name in the temp path can hold.
 fn spawn_tool_with_grandchild(pid_file: &Path) -> (RunningDownload, u32) {
+    let variable = format!("SSDOWNLOAD_TEST_PID_FILE_{}", uuid::Uuid::new_v4().simple());
     let script = format!(
         "$p = Start-Process -FilePath ping.exe -ArgumentList '-n','20','127.0.0.1' -WindowStyle Hidden -PassThru; \
-         Set-Content -LiteralPath '{}' -Value $p.Id; $p.WaitForExit()",
-        pid_file.display().to_string().replace('\'', "''")
+         Set-Content -LiteralPath $env:{variable} -Value $p.Id; $p.WaitForExit()"
     );
     let args = vec![
         "-NoProfile".into(),
@@ -495,8 +497,10 @@ fn spawn_tool_with_grandchild(pid_file: &Path) -> (RunningDownload, u32) {
         "-Command".into(),
         script,
     ];
+    std::env::set_var(&variable, pid_file);
     let running =
         RunningDownload::spawn_with_proxy(Path::new("powershell.exe"), &args, b"", None).unwrap();
+    std::env::remove_var(&variable);
     let deadline = Instant::now() + Duration::from_secs(30);
     let pid = loop {
         if let Some(pid) = fs::read_to_string(pid_file)
@@ -897,26 +901,27 @@ fn a_new_speed_limit_restarts_a_download_but_not_a_live_recording() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A restart of a fragmented download starts its fragments again; what a live recording
-/// captured cannot be fetched again, so it stays.
+/// A restarted fragmented download starts its fragments again, whatever the stream is; a
+/// download that is not fragmented resumes its partial file.
 #[test]
-fn a_restarted_live_recording_keeps_what_it_recorded() {
-    let root = std::env::temp_dir().join(format!("ssdownload-live-test-{}", uuid::Uuid::new_v4()));
+fn a_restarted_fragmented_download_starts_its_fragments_again() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-restart-test-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
     let request = AddRequest {
-        url: "https://example.test/live.m3u8".into(),
+        url: "https://example.test/stream.m3u8".into(),
         kind: DownloadKind::Video,
         ..AddRequest::default()
     };
     let plan = OutputPlan::new(&root.join("stream"), &request, None).unwrap();
-    let recorded = plan.workspace.join("media.f299.mp4.part");
-    fs::write(&recorded, b"recorded").unwrap();
+    let partial = plan.workspace.join("media.f299.mp4.part");
+    fs::write(&partial, b"partial").unwrap();
 
-    discard_fragmented_restart(true, true, &plan, &HashSet::new(), "job").unwrap();
-    assert!(recorded.exists());
+    discard_fragmented_restart(false, &plan, &HashSet::new(), "job").unwrap();
+    assert!(partial.exists());
 
-    discard_fragmented_restart(true, false, &plan, &HashSet::new(), "job").unwrap();
-    assert!(!recorded.exists());
+    discard_fragmented_restart(true, &plan, &HashSet::new(), "job").unwrap();
+    assert!(!partial.exists());
     remove_workspace(&plan.workspace, &plan.owner).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
@@ -950,6 +955,9 @@ fn an_extractor_document_cannot_name_a_file_or_a_network_share() {
         json!({"formats": [{"format_id": "a", "url": "https://cdn.example/a",
             "manifest_url": "file://attacker/share/master.m3u8"}]}),
         json!({"subtitles": {"en": [{"ext": "vtt", "url": "file:////attacker/share/en.vtt"}]}}),
+        json!({"formats": [{"format_id": "dash", "url": "https://cdn.example/a.mpd",
+            "fragment_base_url": "https://cdn.example/",
+            "fragments": [{"path": "file:////attacker/share/1.m4s"}]}]}),
     ];
     for document in &hostile {
         assert!(reject_file_urls(document).is_err(), "{document}");
@@ -1084,12 +1092,12 @@ fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
         max_height: Some(720),
         ..AddRequest::default()
     };
-    let video = "[vcodec~='^(avc|h264|hevc|h265|hev1|hvc1|dvh1|dvhe|av01|av1|mpeg4|mp4v)']";
-    let audio = "[acodec~='^(aac|mp4a|alac|mp3|ac3|ac-3|eac3|ec-3)']";
+    let video = "[vcodec~=?'^(avc|h264|hevc|h265|hev1|hvc1|dvh1|dvhe|av01|av1|mpeg4|mp4v)']";
+    let audio = "[acodec~=?'^(aac|mp4a|alac|mp3|ac3|ac-3|eac3|ec-3)']";
     let selector = format_selector(&request, &sampled).unwrap();
     assert_eq!(
         selector,
-        format!("bestvideo[height<=720]{video}+bestaudio{audio}/best[height<=720]{video}{audio}")
+        format!("bestvideo[height<=?720]{video}+bestaudio{audio}/best[height<=?720]{video}{audio}")
     );
     assert_eq!(
         selected_format_ids(&selector, &sampled).unwrap(),
@@ -1105,10 +1113,114 @@ fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
     request.exact_height = Some(720);
     assert!(format_selector(&request, &sampled)
         .unwrap()
-        .starts_with("bestvideo[height=720][vcodec~="));
+        .starts_with("bestvideo[height=720][vcodec~=?"));
 
     request.playlist = false;
     assert_eq!(format_selector(&request, &sampled).unwrap(), "f-avc+f-aac");
+}
+
+/// An HLS audio rendition has no `acodec` and a variant may have no `height`; yt-dlp drops a
+/// format without the filtered field unless the operator carries a `?`.
+#[test]
+fn a_playlist_mp4_selector_keeps_formats_without_a_codec_or_a_height() {
+    let sampled = media_info_from_json(&json!({"formats": [
+        {"format_id": "v-noheight", "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "v-720", "height": 720, "vcodec": "avc1.64001f", "acodec": "none"},
+        {"format_id": "a-main", "vcodec": "none"},
+        {"format_id": "a-opus", "vcodec": "none", "acodec": "opus"}
+    ]}))
+    .unwrap();
+    let other = media_info_from_json(&json!({"formats": [
+        {"format_id": "s-video", "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "s-audio", "vcodec": "none"}
+    ]}))
+    .unwrap();
+    let request = AddRequest {
+        url: "https://example.test/playlist".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        playlist: true,
+        max_height: Some(720),
+        ..AddRequest::default()
+    };
+
+    let selector = format_selector(&request, &sampled).unwrap();
+    assert!(selector.contains("[height<=?720]"), "{selector}");
+    assert!(selector.contains("[vcodec~=?'^("), "{selector}");
+    assert!(selector.contains("[acodec~=?'^("), "{selector}");
+    assert_eq!(
+        selected_format_ids(&selector, &sampled).unwrap(),
+        ["v-720", "a-main"],
+        "the rendition without a codec is chosen, the Opus one listed after it is not"
+    );
+    assert_eq!(
+        selected_format_ids(&selector, &other).unwrap(),
+        ["s-video", "s-audio"]
+    );
+}
+
+#[test]
+fn the_evidence_selector_follows_ytdlp_for_a_format_without_the_filtered_field() {
+    let info = media_info_from_json(&json!({"formats": [
+        {"format_id": "v-noheight", "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "a-main", "vcodec": "none"},
+        {"format_id": "a-opus", "vcodec": "none", "acodec": "opus"}
+    ]}))
+    .unwrap();
+    let ids = |selector: &str| selected_format_ids(selector, &info).ok();
+
+    assert_eq!(ids("bestvideo[height<=720]"), None);
+    assert_eq!(
+        ids("bestvideo[height<=?720]"),
+        Some(vec!["v-noheight".to_string()])
+    );
+    assert_eq!(ids("bestaudio[acodec~='^(vorbis)']"), None);
+    assert_eq!(
+        ids("bestaudio[acodec~=?'^(vorbis)']"),
+        Some(vec!["a-main".to_string()]),
+        "the rendition without a codec passes, the reported Opus one does not"
+    );
+}
+
+/// The picker keeps the selected audio language for a playlist; the sampled entry's format ids
+/// would fail every entry that has other ids.
+#[test]
+fn a_playlist_with_an_audio_language_does_not_pin_the_sampled_entrys_ids() {
+    let sampled = media_info_from_json(&json!({"formats": [
+        {"format_id": "f-avc", "height": 720, "vcodec": "avc1.64001f", "acodec": "none"},
+        {"format_id": "f-en", "vcodec": "none", "acodec": "mp4a.40.2", "language": "en"},
+        {"format_id": "f-tr", "vcodec": "none", "acodec": "mp4a.40.2", "language": "tr"}
+    ]}))
+    .unwrap();
+    let other = media_info_from_json(&json!({"formats": [
+        {"format_id": "s-137", "height": 720, "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "s-en", "vcodec": "none", "acodec": "mp4a.40.2", "language": "en"},
+        {"format_id": "s-tr", "vcodec": "none", "acodec": "mp4a.40.2", "language": "tr"}
+    ]}))
+    .unwrap();
+    let mut request = AddRequest {
+        url: "https://example.test/playlist".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        playlist: true,
+        max_height: Some(720),
+        audio_language: Some("tr".into()),
+        ..AddRequest::default()
+    };
+
+    let selector = format_selector(&request, &sampled).unwrap();
+    assert!(selector.contains("[language=tr]"), "{selector}");
+    assert!(
+        !selector.contains("f-avc") && !selector.contains("f-tr"),
+        "{selector}"
+    );
+    assert_eq!(
+        selected_format_ids(&selector, &other).unwrap(),
+        ["s-137", "s-tr"]
+    );
+
+    request.playlist = false;
+    assert_eq!(format_selector(&request, &sampled).unwrap(), "f-avc+f-tr");
 }
 
 #[test]

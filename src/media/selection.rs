@@ -206,17 +206,25 @@ pub(super) fn best_mp4_audio<'a>(
 }
 
 /// A playlist is downloaded with one `--format` expression for every entry, and format ids
-/// belong to a single entry; the codecs and the height take the place of the ids.
-fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> String {
+/// belong to a single entry; the codecs, the height and the audio language take the place of
+/// the ids. A `?` after `~=` and `<=` lets a format pass whose value the extractor did not
+/// report, as the checks on the sampled entry do (an HLS audio rendition has no `acodec`); an
+/// exact height must be reported.
+pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> String {
     let mut height = String::new();
     if let Some(exact) = request.exact_height {
         height.push_str(&format!("[height={exact}]"));
     }
     if let Some(maximum) = request.max_height {
-        height.push_str(&format!("[height<={maximum}]"));
+        height.push_str(&format!("[height<=?{maximum}]"));
     }
-    let video = format!("[vcodec~='^({})']", MP4_VIDEO_CODECS.join("|"));
-    let audio = format!("[acodec~='^({})']", MP4_AUDIO_CODECS.join("|"));
+    let language = request
+        .audio_language
+        .as_ref()
+        .map(|language| format!("[language={language}]"))
+        .unwrap_or_default();
+    let video = format!("[vcodec~=?'^({})']", MP4_VIDEO_CODECS.join("|"));
+    let audio = format!("[acodec~=?'^({})']{language}", MP4_AUDIO_CODECS.join("|"));
     if with_audio {
         format!("bestvideo{height}{video}+bestaudio{audio}/best{height}{video}{audio}")
     } else {
