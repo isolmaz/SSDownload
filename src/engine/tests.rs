@@ -33,7 +33,7 @@ fn schedule_respects_normal_overnight_and_full_day_windows() {
 }
 
 #[test]
-fn overnight_weekday_quota_uses_the_start_day_across_dst_offsets() {
+fn overnight_weekday_quota_uses_the_start_day_at_different_utc_offsets() {
     use chrono::FixedOffset;
 
     let mut queue = QueuePolicy {
@@ -82,6 +82,106 @@ fn overnight_weekday_quota_uses_the_start_day_across_dst_offsets() {
     consume_queue_bytes_at(&mut settings, "night", 1, &next_occurrence);
     queue = settings.queues.remove(0);
     assert_eq!(queue.quota.unwrap().consumed_bytes, 1);
+}
+
+/// US Eastern time around its 2026 change back to standard time: UTC-4 until
+/// 2026-11-01 06:00 UTC, UTC-5 afterwards, so 01:00-02:00 local occurs twice.
+#[derive(Clone, Copy, Debug)]
+struct EasternFallBack;
+
+impl EasternFallBack {
+    fn change() -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 1)
+            .unwrap()
+            .and_hms_opt(6, 0, 0)
+            .unwrap()
+    }
+}
+
+impl TimeZone for EasternFallBack {
+    type Offset = chrono::FixedOffset;
+
+    fn from_offset(_: &chrono::FixedOffset) -> Self {
+        Self
+    }
+
+    fn offset_from_local_date(
+        &self,
+        local: &chrono::NaiveDate,
+    ) -> chrono::LocalResult<chrono::FixedOffset> {
+        self.offset_from_local_datetime(&local.and_hms_opt(12, 0, 0).unwrap())
+    }
+
+    fn offset_from_local_datetime(
+        &self,
+        local: &chrono::NaiveDateTime,
+    ) -> chrono::LocalResult<chrono::FixedOffset> {
+        let daylight = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+        let standard = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        let repeated_from = Self::change() - chrono::Duration::hours(5);
+        if *local < repeated_from {
+            chrono::LocalResult::Single(daylight)
+        } else if *local < repeated_from + chrono::Duration::hours(1) {
+            chrono::LocalResult::Ambiguous(daylight, standard)
+        } else {
+            chrono::LocalResult::Single(standard)
+        }
+    }
+
+    fn offset_from_utc_date(&self, utc: &chrono::NaiveDate) -> chrono::FixedOffset {
+        self.offset_from_utc_datetime(&utc.and_hms_opt(12, 0, 0).unwrap())
+    }
+
+    fn offset_from_utc_datetime(&self, utc: &chrono::NaiveDateTime) -> chrono::FixedOffset {
+        let hours = if *utc < Self::change() { 4 } else { 5 };
+        chrono::FixedOffset::west_opt(hours * 3600).unwrap()
+    }
+}
+
+#[test]
+fn overnight_weekday_quota_period_holds_across_a_real_fall_back_inside_the_window() {
+    // Saturday 22:00 to Sunday 04:00 contains the change back to standard time.
+    let queue = QueuePolicy {
+        id: "night".into(),
+        windows: vec![QueueWindow {
+            weekdays: vec![5],
+            start: "22:00".into(),
+            end: "04:00".into(),
+        }],
+        quota: Some(QueueQuota {
+            limit_bytes: 100,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let at = |month, day, hour, minute| {
+        EasternFallBack.from_utc_datetime(
+            &chrono::NaiveDate::from_ymd_opt(2026, month, day)
+                .unwrap()
+                .and_hms_opt(hour, minute, 0)
+                .unwrap(),
+        )
+    };
+    let first_pass = at(11, 1, 5, 30);
+    let second_pass = at(11, 1, 6, 30);
+    let after = at(11, 1, 8, 30);
+    assert_eq!((first_pass.hour(), first_pass.minute()), (1, 30));
+    assert_eq!((second_pass.hour(), second_pass.minute()), (1, 30));
+    assert_ne!(first_pass.offset(), second_pass.offset());
+
+    let key = queue_period_key(&queue, &first_pass).unwrap();
+    assert!(key.contains("2026-10-31"), "{key}");
+    assert_eq!(queue_period_key(&queue, &second_pass), Some(key.clone()));
+    assert_eq!(queue_period_key(&queue, &after), Some(key));
+
+    let mut settings = Settings {
+        queues: vec![queue],
+        ..Default::default()
+    };
+    consume_queue_bytes_at(&mut settings, "night", 100, &first_pass);
+    assert!(!queue_accepts_work(&settings, "night", &second_pass));
+    assert!(!queue_accepts_work(&settings, "night", &after));
+    assert!(queue_accepts_work(&settings, "night", &at(11, 8, 3, 30)));
 }
 
 #[test]
@@ -379,6 +479,7 @@ fn completion_requires_every_remaining_job_to_succeed() {
         force_start: false,
         open_when_done: false,
         live: false,
+        sequence: 0,
     };
     let mut jobs = BTreeMap::new();
     jobs.insert("done".into(), make_job("done", JobState::Completed));
@@ -547,7 +648,7 @@ fn browser_policy_stop_persists_scheduled_state_before_releasing_generation() {
     store.save_job(&job).unwrap();
     drop(store);
 
-    let engine = Engine::open(paths).unwrap();
+    let engine = Engine::open(paths.clone()).unwrap();
     let sender_started_at =
         process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .unwrap();
@@ -559,6 +660,16 @@ fn browser_policy_stop_persists_scheduled_state_before_releasing_generation() {
     let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
     assert_eq!(job.state, JobState::Scheduled);
     assert!(job.phase.contains("sınırında durdu"));
+    // The stop is already in the database while the engine is still running.
+    let stored = Store::open(&paths.database)
+        .unwrap()
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap();
+    assert_eq!(stored.state, JobState::Scheduled);
+    assert!(stored.phase.contains("sınırında durdu"));
     assert!(engine.browser_transfer_job(&id).is_err());
     assert!(engine.pause_browser_transfer(&id, generation).is_err());
     engine.shutdown();
@@ -819,6 +930,29 @@ fn proxy_tunnel_failures_are_retryable() {
 }
 
 #[test]
+fn an_http_error_in_a_media_tool_message_is_retried_by_the_rule_of_a_typed_status() {
+    for status in 100..=599 {
+        let typed = anyhow::Error::new(transfer::HttpStatusError { status });
+        let media = anyhow!("ERROR: unable to download video data: HTTP Error {status}: Whatever");
+        assert_eq!(
+            retryable_error(&media),
+            retryable_error(&typed),
+            "HTTP {status}"
+        );
+    }
+    // The CDN statuses that no fixed list names are transient; 501 and client errors are not.
+    assert!(retryable_error(&anyhow!(
+        "HTTP Error 522: Connection Timed Out"
+    )));
+    assert!(!retryable_error(&anyhow!(
+        "HTTP Error 501: Not Implemented"
+    )));
+    assert!(!retryable_error(&anyhow!("HTTP Error 404: Not Found")));
+    // Only a three-digit number is a status.
+    assert!(!retryable_error(&anyhow!("HTTP Error 5039: unexpected")));
+}
+
+#[test]
 fn a_file_locked_by_another_program_is_retried_but_other_access_errors_are_not() {
     let locked = |code| {
         anyhow::Error::new(std::io::Error::from_raw_os_error(code))
@@ -870,6 +1004,7 @@ fn a_job_whose_destination_folder_was_deleted_recreates_it_before_starting() {
         force_start: false,
         open_when_done: false,
         live: false,
+        sequence: 0,
     };
     let allocation = ConnectionAllocation {
         direct: 1,
@@ -932,6 +1067,242 @@ fn synchronization_refuses_a_redirect_to_a_non_http_protocol() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Serves one request: `Not Modified` when it carries a validator, otherwise `body`.
+/// Returns the base address and a handle that yields the request head.
+fn serve_sync_once(body: &'static [u8]) -> (String, thread::JoinHandle<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut head = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+            let count = std::io::Read::read(&mut stream, &mut buffer).unwrap();
+            assert!(count > 0, "the client closed before sending its request");
+            head.extend_from_slice(&buffer[..count]);
+        }
+        let head = String::from_utf8(head).unwrap();
+        let lower = head.to_ascii_lowercase();
+        let reply = if lower.contains("if-none-match:") || lower.contains("if-modified-since:") {
+            b"HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".to_vec()
+        } else {
+            let mut reply = format!(
+                "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            reply.extend_from_slice(body);
+            reply
+        };
+        std::io::Write::write_all(&mut stream, &reply).unwrap();
+        head
+    });
+    (format!("http://{address}"), server)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+#[test]
+fn synchronization_restores_a_deleted_destination_instead_of_trusting_the_validators() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let (base, server) = serve_sync_once(b"mirror content");
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("{base}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        overwrite: true,
+        etag: Some("\"v1\"".into()),
+        last_modified: Some("Wed, 21 Oct 2026 07:28:00 GMT".into()),
+        content_sha256: Some(sha256_hex(b"mirror content")),
+        ..Default::default()
+    };
+    let outcome = perform_synchronization(&policy, &NetworkGovernor::new(4)).unwrap();
+    let head = server.join().unwrap().to_ascii_lowercase();
+    assert!(!head.contains("if-none-match"), "{head}");
+    assert!(!head.contains("if-modified-since"), "{head}");
+    assert!(outcome.changed);
+    assert_eq!(
+        fs::read(root.join("mirror.bin")).unwrap(),
+        b"mirror content"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn synchronization_still_sends_validators_while_the_destination_exists() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("mirror.bin"), b"mirror content").unwrap();
+    let (base, server) = serve_sync_once(b"mirror content");
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("{base}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        overwrite: true,
+        etag: Some("\"v1\"".into()),
+        content_sha256: Some(sha256_hex(b"mirror content")),
+        ..Default::default()
+    };
+    let outcome = perform_synchronization(&policy, &NetworkGovernor::new(4)).unwrap();
+    let head = server.join().unwrap().to_ascii_lowercase();
+    assert!(head.contains("if-none-match: \"v1\""), "{head}");
+    assert!(!outcome.changed);
+    assert_eq!(
+        fs::read(root.join("mirror.bin")).unwrap(),
+        b"mirror content"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn synchronization_keeps_a_good_file_when_the_server_answers_with_an_empty_body() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("mirror.bin"), b"good content").unwrap();
+    let (base, server) = serve_sync_once(b"");
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("{base}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        overwrite: true,
+        content_sha256: Some(sha256_hex(b"good content")),
+        ..Default::default()
+    };
+    perform_synchronization(&policy, &NetworkGovernor::new(4))
+        .err()
+        .expect("an empty body must not replace a good file");
+    server.join().unwrap();
+    assert_eq!(fs::read(root.join("mirror.bin")).unwrap(), b"good content");
+    let leftovers = fs::read_dir(&root).unwrap().count();
+    assert_eq!(leftovers, 1, "the temporary file was removed");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn synchronization_keeps_a_good_file_from_an_empty_body_when_no_digest_is_stored() {
+    // A new policy, or one whose address or destination was edited, has no stored digest.
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("mirror.bin"), b"good content").unwrap();
+    let (base, server) = serve_sync_once(b"");
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("{base}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        overwrite: true,
+        content_sha256: None,
+        ..Default::default()
+    };
+    perform_synchronization(&policy, &NetworkGovernor::new(4))
+        .err()
+        .expect("an empty body must not replace a good file");
+    server.join().unwrap();
+    assert_eq!(fs::read(root.join("mirror.bin")).unwrap(), b"good content");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn synchronization_restores_a_deleted_destination_from_an_empty_body() {
+    // Nothing is left to keep, so the refusal that protects a good file does not apply.
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let (base, server) = serve_sync_once(b"");
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("{base}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        overwrite: true,
+        etag: Some("\"v1\"".into()),
+        content_sha256: Some(sha256_hex(b"good content")),
+        ..Default::default()
+    };
+    let outcome = perform_synchronization(&policy, &NetworkGovernor::new(4)).unwrap();
+    server.join().unwrap();
+    assert!(outcome.changed);
+    assert_eq!(fs::read(root.join("mirror.bin")).unwrap(), b"");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn synchronization_accepts_an_empty_body_when_the_file_was_empty_before() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("mirror.bin"), b"").unwrap();
+    let (base, server) = serve_sync_once(b"");
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("{base}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        overwrite: true,
+        content_sha256: Some(sha256_hex(b"")),
+        ..Default::default()
+    };
+    let outcome = perform_synchronization(&policy, &NetworkGovernor::new(4)).unwrap();
+    server.join().unwrap();
+    assert!(!outcome.changed);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_stored_profile_with_two_spellings_of_one_login_host_keeps_the_first_and_saves() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-logins-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    Engine::open(paths.clone()).unwrap().shutdown();
+    let login = |host: &str, username: &str| crate::model::SiteLogin {
+        host: host.into(),
+        username: username.into(),
+        password: String::new(),
+        allow_http: false,
+    };
+    let mut store = Store::open(&paths.database).unwrap();
+    let mut stored = store.load_settings().unwrap().unwrap();
+    stored.site_logins = vec![
+        login("bücher.example", "first"),
+        login("files.example.com", "other"),
+        login("xn--bcher-kva.example", "second"),
+    ];
+    store.save_settings(&stored).unwrap();
+    drop(store);
+
+    let engine = Engine::open(paths.clone()).unwrap();
+    let snapshot = engine.snapshot();
+    assert!(snapshot.warning.is_some());
+    assert_eq!(
+        snapshot.settings.site_logins,
+        [
+            login("bücher.example", "first"),
+            login("files.example.com", "other")
+        ]
+    );
+    crate::validation::validate_settings(&snapshot.settings).unwrap();
+    engine.update_settings(snapshot.settings.clone()).unwrap();
+    engine.shutdown();
+
+    let reopened = Engine::open(paths).unwrap();
+    assert_eq!(
+        reopened.snapshot().settings.site_logins,
+        snapshot.settings.site_logins
+    );
+    reopened.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn a_job_named_from_the_address_gets_the_decoded_file_name() {
     let root = std::env::temp_dir().join(format!("ssdownload-engine-name-{}", Uuid::new_v4()));
@@ -949,6 +1320,744 @@ fn a_job_named_from_the_address_gets_the_decoded_file_name() {
     let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
     assert_eq!(job.name, "Yıllık Rapor (1).pdf");
     assert_eq!(job.path.file_name().unwrap(), "Yıllık Rapor (1).pdf");
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn job_state(engine: &Engine, id: &str) -> JobState {
+    engine
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .state
+}
+
+fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !condition() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Serves fixed bodies on 127.0.0.1. A gated path sends its body only after `release`, which
+/// keeps its download running for as long as a test needs; `hits` lists the GET paths served.
+struct FileServer {
+    address: std::net::SocketAddr,
+    release: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    hits: Arc<Mutex<Vec<String>>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+type ServedFile = (String, Vec<u8>, bool);
+
+impl FileServer {
+    fn start(files: Vec<ServedFile>) -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let files = Arc::new(files);
+        let release = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let thread = {
+            let (release, stop, hits) = (release.clone(), stop.clone(), hits.clone());
+            thread::spawn(move || {
+                let mut handlers = Vec::new();
+                while !stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            let (files, release, stop, hits) =
+                                (files.clone(), release.clone(), stop.clone(), hits.clone());
+                            handlers.push(thread::spawn(move || {
+                                serve_connection(stream, &files, &release, &stop, &hits)
+                            }));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                for handler in handlers {
+                    let _ = handler.join();
+                }
+            })
+        };
+        Self {
+            address,
+            release,
+            stop,
+            hits,
+            thread: Some(thread),
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.address)
+    }
+
+    fn release(&self) {
+        self.release.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for FileServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn serve_connection(
+    mut stream: std::net::TcpStream,
+    files: &[ServedFile],
+    release: &AtomicBool,
+    stop: &AtomicBool,
+    hits: &Mutex<Vec<String>>,
+) {
+    use std::io::{Read as _, Write as _};
+    stream.set_nonblocking(false).unwrap();
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 512];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(count) => request.extend_from_slice(&buffer[..count]),
+        }
+    }
+    let head = String::from_utf8_lossy(&request);
+    let mut words = head.split_whitespace();
+    let (method, path) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+    let Some((_, body, gated)) = files.iter().find(|(name, _, _)| name == path) else {
+        let _ = stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return;
+    };
+    let _ = stream.write_all(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    );
+    if method != "GET" {
+        return;
+    }
+    hits.lock().unwrap().push(path.to_owned());
+    while *gated && !release.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _ = stream.write_all(body);
+}
+
+fn file_request(url: String, directory: &Path) -> AddRequest {
+    AddRequest {
+        url,
+        kind: DownloadKind::File,
+        directory: Some(directory.to_path_buf()),
+        ..Default::default()
+    }
+}
+
+fn shutdown_when_done(queue: &QueuePolicy) -> QueuePolicy {
+    QueuePolicy {
+        // The countdown is far longer than any test, and the tests cancel it, so
+        // no shutdown is ever issued.
+        completion: CompletionAction::ShutdownComputer {
+            countdown_seconds: 3600,
+        },
+        ..queue.clone()
+    }
+}
+
+#[test]
+fn a_queue_that_finished_first_starts_its_shutdown_when_the_last_other_job_completes() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-idle-a-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue_a = engine.snapshot().settings.queues[0].clone();
+    let queue_b = engine.create_queue("B".into()).unwrap();
+    engine
+        .update_queue_policy(shutdown_when_done(&queue_a))
+        .unwrap();
+    let out = root.join("out");
+    let slow = engine
+        .add(AddRequest {
+            queue_id: Some(queue_b),
+            ..file_request(server.url("/slow.bin"), &out)
+        })
+        .unwrap()
+        .remove(0);
+    let fast = engine
+        .add(file_request(server.url("/fast.bin"), &out))
+        .unwrap()
+        .remove(0);
+
+    wait_until("the fast job", || {
+        job_state(&engine, &fast) == JobState::Completed
+    });
+    assert!(job_state(&engine, &slow).is_active());
+    assert!(engine.snapshot().completion_countdown.is_none());
+
+    server.release();
+    wait_until("the countdown", || {
+        engine.snapshot().completion_countdown.is_some()
+    });
+    assert_eq!(job_state(&engine, &slow), JobState::Completed);
+    let countdown = engine.snapshot().completion_countdown.unwrap();
+    assert_eq!(countdown.queue_id, queue_a.id);
+    engine.cancel_completion_action(queue_a.id).unwrap();
+    assert!(engine.snapshot().completion_countdown.is_none());
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn removing_the_last_job_that_blocks_a_finished_queue_starts_its_shutdown() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-idle-b-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/fast.bin".into(), vec![1; 4096], false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue_a = engine.snapshot().settings.queues[0].clone();
+    let queue_b = engine.create_queue("B".into()).unwrap();
+    engine
+        .update_queue_policy(shutdown_when_done(&queue_a))
+        .unwrap();
+    let out = root.join("out");
+    let waiting = engine
+        .add(AddRequest {
+            queue_id: Some(queue_b),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..file_request("https://waiting.example/file.bin".into(), &out)
+        })
+        .unwrap()
+        .remove(0);
+    let fast = engine
+        .add(file_request(server.url("/fast.bin"), &out))
+        .unwrap()
+        .remove(0);
+
+    wait_until("the fast job", || {
+        job_state(&engine, &fast) == JobState::Completed
+    });
+    assert!(engine.snapshot().completion_countdown.is_none());
+
+    engine.remove(&waiting, false).unwrap();
+    let countdown = engine.snapshot().completion_countdown.unwrap();
+    assert_eq!(countdown.queue_id, queue_a.id);
+    engine.cancel_completion_action(queue_a.id).unwrap();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Adds a queue with a chosen id. The queues of a pass are evaluated in id order, so
+/// "a-countdown" is always evaluated before the default queue.
+fn add_queue(engine: &Engine, id: &str, completion: CompletionAction) {
+    let mut settings = engine.snapshot().settings;
+    settings.queues.push(QueuePolicy {
+        id: id.into(),
+        name: id.into(),
+        completion,
+        ..Default::default()
+    });
+    engine.update_settings(settings).unwrap();
+}
+
+fn queued_in(url: String, directory: &Path, queue: &str) -> AddRequest {
+    AddRequest {
+        queue_id: Some(queue.into()),
+        ..file_request(url, directory)
+    }
+}
+
+#[test]
+fn moving_a_finished_job_into_a_queue_does_not_arm_that_queue_s_shutdown() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-move-done-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/done.bin".into(), vec![1; 4096], false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let default_queue = engine.snapshot().settings.queues[0].clone();
+    let source = engine.create_queue("Source".into()).unwrap();
+    let unrelated = engine.create_queue("Unrelated".into()).unwrap();
+    engine
+        .update_queue_policy(shutdown_when_done(&default_queue))
+        .unwrap();
+    let out = root.join("out");
+    let finished = engine
+        .add(queued_in(server.url("/done.bin"), &out, &source))
+        .unwrap()
+        .remove(0);
+    let waiting = engine
+        .add(AddRequest {
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..queued_in("https://waiting.example/file.bin".into(), &out, &unrelated)
+        })
+        .unwrap()
+        .remove(0);
+    wait_until("the finished job", || {
+        job_state(&engine, &finished) == JobState::Completed
+    });
+
+    engine
+        .move_to_queue(vec![finished], default_queue.id.clone())
+        .unwrap();
+    engine.remove(&waiting, false).unwrap();
+
+    // The default queue holds nothing but a job that finished elsewhere, so its shutdown has
+    // no work of its own to follow. A countdown is running exactly when cancelling succeeds.
+    assert!(engine.cancel_completion_action(default_queue.id).is_err());
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_notify_queue_is_not_held_back_by_a_countdown_that_starts_in_the_same_pass() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-engine-notify-gate-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    add_queue(
+        &engine,
+        "a-countdown",
+        CompletionAction::ShutdownComputer {
+            countdown_seconds: 3600,
+        },
+    );
+    let default_queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(QueuePolicy {
+            completion: CompletionAction::Notify,
+            ..default_queue.clone()
+        })
+        .unwrap();
+    let out = root.join("out");
+    let fast = engine
+        .add(queued_in(server.url("/fast.bin"), &out, "a-countdown"))
+        .unwrap()
+        .remove(0);
+    engine
+        .add(queued_in(server.url("/slow.bin"), &out, &default_queue.id))
+        .unwrap();
+    wait_until("the fast job", || {
+        job_state(&engine, &fast) == JobState::Completed
+    });
+
+    // The slow job is the last to finish: the countdown queue starts first in id order and
+    // the Notify queue is evaluated right after it, in the same pass.
+    server.release();
+    wait_until("the countdown", || {
+        engine.snapshot().completion_countdown.is_some()
+    });
+    let snapshot = engine.snapshot();
+    assert_eq!(
+        snapshot.completion_countdown.unwrap().queue_id,
+        "a-countdown"
+    );
+    assert!(
+        snapshot
+            .completion_events
+            .iter()
+            .any(|event| event.queue_id == default_queue.id),
+        "{:?}",
+        snapshot.completion_events
+    );
+    engine
+        .cancel_completion_action("a-countdown".into())
+        .unwrap();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancelling_a_countdown_also_cancels_the_actions_waiting_behind_it() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-engine-cancel-next-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let shutdown = CompletionAction::ShutdownComputer {
+        countdown_seconds: 3600,
+    };
+    add_queue(&engine, "a-countdown", shutdown);
+    let default_queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(shutdown_when_done(&default_queue))
+        .unwrap();
+    let out = root.join("out");
+    let fast = engine
+        .add(queued_in(server.url("/fast.bin"), &out, "a-countdown"))
+        .unwrap()
+        .remove(0);
+    engine
+        .add(queued_in(server.url("/slow.bin"), &out, &default_queue.id))
+        .unwrap();
+    wait_until("the fast job", || {
+        job_state(&engine, &fast) == JobState::Completed
+    });
+    server.release();
+    wait_until("the countdown", || {
+        engine.snapshot().completion_countdown.is_some()
+    });
+    assert_eq!(
+        engine.snapshot().completion_countdown.unwrap().queue_id,
+        "a-countdown"
+    );
+
+    engine
+        .cancel_completion_action("a-countdown".into())
+        .unwrap();
+
+    // The default queue also finished and was waiting behind the countdown; it is cancelled
+    // with it instead of starting in its place.
+    assert!(engine.snapshot().completion_countdown.is_none());
+    assert!(engine.cancel_completion_action(default_queue.id).is_err());
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn moving_a_finished_job_into_its_own_queue_keeps_that_queue_s_shutdown() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-own-queue-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(shutdown_when_done(&queue))
+        .unwrap();
+    let out = root.join("out");
+    let done = engine
+        .add(file_request(server.url("/fast.bin"), &out))
+        .unwrap()
+        .remove(0);
+    engine
+        .add(file_request(server.url("/slow.bin"), &out))
+        .unwrap();
+    wait_until("the fast job", || {
+        job_state(&engine, &done) == JobState::Completed
+    });
+
+    engine.move_to_queue(vec![done], queue.id.clone()).unwrap();
+    server.release();
+
+    wait_until(
+        "the shutdown countdown of the queue that still had a running job",
+        || engine.snapshot().completion_countdown.is_some(),
+    );
+    engine.cancel_completion_action(queue.id).unwrap();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn an_expired_countdown_starts_the_next_queue_that_was_waiting_for_it() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-expiry-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    add_queue(
+        &engine,
+        "a-countdown",
+        CompletionAction::RunProgram {
+            program: PathBuf::from(std::env::var_os("COMSPEC").unwrap()),
+            arguments: vec!["/C".into(), "exit".into()],
+            countdown_seconds: 0,
+        },
+    );
+    let default_queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(shutdown_when_done(&default_queue))
+        .unwrap();
+    let out = root.join("out");
+    let fast = engine
+        .add(queued_in(server.url("/fast.bin"), &out, "a-countdown"))
+        .unwrap()
+        .remove(0);
+    engine
+        .add(queued_in(server.url("/slow.bin"), &out, &default_queue.id))
+        .unwrap();
+    wait_until("the fast job", || {
+        job_state(&engine, &fast) == JobState::Completed
+    });
+
+    server.release();
+    wait_until("the second countdown", || {
+        engine
+            .snapshot()
+            .completion_countdown
+            .is_some_and(|countdown| countdown.queue_id == default_queue.id)
+    });
+    assert!(engine
+        .snapshot()
+        .completion_events
+        .iter()
+        .any(|event| event.queue_id == "a-countdown"));
+    engine.cancel_completion_action(default_queue.id).unwrap();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn jobs_added_in_the_same_second_keep_the_order_they_were_added_in() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-order-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let out = root.join("out");
+    let future = Utc::now().timestamp() + 3600;
+    let add = |engine: &Engine, index: usize| {
+        engine
+            .add(AddRequest {
+                start_at: Some(future),
+                ..file_request(format!("https://order.example/file-{index}.bin"), &out)
+            })
+            .unwrap()
+            .remove(0)
+    };
+    let listed = |engine: &Engine| {
+        engine
+            .snapshot()
+            .jobs
+            .iter()
+            .map(|job| job.id.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let engine = Engine::open(paths.clone()).unwrap();
+    let mut added = (0..16).map(|index| add(&engine, index)).collect::<Vec<_>>();
+    assert_eq!(listed(&engine), added);
+    engine.shutdown();
+
+    let engine = Engine::open(paths).unwrap();
+    assert_eq!(listed(&engine), added);
+    added.push(add(&engine, 16));
+    assert_eq!(listed(&engine), added);
+
+    engine
+        .move_before(vec![added[16].clone()], added[0].clone())
+        .unwrap();
+    let moved = added.pop().unwrap();
+    added.insert(0, moved);
+    assert_eq!(listed(&engine), added);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn queued_jobs_start_in_the_order_they_were_added_in() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-start-{}", Uuid::new_v4()));
+    let server = FileServer::start(
+        (0..12)
+            .map(|index| (format!("/file-{index}.bin"), vec![0; 1024], true))
+            .collect(),
+    );
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.max_active = 1;
+    engine.update_settings(settings).unwrap();
+    let mut queue = engine.snapshot().settings.queues[0].clone();
+    queue.concurrency = 1;
+    queue.enabled = false;
+    engine.update_queue_policy(queue.clone()).unwrap();
+    let out = root.join("out");
+    for index in 0..12 {
+        engine
+            .add(file_request(
+                server.url(&format!("/file-{index}.bin")),
+                &out,
+            ))
+            .unwrap();
+    }
+    assert!(engine
+        .snapshot()
+        .jobs
+        .iter()
+        .all(|job| job.state == JobState::Scheduled));
+
+    queue.enabled = true;
+    engine.update_queue_policy(queue).unwrap();
+    wait_until("the first download", || {
+        !server.hits.lock().unwrap().is_empty()
+    });
+    assert_eq!(server.hits.lock().unwrap()[0], "/file-0.bin");
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pausing_a_browser_transfer_releases_the_permits_of_its_open_requests() {
+    let root = std::env::temp_dir().join(format!(
+        "ssdownload-engine-browser-permits-{}",
+        Uuid::new_v4()
+    ));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let engine = Engine::open(paths.clone()).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    let id = engine
+        .add(AddRequest {
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..file_request("https://example.test/permits.bin".into(), &root.join("out"))
+        })
+        .unwrap()
+        .remove(0);
+    engine.shutdown();
+
+    let mut store = Store::open(&paths.database).unwrap();
+    let mut job = store
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap();
+    job.request.start_at = None;
+    job.state = JobState::Paused;
+    job.browser_transfer_authorized = true;
+    store.save_job(&job).unwrap();
+    drop(store);
+
+    let engine = Engine::open(paths).unwrap();
+    let sender_started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    let (_, generation) = engine
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .unwrap();
+    let limit = usize::from(engine.snapshot().settings.per_host_limit);
+    for index in 0..limit {
+        assert!(engine
+            .try_begin_browser_request(&id, generation, &format!("relay-{index}"))
+            .unwrap());
+    }
+    let governor = engine.network_governor();
+    assert!(
+        governor.try_acquire_wildcard().is_none(),
+        "the open requests hold every permit"
+    );
+
+    engine.pause(&id).unwrap();
+
+    let permits = (0..limit)
+        .map(|_| governor.try_acquire_wildcard())
+        .collect::<Vec<_>>();
+    assert!(
+        permits.iter().all(Option::is_some),
+        "the paused transfer still holds permits"
+    );
+    drop(permits);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn resuming_a_running_job_leaves_it_running() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-resume-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/held.bin".into(), vec![3; 4096], true)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(file_request(server.url("/held.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the download to start", || {
+        job_state(&engine, &id).is_active()
+    });
+
+    engine.resume(&id).unwrap();
+
+    assert!(job_state(&engine, &id).is_active());
+    server.release();
+    wait_until("the download to finish", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pause_all_cancels_a_running_source_refresh_so_it_cannot_requeue_the_job() {
+    let root = std::env::temp_dir().join(format!(
+        "ssdownload-engine-refresh-pause-all-{}",
+        Uuid::new_v4()
+    ));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(refresh_request(
+            "https://old.example.test/refresh.bin".into(),
+        ))
+        .unwrap()
+        .remove(0);
+    let (state_path, original_state) = seed_direct_refresh_state(&engine, &id);
+    let ticket = engine.begin_source_refresh(&id).unwrap();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refreshed_url = format!("http://{}/refresh.bin", listener.local_addr().unwrap());
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server =
+        thread::spawn(move || read_head_and_respond(listener, Some(started_tx), Some(release_rx)));
+    let complete_engine = engine.clone();
+    let complete_id = id.clone();
+    let complete = thread::spawn(move || {
+        let mut request = (*ticket.request).clone();
+        request.url = refreshed_url;
+        complete_engine.complete_source_refresh(&complete_id, &ticket.token, request, false)
+    });
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    engine.pause_all().unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
+    release_tx.send(()).unwrap();
+
+    assert!(
+        complete.join().unwrap().is_err(),
+        "a refresh that finishes after Pause all must be rejected"
+    );
+    server.join().unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
+    assert_eq!(fs::read(state_path).unwrap(), original_state);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_waiting_for_a_new_source_is_neither_paused_nor_started_by_bulk_commands() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-awaiting-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(AddRequest {
+            directory: Some(root.join("out")),
+            ..refresh_request("https://old.example.test/refresh.bin".into())
+        })
+        .unwrap()
+        .remove(0);
+    engine.begin_source_refresh(&id).unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
+
+    engine.pause_all().unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
+
+    let error = engine.start_now(&id).unwrap_err();
+    assert_eq!(error.to_string(), source_refresh_required().to_string());
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
 }

@@ -1,6 +1,7 @@
 //! Timer-driven refresh of open dialogs: job view, media picker population and queueing.
 
 use super::*;
+use std::ffi::OsString;
 
 pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
     let snapshot = dlg.app.snapshot();
@@ -1143,8 +1144,8 @@ pub(super) unsafe fn queue_media(
         request.playlist_items = Some(items);
     }
     if request.playlist {
-        // A playlist takes the height bound for every item; item-specific
-        // format and track ids do not apply across items.
+        // A playlist takes the height bound and the audio language for every item;
+        // item-specific format and track ids do not apply across items.
         request.video_format_id = None;
         request.exact_height = None;
         request.audio_format_id = None;
@@ -1450,6 +1451,75 @@ pub(super) fn load_thumbnail(hwnd: HWND, app: App, url: String) {
         });
 }
 
+/// The demuxers that may read a downloaded thumbnail: the image formats and the MP4 family
+/// (AVIF). FFmpeg probes the bytes itself, which is the only way it recognizes AVIF.
+const THUMBNAIL_DEMUXERS: &str = "image2,jpeg_pipe,png_pipe,webp_pipe,webp_anim,gif,bmp_pipe,mov";
+
+fn thumbnail_args(input: &Path, output: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-protocol_whitelist",
+        "file",
+        "-format_whitelist",
+        THUMBNAIL_DEMUXERS,
+        "-i",
+    ]
+    .map(OsString::from)
+    .into();
+    args.push(input.into());
+    args.extend(
+        [
+            "-vf",
+            "scale=100:56:force_original_aspect_ratio=decrease",
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "bgr24",
+        ]
+        .map(OsString::from),
+    );
+    args.push(output.into());
+    args
+}
+
+/// Runs FFmpeg on the downloaded bytes inside a job that dies with it. Only image demuxers
+/// may read them, so a playlist or concat script in the bytes is never interpreted, and only
+/// the local file protocol is allowed.
+fn convert_thumbnail(ffmpeg: &Path, input: &Path, output: &Path) -> Option<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_SUSPENDED: u32 = 0x0000_0004;
+    let mut child = std::process::Command::new(ffmpeg)
+        .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .args(thumbnail_args(input, output))
+        .spawn()
+        .ok()?;
+    let Ok(job) = crate::process::ProcessJob::assign(&child) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().ok()? {
+            break status;
+        }
+        if started.elapsed() >= Duration::from_secs(20) {
+            job.terminate();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    status.success().then_some(())
+}
+
 fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
     let parsed = url::Url::parse(url).ok()?;
     if !matches!(parsed.scheme(), "https" | "http") {
@@ -1489,28 +1559,7 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
     let output = folder.join("thumbnail.bmp");
     let result = (|| {
         std::fs::write(&input, &data).ok()?;
-        use std::os::windows::process::CommandExt;
-        let status = std::process::Command::new(&tools.ffmpeg)
-            .creation_flags(0x0800_0000)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-            .arg(&input)
-            .args([
-                "-vf",
-                "scale=100:56:force_original_aspect_ratio=decrease",
-                "-frames:v",
-                "1",
-                "-pix_fmt",
-                "bgr24",
-            ])
-            .arg(&output)
-            .status()
-            .ok()?;
-        if !status.success() {
-            return None;
-        }
+        convert_thumbnail(&tools.ffmpeg, &input, &output)?;
         let path = wide(&output.to_string_lossy());
         let bitmap = unsafe {
             LoadImageW(
@@ -1526,4 +1575,36 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
     })();
     let _ = std::fs::remove_dir_all(&folder);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_thumbnail_is_opened_only_by_image_demuxers_and_the_local_file_protocol() {
+        let args = thumbnail_args(Path::new(r"C:\t\thumbnail.img"), Path::new(r"C:\t\out.bmp"));
+        let args: Vec<&str> = args.iter().filter_map(|arg| arg.to_str()).collect();
+        let input = args.iter().position(|arg| *arg == "-i").unwrap();
+        let input_option = |name: &str| {
+            let at = args.iter().position(|arg| *arg == name)?;
+            (at < input).then(|| args[at + 1])
+        };
+
+        assert_eq!(input_option("-protocol_whitelist"), Some("file"));
+        assert_eq!(input_option("-format_whitelist"), Some(THUMBNAIL_DEMUXERS));
+        assert_eq!(args[input + 1], r"C:\t\thumbnail.img");
+        assert_eq!(args.last(), Some(&r"C:\t\out.bmp"));
+        assert!(
+            !args.contains(&"-f"),
+            "a forced demuxer cannot detect AVIF; the whitelist restricts the probe instead"
+        );
+        let demuxers: Vec<&str> = THUMBNAIL_DEMUXERS.split(',').collect();
+        for accepted in ["image2", "png_pipe", "webp_pipe", "gif", "bmp_pipe", "mov"] {
+            assert!(demuxers.contains(&accepted), "{accepted}");
+        }
+        for refused in ["concat", "hls", "sdp"] {
+            assert!(!demuxers.contains(&refused), "{refused}");
+        }
+    }
 }

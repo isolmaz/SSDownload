@@ -595,7 +595,14 @@ mod tests {
         let archive_file = std::fs::File::open(&written.zip).unwrap();
         let mut archive = zip::ZipArchive::new(archive_file).unwrap();
         let names: Vec<String> = (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().name().to_owned())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .unwrap()
+                    .name()
+                    .unwrap()
+                    .into_owned()
+            })
             .collect();
         for expected in [
             "hata.json",
@@ -676,7 +683,14 @@ mod tests {
         let archive_file = std::fs::File::open(&written.zip).unwrap();
         let mut archive = zip::ZipArchive::new(archive_file).unwrap();
         let names: Vec<String> = (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().name().to_owned())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .unwrap()
+                    .name()
+                    .unwrap()
+                    .into_owned()
+            })
             .collect();
         for relative in expected {
             assert!(

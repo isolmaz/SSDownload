@@ -105,12 +105,24 @@ impl Command {
         } = self
         {
             if !duration.is_finite() || *duration <= 0.0 {
-                bail!("Tarayıcı manifest süresi geçersiz");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "Tarayıcı manifest süresi geçersiz",
+                        "The browser manifest duration is not valid"
+                    )
+                );
             }
         }
         if let Self::Chunk { data, sha256, .. } = self {
             if data.len() > MAX_CHUNK_BYTES.div_ceil(3) * 4 || sha256.len() != 64 {
-                bail!("Tarayıcı aktarım parçası sınırı aşıldı");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "Tarayıcı aktarım parçası sınırı aşıldı",
+                        "The browser transfer chunk exceeds its size limit"
+                    )
+                );
             }
         }
         if let Self::BeginRequest {
@@ -125,7 +137,13 @@ impl Command {
         } = self
         {
             if *generation == 0 || request_id.is_empty() || request_id.len() > 256 {
-                bail!("Tarayıcı bağlantı izni geçersiz");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "Tarayıcı bağlantı izni geçersiz",
+                        "The browser connection permit is not valid"
+                    )
+                );
             }
         }
         Ok(())
@@ -219,7 +237,13 @@ fn source_key(request: &AddRequest) -> Result<String> {
 }
 fn checked_path(path: &Path) -> Result<()> {
     if path.exists() && fs::symlink_metadata(path)?.file_attributes() & 0x400 != 0 {
-        bail!("Tarayıcı çalışma alanı yönlendirme içeriyor");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Tarayıcı çalışma alanı yönlendirme içeriyor",
+                "The browser work folder contains a reparse point"
+            )
+        );
     }
     Ok(())
 }
@@ -236,13 +260,25 @@ fn save(root: &Path, state: &State) -> Result<()> {
 fn load(root: &Path) -> Result<State> {
     checked_path(&state_path(root))?;
     if fs::metadata(state_path(root))?.len() > 1024 * 1024 {
-        bail!("Tarayıcı aktarım kaydı çok büyük");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Tarayıcı aktarım kaydı çok büyük",
+                "The browser transfer record is too large"
+            )
+        );
     }
     let state: State = serde_json::from_str(&crate::secure::unseal(&fs::read_to_string(
         state_path(root),
     )?)?)?;
     if state.version != STATE_VERSION || state.streams.len() > MAX_STREAMS {
-        bail!("Tarayıcı aktarım kayıt sürümü geçersiz");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Tarayıcı aktarım kayıt sürümü geçersiz",
+                "The browser transfer record version is not valid"
+            )
+        );
     }
     Ok(state)
 }
@@ -297,7 +333,13 @@ fn new_stream(
             .as_ref()
             .is_some_and(|v| v.len() > 8192 || v.contains(['\r', '\n']))
     {
-        bail!("Geçersiz tarayıcı akışı tanımı");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Geçersiz tarayıcı akışı tanımı",
+                "The browser stream definition is not valid"
+            )
+        );
     }
     Ok(StreamState {
         role,
@@ -316,7 +358,10 @@ fn new_stream(
 
 pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<Response> {
     command.validate_frame()?;
-    uuid::Uuid::parse_str(command.id()).context("Tarayıcı iş kimliği geçersiz")?;
+    uuid::Uuid::parse_str(command.id()).context(crate::i18n::ui(
+        "Tarayıcı iş kimliği geçersiz",
+        "The browser job ID is not valid",
+    ))?;
     if let Command::Release { id, generation } = &command {
         engine.release_browser_transfer(id, *generation)?;
         return Ok(Response {
@@ -336,7 +381,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
             sender_started_at: Some(started_at),
             ..
         } => Some((*pid, *started_at)),
-        Command::Begin { .. } => bail!("Tarayıcı aktarım gönderici kimliği eksik"),
+        Command::Begin { .. } => bail!(
+            "{}",
+            crate::i18n::ui(
+                "Tarayıcı aktarım gönderici kimliği eksik",
+                "The browser transfer sender identity is missing"
+            )
+        ),
         _ => None,
     };
     let is_begin = sender.is_some();
@@ -348,7 +399,10 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
     let mut authenticated = is_begin;
     let operation = (|| {
         let scratch = crate::recovery::prepare_work(&job)?;
-        let parent = scratch.parent().context("Çalışma alanı yok")?;
+        let parent = scratch.parent().context(crate::i18n::ui(
+            "Çalışma alanı yok",
+            "The work folder is missing",
+        ))?;
         let root = parent.join("browser-transfer");
         checked_path(&root)?;
         fs::create_dir_all(&root)?;
@@ -364,10 +418,22 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
             let mut state = if state_path(&root).exists() && !restart {
                 let value = load(&root)?;
                 if value.job_id != job.id || value.source != fingerprint {
-                    bail!("Kaynak veya seçim değişti; eski aktarım korundu. Açık yeniden başlama gerekli.");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Kaynak veya seçim değişti; eski aktarım korundu. Açık yeniden başlama gerekli.",
+                            "The source or selection changed; the previous transfer was kept. An explicit restart is required.",
+                        )
+                    );
                 }
                 if value.cancelled {
-                    bail!("İptal edilen aktarım için açık yeniden başlama gerekli");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "İptal edilen aktarım için açık yeniden başlama gerekli",
+                            "An explicit restart is required for a cancelled transfer"
+                        )
+                    );
                 }
                 if let Some(stream) = value.streams.get(&0) {
                     if stream.offset > 0
@@ -375,7 +441,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                             || stream.etag != *etag
                             || etag.as_deref().is_none_or(|v| v.starts_with("W/")))
                     {
-                        bail!("Sürdürme kimliği doğrulanamadı; eski veriler korundu");
+                        bail!(
+                            "{}",
+                            crate::i18n::ui(
+                                "Sürdürme kimliği doğrulanamadı; eski veriler korundu",
+                                "The resume identity could not be verified; the previous data was kept",
+                            )
+                        );
                     }
                 }
                 value
@@ -386,14 +458,23 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                         "browser-transfer-previous-{}",
                         uuid::Uuid::new_v4()
                     ));
-                    fs::rename(&root, &archive).context("Eski tarayıcı verileri korunamadı")?;
+                    fs::rename(&root, &archive).context(crate::i18n::ui(
+                        "Eski tarayıcı verileri korunamadı",
+                        "The previous browser data could not be preserved",
+                    ))?;
                     fs::create_dir_all(&root)?;
                     if scratch.exists() {
                         fs::rename(
                             &scratch,
-                            archive.join(scratch.file_name().context("Doğrulama hedef adı yok")?),
+                            archive.join(scratch.file_name().context(crate::i18n::ui(
+                                "Doğrulama hedef adı yok",
+                                "The verification target has no file name",
+                            ))?),
                         )
-                        .context("Önceki doğrulama çıktısı korunamadı")?;
+                        .context(crate::i18n::ui(
+                            "Önceki doğrulama çıktısı korunamadı",
+                            "The previous verification output could not be preserved",
+                        ))?;
                     }
                 }
                 let mut streams = BTreeMap::new();
@@ -432,7 +513,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
             || command.token() != Some(state.token.as_str())
             || state.source != source_key(&job.request)?
         {
-            bail!("Tarayıcı aktarım yetkisi geçersiz veya iptal edilmiş");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Tarayıcı aktarım yetkisi geçersiz veya iptal edilmiş",
+                    "The browser transfer authorization is not valid or was cancelled"
+                )
+            );
         }
         authenticated = true;
         match &command {
@@ -442,7 +529,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 ..
             } => {
                 if *request_generation != generation {
-                    bail!("Tarayıcı bağlantı izni aktarım nesliyle eşleşmiyor");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı bağlantı izni aktarım nesliyle eşleşmiyor",
+                            "The browser connection permit does not match the transfer generation"
+                        )
+                    );
                 }
                 let mut result = response(&state, None);
                 result.request_granted =
@@ -455,7 +548,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 ..
             } => {
                 if *request_generation != generation {
-                    bail!("Tarayıcı bağlantı izni aktarım nesliyle eşleşmiyor");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı bağlantı izni aktarım nesliyle eşleşmiyor",
+                            "The browser connection permit does not match the transfer generation"
+                        )
+                    );
                 }
                 engine.end_browser_request(&job.id, generation, request_id)?;
                 return Ok(response(&state, None));
@@ -476,7 +575,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     || (!state.streams.contains_key(&stream_id)
                         && state.streams.len() >= MAX_STREAMS)
                 {
-                    bail!("Akış kimliği veya sayısı sınırı aşıldı");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Akış kimliği veya sayısı sınırı aşıldı",
+                            "The stream ID or stream count exceeds its limit"
+                        )
+                    );
                 }
                 if let Some(old) = state.streams.get(&stream_id) {
                     if old.role != role
@@ -485,7 +590,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                         || old.total != total
                         || old.etag != etag
                     {
-                        bail!("Akış kimliği değişti; var olan parça korunuyor");
+                        bail!(
+                            "{}",
+                            crate::i18n::ui(
+                                "Akış kimliği değişti; var olan parça korunuyor",
+                                "The stream identity changed; the existing part is kept"
+                            )
+                        );
                     }
                     if let Some(total) = old.total {
                         crate::output::require_space(
@@ -515,15 +626,33 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     .as_ref()
                     .is_some_and(|v| v.to_string().len() > 4096)
                 {
-                    bail!("Tarayıcı sürdürme kontrol kaydı çok büyük");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı sürdürme kontrol kaydı çok büyük",
+                            "The browser resume checkpoint is too large"
+                        )
+                    );
                 }
-                let stream = state.streams.get_mut(&stream_id).context("Akış açılmadı")?;
-                let bytes = STANDARD.decode(data).context("Geçersiz parça kodlaması")?;
+                let stream = state.streams.get_mut(&stream_id).context(crate::i18n::ui(
+                    "Akış açılmadı",
+                    "The stream was not opened",
+                ))?;
+                let bytes = STANDARD.decode(data).context(crate::i18n::ui(
+                    "Geçersiz parça kodlaması",
+                    "The chunk encoding is not valid",
+                ))?;
                 if bytes.is_empty()
                     || bytes.len() > MAX_CHUNK_BYTES
                     || hex::encode(Sha256::digest(&bytes)) != sha256
                 {
-                    bail!("Tarayıcı parça hash veya boyutu geçersiz");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı parça hash veya boyutu geçersiz",
+                            "The browser chunk hash or size is not valid"
+                        )
+                    );
                 }
                 if sequence.checked_add(1) == Some(stream.sequence)
                     && offset == stream.last_offset
@@ -532,13 +661,28 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     return Ok(response(&state, None));
                 }
                 if stream.sealed || sequence != stream.sequence || offset != stream.offset {
-                    bail!("Tarayıcı parçası sıra/ofset eşleşmiyor");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı parçası sıra/ofset eşleşmiyor",
+                            "The browser chunk sequence or offset does not match"
+                        )
+                    );
                 }
                 let end = offset
                     .checked_add(bytes.len() as u64)
-                    .context("Parça ofseti taştı")?;
+                    .context(crate::i18n::ui(
+                        "Parça ofseti taştı",
+                        "The chunk offset overflowed",
+                    ))?;
                 if stream.total.is_some_and(|total| end > total) {
-                    bail!("Tarayıcı verisi beklenen boyutu aşıyor");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı verisi beklenen boyutu aşıyor",
+                            "The browser data exceeds the expected size"
+                        )
+                    );
                 }
                 let path = stream_path(&root, stream_id);
                 checked_path(&path)?;
@@ -549,18 +693,30 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     .write(true)
                     .open(&path)?;
                 if file.metadata()?.len() < offset {
-                    bail!("Onaylanmış tarayıcı verisi eksik; sürdürme durduruldu");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Onaylanmış tarayıcı verisi eksik; sürdürme durduruldu",
+                            "Acknowledged browser data is missing; resuming was stopped"
+                        )
+                    );
                 }
                 file.set_len(offset)?; // An unacknowledged crash tail is never treated as committed data.
                 file.seek(SeekFrom::Start(offset))?;
                 file.write_all(&bytes).map_err(|error| {
-                    let message = format!("Tarayıcı verisi diske yazılamadı: {error}");
+                    let message = crate::i18n::ui_owned!(
+                        format!("Tarayıcı verisi diske yazılamadı: {error}"),
+                        format!("The browser data could not be written to disk: {error}"),
+                    );
                     anyhow::Error::from(error).context(message)
                 })?;
                 file.sync_all()?;
                 stream.last_offset = offset;
                 stream.offset = end;
-                stream.sequence = sequence.checked_add(1).context("Parça sırası taştı")?;
+                stream.sequence = sequence.checked_add(1).context(crate::i18n::ui(
+                    "Parça sırası taştı",
+                    "The chunk sequence overflowed",
+                ))?;
                 stream.last_hash = sha256;
                 stream.client_checkpoint = client_checkpoint;
                 save(&root, &state)?;
@@ -568,7 +724,10 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     .streams
                     .values()
                     .try_fold(0u64, |sum, s| sum.checked_add(s.offset))
-                    .context("Toplam aktarım boyutu taştı")?;
+                    .context(crate::i18n::ui(
+                        "Toplam aktarım boyutu taştı",
+                        "The total transfer size overflowed",
+                    ))?;
                 let total = state
                     .streams
                     .values()
@@ -579,14 +738,29 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
             Command::SealStream {
                 stream_id, sha256, ..
             } => {
-                let stream = state.streams.get_mut(&stream_id).context("Akış açılmadı")?;
+                let stream = state.streams.get_mut(&stream_id).context(crate::i18n::ui(
+                    "Akış açılmadı",
+                    "The stream was not opened",
+                ))?;
                 if stream.offset == 0 || stream.total.is_some_and(|total| total != stream.offset) {
-                    bail!("Tarayıcı akışı eksik kaldı");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı akışı eksik kaldı",
+                            "The browser stream is incomplete"
+                        )
+                    );
                 }
                 let path = stream_path(&root, stream_id);
                 checked_path(&path)?;
                 if fs::metadata(&path)?.len() != stream.offset || digest_file(&path)? != sha256 {
-                    bail!("Tarayıcı akışı SHA-256 doğrulaması başarısız");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı akışı SHA-256 doğrulaması başarısız",
+                            "The browser stream failed SHA-256 verification"
+                        )
+                    );
                 }
                 stream.sealed = true;
                 save(&root, &state)?;
@@ -607,10 +781,22 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     .filter(|(id, s)| **id != 0 || s.offset > 0)
                     .collect();
                 if streams.is_empty() || streams.iter().any(|(_, s)| s.offset == 0 || !s.sealed) {
-                    bail!("Bütün akışlar hash ile doğrulanmadan tamamlanamaz");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Bütün akışlar hash ile doğrulanmadan tamamlanamaz",
+                            "The transfer cannot finish before every stream is verified by hash"
+                        )
+                    );
                 }
                 if scratch.exists() {
-                    bail!("Doğrulama hedefi zaten var; eski dosya korundu");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Doğrulama hedefi zaten var; eski dosya korundu",
+                            "The verification target already exists; the old file was kept"
+                        )
+                    );
                 }
                 let files: Vec<_> = streams
                     .iter()
@@ -625,7 +811,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     fs::rename(stream_path(&root, *streams[0].0), &scratch)?;
                 } else {
                     if job.request.kind == DownloadKind::File {
-                        bail!("Ham dosya isteği çoklu medya akışına çevrilemez");
+                        bail!(
+                            "{}",
+                            crate::i18n::ui(
+                                "Ham dosya isteği çoklu medya akışına çevrilemez",
+                                "A raw file request cannot be turned into a multi-stream media job"
+                            )
+                        );
                     }
                     crate::media::mux_browser_streams(
                         paths,
@@ -653,7 +845,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                         )?
                     };
                 if verified != bytes {
-                    bail!("Tarayıcı aktarımı doğrulama boyutuyla eşleşmiyor");
+                    bail!(
+                        "{}",
+                        crate::i18n::ui(
+                            "Tarayıcı aktarımı doğrulama boyutuyla eşleşmiyor",
+                            "The browser transfer does not match the verified size"
+                        )
+                    );
                 }
                 engine.finish_browser_transfer(&job.id, generation, scratch, bytes)?;
                 let mut result = response(&state, None);

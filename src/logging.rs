@@ -297,15 +297,6 @@ pub struct Config {
     pub hosts: bool,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            level: Level::Detailed,
-            hosts: true,
-        }
-    }
-}
-
 struct Writer {
     /// Live configuration: the Settings dialog changes take effect without a restart.
     level: AtomicU8,
@@ -407,6 +398,70 @@ pub fn record_job(job_id: &str, event: Event) {
     }
 }
 
+/// The log session of the browser's native host. That process starts once per browser message and
+/// ends right after, so it writes from the calling thread (nothing waits in a queue when the
+/// process exits) and opens its session with the first event it records: a host that only relays
+/// traffic leaves no session banner. It appends to the day files of the desktop session, which
+/// open them shared and own their rotation and retention; the `native-host` channel tells the two
+/// apart.
+pub struct HostLog {
+    database: PathBuf,
+    sink: Sink,
+    session: Session,
+    /// Read from the profile settings when the first event arrives.
+    config: Option<Config>,
+}
+
+impl HostLog {
+    pub fn new(paths: &AppPaths) -> Self {
+        Self {
+            database: paths.database.clone(),
+            sink: Sink::appending(paths.base_dir.join("logs")),
+            session: Session {
+                id: uuid::Uuid::new_v4().to_string()[..8].to_owned(),
+                channel: "native-host",
+                version: env!("CARGO_PKG_VERSION"),
+            },
+            config: None,
+        }
+    }
+
+    pub fn record(&mut self, event: Event) {
+        let config = match self.config {
+            Some(config) => config,
+            None => {
+                // Settings that cannot be read may hold a choice to log nothing or no site names,
+                // so the host writes nothing then.
+                let config = crate::store::Store::stored_settings(&self.database)
+                    .map(|settings| Config {
+                        level: Level::parse(&settings.logging_level).unwrap_or(Level::Detailed),
+                        hosts: settings.logging_hosts,
+                    })
+                    .unwrap_or(Config {
+                        level: Level::Off,
+                        hosts: false,
+                    });
+                self.config = Some(config);
+                let banner = Event::info("app.session").detail(format!(
+                    "channel={} version={} level={}",
+                    self.session.channel,
+                    self.session.version,
+                    config.level.as_str()
+                ));
+                self.write(config, banner);
+                config
+            }
+        };
+        self.write(config, event);
+    }
+
+    fn write(&mut self, config: Config, event: Event) {
+        if let Some(event) = filtered(config.level, config.hosts, event) {
+            self.sink.event_line(&self.session, &event);
+        }
+    }
+}
+
 impl Writer {
     fn level(&self) -> Level {
         level_from_code(self.level.load(Ordering::Relaxed))
@@ -418,27 +473,118 @@ impl Writer {
 
     /// Applies the level filter and the host privacy switch as configured right now.
     fn prepare(&self, event: Event) -> Option<Event> {
-        if !self.level().allows(event.level) {
-            return None;
-        }
-        if self.hosts() {
-            return Some(event);
-        }
-        let mut event = event;
-        event.host = None;
-        event.detail = event.detail.map(|detail| hide_hosts(&detail));
-        Some(event)
+        filtered(self.level(), self.hosts(), event)
     }
 }
 
-/// Replaces the host of every address in an already sanitized detail line, so the privacy
-/// switch that stops host recording does not leave the site name behind inside a URL.
-fn hide_hosts(detail: &str) -> String {
-    detail
+fn filtered(level: Level, hosts: bool, event: Event) -> Option<Event> {
+    if !level.allows(event.level) {
+        return None;
+    }
+    if hosts {
+        return Some(event);
+    }
+    let mut event = event;
+    let own_host = event.host.take();
+    event.detail = event
+        .detail
+        .map(|detail| hide_hosts(&detail, own_host.as_deref()));
+    Some(event)
+}
+
+const HIDDEN_HOST: &str = "host-hidden.invalid";
+
+/// Replaces the host of every address in an already sanitized detail line, and the host names
+/// that stand alone, so the privacy switch that stops host recording does not leave the site
+/// name behind inside a URL or an error message.
+fn hide_hosts(detail: &str, own_host: Option<&str>) -> String {
+    let addresses = detail
         .split(' ')
         .map(hide_word_host)
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    hide_bare_hosts(&addresses, own_host)
+}
+
+/// Phrases that introduce a host name in the messages of curl (`Could not resolve host: <name>`,
+/// `Failed to connect to <name> port 443`) and of urllib3 (`HTTPSConnectionPool(host='<name>')`).
+const HOST_LABELS: [&str; 3] = ["host:", "host=", "connect to"];
+
+/// Hides the names that appear outside an address: the event's own host, which curl and the
+/// media tools repeat in their messages (also as a subdomain, as a parent domain of at least two
+/// labels or before a port), and a dotted name after a host phrase. Names are read with their
+/// non-ASCII letters, so an internationalized name is never cut in the middle.
+fn hide_bare_hosts(detail: &str, own_host: Option<&str>) -> String {
+    let own_host = own_host
+        .filter(|host| !host.is_empty())
+        .map(ascii_host_name);
+    let mut hidden = String::with_capacity(detail.len());
+    let mut copied = 0;
+    let mut name_start = None;
+    // The sentinel ends a name that runs to the end of the line.
+    for (index, character) in detail.char_indices().chain([(detail.len(), ' ')]) {
+        let in_name = character.is_alphanumeric() || character == '-' || character == '.';
+        match (in_name, name_start) {
+            (true, None) => name_start = Some(index),
+            (false, Some(start)) => {
+                name_start = None;
+                let name = detail[start..index].trim_end_matches('.');
+                if is_host_name(name, own_host.as_deref(), &detail[..start]) {
+                    hidden.push_str(&detail[copied..start]);
+                    hidden.push_str(HIDDEN_HOST);
+                    copied = start + name.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    hidden.push_str(&detail[copied..]);
+    hidden
+}
+
+/// The lower-case ASCII form of a host name, which is how `host_of` records one: an
+/// internationalized name becomes its punycode spelling.
+fn ascii_host_name(name: &str) -> String {
+    if name.is_ascii() {
+        return name.to_ascii_lowercase();
+    }
+    url::Host::parse(name)
+        .map(|host| host.to_string())
+        .unwrap_or_else(|_| name.to_lowercase())
+}
+
+fn is_host_name(name: &str, own_host: Option<&str>, before: &str) -> bool {
+    let lower = ascii_host_name(name);
+    own_host.is_some_and(|host| {
+        lower == host
+            || lower
+                .strip_suffix(host)
+                .is_some_and(|rest| rest.ends_with('.'))
+            // A parent domain names the site as well; the letter test keeps the tail of an IP
+            // address such as `2.1` out.
+            || (lower.contains('.')
+                && lower.contains(|character: char| character.is_ascii_alphabetic())
+                && host
+                    .strip_suffix(lower.as_str())
+                    .is_some_and(|rest| rest.ends_with('.')))
+    }) || (name.contains('.') && follows_host_label(before))
+}
+
+/// Whether `before` ends with one of the `HOST_LABELS`, optionally followed by an opening quote.
+fn follows_host_label(before: &str) -> bool {
+    let before = before.trim_end().trim_end_matches(['\'', '"']).trim_end();
+    HOST_LABELS.iter().any(|label| {
+        let Some(label_start) = before.len().checked_sub(label.len()) else {
+            return false;
+        };
+        before
+            .get(label_start..)
+            .is_some_and(|text| text.eq_ignore_ascii_case(label))
+            && before[..label_start]
+                .chars()
+                .next_back()
+                .is_none_or(|character| !character.is_alphanumeric())
+    })
 }
 
 fn hide_word_host(word: &str) -> String {
@@ -449,7 +595,7 @@ fn hide_word_host(word: &str) -> String {
         };
         if matches!(url.scheme(), "http" | "https" | "ftp" | "ftps")
             && url.host().is_some()
-            && url.set_host(Some("host-hidden.invalid")).is_ok()
+            && url.set_host(Some(HIDDEN_HOST)).is_ok()
         {
             return format!("{head}{url}");
         }
@@ -737,6 +883,9 @@ fn run(logs: PathBuf, session: Session, lines: Receiver<Line>) {
 
 struct Sink {
     logs: PathBuf,
+    /// Never rotates, renames, deletes or prunes: another process owns the day files this sink
+    /// shares.
+    append_only: bool,
     day: String,
     events: Option<Rotating>,
     human: Option<Rotating>,
@@ -751,6 +900,7 @@ impl Sink {
     fn new(logs: PathBuf) -> Self {
         Self {
             logs,
+            append_only: false,
             day: String::new(),
             events: None,
             human: None,
@@ -758,6 +908,17 @@ impl Sink {
             reported_drops: 0,
             reported_write_failures: 0,
             retry_at: Instant::now(),
+        }
+    }
+
+    /// A sink for a process that writes into the day files of the desktop session. The desktop
+    /// rotates them before its own next write and does not count this sink's bytes, so a second
+    /// rotation here would rename a file the desktop still holds open and delete the newest
+    /// archive.
+    fn appending(logs: PathBuf) -> Self {
+        Self {
+            append_only: true,
+            ..Self::new(logs)
         }
     }
 
@@ -777,16 +938,23 @@ impl Sink {
             self.events = None;
             self.human = None;
             self.jobs.clear();
-            if let Ok(today) = chrono::NaiveDate::parse_from_str(day, "%Y%m%d") {
-                prune_day_files(&self.logs, today, RETENTION_DAYS);
+            if !self.append_only {
+                if let Ok(today) = chrono::NaiveDate::parse_from_str(day, "%Y%m%d") {
+                    prune_day_files(&self.logs, today, RETENTION_DAYS);
+                }
             }
         }
+        let limit = if self.append_only {
+            u64::MAX
+        } else {
+            FILE_LIMIT
+        };
         if self.events.is_none() {
             self.events = Rotating::open(
                 &self.logs,
                 &format!("events-{day}"),
                 "jsonl",
-                FILE_LIMIT,
+                limit,
                 FILE_FAMILIES,
             );
         }
@@ -795,7 +963,7 @@ impl Sink {
                 &self.logs,
                 &format!("ssdownload-{day}"),
                 "log",
-                FILE_LIMIT,
+                limit,
                 FILE_FAMILIES,
             );
         }
@@ -815,8 +983,10 @@ impl Sink {
         }
         let delta = total - self.reported_drops;
         self.reported_drops = total;
-        let event = Event::warn("log.dropped")
-            .detail(format!("{delta} olay kuyruk dolduğu için yazılamadı"));
+        let event = Event::warn("log.dropped").detail(crate::i18n::ui_owned!(
+            format!("{delta} olay kuyruk dolduğu için yazılamadı"),
+            format!("{delta} events were not written because the queue was full")
+        ));
         self.event_line(session, &event);
     }
 
@@ -830,8 +1000,10 @@ impl Sink {
         }
         let delta = total - self.reported_write_failures;
         self.reported_write_failures = total;
-        let event = Event::warn("log.write_failed")
-            .detail(format!("{delta} günlük satırı diske yazılamadı"));
+        let event = Event::warn("log.write_failed").detail(crate::i18n::ui_owned!(
+            format!("{delta} günlük satırı diske yazılamadı"),
+            format!("{delta} log lines could not be written to disk")
+        ));
         self.event_line(session, &event);
     }
 
@@ -952,7 +1124,8 @@ fn human_detail(event: &Event) -> String {
 
 /// Size- and count-bounded append target: `stem.log`, `stem.1.log`, ... keeping the newest
 /// `families` files. A new file starts once the current one passes `limit`; `families` must be
-/// at least two for any rotation to happen, which `rotate` relies on.
+/// at least two for any rotation to happen, which `rotate` relies on. A `limit` of `u64::MAX` is
+/// never passed, so the file is only ever appended to.
 struct Rotating {
     dir: PathBuf,
     stem: String,
@@ -1447,6 +1620,348 @@ mod tests {
         assert!(kept <= JOB_FILE_KEEP, "kept {kept}");
         assert!(kept > 10, "kept {kept}");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bare_host_names_in_free_text_are_hidden_with_the_site_switch_off() {
+        let hide = |host: &str, detail: &str| {
+            filtered(
+                Level::Detailed,
+                false,
+                Event::info("job.fail").host(host).detail(detail),
+            )
+            .and_then(|event| event.detail)
+            .expect("the detail is kept")
+        };
+        assert_eq!(
+            hide(
+                "files.example.com",
+                "Could not resolve host: files.example.com"
+            ),
+            "Could not resolve host: host-hidden.invalid"
+        );
+        // Wherever the message puts the job's own host: quoted, in other case, before a port or
+        // a full stop, or as the parent of a subdomain.
+        assert_eq!(
+            hide(
+                "files.example.com",
+                "connect 'Files.Example.com':443 via cdn.files.example.com."
+            ),
+            "connect 'host-hidden.invalid':443 via host-hidden.invalid."
+        );
+        // A redirect can name another host than the job's; curl's own wording gives it away.
+        assert_eq!(
+            hide("site.example", "Could not resolve host: cdn.other.example"),
+            "Could not resolve host: host-hidden.invalid"
+        );
+        // Text that only looks similar stays readable.
+        let unrelated = "ghost: not.a.host; host: refused; saved site.example.org.bak";
+        assert_eq!(hide("site.example", unrelated), unrelated);
+
+        let kept = filtered(
+            Level::Detailed,
+            true,
+            Event::info("job.fail")
+                .host("files.example.com")
+                .detail("Could not resolve host: files.example.com"),
+        )
+        .expect("the event passes");
+        assert_eq!(
+            kept.detail.as_deref(),
+            Some("Could not resolve host: files.example.com"),
+            "names stay when recording is on"
+        );
+    }
+
+    #[test]
+    fn the_names_tools_print_in_their_own_phrasing_are_hidden_with_the_site_switch_off() {
+        let hide = |host: &str, detail: &str| {
+            filtered(
+                Level::Detailed,
+                false,
+                Event::info("job.fail").host(host).detail(detail),
+            )
+            .and_then(|event| event.detail)
+            .expect("the detail is kept")
+        };
+        // curl names the host it failed to reach, which a redirect can make another one.
+        assert_eq!(
+            hide(
+                "site.example",
+                "Failed to connect to cdn.other.example port 443 after 21 ms"
+            ),
+            "Failed to connect to host-hidden.invalid port 443 after 21 ms"
+        );
+        // urllib3, which yt-dlp reports, quotes the host in the connection pool.
+        assert_eq!(
+            hide(
+                "site.example",
+                "HTTPSConnectionPool(host='rr3---sn-x.googlevideo.com', port=443): Max retries \
+                 exceeded; HTTPConnectionPool(host=\"cdn.other.example\", port=80)"
+            ),
+            "HTTPSConnectionPool(host='host-hidden.invalid', port=443): Max retries exceeded; \
+             HTTPConnectionPool(host=\"host-hidden.invalid\", port=80)"
+        );
+        // The parent domains of the job's host name the site too, down to two labels.
+        assert_eq!(
+            hide(
+                "cdn.files.example.com",
+                "certificate for files.example.com and example.com expired; com is a suffix"
+            ),
+            "certificate for host-hidden.invalid and host-hidden.invalid expired; com is a suffix"
+        );
+        // Names with letters outside ASCII are read whole, with or without a phrase before them.
+        assert_eq!(
+            hide("site.example", "Could not resolve host: bücher.example"),
+            "Could not resolve host: host-hidden.invalid"
+        );
+        assert_eq!(
+            hide(
+                "xn--bcher-kva.example",
+                "no answer from Bücher.example after 3 tries"
+            ),
+            "no answer from host-hidden.invalid after 3 tries"
+        );
+        // File names and unrelated dotted words stay readable.
+        let readable = "saved video.mp4 and movie.mkv, ffmpeg 7.1, to connect to server, \
+                        other.example.org";
+        assert_eq!(hide("cdn.files.example.com", readable), readable);
+        assert_eq!(
+            hide(
+                "site.example",
+                "Failed to connect to cdn.other.example port 443; kept video.mp4"
+            ),
+            "Failed to connect to host-hidden.invalid port 443; kept video.mp4"
+        );
+        // An IP address host does not turn the tail of a version number into a parent domain.
+        assert_eq!(
+            hide("192.0.2.1", "ffmpeg 2.1 refused 192.0.2.1"),
+            "ffmpeg 2.1 refused host-hidden.invalid"
+        );
+    }
+
+    fn read_events(root: &Path) -> Vec<serde_json::Value> {
+        let mut values = Vec::new();
+        let Ok(entries) = fs::read_dir(root.join("logs")) else {
+            return values;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("events-") && name.ends_with(".jsonl") {
+                for line in fs::read_to_string(entry.path()).unwrap().lines() {
+                    values.push(serde_json::from_str(line).expect("each line is one JSON event"));
+                }
+            }
+        }
+        values
+    }
+
+    /// Stores the logging choice in a profile, the way the desktop's Settings dialog does.
+    fn store_logging_choice(paths: &AppPaths, level: &str, hosts: bool) {
+        let mut store = crate::store::Store::open(&paths.database).unwrap();
+        store
+            .save_settings(&crate::model::Settings {
+                logging_level: level.into(),
+                logging_hosts: hosts,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_host_log_opens_its_session_with_the_first_event_and_shares_the_day_files() {
+        let root = temp_dir("host-log");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        store_logging_choice(&paths, "detailed", true);
+        let mut host = HostLog::new(&paths);
+        assert!(
+            read_events(&root).is_empty(),
+            "a host that records nothing leaves no trace"
+        );
+
+        // The desktop session keeps the same day files open while the host appends to them.
+        let mut desktop = Sink::new(root.join("logs"));
+        desktop.event_line(&session(), &Event::info("job.stage"));
+        host.record(Event::failure(
+            "bridge.protocol_mismatch",
+            error_codes::BRG_006,
+            "client version 9",
+        ));
+        desktop.event_line(&session(), &Event::info("job.done"));
+        host.record(Event::warn("bridge.listen_failed"));
+
+        let events = read_events(&root);
+        let names: Vec<&str> = events
+            .iter()
+            .map(|event| event["event"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "job.stage",
+                "app.session",
+                "bridge.protocol_mismatch",
+                "job.done",
+                "bridge.listen_failed"
+            ]
+        );
+        assert_eq!(events[0]["channel"], "app");
+        for index in [1, 2, 4] {
+            assert_eq!(
+                events[index]["channel"], "native-host",
+                "{:?}",
+                events[index]
+            );
+            assert_eq!(events[index]["session"], events[1]["session"]);
+        }
+        assert_eq!(events[2]["code"], "SSD-BRG-006");
+        assert_eq!(events[2]["outcome"], "failed");
+
+        let human: String = fs::read_dir(root.join("logs"))
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".log"))
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect();
+        assert!(
+            human.contains("native-host | bridge.protocol_mismatch"),
+            "{human}"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_host_log_follows_the_level_and_site_switch_stored_in_the_profile() {
+        let root = temp_dir("host-log-settings");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let mut store = crate::store::Store::open(&paths.database).unwrap();
+        store
+            .save_settings(&crate::model::Settings {
+                logging_level: "normal".into(),
+                logging_hosts: false,
+                ..Default::default()
+            })
+            .unwrap();
+        drop(store);
+
+        let mut host = HostLog::new(&paths);
+        host.record(
+            Event::failure(
+                "bridge.browser_add_rejected",
+                error_codes::MED_005,
+                "Could not resolve host: files.example.com",
+            )
+            .host("files.example.com"),
+        );
+        host.record(Event::debug("bridge.noise"));
+
+        let events = read_events(&root);
+        let names: Vec<&str> = events
+            .iter()
+            .map(|event| event["event"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["app.session", "bridge.browser_add_rejected"],
+            "the debug event is below the stored level"
+        );
+        assert!(events[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("level=normal"));
+        assert!(events[1].get("host").is_none(), "{:?}", events[1]);
+        assert!(
+            !events[1]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("example.com"),
+            "{:?}",
+            events[1]
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_host_log_appends_to_the_desktops_day_files_without_rotating_or_pruning() {
+        let root = temp_dir("host-log-append");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        store_logging_choice(&paths, "detailed", true);
+        let logs = root.join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        let day = chrono::Local::now().format("%Y%m%d").to_string();
+        let limit = FILE_LIMIT as usize;
+        // The event file is already over the limit and the readable one is about to pass it, so
+        // a host that rotated would do it when it opens the first and when it writes to the other.
+        let events = logs.join(format!("events-{day}.jsonl"));
+        let human = logs.join(format!("ssdownload-{day}.log"));
+        fs::write(&events, vec![b'e'; limit + 1]).unwrap();
+        fs::write(&human, vec![b'h'; limit - 10]).unwrap();
+        let archives = [
+            (logs.join(format!("events-{day}.1.jsonl")), "newest archive"),
+            (
+                logs.join(format!("ssdownload-{day}.1.log")),
+                "newest archive",
+            ),
+        ];
+        for (path, content) in &archives {
+            fs::write(path, content).unwrap();
+        }
+        let old_day = logs.join("events-20200101.jsonl");
+        fs::write(&old_day, "an old day").unwrap();
+
+        // The desktop session holds the live file open, as it does while it runs.
+        let mut desktop = OpenOptions::new().append(true).open(&events).unwrap();
+        let mut host = HostLog::new(&paths);
+        host.record(Event::warn("bridge.listen_failed"));
+        host.record(Event::warn("bridge.listen_failed"));
+        desktop.write_all(b"desktop line\n").unwrap();
+
+        let live = fs::read_to_string(&events).unwrap();
+        assert!(live.starts_with("eeee"), "the live file was replaced");
+        assert_eq!(live.matches("bridge.listen_failed").count(), 2);
+        assert!(
+            live.ends_with("desktop line\n"),
+            "the desktop's open handle no longer writes to the live file"
+        );
+        assert!(
+            fs::read_to_string(&human).unwrap().starts_with("hhhh"),
+            "the readable log was replaced"
+        );
+        for (path, content) in &archives {
+            assert_eq!(&fs::read_to_string(path).unwrap(), content, "{path:?}");
+        }
+        assert!(!logs.join(format!("events-{day}.2.jsonl")).exists());
+        assert!(
+            old_day.is_file(),
+            "the retention of old days belongs to the desktop"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_host_log_whose_profile_settings_cannot_be_read_writes_nothing() {
+        let root = temp_dir("host-log-unreadable");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let refusal = || {
+            Event::failure(
+                "bridge.browser_add_rejected",
+                error_codes::MED_005,
+                "Could not resolve host: files.example.com",
+            )
+            .host("files.example.com")
+        };
+
+        // No database: the user may have chosen to log nothing, and it cannot be told.
+        HostLog::new(&paths).record(refusal());
+        // A file that is not a database.
+        fs::write(&paths.database, b"this is not a database").unwrap();
+        HostLog::new(&paths).record(refusal());
+
+        assert!(
+            !root.join("logs").exists(),
+            "an unreadable profile must leave no log file behind"
+        );
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

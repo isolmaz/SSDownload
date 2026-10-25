@@ -197,6 +197,7 @@ impl SourceInfoLease {
                 "Doğrulanmış medya kaynak paketi bozuk",
                 "The verified media source bundle is corrupt",
             ))?;
+        reject_file_urls(&source.inspection)?;
         let root = crate::paths::cookie_jar_dir()?
             .join(format!("{PINNED_LEASE_PREFIX}{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root)?;
@@ -232,6 +233,7 @@ impl SourceInfoLease {
     }
 
     pub(super) fn from_inspection(inspection: &Value) -> Result<Self> {
+        reject_file_urls(inspection)?;
         let serialized = serde_json::to_vec(inspection)?;
         let root = crate::paths::cookie_jar_dir()?
             .join(format!("{INFO_LEASE_PREFIX}{}", uuid::Uuid::new_v4()));
@@ -249,6 +251,39 @@ impl Drop for SourceInfoLease {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+/// The extractor document is built from remote site data and yt-dlp downloads from it: none of
+/// its addresses may name a local file or a network share (`file:////host/share/…` makes
+/// Windows authenticate to the host).
+pub(super) fn reject_file_urls(document: &Value) -> Result<()> {
+    match document {
+        Value::Object(fields) => {
+            for (key, field) in fields {
+                if matches!(
+                    key.as_str(),
+                    "url" | "manifest_url" | "fragment_base_url" | "path"
+                ) && field
+                    .as_str()
+                    .and_then(|value| Url::parse(value).ok())
+                    .is_some_and(|url| url.scheme() == "file")
+                {
+                    bail!(crate::i18n::ui(
+                        "Medya kaynağı yerel dosya veya ağ paylaşımı adresi içeriyor; güvenlik için indirilmedi",
+                        "The media source lists a local file or network share address; it was not downloaded for safety"
+                    ));
+                }
+                reject_file_urls(field)?;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                reject_file_urls(item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 pub(super) fn replace_marker(value: &mut Value, marker: &str, replacement: &str) {

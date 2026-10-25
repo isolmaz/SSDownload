@@ -488,6 +488,7 @@ mod tests {
             force_start: false,
             open_when_done: false,
             live: false,
+            sequence: 0,
         }
     }
 
@@ -608,6 +609,34 @@ mod tests {
         assert_eq!(recovered[0].speed, 0);
         assert_eq!(recovered[0].eta, None);
         assert_eq!(store.load_jobs().unwrap()[0].state, JobState::Queued);
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_job_record_written_before_the_sequence_field_still_loads() {
+        let root = scratch();
+        let mut store = Store::open(&root.join("queue.sqlite3")).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let mut record = serde_json::to_value(job(id.clone(), JobState::Queued)).unwrap();
+        record
+            .as_object_mut()
+            .unwrap()
+            .remove("sequence")
+            .expect("the current record carries the sequence");
+        store
+            .connection
+            .execute(
+                "INSERT INTO jobs(id, payload, created_at) VALUES(?1, ?2, 1)",
+                params![id, secure::seal(record.to_string()).unwrap()],
+            )
+            .unwrap();
+
+        let loaded = store.load_jobs().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, id);
+        assert_eq!(loaded[0].sequence, 0);
+        assert!(store.warnings.is_empty());
         drop(store);
         fs::remove_dir_all(root).unwrap();
     }

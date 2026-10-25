@@ -1,5 +1,6 @@
-// Stable error codes mirrored from src/error_codes.rs. The Rust test
-// `the_extension_mirror_lists_exactly_the_same_codes` fails when the two lists drift.
+// Stable error codes, generated with src/error_codes.rs by scripts/generate-error-codes.py
+// (edit the table there). The Rust test `the_extension_mirror_lists_exactly_the_same_codes`
+// fails when the two lists drift.
 // `action` tells the browser surface what to offer next: retry, refresh, open_app, open_page,
 // settings, update, unsupported, report.
 const ERROR_CODES = {

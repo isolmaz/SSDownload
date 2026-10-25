@@ -722,12 +722,10 @@ fn validate_transfer_options(settings: &Settings) -> Result<()> {
     }
     let mut hosts = std::collections::BTreeSet::new();
     for login in &settings.site_logins {
-        let host = login.host.trim().to_ascii_lowercase();
-        if host.is_empty()
-            || host.len() > 253
-            || url::Host::parse(&host).is_err()
-            || host.contains(['/', ':', '@', ' '])
-        {
+        let typed = login.host.trim();
+        let Some(host) = crate::network::canonical_host_name(typed).filter(|_| {
+            !typed.is_empty() && typed.len() <= 253 && !typed.contains(['/', ':', '@', ' '])
+        }) else {
             bail!(
                 "{}",
                 crate::i18n::ui(
@@ -735,7 +733,7 @@ fn validate_transfer_options(settings: &Settings) -> Result<()> {
                     "Enter a valid host name for the site login (e.g. files.example.com)."
                 )
             );
-        }
+        };
         if login.username.is_empty()
             || login.username.len() > 256
             || login.username.contains([':', '\r', '\n'])
@@ -998,5 +996,37 @@ mod tests {
         assert!(expand_batch_pattern("https://a.example/[1-5000].bin").is_err());
         assert!(expand_batch_pattern("https://a.example/[9-1].bin").is_err());
         assert_eq!(expand_batch_pattern("https://[::1]/x").unwrap(), None);
+    }
+
+    fn settings_with_logins(hosts: &[&str]) -> Settings {
+        Settings {
+            site_logins: hosts
+                .iter()
+                .map(|host| crate::model::SiteLogin {
+                    host: (*host).into(),
+                    username: "user".into(),
+                    password: String::new(),
+                    allow_http: false,
+                })
+                .collect(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn one_server_cannot_have_two_site_logins_in_different_spellings() {
+        for spellings in [
+            ["bücher.example", "xn--bcher-kva.example"],
+            ["BÜCHER.example", "xn--bcher-kva.example"],
+            ["files.example.com", "Files.Example.COM."],
+        ] {
+            let settings = settings_with_logins(&spellings);
+            assert!(
+                validate_transfer_options(&settings).is_err(),
+                "{spellings:?}"
+            );
+        }
+        let distinct = settings_with_logins(&["bücher.example", "files.example.com."]);
+        assert!(validate_transfer_options(&distinct).is_ok());
     }
 }

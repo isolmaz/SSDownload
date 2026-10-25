@@ -63,7 +63,11 @@ unsafe fn prepare_error_line(dlg: &DialogUi) {
     SetWindowLongPtrW(
         dlg.error,
         GWL_STYLE,
-        (style & !SS_TYPE_MASK) | SS_LEFTNOWORDWRAP_STYLE | SS_NOTIFY_STYLE | SS_ENDELLIPSIS_STYLE,
+        (style & !SS_TYPE_MASK)
+            | SS_LEFTNOWORDWRAP_STYLE
+            | SS_NOTIFY_STYLE
+            | SS_ENDELLIPSIS_STYLE
+            | SS_NOPREFIX as isize,
     );
     let tip = CreateWindowExW(
         WS_EX_TOPMOST,

@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc, Arc,
     },
     thread,
@@ -217,9 +217,11 @@ impl std::fmt::Display for HttpStatusError {
 
 impl std::error::Error for HttpStatusError {}
 
-/// Kept partial data whose source identity is unproven or changed. It stays on disk until
-/// the user restarts or a renewed source proves compatibility, so the engine treats it as a
-/// source-renewal candidate.
+/// Partial data whose source identity is unproven or changed. `download_http` and
+/// `download_ftp` discard it and restart from zero. The error reaches the engine only when
+/// the transfer was stopped or the restarted attempt fails the same way; the engine treats it
+/// as a source-renewal candidate, and a renewed source that proves the identity re-binds the
+/// kept data.
 #[derive(Debug)]
 pub(crate) struct PreservedPartialError {
     message: &'static str,
@@ -519,20 +521,7 @@ fn download_http(
         progress,
     ) {
         Err(error) if preserves_partial(&error) && !control.stop_requested() => {
-            remove_if_exists(&part_path(output));
-            remove_if_exists(&state_path(output));
-            cleanup_legacy_segments(output);
-            progress(TransferProgress {
-                downloaded: 0,
-                total: remote.total,
-                speed: 0,
-                eta: None,
-                phase: crate::i18n::ui(
-                    "Kaynak kimliği kanıtlanamadı; baştan başlıyor",
-                    "The source identity could not be proven; restarting from the beginning",
-                )
-                .into(),
-            });
+            restart_from_zero(output, remote.total, progress);
             download_http_resuming(
                 request,
                 output,
@@ -545,6 +534,28 @@ fn download_http(
         }
         other => other,
     }
+}
+
+/// Drops every retained part of `output` and reports that the transfer starts over from byte zero.
+fn restart_from_zero(
+    output: &Path,
+    total: Option<u64>,
+    progress: &mut dyn FnMut(TransferProgress),
+) {
+    remove_if_exists(&part_path(output));
+    remove_if_exists(&state_path(output));
+    cleanup_legacy_segments(output);
+    progress(TransferProgress {
+        downloaded: 0,
+        total,
+        speed: 0,
+        eta: None,
+        phase: crate::i18n::ui(
+            "Kaynak kimliği kanıtlanamadı; baştan başlıyor",
+            "The source identity could not be proven; restarting from the beginning",
+        )
+        .into(),
+    });
 }
 
 fn download_http_resuming(
@@ -617,9 +628,9 @@ fn download_http_resuming(
             Ok(supported) => supported,
             Err(AttemptFailure::ResourceChanged) => {
                 return Err(preserved_partial(crate::i18n::ui(
-"Kaynak kimliği değişti; doğrulanmış parçalar yeniden başlatma seçilene kadar korundu",
-                        "The source identity changed; verified parts are kept until you choose to restart",
-)))
+                    "Kaynak kimliği değişti; doğrulanmış parçalar kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
+                    "The source identity changed; the verified parts cannot be reused and the next attempt restarts the download from the beginning",
+                )))
             }
             Err(AttemptFailure::Other(error)) => return Err(error),
             // Probe transport and status failures have always meant that range support
@@ -667,15 +678,15 @@ fn download_http_resuming(
             }
             Err(AttemptFailure::RangeRejected) => {
                 return Err(preserved_partial(crate::i18n::ui(
-"Sunucu byte aralığını reddetti; doğrulanmış parçalar yeniden başlatma seçilene kadar korundu",
-                        "The server rejected the byte range; verified parts are kept until you choose to restart",
-)))
+                    "Sunucu byte aralığını reddetti; doğrulanmış parçalar kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
+                    "The server rejected the byte range; the verified parts cannot be reused and the next attempt restarts the download from the beginning",
+                )))
             }
             Err(AttemptFailure::ResourceChanged) => {
                 return Err(preserved_partial(crate::i18n::ui(
-"Kaynak kimliği değişti; doğrulanmış parçalar yeniden başlatma seçilene kadar korundu",
-                        "The source identity changed; verified parts are kept until you choose to restart",
-)))
+                    "Kaynak kimliği değişti; doğrulanmış parçalar kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
+                    "The source identity changed; the verified parts cannot be reused and the next attempt restarts the download from the beginning",
+                )))
             }
             Err(AttemptFailure::RetryableStatus {
                 status,
@@ -742,10 +753,17 @@ fn download_http_single(
         && remote.total.map(|total| offset <= total).unwrap_or(true)
         && remote.accept_ranges;
     if !resumable && offset > 0 {
+        if let Some(error) = previous
+            .is_none()
+            .then(|| unreadable_state(&state_path))
+            .flatten()
+        {
+            return Err(error);
+        }
         return Err(preserved_partial(crate::i18n::ui(
-"Kısmi dosyanın kaynak kimliği kanıtlanamadı; yeniden başlatma seçilene kadar korundu",
-                "The partial file's source identity could not be proven; it is kept until you choose to restart",
-)));
+            "Kısmi dosyanın kaynak kimliği kanıtlanamadı; dosya kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
+            "The partial file's source identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning",
+        )));
     }
     if remote.total == Some(offset) && offset > 0 && resumable {
         return finalize_part(
@@ -852,8 +870,8 @@ fn download_http_single(
             }
             Err(AttemptFailure::RangeRejected | AttemptFailure::ResourceChanged) if offset > 0 => {
                 return Err(preserved_partial(crate::i18n::ui(
-                    "Sürdürme yanıtı kaynak kimliğini kanıtlamadı; kısmi dosya korundu",
-                    "The resume response did not prove the source identity; the partial file was kept",
+                    "Sürdürme yanıtı kaynak kimliğini kanıtlamadı; kısmi dosya kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
+                    "The resume response did not prove the source identity; the partial file cannot be reused and the next attempt restarts the download from the beginning",
                 )))
             }
             Err(AttemptFailure::RetryableStatus {
@@ -992,7 +1010,7 @@ fn http_to_file(
     let mut last_report = Instant::now();
     let mut last_bytes = offset;
     let mut throttle_started = Instant::now();
-    let mut throttle_bytes = 0u64;
+    let mut throttle_cost = 0u64;
 
     easy.progress(true).map_err(anyhow::Error::from)?;
     let perform_result = {
@@ -1016,8 +1034,13 @@ fn http_to_file(
                     return Ok(0);
                 }
                 written = written.saturating_add(data.len() as u64);
-                throttle_bytes = throttle_bytes.saturating_add(data.len() as u64);
-                throttle(control, divisor, &mut throttle_started, &mut throttle_bytes);
+                throttle(
+                    control,
+                    divisor,
+                    &mut throttle_started,
+                    &mut throttle_cost,
+                    data.len() as u64,
+                );
                 let now = Instant::now();
                 if now.duration_since(last_report) >= Duration::from_millis(200) {
                     let elapsed = now.duration_since(last_report).as_secs_f64().max(0.001);
@@ -1070,10 +1093,9 @@ fn http_to_file(
             retry_after: headers.retry_after,
         });
     }
-    if matches!(
-        headers.status,
-        401 | 403 | 404 | 408 | 410 | 500 | 502 | 504
-    ) {
+    if matches!(headers.status, 401 | 403 | 404 | 408 | 410)
+        || is_transient_server_error(headers.status)
+    {
         return Err(AttemptFailure::Other(anyhow!(HttpStatusError {
             status: headers.status
         })));
@@ -1176,9 +1198,12 @@ fn download_segmented(
     // This is the connection allocation granted by the engine. Dynamic workers
     // never exceed it, even if this private entry point is reused later.
     let count = count.clamp(1, 16);
-    let total = remote
-        .total
-        .ok_or_else(|| AttemptFailure::Other(anyhow!("Dosya boyutu bilinmiyor")))?;
+    let total = remote.total.ok_or_else(|| {
+        AttemptFailure::Other(anyhow!(
+            "{}",
+            crate::i18n::ui("Dosya boyutu bilinmiyor", "The file size is unknown")
+        ))
+    })?;
     let part = part_path(output);
     let state_path = state_path(output);
     let mut state = prepare_dynamic_state(request, output, remote, total, count)?;
@@ -1210,6 +1235,9 @@ fn download_segmented(
     // Raised when the scheduler gives up, so workers stop their current range at once
     // instead of finishing it for nobody.
     let abort = Arc::new(AtomicBool::new(false));
+    // Ranges handed to workers and not yet reported complete; the speed limit is split
+    // among them rather than among the planned connections.
+    let busy = Arc::new(AtomicUsize::new(0));
     let mut senders = Vec::with_capacity(worker_count);
     let mut handles = Vec::with_capacity(worker_count);
     for worker in 0..worker_count {
@@ -1221,6 +1249,7 @@ fn download_segmented(
         let part = part.clone();
         let control = control.clone();
         let abort = abort.clone();
+        let busy = busy.clone();
         let network = NetworkGovernor::clone(network);
         handles.push(thread::spawn(move || {
             let mut downloader = DynamicRangeWorker {
@@ -1231,7 +1260,7 @@ fn download_segmented(
                 path: &part,
                 control: &control,
                 abort: &abort,
-                divisor: count as u64,
+                busy: &busy,
             };
             loop {
                 let command = match command_rx.recv_timeout(RANGE_WORKER_IDLE_TIMEOUT) {
@@ -1305,9 +1334,14 @@ fn download_segmented(
             }
             let worker = idle.pop().expect("idle worker disappeared");
             active_bytes[worker] = 0;
+            busy.fetch_add(1, Ordering::AcqRel);
             if senders[worker].send(RangeCommand::Download(work)).is_err() {
                 break 'scheduler Err(AttemptFailure::Other(anyhow!(
-                    "İndirme işçisi beklenmedik biçimde kapandı"
+                    "{}",
+                    crate::i18n::ui(
+                        "İndirme işçisi beklenmedik biçimde kapandı",
+                        "A download worker closed unexpectedly",
+                    )
                 )));
             }
             active += 1;
@@ -1340,6 +1374,7 @@ fn download_segmented(
                 result,
             }) => {
                 active = active.saturating_sub(1);
+                busy.fetch_sub(1, Ordering::AcqRel);
                 active_bytes[worker] = 0;
                 idle.push(worker);
                 match result {
@@ -1553,7 +1588,7 @@ struct DynamicRangeWorker<'a> {
     path: &'a Path,
     control: &'a TransferControl,
     abort: &'a AtomicBool,
-    divisor: u64,
+    busy: &'a AtomicUsize,
 }
 
 impl DynamicRangeWorker<'_> {
@@ -1578,7 +1613,7 @@ impl DynamicRangeWorker<'_> {
         let remote = self.remote;
         let path = self.path;
         let control = self.control;
-        let divisor = self.divisor;
+        let busy = self.busy;
         // Do not reset a governed handle: libcurl reset clears its socket callbacks.
         // Reapplying request options preserves callback accounting and lets
         // immediately assigned ranges reuse the connection.
@@ -1616,7 +1651,7 @@ impl DynamicRangeWorker<'_> {
         let mut written = 0u64;
         let mut last_report = Instant::now();
         let mut throttle_started = Instant::now();
-        let mut throttle_bytes = 0u64;
+        let mut throttle_cost = 0u64;
         let expected = ExpectedResponse::Range {
             start: range.start,
             end: Some(range.end - 1),
@@ -1647,8 +1682,13 @@ impl DynamicRangeWorker<'_> {
                         return Ok(0);
                     }
                     written += data.len() as u64;
-                    throttle_bytes += data.len() as u64;
-                    throttle(control, divisor, &mut throttle_started, &mut throttle_bytes);
+                    throttle(
+                        control,
+                        busy.load(Ordering::Acquire) as u64,
+                        &mut throttle_started,
+                        &mut throttle_cost,
+                        data.len() as u64,
+                    );
                     if last_report.elapsed() >= Duration::from_millis(200) {
                         report(written);
                         last_report = Instant::now();
@@ -1682,10 +1722,9 @@ impl DynamicRangeWorker<'_> {
                 retry_after: headers.retry_after,
             });
         }
-        if matches!(
-            headers.status,
-            401 | 403 | 404 | 408 | 410 | 500 | 502 | 504
-        ) {
+        if matches!(headers.status, 401 | 403 | 404 | 408 | 410)
+            || is_transient_server_error(headers.status)
+        {
             return Err(AttemptFailure::Other(anyhow!(HttpStatusError {
                 status: headers.status
             })));
@@ -1725,9 +1764,11 @@ impl DynamicRangeWorker<'_> {
         }
         if written != range.len() {
             return Err(AttemptFailure::Other(anyhow!(
-                "Byte aralığı eksik kaldı: {}/{}",
-                written,
-                range.len()
+                "{}",
+                crate::i18n::ui_owned!(
+                    format!("Byte aralığı eksik kaldı: {}/{}", written, range.len()),
+                    format!("Byte range incomplete: {}/{}", written, range.len()),
+                )
             )));
         }
         file.sync_all().map_err(|error| {
@@ -1758,9 +1799,10 @@ fn prepare_dynamic_state(
                 return Err(AttemptFailure::ResourceChanged);
             }
             if fs::metadata(&part).map(|value| value.len()).ok() != Some(total) {
-                return Err(AttemptFailure::Other(anyhow!(
-                    "Aralık haritasının seyrek dosyası eksik; mevcut eserler korundu"
-                )));
+                return Err(AttemptFailure::Other(preserved_partial(crate::i18n::ui(
+                    "Aralık haritasının seyrek dosyası eksik veya kısa; sonraki deneme indirmeyi baştan başlatır",
+                    "The range map's sparse file is missing or short; the next attempt restarts the download from the beginning",
+                ))));
             }
             return Ok(ResumeState {
                 url: source_url_digest(&remote.url),
@@ -1777,9 +1819,13 @@ fn prepare_dynamic_state(
         return Err(AttemptFailure::ResourceChanged);
     }
     if part.exists() || legacy_segments_exist(output) {
-        return Err(AttemptFailure::Other(anyhow!(
-            "Kaydı olmayan kısmi dosyaların kimliği kanıtlanamadı; eserler korundu"
-        )));
+        if let Some(error) = unreadable_state(&state_path) {
+            return Err(AttemptFailure::Other(error));
+        }
+        return Err(AttemptFailure::Other(preserved_partial(crate::i18n::ui(
+            "Kaydı olmayan kısmi dosyaların kimliği kanıtlanamadı; sonraki deneme indirmeyi baştan başlatır",
+            "The partial files have no state record, so their identity cannot be proven; the next attempt restarts the download from the beginning",
+        ))));
     }
     crate::output::require_space(output, total).map_err(AttemptFailure::Other)?;
     let file = OpenOptions::new()
@@ -1878,7 +1924,11 @@ fn migrate_v2_state(
                 let maximum = end - start + 1;
                 if length > maximum {
                     return Err(AttemptFailure::Other(anyhow!(
-                        "Eski parça sınırını aşıyor; eserler korundu"
+                        "{}",
+                        crate::i18n::ui(
+                            "Eski parça sınırını aşıyor; eserler korundu",
+                            "The legacy part exceeds its range; the files were kept",
+                        )
                     )));
                 }
                 if length == 0 {
@@ -1896,7 +1946,11 @@ fn migrate_v2_state(
                         .map_err(|error| AttemptFailure::Other(error.into()))?;
                     if amount == 0 {
                         return Err(AttemptFailure::Other(anyhow!(
-                            "Eski parça beklenmedik biçimde kısa"
+                            "{}",
+                            crate::i18n::ui(
+                                "Eski parça beklenmedik biçimde kısa",
+                                "The legacy part is unexpectedly short",
+                            )
                         )));
                     }
                     target
@@ -1917,7 +1971,11 @@ fn migrate_v2_state(
         let length = fs::metadata(&part).map(|value| value.len()).unwrap_or(0);
         if length > total {
             return Err(AttemptFailure::Other(anyhow!(
-                "Eski kısmi dosya beklenen boyutu aşıyor; eser korundu"
+                "{}",
+                crate::i18n::ui(
+                    "Eski kısmi dosya beklenen boyutu aşıyor; eser korundu",
+                    "The legacy partial file exceeds the expected size; the file was kept",
+                )
             )));
         }
         if length > 0 {
@@ -1969,13 +2027,21 @@ fn normalize_completed(
     for range in ranges {
         if range.start >= range.end || range.end > total {
             return Err(AttemptFailure::Other(anyhow!(
-                "Kalıcı aralık haritası geçersiz"
+                "{}",
+                crate::i18n::ui(
+                    "Kalıcı aralık haritası geçersiz",
+                    "The permanent range map is invalid",
+                )
             )));
         }
         if let Some(previous) = normalized.last_mut() {
             if range.start < previous.end {
                 return Err(AttemptFailure::Other(anyhow!(
-                    "Kalıcı aralık haritasında çakışma var"
+                    "{}",
+                    crate::i18n::ui(
+                        "Kalıcı aralık haritasında çakışma var",
+                        "The permanent range map has overlapping ranges",
+                    )
                 )));
             }
             if range.start == previous.end {
@@ -2059,6 +2125,26 @@ fn download_ftp(
     progress: &mut dyn FnMut(TransferProgress),
 ) -> Result<TransferResult> {
     let remote = probe_ftp(request, url, control, network)?;
+    match download_ftp_resuming(request, output, &remote, control, network, progress) {
+        Err(error) if preserves_partial(&error) && !control.stop_requested() => {
+            restart_from_zero(output, remote.total, progress);
+            download_ftp_resuming(request, output, &remote, control, network, progress)
+        }
+        other => other,
+    }
+}
+
+/// Resumes a retained part only when the server's size and modification time match the
+/// recorded state. Anything else (no `MDTM` or `SIZE`, a changed file, a server that refuses
+/// `REST`) is an unproven partial that `download_ftp` replaces with a fresh download.
+fn download_ftp_resuming(
+    request: &AddRequest,
+    output: &Path,
+    remote: &RemoteInfo,
+    control: &TransferControl,
+    network: &NetworkGovernor,
+    progress: &mut dyn FnMut(TransferProgress),
+) -> Result<TransferResult> {
     let part = part_path(output);
     let state_path = state_path(output);
     let previous = read_state(&state_path);
@@ -2066,15 +2152,32 @@ fn download_ftp(
     let may_resume = offset > 0
         && previous
             .as_ref()
-            .map(|state| ftp_state_matches(state, &remote))
+            .map(|state| ftp_state_matches(state, remote))
             .unwrap_or(false)
         && remote.last_modified.is_some()
-        && remote.total.map(|total| offset < total).unwrap_or(false);
+        && remote.total.is_some_and(|total| offset <= total);
     if !may_resume && offset > 0 {
+        if let Some(error) = previous
+            .is_none()
+            .then(|| unreadable_state(&state_path))
+            .flatten()
+        {
+            return Err(error);
+        }
         return Err(preserved_partial(crate::i18n::ui(
-"FTP kısmi dosyasının kimliği kanıtlanamadı; yeniden başlatma seçilene kadar korundu",
-                "The FTP partial file's identity could not be proven; it is kept until you choose to restart",
-)));
+            "FTP kısmi dosyasının kimliği kanıtlanamadı; dosya kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
+            "The FTP partial file's identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning",
+        )));
+    }
+    if may_resume && remote.total == Some(offset) {
+        return finalize_part(
+            output,
+            &part,
+            &state_path,
+            offset,
+            control,
+            request.checksum.as_deref(),
+        );
     }
     write_state(
         &state_path,
@@ -2115,7 +2218,7 @@ fn download_ftp(
     let mut last = Instant::now();
     let mut last_bytes = offset;
     let mut throttle_started = Instant::now();
-    let mut throttle_bytes = 0u64;
+    let mut throttle_cost = 0u64;
     let io_error = Rc::new(RefCell::new(None::<std::io::Error>));
     let write_error = io_error.clone();
     easy.progress(true)?;
@@ -2130,8 +2233,13 @@ fn download_ftp(
                 return Ok(0);
             }
             written += data.len() as u64;
-            throttle_bytes += data.len() as u64;
-            throttle(control, 1, &mut throttle_started, &mut throttle_bytes);
+            throttle(
+                control,
+                1,
+                &mut throttle_started,
+                &mut throttle_cost,
+                data.len() as u64,
+            );
             let now = Instant::now();
             if now.duration_since(last) >= Duration::from_millis(200) {
                 let current = offset + written;
@@ -2169,6 +2277,12 @@ fn download_ftp(
         )));
     }
     if let Err(error) = result {
+        if offset > 0 && error.code() == curl_sys::CURLE_FTP_COULDNT_USE_REST {
+            return Err(preserved_partial(crate::i18n::ui(
+                "FTP sunucusu kaldığı yerden sürdürmeyi kabul etmedi; sonraki deneme indirmeyi baştan başlatır",
+                "The FTP server refused to resume; the next attempt restarts the download from the beginning",
+            )));
+        }
         return Err(governed_transport_error(
             &easy,
             error,
@@ -2425,7 +2539,13 @@ fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
         )
     };
     if code != curl_sys::CURLE_OK {
-        bail!("libcurl CONNECT başlıklarını gizleyemedi");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "libcurl CONNECT başlıklarını gizleyemedi",
+                "libcurl could not suppress the CONNECT headers",
+            )
+        );
     }
     // Site logins answer only for their own host (see `proxy::site_login`); every
     // redirect hop configures a new handle for its own URL, so credentials never follow.
@@ -2803,6 +2923,20 @@ fn read_state(path: &Path) -> Option<ResumeState> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// The error for a state file that exists but cannot be read (a virus scanner holds it for a
+/// moment): it says nothing about the partial files beside it, so they are kept, and the I/O
+/// error stays in the chain for the retry rules. A missing state file, or one that reads but does
+/// not parse, cannot prove the partial files, so the caller restarts them.
+fn unreadable_state(path: &Path) -> Option<anyhow::Error> {
+    let error = fs::read(path)
+        .err()
+        .filter(|error| error.kind() != std::io::ErrorKind::NotFound)?;
+    Some(anyhow::Error::new(error).context(crate::i18n::ui(
+        "Devam kaydı okunamadı; kısmi dosyalar olduğu gibi korundu",
+        "The resume record could not be read; the partial files were kept as they are",
+    )))
+}
+
 fn write_state(path: &Path, state: &ResumeState) -> Result<()> {
     crate::recovery::atomic_write(path, &serde_json::to_vec(state)?)
 }
@@ -2815,7 +2949,14 @@ fn finalize_part(
     control: &TransferControl,
     checksum: Option<&str>,
 ) -> Result<TransferResult> {
-    verify_checksum(part, checksum, control)?;
+    verify_checksum(part, checksum, control).inspect_err(|error| {
+        // The part holds exactly the bytes that failed; keeping it would make every retry
+        // verify the same bytes again instead of downloading them anew.
+        if crate::error_codes::code_of(error) == Some(crate::error_codes::TRF_003) {
+            remove_if_exists(part);
+            remove_if_exists(state);
+        }
+    })?;
     if control.stop_requested() {
         bail!(
             "{}",
@@ -2863,7 +3004,14 @@ fn verify_checksum(path: &Path, checksum: Option<&str>, control: &TransferContro
     }
     let actual = hex::encode(digest.finalize());
     if !actual.eq_ignore_ascii_case(expected) {
-        crate::bail_code!(crate::error_codes::TRF_003, "{}", crate::i18n::ui("SHA-256 doğrulaması başarısız oldu; kısmi eser inceleme veya açık yeniden başlatma için korundu", "SHA-256 verification failed; the partial artifact was kept for inspection or to resume after a restart"));
+        crate::bail_code!(
+            crate::error_codes::TRF_003,
+            "{}",
+            crate::i18n::ui(
+                "SHA-256 doğrulaması başarısız oldu; kısmi dosya silindi, yeniden denemede dosya baştan indirilir",
+                "SHA-256 verification failed; the partial file was deleted and a retry downloads it again",
+            )
+        );
     }
     Ok(())
 }
@@ -2938,6 +3086,11 @@ fn origin(url: &Url) -> (String, String, u16) {
 fn is_redirect(status: u32) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
 }
+/// A server failure that a later attempt can get past. 501 is left out: a server that does
+/// not implement ranges may answer a Range request with it, which is a range rejection.
+pub(crate) fn is_transient_server_error(status: u32) -> bool {
+    (500..=599).contains(&status) && status != 501
+}
 fn is_strong_etag(value: &str) -> bool {
     !value.trim_start().starts_with("W/")
 }
@@ -2985,16 +3138,26 @@ fn eta(total: Option<u64>, downloaded: u64, speed: u64) -> Option<u64> {
         .filter(|total| *total >= downloaded)
         .and_then(|total| (total - downloaded).checked_div(speed))
 }
-fn throttle(control: &TransferControl, divisor: u64, started: &mut Instant, bytes: &mut u64) {
+/// Paces a write of `written` bytes to a `workers`-th share of the speed limit. `cost` adds
+/// each chunk's length times the worker count in force when it was written, so a change in
+/// the number of busy workers never turns bytes counted under the old share into credit
+/// that would let the aggregate rate exceed the limit.
+fn throttle(
+    control: &TransferControl,
+    workers: u64,
+    started: &mut Instant,
+    cost: &mut u64,
+    written: u64,
+) {
+    *cost = cost.saturating_add(written.saturating_mul(workers.max(1)));
     loop {
         let limit = control.speed_limit();
         if limit == 0 || control.stop_requested() {
             *started = Instant::now();
-            *bytes = 0;
+            *cost = 0;
             return;
         }
-        let share = (limit / divisor.max(1)).max(1);
-        let expected = Duration::from_secs_f64(*bytes as f64 / share as f64);
+        let expected = Duration::from_secs_f64(*cost as f64 / limit as f64);
         let elapsed = started.elapsed();
         if expected <= elapsed {
             break;
@@ -3003,7 +3166,7 @@ fn throttle(control: &TransferControl, divisor: u64, started: &mut Instant, byte
     }
     if started.elapsed() >= Duration::from_secs(1) {
         *started = Instant::now();
-        *bytes = 0;
+        *cost = 0;
     }
 }
 
@@ -3170,9 +3333,9 @@ pub(crate) fn migrate_legacy_parts(original: &Path, scratch: &Path) -> Result<()
 mod tests {
     use super::*;
     use std::{
-        io::{Read, Write},
-        net::{TcpListener, TcpStream},
-        sync::mpsc,
+        io::{BufRead, BufReader, Read, Write},
+        net::{SocketAddr, TcpListener, TcpStream},
+        sync::{mpsc, Mutex},
         time::SystemTime,
     };
 
@@ -3504,14 +3667,51 @@ mod tests {
     }
 
     #[test]
-    fn checksum_failure_preserves_the_partial_file_for_explicit_restart() {
+    fn a_checksum_mismatch_discards_the_part_and_state_but_a_malformed_digest_keeps_them() {
         let directory = TestDirectory::new("checksum");
-        let part = directory.0.join("payload.part");
-        fs::write(&part, b"payload").unwrap();
+        let output = directory.0.join("payload.bin");
+        let (part, state) = (part_path(&output), state_path(&output));
         let control = TransferControl::default();
-        let error = verify_checksum(&part, Some(&"0".repeat(64)), &control).unwrap_err();
-        assert!(error.to_string().contains("doğrulaması başarısız"));
-        assert!(part.exists());
+        let code = |error: &anyhow::Error| crate::error_codes::code_of(error);
+
+        fs::write(&part, b"payload").unwrap();
+        fs::write(&state, b"{}").unwrap();
+        let error =
+            finalize_part(&output, &part, &state, 7, &control, Some(&"0".repeat(64))).unwrap_err();
+        assert_eq!(code(&error), Some(crate::error_codes::TRF_003), "{error:#}");
+        assert!(!part.exists() && !state.exists());
+        assert!(!output.exists());
+
+        // A checksum that is not a digest says nothing about the downloaded bytes.
+        fs::write(&part, b"payload").unwrap();
+        fs::write(&state, b"{}").unwrap();
+        let error =
+            finalize_part(&output, &part, &state, 7, &control, Some("not-a-digest")).unwrap_err();
+        assert_ne!(code(&error), Some(crate::error_codes::TRF_003), "{error:#}");
+        assert!(part.exists() && state.exists());
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn a_changed_worker_count_does_not_turn_earlier_bytes_into_credit() {
+        let control = TransferControl::default();
+        control.set_speed_limit(100_000);
+        // 45 000 bytes written while two workers shared the limit use up 0.9 s of a
+        // 50 000 B/s share.
+        let mut started = Instant::now() - Duration::from_millis(900);
+        let mut cost = 0u64;
+        throttle(&control, 2, &mut started, &mut cost, 45_000);
+
+        // Alone, the same worker may write at the whole limit from now on, but the bytes
+        // written earlier stay charged at the old share: another 45 000 bytes still wait
+        // about 0.45 s instead of arriving at once.
+        let before = Instant::now();
+        throttle(&control, 1, &mut started, &mut cost, 45_000);
+        assert!(
+            before.elapsed() >= Duration::from_millis(400),
+            "{:?}",
+            before.elapsed()
+        );
     }
 
     #[test]
@@ -4045,6 +4245,13 @@ mod tests {
 
     #[test]
     fn a_gateway_error_on_a_later_range_is_a_retryable_http_status_not_a_range_rejection() {
+        // 522 stands for the proxy and CDN statuses (520-524) that no fixed list names.
+        for (status, line) in [(502, "502 Bad Gateway"), (522, "522 Connection Timed Out")] {
+            later_range_server_error_keeps_the_recorded_range(status, line);
+        }
+    }
+
+    fn later_range_server_error_keeps_the_recorded_range(status: u32, line: &'static str) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -4086,7 +4293,7 @@ mod tests {
                                     // The first range has finished and been recorded by now.
                                     thread::sleep(Duration::from_millis(400));
                                     let _ = stream.write_all(
-                                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                        format!("HTTP/1.1 {line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes(),
                                     );
                                     return;
                                 }
@@ -4106,7 +4313,7 @@ mod tests {
             })
         };
 
-        let directory = TestDirectory::new("range-gateway");
+        let directory = TestDirectory::new(&format!("range-gateway-{status}"));
         let output = directory.0.join("large.bin");
         let error = download(
             &local_request(format!("http://{address}/large")),
@@ -4120,7 +4327,7 @@ mod tests {
         .unwrap_err();
         stop.store(true, Ordering::Release);
         server.join().unwrap();
-        assert_eq!(http_status(&error), Some(502), "{error:#}");
+        assert_eq!(http_status(&error), Some(status), "{error:#}");
         assert!(!preserves_partial(&error), "{error:#}");
         // The first range was durably recorded, so the retry resumes instead of restarting.
         let state = read_state(&state_path(&output)).unwrap();
@@ -4184,5 +4391,726 @@ mod tests {
         assert!(error.to_string().contains("durduruldu"));
         assert!(fs::metadata(part_path(&output)).unwrap().len() > 0);
         assert!(!output.exists());
+    }
+
+    fn patterned(length: u64) -> Vec<u8> {
+        (0..length).map(|index| (index % 251) as u8).collect()
+    }
+
+    /// Serves one payload over HTTP with `HEAD`, ranged and plain `GET`, on a fresh
+    /// connection per request, until it is dropped.
+    struct PayloadServer {
+        address: SocketAddr,
+        requests: Arc<Mutex<Vec<String>>>,
+        payload: Arc<Mutex<Arc<Vec<u8>>>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl PayloadServer {
+        fn start(payload: Vec<u8>, etag: &'static str) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let payload = Arc::new(Mutex::new(Arc::new(payload)));
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread = {
+                let (requests, payload, stop) = (requests.clone(), payload.clone(), stop.clone());
+                thread::spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        match listener.accept() {
+                            Ok((mut stream, _)) => {
+                                stream.set_nonblocking(false).unwrap();
+                                let body = payload.lock().unwrap().clone();
+                                let requests = requests.clone();
+                                thread::spawn(move || {
+                                    serve_payload(&mut stream, &body, etag, &requests)
+                                });
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                })
+            };
+            Self {
+                address,
+                requests,
+                payload,
+                stop,
+                thread: Some(thread),
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/payload.bin", self.address)
+        }
+
+        fn serve(&self, payload: Vec<u8>) {
+            *self.payload.lock().unwrap() = Arc::new(payload);
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for PayloadServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn serve_payload(
+        stream: &mut TcpStream,
+        payload: &[u8],
+        etag: &str,
+        requests: &Mutex<Vec<String>>,
+    ) {
+        let request = read_request(stream);
+        requests.lock().unwrap().push(request.clone());
+        let total = payload.len();
+        let identity = format!("Accept-Ranges: bytes\r\nETag: {etag}\r\nConnection: close\r\n");
+        if request.starts_with("HEAD ") {
+            let _ = stream.write_all(
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\n{identity}\r\n").as_bytes(),
+            );
+            return;
+        }
+        let range = request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+            .and_then(|line| line.split_once("bytes="))
+            .and_then(|(_, value)| value.trim().split_once('-'));
+        let (head, body) = match range {
+            Some((start, end)) => {
+                let start: usize = start.parse().unwrap();
+                let end: usize = end.parse().unwrap_or(total - 1);
+                (
+                    format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\n{identity}\r\n",
+                        end - start + 1
+                    ),
+                    &payload[start..=end],
+                )
+            }
+            None => (
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\n{identity}\r\n"),
+                payload,
+            ),
+        };
+        if stream.write_all(head.as_bytes()).is_ok() {
+            let _ = stream.write_all(body);
+        }
+    }
+
+    /// A segmented-download state as a previous run would have left it.
+    fn segmented_state(
+        url: &str,
+        etag: &str,
+        total: u64,
+        completed: Vec<ByteRange>,
+    ) -> ResumeState {
+        ResumeState {
+            version: STATE_VERSION,
+            url: source_url_digest(&Url::parse(url).unwrap()),
+            etag: Some(etag.into()),
+            last_modified: None,
+            total: Some(total),
+            segmented: true,
+            connections: 2,
+            checksum: None,
+            completed,
+        }
+    }
+
+    #[test]
+    fn a_segmented_state_without_its_full_sparse_file_restarts_instead_of_failing_forever() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 2 + 257);
+        let total = payload.len() as u64;
+        let server = PayloadServer::start(payload.clone(), "\"sparse-v1\"");
+        let request = local_request(server.url());
+        for (label, existing_part) in [("missing", None), ("short", Some(10usize))] {
+            let directory = TestDirectory::new(&format!("sparse-{label}"));
+            let output = directory.0.join("large.bin");
+            write_state(
+                &state_path(&output),
+                &segmented_state(
+                    &request.url,
+                    "\"sparse-v1\"",
+                    total,
+                    vec![ByteRange {
+                        start: 0,
+                        end: 1024,
+                    }],
+                ),
+            )
+            .unwrap();
+            if let Some(length) = existing_part {
+                fs::write(part_path(&output), vec![0u8; length]).unwrap();
+            }
+            let result = download(
+                &request,
+                &output,
+                &TransferControl::default(),
+                &NetworkGovernor::new(16),
+                2,
+                None,
+                &mut |_| {},
+            )
+            .unwrap_or_else(|error| panic!("{label} sparse file: {error:#}"));
+            assert_eq!(fs::read(result.path).unwrap(), payload, "{label}");
+            assert!(!part_path(&output).exists() && !state_path(&output).exists());
+        }
+    }
+
+    #[test]
+    fn a_part_without_a_state_record_restarts_instead_of_failing_forever() {
+        // A crash after the sparse file was created and before the first state write.
+        let payload = patterned(MIN_SEGMENT_SIZE * 2 + 257);
+        let server = PayloadServer::start(payload.clone(), "\"orphan-v1\"");
+        let directory = TestDirectory::new("orphan-part");
+        let output = directory.0.join("large.bin");
+        let orphan = File::create(part_path(&output)).unwrap();
+        orphan.set_len(payload.len() as u64).unwrap();
+        drop(orphan);
+        let result = download(
+            &local_request(server.url()),
+            &output,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            2,
+            None,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(!part_path(&output).exists() && !state_path(&output).exists());
+    }
+
+    #[test]
+    fn a_retry_after_a_checksum_mismatch_downloads_the_file_again() {
+        let good: Vec<u8> = (0..128).collect();
+        let mut corrupt = good.clone();
+        corrupt[5] ^= 0xff;
+        let server = PayloadServer::start(corrupt, "\"digest-v1\"");
+        let mut request = local_request(server.url());
+        request.checksum = Some(hex::encode(Sha256::digest(&good)));
+        let control = TransferControl::default();
+        let network = NetworkGovernor::new(16);
+        let directory = TestDirectory::new("digest-retry");
+        let output = directory.0.join("payload.bin");
+
+        let error =
+            download(&request, &output, &control, &network, 1, None, &mut |_| {}).unwrap_err();
+        assert_eq!(
+            crate::error_codes::code_of(&error),
+            Some(crate::error_codes::TRF_003),
+            "{error:#}"
+        );
+        assert!(!part_path(&output).exists() && !state_path(&output).exists());
+
+        server.serve(good.clone());
+        let result = download(&request, &output, &control, &network, 1, None, &mut |_| {}).unwrap();
+        assert_eq!(fs::read(result.path).unwrap(), good);
+        let body_requests = server
+            .requests()
+            .iter()
+            .filter(|request| request.starts_with("GET "))
+            .count();
+        assert_eq!(body_requests, 2);
+    }
+
+    #[test]
+    fn a_single_remaining_range_may_use_the_whole_speed_limit() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 4);
+        let total = payload.len() as u64;
+        let server = PayloadServer::start(payload.clone(), "\"limit-v1\"");
+        let request = local_request(server.url());
+        let directory = TestDirectory::new("limit-tail");
+        let output = directory.0.join("large.bin");
+        // Everything but the last 2 MiB is already durable, so one of four planned
+        // connections downloads the tail.
+        let done = total - MIN_SEGMENT_SIZE;
+        let mut part = File::create(part_path(&output)).unwrap();
+        part.write_all(&payload[..done as usize]).unwrap();
+        part.set_len(total).unwrap();
+        drop(part);
+        let mut state = segmented_state(
+            &request.url,
+            "\"limit-v1\"",
+            total,
+            vec![ByteRange {
+                start: 0,
+                end: done,
+            }],
+        );
+        state.connections = 4;
+        write_state(&state_path(&output), &state).unwrap();
+
+        let control = TransferControl::default();
+        control.set_speed_limit(MIN_SEGMENT_SIZE);
+        let started = Instant::now();
+        let result = download(
+            &request,
+            &output,
+            &control,
+            &NetworkGovernor::new(16),
+            4,
+            None,
+            &mut |_| {},
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        // 2 MiB at 2 MiB/s: never faster than the limit, and not paced at a quarter of it.
+        assert!(elapsed >= Duration::from_millis(900), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(2500), "{elapsed:?}");
+    }
+
+    struct FtpBehavior {
+        modification_time: bool,
+        resume: bool,
+        /// Ends the first transfer after this many bytes.
+        cut_first_transfer: Option<usize>,
+    }
+
+    /// A scripted FTP server on loopback: anonymous login, passive transfers, and the
+    /// optional `MDTM` and `REST` commands.
+    struct FtpFixture {
+        address: SocketAddr,
+        commands: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl FtpFixture {
+        fn start(payload: Vec<u8>, behavior: FtpBehavior) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let payload = Arc::new(payload);
+            let behavior = Arc::new((
+                behavior.modification_time,
+                behavior.resume,
+                Mutex::new(behavior.cut_first_transfer),
+            ));
+            let thread = {
+                let (commands, stop) = (commands.clone(), stop.clone());
+                thread::spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                stream.set_nonblocking(false).unwrap();
+                                let (payload, behavior, commands) =
+                                    (payload.clone(), behavior.clone(), commands.clone());
+                                thread::spawn(move || {
+                                    ftp_session(stream, &payload, &behavior, &commands)
+                                });
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                })
+            };
+            Self {
+                address,
+                commands,
+                stop,
+                thread: Some(thread),
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("ftp://{}/payload.bin", self.address)
+        }
+
+        fn commands(&self) -> Vec<String> {
+            self.commands.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for FtpFixture {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn ftp_session(
+        stream: TcpStream,
+        payload: &[u8],
+        behavior: &(bool, bool, Mutex<Option<usize>>),
+        commands: &Mutex<Vec<String>>,
+    ) {
+        let (modification_time, resume, cut_first_transfer) = behavior;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut send = |line: &str| {
+            let _ = writer.write_all(format!("{line}\r\n").as_bytes());
+        };
+        send("220 fixture ready");
+        let mut data_listener = None;
+        let mut rest = 0usize;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if !matches!(reader.read_line(&mut line), Ok(read) if read > 0) {
+                return;
+            }
+            let command = line.trim_end().to_owned();
+            commands.lock().unwrap().push(command.clone());
+            let (verb, argument) = command.split_once(' ').unwrap_or((command.as_str(), ""));
+            match verb.to_ascii_uppercase().as_str() {
+                "USER" => send("230 logged in"),
+                "PWD" => send("257 \"/\" is the current directory"),
+                "CWD" => send("250 directory changed"),
+                "TYPE" => send("200 type set"),
+                "MDTM" if *modification_time => send("213 20260101000000"),
+                "SIZE" => send(&format!("213 {}", payload.len())),
+                "REST" if *resume => {
+                    rest = argument.parse().unwrap();
+                    send("350 restarting");
+                }
+                "EPSV" => {
+                    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                    let port = listener.local_addr().unwrap().port();
+                    data_listener = Some(listener);
+                    send(&format!("229 Entering Extended Passive Mode (|||{port}|)"));
+                }
+                "RETR" => {
+                    let Some(listener) = data_listener.take() else {
+                        send("425 no data connection");
+                        continue;
+                    };
+                    send("150 opening data connection");
+                    let (mut data, _) = listener.accept().unwrap();
+                    let body = &payload[rest.min(payload.len())..];
+                    match cut_first_transfer.lock().unwrap().take() {
+                        Some(length) => {
+                            let _ = data.write_all(&body[..length.min(body.len())]);
+                            drop(data);
+                            send("426 transfer aborted");
+                        }
+                        None => {
+                            let _ = data.write_all(body);
+                            drop(data);
+                            send("226 transfer complete");
+                        }
+                    }
+                }
+                "QUIT" => {
+                    send("221 bye");
+                    return;
+                }
+                _ => send("502 command not implemented"),
+            }
+        }
+    }
+
+    fn ftp_download(server: &FtpFixture, output: &Path) -> Result<TransferResult> {
+        download(
+            &local_request(server.url()),
+            output,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            1,
+            None,
+            &mut |_| {},
+        )
+    }
+
+    #[test]
+    fn an_ftp_partial_without_a_modification_time_restarts_from_zero() {
+        let payload = patterned(128);
+        let server = FtpFixture::start(
+            payload.clone(),
+            FtpBehavior {
+                modification_time: false,
+                resume: true,
+                cut_first_transfer: Some(31),
+            },
+        );
+        let directory = TestDirectory::new("ftp-no-mdtm");
+        let output = directory.0.join("payload.bin");
+        assert!(ftp_download(&server, &output).is_err());
+        assert_eq!(fs::metadata(part_path(&output)).unwrap().len(), 31);
+
+        let result = ftp_download(&server, &output).unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(!part_path(&output).exists() && !state_path(&output).exists());
+        // libcurl's metadata probe sends `REST 0`; a resumed transfer would send the offset.
+        assert!(
+            !server
+                .commands()
+                .iter()
+                .any(|command| command.starts_with("REST ") && command != "REST 0"),
+            "{:#?}",
+            server.commands()
+        );
+    }
+
+    #[test]
+    fn an_ftp_server_that_refuses_rest_restarts_from_zero() {
+        let payload = patterned(128);
+        let server = FtpFixture::start(
+            payload.clone(),
+            FtpBehavior {
+                modification_time: true,
+                resume: false,
+                cut_first_transfer: Some(31),
+            },
+        );
+        let directory = TestDirectory::new("ftp-no-rest");
+        let output = directory.0.join("payload.bin");
+        assert!(ftp_download(&server, &output).is_err());
+        assert_eq!(fs::metadata(part_path(&output)).unwrap().len(), 31);
+
+        let result = ftp_download(&server, &output).unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(!part_path(&output).exists() && !state_path(&output).exists());
+        let commands = server.commands();
+        assert!(
+            commands.iter().any(|command| command == "REST 31"),
+            "{commands:#?}"
+        );
+        // The refused `REST` ends the resumed attempt before `RETR`; only the cut first
+        // transfer and the restarted one retrieve the file.
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command.starts_with("RETR"))
+                .count(),
+            2,
+            "{commands:#?}"
+        );
+    }
+
+    #[test]
+    fn an_ftp_part_that_already_holds_every_byte_is_finalized_without_a_transfer() {
+        let payload = patterned(128);
+        let server = FtpFixture::start(
+            payload.clone(),
+            FtpBehavior {
+                modification_time: true,
+                resume: true,
+                cut_first_transfer: None,
+            },
+        );
+        let directory = TestDirectory::new("ftp-complete");
+        let output = directory.0.join("payload.bin");
+        let request = local_request(server.url());
+        let remote = probe_ftp(
+            &request,
+            Url::parse(&request.url).unwrap(),
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+        )
+        .unwrap();
+        assert!(remote.last_modified.is_some());
+        fs::write(part_path(&output), &payload).unwrap();
+        write_state(
+            &state_path(&output),
+            &ResumeState {
+                version: STATE_VERSION,
+                url: source_url_digest(&remote.url),
+                etag: None,
+                last_modified: remote.last_modified.clone(),
+                total: remote.total,
+                segmented: false,
+                connections: 1,
+                checksum: None,
+                completed: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let result = ftp_download(&server, &output).unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(!part_path(&output).exists() && !state_path(&output).exists());
+        assert!(
+            !server
+                .commands()
+                .iter()
+                .any(|command| command.starts_with("RETR")),
+            "{:#?}",
+            server.commands()
+        );
+    }
+
+    /// Holds a file open without sharing, as a virus scanner does for a moment: it exists but
+    /// cannot be read.
+    fn hold_exclusively(path: &Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_segmented_partial_survives_a_state_record_that_cannot_be_read_for_a_moment() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 4);
+        let total = payload.len() as u64;
+        let server = PayloadServer::start(payload.clone(), "\"held-v1\"");
+        let request = local_request(server.url());
+        let directory = TestDirectory::new("held-state-segmented");
+        let output = directory.0.join("large.bin");
+        let done = total - MIN_SEGMENT_SIZE;
+        let mut part = File::create(part_path(&output)).unwrap();
+        part.write_all(&payload[..done as usize]).unwrap();
+        part.set_len(total).unwrap();
+        drop(part);
+        let mut state = segmented_state(
+            &request.url,
+            "\"held-v1\"",
+            total,
+            vec![ByteRange {
+                start: 0,
+                end: done,
+            }],
+        );
+        state.connections = 4;
+        write_state(&state_path(&output), &state).unwrap();
+        let recorded = fs::read(state_path(&output)).unwrap();
+        let attempt = || {
+            download(
+                &request,
+                &output,
+                &TransferControl::default(),
+                &NetworkGovernor::new(16),
+                4,
+                None,
+                &mut |_| {},
+            )
+        };
+
+        let held = hold_exclusively(&state_path(&output));
+        let error = attempt().unwrap_err();
+        assert!(!preserves_partial(&error), "{error:#}");
+        drop(held);
+        assert_eq!(fs::read(state_path(&output)).unwrap(), recorded);
+        assert!(
+            fs::read(part_path(&output)).unwrap()[..done as usize] == payload[..done as usize],
+            "the verified bytes of the part were replaced"
+        );
+
+        let requests_before = server.requests().len();
+        let result = attempt().unwrap_or_else(|error| panic!("{error:#}"));
+        assert!(
+            fs::read(result.path).unwrap() == payload,
+            "the resumed download differs from the payload"
+        );
+        // The bytes before `done` were kept, so only the tail was requested again.
+        let resumed_from_zero = server.requests()[requests_before..]
+            .iter()
+            .filter(|request| request.starts_with("GET "))
+            .any(|request| request.to_ascii_lowercase().contains("range: bytes=0-"));
+        assert!(!resumed_from_zero, "{:#?}", server.requests());
+    }
+
+    #[test]
+    fn a_single_connection_partial_survives_a_state_record_that_cannot_be_read_for_a_moment() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 4);
+        let total = payload.len() as u64;
+        let server = PayloadServer::start(payload.clone(), "\"held-v1\"");
+        let request = local_request(server.url());
+        let directory = TestDirectory::new("held-state-single");
+        let output = directory.0.join("large.bin");
+        let done = total - MIN_SEGMENT_SIZE;
+        let mut part = File::create(part_path(&output)).unwrap();
+        part.write_all(&payload[..done as usize]).unwrap();
+        part.set_len(total).unwrap();
+        drop(part);
+        let state = segmented_state(
+            &request.url,
+            "\"held-v1\"",
+            total,
+            vec![ByteRange {
+                start: 0,
+                end: done,
+            }],
+        );
+        write_state(&state_path(&output), &state).unwrap();
+
+        let held = hold_exclusively(&state_path(&output));
+        // One connection: the per-file setting, or a retry the engine capped to one.
+        let error = download(
+            &request,
+            &output,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            1,
+            None,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        drop(held);
+
+        assert!(!preserves_partial(&error), "{error:#}");
+        assert!(
+            error.chain().any(|cause| cause
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error)
+                == Some(32)),
+            "the sharing violation reaches the retry rules: {error:#}"
+        );
+        assert!(
+            fs::read(part_path(&output)).unwrap()[..done as usize] == payload[..done as usize],
+            "the verified bytes of the part were replaced"
+        );
+    }
+
+    #[test]
+    fn an_ftp_partial_survives_a_state_record_that_cannot_be_read_for_a_moment() {
+        let payload = patterned(128);
+        let server = FtpFixture::start(
+            payload.clone(),
+            FtpBehavior {
+                modification_time: true,
+                resume: true,
+                cut_first_transfer: Some(31),
+            },
+        );
+        let directory = TestDirectory::new("held-state-ftp");
+        let output = directory.0.join("payload.bin");
+        assert!(ftp_download(&server, &output).is_err());
+        assert_eq!(fs::metadata(part_path(&output)).unwrap().len(), 31);
+        let recorded = fs::read(state_path(&output)).unwrap();
+
+        let held = hold_exclusively(&state_path(&output));
+        let error = ftp_download(&server, &output).unwrap_err();
+        assert!(!preserves_partial(&error), "{error:#}");
+        drop(held);
+        assert_eq!(fs::read(state_path(&output)).unwrap(), recorded);
+        assert_eq!(
+            fs::read(part_path(&output)).expect("the partial file was kept"),
+            payload[..31]
+        );
+
+        let result = ftp_download(&server, &output).unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(
+            server.commands().iter().any(|command| command == "REST 31"),
+            "{:#?}",
+            server.commands()
+        );
     }
 }

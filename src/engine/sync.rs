@@ -180,12 +180,16 @@ pub(super) fn perform_synchronization(
         env!("CARGO_PKG_VERSION"),
         " synchronization"
     ))?;
+    // A missing destination needs the whole body again, whatever the validators say.
+    let destination_present = destination.exists();
     let mut conditional = List::new();
-    if let Some(etag) = policy.etag.as_deref() {
-        conditional.append(&format!("If-None-Match: {etag}"))?;
-    }
-    if let Some(last_modified) = policy.last_modified.as_deref() {
-        conditional.append(&format!("If-Modified-Since: {last_modified}"))?;
+    if destination_present {
+        if let Some(etag) = policy.etag.as_deref() {
+            conditional.append(&format!("If-None-Match: {etag}"))?;
+        }
+        if let Some(last_modified) = policy.last_modified.as_deref() {
+            conditional.append(&format!("If-Modified-Since: {last_modified}"))?;
+        }
     }
     easy.http_headers(conditional)?;
 
@@ -307,7 +311,16 @@ pub(super) fn perform_synchronization(
         );
     }
     let sha256 = hex::encode(digest.finalize());
-    let changed = policy.content_sha256.as_deref() != Some(sha256.as_str());
+    if written == 0 && fs::metadata(destination).is_ok_and(|metadata| metadata.len() > 0) {
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "Senkronizasyon sunucusu boş içerik döndürdü; önceki çıktı korundu",
+                "The synchronization server returned an empty body; the previous output was kept"
+            )
+        );
+    }
+    let changed = !destination_present || policy.content_sha256.as_deref() != Some(sha256.as_str());
     if !changed {
         return Ok(SyncOutcome {
             etag: headers.etag,

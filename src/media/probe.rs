@@ -90,7 +90,9 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             if let Some(expected) = selected.fps {
                 let actual = rational_value(&video["avg_frame_rate"])
                     .or_else(|| rational_value(&video["r_frame_rate"]));
-                if actual.is_none_or(|actual| (actual - expected).abs() > 0.05) {
+                // Extractors often round the rate (60 for 60000/1001): the tolerance scales with it.
+                let tolerance = (expected * 0.002).max(0.05);
+                if actual.is_none_or(|actual| (actual - expected).abs() > tolerance) {
                     bail!(crate::i18n::ui("Medya doğrulaması: seçilen görüntü kare hızı çıktıda eşleşmiyor", "Media verification: the selected video frame rate does not match in the output"));
                 }
             }
@@ -180,7 +182,10 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             ));
         }
         let audio = audio_streams[0];
-        if let Some(id) = &request.audio_format_id {
+        // The exact `--format` pins the track; a converted file does not carry the source
+        // track's codec or language tag.
+        let converted = audio_conversion(request)?.is_some();
+        if let Some(id) = request.audio_format_id.as_ref().filter(|_| !converted) {
             let selected_format = exact_audio_format(info, id)?;
             if let Some(expected) = selected_format.audio_codec.as_deref() {
                 let actual = audio["codec_name"].as_str().ok_or_else(|| {
@@ -197,7 +202,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 }
             }
         }
-        if let Some(language) = &request.audio_language {
+        if let Some(language) = request.audio_language.as_ref().filter(|_| !converted) {
             let actual = audio["tags"]["language"]
                 .as_str()
                 .filter(|value| !matches!(*value, "und" | "unknown"))

@@ -525,7 +525,9 @@ pub(super) fn monitor_download(
             return Ok(MonitorOutcome::Paused);
         }
         let requested_limit = control.speed_limit();
-        if requested_limit == launch_limit {
+        // A live recording keeps the limit it started with: a restart for a new one would cut the
+        // capture and start it over from the present.
+        if live.is_some() || requested_limit == launch_limit {
             pending_limit = None;
         } else {
             match pending_limit {
@@ -707,7 +709,7 @@ pub(super) fn useful_error(stderr: &str, secrets: &[String]) -> String {
         .trim()
         .to_string();
     for secret in secrets.iter().filter(|s| !s.is_empty()) {
-        result = result.replace(secret, "[gizlendi]");
+        result = result.replace(secret, crate::i18n::ui("[gizlendi]", "[redacted]"));
     }
     // Generic extractor IDs may be a signed URL query or an opaque CDN path.
     // The actual failure after the ID is useful; repeating that ID can expose tokens.

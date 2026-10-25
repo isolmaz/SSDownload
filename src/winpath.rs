@@ -87,18 +87,23 @@ fn is_drive_qualified(value: &str) -> bool {
 }
 
 /// Verbatim paths skip Win32 normalization, so they must already be plain:
-/// backslashes only, without `.` or `..` components.
+/// backslashes only, without `.` or `..` components, without an empty component
+/// (`C:\\dir`) and without a name ending in a dot or space, which only
+/// normalization strips.
 fn verbatim_safe(value: &str) -> bool {
     if value.contains('/') {
         return false;
     }
-    let body = value
-        .strip_prefix(r"\\?\")
-        .or_else(|| value.strip_prefix(r"\\?\UNC\"))
-        .unwrap_or(value);
-    !body
-        .split('\\')
-        .any(|component| component == "." || component == "..")
+    let body = value.strip_prefix(r"\\?\").unwrap_or(value);
+    let components: Vec<&str> = body.split('\\').collect();
+    let last = components.len() - 1;
+    !components.iter().enumerate().any(|(index, component)| {
+        *component == "."
+            || *component == ".."
+            || (component.is_empty() && index != last)
+            || component.ends_with('.')
+            || component.ends_with(' ')
+    })
 }
 
 #[cfg(test)]
@@ -120,6 +125,10 @@ mod tests {
         assert_eq!(
             text(r"\\server\share\folder\file.bin"),
             r"\\?\UNC\server\share\folder\file.bin"
+        );
+        assert_eq!(
+            text(r"C:\Users\adam\Downloads\"),
+            r"\\?\C:\Users\adam\Downloads\"
         );
     }
 
@@ -163,6 +172,9 @@ mod tests {
             r"C:\folder\..\escape.bin",
             r"C:\folder\.\current.bin",
             r"\\?\C:\already\verbatim\..\odd.bin",
+            r"C:\\Downloads\file.bin",
+            r"C:\folder.\file.bin",
+            r"C:\folder \file.bin",
             "",
         ] {
             assert_eq!(text(value), value, "unexpected conversion for {value}");

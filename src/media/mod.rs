@@ -422,11 +422,10 @@ pub(crate) fn download(
         base_args.push("--live-from-start".into());
     }
     if let Some(source_info) = &source_info {
-        base_args.extend([
-            "--enable-file-urls".into(),
-            "--load-info-json".into(),
-            source_info.info_path.to_string_lossy().into_owned(),
-        ]);
+        base_args.extend(load_info_args(
+            &source_info.info_path,
+            source_capture.pinned.is_some(),
+        ));
     }
     base_args.extend([
         "--continue".into(),
@@ -1004,90 +1003,7 @@ pub(crate) fn mux_browser_streams(
     ))?;
     fs::create_dir_all(parent)?;
     let staged = parent.join(format!(".browser-mux-{}.tmp", uuid::Uuid::new_v4()));
-    let mut args = vec![
-        "-v".into(),
-        "error".into(),
-        "-xerror".into(),
-        "-nostdin".into(),
-        "-protocol_whitelist".into(),
-        "file,crypto,data".into(),
-    ];
-    for stream in streams {
-        args.extend(["-i".into(), stream.path.to_string_lossy().into_owned()]);
-    }
-    for (index, stream) in streams.iter().enumerate() {
-        let specifier = match stream.role.as_str() {
-            "video" => "v:0",
-            "audio" => "a:0",
-            "subtitle" => "s:0",
-            _ => unreachable!(),
-        };
-        args.extend(["-map".into(), format!("{index}:{specifier}")]);
-    }
-    args.extend(["-c:v".into(), "copy".into(), "-c:a".into(), "copy".into()]);
-    if !subtitles.is_empty() {
-        args.extend([
-            "-c:s".into(),
-            if request.container.as_deref() == Some("mp4") {
-                "mov_text"
-            } else {
-                "srt"
-            }
-            .into(),
-        ]);
-    }
-    for (index, audio) in audios.iter().enumerate() {
-        let language = request
-            .audio_tracks
-            .get(index)
-            .and_then(|selection| selection.language.as_deref())
-            .or(request.audio_language.as_deref())
-            .or(audio.language.as_deref());
-        if let Some(language) = language {
-            args.extend([
-                format!("-metadata:s:a:{index}"),
-                format!(
-                    "language={}",
-                    tag_language(language, request.container.as_deref())
-                ),
-            ]);
-        }
-        args.extend([
-            format!("-disposition:a:{index}"),
-            if index == 0 { "default" } else { "0" }.into(),
-        ]);
-    }
-    for index in 0..subtitles.len() {
-        let (language, is_default) = if let Some(selected) = request.external_subtitles.get(index) {
-            (Some(selected.language.as_str()), selected.is_default)
-        } else if let Some(selected) = request.subtitle_tracks.get(index) {
-            (Some(selected.language.as_str()), false)
-        } else {
-            (
-                request.subtitle_languages.get(index).map(String::as_str),
-                false,
-            )
-        };
-        if let Some(language) = language {
-            args.extend([
-                format!("-metadata:s:s:{index}"),
-                format!(
-                    "language={}",
-                    tag_language(language, request.container.as_deref())
-                ),
-            ]);
-        }
-        args.extend([
-            format!("-disposition:s:{index}"),
-            if is_default { "default" } else { "0" }.into(),
-        ]);
-    }
-    let muxer = match request.container.as_deref() {
-        None | Some("mkv") => "matroska",
-        Some(container) => container,
-    };
-    args.extend(["-f".into(), muxer.into()]);
-    args.push(staged.to_string_lossy().into_owned());
+    let args = browser_mux_args(request, streams, &staged);
     let result = run_capture(
         &tools.ffmpeg,
         &args,
@@ -1119,6 +1035,111 @@ pub(crate) fn mux_browser_streams(
         ));
     }
     Ok(())
+}
+
+/// FFmpeg arguments that copy the browser's stream files into one container.
+fn browser_mux_args(
+    request: &AddRequest,
+    streams: &[crate::browser_transfer::StreamFile],
+    staged: &Path,
+) -> Vec<String> {
+    let audios = streams
+        .iter()
+        .filter(|stream| stream.role == "audio")
+        .collect::<Vec<_>>();
+    let subtitle_count = streams
+        .iter()
+        .filter(|stream| stream.role == "subtitle")
+        .count();
+    let mut args = vec![
+        "-v".into(),
+        "error".into(),
+        "-xerror".into(),
+        "-nostdin".into(),
+    ];
+    // The whitelist is an input option: every input needs its own.
+    for stream in streams {
+        args.extend([
+            "-protocol_whitelist".into(),
+            "file,crypto,data".into(),
+            "-i".into(),
+            stream.path.to_string_lossy().into_owned(),
+        ]);
+    }
+    for (index, stream) in streams.iter().enumerate() {
+        let specifier = match stream.role.as_str() {
+            "video" => "v:0",
+            "audio" => "a:0",
+            "subtitle" => "s:0",
+            _ => unreachable!(),
+        };
+        args.extend(["-map".into(), format!("{index}:{specifier}")]);
+    }
+    args.extend(["-c:v".into(), "copy".into(), "-c:a".into(), "copy".into()]);
+    if subtitle_count > 0 {
+        args.extend([
+            "-c:s".into(),
+            if request.container.as_deref() == Some("mp4") {
+                "mov_text"
+            } else {
+                "srt"
+            }
+            .into(),
+        ]);
+    }
+    for (index, audio) in audios.iter().enumerate() {
+        let language = request
+            .audio_tracks
+            .get(index)
+            .and_then(|selection| selection.language.as_deref())
+            .or(request.audio_language.as_deref())
+            .or(audio.language.as_deref());
+        if let Some(language) = language {
+            args.extend([
+                format!("-metadata:s:a:{index}"),
+                format!(
+                    "language={}",
+                    tag_language(language, request.container.as_deref())
+                ),
+            ]);
+        }
+        args.extend([
+            format!("-disposition:a:{index}"),
+            if index == 0 { "default" } else { "0" }.into(),
+        ]);
+    }
+    for index in 0..subtitle_count {
+        let (language, is_default) = if let Some(selected) = request.external_subtitles.get(index) {
+            (Some(selected.language.as_str()), selected.is_default)
+        } else if let Some(selected) = request.subtitle_tracks.get(index) {
+            (Some(selected.language.as_str()), false)
+        } else {
+            (
+                request.subtitle_languages.get(index).map(String::as_str),
+                false,
+            )
+        };
+        if let Some(language) = language {
+            args.extend([
+                format!("-metadata:s:s:{index}"),
+                format!(
+                    "language={}",
+                    tag_language(language, request.container.as_deref())
+                ),
+            ]);
+        }
+        args.extend([
+            format!("-disposition:s:{index}"),
+            if is_default { "default" } else { "0" }.into(),
+        ]);
+    }
+    let muxer = match request.container.as_deref() {
+        None | Some("mkv") => "matroska",
+        Some(container) => container,
+    };
+    args.extend(["-f".into(), muxer.into()]);
+    args.push(staged.to_string_lossy().into_owned());
+    args
 }
 
 /// The request as it is downloaded from the stream's beginning. The picker chose its quality
@@ -1324,6 +1345,21 @@ fn remux_live_recording(
         );
     }
     Ok(())
+}
+
+/// Arguments that make yt-dlp download from a captured extractor document. Only the pinned
+/// bundle needs `--enable-file-urls`, because its manifests are local files; an unpinned
+/// document is built from remote site data and must never be able to open a file or share.
+fn load_info_args(info_path: &Path, pinned: bool) -> Vec<String> {
+    let mut args = Vec::with_capacity(3);
+    if pinned {
+        args.push("--enable-file-urls".into());
+    }
+    args.extend([
+        "--load-info-json".into(),
+        info_path.to_string_lossy().into_owned(),
+    ]);
+    args
 }
 
 fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
@@ -2182,6 +2218,17 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
         {
             crate::bail_code!(crate::error_codes::MED_012);
         }
+        // yt-dlp keeps the first audio stream of a merge, so a dub beside a video that already
+        // carries audio would be dropped silently.
+        if request.kind != DownloadKind::Audio
+            && request.audio_format_id.is_some()
+            && stream_present(video.audio_codec.as_deref())
+        {
+            bail!(crate::i18n::ui(
+                "Ayrı ses parçası yalnız ses içermeyen bir görüntü biçimiyle birleştirilebilir",
+                "A separate audio track can only be merged with a video format that has no audio"
+            ));
+        }
     } else if let Some(height) = request.exact_height {
         if !info
             .formats
@@ -2392,7 +2439,12 @@ fn selected_tracks_format(request: &AddRequest, info: &MediaInfo) -> Result<Stri
     }
     if request.audio_language.is_some() {
         if request.container.as_deref() == Some("mp4") {
-            return Ok(format!("{video}+{}", best_mp4_audio(request, info)?.id));
+            let audio = best_mp4_audio(request, info)?;
+            return Ok(if request.playlist {
+                playlist_mp4_selector(request, true)
+            } else {
+                format!("{video}+{}", audio.id)
+            });
         }
         return Ok(format!(
             "{video}+bestaudio{language}/best{height}{language}"
@@ -2433,12 +2485,15 @@ fn reject_unsafe_media_headers(headers: &std::collections::BTreeMap<String, Stri
     Ok(())
 }
 
+/// An id is embedded in the `--format` expression, so it may not hold a selector operator or
+/// bracket. `=` stays allowed: DASH ids such as `video=1500000` carry it and yt-dlp reads it as
+/// part of the id.
 fn validate_format_id(value: &str, label: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 200
-        || !value
-            .chars()
-            .all(|character| character.is_alphanumeric() || matches!(character, '-' | '_' | '.'))
+        || !value.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '-' | '_' | '.' | '=')
+        })
     {
         bail!(
             "{}",

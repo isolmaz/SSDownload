@@ -1170,6 +1170,8 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
             let height_max = selector_filter_u32(term, "height<=");
             let extension = selector_filter_text(term, "ext=");
             let language = selector_filter_text(term, "language=");
+            let video_codecs = selector_codec_prefixes(term, "vcodec");
+            let audio_codecs = selector_codec_prefixes(term, "acodec");
             let candidate = info.formats.iter().rev().find(|format| {
                 let kind = match base {
                     "bestvideo" => {
@@ -1186,15 +1188,25 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
                     }
                     _ => false,
                 };
-                kind && height_exact.is_none_or(|height| format.height == Some(height))
-                    && height_max
-                        .is_none_or(|height| format.height.is_none_or(|actual| actual <= height))
-                    && extension
-                        .as_ref()
-                        .is_none_or(|value| format.extension == *value)
-                    && language.as_ref().is_none_or(|value| {
-                        format.language.as_deref().map(language_key) == Some(language_key(value))
-                    })
+                kind && filter_admits(&height_exact, format.height, |wanted, height| {
+                    height == *wanted
+                }) && filter_admits(&height_max, format.height, |maximum, height| {
+                    height <= *maximum
+                }) && filter_admits(
+                    &extension,
+                    Some(format.extension.as_str()),
+                    |wanted, extension| extension == wanted,
+                ) && filter_admits(&language, format.language.as_deref(), |wanted, language| {
+                    language_key(language) == language_key(wanted)
+                }) && filter_admits(
+                    &video_codecs,
+                    format.video_codec.as_deref(),
+                    |prefixes, codec| starts_with_any(codec, prefixes),
+                ) && filter_admits(
+                    &audio_codecs,
+                    format.audio_codec.as_deref(),
+                    |prefixes, codec| starts_with_any(codec, prefixes),
+                )
             });
             if let Some(candidate) = candidate {
                 selected.push(candidate.id.clone());
@@ -1213,14 +1225,57 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
     ))
 }
 
-pub(super) fn selector_filter_u32(selector: &str, marker: &str) -> Option<u32> {
-    selector_filter_text(selector, marker)?.parse().ok()
+/// A `[<field><operator><value>]` filter of a selector term. yt-dlp drops a format that has no
+/// value for the field unless the operator is followed by `?` (`[height<=?720]`).
+pub(super) struct SelectorFilter<T> {
+    value: T,
+    none_inclusive: bool,
 }
 
-pub(super) fn selector_filter_text(selector: &str, marker: &str) -> Option<String> {
+fn filter_admits<T, A>(
+    filter: &Option<SelectorFilter<T>>,
+    actual: Option<A>,
+    matches: impl FnOnce(&T, A) -> bool,
+) -> bool {
+    filter.as_ref().is_none_or(|filter| {
+        actual.map_or(filter.none_inclusive, |actual| {
+            matches(&filter.value, actual)
+        })
+    })
+}
+
+pub(super) fn selector_filter_u32(selector: &str, marker: &str) -> Option<SelectorFilter<u32>> {
+    let filter = selector_filter_text(selector, marker)?;
+    Some(SelectorFilter {
+        value: filter.value.parse().ok()?,
+        none_inclusive: filter.none_inclusive,
+    })
+}
+
+/// The prefixes of a `[<field>~=['?]'^(a|b)']` codec filter.
+pub(super) fn selector_codec_prefixes(
+    term: &str,
+    field: &str,
+) -> Option<SelectorFilter<Vec<String>>> {
+    let filter = selector_filter_text(term, &format!("{field}~="))?;
+    let prefixes = filter.value.strip_prefix("'^(")?.strip_suffix(")'")?;
+    Some(SelectorFilter {
+        value: prefixes.split('|').map(str::to_string).collect(),
+        none_inclusive: filter.none_inclusive,
+    })
+}
+
+pub(super) fn selector_filter_text(selector: &str, marker: &str) -> Option<SelectorFilter<String>> {
     let start = selector.find(marker)? + marker.len();
-    let value = &selector[start..];
-    Some(value.split(']').next()?.to_string())
+    let value = selector[start..].split(']').next()?;
+    let (value, none_inclusive) = match value.strip_prefix('?') {
+        Some(value) => (value, true),
+        None => (value, false),
+    };
+    Some(SelectorFilter {
+        value: value.to_string(),
+        none_inclusive,
+    })
 }
 
 pub(super) fn read_media_source_state(workspace: &Path) -> Result<MediaSourceState> {

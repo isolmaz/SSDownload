@@ -332,9 +332,6 @@ struct Actor {
     source_refresh: HashMap<String, SourceRefreshGrant>,
     source_refresh_workers: HashMap<u64, ActiveSourceRefresh>,
     browser_transfers: BTreeMap<String, BrowserTransferLease>,
-    /// Requests removed before explicit browser completion remain counted rather
-    /// than treating native-host death as proof that Chrome stopped fetching.
-    browser_orphans: Vec<ConnectionLease>,
     /// The requested host cap is already applied to new acquisitions, while
     /// this records whether pre-existing actual sockets still need to drain.
     network_limit_pending: bool,
@@ -551,7 +548,6 @@ impl Engine {
                     source_refresh: HashMap::new(),
                     source_refresh_workers: HashMap::new(),
                     browser_transfers: BTreeMap::new(),
-                    browser_orphans: Vec::new(),
                     network_limit_pending: false,
                     queue_cursor: 0,
                     quota_accounted,
@@ -1086,6 +1082,13 @@ impl Actor {
         let local = Local::now();
         let now = local.timestamp();
         let state = job_scheduling_state_at(&self.settings, &request, &local);
+        let sequence = self
+            .jobs
+            .values()
+            .map(|job| job.sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
         let job = Job {
             id: id.clone(),
             request,
@@ -1118,6 +1121,7 @@ impl Actor {
             force_start: false,
             open_when_done: false,
             live: false,
+            sequence,
         };
         if let Err(error) = self.store.save_job(&job) {
             let _ = crate::recovery::release(&job.path, &id);
@@ -1169,13 +1173,16 @@ impl Actor {
                 );
             }
             if !pause && job.state == JobState::AwaitingSource {
-                bail!(
-                    "{}",
-                    crate::i18n::ui(
-                        "Bu iş devam etmeden önce kaynak adresi yenilenmeli.",
-                        "The source URL must be refreshed before this job can continue."
-                    )
-                )
+                return Err(source_refresh_required());
+            }
+            // A worker that is neither stopping nor stopped has nothing to resume.
+            if !pause
+                && self
+                    .active
+                    .get(id)
+                    .is_some_and(|active| matches!(active.desired, DesiredStop::None))
+            {
+                continue;
             }
             job.state = if pause {
                 JobState::Paused
@@ -1271,13 +1278,7 @@ impl Actor {
             return Ok(());
         }
         let mut order = self.jobs.values().collect::<Vec<_>>();
-        order.sort_by(|left, right| {
-            (-left.priority, left.created_at, &left.id).cmp(&(
-                -right.priority,
-                right.created_at,
-                &right.id,
-            ))
-        });
+        order.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
         let mut order = order
             .into_iter()
             .map(|job| job.id.clone())
@@ -1325,6 +1326,9 @@ impl Actor {
         }
         if self.active.contains_key(id) {
             return Ok(());
+        }
+        if job.state == JobState::AwaitingSource {
+            return Err(source_refresh_required());
         }
         job.force_start = true;
         job.state = JobState::Queued;
@@ -1509,10 +1513,26 @@ impl Actor {
         let ids = self
             .jobs
             .values()
-            .filter(|j| j.state != JobState::Completed && j.remove_requested.is_none())
+            .filter(|j| {
+                !matches!(j.state, JobState::Completed | JobState::AwaitingSource)
+                    && j.remove_requested.is_none()
+            })
             .map(|j| j.id.clone())
             .collect();
-        self.transition(ids, true)
+        self.transition(ids, true)?;
+        // A job waiting for a new source stays that way, but a refresh still running for it
+        // must not re-queue it after Pause all.
+        let awaiting_source = self
+            .jobs
+            .values()
+            .filter(|j| j.state == JobState::AwaitingSource)
+            .map(|j| j.id.clone())
+            .collect::<Vec<_>>();
+        for id in awaiting_source {
+            self.cancel_source_refresh_workers(&id);
+            self.source_refresh.remove(&id);
+        }
+        Ok(())
     }
     fn resume_all(&mut self) -> Result<()> {
         let ids = self
@@ -1611,6 +1631,7 @@ impl Actor {
                 format!("The old completion record could not be deleted: {error}")
             ));
         }
+        self.maybe_begin_completions();
         self.publish();
         Ok(())
     }
@@ -2340,10 +2361,14 @@ impl Actor {
             changed.push(job);
         }
         self.store.save_jobs(&changed)?;
+        let moved_pending = changed.iter().any(|job| !job.state.is_terminal());
         for job in changed {
             self.jobs.insert(job.id.clone(), job);
         }
-        for source_queue in source_queues {
+        for source_queue in source_queues
+            .into_iter()
+            .filter(|source| source != queue_id)
+        {
             self.completion_armed.remove(&source_queue);
             if self
                 .completion_countdown
@@ -2353,7 +2378,9 @@ impl Actor {
                 self.completion_countdown = None;
             }
         }
-        self.completion_armed.insert(queue_id.into());
+        if moved_pending {
+            self.completion_armed.insert(queue_id.into());
+        }
         self.publish();
         Ok(())
     }
@@ -2421,7 +2448,17 @@ impl Actor {
             );
         }
         self.completion_countdown = None;
+        // Cancelling also cancels the shutdown and program actions waiting behind this one, so
+        // none of them starts in its place.
         self.completion_armed.remove(queue_id);
+        for queue in &self.settings.queues {
+            if matches!(
+                queue.completion,
+                CompletionAction::ShutdownComputer { .. } | CompletionAction::RunProgram { .. }
+            ) {
+                self.completion_armed.remove(&queue.id);
+            }
+        }
         self.completion_events.push(CompletionEvent {
             queue_id: queue_id.into(),
             occurred_at: Utc::now().timestamp(),
@@ -2804,22 +2841,10 @@ impl Actor {
         Ok(())
     }
 
+    /// Ends the transfer and with it every network permit it still holds. The extension's
+    /// late `end_request` for that generation is refused, so nothing else could release them.
     fn remove_browser_transfer(&mut self, id: &str) -> Option<BrowserTransferLease> {
-        let mut transfer = self.browser_transfers.remove(id)?;
-        let retained = transfer.requests.len();
-        self.browser_orphans
-            .extend(std::mem::take(&mut transfer.requests).into_values());
-        if retained > 0 {
-            self.warning = Some(crate::i18n::ui_owned!(
-                format!(
-                    "Tarayıcı isteği kapanmadan iş durdu; {retained} ağ izni Chrome'un durduğu doğrulanana kadar güvenli olarak tutuluyor"
-                ),
-                format!(
-                    "The job stopped before the browser request closed; {retained} network permit(s) are kept safely until Chrome is confirmed stopped"
-                )
-            ));
-        }
-        Some(transfer)
+        self.browser_transfers.remove(id)
     }
 
     fn revoke_exited_browser_transfer(&mut self, id: &str, generation: u64) -> Result<()> {
@@ -3068,9 +3093,16 @@ impl Actor {
         changed
     }
 
+    /// A shutdown or program action waits for every queue to be idle, so a queue that finished
+    /// earlier is started by whichever job completes last, not only by its own.
+    fn maybe_begin_completions(&mut self) {
+        for queue_id in self.completion_armed.clone() {
+            self.maybe_begin_completion(&queue_id);
+        }
+    }
+
     fn maybe_begin_completion(&mut self, queue_id: &str) {
         if !self.completion_armed.contains(queue_id)
-            || self.completion_countdown.is_some()
             || !queue_completed_successfully(&self.jobs, queue_id)
         {
             return;
@@ -3105,9 +3137,12 @@ impl Actor {
             }
             action @ (CompletionAction::ShutdownComputer { .. }
             | CompletionAction::RunProgram { .. }) => {
-                // Destructive/external actions are global-idle only. A manually paused,
-                // waiting-source, queued, or active job blocks the trigger.
-                if !self.active.is_empty()
+                // Destructive/external actions wait until every job in the list has completed:
+                // a queued, active, paused, waiting-source, failed or cancelled job blocks the
+                // trigger, and so does a countdown that is already running; the other armed
+                // queues are evaluated again when it expires.
+                if self.completion_countdown.is_some()
+                    || !self.active.is_empty()
                     || !self.browser_transfers.is_empty()
                     || self
                         .jobs
@@ -3188,6 +3223,7 @@ impl Actor {
             }),
         });
         self.trim_completion_events();
+        self.maybe_begin_completions();
         self.publish();
     }
 
@@ -3575,7 +3611,7 @@ impl Actor {
                             self.persistence_error = Some(error.to_string());
                         }
                     }
-                    self.maybe_begin_completion(&queue_id);
+                    self.maybe_begin_completions();
                 }
             }
             Err(error) => {
@@ -3799,7 +3835,7 @@ impl Actor {
                         host_counts.get(&host).copied().unwrap_or(0)
                             < self.settings.per_host_limit.max(1) as usize
                     })
-                    .min_by_key(|job| (-job.priority, job.created_at, job.id.clone()))
+                    .min_by(|left, right| left.order_key().cmp(&right.order_key()))
                     .map(|job| job.id.clone());
                 if let Some(id) = candidate {
                     self.queue_cursor = (index + 1) % queue_len.max(1);
@@ -4000,7 +4036,7 @@ impl Actor {
             .filter_map(|(id, _)| {
                 self.jobs.get(id).map(|job| {
                     (
-                        (-job.priority, job.created_at),
+                        (-job.priority, job.created_at, job.sequence),
                         id.clone(),
                         job_host(&job.request.url),
                     )
@@ -4285,17 +4321,6 @@ impl Actor {
         if let Some(warning) = &self.warning {
             warnings.push(warning.clone());
         }
-        if !self.browser_orphans.is_empty() {
-            let count = self.browser_orphans.len();
-            warnings.push(crate::i18n::ui_owned!(
-                format!(
-                    "{count} doğrulanmamış tarayıcı ağ izni kapasitede tutuluyor; Chrome'un isteği kapattığı kanıtlanmadan serbest bırakılmaz"
-                ),
-                format!(
-                    "{count} unverified browser network permit(s) are held in capacity; they are not released until Chrome is proven to have closed the request"
-                )
-            ));
-        }
         if self.network_limit_pending {
             let limit = self.settings.per_host_limit;
             warnings.push(crate::i18n::ui_owned!(
@@ -4559,13 +4584,7 @@ fn make_snapshot(
 ) -> EngineSnapshot {
     let mut jobs = jobs.values().cloned().collect::<Vec<_>>();
     // Queue order: explicit priority first (higher first), then creation order.
-    jobs.sort_by(|left, right| {
-        (-left.priority, left.created_at, &left.id).cmp(&(
-            -right.priority,
-            right.created_at,
-            &right.id,
-        ))
-    });
+    jobs.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
     EngineSnapshot {
         revision: 0,
         warning: None,
@@ -4616,6 +4635,11 @@ fn repair_settings(settings: &mut Settings, paths: &AppPaths) {
     if settings.usage_modes.validate().is_err() {
         settings.usage_modes = defaults.usage_modes;
     }
+    // The first login of a server wins, as it does when a URL looks one up.
+    let mut login_hosts = BTreeSet::new();
+    settings.site_logins.retain(|login| {
+        crate::network::canonical_host_name(&login.host).is_none_or(|host| login_hosts.insert(host))
+    });
 }
 
 fn validate_settings(settings: &Settings) -> Result<()> {
@@ -4822,6 +4846,16 @@ fn processing_phase(phase: &str) -> bool {
         || phase.contains("mux")
 }
 
+fn source_refresh_required() -> anyhow::Error {
+    anyhow!(
+        "{}",
+        crate::i18n::ui(
+            "Bu iş devam etmeden önce kaynak adresi yenilenmeli.",
+            "The source URL must be refreshed before this job can continue."
+        )
+    )
+}
+
 /// The persistence failure that stops downloads, in the interface language.
 fn queue_save_stopped(error: &impl std::fmt::Display) -> String {
     crate::i18n::ui_owned!(
@@ -4928,10 +4962,23 @@ fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailu
     }
 }
 
+fn retryable_status(status: u32) -> bool {
+    matches!(status, 408 | 429) || transfer::is_transient_server_error(status)
+}
+
+/// The first status written as "HTTP Error 522" (yt-dlp) or "HTTP 522" in an error message
+/// that has already been lowercased.
+fn http_status_in_text(message: &str) -> Option<u32> {
+    message.match_indices("http ").find_map(|(index, needle)| {
+        let rest = &message[index + needle.len()..];
+        let rest = rest.strip_prefix("error ").unwrap_or(rest);
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        rest[..digits].parse().ok().filter(|_| digits == 3)
+    })
+}
+
 fn retryable_error(error: &anyhow::Error) -> bool {
-    if transfer::http_status(error)
-        .is_some_and(|status| matches!(status, 408 | 429 | 500 | 502 | 503 | 504))
-    {
+    if transfer::http_status(error).is_some_and(retryable_status) {
         return true;
     }
     for cause in error.chain() {
@@ -4957,30 +5004,19 @@ fn retryable_error(error: &anyhow::Error) -> bool {
         }
     }
     let message = format!("{error:#}").to_lowercase();
-    [
-        "http 408",
-        "http 429",
-        "http 500",
-        "http 502",
-        "http 503",
-        "http 504",
-        // yt-dlp fragment and webpage failures surface as "HTTP Error <code>"
-        // after exhausting its own retries; give them a job-level retry.
-        "http error 408",
-        "http error 429",
-        "http error 500",
-        "http error 502",
-        "http error 503",
-        "http error 504",
-        // Local proxy saturation and tunnel failures surface verbatim from
-        // the child's urllib stack; they are transient by construction.
-        "tunnel connection failed",
-        "unable to connect to proxy",
-        "503 service unavailable",
-        "timed out",
-        "temporary failure",
-        "connection reset",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
+    // yt-dlp fragment and webpage failures surface as "HTTP Error <code>" after exhausting
+    // its own retries; they get the same job-level retry as a typed status.
+    http_status_in_text(&message).is_some_and(retryable_status)
+        || [
+            // Local proxy saturation and tunnel failures surface verbatim from
+            // the child's urllib stack; they are transient by construction.
+            "tunnel connection failed",
+            "unable to connect to proxy",
+            "503 service unavailable",
+            "timed out",
+            "temporary failure",
+            "connection reset",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
 }

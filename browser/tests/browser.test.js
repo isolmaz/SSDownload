@@ -298,6 +298,19 @@ test("a blob player with one observed manifest hands that manifest, never its bl
   assert.equal(reply.ok, true);
 });
 
+test("the video context entry on a blob player falls back to the page and its one observed source", async () => {
+  const h = backgroundHarness();
+  const pageUrl = "https://www.youtube.com/watch?v=abc";
+  const blob = "blob:https://www.youtube.com/0000";
+  const players = [{ id: "movie_player", title: "Film", urls: [blob], active: true }];
+  await h.content({ channel: "ssdownload-content", event: "scan", documentId: "d", pageUrl, players, sources: [{ url: blob, kind: "blob" }] });
+  await h.events.headers.listeners[0]({ tabId: 7, frameId: 0, documentId: "d", statusCode: 200, url: "https://cdn.example/master.m3u8", responseHeaders: [{ name: "content-type", value: "application/vnd.apple.mpegurl" }] });
+  await h.menu("ssdownload-video", { tab: { id: 7, url: pageUrl }, info: { srcUrl: blob } });
+  await h.waitFor(() => h.nativeRequests.some(request => request?.action?.type === "browser_media"));
+  const handoff = h.nativeRequests.find(request => request?.action?.type === "browser_media");
+  assert.equal(handoff.action.request.url, "https://cdn.example/master.m3u8", "the blob address must not end the lookup before the page is tried");
+});
+
 test("an unresolved blob player hands its page address, never its blob or another player's stream", async () => {
   const h = backgroundHarness();
   const pageUrl = "https://www.youtube.com/watch?v=abc";
@@ -316,6 +329,39 @@ test("an unresolved blob player hands its page address, never its blob or anothe
   assert.notEqual(handoff.action.request.url, "https://cdn.example/related.mp4", "the other player's stream is never substituted");
   assert.equal(h.nativeRequests.filter(request => request?.action?.type === "add").length, 0, "the handoff opens the picker instead of submitting");
   assert.equal(reply.ok, true);
+});
+
+test("the video entry on a blob player inside a frame hands over that frame's page, not the top page", async () => {
+  const h = backgroundHarness();
+  const topUrl = "https://site.example/watch", frameUrl = "https://player.example/embed/1", blob = "blob:https://player.example/inner";
+  await h.content({ channel: "ssdownload-content", event: "scan", documentId: "dt", pageUrl: topUrl,
+    players: [{ id: "main", title: "Ana film", urls: ["blob:https://site.example/top"], active: true }], sources: [] });
+  await h.content({ channel: "ssdownload-content", event: "scan", documentId: "df", pageUrl: frameUrl,
+    players: [{ id: "inner", title: "Gömülü film", urls: [blob], active: true }], sources: [] }, 7, 2);
+  await h.menu("ssdownload-video", { tab: { id: 7, url: topUrl }, info: { srcUrl: blob, frameUrl, pageUrl: topUrl } });
+  await h.waitFor(() => h.nativeRequests.some(request => request?.action?.type === "browser_media"));
+  const handoff = h.nativeRequests.find(request => request?.action?.type === "browser_media");
+  assert.equal(handoff.action.request.url, frameUrl, "the frame that holds the player is the source");
+  assert.deepEqual(JSON.parse(JSON.stringify(handoff.action.request.source_identity)), { video_id: "2:df:inner", frame_id: 2, document_id: "df", page_url: frameUrl });
+});
+
+test("two unresolved blob players on one page are told apart only by an explicit submenu choice", async () => {
+  const h = backgroundHarness();
+  const pageUrl = "https://site.example/watch";
+  const players = [
+    { id: "first", title: "Birinci film", urls: ["blob:https://site.example/a"], active: true },
+    { id: "second", title: "İkinci film", urls: ["blob:https://site.example/b"], active: true }
+  ];
+  await h.content({ channel: "ssdownload-content", event: "scan", documentId: "d", pageUrl, players, sources: [] });
+  await h.menu("ssdownload-video", { info: { srcUrl: "blob:https://site.example/b" } });
+  assert.equal(h.nativeRequests.filter(request => request?.action?.type === "browser_media").length, 0, "neither player is picked silently");
+  assert.match((await h.state(7)).status.message, /Kaynak seç menüsünden/);
+  h.runTimers(250);
+  await h.settle();
+  await h.menu("ssdownload-candidate:1");
+  await h.waitFor(() => h.nativeRequests.some(request => request?.action?.type === "browser_media"));
+  const handoff = h.nativeRequests.find(request => request?.action?.type === "browser_media");
+  assert.equal(handoff.action.request.source_identity.video_id, "0:d:second", "the explicit choice hands over that player");
 });
 
 test("a blob player with several observed roots never gets an arbitrary one", async () => {
@@ -708,6 +754,31 @@ test("the popup offers the download page only when the app is missing, not when 
   const refused = backgroundHarness({ native: async () => { throw new Error("Access to the specified native messaging host is forbidden."); } });
   await refused.settle();
   assert.equal((await popup(refused)).appMissing, false);
+});
+
+test("a content script on a page named popup.html cannot speak for the popup", async () => {
+  const h = backgroundHarness();
+  await h.settle();
+  const reply = await new Promise(resolve => h.events.message.listeners.at(-1)({ channel: "ssdownload-popup", command: "state" },
+    { id: "test-extension", url: "https://site.example/popup.html", tab: { id: 7 } }, resolve));
+  assert.ok(reply.error, "a page sender is refused");
+  assert.equal(reply.detectionEnabled, undefined);
+});
+
+test("without the app the extension adds no context entries, but a refusing app keeps Open SSDownload", async () => {
+  const missing = backgroundHarness({ native: async () => { throw new Error("Specified native messaging host not found."); } });
+  await missing.settle();
+  assert.deepEqual(missing.menuEntries.map(entry => entry.id), []);
+  await missing.content({ channel: "ssdownload-content", event: "scan", documentId: "d", pageUrl: "https://site.example/watch",
+    players: [{ id: "p1", title: "Film", urls: ["https://cdn.example/one.mp4"], active: true }],
+    sources: [{ url: "https://cdn.example/one.mp4", contentType: "video/mp4", playerId: "p1" }] });
+  assert.equal((await missing.state(7)).videos.length, 1, "the page has a detected source");
+  missing.runTimers(250);
+  await missing.settle();
+  assert.deepEqual(missing.menuEntries.map(entry => entry.id), [], "a detected source does not add a Choose source submenu");
+  const refused = backgroundHarness({ native: async () => { throw new Error("Access to the specified native messaging host is forbidden."); } });
+  await refused.settle();
+  assert.ok(refused.menuEntries.some(entry => entry.id === "ssdownload-app"));
 });
 
 test("a refused extension identity is reported as such, never as a missing registration", async () => {

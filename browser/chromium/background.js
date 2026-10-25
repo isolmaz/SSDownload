@@ -1316,7 +1316,7 @@ async function createMenus() {
   const selectable = active === null ? [] : selectableRecords(active).slice(0, MAX_MEDIA_PER_TAB);
   const candidates = selectable.map(item => publicSource(active, item));
   const relays = capabilityState.status==="ready" ? (capabilityState.sourceRefreshJobs||[]) : [];
-  const signature=JSON.stringify([SSDownloadI18n.language(),capabilityState.status,capabilityState.usageModes,capabilityState.siteEntries===true,detectionEnabled,active,selectable.length,
+  const signature=JSON.stringify([SSDownloadI18n.language(),capabilityState.status,capabilityState.appMissing===true,capabilityState.usageModes,capabilityState.siteEntries===true,detectionEnabled,active,selectable.length,
     candidates.map(item=>[item.candidateId||item.videoId||item.url,item.title||"",item.kind]),
     relays.map(job=>[job.id,job.title,job.pageUrl])]);
   if(signature===menuSignature)return;
@@ -1333,7 +1333,7 @@ async function createMenus() {
   }
   if(modeAllows("audio")) entries.push({id:"ssdownload-audio",title:t("menuDownloadAudio"),contexts:["audio"]});
   if(modeAllows("media")) entries.push({id:"ssdownload-media",title:t("menuOpenPicker"),contexts:["page","video","audio"]});
-  if(candidates.length && active !== null) {
+  if(candidates.length && active !== null && capabilityState.appMissing!==true) {
     candidateMenus.set(active, candidates);
     const contexts = ["page","video","audio"];
     entries.push({id:"ssdownload-candidates",title:t("menuChooseSource",candidates.length),contexts});
@@ -1351,9 +1351,12 @@ async function createMenus() {
       entries.push({id:`ssdownload-relay-restart:${index}`,parentId:"ssdownload-relay",title:t("menuRelayRestart",job.title||job.id),contexts});
     });
   }
-  entries.push({id:"ssdownload-session-grant",title:t("menuSessionGrant"),contexts:["page","video","audio","link"]});
-  entries.push({id:"ssdownload-session-revoke",title:t("menuSessionRevoke"),contexts:["page","video","audio","link"]});
-  entries.push({id:"ssdownload-app",title:t("menuOpenApp"),contexts:["page","video","audio","link"]});
+  // Without the app installed the extension stays out of the context menu entirely.
+  if(capabilityState.appMissing!==true) {
+    entries.push({id:"ssdownload-session-grant",title:t("menuSessionGrant"),contexts:["page","video","audio","link"]});
+    entries.push({id:"ssdownload-session-revoke",title:t("menuSessionRevoke"),contexts:["page","video","audio","link"]});
+    entries.push({id:"ssdownload-app",title:t("menuOpenApp"),contexts:["page","video","audio","link"]});
+  }
   for (const entry of entries) {
     try {
       api.contextMenus.create(entry, () => { if (api.runtime.lastError) menuSignature = null; });
@@ -1405,15 +1408,17 @@ async function runGuarded(tabId, purpose, task, host) {
 function selectableRecords(tabId) {
   return videoRecords(tabId).filter(item => item.selectable === true && item.downloadable === true);
 }
-// One exact source for a context-menu gesture. The acted-on address wins; a page with
-// exactly one selectable source is unambiguous; anything else must be chosen from the
-// candidate submenu instead of silently taking the first entry.
+// One exact source for a context-menu gesture. The acted-on address wins when exactly one
+// source has it; a page with exactly one selectable source is unambiguous; anything else
+// must be chosen from the candidate submenu instead of silently taking the first entry.
 function mediaCandidate(tabId, info, tab, kind) {
-  const target = safeUrl(info.linkUrl || info.srcUrl || info.pageUrl || tab?.url)?.href || null;
+  // A blob: source (MSE players) is no address the desktop can fetch, so the frame the click was in
+  // stands in for it, then the top page.
+  const target = [info.linkUrl, info.srcUrl, info.frameUrl, info.pageUrl, tab?.url].map(value => safeUrl(value)?.href).find(Boolean) || null;
   if (!target) throw new Error(t("noSourceHere"));
   const records = selectableRecords(tabId);
-  const exact = records.find(item => item.url === target);
-  if (exact) return exact;
+  const exact = records.filter(item => item.url === target);
+  if (exact.length === 1) return exact[0];
   const audioOnly = kind === "audio" ? records.filter(item => item.kind === "audio" || (item.tracks || []).some(track => track.kind === "audio")) : records;
   const usable = audioOnly.length ? audioOnly : records;
   if (usable.length === 1) return usable[0];
@@ -1753,7 +1758,8 @@ async function handleContentMessage(message, sender) {
 
 // ------------------------------------------------------------------- toolbar popup
 function isPopupSender(sender) {
-  return sender?.id === api.runtime.id && typeof sender?.url === "string" && sender.url.endsWith("/popup.html");
+  // A content script shares the extension id, so the popup is told apart by its own page address.
+  return sender?.id === api.runtime.id && sender?.url === api.runtime.getURL("popup.html");
 }
 async function hiddenHosts() {
   try { const saved = await invoke(api.storage.local, "get", { hiddenHosts: [] }); return Array.isArray(saved.hiddenHosts) ? saved.hiddenHosts : []; } catch (_) { return []; }

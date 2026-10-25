@@ -104,6 +104,24 @@ pub(crate) struct UpdateOutcome {
     pub(crate) dry_run: bool,
 }
 
+impl UpdateOutcome {
+    /// The text of the result dialog: the message, followed by the quarantine folder unless the
+    /// message already names it.
+    pub(crate) fn dialog_text(&self) -> String {
+        let mut text = self.message.clone();
+        if let Some(folder) = &self.quarantine {
+            let folder = folder.display().to_string();
+            if !text.contains(&folder) {
+                text.push_str(&format!(
+                    "\n\n{}: {folder}",
+                    crate::i18n::ui("Karantina klasörü", "Quarantine folder")
+                ));
+            }
+        }
+        text
+    }
+}
+
 /// Release-version comparison for the update feed. Both sides must be a stable
 /// `major.minor.patch` release: a prerelease or build suffix, a missing component or a
 /// non-numeric part is not a release this product ships, so it never counts as newer and
@@ -663,13 +681,59 @@ fn download_setup(
     let hasher = hasher.into_inner();
     let actual = hex::encode(hasher.finalize());
     if !actual.eq_ignore_ascii_case(&manifest.sha256) {
-        bail!("{}",
-            crate::i18n::ui_owned!(
-                format!("SHA-256 doğrulaması başarısız (beklenen {}, alınan {actual}). Dosya karantinaya taşındı.", manifest.sha256),
-                format!("SHA-256 verification failed (expected {}, received {actual}). The file was moved to quarantine.", manifest.sha256),
-            ));
+        return Err(anyhow::Error::new(DigestMismatch {
+            expected: manifest.sha256.clone(),
+            actual,
+        })
+        .context(crate::error_codes::CodedError::new(
+            crate::error_codes::UPD_003,
+            crate::i18n::ui(
+                "SHA-256 doğrulaması başarısız",
+                "SHA-256 verification failed",
+            ),
+        )));
     }
     Ok(())
+}
+
+/// The root of the error of a finished download whose bytes hash to something other than the
+/// digest of the signed feed. `run_update` words it with `digest_mismatch_message` once it
+/// knows whether the file could be moved to quarantine.
+#[derive(Debug)]
+struct DigestMismatch {
+    expected: String,
+    actual: String,
+}
+
+impl std::fmt::Display for DigestMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&crate::i18n::ui_owned!(
+            format!("beklenen {}, alınan {}", self.expected, self.actual),
+            format!("expected {}, received {}", self.expected, self.actual)
+        ))
+    }
+}
+
+impl std::error::Error for DigestMismatch {}
+
+/// The dialog text for a staged Setup whose digest differs from the signed feed.
+fn digest_mismatch_message(expected: &str, actual: &str, quarantine: Option<&Path>) -> String {
+    let moved = quarantine
+        .map(|folder| {
+            crate::i18n::ui_owned!(
+                format!("\n\nDosya şu klasöre taşındı (kendiniz inceleyip silebilirsiniz):\n{}", folder.display()),
+                format!("\n\nThe file was moved to this folder (you can inspect and delete it yourself):\n{}", folder.display())
+            )
+        })
+        .unwrap_or_default();
+    crate::error_codes::coded(
+        crate::error_codes::UPD_003,
+        crate::i18n::ui_owned!(
+            format!("SHA-256 özeti eşleşmedi. İndirilen kurulum dosyası güvenli değil.\nBeklenen: {expected}\nAlınan: {actual}{moved}"),
+            format!("SHA-256 digest does not match. The downloaded installer is not safe.\nExpected: {expected}\nReceived: {actual}{moved}")
+        ),
+    )
+    .to_string()
 }
 
 /// Name of the marker the install helper leaves in the profile when the silent Setup did not
@@ -688,7 +752,22 @@ fn install_helper_script(
     marker: &Path,
     version: &str,
 ) -> String {
-    let quoted = |value: &str| format!("'{}'", value.replace('\'', "''"));
+    // PowerShell also ends a single-quoted string at the typographic quotes U+2018-U+201B (a
+    // user name such as "Ali’nin" has one); doubling any of them keeps it as text.
+    let quoted = |value: &str| {
+        let mut text = String::from("'");
+        for character in value.chars() {
+            if matches!(
+                character,
+                '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}'
+            ) {
+                text.push(character);
+            }
+            text.push(character);
+        }
+        text.push('\'');
+        text
+    };
     // Keep the verified file open without write/delete sharing through installation.
     // A second path-based hash check alone would leave another replacement race.
     format!(
@@ -837,10 +916,12 @@ fn report_install_failure(paths: &AppPaths) {
             });
         });
     if let Err(error) = spawned {
-        crate::logging::record(
-            crate::logging::Event::warn("update.check_spawn")
-                .detail(format!("Kurulum hatası bildirimi başlatılamadı: {error}")),
-        );
+        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
+            crate::i18n::ui_owned!(
+                format!("Kurulum hatası bildirimi başlatılamadı: {error}"),
+                format!("The install failure notice could not be started: {error}")
+            ),
+        ));
     }
 }
 
@@ -1003,6 +1084,18 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
             } else {
                 None
             };
+            if let Some(mismatch) = error.downcast_ref::<DigestMismatch>() {
+                return UpdateOutcome {
+                    success: false,
+                    message: digest_mismatch_message(
+                        &mismatch.expected,
+                        &mismatch.actual,
+                        quarantine.as_deref(),
+                    ),
+                    quarantine,
+                    dry_run: ctx.dry_run,
+                };
+            }
             let mut text = crate::i18n::ui_owned!(
                 format!("Güncelleme indirilemedi: {error:#}"),
                 format!("The update could not be downloaded: {error:#}")
@@ -1075,17 +1168,7 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
         let folder = quarantine_file(ctx.paths, &destination).ok();
         return UpdateOutcome {
             success: false,
-            message: crate::i18n::ui_owned!(format!("SHA-256 özeti eşleşmedi. İndirilen kurulum dosyası güvenli değil.\nBeklenen: {}\nAlınan: {actual}{}",
-                manifest.sha256,
-                folder
-                    .as_ref()
-                    .map(|f| crate::i18n::ui_owned!(format!("\n\nDosya şu klasöre taşındı (kendiniz inceleyip silebilirsiniz):\n{}", f.display()), format!("\n\nThe file was moved to this folder (you can inspect and delete it yourself):\n{}", f.display())))
-                    .unwrap_or_default()), format!("SHA-256 digest does not match. The downloaded installer is not safe.\nExpected: {}\nReceived: {actual}{}",
-                            manifest.sha256,
-                            folder
-            .as_ref()
-            .map(|f| crate::i18n::ui_owned!(format!("\n\nDosya şu klasöre taşındı (kendiniz inceleyip silebilirsiniz):\n{}", f.display()), format!("\n\nThe file was moved to this folder (you can inspect and delete it yourself):\n{}", f.display())))
-            .unwrap_or_default())),
+            message: digest_mismatch_message(&manifest.sha256, &actual, folder.as_deref()),
             quarantine: folder,
             dry_run: ctx.dry_run,
         };
@@ -1278,9 +1361,18 @@ fn stamp_update_check(app: &crate::app::App) {
     stamped.last_update_check = chrono::Local::now().timestamp();
     if let Err(error) = app.update_settings_quiet(stamped) {
         crate::logging::record(crate::logging::Event::warn("update.settings_save").detail(
-            format!("Güncelleme denetim damgası kaydedilemedi: {error:#}"),
+            crate::i18n::ui_owned!(
+                format!("Güncelleme denetim damgası kaydedilemedi: {error:#}"),
+                format!("The update check time could not be saved: {error:#}")
+            ),
         ));
     }
+}
+
+/// A stamp from the last day skips the automatic check. One in the future (written while the
+/// clock was wrong) must not hold checks back until real time catches up with it.
+fn checked_recently(last_check: i64, now: i64) -> bool {
+    last_check > 0 && (0..24 * 3600).contains(&(now - last_check))
 }
 
 pub fn startup_check(app: crate::app::App) {
@@ -1289,8 +1381,7 @@ pub fn startup_check(app: crate::app::App) {
     if !settings.update_check_enabled {
         return;
     }
-    let now = chrono::Local::now().timestamp();
-    if settings.last_update_check > 0 && now - settings.last_update_check < 24 * 3600 {
+    if checked_recently(settings.last_update_check, chrono::Local::now().timestamp()) {
         return;
     }
     // A manual check already in flight covers this launch; it reports its own outcome.
@@ -1338,8 +1429,14 @@ pub fn startup_check(app: crate::app::App) {
                         next.skipped_update_version = Some(manifest.version);
                         if let Err(error) = app.update_settings_quiet(next) {
                             crate::logging::record(
-                                crate::logging::Event::warn("update.settings_save")
-                                    .detail(format!("Atlanan sürüm kaydedilemedi: {error:#}")),
+                                crate::logging::Event::warn("update.settings_save").detail(
+                                    crate::i18n::ui_owned!(
+                                        format!("Atlanan sürüm kaydedilemedi: {error:#}"),
+                                        format!(
+                                            "The skipped version could not be saved: {error:#}"
+                                        )
+                                    ),
+                                ),
                             );
                         }
                     }
@@ -1348,11 +1445,12 @@ pub fn startup_check(app: crate::app::App) {
             }
         });
     if let Err(error) = spawned {
-        crate::logging::record(
-            crate::logging::Event::warn("update.check_spawn").detail(format!(
-                "Güncelleme denetim iş parçacığı başlatılamadı: {error}"
-            )),
-        );
+        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
+            crate::i18n::ui_owned!(
+                format!("Güncelleme denetim iş parçacığı başlatılamadı: {error}"),
+                format!("The update check thread could not be started: {error}")
+            ),
+        ));
     }
 }
 
@@ -1413,8 +1511,9 @@ pub fn check_now(app: crate::app::App) {
                                     if let Err(error) = app.update_settings_quiet(next) {
                                         crate::logging::record(
                                             crate::logging::Event::warn("update.settings_save")
-                                                .detail(format!(
-                                                    "Atlanan sürüm kaydedilemedi: {error:#}"
+                                                .detail(crate::i18n::ui_owned!(
+                                                    format!("Atlanan sürüm kaydedilemedi: {error:#}"),
+                                                    format!("The skipped version could not be saved: {error:#}")
                                                 )),
                                         );
                                     }
@@ -1444,11 +1543,12 @@ pub fn check_now(app: crate::app::App) {
             }
         });
     if let Err(error) = spawned {
-        crate::logging::record(
-            crate::logging::Event::warn("update.check_spawn").detail(format!(
-                "Güncelleme denetim iş parçacığı başlatılamadı: {error}"
-            )),
-        );
+        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
+            crate::i18n::ui_owned!(
+                format!("Güncelleme denetim iş parçacığı başlatılamadı: {error}"),
+                format!("The update check thread could not be started: {error}")
+            ),
+        ));
     }
 }
 
@@ -1680,6 +1780,52 @@ mod tests {
     }
 
     #[test]
+    fn helper_paths_with_typographic_quotes_reach_powershell_unchanged() {
+        let root =
+            PathBuf::from("C:\\Users\\Ali\u{2019}nin \u{2018}x\u{2019} \u{201A}y\u{201B} 'z'");
+        let setup = root.join("SSDownload-9.9.9-Setup.exe");
+        let script = install_helper_script(
+            1,
+            &setup,
+            &root.join("ssdownload.exe"),
+            &"0".repeat(64),
+            &root.join(INSTALL_FAILURE_MARKER),
+            "9.9.9",
+        );
+        let encode = |text: &str| {
+            let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            STANDARD.encode(bytes)
+        };
+        // PowerShell's own parser decides: no syntax error, and the Setup path is one literal.
+        let check = format!(
+            "$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{script}')); \
+             $expected=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{setup}')); \
+             $tokens=$null; $errors=$null; \
+             $ast=[System.Management.Automation.Language.Parser]::ParseInput($text,[ref]$tokens,[ref]$errors); \
+             if ($errors.Count -gt 0) {{ exit 2 }}; \
+             $values=$ast.FindAll({{ $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }}, $true) | ForEach-Object {{ $_.Value }}; \
+             if ($values -cnotcontains $expected) {{ exit 3 }}; \
+             exit 0",
+            script = encode(&script),
+            setup = encode(&setup.display().to_string()),
+        );
+        let status = helper_command(&check).status().expect("powershell starts");
+        assert_eq!(status.code(), Some(0));
+    }
+
+    #[test]
+    fn a_future_check_stamp_does_not_hold_back_the_daily_check() {
+        let now = 1_800_000_000;
+        assert!(checked_recently(now - 3600, now));
+        assert!(!checked_recently(now - 25 * 3600, now));
+        assert!(!checked_recently(0, now), "a profile that never checked");
+        assert!(
+            !checked_recently(now + 30 * 24 * 3600, now),
+            "a stamp written by a clock that ran ahead"
+        );
+    }
+
+    #[test]
     fn a_setup_that_exits_with_an_error_is_reported_with_its_exit_code() {
         let root = temp_root("helper-exit");
         let marker = root.join(INSTALL_FAILURE_MARKER);
@@ -1831,6 +1977,154 @@ mod tests {
             "an oversized feed must carry its registry code, got: {text}"
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn a_downloaded_setup_with_another_digest_is_refused_with_its_registry_code() {
+        let (url, server) = serve_once(b"MZ this is not the signed installer".to_vec());
+        let root = std::env::temp_dir().join(format!("ssdownload-digest-{}", uuid::Uuid::new_v4()));
+        let manifest = UpdateManifest {
+            version: "9.9.9".into(),
+            url,
+            sha256: "0".repeat(64),
+            notes: String::new(),
+        };
+        let governor = NetworkGovernor::new(4);
+        let error = download_setup(
+            &manifest,
+            &root.join("Setup.exe"),
+            &governor,
+            &mut |_, _| {},
+            true,
+        )
+        .expect_err("a digest that differs from the signed feed is refused");
+        assert_eq!(
+            crate::error_codes::code_of(&error),
+            Some(crate::error_codes::UPD_003),
+            "{error:#}"
+        );
+        server.join().unwrap();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn the_digest_mismatch_dialog_carries_the_registry_code_and_both_digests() {
+        let expected = "a".repeat(64);
+        let actual = "b".repeat(64);
+        let folder = Path::new(r"C:\profile\update-quarantine\20260101-000000");
+        let text = digest_mismatch_message(&expected, &actual, Some(folder));
+        assert_eq!(
+            crate::error_codes::from_text(&text),
+            Some(crate::error_codes::UPD_003),
+            "{text}"
+        );
+        assert!(text.contains(&expected) && text.contains(&actual), "{text}");
+        assert!(text.contains(&folder.display().to_string()), "{text}");
+        assert!(
+            !digest_mismatch_message(&expected, &actual, None).contains("update-quarantine"),
+            "a missing quarantine folder is not named"
+        );
+    }
+
+    /// Runs a dry-run update whose Setup hashes to something other than the feed's digest and
+    /// returns its outcome with the digest the file really has.
+    fn refused_update(paths: &AppPaths) -> (UpdateOutcome, String) {
+        let _guard = FEED_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let body = b"MZ this is not the signed installer".to_vec();
+        let actual = hex::encode(Sha256::digest(&body));
+        let (url, server) = serve_once(body);
+        std::env::set_var("SSDOWNLOAD_UPDATE_FEED", "http://127.0.0.1:1");
+        let manifest = UpdateManifest {
+            version: "9.9.9".into(),
+            url,
+            sha256: "0".repeat(64),
+            notes: String::new(),
+        };
+        let governor = NetworkGovernor::new(4);
+        let outcome = run_update(
+            &UpdateContext {
+                paths,
+                network: &governor,
+                dry_run: true,
+            },
+            &manifest,
+        );
+        std::env::remove_var("SSDOWNLOAD_UPDATE_FEED");
+        server.join().unwrap();
+        (outcome, actual)
+    }
+
+    #[test]
+    fn a_refused_download_states_the_mismatch_and_names_the_quarantine_folder_once() {
+        let root = temp_root("refused");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let (outcome, actual) = refused_update(&paths);
+
+        assert!(!outcome.success);
+        let folder = outcome.quarantine.clone().expect("the file was moved");
+        assert!(folder.join("SSDownload-9.9.9-Setup.exe").is_file());
+        let text = outcome.dialog_text();
+        assert_eq!(
+            crate::error_codes::from_text(&text),
+            Some(crate::error_codes::UPD_003),
+            "{text}"
+        );
+        assert_eq!(text.matches("SSD-UPD-003").count(), 1, "{text}");
+        assert!(
+            text.contains(&"0".repeat(64)) && text.contains(&actual),
+            "{text}"
+        );
+        assert_eq!(
+            text.matches(&folder.display().to_string()).count(),
+            1,
+            "the folder is named once: {text}"
+        );
+        // The file is complete and was moved only after the check, so neither a partial
+        // download nor an announced move belongs in the statement.
+        for stale in [
+            "Kısmi",
+            "partial",
+            "indirilemedi",
+            "could not be downloaded",
+            "karantinaya taşındı",
+            "moved to quarantine",
+        ] {
+            assert!(!text.contains(stale), "{stale:?} in: {text}");
+        }
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_refused_download_that_could_not_be_moved_claims_no_folder() {
+        let root = temp_root("refused-unmoved");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        // A file where the quarantine root belongs makes every move fail.
+        fs::write(root.join("update-quarantine"), b"not a folder").unwrap();
+        let (outcome, actual) = refused_update(&paths);
+
+        assert!(outcome.quarantine.is_none());
+        let text = outcome.dialog_text();
+        assert_eq!(
+            crate::error_codes::from_text(&text),
+            Some(crate::error_codes::UPD_003),
+            "{text}"
+        );
+        assert!(
+            text.contains(&"0".repeat(64)) && text.contains(&actual),
+            "{text}"
+        );
+        for claim in [
+            "taşındı",
+            "moved",
+            "update-quarantine",
+            "Karantina klasörü",
+            "Quarantine folder",
+        ] {
+            assert!(!text.contains(claim), "{claim:?} in: {text}");
+        }
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

@@ -723,7 +723,14 @@ impl App {
                         {
                             crate::logging::record(
                                 crate::logging::Event::warn("app.autostart_rollback").detail(
-                                    format!("Otomatik başlatma ayarı geri alınamadı: {rollback:#}"),
+                                    crate::i18n::ui_owned!(
+                                        format!(
+                                            "Otomatik başlatma ayarı geri alınamadı: {rollback:#}"
+                                        ),
+                                        format!(
+                                            "The autostart setting could not be rolled back: {rollback:#}"
+                                        )
+                                    ),
                                 ),
                             );
                         }
@@ -1540,7 +1547,11 @@ fn crawl_site(
                 continue;
             }
         }
-        if let Some(error) = failure {
+        // The write callback stops at the cap, which libcurl reports as a write error: a
+        // page larger than the cap is scanned up to it, not failed.
+        let capped =
+            body.len() >= cap && failure.as_ref().is_some_and(|error| error.is_write_error());
+        if let Some(error) = failure.filter(|_| !capped) {
             failed_pages += 1;
             last_failure = Some(format!("{error:#}"));
             if body.len() < cap {
@@ -2101,6 +2112,91 @@ mod tests {
     }
 
     #[test]
+    fn site_crawl_scans_a_page_larger_than_the_cap_up_to_the_cap() {
+        use std::io::{Read as _, Write as _};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        use std::time::{Duration, Instant};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let server = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !stop.load(AtomicOrdering::Relaxed) && Instant::now() < deadline {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    let stop = stop.clone();
+                    std::thread::spawn(move || {
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+                        let mut request = Vec::new();
+                        let mut buffer = [0u8; 512];
+                        while !stop.load(AtomicOrdering::Relaxed) {
+                            match stream.read(&mut buffer) {
+                                Ok(0) => break,
+                                Ok(count) => {
+                                    request.extend_from_slice(&buffer[..count]);
+                                    if !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                        continue;
+                                    }
+                                    // The link sits inside the cap; the padding is far beyond it.
+                                    let body = format!(
+                                        "<a href=\"/movie.mp4\">video</a>{}",
+                                        " ".repeat(256 * 1024)
+                                    );
+                                    let head = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                        body.len()
+                                    );
+                                    let _ = stream.write_all(head.as_bytes());
+                                    let _ = stream.write_all(body.as_bytes());
+                                    let _ = stream.flush();
+                                    break;
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                    });
+                }
+            })
+        };
+        let result = crawl_site(
+            SiteCrawlRequest {
+                url: format!("http://{address}/index.html"),
+                request_id: Some("crawl-capped".into()),
+                policy: Some(SiteCrawlerPolicy {
+                    max_depth: 0,
+                    same_host_only: true,
+                    allowed_kinds: vec![DownloadKind::File, DownloadKind::Video],
+                    max_pages: 1,
+                    max_candidates: 10,
+                    max_response_bytes: 4096,
+                    max_total_bytes: 1024 * 1024,
+                }),
+            },
+            &Settings::default(),
+            &crate::network::NetworkGovernor::new(2),
+        );
+        stop.store(true, AtomicOrdering::Relaxed);
+        server.join().unwrap();
+        let result = result.expect("a page over the cap is still scanned");
+        assert_eq!(result.failed_pages, 0, "{:?}", result.last_failure);
+        assert_eq!(result.pages_scanned, 1);
+        assert!(result.truncated);
+        assert!(
+            result
+                .candidates
+                .iter()
+                .any(|candidate| candidate.url.ends_with("/movie.mp4")),
+            "{:?}",
+            result.candidates
+        );
+    }
+
+    #[test]
     fn add_ack_returns_a_stable_job_id_for_the_same_request_id() {
         let (app, root) = isolated_app();
         let request = AddRequest {
@@ -2304,56 +2400,18 @@ mod tests {
         cleanup(root);
     }
 
-    /// Recent human lines the process-global writer rendered, regardless of which data
-    /// directory owns the log files. The writer is started once per process, so this ring is
-    /// the observation that survives another test winning the startup race.
-    fn relay_line_seen(marker: &str) -> bool {
+    /// The newest line the process-global session writer rendered that contains `marker`. The
+    /// writer is started once per process, so the shared ring of recent lines is the
+    /// observation that holds whichever test started it and whichever data directory it uses.
+    fn relay_line(marker: &str) -> Option<String> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            if crate::logging::recent(200)
-                .iter()
-                .any(|line| line.contains(marker))
+            if let Some(line) = crate::logging::recent(200)
+                .into_iter()
+                .rev()
+                .find(|line| line.contains(marker))
             {
-                return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-    }
-
-    /// JSONL values this test's own data directory received, or `None` when another test in this
-    /// binary won the process-global logger startup race: only the winning directory gets files,
-    /// and a losing `App::open` can still have created its own (empty) `logs/` first. Callers
-    /// assert the file-level contract only when this returns `Some`; the receipt and the recent
-    /// lines are the contract that always holds.
-    fn relay_lines(root: &std::path::Path, marker: &str) -> Option<Vec<serde_json::Value>> {
-        let logs = root.join("logs");
-        if !logs.exists() {
-            return None;
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            let mut values: Vec<serde_json::Value> = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(&logs) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if name.starts_with("events-") && name.ends_with(".jsonl") {
-                        if let Ok(text) = std::fs::read_to_string(entry.path()) {
-                            values.extend(
-                                text.lines()
-                                    .filter_map(|line| serde_json::from_str(line).ok()),
-                            );
-                        }
-                    }
-                }
-            }
-            if values
-                .iter()
-                .any(|value| value["event"].as_str() == Some(marker))
-            {
-                return Some(values);
+                return Some(line);
             }
             if std::time::Instant::now() >= deadline {
                 return None;
@@ -2395,30 +2453,19 @@ mod tests {
         let receipt = result.log.expect("relay batches return a receipt");
         assert_eq!(receipt.accepted, 2);
         assert_eq!(receipt.rejected, 0);
-        if crate::logging::session_id().is_some() {
-            assert!(
-                relay_line_seen("relay.capture.ok"),
-                "the relayed event should reach the session writer"
-            );
-        }
+        assert!(
+            crate::logging::session_id().is_some(),
+            "opening the app starts the session log"
+        );
 
-        if let Some(lines) = relay_lines(&root, "relay.capture.ok") {
-            let captured = lines
-                .iter()
-                .find(|value| value["event"].as_str() == Some("relay.capture.ok"))
-                .expect("the relayed event line should be written");
-            assert_eq!(captured["code"], "SSD-EXT-010");
-            assert_eq!(captured["job"], job);
-            let job_log = root
-                .join("logs")
-                .join("jobs")
-                .join(format!("job-{job}.jsonl"));
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while !job_log.exists() && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-            assert!(job_log.exists(), "{}", job_log.display());
-        }
+        let captured = relay_line("relay.capture.ok")
+            .expect("the relayed event should reach the session writer");
+        assert!(captured.contains("SSD-EXT-010"), "{captured}");
+        assert!(captured.contains("site=site.example"), "{captured}");
+        assert!(captured.contains(&format!("job={job}")), "{captured}");
+        let scanned = relay_line("relay.page.scanned")
+            .expect("the second relayed event should reach the session writer");
+        assert!(scanned.contains("site=cdn.example"), "{scanned}");
 
         app.shutdown();
         cleanup(root);

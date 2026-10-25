@@ -185,27 +185,55 @@ pub(super) fn best_mp4_video<'a>(
         })
 }
 
+/// The extractor lists formats from worst to best in its own preference order (the original
+/// language before dubs, DRC variants last), so the last compatible audio format is its pick.
+fn preferred_mp4_audio<'a>(request: &AddRequest, info: &'a MediaInfo) -> Option<&'a MediaFormat> {
+    info.formats
+        .iter()
+        .rfind(|format| mp4_audio_candidate(format, request))
+}
+
 pub(super) fn best_mp4_audio<'a>(
     request: &AddRequest,
     info: &'a MediaInfo,
 ) -> Result<&'a MediaFormat> {
-    info.formats
-        .iter()
-        .filter(|format| mp4_audio_candidate(format, request))
-        .max_by_key(|format| {
-            (
-                format.audio_channels.unwrap_or(0),
-                format.filesize.unwrap_or(0),
-            )
-        })
-        .ok_or_else(|| {
-            anyhow!(crate::i18n::ui(
-                "Seçilen dilde MP4 uyumlu ses codec'i bulunamadı; MKV seçin",
-                "No MP4-compatible audio codec was found in the selected language; choose MKV"
-            ))
-        })
+    preferred_mp4_audio(request, info).ok_or_else(|| {
+        anyhow!(crate::i18n::ui(
+            "Seçilen dilde MP4 uyumlu ses codec'i bulunamadı; MKV seçin",
+            "No MP4-compatible audio codec was found in the selected language; choose MKV"
+        ))
+    })
 }
 
+/// A playlist is downloaded with one `--format` expression for every entry, and format ids
+/// belong to a single entry; the codecs, the height and the audio language take the place of
+/// the ids. A `?` after `~=` and `<=` lets a format pass whose value the extractor did not
+/// report, as the checks on the sampled entry do (an HLS audio rendition has no `acodec`); an
+/// exact height must be reported.
+pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> String {
+    let mut height = String::new();
+    if let Some(exact) = request.exact_height {
+        height.push_str(&format!("[height={exact}]"));
+    }
+    if let Some(maximum) = request.max_height {
+        height.push_str(&format!("[height<=?{maximum}]"));
+    }
+    let language = request
+        .audio_language
+        .as_ref()
+        .map(|language| format!("[language={language}]"))
+        .unwrap_or_default();
+    let video = format!("[vcodec~=?'^({})']", MP4_VIDEO_CODECS.join("|"));
+    let audio = format!("[acodec~=?'^({})']{language}", MP4_AUDIO_CODECS.join("|"));
+    if with_audio {
+        format!("bestvideo{height}{video}+bestaudio{audio}/best{height}{video}{audio}")
+    } else {
+        format!("bestvideo{height}{video}")
+    }
+}
+
+/// The MP4-compatible selection resolved from the sampled entry: its format ids, or for a
+/// playlist a codec-filtered expression that fits the other entries too.
 pub(super) fn automatic_mp4_selector(request: &AddRequest, info: &MediaInfo) -> Result<String> {
     let video_only = info
         .formats
@@ -215,18 +243,13 @@ pub(super) fn automatic_mp4_selector(request: &AddRequest, info: &MediaInfo) -> 
             (left.height.unwrap_or(0), left.width.unwrap_or(0))
                 .cmp(&(right.height.unwrap_or(0), right.width.unwrap_or(0)))
         });
-    let audio_only = info
-        .formats
-        .iter()
-        .filter(|format| mp4_audio_candidate(format, request))
-        .max_by_key(|format| {
-            (
-                format.audio_channels.unwrap_or(0),
-                format.filesize.unwrap_or(0),
-            )
-        });
+    let audio_only = preferred_mp4_audio(request, info);
     if let (Some(video), Some(audio)) = (video_only, audio_only) {
-        return Ok(format!("{}+{}", video.id, audio.id));
+        return Ok(if request.playlist {
+            playlist_mp4_selector(request, true)
+        } else {
+            format!("{}+{}", video.id, audio.id)
+        });
     }
     let combined = info
         .formats
@@ -241,11 +264,19 @@ pub(super) fn automatic_mp4_selector(request: &AddRequest, info: &MediaInfo) -> 
                 .cmp(&(right.height.unwrap_or(0), right.width.unwrap_or(0)))
         });
     if let Some(combined) = combined {
-        return Ok(combined.id.clone());
+        return Ok(if request.playlist {
+            playlist_mp4_selector(request, true)
+        } else {
+            combined.id.clone()
+        });
     }
     if request.expected_audio != Some(true) && (explicitly_silent(info) || !audio_offered(info)) {
         if let Some(video) = video_only {
-            return Ok(video.id.clone());
+            return Ok(if request.playlist {
+                playlist_mp4_selector(request, false)
+            } else {
+                video.id.clone()
+            });
         }
     }
     crate::bail_code!(
@@ -350,22 +381,26 @@ pub(super) fn validate_container_selection(request: &AddRequest, info: &MediaInf
     Ok(())
 }
 
+const MP4_VIDEO_CODECS: &[&str] = &[
+    "avc", "h264", "hevc", "h265", "hev1", "hvc1", "dvh1", "dvhe", "av01", "av1", "mpeg4", "mp4v",
+];
+
+/// Both FFmpeg names (`ac3`, `eac3`) and the RFC 6381 names yt-dlp reports (`ac-3`, `ec-3`).
+const MP4_AUDIO_CODECS: &[&str] = &["aac", "mp4a", "alac", "mp3", "ac3", "ac-3", "eac3", "ec-3"];
+
 pub(super) fn mp4_video_codec(codec: &str) -> bool {
-    let codec = codec.to_ascii_lowercase();
-    [
-        "avc", "h264", "hevc", "h265", "hev1", "hvc1", "dvh1", "dvhe", "av01", "av1", "mpeg4",
-        "mp4v",
-    ]
-    .iter()
-    .any(|prefix| codec.starts_with(prefix))
+    starts_with_any(codec, MP4_VIDEO_CODECS)
 }
 
-/// Accepts both FFmpeg names (`ac3`, `eac3`) and the RFC 6381 names yt-dlp reports (`ac-3`, `ec-3`).
 pub(super) fn mp4_audio_codec(codec: &str) -> bool {
+    starts_with_any(codec, MP4_AUDIO_CODECS)
+}
+
+pub(super) fn starts_with_any<S: AsRef<str>>(codec: &str, prefixes: &[S]) -> bool {
     let codec = codec.to_ascii_lowercase();
-    ["aac", "mp4a", "alac", "mp3", "ac3", "ac-3", "eac3", "ec-3"]
+    prefixes
         .iter()
-        .any(|prefix| codec.starts_with(prefix))
+        .any(|prefix| codec.starts_with(prefix.as_ref()))
 }
 
 pub(super) fn is_hdr_dynamic_range(value: &str) -> bool {

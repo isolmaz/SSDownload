@@ -129,6 +129,8 @@ pub(super) unsafe fn open_card(owner: HWND, app: App, kind: CardKind) {
         raw.cast(),
     );
     if hwnd.is_null() {
+        DeleteObject((*raw).font as HGDIOBJ);
+        DeleteObject((*raw).bold as HGDIOBJ);
         drop(Box::from_raw(raw));
         return;
     }

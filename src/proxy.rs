@@ -75,9 +75,21 @@ fn resolve(settings: &ProxySettings) -> Result<ProxyConfig> {
         "none" => Ok(ProxyConfig::default()),
         "manual" => {
             let credentials = credentials(&settings.username, &settings.password)?;
-            let url = url::Url::parse(settings.url.trim()).context("Proxy adresi geçersiz")?;
-            let host = url.host_str().context("Proxy sunucusu eksik")?.to_owned();
-            let port = url.port_or_known_default().context("Proxy portu eksik")?;
+            let url = url::Url::parse(settings.url.trim()).context(crate::i18n::ui(
+                "Proxy adresi geçersiz",
+                "The proxy address is not valid",
+            ))?;
+            let host = url
+                .host_str()
+                .context(crate::i18n::ui(
+                    "Proxy sunucusu eksik",
+                    "The proxy address has no host name",
+                ))?
+                .to_owned();
+            let port = url.port_or_known_default().context(crate::i18n::ui(
+                "Proxy portu eksik",
+                "The proxy address has no port",
+            ))?;
             let upstream = match url.scheme() {
                 "http" => Upstream::Http {
                     host,
@@ -89,7 +101,10 @@ fn resolve(settings: &ProxySettings) -> Result<ProxyConfig> {
                     port,
                     credentials,
                 },
-                _ => bail!("Desteklenmeyen proxy türü"),
+                _ => bail!(
+                    "{}",
+                    crate::i18n::ui("Desteklenmeyen proxy türü", "Unsupported proxy type")
+                ),
             };
             Ok(ProxyConfig {
                 upstream,
@@ -107,7 +122,10 @@ fn credentials(username: &str, sealed: &str) -> Result<Option<(String, String)>>
     let password = if sealed.is_empty() {
         String::new()
     } else {
-        crate::secure::unseal(sealed).context("Proxy parolası açılamadı")?
+        crate::secure::unseal(sealed).context(crate::i18n::ui(
+            "Proxy parolası açılamadı",
+            "The proxy password could not be decrypted",
+        ))?
     };
     Ok(Some((username.to_owned(), password)))
 }
@@ -310,7 +328,10 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
 fn connect_direct(host: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
     let addresses = (host, port)
         .to_socket_addrs()
-        .context("Uzak sunucu adı çözümlenemedi")?
+        .context(crate::i18n::ui(
+            "Uzak sunucu adı çözümlenemedi",
+            "The remote host name could not be resolved",
+        ))?
         .collect::<Vec<_>>();
     let mut last = None;
     for address in addresses {
@@ -319,9 +340,12 @@ fn connect_direct(host: &str, port: u16, timeout: Duration) -> Result<TcpStream>
             Err(error) => last = Some(error),
         }
     }
-    Err(last
-        .map(anyhow::Error::from)
-        .unwrap_or_else(|| anyhow::anyhow!("Uzak sunucu adresi yok")))
+    Err(last.map(anyhow::Error::from).unwrap_or_else(|| {
+        anyhow::anyhow!(
+            "{}",
+            crate::i18n::ui("Uzak sunucu adresi yok", "The remote host has no address")
+        )
+    }))
 }
 
 fn http_connect(
@@ -344,10 +368,22 @@ fn http_connect(
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
         if head.len() > 16 * 1024 {
-            bail!("Proxy yanıt başlığı çok büyük");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Proxy yanıt başlığı çok büyük",
+                    "The proxy response header is too large",
+                )
+            );
         }
         if stream.read(&mut byte)? == 0 {
-            bail!("Proxy bağlantıyı kapattı");
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Proxy bağlantıyı kapattı",
+                    "The proxy closed the connection"
+                )
+            );
         }
         head.push(byte[0]);
     }
@@ -359,8 +395,20 @@ fn http_connect(
         .unwrap_or(0);
     match status {
         200..=299 => Ok(()),
-        407 => bail!("Proxy kimlik doğrulaması reddedildi (HTTP 407)"),
-        other => bail!("Proxy tüneli açılamadı (HTTP {other})"),
+        407 => bail!(
+            "{}",
+            crate::i18n::ui(
+                "Proxy kimlik doğrulaması reddedildi (HTTP 407)",
+                "Proxy authentication was rejected (HTTP 407)",
+            )
+        ),
+        other => bail!(
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("Proxy tüneli açılamadı (HTTP {other})"),
+                format!("The proxy tunnel could not be opened (HTTP {other})"),
+            )
+        ),
     }
 }
 
@@ -383,13 +431,25 @@ fn socks5_connect(
     let mut choice = [0u8; 2];
     stream.read_exact(&mut choice)?;
     if choice[0] != 0x05 {
-        bail!("SOCKS5 sunucusu geçersiz yanıt verdi");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "SOCKS5 sunucusu geçersiz yanıt verdi",
+                "The SOCKS5 server sent an invalid reply",
+            )
+        );
     }
     match (choice[1], credentials) {
         (0x00, _) => {}
         (0x02, Some((username, password))) => {
             if username.len() > 255 || password.len() > 255 {
-                bail!("SOCKS5 kimlik bilgileri çok uzun");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "SOCKS5 kimlik bilgileri çok uzun",
+                        "The SOCKS5 credentials are too long",
+                    )
+                );
             }
             let mut auth = vec![0x01, username.len() as u8];
             auth.extend_from_slice(username.as_bytes());
@@ -399,10 +459,22 @@ fn socks5_connect(
             let mut status = [0u8; 2];
             stream.read_exact(&mut status)?;
             if status[1] != 0x00 {
-                bail!("SOCKS5 kimlik doğrulaması reddedildi");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "SOCKS5 kimlik doğrulaması reddedildi",
+                        "SOCKS5 authentication was rejected",
+                    )
+                );
             }
         }
-        _ => bail!("SOCKS5 sunucusu desteklenen bir kimlik doğrulama yöntemi sunmadı"),
+        _ => bail!(
+            "{}",
+            crate::i18n::ui(
+                "SOCKS5 sunucusu desteklenen bir kimlik doğrulama yöntemi sunmadı",
+                "The SOCKS5 server offered no supported authentication method",
+            )
+        ),
     }
     let host = host.trim_start_matches('[').trim_end_matches(']');
     let mut request = vec![0x05, 0x01, 0x00];
@@ -417,7 +489,13 @@ fn socks5_connect(
         }
         Err(_) => {
             if host.len() > 255 {
-                bail!("SOCKS5 hedef adı çok uzun");
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "SOCKS5 hedef adı çok uzun",
+                        "The SOCKS5 target host name is too long",
+                    )
+                );
             }
             request.push(0x03);
             request.push(host.len() as u8);
@@ -429,7 +507,13 @@ fn socks5_connect(
     let mut reply = [0u8; 4];
     stream.read_exact(&mut reply)?;
     if reply[1] != 0x00 {
-        bail!("SOCKS5 bağlantısı reddedildi (kod {})", reply[1]);
+        bail!(
+            "{}",
+            crate::i18n::ui_owned!(
+                format!("SOCKS5 bağlantısı reddedildi (kod {})", reply[1]),
+                format!("The SOCKS5 connection was refused (code {})", reply[1]),
+            )
+        );
     }
     let skip = match reply[3] {
         0x01 => 4,
@@ -439,7 +523,10 @@ fn socks5_connect(
             stream.read_exact(&mut length)?;
             usize::from(length[0])
         }
-        _ => bail!("SOCKS5 yanıtı geçersiz"),
+        _ => bail!(
+            "{}",
+            crate::i18n::ui("SOCKS5 yanıtı geçersiz", "The SOCKS5 reply is invalid")
+        ),
     };
     let mut bound = vec![0u8; skip + 2];
     stream.read_exact(&mut bound)?;
@@ -457,25 +544,41 @@ pub(crate) fn configure_site_logins(logins: &[crate::model::SiteLogin]) {
 /// The credentials for exactly this URL's host: HTTPS always, plain HTTP only when the
 /// entry allows it. Another host, even a redirect target, never receives them.
 pub(crate) fn site_login(url: &url::Url) -> Option<(String, String)> {
-    let host = url.host_str()?.to_ascii_lowercase();
     let logins = SITE_LOGINS.read().unwrap_or_else(|e| e.into_inner());
-    let login = logins
-        .iter()
-        .find(|login| login.host.trim().eq_ignore_ascii_case(&host))?;
-    let allowed = match url.scheme() {
-        "https" => true,
-        "http" => login.allow_http,
-        _ => false,
-    };
-    if !allowed {
-        return None;
-    }
+    let login = matching_login(&logins, url)?;
     let password = if login.password.is_empty() {
         String::new()
     } else {
         crate::secure::unseal(&login.password).ok()?
     };
     Some((login.username.clone(), password))
+}
+
+fn matching_login<'a>(
+    logins: &'a [crate::model::SiteLogin],
+    url: &url::Url,
+) -> Option<&'a crate::model::SiteLogin> {
+    let host = url.host_str()?;
+    let login = logins.iter().find(|login| same_host(&login.host, host))?;
+    let allowed = match url.scheme() {
+        "https" => true,
+        "http" => login.allow_http,
+        _ => false,
+    };
+    allowed.then_some(login)
+}
+
+/// Compares hosts in their canonical form: `bücher.example` as typed in the settings and
+/// `xn--bcher-kva.example` as `Url::host_str` reports it are the same server, and so are
+/// `files.example.com` and `Files.Example.com.`.
+pub(crate) fn same_host(left: &str, right: &str) -> bool {
+    match (
+        crate::network::canonical_host_name(left),
+        crate::network::canonical_host_name(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -506,5 +609,70 @@ mod tests {
         assert_eq!(config.upstream_for("10.1.2.3"), &Upstream::Direct);
         assert_eq!(config.upstream_for("127.0.0.1"), &Upstream::Direct);
         assert_ne!(config.upstream_for("cdn.example"), &Upstream::Direct);
+    }
+
+    #[test]
+    fn site_logins_match_hosts_in_their_canonical_form() {
+        let login = |host: &str, allow_http: bool| crate::model::SiteLogin {
+            host: host.into(),
+            username: "user".into(),
+            password: String::new(),
+            allow_http,
+        };
+        let logins = [
+            login("bücher.example", false),
+            login("Files.Example.COM", true),
+        ];
+        let host_for = |url: &str| {
+            matching_login(&logins, &url::Url::parse(url).unwrap()).map(|login| login.host.as_str())
+        };
+
+        // Typed with non-ASCII letters, the login still answers the punycode host of the URL.
+        assert_eq!(
+            host_for("https://xn--bcher-kva.example/a"),
+            Some("bücher.example")
+        );
+        assert_eq!(host_for("https://bücher.example/a"), Some("bücher.example"));
+        assert_eq!(
+            host_for("https://files.example.com/a"),
+            Some("Files.Example.COM")
+        );
+
+        // Other hosts, including lookalikes, never receive it; plain HTTP needs the opt-in.
+        assert_eq!(host_for("https://other.example/a"), None);
+        assert_eq!(host_for("https://xn--bcher-kva.example.evil/a"), None);
+        assert_eq!(host_for("https://sub.files.example.com/a"), None);
+        assert_eq!(host_for("http://xn--bcher-kva.example/a"), None);
+        assert_eq!(
+            host_for("http://files.example.com/a"),
+            Some("Files.Example.COM")
+        );
+        assert_eq!(host_for("ftp://files.example.com/a"), None);
+    }
+
+    #[test]
+    fn a_login_saved_with_a_trailing_dot_matches_the_same_server() {
+        let logins = [crate::model::SiteLogin {
+            host: "files.example.com.".into(),
+            username: "user".into(),
+            password: String::new(),
+            allow_http: false,
+        }];
+        let matches = |url: &str| matching_login(&logins, &url::Url::parse(url).unwrap()).is_some();
+
+        assert!(matches("https://files.example.com/a"));
+        assert!(matches("https://FILES.example.com./a"));
+        assert!(!matches("https://sub.files.example.com/a"));
+    }
+
+    #[test]
+    fn spellings_of_one_server_are_the_same_host() {
+        assert!(same_host("bücher.example", "xn--bcher-kva.example"));
+        assert!(same_host("BÜCHER.example", "xn--bcher-kva.example."));
+        assert!(same_host(" Files.Example.COM. ", "files.example.com"));
+        assert!(same_host("[::1]", "[0:0:0:0:0:0:0:1]"));
+        assert!(!same_host("files.example.com", "files.example.org"));
+        assert!(!same_host("files.example.com", "not a host"));
+        assert!(!same_host("not a host", "not a host"));
     }
 }
