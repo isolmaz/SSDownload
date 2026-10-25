@@ -298,6 +298,19 @@ test("a blob player with one observed manifest hands that manifest, never its bl
   assert.equal(reply.ok, true);
 });
 
+test("the video context entry on a blob player falls back to the page and its one observed source", async () => {
+  const h = backgroundHarness();
+  const pageUrl = "https://www.youtube.com/watch?v=abc";
+  const blob = "blob:https://www.youtube.com/0000";
+  const players = [{ id: "movie_player", title: "Film", urls: [blob], active: true }];
+  await h.content({ channel: "ssdownload-content", event: "scan", documentId: "d", pageUrl, players, sources: [{ url: blob, kind: "blob" }] });
+  await h.events.headers.listeners[0]({ tabId: 7, frameId: 0, documentId: "d", statusCode: 200, url: "https://cdn.example/master.m3u8", responseHeaders: [{ name: "content-type", value: "application/vnd.apple.mpegurl" }] });
+  await h.menu("ssdownload-video", { tab: { id: 7, url: pageUrl }, info: { srcUrl: blob } });
+  await h.waitFor(() => h.nativeRequests.some(request => request?.action?.type === "browser_media"));
+  const handoff = h.nativeRequests.find(request => request?.action?.type === "browser_media");
+  assert.equal(handoff.action.request.url, "https://cdn.example/master.m3u8", "the blob address must not end the lookup before the page is tried");
+});
+
 test("an unresolved blob player hands its page address, never its blob or another player's stream", async () => {
   const h = backgroundHarness();
   const pageUrl = "https://www.youtube.com/watch?v=abc";
@@ -708,6 +721,24 @@ test("the popup offers the download page only when the app is missing, not when 
   const refused = backgroundHarness({ native: async () => { throw new Error("Access to the specified native messaging host is forbidden."); } });
   await refused.settle();
   assert.equal((await popup(refused)).appMissing, false);
+});
+
+test("a content script on a page named popup.html cannot speak for the popup", async () => {
+  const h = backgroundHarness();
+  await h.settle();
+  const reply = await new Promise(resolve => h.events.message.listeners.at(-1)({ channel: "ssdownload-popup", command: "state" },
+    { id: "test-extension", url: "https://site.example/popup.html", tab: { id: 7 } }, resolve));
+  assert.ok(reply.error, "a page sender is refused");
+  assert.equal(reply.detectionEnabled, undefined);
+});
+
+test("without the app the extension adds no context entries, but a refusing app keeps Open SSDownload", async () => {
+  const missing = backgroundHarness({ native: async () => { throw new Error("Specified native messaging host not found."); } });
+  await missing.settle();
+  assert.deepEqual(missing.menuEntries.map(entry => entry.id), []);
+  const refused = backgroundHarness({ native: async () => { throw new Error("Access to the specified native messaging host is forbidden."); } });
+  await refused.settle();
+  assert.ok(refused.menuEntries.some(entry => entry.id === "ssdownload-app"));
 });
 
 test("a refused extension identity is reported as such, never as a missing registration", async () => {

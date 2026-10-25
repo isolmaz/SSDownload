@@ -688,7 +688,22 @@ fn install_helper_script(
     marker: &Path,
     version: &str,
 ) -> String {
-    let quoted = |value: &str| format!("'{}'", value.replace('\'', "''"));
+    // PowerShell also ends a single-quoted string at the typographic quotes U+2018-U+201B (a
+    // user name such as "Ali’nin" has one); doubling any of them keeps it as text.
+    let quoted = |value: &str| {
+        let mut text = String::from("'");
+        for character in value.chars() {
+            if matches!(
+                character,
+                '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}'
+            ) {
+                text.push(character);
+            }
+            text.push(character);
+        }
+        text.push('\'');
+        text
+    };
     // Keep the verified file open without write/delete sharing through installation.
     // A second path-based hash check alone would leave another replacement race.
     format!(
@@ -1283,14 +1298,19 @@ fn stamp_update_check(app: &crate::app::App) {
     }
 }
 
+/// A stamp from the last day skips the automatic check. One in the future (written while the
+/// clock was wrong) must not hold checks back until real time catches up with it.
+fn checked_recently(last_check: i64, now: i64) -> bool {
+    last_check > 0 && (0..24 * 3600).contains(&(now - last_check))
+}
+
 pub fn startup_check(app: crate::app::App) {
     report_install_failure(app.paths());
     let settings = app.snapshot().settings;
     if !settings.update_check_enabled {
         return;
     }
-    let now = chrono::Local::now().timestamp();
-    if settings.last_update_check > 0 && now - settings.last_update_check < 24 * 3600 {
+    if checked_recently(settings.last_update_check, chrono::Local::now().timestamp()) {
         return;
     }
     // A manual check already in flight covers this launch; it reports its own outcome.
@@ -1677,6 +1697,52 @@ mod tests {
             "the reason must name the Setup that could not be opened: {written}"
         );
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn helper_paths_with_typographic_quotes_reach_powershell_unchanged() {
+        let root =
+            PathBuf::from("C:\\Users\\Ali\u{2019}nin \u{2018}x\u{2019} \u{201A}y\u{201B} 'z'");
+        let setup = root.join("SSDownload-9.9.9-Setup.exe");
+        let script = install_helper_script(
+            1,
+            &setup,
+            &root.join("ssdownload.exe"),
+            &"0".repeat(64),
+            &root.join(INSTALL_FAILURE_MARKER),
+            "9.9.9",
+        );
+        let encode = |text: &str| {
+            let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            STANDARD.encode(bytes)
+        };
+        // PowerShell's own parser decides: no syntax error, and the Setup path is one literal.
+        let check = format!(
+            "$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{script}')); \
+             $expected=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{setup}')); \
+             $tokens=$null; $errors=$null; \
+             $ast=[System.Management.Automation.Language.Parser]::ParseInput($text,[ref]$tokens,[ref]$errors); \
+             if ($errors.Count -gt 0) {{ exit 2 }}; \
+             $values=$ast.FindAll({{ $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }}, $true) | ForEach-Object {{ $_.Value }}; \
+             if ($values -cnotcontains $expected) {{ exit 3 }}; \
+             exit 0",
+            script = encode(&script),
+            setup = encode(&setup.display().to_string()),
+        );
+        let status = helper_command(&check).status().expect("powershell starts");
+        assert_eq!(status.code(), Some(0));
+    }
+
+    #[test]
+    fn a_future_check_stamp_does_not_hold_back_the_daily_check() {
+        let now = 1_800_000_000;
+        assert!(checked_recently(now - 3600, now));
+        assert!(!checked_recently(now - 25 * 3600, now));
+        assert!(!checked_recently(0, now), "a profile that never checked");
+        assert!(
+            !checked_recently(now + 30 * 24 * 3600, now),
+            "a stamp written by a clock that ran ahead"
+        );
     }
 
     #[test]

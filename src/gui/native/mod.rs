@@ -36,6 +36,7 @@ use windows_sys::Win32::{
             OleInitialize, OleUninitialize, RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop,
             DROPEFFECT_COPY, DROPEFFECT_NONE,
         },
+        SystemServices::SS_NOPREFIX,
         Threading::AttachThreadInput,
     },
     UI::{
@@ -2333,7 +2334,7 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
     append(
         help,
         1402,
-        crate::i18n::ui("SSDownload &hakkında", "SSDownload &about"),
+        crate::i18n::ui("SSDownload &hakkında", "&About SSDownload"),
     );
     AppendMenuW(
         bar,
@@ -4898,7 +4899,8 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                     queues,
                     MF_STRING | if current { MF_CHECKED } else { 0 },
                     (ID_QUEUE_BASE + index as i32) as usize,
-                    wide(queue.display_name()).as_ptr(),
+                    // A queue named "Work & home" must not turn into a mnemonic.
+                    wide(&queue.display_name().replace('&', "&&")).as_ptr(),
                 );
             }
             AppendMenuW(

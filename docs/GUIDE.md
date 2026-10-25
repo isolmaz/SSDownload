@@ -50,7 +50,7 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 - **Mini panel and completion card:** **Downloads → Mini panel** (or the tray) opens a small list of active downloads that can be pinned on top. A finished download shows a card with **Open** and **Show in folder**.
 - **Tray:** progress on the icon; the menu has the mini panel, new download, add from clipboard, pause/resume all, speed-limit presets, shut down when done, a one-hour quiet mode, the download folder, updates, Settings and Exit.
 - **Holds:** a job waits when its disk has less than 256 MiB (or less than the remaining size) free, and optionally while Windows reports a metered connection. Windows is kept awake while downloads run (the display may still sleep).
-- **Simple and Advanced** (`Basit` / `Gelişmiş`) are chosen in the first-run wizard and in Settings. Advanced adds named queues with time windows and byte quotas, folder rules, a site crawler, periodic synchronization, site logins, the event and job logs and completion actions (notify, shut down, run a program).
+- **Basic and Advanced** (`Basit` / `Gelişmiş`) are chosen in the first-run wizard and in Settings (**Interface level**). Advanced adds named queues with time windows and byte quotas, folder rules, a site crawler, periodic synchronization, site logins, the event and job logs and completion actions (notify, shut down, run a program).
 
 ## Menus and shortcuts
 
@@ -58,7 +58,7 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 |---|---|
 | **File** (Dosya) | New download (Ctrl+N), Video download (Ctrl+Shift+N), Batch download, Import list, Export list, Exit |
 | **Downloads** (İndirme) | Pause / resume selected (Space), Remove selected (Delete), Pause all, Resume all, Clear completed, Retry failed, Mini panel, Open file (Enter), Open folder, Refresh source address, Finish live recording and keep it, Speed limit, Select all (Ctrl+A) |
-| **Tools** (Araçlar) | Install media support, Browser setup, Settings; on the Advanced surface also Queue manager, Folder rules, Site explorer, Sync manager, Site logins, Event log, Job log, Diagnostics |
+| **Tools** (Araçlar) | Install media support, Browser setup, Settings; on the Advanced level also Queue manager, Folder rules, Site explorer, Sync manager, Site logins, Event log, Job log, Diagnostics |
 | **Help** (Yardım) | Check for updates, Keyboard shortcuts, Show the tour, About SSDownload |
 
 The progress column fills from the left as a job advances: blue while it runs, grey while it waits or is paused, green when it completed and red when it failed or was cancelled (those two fill the whole cell).
@@ -69,12 +69,12 @@ Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt
 
 | Tab | Controls |
 |---|---|
-| **General** | Simple/Advanced surface and interface language (Turkish or English; the browser extension follows it); download folder; usage profiles; clipboard detection; start with Windows; minimize to tray; completion notification; dark title bar and controls; site entries in the browser; daily working hours; update check; extension install. |
+| **General** | Interface level (Basic or Advanced) and interface language (Turkish or English; the browser extension follows it); download folder; usage profiles; clipboard detection; start with Windows; minimize to tray; completion notification; dark title bar and controls; site entries in the browser; daily working hours; update check; extension install. |
 | **Advanced** | Concurrent jobs (1–16); connections per file (1–16); media fragment concurrency (1–16); per-host jobs and connections (1–16); global speed limit (KiB/s, 0 = unlimited); retry count (0–20); experimental browser transfer; event log level and host recording. |
 | **Network** | Proxy: the Windows setting, none, or manual `http://` / `socks5://` with an optional user name and password; a scheduled speed limit (daily window and KiB/s). |
 | **Behaviour** | Keep Windows awake while downloading; completion sound; completion card; browser download takeover; hold on a metered connection; the Ctrl+Shift+D hotkey; double-click action; history retention in days (0 keeps everything). |
 
-The Simple surface shows only **General**; the other tabs keep their saved values.
+The Basic level shows only **General**; the other tabs keep their saved values.
 
 - **Speed limit:** **Downloads → Speed limit** sets KiB/s for the selected jobs (0 follows the global limit); the tray presets set the global limit.
 - **Site logins** (Advanced): host → user name and password, sent as HTTP Basic credentials only to that exact host over HTTPS (or HTTP when the entry allows it). A redirect to another host never carries them.
@@ -103,7 +103,7 @@ The Simple surface shows only **General**; the other tabs keep their saved value
 
 - Classified failures carry permanent `SSD-<area>-<number>` codes with Turkish and English messages. Areas: `BRG` browser bridge, `MED` media resolution, `NET` network, `TRF` transfer, `STO` storage, `RCV` recovery, `TOL` media tools, `UPD` updates, `EXT` extension. Codes are never renumbered or reused.
 - Logs live in `<profile>\logs\`: `events-YYYYMMDD.jsonl` and `ssdownload-YYYYMMDD.log`, rotating at 5 MB with five kept and removed after 30 days, plus per-job timelines in `logs\jobs\`. URLs are logged without credentials, query or fragment.
-- **Report failure** (on a failed analysis or job) and **Tools → Diagnostics** write a local folder and ZIP. Nothing is uploaded; look through it before sharing it in an issue.
+- **Report problem** (on a failed analysis or job) and **Tools → Diagnostics** write a local folder and ZIP. Nothing is uploaded; look through it before sharing it in an issue.
 
 ## Command line
 
@@ -111,11 +111,13 @@ The Simple surface shows only **General**; the other tabs keep their saved value
 
 | Command | Purpose |
 |---|---|
-| `--add URL [--kind auto\|file\|video\|audio] [--output DIR] [--name FILE]` | Queue a download; also `--connections 1..16`, `--sha256 HEX`, `--container mp4\|mkv`, `--max-height 1080`, `--format ID`, `--audio-format best\|mp3\|m4a\|opus\|flac`, `--subtitle LANG`, `--playlist`, `--referer URL`, `--start-at TIME` |
+| `--add URL [--kind auto\|file\|video\|audio] [--output DIR] [--name FILE]` | Queue a download; also `--connections 1..16`, `--sha256 HEX`, `--container mp4\|mkv`, `--max-height 1080`, `--format ID`, `--audio-format best\|mp3\|m4a\|opus\|flac`, `--subtitle LANG`, `--playlist`, `--referer URL`, `--start-at TIME`, `--request-id ID` (repeating it returns the same job) |
+| `--request-json FILE`, `--action-json FILE` | Queue a download from an AddRequest JSON file; run an action JSON file (for example a site crawl) |
 | `--inspect URL` | Print the media analysis as JSON |
 | `--status [--status-offset 0 --status-limit 100]` | Paged queue status |
 | `--pause ID`, `--resume ID`, `--remove ID [--delete-file]`, `--pause-all`, `--resume-all`, `--clear-completed` | Queue control |
 | `--diagnose [--diagnose-hours 24]` | Event log summary |
+| `--set-settings FILE` | Save the settings from a Settings JSON file |
 | `--install-tools [--update-tools]` | Install or refresh the verified media tools |
 | `--setup-tools` | Install missing media tools without starting the app (used by the installer) |
 | `--register-host`, `--unregister-host` | Browser connection registration |

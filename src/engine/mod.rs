@@ -4929,9 +4929,9 @@ fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailu
 }
 
 fn retryable_error(error: &anyhow::Error) -> bool {
-    if transfer::http_status(error)
-        .is_some_and(|status| matches!(status, 408 | 429 | 500 | 502 | 503 | 504))
-    {
+    if transfer::http_status(error).is_some_and(|status| {
+        matches!(status, 408 | 429) || transfer::is_transient_server_error(status)
+    }) {
         return true;
     }
     for cause in error.chain() {

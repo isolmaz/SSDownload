@@ -1236,12 +1236,13 @@ fn extract_zip_safely(archive_path: &Path, destination: &Path) -> Result<()> {
                 )
             );
         }
+        let entry_name = entry.name()?.into_owned();
         let enclosed = entry.enclosed_name().ok_or_else(|| {
             anyhow!(
                 "{}",
                 crate::i18n::ui_owned!(
-                    format!("Arşiv güvenli olmayan yol içeriyor: {}", entry.name()),
-                    format!("The archive contains an unsafe path: {}", entry.name())
+                    format!("Arşiv güvenli olmayan yol içeriyor: {entry_name}"),
+                    format!("The archive contains an unsafe path: {entry_name}")
                 )
             )
         })?;
@@ -1266,12 +1267,10 @@ fn extract_zip_safely(archive_path: &Path, destination: &Path) -> Result<()> {
                         "{}",
                         crate::i18n::ui_owned!(
                             format!(
-                                "Arşiv güvenli olmayan Windows dosya adı içeriyor: {}",
-                                entry.name()
+                                "Arşiv güvenli olmayan Windows dosya adı içeriyor: {entry_name}"
                             ),
                             format!(
-                                "The archive contains an unsafe Windows file name: {}",
-                                entry.name()
+                                "The archive contains an unsafe Windows file name: {entry_name}"
                             ),
                         )
                     );
@@ -1284,14 +1283,8 @@ fn extract_zip_safely(archive_path: &Path, destination: &Path) -> Result<()> {
                 bail!(
                     "{}",
                     crate::i18n::ui_owned!(
-                        format!(
-                            "Arşiv desteklenmeyen bağlantı/özel dosya içeriyor: {}",
-                            entry.name()
-                        ),
-                        format!(
-                            "The archive contains an unsupported link or special file: {}",
-                            entry.name()
-                        ),
+                        format!("Arşiv desteklenmeyen bağlantı/özel dosya içeriyor: {entry_name}"),
+                        format!("The archive contains an unsupported link or special file: {entry_name}"),
                     )
                 );
             }
@@ -1846,4 +1839,41 @@ fn cleanup_versions(paths: &AppPaths) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+        for (name, bytes) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn tool_archives_extract_inside_the_destination_and_escaping_entries_are_refused() {
+        let root = std::env::temp_dir().join(format!("ssdownload-zip-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+
+        let tool = root.join("tool.zip");
+        write_zip(&tool, &[("ffmpeg/bin/ffmpeg.exe", b"binary")]);
+        let extracted = root.join("extracted");
+        extract_zip_safely(&tool, &extracted).unwrap();
+        assert_eq!(
+            fs::read(extracted.join("ffmpeg/bin/ffmpeg.exe")).unwrap(),
+            b"binary"
+        );
+
+        let escaping = root.join("escaping.zip");
+        write_zip(&escaping, &[("../escaped.txt", b"payload")]);
+        assert!(extract_zip_safely(&escaping, &root.join("jail")).is_err());
+        assert!(!root.join("escaped.txt").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

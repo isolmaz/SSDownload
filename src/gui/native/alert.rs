@@ -242,7 +242,9 @@ pub(super) unsafe fn alert_create(ui: &mut AlertUi) {
             ui.hwnd,
             "STATIC",
             &ui.body,
-            WS_CHILD | WS_VISIBLE, // SS_LEFT: left aligned and word wrapped
+            // SS_LEFT: left aligned and word wrapped; the body carries file and queue names, so
+            // an '&' in them is text, not a mnemonic.
+            WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
             0,
             ALERT_BODY_ID,
         )

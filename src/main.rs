@@ -791,6 +791,8 @@ fn validate_arguments(args: &[String]) -> Result<()> {
         "--remove-extension-policies",
         "--quit",
         "--diagnose",
+        "--enable-autostart",
+        "--disable-autostart",
     ];
     let mut position = 0;
     let mut command_count = 0;
@@ -880,6 +882,14 @@ mod tests {
             "two commands must not run one and silently drop the other"
         );
         assert!(validate_arguments(&argv(&["--status", "--update-tools"])).is_err());
+    }
+
+    #[test]
+    fn autostart_is_a_command_that_cannot_swallow_another() {
+        assert!(validate_arguments(&argv(&["--enable-autostart"])).is_ok());
+        assert!(validate_arguments(&argv(&["--disable-autostart"])).is_ok());
+        assert!(validate_arguments(&argv(&["--enable-autostart", "--pause-all"])).is_err());
+        assert!(validate_arguments(&argv(&["--disable-autostart", "--quit"])).is_err());
     }
 
     /// The handoff policy is a pure function, so the schedule a second launch walks through

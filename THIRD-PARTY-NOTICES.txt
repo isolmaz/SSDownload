@@ -204,7 +204,7 @@ into SSDownload, and are not included in the installer or portable ZIP.
   FFmpeg / ffprobe
     Upstream source: https://ffmpeg.org/ and https://github.com/FFmpeg/FFmpeg
     Windows build provider: https://github.com/BtbN/FFmpeg-Builds
-    Release API: https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest
+    Release API: https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest
     Selected asset: ffmpeg-master-latest-win64-lgpl-shared.zip
     Checksums: checksums.sha256 from that BtbN release
     License: LGPL-3.0-or-later for the selected version-3 LGPL build. SSDownload's installer
@@ -224,7 +224,7 @@ The default development packages produced by scripts/package.ps1 are unsigned. N
 Authenticode signature, browser-store publication, or third-party endorsement is
 implied.
 
-Release 1.1.0 includes generated licenses/index.json and original license/notice
+Every release includes generated licenses/index.json and original license/notice
 texts for the resolved Windows Cargo graph, including build dependencies and
 vendored native sources. sbom.cdx.json records versions and archive checksums.
 Optional tool SBOMs are written at tool installation time; embedded binary

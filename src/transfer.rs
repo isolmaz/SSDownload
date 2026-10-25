@@ -1070,10 +1070,9 @@ fn http_to_file(
             retry_after: headers.retry_after,
         });
     }
-    if matches!(
-        headers.status,
-        401 | 403 | 404 | 408 | 410 | 500 | 502 | 504
-    ) {
+    if matches!(headers.status, 401 | 403 | 404 | 408 | 410)
+        || is_transient_server_error(headers.status)
+    {
         return Err(AttemptFailure::Other(anyhow!(HttpStatusError {
             status: headers.status
         })));
@@ -1682,10 +1681,9 @@ impl DynamicRangeWorker<'_> {
                 retry_after: headers.retry_after,
             });
         }
-        if matches!(
-            headers.status,
-            401 | 403 | 404 | 408 | 410 | 500 | 502 | 504
-        ) {
+        if matches!(headers.status, 401 | 403 | 404 | 408 | 410)
+            || is_transient_server_error(headers.status)
+        {
             return Err(AttemptFailure::Other(anyhow!(HttpStatusError {
                 status: headers.status
             })));
@@ -2938,6 +2936,11 @@ fn origin(url: &Url) -> (String, String, u16) {
 fn is_redirect(status: u32) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
 }
+/// A server failure that a later attempt can get past. 501 is left out: a server that does
+/// not implement ranges may answer a Range request with it, which is a range rejection.
+pub(crate) fn is_transient_server_error(status: u32) -> bool {
+    (500..=599).contains(&status) && status != 501
+}
 fn is_strong_etag(value: &str) -> bool {
     !value.trim_start().starts_with("W/")
 }
@@ -4045,6 +4048,13 @@ mod tests {
 
     #[test]
     fn a_gateway_error_on_a_later_range_is_a_retryable_http_status_not_a_range_rejection() {
+        // 522 stands for the proxy and CDN statuses (520-524) that no fixed list names.
+        for (status, line) in [(502, "502 Bad Gateway"), (522, "522 Connection Timed Out")] {
+            later_range_server_error_keeps_the_recorded_range(status, line);
+        }
+    }
+
+    fn later_range_server_error_keeps_the_recorded_range(status: u32, line: &'static str) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -4086,7 +4096,7 @@ mod tests {
                                     // The first range has finished and been recorded by now.
                                     thread::sleep(Duration::from_millis(400));
                                     let _ = stream.write_all(
-                                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                        format!("HTTP/1.1 {line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes(),
                                     );
                                     return;
                                 }
@@ -4106,7 +4116,7 @@ mod tests {
             })
         };
 
-        let directory = TestDirectory::new("range-gateway");
+        let directory = TestDirectory::new(&format!("range-gateway-{status}"));
         let output = directory.0.join("large.bin");
         let error = download(
             &local_request(format!("http://{address}/large")),
@@ -4120,7 +4130,7 @@ mod tests {
         .unwrap_err();
         stop.store(true, Ordering::Release);
         server.join().unwrap();
-        assert_eq!(http_status(&error), Some(502), "{error:#}");
+        assert_eq!(http_status(&error), Some(status), "{error:#}");
         assert!(!preserves_partial(&error), "{error:#}");
         // The first range was durably recorded, so the retry resumes instead of restarting.
         let state = read_state(&state_path(&output)).unwrap();
