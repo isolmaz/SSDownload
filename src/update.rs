@@ -104,6 +104,24 @@ pub(crate) struct UpdateOutcome {
     pub(crate) dry_run: bool,
 }
 
+impl UpdateOutcome {
+    /// The text of the result dialog: the message, followed by the quarantine folder unless the
+    /// message already names it.
+    pub(crate) fn dialog_text(&self) -> String {
+        let mut text = self.message.clone();
+        if let Some(folder) = &self.quarantine {
+            let folder = folder.display().to_string();
+            if !text.contains(&folder) {
+                text.push_str(&format!(
+                    "\n\n{}: {folder}",
+                    crate::i18n::ui("Karantina klasörü", "Quarantine folder")
+                ));
+            }
+        }
+        text
+    }
+}
+
 /// Release-version comparison for the update feed. Both sides must be a stable
 /// `major.minor.patch` release: a prerelease or build suffix, a missing component or a
 /// non-numeric part is not a release this product ships, so it never counts as newer and
@@ -663,17 +681,40 @@ fn download_setup(
     let hasher = hasher.into_inner();
     let actual = hex::encode(hasher.finalize());
     if !actual.eq_ignore_ascii_case(&manifest.sha256) {
-        crate::bail_code!(
+        return Err(anyhow::Error::new(DigestMismatch {
+            expected: manifest.sha256.clone(),
+            actual,
+        })
+        .context(crate::error_codes::CodedError::new(
             crate::error_codes::UPD_003,
-            "{}",
-            crate::i18n::ui_owned!(
-                format!("SHA-256 doğrulaması başarısız (beklenen {}, alınan {actual}). Dosya karantinaya taşındı.", manifest.sha256),
-                format!("SHA-256 verification failed (expected {}, received {actual}). The file was moved to quarantine.", manifest.sha256),
-            )
-        );
+            crate::i18n::ui(
+                "SHA-256 doğrulaması başarısız",
+                "SHA-256 verification failed",
+            ),
+        )));
     }
     Ok(())
 }
+
+/// The root of the error of a finished download whose bytes hash to something other than the
+/// digest of the signed feed. `run_update` words it with `digest_mismatch_message` once it
+/// knows whether the file could be moved to quarantine.
+#[derive(Debug)]
+struct DigestMismatch {
+    expected: String,
+    actual: String,
+}
+
+impl std::fmt::Display for DigestMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&crate::i18n::ui_owned!(
+            format!("beklenen {}, alınan {}", self.expected, self.actual),
+            format!("expected {}, received {}", self.expected, self.actual)
+        ))
+    }
+}
+
+impl std::error::Error for DigestMismatch {}
 
 /// The dialog text for a staged Setup whose digest differs from the signed feed.
 fn digest_mismatch_message(expected: &str, actual: &str, quarantine: Option<&Path>) -> String {
@@ -1043,6 +1084,18 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
             } else {
                 None
             };
+            if let Some(mismatch) = error.downcast_ref::<DigestMismatch>() {
+                return UpdateOutcome {
+                    success: false,
+                    message: digest_mismatch_message(
+                        &mismatch.expected,
+                        &mismatch.actual,
+                        quarantine.as_deref(),
+                    ),
+                    quarantine,
+                    dry_run: ctx.dry_run,
+                };
+            }
             let mut text = crate::i18n::ui_owned!(
                 format!("Güncelleme indirilemedi: {error:#}"),
                 format!("The update could not be downloaded: {error:#}")
@@ -1971,6 +2024,107 @@ mod tests {
             !digest_mismatch_message(&expected, &actual, None).contains("update-quarantine"),
             "a missing quarantine folder is not named"
         );
+    }
+
+    /// Runs a dry-run update whose Setup hashes to something other than the feed's digest and
+    /// returns its outcome with the digest the file really has.
+    fn refused_update(paths: &AppPaths) -> (UpdateOutcome, String) {
+        let _guard = FEED_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let body = b"MZ this is not the signed installer".to_vec();
+        let actual = hex::encode(Sha256::digest(&body));
+        let (url, server) = serve_once(body);
+        std::env::set_var("SSDOWNLOAD_UPDATE_FEED", "http://127.0.0.1:1");
+        let manifest = UpdateManifest {
+            version: "9.9.9".into(),
+            url,
+            sha256: "0".repeat(64),
+            notes: String::new(),
+        };
+        let governor = NetworkGovernor::new(4);
+        let outcome = run_update(
+            &UpdateContext {
+                paths,
+                network: &governor,
+                dry_run: true,
+            },
+            &manifest,
+        );
+        std::env::remove_var("SSDOWNLOAD_UPDATE_FEED");
+        server.join().unwrap();
+        (outcome, actual)
+    }
+
+    #[test]
+    fn a_refused_download_states_the_mismatch_and_names_the_quarantine_folder_once() {
+        let root = temp_root("refused");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let (outcome, actual) = refused_update(&paths);
+
+        assert!(!outcome.success);
+        let folder = outcome.quarantine.clone().expect("the file was moved");
+        assert!(folder.join("SSDownload-9.9.9-Setup.exe").is_file());
+        let text = outcome.dialog_text();
+        assert_eq!(
+            crate::error_codes::from_text(&text),
+            Some(crate::error_codes::UPD_003),
+            "{text}"
+        );
+        assert_eq!(text.matches("SSD-UPD-003").count(), 1, "{text}");
+        assert!(
+            text.contains(&"0".repeat(64)) && text.contains(&actual),
+            "{text}"
+        );
+        assert_eq!(
+            text.matches(&folder.display().to_string()).count(),
+            1,
+            "the folder is named once: {text}"
+        );
+        // The file is complete and was moved only after the check, so neither a partial
+        // download nor an announced move belongs in the statement.
+        for stale in [
+            "Kısmi",
+            "partial",
+            "indirilemedi",
+            "could not be downloaded",
+            "karantinaya taşındı",
+            "moved to quarantine",
+        ] {
+            assert!(!text.contains(stale), "{stale:?} in: {text}");
+        }
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_refused_download_that_could_not_be_moved_claims_no_folder() {
+        let root = temp_root("refused-unmoved");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        // A file where the quarantine root belongs makes every move fail.
+        fs::write(root.join("update-quarantine"), b"not a folder").unwrap();
+        let (outcome, actual) = refused_update(&paths);
+
+        assert!(outcome.quarantine.is_none());
+        let text = outcome.dialog_text();
+        assert_eq!(
+            crate::error_codes::from_text(&text),
+            Some(crate::error_codes::UPD_003),
+            "{text}"
+        );
+        assert!(
+            text.contains(&"0".repeat(64)) && text.contains(&actual),
+            "{text}"
+        );
+        for claim in [
+            "taşındı",
+            "moved",
+            "update-quarantine",
+            "Karantina klasörü",
+            "Quarantine folder",
+        ] {
+            assert!(!text.contains(claim), "{claim:?} in: {text}");
+        }
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

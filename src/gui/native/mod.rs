@@ -747,17 +747,9 @@ pub fn report_update_outcome(outcome: &crate::update::UpdateOutcome) {
         } else {
             MB_OK | MB_ICONERROR
         };
-        let mut body = outcome.message.clone();
-        if let Some(folder) = &outcome.quarantine {
-            body.push_str(&format!(
-                "\n\n{}: {}",
-                crate::i18n::ui("Karantina klasörü", "Quarantine folder"),
-                folder.display()
-            ));
-        }
         message(
             std::ptr::null_mut(),
-            &body,
+            &outcome.dialog_text(),
             title,
             flags | MB_SETFOREGROUND | MB_TOPMOST,
         );

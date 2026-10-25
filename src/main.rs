@@ -643,8 +643,8 @@ fn claim_instance(name: &[u16]) -> Result<Option<InstanceGuard>> {
 }
 
 /// Waits up to `budget` for the handover thread's verdict. Between its attempts the lock is
-/// tried again: an instance that is still exiting has closed its pipe but not yet its lock, and
-/// once the lock is free nobody is left to hand the launch to.
+/// tried again: an instance that is still exiting has stopped answering on its pipe but not yet
+/// released its lock, and once the lock is free nobody is left to hand the launch to.
 fn await_handover(
     outcome: &Receiver<Handover>,
     mutex_name: &[u16],

@@ -16,9 +16,9 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_NO_DATA,
-        ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, FILETIME, GENERIC_READ,
-        GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND,
+        ERROR_NO_DATA, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, FILETIME,
+        GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
     },
     Security::{
         Authorization::{
@@ -68,6 +68,9 @@ const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(15);
 /// How long a client waits for the pipe name to reappear while the server swaps instances. It
 /// only covers failures observed before a request could have been written to the pipe.
 const PIPE_RECONNECT_WINDOW: Duration = Duration::from_millis(250);
+/// How long a new instance waits for the previous one to release the pipe name before it gives up
+/// creating its first listener.
+const PIPE_NAME_RELEASE_WINDOW: Duration = Duration::from_secs(5);
 /// Main window of the desktop instance as another process sees it: the class name it
 /// registers (`gui/native/mod.rs`) and the message that makes it raise that window exactly the
 /// way `Action::ShowWindow` does. The pipe is what a second launch normally uses, so both
@@ -212,36 +215,55 @@ fn pipe_security() -> Result<PipeSecurity> {
 }
 
 fn create_pipe(name: &str, security: &PipeSecurity, first: bool) -> Result<OwnedHandle> {
+    create_pipe_within(name, security, first, PIPE_NAME_RELEASE_WINDOW)
+}
+
+/// Creates one pipe instance. The first instance claims the name exclusively, and Windows
+/// refuses that with `ERROR_ACCESS_DENIED` while any other handle still holds an instance of the
+/// name, as the bridge threads of a previous instance do for a moment after it released the
+/// single-instance lock; so the first instance is retried for up to `wait` before it fails.
+fn create_pipe_within(
+    name: &str,
+    security: &PipeSecurity,
+    first: bool,
+    wait: Duration,
+) -> Result<OwnedHandle> {
     let name = wide(name);
     let attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: security.0,
         bInheritHandle: 0,
     };
-    let handle = unsafe {
-        CreateNamedPipeW(
-            name.as_ptr(),
-            PIPE_ACCESS_DUPLEX
-                | if first {
-                    FILE_FLAG_FIRST_PIPE_INSTANCE
-                } else {
-                    0
-                },
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_WORKERS,
-            MAX_PIPE_MESSAGE as u32,
-            MAX_PIPE_MESSAGE as u32,
-            PIPE_IO_TIMEOUT.as_millis() as u32,
-            &attributes,
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        Err(win32_error(
+    let deadline = Instant::now() + wait;
+    loop {
+        let handle = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX
+                    | if first {
+                        FILE_FLAG_FIRST_PIPE_INSTANCE
+                    } else {
+                        0
+                    },
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                PIPE_WORKERS,
+                MAX_PIPE_MESSAGE as u32,
+                MAX_PIPE_MESSAGE as u32,
+                PIPE_IO_TIMEOUT.as_millis() as u32,
+                &attributes,
+            )
+        };
+        if handle != INVALID_HANDLE_VALUE {
+            return Ok(OwnedHandle(handle));
+        }
+        if first && unsafe { GetLastError() } == ERROR_ACCESS_DENIED && Instant::now() < deadline {
+            thread::sleep(PIPE_POLL_INTERVAL);
+            continue;
+        }
+        return Err(win32_error(
             "SSDownload yerel iletişim kanalı oluşturulamadı",
             "The SSDownload local communication channel could not be created",
-        ))
-    } else {
-        Ok(OwnedHandle(handle))
+        ));
     }
 }
 
@@ -2062,6 +2084,60 @@ mod tests {
         assert!(echo.join().unwrap());
     }
 
+    fn pipe_test_paths() -> AppPaths {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-bridge-name-{}", uuid::Uuid::new_v4()));
+        AppPaths::new(root).unwrap()
+    }
+
+    /// The bridge threads of an exiting instance can hold pipe instances after its
+    /// single-instance lock is free, and Windows refuses a new first instance meanwhile.
+    #[test]
+    fn the_first_pipe_instance_waits_until_another_holder_of_the_name_lets_go() {
+        let paths = pipe_test_paths();
+        let security = pipe_security().unwrap();
+        let holder = create_pipe(&paths.pipe_name(), &security, true).unwrap();
+        let hold = Duration::from_millis(400);
+        let releasing = thread::spawn(move || {
+            thread::sleep(hold);
+            drop(holder);
+        });
+
+        let started = Instant::now();
+        let next = create_pipe(&paths.pipe_name(), &security, true)
+            .map_err(|error| format!("{error:#}"))
+            .expect("the name is free once the holder closes");
+        assert!(
+            started.elapsed() >= hold,
+            "the name was taken while the holder still had it"
+        );
+        releasing.join().unwrap();
+        drop(next);
+    }
+
+    #[test]
+    fn the_first_pipe_instance_stops_waiting_when_the_name_stays_held() {
+        let paths = pipe_test_paths();
+        let security = pipe_security().unwrap();
+        let holder = create_pipe(&paths.pipe_name(), &security, true).unwrap();
+        let wait = Duration::from_millis(300);
+
+        let started = Instant::now();
+        let refused = create_pipe_within(&paths.pipe_name(), &security, true, wait)
+            .err()
+            .expect("a name that stays held cannot be claimed");
+        assert!(started.elapsed() >= wait, "it gave up before its window");
+        assert!(
+            started.elapsed() < PIPE_NAME_RELEASE_WINDOW,
+            "the wait is bounded"
+        );
+        assert!(
+            format!("{refused:#}").contains(&ERROR_ACCESS_DENIED.to_string()),
+            "{refused:#}"
+        );
+        drop(holder);
+    }
+
     /// What a pipe server in this process saw of one client.
     struct ServerView {
         /// The first message it received, `None` when the client sent nothing.
@@ -2256,10 +2332,17 @@ mod tests {
         events
     }
 
+    /// A profile whose saved settings log at the default level: the host reads its logging
+    /// choice from them and writes nothing when they are missing.
     fn host_profile() -> (AppPaths, PathBuf) {
         let root =
             std::env::temp_dir().join(format!("ssdownload-bridge-host-{}", uuid::Uuid::new_v4()));
-        (AppPaths::new(root.clone()).unwrap(), root)
+        let paths = AppPaths::new(root.clone()).unwrap();
+        crate::store::Store::open(&paths.database)
+            .unwrap()
+            .save_settings(&Settings::default())
+            .unwrap();
+        (paths, root)
     }
 
     #[test]
