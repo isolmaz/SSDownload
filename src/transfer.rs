@@ -753,6 +753,13 @@ fn download_http_single(
         && remote.total.map(|total| offset <= total).unwrap_or(true)
         && remote.accept_ranges;
     if !resumable && offset > 0 {
+        if let Some(error) = previous
+            .is_none()
+            .then(|| unreadable_state(&state_path))
+            .flatten()
+        {
+            return Err(error);
+        }
         return Err(preserved_partial(crate::i18n::ui(
             "Kısmi dosyanın kaynak kimliği kanıtlanamadı; dosya kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
             "The partial file's source identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning",
@@ -1812,6 +1819,9 @@ fn prepare_dynamic_state(
         return Err(AttemptFailure::ResourceChanged);
     }
     if part.exists() || legacy_segments_exist(output) {
+        if let Some(error) = unreadable_state(&state_path) {
+            return Err(AttemptFailure::Other(error));
+        }
         return Err(AttemptFailure::Other(preserved_partial(crate::i18n::ui(
             "Kaydı olmayan kısmi dosyaların kimliği kanıtlanamadı; sonraki deneme indirmeyi baştan başlatır",
             "The partial files have no state record, so their identity cannot be proven; the next attempt restarts the download from the beginning",
@@ -2147,6 +2157,13 @@ fn download_ftp_resuming(
         && remote.last_modified.is_some()
         && remote.total.is_some_and(|total| offset <= total);
     if !may_resume && offset > 0 {
+        if let Some(error) = previous
+            .is_none()
+            .then(|| unreadable_state(&state_path))
+            .flatten()
+        {
+            return Err(error);
+        }
         return Err(preserved_partial(crate::i18n::ui(
             "FTP kısmi dosyasının kimliği kanıtlanamadı; dosya kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
             "The FTP partial file's identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning",
@@ -2904,6 +2921,20 @@ fn split_ranges(total: u64, count: u8) -> Vec<(u64, u64)> {
 fn read_state(path: &Path) -> Option<ResumeState> {
     let bytes = fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+/// The error for a state file that exists but cannot be read (a virus scanner holds it for a
+/// moment): it says nothing about the partial files beside it, so they are kept, and the I/O
+/// error stays in the chain for the retry rules. A missing state file, or one that reads but does
+/// not parse, cannot prove the partial files, so the caller restarts them.
+fn unreadable_state(path: &Path) -> Option<anyhow::Error> {
+    let error = fs::read(path)
+        .err()
+        .filter(|error| error.kind() != std::io::ErrorKind::NotFound)?;
+    Some(anyhow::Error::new(error).context(crate::i18n::ui(
+        "Devam kaydı okunamadı; kısmi dosyalar olduğu gibi korundu",
+        "The resume record could not be read; the partial files were kept as they are",
+    )))
 }
 
 fn write_state(path: &Path, state: &ResumeState) -> Result<()> {
@@ -4918,6 +4949,166 @@ mod tests {
                 .commands()
                 .iter()
                 .any(|command| command.starts_with("RETR")),
+            "{:#?}",
+            server.commands()
+        );
+    }
+
+    /// Holds a file open without sharing, as a virus scanner does for a moment: it exists but
+    /// cannot be read.
+    fn hold_exclusively(path: &Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_segmented_partial_survives_a_state_record_that_cannot_be_read_for_a_moment() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 4);
+        let total = payload.len() as u64;
+        let server = PayloadServer::start(payload.clone(), "\"held-v1\"");
+        let request = local_request(server.url());
+        let directory = TestDirectory::new("held-state-segmented");
+        let output = directory.0.join("large.bin");
+        let done = total - MIN_SEGMENT_SIZE;
+        let mut part = File::create(part_path(&output)).unwrap();
+        part.write_all(&payload[..done as usize]).unwrap();
+        part.set_len(total).unwrap();
+        drop(part);
+        let mut state = segmented_state(
+            &request.url,
+            "\"held-v1\"",
+            total,
+            vec![ByteRange {
+                start: 0,
+                end: done,
+            }],
+        );
+        state.connections = 4;
+        write_state(&state_path(&output), &state).unwrap();
+        let recorded = fs::read(state_path(&output)).unwrap();
+        let attempt = || {
+            download(
+                &request,
+                &output,
+                &TransferControl::default(),
+                &NetworkGovernor::new(16),
+                4,
+                None,
+                &mut |_| {},
+            )
+        };
+
+        let held = hold_exclusively(&state_path(&output));
+        let error = attempt().unwrap_err();
+        assert!(!preserves_partial(&error), "{error:#}");
+        drop(held);
+        assert_eq!(fs::read(state_path(&output)).unwrap(), recorded);
+        assert!(
+            fs::read(part_path(&output)).unwrap()[..done as usize] == payload[..done as usize],
+            "the verified bytes of the part were replaced"
+        );
+
+        let requests_before = server.requests().len();
+        let result = attempt().unwrap_or_else(|error| panic!("{error:#}"));
+        assert!(
+            fs::read(result.path).unwrap() == payload,
+            "the resumed download differs from the payload"
+        );
+        // The bytes before `done` were kept, so only the tail was requested again.
+        let resumed_from_zero = server.requests()[requests_before..]
+            .iter()
+            .filter(|request| request.starts_with("GET "))
+            .any(|request| request.to_ascii_lowercase().contains("range: bytes=0-"));
+        assert!(!resumed_from_zero, "{:#?}", server.requests());
+    }
+
+    #[test]
+    fn a_single_connection_partial_survives_a_state_record_that_cannot_be_read_for_a_moment() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 4);
+        let total = payload.len() as u64;
+        let server = PayloadServer::start(payload.clone(), "\"held-v1\"");
+        let request = local_request(server.url());
+        let directory = TestDirectory::new("held-state-single");
+        let output = directory.0.join("large.bin");
+        let done = total - MIN_SEGMENT_SIZE;
+        let mut part = File::create(part_path(&output)).unwrap();
+        part.write_all(&payload[..done as usize]).unwrap();
+        part.set_len(total).unwrap();
+        drop(part);
+        let state = segmented_state(
+            &request.url,
+            "\"held-v1\"",
+            total,
+            vec![ByteRange {
+                start: 0,
+                end: done,
+            }],
+        );
+        write_state(&state_path(&output), &state).unwrap();
+
+        let held = hold_exclusively(&state_path(&output));
+        // One connection: the per-file setting, or a retry the engine capped to one.
+        let error = download(
+            &request,
+            &output,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            1,
+            None,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        drop(held);
+
+        assert!(!preserves_partial(&error), "{error:#}");
+        assert!(
+            error.chain().any(|cause| cause
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error)
+                == Some(32)),
+            "the sharing violation reaches the retry rules: {error:#}"
+        );
+        assert!(
+            fs::read(part_path(&output)).unwrap()[..done as usize] == payload[..done as usize],
+            "the verified bytes of the part were replaced"
+        );
+    }
+
+    #[test]
+    fn an_ftp_partial_survives_a_state_record_that_cannot_be_read_for_a_moment() {
+        let payload = patterned(128);
+        let server = FtpFixture::start(
+            payload.clone(),
+            FtpBehavior {
+                modification_time: true,
+                resume: true,
+                cut_first_transfer: Some(31),
+            },
+        );
+        let directory = TestDirectory::new("held-state-ftp");
+        let output = directory.0.join("payload.bin");
+        assert!(ftp_download(&server, &output).is_err());
+        assert_eq!(fs::metadata(part_path(&output)).unwrap().len(), 31);
+        let recorded = fs::read(state_path(&output)).unwrap();
+
+        let held = hold_exclusively(&state_path(&output));
+        let error = ftp_download(&server, &output).unwrap_err();
+        assert!(!preserves_partial(&error), "{error:#}");
+        drop(held);
+        assert_eq!(fs::read(state_path(&output)).unwrap(), recorded);
+        assert_eq!(
+            fs::read(part_path(&output)).expect("the partial file was kept"),
+            payload[..31]
+        );
+
+        let result = ftp_download(&server, &output).unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(
+            server.commands().iter().any(|command| command == "REST 31"),
             "{:#?}",
             server.commands()
         );

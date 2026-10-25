@@ -1519,7 +1519,20 @@ impl Actor {
             })
             .map(|j| j.id.clone())
             .collect();
-        self.transition(ids, true)
+        self.transition(ids, true)?;
+        // A job waiting for a new source stays that way, but a refresh still running for it
+        // must not re-queue it after Pause all.
+        let awaiting_source = self
+            .jobs
+            .values()
+            .filter(|j| j.state == JobState::AwaitingSource)
+            .map(|j| j.id.clone())
+            .collect::<Vec<_>>();
+        for id in awaiting_source {
+            self.cancel_source_refresh_workers(&id);
+            self.source_refresh.remove(&id);
+        }
+        Ok(())
     }
     fn resume_all(&mut self) -> Result<()> {
         let ids = self
@@ -2348,10 +2361,14 @@ impl Actor {
             changed.push(job);
         }
         self.store.save_jobs(&changed)?;
+        let moved_pending = changed.iter().any(|job| !job.state.is_terminal());
         for job in changed {
             self.jobs.insert(job.id.clone(), job);
         }
-        for source_queue in source_queues {
+        for source_queue in source_queues
+            .into_iter()
+            .filter(|source| source != queue_id)
+        {
             self.completion_armed.remove(&source_queue);
             if self
                 .completion_countdown
@@ -2361,7 +2378,9 @@ impl Actor {
                 self.completion_countdown = None;
             }
         }
-        self.completion_armed.insert(queue_id.into());
+        if moved_pending {
+            self.completion_armed.insert(queue_id.into());
+        }
         self.publish();
         Ok(())
     }
@@ -2429,7 +2448,17 @@ impl Actor {
             );
         }
         self.completion_countdown = None;
+        // Cancelling also cancels the shutdown and program actions waiting behind this one, so
+        // none of them starts in its place.
         self.completion_armed.remove(queue_id);
+        for queue in &self.settings.queues {
+            if matches!(
+                queue.completion,
+                CompletionAction::ShutdownComputer { .. } | CompletionAction::RunProgram { .. }
+            ) {
+                self.completion_armed.remove(&queue.id);
+            }
+        }
         self.completion_events.push(CompletionEvent {
             queue_id: queue_id.into(),
             occurred_at: Utc::now().timestamp(),
@@ -3074,7 +3103,6 @@ impl Actor {
 
     fn maybe_begin_completion(&mut self, queue_id: &str) {
         if !self.completion_armed.contains(queue_id)
-            || self.completion_countdown.is_some()
             || !queue_completed_successfully(&self.jobs, queue_id)
         {
             return;
@@ -3109,9 +3137,12 @@ impl Actor {
             }
             action @ (CompletionAction::ShutdownComputer { .. }
             | CompletionAction::RunProgram { .. }) => {
-                // Destructive/external actions are global-idle only. A manually paused,
-                // waiting-source, queued, or active job blocks the trigger.
-                if !self.active.is_empty()
+                // Destructive/external actions wait until every job in the list has completed:
+                // a queued, active, paused, waiting-source, failed or cancelled job blocks the
+                // trigger, and so does a countdown that is already running; the other armed
+                // queues are evaluated again when it expires.
+                if self.completion_countdown.is_some()
+                    || !self.active.is_empty()
                     || !self.browser_transfers.is_empty()
                     || self
                         .jobs
@@ -3192,6 +3223,7 @@ impl Actor {
             }),
         });
         self.trim_completion_events();
+        self.maybe_begin_completions();
         self.publish();
     }
 
@@ -4603,6 +4635,11 @@ fn repair_settings(settings: &mut Settings, paths: &AppPaths) {
     if settings.usage_modes.validate().is_err() {
         settings.usage_modes = defaults.usage_modes;
     }
+    // The first login of a server wins, as it does when a URL looks one up.
+    let mut login_hosts = BTreeSet::new();
+    settings.site_logins.retain(|login| {
+        crate::network::canonical_host_name(&login.host).is_none_or(|host| login_hosts.insert(host))
+    });
 }
 
 fn validate_settings(settings: &Settings) -> Result<()> {
@@ -4925,10 +4962,23 @@ fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailu
     }
 }
 
+fn retryable_status(status: u32) -> bool {
+    matches!(status, 408 | 429) || transfer::is_transient_server_error(status)
+}
+
+/// The first status written as "HTTP Error 522" (yt-dlp) or "HTTP 522" in an error message
+/// that has already been lowercased.
+fn http_status_in_text(message: &str) -> Option<u32> {
+    message.match_indices("http ").find_map(|(index, needle)| {
+        let rest = &message[index + needle.len()..];
+        let rest = rest.strip_prefix("error ").unwrap_or(rest);
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        rest[..digits].parse().ok().filter(|_| digits == 3)
+    })
+}
+
 fn retryable_error(error: &anyhow::Error) -> bool {
-    if transfer::http_status(error).is_some_and(|status| {
-        matches!(status, 408 | 429) || transfer::is_transient_server_error(status)
-    }) {
+    if transfer::http_status(error).is_some_and(retryable_status) {
         return true;
     }
     for cause in error.chain() {
@@ -4954,30 +5004,19 @@ fn retryable_error(error: &anyhow::Error) -> bool {
         }
     }
     let message = format!("{error:#}").to_lowercase();
-    [
-        "http 408",
-        "http 429",
-        "http 500",
-        "http 502",
-        "http 503",
-        "http 504",
-        // yt-dlp fragment and webpage failures surface as "HTTP Error <code>"
-        // after exhausting its own retries; give them a job-level retry.
-        "http error 408",
-        "http error 429",
-        "http error 500",
-        "http error 502",
-        "http error 503",
-        "http error 504",
-        // Local proxy saturation and tunnel failures surface verbatim from
-        // the child's urllib stack; they are transient by construction.
-        "tunnel connection failed",
-        "unable to connect to proxy",
-        "503 service unavailable",
-        "timed out",
-        "temporary failure",
-        "connection reset",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
+    // yt-dlp fragment and webpage failures surface as "HTTP Error <code>" after exhausting
+    // its own retries; they get the same job-level retry as a typed status.
+    http_status_in_text(&message).is_some_and(retryable_status)
+        || [
+            // Local proxy saturation and tunnel failures surface verbatim from
+            // the child's urllib stack; they are transient by construction.
+            "tunnel connection failed",
+            "unable to connect to proxy",
+            "503 service unavailable",
+            "timed out",
+            "temporary failure",
+            "connection reset",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
 }

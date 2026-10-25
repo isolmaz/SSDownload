@@ -569,13 +569,14 @@ fn matching_login<'a>(
 }
 
 /// Compares hosts in their canonical form: `bücher.example` as typed in the settings and
-/// `xn--bcher-kva.example` as `Url::host_str` reports it are the same server.
-fn same_host(left: &str, right: &str) -> bool {
+/// `xn--bcher-kva.example` as `Url::host_str` reports it are the same server, and so are
+/// `files.example.com` and `Files.Example.com.`.
+pub(crate) fn same_host(left: &str, right: &str) -> bool {
     match (
-        url::Host::parse(left.trim()),
-        url::Host::parse(right.trim()),
+        crate::network::canonical_host_name(left),
+        crate::network::canonical_host_name(right),
     ) {
-        (Ok(left), Ok(right)) => left == right,
+        (Some(left), Some(right)) => left == right,
         _ => false,
     }
 }
@@ -647,5 +648,31 @@ mod tests {
             Some("Files.Example.COM")
         );
         assert_eq!(host_for("ftp://files.example.com/a"), None);
+    }
+
+    #[test]
+    fn a_login_saved_with_a_trailing_dot_matches_the_same_server() {
+        let logins = [crate::model::SiteLogin {
+            host: "files.example.com.".into(),
+            username: "user".into(),
+            password: String::new(),
+            allow_http: false,
+        }];
+        let matches = |url: &str| matching_login(&logins, &url::Url::parse(url).unwrap()).is_some();
+
+        assert!(matches("https://files.example.com/a"));
+        assert!(matches("https://FILES.example.com./a"));
+        assert!(!matches("https://sub.files.example.com/a"));
+    }
+
+    #[test]
+    fn spellings_of_one_server_are_the_same_host() {
+        assert!(same_host("bücher.example", "xn--bcher-kva.example"));
+        assert!(same_host("BÜCHER.example", "xn--bcher-kva.example."));
+        assert!(same_host(" Files.Example.COM. ", "files.example.com"));
+        assert!(same_host("[::1]", "[0:0:0:0:0:0:0:1]"));
+        assert!(!same_host("files.example.com", "files.example.org"));
+        assert!(!same_host("files.example.com", "not a host"));
+        assert!(!same_host("not a host", "not a host"));
     }
 }

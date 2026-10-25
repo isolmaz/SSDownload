@@ -311,12 +311,7 @@ pub(super) fn perform_synchronization(
         );
     }
     let sha256 = hex::encode(digest.finalize());
-    if written == 0
-        && policy
-            .content_sha256
-            .as_deref()
-            .is_some_and(|previous| previous != sha256)
-    {
+    if written == 0 && fs::metadata(destination).is_ok_and(|metadata| metadata.len() > 0) {
         bail!(
             "{}",
             crate::i18n::ui(

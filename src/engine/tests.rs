@@ -930,6 +930,29 @@ fn proxy_tunnel_failures_are_retryable() {
 }
 
 #[test]
+fn an_http_error_in_a_media_tool_message_is_retried_by_the_rule_of_a_typed_status() {
+    for status in 100..=599 {
+        let typed = anyhow::Error::new(transfer::HttpStatusError { status });
+        let media = anyhow!("ERROR: unable to download video data: HTTP Error {status}: Whatever");
+        assert_eq!(
+            retryable_error(&media),
+            retryable_error(&typed),
+            "HTTP {status}"
+        );
+    }
+    // The CDN statuses that no fixed list names are transient; 501 and client errors are not.
+    assert!(retryable_error(&anyhow!(
+        "HTTP Error 522: Connection Timed Out"
+    )));
+    assert!(!retryable_error(&anyhow!(
+        "HTTP Error 501: Not Implemented"
+    )));
+    assert!(!retryable_error(&anyhow!("HTTP Error 404: Not Found")));
+    // Only a three-digit number is a status.
+    assert!(!retryable_error(&anyhow!("HTTP Error 5039: unexpected")));
+}
+
+#[test]
 fn a_file_locked_by_another_program_is_retried_but_other_access_errors_are_not() {
     let locked = |code| {
         anyhow::Error::new(std::io::Error::from_raw_os_error(code))
@@ -1165,6 +1188,56 @@ fn synchronization_keeps_a_good_file_when_the_server_answers_with_an_empty_body(
 }
 
 #[test]
+fn synchronization_keeps_a_good_file_from_an_empty_body_when_no_digest_is_stored() {
+    // A new policy, or one whose address or destination was edited, has no stored digest.
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("mirror.bin"), b"good content").unwrap();
+    let (base, server) = serve_sync_once(b"");
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("{base}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        overwrite: true,
+        content_sha256: None,
+        ..Default::default()
+    };
+    perform_synchronization(&policy, &NetworkGovernor::new(4))
+        .err()
+        .expect("an empty body must not replace a good file");
+    server.join().unwrap();
+    assert_eq!(fs::read(root.join("mirror.bin")).unwrap(), b"good content");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn synchronization_restores_a_deleted_destination_from_an_empty_body() {
+    // Nothing is left to keep, so the refusal that protects a good file does not apply.
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let (base, server) = serve_sync_once(b"");
+    let policy = SyncPolicy {
+        id: Uuid::new_v4().to_string(),
+        url: format!("{base}/mirror.bin"),
+        destination: root.join("mirror.bin"),
+        enabled: true,
+        interval_minutes: 60,
+        overwrite: true,
+        etag: Some("\"v1\"".into()),
+        content_sha256: Some(sha256_hex(b"good content")),
+        ..Default::default()
+    };
+    let outcome = perform_synchronization(&policy, &NetworkGovernor::new(4)).unwrap();
+    server.join().unwrap();
+    assert!(outcome.changed);
+    assert_eq!(fs::read(root.join("mirror.bin")).unwrap(), b"");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn synchronization_accepts_an_empty_body_when_the_file_was_empty_before() {
     let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
@@ -1183,6 +1256,50 @@ fn synchronization_accepts_an_empty_body_when_the_file_was_empty_before() {
     let outcome = perform_synchronization(&policy, &NetworkGovernor::new(4)).unwrap();
     server.join().unwrap();
     assert!(!outcome.changed);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_stored_profile_with_two_spellings_of_one_login_host_keeps_the_first_and_saves() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-logins-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    Engine::open(paths.clone()).unwrap().shutdown();
+    let login = |host: &str, username: &str| crate::model::SiteLogin {
+        host: host.into(),
+        username: username.into(),
+        password: String::new(),
+        allow_http: false,
+    };
+    let mut store = Store::open(&paths.database).unwrap();
+    let mut stored = store.load_settings().unwrap().unwrap();
+    stored.site_logins = vec![
+        login("bücher.example", "first"),
+        login("files.example.com", "other"),
+        login("xn--bcher-kva.example", "second"),
+    ];
+    store.save_settings(&stored).unwrap();
+    drop(store);
+
+    let engine = Engine::open(paths.clone()).unwrap();
+    let snapshot = engine.snapshot();
+    assert!(snapshot.warning.is_some());
+    assert_eq!(
+        snapshot.settings.site_logins,
+        [
+            login("bücher.example", "first"),
+            login("files.example.com", "other")
+        ]
+    );
+    crate::validation::validate_settings(&snapshot.settings).unwrap();
+    engine.update_settings(snapshot.settings.clone()).unwrap();
+    engine.shutdown();
+
+    let reopened = Engine::open(paths).unwrap();
+    assert_eq!(
+        reopened.snapshot().settings.site_logins,
+        snapshot.settings.site_logins
+    );
+    reopened.shutdown();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1445,6 +1562,261 @@ fn removing_the_last_job_that_blocks_a_finished_queue_starts_its_shutdown() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Adds a queue with a chosen id. The queues of a pass are evaluated in id order, so
+/// "a-countdown" is always evaluated before the default queue.
+fn add_queue(engine: &Engine, id: &str, completion: CompletionAction) {
+    let mut settings = engine.snapshot().settings;
+    settings.queues.push(QueuePolicy {
+        id: id.into(),
+        name: id.into(),
+        completion,
+        ..Default::default()
+    });
+    engine.update_settings(settings).unwrap();
+}
+
+fn queued_in(url: String, directory: &Path, queue: &str) -> AddRequest {
+    AddRequest {
+        queue_id: Some(queue.into()),
+        ..file_request(url, directory)
+    }
+}
+
+#[test]
+fn moving_a_finished_job_into_a_queue_does_not_arm_that_queue_s_shutdown() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-move-done-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/done.bin".into(), vec![1; 4096], false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let default_queue = engine.snapshot().settings.queues[0].clone();
+    let source = engine.create_queue("Source".into()).unwrap();
+    let unrelated = engine.create_queue("Unrelated".into()).unwrap();
+    engine
+        .update_queue_policy(shutdown_when_done(&default_queue))
+        .unwrap();
+    let out = root.join("out");
+    let finished = engine
+        .add(queued_in(server.url("/done.bin"), &out, &source))
+        .unwrap()
+        .remove(0);
+    let waiting = engine
+        .add(AddRequest {
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..queued_in("https://waiting.example/file.bin".into(), &out, &unrelated)
+        })
+        .unwrap()
+        .remove(0);
+    wait_until("the finished job", || {
+        job_state(&engine, &finished) == JobState::Completed
+    });
+
+    engine
+        .move_to_queue(vec![finished], default_queue.id.clone())
+        .unwrap();
+    engine.remove(&waiting, false).unwrap();
+
+    // The default queue holds nothing but a job that finished elsewhere, so its shutdown has
+    // no work of its own to follow. A countdown is running exactly when cancelling succeeds.
+    assert!(engine.cancel_completion_action(default_queue.id).is_err());
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_notify_queue_is_not_held_back_by_a_countdown_that_starts_in_the_same_pass() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-engine-notify-gate-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    add_queue(
+        &engine,
+        "a-countdown",
+        CompletionAction::ShutdownComputer {
+            countdown_seconds: 3600,
+        },
+    );
+    let default_queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(QueuePolicy {
+            completion: CompletionAction::Notify,
+            ..default_queue.clone()
+        })
+        .unwrap();
+    let out = root.join("out");
+    let fast = engine
+        .add(queued_in(server.url("/fast.bin"), &out, "a-countdown"))
+        .unwrap()
+        .remove(0);
+    engine
+        .add(queued_in(server.url("/slow.bin"), &out, &default_queue.id))
+        .unwrap();
+    wait_until("the fast job", || {
+        job_state(&engine, &fast) == JobState::Completed
+    });
+
+    // The slow job is the last to finish: the countdown queue starts first in id order and
+    // the Notify queue is evaluated right after it, in the same pass.
+    server.release();
+    wait_until("the countdown", || {
+        engine.snapshot().completion_countdown.is_some()
+    });
+    let snapshot = engine.snapshot();
+    assert_eq!(
+        snapshot.completion_countdown.unwrap().queue_id,
+        "a-countdown"
+    );
+    assert!(
+        snapshot
+            .completion_events
+            .iter()
+            .any(|event| event.queue_id == default_queue.id),
+        "{:?}",
+        snapshot.completion_events
+    );
+    engine
+        .cancel_completion_action("a-countdown".into())
+        .unwrap();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancelling_a_countdown_also_cancels_the_actions_waiting_behind_it() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-engine-cancel-next-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let shutdown = CompletionAction::ShutdownComputer {
+        countdown_seconds: 3600,
+    };
+    add_queue(&engine, "a-countdown", shutdown);
+    let default_queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(shutdown_when_done(&default_queue))
+        .unwrap();
+    let out = root.join("out");
+    let fast = engine
+        .add(queued_in(server.url("/fast.bin"), &out, "a-countdown"))
+        .unwrap()
+        .remove(0);
+    engine
+        .add(queued_in(server.url("/slow.bin"), &out, &default_queue.id))
+        .unwrap();
+    wait_until("the fast job", || {
+        job_state(&engine, &fast) == JobState::Completed
+    });
+    server.release();
+    wait_until("the countdown", || {
+        engine.snapshot().completion_countdown.is_some()
+    });
+    assert_eq!(
+        engine.snapshot().completion_countdown.unwrap().queue_id,
+        "a-countdown"
+    );
+
+    engine
+        .cancel_completion_action("a-countdown".into())
+        .unwrap();
+
+    // The default queue also finished and was waiting behind the countdown; it is cancelled
+    // with it instead of starting in its place.
+    assert!(engine.snapshot().completion_countdown.is_none());
+    assert!(engine.cancel_completion_action(default_queue.id).is_err());
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn moving_a_finished_job_into_its_own_queue_keeps_that_queue_s_shutdown() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-own-queue-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(shutdown_when_done(&queue))
+        .unwrap();
+    let out = root.join("out");
+    let done = engine
+        .add(file_request(server.url("/fast.bin"), &out))
+        .unwrap()
+        .remove(0);
+    engine
+        .add(file_request(server.url("/slow.bin"), &out))
+        .unwrap();
+    wait_until("the fast job", || {
+        job_state(&engine, &done) == JobState::Completed
+    });
+
+    engine.move_to_queue(vec![done], queue.id.clone()).unwrap();
+    server.release();
+
+    wait_until(
+        "the shutdown countdown of the queue that still had a running job",
+        || engine.snapshot().completion_countdown.is_some(),
+    );
+    engine.cancel_completion_action(queue.id).unwrap();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn an_expired_countdown_starts_the_next_queue_that_was_waiting_for_it() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-expiry-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![
+        ("/fast.bin".into(), vec![1; 4096], false),
+        ("/slow.bin".into(), vec![2; 4096], true),
+    ]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    add_queue(
+        &engine,
+        "a-countdown",
+        CompletionAction::RunProgram {
+            program: PathBuf::from(std::env::var_os("COMSPEC").unwrap()),
+            arguments: vec!["/C".into(), "exit".into()],
+            countdown_seconds: 0,
+        },
+    );
+    let default_queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(shutdown_when_done(&default_queue))
+        .unwrap();
+    let out = root.join("out");
+    let fast = engine
+        .add(queued_in(server.url("/fast.bin"), &out, "a-countdown"))
+        .unwrap()
+        .remove(0);
+    engine
+        .add(queued_in(server.url("/slow.bin"), &out, &default_queue.id))
+        .unwrap();
+    wait_until("the fast job", || {
+        job_state(&engine, &fast) == JobState::Completed
+    });
+
+    server.release();
+    wait_until("the second countdown", || {
+        engine
+            .snapshot()
+            .completion_countdown
+            .is_some_and(|countdown| countdown.queue_id == default_queue.id)
+    });
+    assert!(engine
+        .snapshot()
+        .completion_events
+        .iter()
+        .any(|event| event.queue_id == "a-countdown"));
+    engine.cancel_completion_action(default_queue.id).unwrap();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn jobs_added_in_the_same_second_keep_the_order_they_were_added_in() {
     let root = std::env::temp_dir().join(format!("ssdownload-engine-order-{}", Uuid::new_v4()));
@@ -1616,6 +1988,52 @@ fn resuming_a_running_job_leaves_it_running() {
     wait_until("the download to finish", || {
         job_state(&engine, &id) == JobState::Completed
     });
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pause_all_cancels_a_running_source_refresh_so_it_cannot_requeue_the_job() {
+    let root = std::env::temp_dir().join(format!(
+        "ssdownload-engine-refresh-pause-all-{}",
+        Uuid::new_v4()
+    ));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(refresh_request(
+            "https://old.example.test/refresh.bin".into(),
+        ))
+        .unwrap()
+        .remove(0);
+    let (state_path, original_state) = seed_direct_refresh_state(&engine, &id);
+    let ticket = engine.begin_source_refresh(&id).unwrap();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refreshed_url = format!("http://{}/refresh.bin", listener.local_addr().unwrap());
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server =
+        thread::spawn(move || read_head_and_respond(listener, Some(started_tx), Some(release_rx)));
+    let complete_engine = engine.clone();
+    let complete_id = id.clone();
+    let complete = thread::spawn(move || {
+        let mut request = (*ticket.request).clone();
+        request.url = refreshed_url;
+        complete_engine.complete_source_refresh(&complete_id, &ticket.token, request, false)
+    });
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    engine.pause_all().unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
+    release_tx.send(()).unwrap();
+
+    assert!(
+        complete.join().unwrap().is_err(),
+        "a refresh that finishes after Pause all must be rejected"
+    );
+    server.join().unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
+    assert_eq!(fs::read(state_path).unwrap(), original_state);
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
 }

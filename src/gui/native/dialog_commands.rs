@@ -1077,7 +1077,7 @@ Use the existing jobs, or download new copies?"
                 let existing = f
                     .logins
                     .iter()
-                    .position(|login| login.host.eq_ignore_ascii_case(&host));
+                    .position(|login| crate::proxy::same_host(&login.host, &host));
                 let sealed = if password.is_empty() {
                     existing
                         .map(|index| f.logins[index].password.clone())

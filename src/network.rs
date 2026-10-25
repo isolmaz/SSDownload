@@ -425,25 +425,28 @@ pub(crate) fn canonical_host(url: &Url) -> Result<String> {
     // Do not derive identity from `host_str()`: its IPv6 serialization includes
     // brackets, while a DNS name needs trailing-dot normalization. `Url` has
     // already applied IDNA and parsed address literals structurally.
-    match url.host().context(crate::i18n::ui(
-        "Ağ adresinde sunucu adı yok",
-        "The network address has no host name",
-    ))? {
+    url.host()
+        .and_then(canonical_host_form)
+        .context(crate::i18n::ui(
+            "Ağ adresinde sunucu adı yok",
+            "The network address has no host name",
+        ))
+}
+
+/// The canonical form of a host name typed in the settings: `bücher.example`,
+/// `BÜCHER.example` and `xn--bcher-kva.example.` all become `xn--bcher-kva.example`.
+pub(crate) fn canonical_host_name(name: &str) -> Option<String> {
+    canonical_host_form(Host::parse(name.trim()).ok()?)
+}
+
+fn canonical_host_form<S: AsRef<str>>(host: Host<S>) -> Option<String> {
+    match host {
         Host::Domain(domain) => {
-            let host = domain.trim_end_matches('.').to_ascii_lowercase();
-            if host.is_empty() {
-                bail!(
-                    "{}",
-                    crate::i18n::ui(
-                        "Ağ adresinde sunucu adı yok",
-                        "The network address has no host name"
-                    )
-                );
-            }
-            Ok(host)
+            let host = domain.as_ref().trim_end_matches('.').to_ascii_lowercase();
+            (!host.is_empty()).then_some(host)
         }
-        Host::Ipv4(address) => Ok(address.to_string()),
-        Host::Ipv6(address) => Ok(address.to_string()),
+        Host::Ipv4(address) => Some(address.to_string()),
+        Host::Ipv6(address) => Some(address.to_string()),
     }
 }
 
@@ -1971,5 +1974,37 @@ mod tests {
         drop(first);
         assert!(governor.try_acquire_host("media.example".into()).is_some());
         drop(named);
+    }
+
+    #[test]
+    fn host_names_typed_in_the_settings_share_the_canonical_form_of_a_url_host() {
+        let from_url = |url: &str| super::canonical_host(&url::Url::parse(url).unwrap()).unwrap();
+        for typed in [
+            "bücher.example",
+            "BÜCHER.example",
+            "xn--bcher-kva.example.",
+            " Xn--Bcher-Kva.Example ",
+        ] {
+            assert_eq!(
+                super::canonical_host_name(typed).as_deref(),
+                Some("xn--bcher-kva.example"),
+                "{typed}"
+            );
+        }
+        assert_eq!(
+            from_url("https://BÜCHER.example./a"),
+            "xn--bcher-kva.example"
+        );
+        assert_eq!(
+            super::canonical_host_name("[0:0:0:0:0:0:0:1]").as_deref(),
+            Some("::1")
+        );
+        assert_eq!(
+            super::canonical_host_name("10.0.0.1").unwrap(),
+            from_url("http://10.0.0.1/")
+        );
+        for invalid in ["", ".", "a b", "a/b"] {
+            assert_eq!(super::canonical_host_name(invalid), None, "{invalid:?}");
+        }
     }
 }
