@@ -35,7 +35,7 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 ## Downloading
 
 - **Files:** paste or drop links into **New download** (Ctrl+N), press Ctrl+V in the main window to add clipboard links, right-click a link in the browser → **Download link with SSDownload**, or let the extension take over ordinary browser downloads (**Settings → Behaviour → Take over browser downloads**, off by default; incognito, blob/data and extension downloads stay in the browser and a refused handover resumes there).
-- **Segmented and resumable:** large files download over several connections. A download resumes only when the server proves the file did not change (strong ETag, a SHA-256 you supplied, or the same `Last-Modified` and length); otherwise it restarts instead of mixing two versions. Finished files are published atomically and never overwrite an existing file (`name (1).ext`).
+- **Segmented and resumable:** large files download over several connections. A download resumes only when the server proves the file did not change (strong ETag, a SHA-256 you supplied, or the same `Last-Modified` and length); otherwise it restarts instead of mixing two versions. FTP follows the same rule with the server's size and modification time; a server that does not report both, or refuses to resume, restarts the download. A supplied SHA-256 that does not match deletes the partial file, so a retry downloads it again. Finished files are published atomically and never overwrite an existing file (`name (1).ext`).
 - **Video and audio:** play the media and press the SSDownload button over it, use the extension's context entries, or use **File → Video download** (Ctrl+Shift+N) with the page address. The picker shows name, duration, thumbnail, quality (container, resolution, FPS, codec, HDR) and audio/subtitle tracks. **Download** turns the picker into that download's status view; closing it never cancels the download. A missing quality or track fails instead of being silently substituted, and the result is checked with ffprobe/FFmpeg before it is published.
 - **Picker memory:** **Remember this choice for \<site\>** stores quality, container and audio-only per site; the next media from that site is queued directly. **MP3** queues the best audio as MP3 at the highest quality; a playlist accepts an item selection such as `1-10,15`.
 - **Live streams** (Twitch, Kick and similar) are recorded from the moment the download starts until the stream ends; the list shows the recorded size and speed instead of a percentage. A paused live recording cannot continue the same file.
@@ -84,7 +84,7 @@ The Basic level shows only **General**; the other tabs keep their saved values.
 
 ## Recovery
 
-100% transfer progress is not completion: merging and final validation still run, and only **Completed** unlocks **Open file**. Failed jobs keep their data.
+100% transfer progress is not completion: merging and final validation still run, and only **Completed** unlocks **Open file**. Failed jobs keep their data, except a partial file whose supplied SHA-256 did not match.
 
 | Symptom | What to do |
 |---|---|
