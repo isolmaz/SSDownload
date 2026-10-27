@@ -30,6 +30,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1
 
 It runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the extension tests (`node --test`) and `cargo audit` when it is installed. `scripts\install-hooks.ps1` installs it as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
 
+The HLS end-to-end tests download from a local server through the media tools the app installed in `%LOCALAPPDATA%\SSDownload\tools`, so they run only on request. They cover the app's own HLS downloader and the yt-dlp path; the yt-dlp one waits out its fragment retries and takes about five minutes:
+
+```powershell
+cargo test --lib hls_tests -- --ignored
+```
+
 ## Code layout
 
 ```text

@@ -6,13 +6,22 @@ fn fragment_concurrency_leaves_a_tunnel_for_retries() {
     // The proxy governor rejects CONNECT attempts beyond the per-host bound with 503 once its
     // wait expires, and a fragment retry arrives while the slow fragment still holds its
     // tunnel; the job therefore never occupies the whole bound.
-    assert_eq!(fragment_concurrency(None, 2), "1");
-    assert_eq!(fragment_concurrency(Some(8), 2), "1");
-    assert_eq!(fragment_concurrency(Some(4), 16), "4");
-    assert_eq!(fragment_concurrency(Some(16), 16), "15");
-    assert_eq!(fragment_concurrency(Some(3), 0), "1");
-    assert_eq!(fragment_concurrency(None, 0), "1");
-    assert_eq!(fragment_concurrency(Some(1), 8), "1");
+    assert_eq!(fragment_concurrency(None, 2, 0), "1");
+    assert_eq!(fragment_concurrency(Some(8), 2, 0), "1");
+    assert_eq!(fragment_concurrency(Some(4), 16, 0), "4");
+    assert_eq!(fragment_concurrency(Some(16), 16, 0), "15");
+    assert_eq!(fragment_concurrency(Some(3), 0, 0), "1");
+    assert_eq!(fragment_concurrency(None, 0, 0), "1");
+    assert_eq!(fragment_concurrency(Some(1), 8, 0), "1");
+}
+
+#[test]
+fn each_fragment_restart_halves_the_parallelism_down_to_one() {
+    assert_eq!(fragment_concurrency(Some(16), 16, 1), "7");
+    assert_eq!(fragment_concurrency(Some(16), 16, 2), "3");
+    assert_eq!(fragment_concurrency(Some(16), 16, 3), "1");
+    assert_eq!(fragment_concurrency(Some(16), 16, 40), "1");
+    assert_eq!(fragment_concurrency(Some(1), 8, 1), "1");
 }
 
 #[test]
@@ -438,6 +447,40 @@ fn discarding_a_failed_playlist_attempt_keeps_workspace_state_and_finished_items
     assert!(!partial.exists());
     verify_workspace(&plan.workspace, &plan.owner).unwrap();
     assert!(plan.workspace.join(".request").exists());
+    remove_workspace(&plan.workspace, &plan.owner).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_lost_fragment_discards_only_the_unfinished_stream() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-stream-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let request = AddRequest {
+        url: "https://example.test/master.m3u8".into(),
+        kind: DownloadKind::Video,
+        ..AddRequest::default()
+    };
+    let plan = OutputPlan::new(&root.join("film.mp4"), &request, None).unwrap();
+    // The video stream finished in this attempt; the audio stream lost a fragment mid-chain.
+    let video = plan.workspace.join("media.f2530.mp4");
+    fs::write(&video, b"complete video").unwrap();
+    let unfinished = [
+        "media.faudio.mp4.part",
+        "media.faudio.mp4.part-Frag7",
+        "media.faudio.mp4.ytdl",
+        "media.temp.mp4",
+    ]
+    .map(|name| plan.workspace.join(name));
+    for path in &unfinished {
+        fs::write(path, b"x").unwrap();
+    }
+
+    let (removed, _) = discard_attempt_outputs(&plan, &HashSet::new()).unwrap();
+
+    assert_eq!(removed, unfinished.len());
+    assert!(video.exists());
+    assert!(unfinished.iter().all(|path| !path.exists()));
     remove_workspace(&plan.workspace, &plan.owner).unwrap();
     fs::remove_dir_all(root).unwrap();
 }

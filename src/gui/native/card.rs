@@ -75,7 +75,21 @@ pub(super) unsafe fn register_card_class(instance: HINSTANCE, icon: HICON) -> bo
     RegisterClassExW(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS
 }
 
-/// Opens a card; a panel or a job card for the same downloads is raised instead of
+/// Whether an open card already shows what `kind` would. A card minimized from one download
+/// shows that download's completion itself, so it stands in for its completion card.
+fn shows(open: &CardKind, kind: &CardKind) -> bool {
+    match (open, kind) {
+        (CardKind::Panel, CardKind::Panel) => true,
+        (CardKind::Jobs(a), CardKind::Jobs(b)) => a == b,
+        (CardKind::Done(a), CardKind::Done(b)) => a == b,
+        (CardKind::Jobs(jobs), CardKind::Done(job)) => {
+            matches!(jobs.as_slice(), [only] if only == job)
+        }
+        _ => false,
+    }
+}
+
+/// Opens a card; a card that already shows the same downloads is raised instead of
 /// duplicated.
 pub(super) unsafe fn open_card(owner: HWND, app: App, kind: CardKind) {
     let existing = CARDS.with(|cards| cards.borrow().clone());
@@ -84,13 +98,7 @@ pub(super) unsafe fn open_card(owner: HWND, app: App, kind: CardKind) {
         if raw.is_null() {
             continue;
         }
-        let same = match (&(*raw).kind, &kind) {
-            (CardKind::Panel, CardKind::Panel) => true,
-            (CardKind::Jobs(a), CardKind::Jobs(b)) => a == b,
-            (CardKind::Done(a), CardKind::Done(b)) => a == b,
-            _ => false,
-        };
-        if same {
+        if shows(&(*raw).kind, &kind) {
             (*raw).opened = Instant::now();
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             InvalidateRect(hwnd, null(), 1);
@@ -777,5 +785,30 @@ unsafe extern "system" fn card_proc(
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shows, CardKind};
+
+    #[test]
+    fn a_card_minimized_from_one_download_stands_in_for_its_completion_card() {
+        let job = || "job-1".to_owned();
+        assert!(shows(&CardKind::Jobs(vec![job()]), &CardKind::Done(job())));
+        assert!(!shows(
+            &CardKind::Jobs(vec![job()]),
+            &CardKind::Done("job-2".into())
+        ));
+        // A card for several downloads does not show one download's completion.
+        assert!(!shows(
+            &CardKind::Jobs(vec![job(), "job-2".into()]),
+            &CardKind::Done(job())
+        ));
+        // A completion card does not stand in for a running view.
+        assert!(!shows(&CardKind::Done(job()), &CardKind::Jobs(vec![job()])));
+        assert!(shows(&CardKind::Done(job()), &CardKind::Done(job())));
+        assert!(shows(&CardKind::Panel, &CardKind::Panel));
+        assert!(!shows(&CardKind::Panel, &CardKind::Done(job())));
     }
 }

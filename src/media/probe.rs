@@ -235,10 +235,71 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
     // reason the user has to act on. Metadata findings are reported only for intact streams.
     let start_tolerance = info.duration_tolerance.unwrap_or(0.5).clamp(0.25, 2.0);
     let end_tolerance = start_tolerance;
+    // Source playlists may declare different lengths for video and audio; each stream is then
+    // held to its own playlist instead of to its counterpart.
+    let declared =
+        !info.declared_video_durations.is_empty() && !info.declared_audio_durations.is_empty();
+    if declared {
+        for (kind, spans, lengths) in [
+            ("video", &video_spans, &info.declared_video_durations),
+            ("audio", &audio_spans, &info.declared_audio_durations),
+        ] {
+            for span in spans.iter() {
+                let length = span.1 - span.0;
+                // Whole-second segment lengths are rounded and drift from the stream by up to
+                // a second every quarter hour (6.006 s segments listed as 6).
+                let fits = |declared: &f64| {
+                    let drift = if declared.fract() == 0.0 {
+                        declared * 0.002
+                    } else {
+                        0.0
+                    };
+                    (declared - length).abs() <= end_tolerance + drift
+                };
+                if !lengths.iter().any(fits) {
+                    let declared = lengths
+                        .iter()
+                        .map(|length| format!("{length:.1}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let tr_kind = if kind == "video" { "görüntü" } else { "ses" };
+                    crate::bail_code!(
+                        crate::error_codes::TRF_012,
+                        "{}",
+                        crate::i18n::ui_owned!(
+                            format!("Medya doğrulaması: {tr_kind} akışı {length:.1} sn, kaynak listesi {declared} sn bildiriyor (eksik ya da yinelenen parça)."),
+                            format!("Media verification: the {kind} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).")
+                        )
+                    );
+                }
+            }
+        }
+    }
+    // Rounding drifts both playlists alike, while a lost segment moves one stream alone: with
+    // whole-second lengths, the streams' distances from their own playlists have to agree.
+    let rounded = declared
+        && info
+            .declared_video_durations
+            .iter()
+            .chain(&info.declared_audio_durations)
+            .any(|length| length.fract() == 0.0);
+    let residual = |span: (f64, f64), lengths: &[f64]| {
+        lengths
+            .iter()
+            .map(|declared| span.1 - span.0 - declared)
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()))
+            .unwrap_or(0.0)
+    };
     if let Some(video) = video_spans.first().copied() {
         for (index, audio) in audio_spans.iter().enumerate() {
+            let drift_differs = rounded
+                && (residual(video, &info.declared_video_durations)
+                    - residual(*audio, &info.declared_audio_durations))
+                .abs()
+                    > end_tolerance;
             if (video.0 - audio.0).abs() > start_tolerance
-                || (video.1 - audio.1).abs() > end_tolerance
+                || (!declared && (video.1 - audio.1).abs() > end_tolerance)
+                || drift_differs
             {
                 crate::bail_code!(
                     crate::error_codes::TRF_012,

@@ -2517,7 +2517,7 @@ fn verify_range_support(
     Ok(result.is_ok() && response_allows_body(&headers, expected))
 }
 
-fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
+pub(crate) fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
     easy.url(url.as_str())?;
     easy.useragent(concat!("SSDownload/", env!("CARGO_PKG_VERSION")))?;
     easy.connect_timeout(Duration::from_secs(20))?;
@@ -2695,7 +2695,7 @@ fn parse_header_line(headers: &mut ResponseHeaders, bytes: &[u8]) {
 /// clamped so a server cannot park a job indefinitely.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
 
-fn parse_retry_after(value: &str) -> Option<Duration> {
+pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
     let delay = if let Ok(seconds) = value.trim().parse::<u64>() {
         Duration::from_secs(seconds)
     } else {
@@ -3142,7 +3142,7 @@ fn eta(total: Option<u64>, downloaded: u64, speed: u64) -> Option<u64> {
 /// each chunk's length times the worker count in force when it was written, so a change in
 /// the number of busy workers never turns bytes counted under the old share into credit
 /// that would let the aggregate rate exceed the limit.
-fn throttle(
+pub(crate) fn throttle(
     control: &TransferControl,
     workers: u64,
     started: &mut Instant,

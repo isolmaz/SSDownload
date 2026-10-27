@@ -866,6 +866,10 @@ pub struct MediaInfo {
     pub webpage_url: String,
     pub duration: Option<f64>,
     pub duration_tolerance: Option<f64>,
+    /// Lengths the finished source playlists of the selected video and audio streams declare;
+    /// both are empty when the source does not declare them.
+    pub declared_video_durations: Vec<f64>,
+    pub declared_audio_durations: Vec<f64>,
     pub thumbnail: Option<String>,
     pub formats: Vec<MediaFormat>,
     pub subtitles: Vec<String>,

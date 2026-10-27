@@ -120,6 +120,8 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
             .unwrap_or_default(),
         duration,
         duration_tolerance: fragment_duration_tolerance(root),
+        declared_video_durations: Vec::new(),
+        declared_audio_durations: Vec::new(),
         thumbnail: string_field(root, "thumbnail")
             .or_else(|| entries.first().and_then(|e| string_field(e, "thumbnail"))),
         formats,

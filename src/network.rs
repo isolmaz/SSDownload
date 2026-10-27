@@ -36,13 +36,14 @@ const INSPECTION_HEADROOM: usize = 2;
 /// `ExternalProxy::spawn_for_live_recording`.
 const LIVE_RECORDING_HEADROOM: usize = 2;
 const TUNNEL_WAIT_STEP: Duration = Duration::from_millis(50);
-/// A tunnel whose last bytes were the server's and that has been silent this long is treated as
-/// a kept-alive connection parked in the child's pool, and a refused admission may close it; a
-/// pool normally notices the closed socket before its next reuse and dials again. The proxy
-/// cannot see inside TLS, so a server that pauses mid-answer (or after a TLS 1.3 session ticket,
-/// before the first response byte) looks the same: the delay is kept well above such pauses
-/// while staying below `TUNNEL_WAIT`.
-const IDLE_TUNNEL_RECLAIM_AFTER: Duration = Duration::from_secs(5);
+/// A tunnel whose last bytes were the server's and that has been silent this long gives its
+/// slot back while it stays open, and takes a slot again before the client's next bytes are
+/// forwarded. Pooled HTTP clients keep idle connections open per host; counted, they fill the
+/// budgets while the next request is refused. The proxy cannot see inside TLS, so a server
+/// that pauses mid-answer, or a request whose TLS 1.3 session ticket arrived after it, also
+/// gives its slot back: that briefly admits one request more than the bound, it never cuts
+/// a transfer.
+const IDLE_SLOT_RELEASE_AFTER: Duration = Duration::from_secs(1);
 const RELAY_BUFFER: usize = 64 * 1024;
 const RELAY_POLL: Duration = Duration::from_millis(250);
 const ACQUIRE_POLL: Duration = Duration::from_millis(50);
@@ -61,11 +62,6 @@ pub(crate) struct NetworkGovernor {
 struct GovernorInner {
     state: Mutex<GovernorState>,
     available: Condvar,
-    /// Relayed proxy tunnels of every child on this governor. Pooled HTTP clients keep idle
-    /// connections open per host; when segments rotate across many hosts those idle tunnels
-    /// would otherwise hold the global budget while the next host's request is refused.
-    tunnels: Mutex<HashMap<u64, Arc<TunnelActivity>>>,
-    next_tunnel: AtomicU64,
 }
 
 struct GovernorState {
@@ -114,8 +110,6 @@ impl NetworkGovernor {
                     wildcards: 0,
                 }),
                 available: Condvar::new(),
-                tunnels: Mutex::new(HashMap::new()),
-                next_tunnel: AtomicU64::new(1),
             }),
         }
     }
@@ -150,10 +144,8 @@ impl NetworkGovernor {
     }
 
     /// Admission for one proxy tunnel: wait briefly for a finished fragment to release its slot
-    /// before answering the client with a retryable 503. While waiting, an idle kept-alive
-    /// tunnel that blocks the admission is closed. The wait is bounded, so a child that holds
-    /// every slot of a host with live transfers still gets its refusal instead of deadlocking
-    /// the proxy.
+    /// before answering the client with a retryable 503. The wait is bounded, so a child that
+    /// holds every slot of a host still gets its refusal instead of deadlocking the proxy.
     pub(crate) fn acquire_host_for_tunnel(
         &self,
         host: String,
@@ -161,22 +153,12 @@ impl NetworkGovernor {
         headroom: usize,
     ) -> Option<ConnectionLease> {
         let deadline = Instant::now() + timeout;
-        // The tunnel this request closed, until its relay has ended and released its slot: a
-        // closed relay notices within one poll step, and closing more meanwhile would cut
-        // pooled connections nobody is waiting for.
-        let mut reclaimed: Option<Arc<TunnelActivity>> = None;
         loop {
             if let Some(lease) = self.try_acquire_host_with_headroom(host.clone(), headroom) {
                 return Some(lease);
             }
             if Instant::now() >= deadline {
                 return None;
-            }
-            if reclaimed
-                .as_ref()
-                .is_none_or(|tunnel| Arc::strong_count(tunnel) == 1)
-            {
-                reclaimed = self.reclaim_idle_tunnel(&host, headroom);
             }
             let state = self.lock_state();
             let (next, _) = self
@@ -210,43 +192,6 @@ impl NetworkGovernor {
             scope: Some(scope),
             units: 1,
         })
-    }
-
-    /// Closes the longest-silent idle tunnel whose slot would let `host` in: any host when the
-    /// global budget is full, otherwise only `host` itself. Its relay then ends and releases the
-    /// lease. A tunnel the client spoke on last is never chosen.
-    fn reclaim_idle_tunnel(&self, host: &str, headroom: usize) -> Option<Arc<TunnelActivity>> {
-        let host_full = {
-            let state = self.lock_state();
-            let count = state.hosts.get(host).copied().unwrap_or(0);
-            count.saturating_add(state.wildcards) >= state.per_host_limit.saturating_add(headroom)
-        };
-        let mut tunnels = self.lock_tunnels();
-        let id = tunnels
-            .iter()
-            .filter(|(_, tunnel)| !host_full || tunnel.host == host)
-            .filter_map(|(id, tunnel)| tunnel.parked_for().map(|idle| (*id, idle)))
-            .filter(|(_, idle)| *idle >= IDLE_TUNNEL_RECLAIM_AFTER)
-            .max_by_key(|(_, idle)| *idle)
-            .map(|(id, _)| id)?;
-        let tunnel = tunnels.remove(&id)?;
-        drop(tunnels);
-        crate::logging::record(
-            crate::logging::Event::debug("proxy.reclaim")
-                .host(tunnel.host.clone())
-                .detail("Boştaki tünel, bekleyen bir istek için kapatıldı"),
-        );
-        tunnel.reclaimed.store(true, Ordering::Release);
-        let _ = tunnel.client.shutdown(Shutdown::Both);
-        let _ = tunnel.upstream.shutdown(Shutdown::Both);
-        Some(tunnel)
-    }
-
-    fn lock_tunnels(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<TunnelActivity>>> {
-        self.inner
-            .tunnels
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// `host=<n> wildcards=<n> active=<n> limit=<n>` for a refused admission's log line.
@@ -1383,8 +1328,9 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
                 crate::logging::Event::warn("proxy.reject")
                     .host(parsed.host.clone())
                     .detail(format!(
-                        "Yerel ağ aracısı tünel kapasitesi dolu; istek bekleme sonrası reddedildi ({})",
-                        shared.governor.usage_summary(&parsed.host)
+                        "Yerel ağ aracısı tünel kapasitesi dolu; istek bekleme sonrası reddedildi ({} open={})",
+                        shared.governor.usage_summary(&parsed.host),
+                        shared.open_tunnels()
                     )),
             );
             let _ = write_proxy_error(
@@ -1413,12 +1359,8 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
         }
     };
 
-    let (registration, reclaimable) = match TunnelRegistration::new(&shared, &client, &upstream)
-        .and_then(|registration| {
-            ReclaimableTunnel::new(&shared.governor, parsed.host.clone(), &client, &upstream)
-                .map(|reclaimable| (registration, reclaimable))
-        }) {
-        Ok(pair) => pair,
+    let registration = match TunnelRegistration::new(&shared, &client, &upstream) {
+        Ok(registration) => registration,
         Err(_) => {
             let _ = write_proxy_error(
                 client,
@@ -1452,11 +1394,7 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
     if !parsed.trailing.is_empty() && upstream.write_all(&parsed.trailing).is_err() {
         return;
     }
-    relay(client, upstream, &reclaimable.activity, &shared.stopping);
-    // The slot is free before the tunnel leaves the governor's list, so a request that waits
-    // for the tunnel it reclaimed finds the slot once the tunnel is gone.
-    drop(lease);
-    drop(reclaimable);
+    relay(client, upstream, lease, &shared, &parsed.host);
     drop(registration);
 }
 
@@ -1861,84 +1799,16 @@ impl Drop for TunnelRegistration {
     }
 }
 
-/// Traffic state of one relayed tunnel, kept in the governor so another child's refused
-/// admission can find a tunnel its own client only keeps alive.
-struct TunnelActivity {
-    host: String,
-    client: TcpStream,
-    upstream: TcpStream,
-    opened: Instant,
-    last_traffic_ms: AtomicU64,
-    upstream_spoke_last: AtomicBool,
-    /// A chunk is being relayed; a write to a slow reader can block for longer than the
-    /// reclaim delay while the transfer is very much alive.
-    relaying: AtomicBool,
-    reclaimed: AtomicBool,
-}
-
-impl TunnelActivity {
-    fn record(&self, from_upstream: bool) {
-        self.last_traffic_ms
-            .store(self.opened.elapsed().as_millis() as u64, Ordering::Release);
-        self.upstream_spoke_last
-            .store(from_upstream, Ordering::Release);
-    }
-
-    /// How long the tunnel has been silent since the server last answered, or `None` while
-    /// a chunk is in flight or the client spoke last and its request may still be waiting
-    /// for a reply.
-    fn parked_for(&self) -> Option<Duration> {
-        if self.relaying.load(Ordering::Acquire)
-            || !self.upstream_spoke_last.load(Ordering::Acquire)
-        {
-            return None;
-        }
-        let last = Duration::from_millis(self.last_traffic_ms.load(Ordering::Acquire));
-        Some(self.opened.elapsed().saturating_sub(last))
-    }
-}
-
-/// Lists a tunnel with its governor for the lifetime of its relay.
-struct ReclaimableTunnel {
-    governor: NetworkGovernor,
-    id: u64,
-    activity: Arc<TunnelActivity>,
-}
-
-impl ReclaimableTunnel {
-    fn new(
-        governor: &NetworkGovernor,
-        host: String,
-        client: &TcpStream,
-        upstream: &TcpStream,
-    ) -> Result<Self> {
-        let activity = Arc::new(TunnelActivity {
-            host,
-            client: client.try_clone()?,
-            upstream: upstream.try_clone()?,
-            opened: Instant::now(),
-            last_traffic_ms: AtomicU64::new(0),
-            upstream_spoke_last: AtomicBool::new(false),
-            relaying: AtomicBool::new(false),
-            reclaimed: AtomicBool::new(false),
-        });
-        let id = governor.inner.next_tunnel.fetch_add(1, Ordering::Relaxed);
-        governor.lock_tunnels().insert(id, Arc::clone(&activity));
-        Ok(Self {
-            governor: governor.clone(),
-            id,
-            activity,
-        })
-    }
-}
-
-impl Drop for ReclaimableTunnel {
-    fn drop(&mut self) {
-        self.governor.lock_tunnels().remove(&self.id);
-    }
-}
-
 impl ProxyShared {
+    /// Tunnels this child keeps open, idle ones included, for a refused admission's log line.
+    fn open_tunnels(&self) -> usize {
+        self.tunnels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+            / 2
+    }
+
     fn close_tunnels(&self) {
         let tunnels = self
             .tunnels
@@ -1953,22 +1823,23 @@ impl ProxyShared {
 fn relay(
     mut client: TcpStream,
     mut upstream: TcpStream,
-    activity: &TunnelActivity,
-    stopping: &AtomicBool,
+    lease: ConnectionLease,
+    shared: &ProxyShared,
+    host: &str,
 ) {
     // The child owns application-level retries, but each relay is also bounded
-    // so a silent tunnel cannot consume a worker and a lease forever. Readiness
-    // is polled in short steps because a blocked Winsock recv is not woken by a
-    // shutdown issued from another thread; cancellation and reclaim are checked
-    // between steps.
+    // so a silent tunnel cannot consume a worker forever. Readiness is polled in
+    // short steps because a blocked Winsock recv is not woken by a shutdown
+    // issued from another thread; cancellation is checked between steps.
     for stream in [&client, &upstream] {
         let _ = stream.set_write_timeout(Some(PROXY_RELAY_IDLE_TIMEOUT));
     }
     let mut buffer = vec![0u8; RELAY_BUFFER];
+    let mut lease = Some(lease);
     let mut client_open = true;
+    let mut upstream_spoke_last = false;
     let mut last_traffic = Instant::now();
-    while !stopping.load(Ordering::Acquire)
-        && !activity.reclaimed.load(Ordering::Acquire)
+    while !shared.stopping.load(Ordering::Acquire)
         && last_traffic.elapsed() < PROXY_RELAY_IDLE_TIMEOUT
     {
         let mut polls = [&upstream, &client].map(|stream| WSAPOLLFD {
@@ -1982,30 +1853,50 @@ fn relay(
             return;
         }
         if ready == 0 {
+            if upstream_spoke_last && last_traffic.elapsed() >= IDLE_SLOT_RELEASE_AFTER {
+                lease = None;
+            }
             continue;
         }
-        activity.relaying.store(true, Ordering::Release);
         if polls[0].revents != 0 {
             // The server's end closes the tunnel: nothing it sends can follow.
-            match relay_chunk(&mut upstream, &mut client, &mut buffer) {
-                Some(()) => activity.record(true),
-                None => return,
+            if relay_chunk(&mut upstream, &mut client, &mut buffer).is_none() {
+                return;
             }
+            upstream_spoke_last = true;
             last_traffic = Instant::now();
         }
         if client_open && polls[1].revents != 0 {
-            match relay_chunk(&mut client, &mut upstream, &mut buffer) {
-                Some(()) => activity.record(false),
-                None => {
-                    // A client half-close still lets the server finish its answer.
-                    client_open = false;
-                    let _ = upstream.shutdown(Shutdown::Write);
+            if lease.is_none() {
+                lease = reacquire_tunnel_slot(shared, host);
+                if lease.is_none() {
+                    return;
                 }
             }
+            if relay_chunk(&mut client, &mut upstream, &mut buffer).is_none() {
+                // A client half-close still lets the server finish its answer.
+                client_open = false;
+                let _ = upstream.shutdown(Shutdown::Write);
+            }
+            upstream_spoke_last = false;
             last_traffic = Instant::now();
         }
-        activity.relaying.store(false, Ordering::Release);
     }
+}
+
+/// Waits for a slot for an open tunnel whose client speaks again; `None` once the proxy stops.
+/// The tunnel holds no slot meanwhile, so the wait cannot block the transfers it waits for.
+fn reacquire_tunnel_slot(shared: &ProxyShared, host: &str) -> Option<ConnectionLease> {
+    while !shared.stopping.load(Ordering::Acquire) {
+        if let Some(lease) =
+            shared
+                .governor
+                .acquire_host_for_tunnel(host.to_owned(), RELAY_POLL, shared.headroom)
+        {
+            return Some(lease);
+        }
+    }
+    None
 }
 
 /// Moves one readable chunk; `None` once the reader has ended or either side failed.
@@ -2071,26 +1962,15 @@ fn capability_matches(shared: &ProxyShared, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExternalProxy, NetworkGovernor, TunnelActivity, GLOBAL_CONNECTION_BUDGET};
+    use super::{ExternalProxy, NetworkGovernor};
     use crate::model::TransferControl;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use std::{
         io::{ErrorKind, Read, Write},
         net::{TcpListener, TcpStream},
-        sync::{
-            atomic::{AtomicBool, AtomicU64},
-            Arc,
-        },
         thread,
         time::{Duration, Instant},
     };
-
-    fn loopback_pair() -> (TcpStream, TcpStream) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let near = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (far, _) = listener.accept().unwrap();
-        (near, far)
-    }
 
     /// Opens a CONNECT tunnel through the proxy and returns the stream with the status line.
     fn open_tunnel(proxy: &ExternalProxy, target: &str) -> (TcpStream, String) {
@@ -2125,10 +2005,8 @@ mod tests {
         (stream, status)
     }
 
-    #[test]
-    fn idle_kept_alive_tunnels_yield_their_slots_to_a_waiting_request() {
-        // A server that answers each request, keeps the connection alive and is slow to close
-        // it after the client's FIN, so a reclaimed relay ends on its own poll step.
+    /// A server that answers every read with "pong" and keeps the connection open.
+    fn answering_server() -> String {
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let target = format!("127.0.0.1:{}", server.local_addr().unwrap().port());
         thread::spawn(move || {
@@ -2137,123 +2015,150 @@ mod tests {
                 thread::spawn(move || {
                     let mut buffer = [0u8; 64];
                     while let Ok(read) = stream.read(&mut buffer) {
-                        if read == 0 {
-                            thread::sleep(Duration::from_secs(30));
-                            return;
-                        }
-                        if stream.write_all(b"pong").is_err() {
+                        if read == 0 || stream.write_all(b"pong").is_err() {
                             return;
                         }
                     }
                 });
             }
         });
-        // The per-host bound exceeds the global budget, so only the budget can refuse.
-        let proxy =
-            ExternalProxy::spawn(NetworkGovernor::new(40), TransferControl::default()).unwrap();
-        let mut pooled = Vec::new();
-        for _ in 0..GLOBAL_CONNECTION_BUDGET {
-            let (mut stream, status) = open_tunnel(&proxy, &target);
-            assert!(status.starts_with("HTTP/1.1 200"), "{status}");
-            stream.write_all(b"ping").unwrap();
-            let mut reply = [0u8; 4];
-            stream.read_exact(&mut reply).unwrap();
-            assert_eq!(&reply, b"pong");
-            pooled.push(stream);
-        }
+        target
+    }
 
-        let started = Instant::now();
-        let (mut stream, status) = open_tunnel(&proxy, &target);
-        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
-        assert!(
-            started.elapsed() < super::TUNNEL_WAIT,
-            "{:?}",
-            started.elapsed()
-        );
+    fn exchange(stream: &mut TcpStream) {
         stream.write_all(b"ping").unwrap();
         let mut reply = [0u8; 4];
         stream.read_exact(&mut reply).unwrap();
         assert_eq!(&reply, b"pong");
+    }
 
-        let closed = pooled
-            .iter()
-            .filter(|stream| {
-                stream.set_nonblocking(true).unwrap();
-                let mut reader: &TcpStream = stream;
-                matches!(reader.read(&mut [0u8; 1]), Ok(0))
-            })
-            .count();
-        assert_eq!(closed, 1);
+    fn eventually(condition: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if condition() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
     }
 
     #[test]
-    fn a_tunnel_waiting_for_its_answer_is_never_reclaimed() {
+    fn an_answered_idle_tunnel_gives_its_slot_back_and_stays_open() {
+        let target = answering_server();
+        let host = || "127.0.0.1".to_owned();
         let governor = NetworkGovernor::new(1);
-        let held = governor
-            .try_acquire_host("media.test".into())
-            .expect("first slot");
-        let (client, client_peer) = loopback_pair();
-        let (upstream, _upstream_peer) = loopback_pair();
-        let activity = Arc::new(TunnelActivity {
-            host: "media.test".into(),
-            client,
-            upstream,
-            opened: Instant::now() - Duration::from_secs(60),
-            last_traffic_ms: AtomicU64::new(0),
-            upstream_spoke_last: AtomicBool::new(false),
-            relaying: AtomicBool::new(false),
-            reclaimed: AtomicBool::new(false),
-        });
-        governor.lock_tunnels().insert(1, Arc::clone(&activity));
-        client_peer.set_nonblocking(true).unwrap();
-        let peer_state = || match (&client_peer).read(&mut [0u8; 1]) {
-            Ok(0) => "closed",
-            Err(error) if error.kind() == ErrorKind::WouldBlock => "open",
-            other => panic!("{other:?}"),
-        };
+        let proxy = ExternalProxy::spawn(governor.clone(), TransferControl::default()).unwrap();
+        let (mut pooled, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        exchange(&mut pooled);
 
-        assert!(governor
-            .acquire_host_for_tunnel("media.test".into(), Duration::from_millis(200), 0)
-            .is_none());
-        assert_eq!(peer_state(), "open");
-
-        activity.record(true);
-        assert!(governor
-            .acquire_host_for_tunnel("media.test".into(), Duration::from_millis(200), 0)
-            .is_none());
-        assert_eq!(
-            peer_state(),
-            "open",
-            "silent for less than the reclaim delay"
+        // Silent after its answer, the open tunnel no longer counts against the host.
+        assert!(
+            eventually(|| governor.try_acquire_host(host()).is_some()),
+            "the idle tunnel kept its slot"
         );
+        let held = governor.try_acquire_host(host()).expect("free slot");
 
-        activity
-            .last_traffic_ms
-            .store(0, std::sync::atomic::Ordering::Release);
-        activity
-            .relaying
-            .store(true, std::sync::atomic::Ordering::Release);
-        assert!(governor
-            .acquire_host_for_tunnel("media.test".into(), Duration::from_millis(200), 0)
-            .is_none());
-        assert_eq!(
-            peer_state(),
-            "open",
-            "a chunk blocked on a slow reader is in flight"
+        // Its next request waits for a slot instead of exceeding the bound.
+        pooled
+            .set_read_timeout(Some(Duration::from_millis(700)))
+            .unwrap();
+        pooled.write_all(b"ping").unwrap();
+        let mut reply = [0u8; 4];
+        let early = pooled.read(&mut reply);
+        assert!(
+            matches!(&early, Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)),
+            "{early:?}"
         );
-
-        activity
-            .relaying
-            .store(false, std::sync::atomic::Ordering::Release);
-        assert!(governor
-            .acquire_host_for_tunnel("media.test".into(), Duration::from_millis(200), 0)
-            .is_none());
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while peer_state() == "open" && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(peer_state(), "closed");
         drop(held);
+        pooled
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        pooled.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"pong");
+
+        // A second tunnel to the same host is admitted while the first stays open.
+        assert!(eventually(|| governor.try_acquire_host(host()).is_some()));
+        let (mut second, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        exchange(&mut second);
+        assert!(eventually(|| governor.try_acquire_host(host()).is_some()));
+        exchange(&mut pooled);
+    }
+
+    #[test]
+    fn a_tunnel_waiting_for_its_answer_keeps_its_slot() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("127.0.0.1:{}", server.local_addr().unwrap().port());
+        let (accepted, silent) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            if let Ok((stream, _)) = server.accept() {
+                let _ = accepted.send(stream);
+            }
+        });
+        let governor = NetworkGovernor::new(1);
+        let proxy = ExternalProxy::spawn(governor.clone(), TransferControl::default()).unwrap();
+        let (mut waiting, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        let _upstream = silent.recv_timeout(Duration::from_secs(5)).unwrap();
+        waiting.write_all(b"ping").unwrap();
+        assert!(!eventually(|| governor
+            .try_acquire_host("127.0.0.1".into())
+            .is_some()));
+    }
+
+    #[test]
+    fn a_tunnel_waiting_for_a_slot_closes_when_the_proxy_stops() {
+        let target = answering_server();
+        let governor = NetworkGovernor::new(1);
+        let proxy = ExternalProxy::spawn(governor.clone(), TransferControl::default()).unwrap();
+        let (mut pooled, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        exchange(&mut pooled);
+        assert!(eventually(|| governor
+            .try_acquire_host("127.0.0.1".into())
+            .is_some()));
+        let _held = governor.try_acquire_host("127.0.0.1".into()).unwrap();
+        pooled.write_all(b"ping").unwrap();
+
+        // Stopping ends the wait: the proxy shuts down and the request is never forwarded.
+        let (stopped, done) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(proxy);
+            let _ = stopped.send(());
+        });
+        done.recv_timeout(Duration::from_secs(5))
+            .expect("the proxy stopped");
+        let mut reply = [0u8; 4];
+        let read = pooled.read(&mut reply);
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    }
+
+    #[test]
+    fn open_tunnels_counts_each_relayed_tunnel_once() {
+        let target = answering_server();
+        let proxy =
+            ExternalProxy::spawn(NetworkGovernor::new(4), TransferControl::default()).unwrap();
+        let (mut first, _) = open_tunnel(&proxy, &target);
+        let (mut second, _) = open_tunnel(&proxy, &target);
+        exchange(&mut first);
+        exchange(&mut second);
+        assert_eq!(proxy.shared.open_tunnels(), 2);
+        drop(first);
+        assert!(eventually(|| proxy.shared.open_tunnels() == 1));
+    }
+
+    #[test]
+    fn a_tunnel_refused_after_the_wait_gets_a_retryable_503() {
+        let target = answering_server();
+        let governor = NetworkGovernor::new(1);
+        let proxy = ExternalProxy::spawn(governor.clone(), TransferControl::default()).unwrap();
+        let _held = governor.try_acquire_host("127.0.0.1".into()).unwrap();
+        let started = Instant::now();
+        let (_, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 503"), "{status}");
+        assert!(started.elapsed() >= super::TUNNEL_WAIT);
     }
 
     fn proxy_reply(proxy: &ExternalProxy, request: &str) -> String {
