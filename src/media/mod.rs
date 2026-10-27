@@ -29,6 +29,7 @@ use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
 
 mod evidence;
 mod metadata;
+mod native_hls;
 mod postprocess;
 mod probe;
 mod process;
@@ -547,6 +548,38 @@ pub(crate) fn download(
         }
     }
 
+    // A finished HLS source with separate video and audio playlists downloads both streams at
+    // once in the app; every other source goes through yt-dlp below.
+    let native = source_capture
+        .pinned
+        .as_ref()
+        .filter(|_| !live)
+        .and_then(|pinned| native_hls::native_streams(pinned, request));
+    let mut native_output = match native {
+        Some(streams) => {
+            crate::logging::record_job(
+                job_id,
+                crate::logging::Event::info("download.native_hls").detail(format!(
+                    "parça={}",
+                    streams
+                        .iter()
+                        .map(native_hls::NativeStream::summary)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )),
+            );
+            Some(native_hls::download_streams(
+                &streams,
+                &output_plan.workspace,
+                request,
+                &toolchain,
+                control,
+                network,
+                progress,
+            )?)
+        }
+        None => None,
+    };
     let mut completed_files = HashSet::new();
     let mut last_path = None;
     let mut restart_count = 0u32;
@@ -554,6 +587,11 @@ pub(crate) fn download(
     let mut fragment_restarts = 0u32;
     let mut stall_restarts = 0u32;
     loop {
+        if let Some(path) = native_output.take() {
+            completed_files.insert(path.clone());
+            last_path = Some(path);
+            break;
+        }
         if control.is_cancelled() {
             bail!(crate::i18n::ui(
                 "İndirme iptal edildi",

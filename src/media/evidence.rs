@@ -283,7 +283,7 @@ pub(super) fn pinned_hls_declared_durations(source: &PinnedMediaSource) -> (Vec<
     (video, audio)
 }
 
-fn object_with_url<'a>(value: &'a Value, url: &str) -> Option<&'a Value> {
+pub(super) fn object_with_url<'a>(value: &'a Value, url: &str) -> Option<&'a Value> {
     match value {
         Value::Object(object) if object.get("url").and_then(Value::as_str) == Some(url) => {
             Some(value)
