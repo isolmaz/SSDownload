@@ -424,9 +424,10 @@ pub(super) fn verify_workspace(path: &Path, owner: &str) -> Result<()> {
     }
     Ok(())
 }
-/// Deletes the files this attempt produced inside the workspace, keeping everything that was
-/// already finished before it started. A skipped fragment invalidates only the streams of the
-/// attempt that saw it, so earlier, complete streams are not downloaded again.
+/// Deletes the unfinished files this attempt produced inside the workspace, keeping everything
+/// that was finished before it started and every stream the attempt itself finished. A lost
+/// fragment invalidates only the stream it belongs to, so complete streams are not downloaded
+/// again.
 pub(super) fn discard_attempt_outputs(
     plan: &OutputPlan,
     keep: &HashSet<PathBuf>,
@@ -471,6 +472,7 @@ pub(super) fn discard_attempt_outputs(
         // template has no literal prefix, so the stem alone would match them too.
         if name.starts_with('.')
             || !name.starts_with(&stem)
+            || finished_file(name)
             || path
                 .canonicalize()
                 .is_ok_and(|resolved| keep.contains(&resolved))
@@ -483,6 +485,13 @@ pub(super) fn discard_attempt_outputs(
         bytes = bytes.saturating_add(size);
     }
     Ok((removed, bytes))
+}
+
+/// Whether the downloader gave the file its final name. yt-dlp writes every stream, fragment
+/// chain and merge under a `.part`, `.ytdl` or `.temp.` name and renames it only once it is
+/// complete; a lost fragment aborts its stream before that rename.
+fn finished_file(name: &str) -> bool {
+    !(name.contains(".part") || name.ends_with(".ytdl") || name.contains(".temp."))
 }
 
 pub(super) fn remove_workspace(path: &Path, owner: &str) -> Result<()> {

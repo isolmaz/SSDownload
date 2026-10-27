@@ -2103,8 +2103,62 @@ mod tests {
         assert!(status.starts_with("HTTP/1.1 200"), "{status}");
         let _upstream = silent.recv_timeout(Duration::from_secs(5)).unwrap();
         waiting.write_all(b"ping").unwrap();
-        thread::sleep(super::IDLE_SLOT_RELEASE_AFTER * 3);
-        assert!(governor.try_acquire_host("127.0.0.1".into()).is_none());
+        assert!(!eventually(|| governor
+            .try_acquire_host("127.0.0.1".into())
+            .is_some()));
+    }
+
+    #[test]
+    fn a_tunnel_waiting_for_a_slot_closes_when_the_proxy_stops() {
+        let target = answering_server();
+        let governor = NetworkGovernor::new(1);
+        let proxy = ExternalProxy::spawn(governor.clone(), TransferControl::default()).unwrap();
+        let (mut pooled, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        exchange(&mut pooled);
+        assert!(eventually(|| governor
+            .try_acquire_host("127.0.0.1".into())
+            .is_some()));
+        let _held = governor.try_acquire_host("127.0.0.1".into()).unwrap();
+        pooled.write_all(b"ping").unwrap();
+
+        // Stopping ends the wait: the proxy shuts down and the request is never forwarded.
+        let (stopped, done) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(proxy);
+            let _ = stopped.send(());
+        });
+        done.recv_timeout(Duration::from_secs(5))
+            .expect("the proxy stopped");
+        let mut reply = [0u8; 4];
+        let read = pooled.read(&mut reply);
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    }
+
+    #[test]
+    fn open_tunnels_counts_each_relayed_tunnel_once() {
+        let target = answering_server();
+        let proxy =
+            ExternalProxy::spawn(NetworkGovernor::new(4), TransferControl::default()).unwrap();
+        let (mut first, _) = open_tunnel(&proxy, &target);
+        let (mut second, _) = open_tunnel(&proxy, &target);
+        exchange(&mut first);
+        exchange(&mut second);
+        assert_eq!(proxy.shared.open_tunnels(), 2);
+        drop(first);
+        assert!(eventually(|| proxy.shared.open_tunnels() == 1));
+    }
+
+    #[test]
+    fn a_tunnel_refused_after_the_wait_gets_a_retryable_503() {
+        let target = answering_server();
+        let governor = NetworkGovernor::new(1);
+        let proxy = ExternalProxy::spawn(governor.clone(), TransferControl::default()).unwrap();
+        let _held = governor.try_acquire_host("127.0.0.1".into()).unwrap();
+        let started = Instant::now();
+        let (_, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 503"), "{status}");
+        assert!(started.elapsed() >= super::TUNNEL_WAIT);
     }
 
     fn proxy_reply(proxy: &ExternalProxy, request: &str) -> String {

@@ -226,29 +226,74 @@ pub(super) struct PinnedMediaSource {
     pub(super) dash_formats: Vec<PinnedDashFormat>,
 }
 
+/// Fragment durations of a finished HLS media playlist; `None` for an unfinished one or one
+/// with an unreadable duration.
+fn finished_hls_fragments(body: &str) -> Option<Vec<f64>> {
+    let mut finite = false;
+    let mut fragments = Vec::new();
+    for line in body.lines().map(str::trim) {
+        if line == "#EXT-X-ENDLIST" {
+            finite = true;
+        }
+        if let Some(value) = line.strip_prefix("#EXTINF:") {
+            let duration = value.split(',').next()?.trim().parse::<f64>().ok()?;
+            if !duration.is_finite() || duration <= 0.0 {
+                return None;
+            }
+            fragments.push(duration);
+        }
+    }
+    (finite && !fragments.is_empty()).then_some(fragments)
+}
+
 pub(super) fn pinned_hls_duration_tolerance(source: &PinnedMediaSource) -> Option<f64> {
     let mut largest = 0.0_f64;
     for manifest in &source.manifests {
-        let mut finite = false;
-        let mut has_fragments = false;
-        for line in manifest.body.lines().map(str::trim) {
-            if line == "#EXT-X-ENDLIST" {
-                finite = true;
-            }
-            if let Some(value) = line.strip_prefix("#EXTINF:") {
-                let duration = value.split(',').next()?.trim().parse::<f64>().ok()?;
-                if !duration.is_finite() || duration <= 0.0 {
-                    return None;
-                }
-                largest = largest.max(duration);
-                has_fragments = true;
-            }
-        }
-        if !finite || !has_fragments {
-            return None;
-        }
+        largest = finished_hls_fragments(&manifest.body)?
+            .into_iter()
+            .fold(largest, f64::max);
     }
     (largest > 0.0).then(|| (largest + 0.25).clamp(0.25, 10.0))
+}
+
+/// The lengths the pinned playlists declare for the selected video and audio streams. A
+/// playlist whose format does not rule a kind out counts for both. Both are empty unless every
+/// selected stream comes from a finished pinned HLS playlist.
+pub(super) fn pinned_hls_declared_durations(source: &PinnedMediaSource) -> (Vec<f64>, Vec<f64>) {
+    let mut video = Vec::new();
+    let mut audio = Vec::new();
+    if !source.dash_formats.is_empty() {
+        return (video, audio);
+    }
+    for manifest in &source.manifests {
+        let (Some(fragments), Some(format)) = (
+            finished_hls_fragments(&manifest.body),
+            object_with_url(&source.inspection, &manifest.marker),
+        ) else {
+            return (Vec::new(), Vec::new());
+        };
+        let length = fragments.iter().sum::<f64>();
+        if format.get("vcodec").and_then(Value::as_str) != Some("none") {
+            video.push(length);
+        }
+        if format.get("acodec").and_then(Value::as_str) != Some("none") {
+            audio.push(length);
+        }
+    }
+    (video, audio)
+}
+
+fn object_with_url<'a>(value: &'a Value, url: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(object) if object.get("url").and_then(Value::as_str) == Some(url) => {
+            Some(value)
+        }
+        Value::Object(object) => object
+            .values()
+            .find_map(|value| object_with_url(value, url)),
+        Value::Array(values) => values.iter().find_map(|value| object_with_url(value, url)),
+        _ => None,
+    }
 }
 
 pub(super) struct MediaSourceCapture {

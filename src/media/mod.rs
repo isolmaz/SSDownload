@@ -346,6 +346,10 @@ pub(crate) fn download(
             .as_ref()
             .and_then(pinned_hls_duration_tolerance);
     }
+    if let Some(pinned) = source_capture.pinned.as_ref().filter(|_| !request.playlist) {
+        (info.declared_video_durations, info.declared_audio_durations) =
+            pinned_hls_declared_durations(pinned);
+    }
     validate_track_selection(request, &info)?;
     validate_container_selection(request, &info)?;
     let live = info.is_live;
@@ -467,8 +471,7 @@ pub(crate) fn download(
     // proxy 503s without adding throughput: the effective parallelism was
     // always min(requested, per_host_limit). Ask for exactly that so the
     // child never fights its own proxy for tunnel slots.
-    // Fragment parallelism is appended per attempt: a retry after a lost fragment runs with a
-    // single connection, because the proxy tunnel limit is what the sources overwhelmed.
+    // Fragment parallelism is appended per attempt: each retry after a lost fragment halves it.
     if request.kind != DownloadKind::Audio {
         if let Some(container) = request.container.as_deref() {
             base_args.extend([
@@ -573,11 +576,11 @@ pub(crate) fn download(
         }
         args.extend([
             "--concurrent-fragments".into(),
-            if fragment_restarts > 0 {
-                "1".to_string()
-            } else {
-                fragment_concurrency(request.connections, network.per_host_limit())
-            },
+            fragment_concurrency(
+                request.connections,
+                network.per_host_limit(),
+                fragment_restarts,
+            ),
         ]);
         progress(TransferProgress {
             downloaded: completed_file_bytes(&completed_files),
@@ -595,8 +598,8 @@ pub(crate) fn download(
             },
         });
 
-        // Files finished before this attempt are known good; everything the attempt itself
-        // produces is provisional until it survives a fragment-complete download.
+        // Files finished before this attempt are known good; of the attempt's own files only the
+        // streams the tool finished survive a lost fragment.
         let known_good = completed_files.clone();
         let mut running = RunningDownload::spawn_ytdlp(
             yt_dlp,
@@ -681,25 +684,40 @@ pub(crate) fn download(
                         ));
                     }
                 }
-                // A skipped fragment leaves a permanent hole: discard this attempt's own files so
-                // the next one downloads the affected stream again instead of resuming it.
-                if fragment_loss(&running.stderr_text()) {
+                // A skipped fragment leaves a permanent hole: discard this attempt's unfinished files
+                // so the next one downloads the affected stream again instead of resuming it.
+                let stderr = running.stderr_text();
+                if fragment_loss(&stderr) {
+                    // The tool's own account of the loss, which the restart below hides.
+                    let visible = non_debug_lines(&stderr);
+                    let lines = visible.lines().collect::<Vec<_>>();
+                    crate::logging::record_job(
+                        job_id,
+                        crate::logging::Event::warn("download.fragment_loss_output").detail(
+                            useful_error(
+                                &lines[lines.len().saturating_sub(12)..].join("\n"),
+                                &secrets.redactions,
+                            ),
+                        ),
+                    );
                     let discarded = discard_attempt_outputs(&output_plan, &known_good)?;
                     if discarded.0 > 0 {
                         fragment_restarts = fragment_restarts.saturating_add(1);
                         progress(TransferProgress {
                             phase: crate::i18n::ui_owned!(
                                 format!(
-                                    "Parça atlandı; {} dosya ({:.1} MB) atılıp akış baştan indiriliyor (deneme {}, tek bağlantı).",
+                                    "Parça atlandı; yarım kalan {} dosya ({:.1} MB) atılıp akış baştan indiriliyor (deneme {}, {} bağlantı).",
                                     discarded.0,
                                     discarded.1 as f64 / (1024.0 * 1024.0),
-                                    fragment_restarts + 1
+                                    fragment_restarts + 1,
+                                    fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)
                                 ),
                                 format!(
-                                    "A fragment was skipped; {} file(s) ({:.1} MB) discarded and the stream restarts (attempt {}, single connection).",
+                                    "A fragment was skipped; {} unfinished file(s) ({:.1} MB) discarded and the stream restarts (attempt {}, {} connection(s)).",
                                     discarded.0,
                                     discarded.1 as f64 / (1024.0 * 1024.0),
-                                    fragment_restarts + 1
+                                    fragment_restarts + 1,
+                                    fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)
                                 )
                             ),
                             ..TransferProgress::default()
@@ -1482,9 +1500,16 @@ fn discard_fragmented_restart(
 
 fn fragment_loss(stderr: &str) -> bool {
     if stderr.contains("Skipping fragment")
-        || stderr.contains("fragment not found")
         || stderr.contains("Skipping already downloaded fragment")
     {
+        return true;
+    }
+    // A stream given up names its fragment: "fragment 6 not found, unable to continue".
+    if stderr.match_indices("fragment").any(|(index, word)| {
+        stderr[index + word.len()..]
+            .trim_start_matches(|c: char| c == ' ' || c.is_ascii_digit())
+            .starts_with("not found")
+    }) {
         return true;
     }
     // The field failure: the fragment temp file disappeared under the downloader.
@@ -1530,7 +1555,9 @@ fn format_unavailable(error: &str) -> bool {
 
 /// Fragment parallelism cannot exceed the network governor's per-host tunnel
 /// bound; requesting more only produced proxy 503s and fragment aborts.
-fn fragment_concurrency(requested: Option<u8>, per_host_limit: u8) -> String {
+/// Each restart after a lost fragment halves the parallelism: fewer requests ease a source that
+/// drops them, while the restarted stream still downloads in parallel.
+fn fragment_concurrency(requested: Option<u8>, per_host_limit: u8, restarts: u32) -> String {
     // One tunnel of the per-host bound stays free. A slow fragment keeps its connection open while
     // the downloader opens a fresh one for a retry; a job that holds the whole bound turns that
     // retry into a local 503 and then into a lost fragment.
@@ -1539,6 +1566,9 @@ fn fragment_concurrency(requested: Option<u8>, per_host_limit: u8) -> String {
         .unwrap_or(4)
         .clamp(1, 16)
         .min(headroom)
+        .checked_shr(restarts)
+        .unwrap_or(0)
+        .max(1)
         .to_string()
 }
 
@@ -2614,6 +2644,8 @@ fn validate_subtitle_languages(values: &[String]) -> Result<String> {
 }
 
 #[cfg(test)]
+mod hls_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod output_validation_tests {
@@ -2856,6 +2888,114 @@ mod output_validation_tests {
     }
 
     #[test]
+    fn declared_lengths_need_every_selected_stream_as_a_finished_pinned_hls_playlist() {
+        let finished = "#EXTM3U
+#EXTINF:6.0,
+a.ts
+#EXTINF:4.0,
+b.ts
+#EXT-X-ENDLIST
+";
+        let mut source = PinnedMediaSource {
+            // A muxed format with unknown codecs counts for both kinds.
+            inspection: json!({"formats": [{"format_id": "muxed", "url": "pinned-0"}]}),
+            manifests: vec![PinnedManifest {
+                marker: "pinned-0".into(),
+                body: finished.into(),
+            }],
+            dash_formats: Vec::new(),
+        };
+        assert_eq!(
+            pinned_hls_declared_durations(&source),
+            (vec![10.0], vec![10.0])
+        );
+
+        source.dash_formats.push(PinnedDashFormat {
+            entry_index: None,
+            format_id: "dash-audio".into(),
+        });
+        assert_eq!(pinned_hls_declared_durations(&source), (vec![], vec![]));
+        source.dash_formats.clear();
+
+        source.manifests[0].body = finished.replace(
+            "#EXT-X-ENDLIST
+",
+            "",
+        );
+        assert_eq!(pinned_hls_declared_durations(&source), (vec![], vec![]));
+        source.manifests[0].body = finished.into();
+
+        source.manifests[0].marker = "pinned-1".into();
+        assert_eq!(pinned_hls_declared_durations(&source), (vec![], vec![]));
+    }
+
+    #[test]
+    fn streams_are_held_to_their_own_playlists_when_the_source_declares_different_lengths() {
+        let request = AddRequest {
+            kind: DownloadKind::Video,
+            expected_audio: Some(true),
+            ..Default::default()
+        };
+        let playlist = |segments: usize| {
+            format!(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:7\n{}#EXT-X-ENDLIST\n",
+                "#EXTINF:7.0,\nsegment.ts\n".repeat(segments)
+            )
+        };
+        // The audio playlist runs 170 s past the video's, as the source serves it.
+        let source = PinnedMediaSource {
+            inspection: json!({"formats": [
+                {"format_id": "video", "url": "pinned-0", "vcodec": "avc1.640028", "acodec": "none"},
+                {"format_id": "audio", "url": "pinned-1", "vcodec": "none", "acodec": null}
+            ]}),
+            manifests: vec![
+                PinnedManifest {
+                    marker: "pinned-0".into(),
+                    body: playlist(1000),
+                },
+                PinnedManifest {
+                    marker: "pinned-1".into(),
+                    body: playlist(1000 + 170 / 7),
+                },
+            ],
+            dash_formats: Vec::new(),
+        };
+        let mut info = MediaInfo {
+            duration: Some(7168.0),
+            duration_tolerance: pinned_hls_duration_tolerance(&source),
+            ..Default::default()
+        };
+        let mut probe = json!({"streams":[
+            {"codec_type":"video","codec_name":"h264","start_time":"0","duration":"6999.4"},
+            {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"7168.0"}
+        ],"format":{"start_time":"0","duration":"7168.0"}});
+        assert!(validate_probe(&probe, &request, &info).is_err());
+
+        (info.declared_video_durations, info.declared_audio_durations) =
+            pinned_hls_declared_durations(&source);
+        assert_eq!(info.declared_video_durations, vec![7000.0]);
+        assert_eq!(info.declared_audio_durations, vec![7168.0]);
+        assert!(validate_probe(&probe, &request, &info).is_ok());
+
+        // A lost or repeated fragment still fails against the stream's own playlist.
+        probe["streams"][1]["duration"] = json!("7161.0");
+        let error = validate_probe(&probe, &request, &info)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("ses akışı 7161.0 sn, kaynak listesi 7168.0 sn"),
+            "{error}"
+        );
+        probe["streams"][1]["duration"] = json!("7168.0");
+        probe["streams"][0]["duration"] = json!("7007.0");
+        assert!(validate_probe(&probe, &request, &info).is_err());
+        // An audio stream cut to the video's length does not pass as the video's playlist.
+        probe["streams"][0]["duration"] = json!("6999.4");
+        probe["streams"][1]["duration"] = json!("7000.0");
+        assert!(validate_probe(&probe, &request, &info).is_err());
+    }
+
+    #[test]
     fn multiple_audio_ids_languages_and_defaults_are_all_exact() {
         let info = media_info_from_json(&json!({"formats":[
             {"format_id":"v","height":720,"vcodec":"h264","acodec":"none"},
@@ -3094,6 +3234,15 @@ mod extractor_error_tests {
             "[download] fragment not found; Skipping fragment 5 ...\n[download] Got error: HTTP Error 429"
         ));
         assert!(fragment_loss("[download] Skipping fragment 12"));
+        // With --abort-on-unavailable-fragments the stream is given up instead of skipped.
+        assert!(fragment_loss(
+            "ERROR: fragment 6 not found, unable to continue
+  File \"__main__.py\", line 17"
+        ));
+        assert!(!fragment_loss(
+            "[hlsnative] Total fragments: 10
+[download] Destination: media.f1.mp4"
+        ));
         // The observed field failure: the fragment temp file vanished under the downloader.
         assert!(fragment_loss(
             "FileNotFoundError: [Errno 2] No such file or directory: '\\\\?\\C:\\Downloads\\SSDownload\\\
