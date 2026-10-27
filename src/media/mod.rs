@@ -3054,14 +3054,21 @@ b.ts
             expected_audio: Some(true),
             ..Default::default()
         };
-        let playlist = |segments: usize| {
+        let playlist = |length: &str, segments: usize| {
             format!(
-                "#EXTM3U\n#EXT-X-TARGETDURATION:7\n{}#EXT-X-ENDLIST\n",
-                "#EXTINF:7.0,\nsegment.ts\n".repeat(segments)
+                "#EXTM3U
+#EXT-X-TARGETDURATION:7
+{}#EXT-X-ENDLIST
+",
+                format!(
+                    "#EXTINF:{length},
+segment.ts
+"
+                )
+                .repeat(segments)
             )
         };
-        // The audio playlist runs 170 s past the video's, as the source serves it.
-        let source = PinnedMediaSource {
+        let source = |length: &str, video: usize, audio: usize| PinnedMediaSource {
             inspection: json!({"formats": [
                 {"format_id": "video", "url": "pinned-0", "vcodec": "avc1.640028", "acodec": "none"},
                 {"format_id": "audio", "url": "pinned-1", "vcodec": "none", "acodec": null}
@@ -3069,47 +3076,61 @@ b.ts
             manifests: vec![
                 PinnedManifest {
                     marker: "pinned-0".into(),
-                    body: playlist(1000),
+                    body: playlist(length, video),
                 },
                 PinnedManifest {
                     marker: "pinned-1".into(),
-                    body: playlist(1000 + 170 / 7),
+                    body: playlist(length, audio),
                 },
             ],
             dash_formats: Vec::new(),
         };
+        // The audio playlist runs 169 s past the video's, as the source serves it.
+        let exact = source("7.04", 999, 1023);
         let mut info = MediaInfo {
-            duration: Some(7168.0),
-            duration_tolerance: pinned_hls_duration_tolerance(&source),
+            duration: Some(7201.9),
+            duration_tolerance: pinned_hls_duration_tolerance(&exact),
             ..Default::default()
         };
         let mut probe = json!({"streams":[
-            {"codec_type":"video","codec_name":"h264","start_time":"0","duration":"6999.4"},
-            {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"7168.0"}
-        ],"format":{"start_time":"0","duration":"7168.0"}});
+            {"codec_type":"video","codec_name":"h264","start_time":"0","duration":"7032.4"},
+            {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"7201.9"}
+        ],"format":{"start_time":"0","duration":"7201.9"}});
         assert!(validate_probe(&probe, &request, &info).is_err());
 
         (info.declared_video_durations, info.declared_audio_durations) =
-            pinned_hls_declared_durations(&source);
-        assert_eq!(info.declared_video_durations, vec![7000.0]);
-        assert_eq!(info.declared_audio_durations, vec![7168.0]);
+            pinned_hls_declared_durations(&exact);
+        assert!((info.declared_video_durations[0] - 7032.96).abs() < 1e-6);
+        assert!((info.declared_audio_durations[0] - 7201.92).abs() < 1e-6);
         assert!(validate_probe(&probe, &request, &info).is_ok());
 
         // A lost or repeated fragment still fails against the stream's own playlist.
-        probe["streams"][1]["duration"] = json!("7161.0");
+        probe["streams"][1]["duration"] = json!("7194.9");
         let error = validate_probe(&probe, &request, &info)
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("ses akışı 7161.0 sn, kaynak listesi 7168.0 sn"),
+            error.contains("ses akışı 7194.9 sn, kaynak listesi 7201.9 sn"),
             "{error}"
         );
-        probe["streams"][1]["duration"] = json!("7168.0");
-        probe["streams"][0]["duration"] = json!("7007.0");
+        probe["streams"][1]["duration"] = json!("7201.9");
+        probe["streams"][0]["duration"] = json!("7039.9");
         assert!(validate_probe(&probe, &request, &info).is_err());
         // An audio stream cut to the video's length does not pass as the video's playlist.
-        probe["streams"][0]["duration"] = json!("6999.4");
-        probe["streams"][1]["duration"] = json!("7000.0");
+        probe["streams"][0]["duration"] = json!("7032.4");
+        probe["streams"][1]["duration"] = json!("7033.0");
+        assert!(validate_probe(&probe, &request, &info).is_err());
+
+        // Whole-second lengths are rounded: an hour of 6.006 s segments listed as 6 passes, a
+        // stream three segments short does not.
+        let rounded = source("6", 600, 600);
+        (info.declared_video_durations, info.declared_audio_durations) =
+            pinned_hls_declared_durations(&rounded);
+        info.duration_tolerance = pinned_hls_duration_tolerance(&rounded);
+        probe["streams"][0]["duration"] = json!("3603.6");
+        probe["streams"][1]["duration"] = json!("3603.6");
+        assert!(validate_probe(&probe, &request, &info).is_ok());
+        probe["streams"][1]["duration"] = json!("3585.6");
         assert!(validate_probe(&probe, &request, &info).is_err());
     }
 

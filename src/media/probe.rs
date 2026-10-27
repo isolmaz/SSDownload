@@ -246,10 +246,17 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
         ] {
             for span in spans.iter() {
                 let length = span.1 - span.0;
-                if !lengths
-                    .iter()
-                    .any(|declared| (declared - length).abs() <= end_tolerance)
-                {
+                // Whole-second segment lengths are rounded and drift from the stream by up to
+                // a second every quarter hour (6.006 s segments listed as 6).
+                let fits = |declared: &f64| {
+                    let drift = if declared.fract() == 0.0 {
+                        declared * 0.002
+                    } else {
+                        0.0
+                    };
+                    (declared - length).abs() <= end_tolerance + drift
+                };
+                if !lengths.iter().any(fits) {
                     let declared = lengths
                         .iter()
                         .map(|length| format!("{length:.1}"))

@@ -2517,7 +2517,7 @@ fn verify_range_support(
     Ok(result.is_ok() && response_allows_body(&headers, expected))
 }
 
-fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
+pub(crate) fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
     easy.url(url.as_str())?;
     easy.useragent(concat!("SSDownload/", env!("CARGO_PKG_VERSION")))?;
     easy.connect_timeout(Duration::from_secs(20))?;

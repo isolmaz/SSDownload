@@ -72,7 +72,14 @@ pub(super) fn native_streams(
                 format_id: codec("format_id")?.to_owned(),
                 language: codec("language").map(str::to_owned),
                 headers: stream_headers(format, request)?,
-                segments: plain_segments(&manifest.body)?,
+                segments: Vec::new(),
+            })
+            .filter(|_| extractor_cookies_are_known(format, request))
+            .and_then(|stream| {
+                Some(NativeStream {
+                    segments: plain_segments(&manifest.body)?,
+                    ..stream
+                })
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -107,6 +114,30 @@ fn stream_headers(format: &Value, request: &AddRequest) -> Option<Vec<(String, S
         .iter()
         .any(|(name, value)| name.is_empty() || unsafe_text(name) || unsafe_text(value)))
     .then_some(headers)
+}
+
+/// Whether every cookie yt-dlp holds for the format is one of the browser session's, which the
+/// app sends itself. A cookie the extractor received from the site would be missing from the
+/// segment requests, so such a source stays with yt-dlp.
+fn extractor_cookies_are_known(format: &Value, request: &AddRequest) -> bool {
+    let Some(cookies) = format.get("cookies").and_then(Value::as_str) else {
+        return true;
+    };
+    cookies
+        .split(';')
+        .filter_map(|part| part.split_once('='))
+        .map(|(name, _)| name.trim())
+        .filter(|name| {
+            !["domain", "path", "expires", "version"]
+                .iter()
+                .any(|attribute| name.eq_ignore_ascii_case(attribute))
+        })
+        .all(|name| {
+            request
+                .session_cookies
+                .iter()
+                .any(|cookie| cookie.name == name)
+        })
 }
 
 /// Segment addresses of a finished media playlist, its initialization section first. `None`
@@ -232,11 +263,13 @@ fn merge(
     let output = workspace.join(format!("media.{container}"));
     let staged = workspace.join(format!("media.native.temp.{container}"));
     let _ = fs::remove_file(&staged);
+    // At least ten minutes, and enough for a slow disk to copy a large film at 20 MB/s.
+    let bytes = joins.iter().map(Join::stored_bytes).sum::<u64>();
     let result = run_capture(
         &tools.ffmpeg,
         &browser_mux_args(request, &files, &staged),
         b"",
-        Duration::from_secs(10 * 60),
+        Duration::from_secs((bytes / (20 << 20)).max(10 * 60)),
         control,
     )?;
     if !result.status.success() || !result.stderr.trim().is_empty() {
@@ -256,9 +289,6 @@ fn merge(
         );
     }
     fs::rename(&staged, &output)?;
-    for join in joins {
-        join.remove();
-    }
     Ok(output)
 }
 
@@ -357,18 +387,13 @@ impl Join {
             target.sync_data()?;
             state.next += 1;
             state.length += copied;
-            fs::write(
-                index_path(&self.joined),
-                format!("{} {}", state.next, state.length),
+            crate::recovery::atomic_write(
+                &index_path(&self.joined),
+                format!("{} {}", state.next, state.length).as_bytes(),
             )?;
             fs::remove_file(&segment)?;
         }
         Ok(())
-    }
-
-    fn remove(&self) {
-        let _ = fs::remove_file(&self.joined);
-        let _ = fs::remove_file(index_path(&self.joined));
     }
 }
 
@@ -411,13 +436,16 @@ struct Pace {
 struct Shared {
     state: Mutex<Schedule>,
     wake: Condvar,
+    /// Each segment's host, as an index into `host_names`.
+    hosts: Vec<Vec<usize>>,
+    host_names: Vec<String>,
 }
 
 struct Schedule {
     queues: Vec<VecDeque<Task>>,
-    paces: HashMap<(usize, String), Pace>,
+    paces: HashMap<(usize, usize), Pace>,
     /// Requests in flight per host across all streams, never above `per_host`.
-    busy: HashMap<String, usize>,
+    busy: Vec<usize>,
     per_host: usize,
     remaining: usize,
     failure: Option<anyhow::Error>,
@@ -443,16 +471,38 @@ impl Shared {
             .collect::<Vec<_>>();
         let remaining = queues.iter().map(VecDeque::len).sum();
         debug_assert_eq!(streams.len(), queues.len());
+        let mut host_names = Vec::<String>::new();
+        let hosts = streams
+            .iter()
+            .map(|stream| {
+                stream
+                    .segments
+                    .iter()
+                    .map(|url| {
+                        let name = host_key(url);
+                        host_names
+                            .iter()
+                            .position(|known| *known == name)
+                            .unwrap_or_else(|| {
+                                host_names.push(name);
+                                host_names.len() - 1
+                            })
+                    })
+                    .collect()
+            })
+            .collect();
         Self {
             state: Mutex::new(Schedule {
                 queues,
                 paces: HashMap::new(),
-                busy: HashMap::new(),
+                busy: vec![0; host_names.len()],
                 per_host,
                 remaining,
                 failure: None,
             }),
             wake: Condvar::new(),
+            hosts,
+            host_names,
         }
     }
 
@@ -490,7 +540,7 @@ impl Shared {
             let now = Instant::now();
             let mut earliest: Option<Instant> = None;
             let per_host = state.per_host;
-            let mut chosen: Option<(usize, usize, String)> = None;
+            let mut chosen: Option<(usize, usize, usize)> = None;
             for stream in 0..state.queues.len() {
                 for position in 0..state.queues[stream].len() {
                     let task = state.queues[stream][position];
@@ -499,9 +549,9 @@ impl Shared {
                             Some(earliest.map_or(task.not_before, |at| at.min(task.not_before)));
                         continue;
                     }
-                    let host = host_key(&streams[stream].segments[task.index]);
-                    let busy = state.busy.get(&host).copied().unwrap_or(0);
-                    let pace = state.paces.entry((stream, host.clone())).or_insert(Pace {
+                    let host = self.hosts[stream][task.index];
+                    let busy = state.busy[host];
+                    let pace = state.paces.entry((stream, host)).or_insert(Pace {
                         limit: per_host,
                         in_flight: 0,
                         successes: 0,
@@ -522,7 +572,7 @@ impl Shared {
                 }
             }
             if let Some((stream, position, host)) = chosen {
-                *state.busy.entry(host.clone()).or_default() += 1;
+                state.busy[host] += 1;
                 if let Some(pace) = state.paces.get_mut(&(stream, host)) {
                     pace.in_flight += 1;
                 }
@@ -540,13 +590,11 @@ impl Shared {
         }
     }
 
-    fn settle(&self, stream: usize, host: &str, outcome: Settled) {
+    fn settle(&self, stream: usize, host: usize, outcome: Settled) {
         let mut state = self.lock();
         let per_host = state.per_host;
-        if let Some(busy) = state.busy.get_mut(host) {
-            *busy = busy.saturating_sub(1);
-        }
-        if let Some(pace) = state.paces.get_mut(&(stream, host.to_owned())) {
+        state.busy[host] = state.busy[host].saturating_sub(1);
+        if let Some(pace) = state.paces.get_mut(&(stream, host)) {
             pace.in_flight = pace.in_flight.saturating_sub(1);
             match &outcome {
                 Settled::Done => {
@@ -594,6 +642,14 @@ enum Settled {
     Failed,
 }
 
+fn file_retry(error: &std::io::Error) -> Fetched {
+    Fetched::Retry {
+        status: None,
+        retry_after: None,
+        reason: format!("local file: {error}"),
+    }
+}
+
 fn host_key(url: &Url) -> String {
     crate::network::canonical_host(url).unwrap_or_else(|_| url.host_str().unwrap_or("").into())
 }
@@ -625,7 +681,7 @@ impl WorkerContext<'_> {
             let stream_index = task.stream;
             let stream = &self.streams[stream_index];
             let join = &self.joins[stream_index];
-            let host = host_key(&stream.segments[task.index]);
+            let host = self.shared.hosts[stream_index][task.index];
             let segment = segment_path(&join.joined, task.index);
             let mut url = stream.segments[task.index].clone();
             let mut fetched = self.fetch(&url, stream, &segment);
@@ -638,7 +694,7 @@ impl WorkerContext<'_> {
             }
             match fetched {
                 Ok(Fetched::Done) => {
-                    self.shared.settle(stream_index, &host, Settled::Done);
+                    self.shared.settle(stream_index, host, Settled::Done);
                     if let Err(error) = join.mark_ready(task.index) {
                         self.shared.fail(error);
                     }
@@ -655,22 +711,22 @@ impl WorkerContext<'_> {
                         + retry_after.map_or(backoff, |delay| delay.min(MAX_SEGMENT_RETRY_AFTER));
                     crate::logging::record(
                         crate::logging::Event::warn("media.segment_retry")
-                            .host(host.clone())
+                            .host(self.shared.host_names[host].clone())
                             .detail(format!(
                                 "{} segment {} deneme {}: {reason}",
                                 stream.role, task.index, task.attempt
                             )),
                     );
                     self.shared
-                        .settle(stream_index, &host, Settled::Retry { task, throttled });
+                        .settle(stream_index, host, Settled::Retry { task, throttled });
                 }
                 Ok(Fetched::Retry { status, reason, .. }) => {
-                    self.shared.settle(stream_index, &host, Settled::Failed);
+                    self.shared.settle(stream_index, host, Settled::Failed);
                     self.shared
                         .fail(segment_failure(stream, task.index, status, &reason));
                 }
                 Ok(Fetched::Redirect(_)) => {
-                    self.shared.settle(stream_index, &host, Settled::Failed);
+                    self.shared.settle(stream_index, host, Settled::Failed);
                     self.shared.fail(segment_failure(
                         stream,
                         task.index,
@@ -679,7 +735,7 @@ impl WorkerContext<'_> {
                     ));
                 }
                 Err(error) => {
-                    self.shared.settle(stream_index, &host, Settled::Failed);
+                    self.shared.settle(stream_index, host, Settled::Failed);
                     self.shared.fail(error);
                 }
             }
@@ -689,13 +745,12 @@ impl WorkerContext<'_> {
     /// One request for a segment into `<segment>.tmp`, renamed to `segment` once whole.
     fn fetch(&self, url: &Url, stream: &NativeStream, segment: &Path) -> Result<Fetched> {
         let partial = partial_path(segment);
-        let mut file = File::create(&partial)?;
+        let mut file = match File::create(&partial) {
+            Ok(file) => file,
+            Err(error) => return Ok(file_retry(&error)),
+        };
         let mut easy = self.network.easy_for_url(url, self.control)?;
-        easy.url(url.as_str())?;
-        easy.follow_location(false)?;
-        easy.fail_on_error(false)?;
-        easy.connect_timeout(Duration::from_secs(20))?;
-        easy.low_speed_limit(1)?;
+        crate::transfer::configure_easy(&mut easy, url)?;
         easy.low_speed_time(Duration::from_secs(30))?;
         easy.progress(true)?;
         let mut headers = List::new();
@@ -760,14 +815,18 @@ impl WorkerContext<'_> {
             && header("content-length")
                 .and_then(|length| length.parse::<u64>().ok())
                 .is_none_or(|length| length == written);
-        if whole {
-            fs::rename(&partial, segment)?;
-            return Ok(Fetched::Done);
-        }
+        let renamed = if whole {
+            match fs::rename(&partial, segment) {
+                Ok(()) => return Ok(Fetched::Done),
+                Err(error) => Some(error),
+            }
+        } else {
+            None
+        };
         self.received.fetch_sub(written, Ordering::Relaxed);
         let _ = fs::remove_file(&partial);
-        if let Some(error) = write_error {
-            return Err(error.into());
+        if let Some(error) = write_error.or(renamed) {
+            return Ok(file_retry(&error));
         }
         if self.control.stop_requested() {
             return Ok(Fetched::Retry {
@@ -1042,6 +1101,19 @@ mod tests {
         let mut unsafe_header = separate();
         unsafe_header.inspection["formats"][1]["http_headers"]["Referer"] = json!("a\r\nX: y");
         assert!(declined(&unsafe_header, &video));
+        // A cookie the extractor got from the site itself is not sent by the app.
+        let mut site_cookie = separate();
+        site_cookie.inspection["formats"][1]["cookies"] =
+            json!("sid=1; Domain=.cdn.example; Path=/; Secure; Expires=1900000000");
+        assert!(declined(&site_cookie, &video));
+        let session = AddRequest {
+            session_cookies: vec![ScopedCookie {
+                name: "sid".into(),
+                ..ScopedCookie::default()
+            }],
+            ..video.clone()
+        };
+        assert!(!declined(&site_cookie, &session));
         assert!(!declined(&separate(), &video));
     }
 
@@ -1066,7 +1138,8 @@ mod tests {
         let shared = Shared::new(&streams, &joins, 8);
         let control = TransferControl::default();
         let host = "cdn.example";
-        let key = (0, host.to_owned());
+        let key = (0, 0);
+        assert_eq!(shared.host_names, [host]);
         let limit = || shared.lock().paces[&key].limit;
 
         let tasks = (0..8)
@@ -1076,14 +1149,14 @@ mod tests {
         {
             let state = shared.lock();
             assert_eq!(state.paces[&key].in_flight, state.paces[&key].limit);
-            assert_eq!(state.busy[host], 8);
+            assert_eq!(state.busy[0], 8);
         }
 
         // A burst of 429s halves the share once, not once per answer.
         for task in &tasks[..4] {
             shared.settle(
                 0,
-                host,
+                0,
                 Settled::Retry {
                     task: *task,
                     throttled: true,
@@ -1094,7 +1167,7 @@ mod tests {
         shared.lock().paces.get_mut(&key).unwrap().last_cut = None;
         shared.settle(
             0,
-            host,
+            0,
             Settled::Retry {
                 task: tasks[4],
                 throttled: true,
@@ -1104,7 +1177,7 @@ mod tests {
         // A failed connection is retried without cutting the share.
         shared.settle(
             0,
-            host,
+            0,
             Settled::Retry {
                 task: tasks[5],
                 throttled: false,
@@ -1114,7 +1187,7 @@ mod tests {
         // Four successes per allowed request raise the share by one.
         for _ in 0..8 {
             shared.lock().paces.get_mut(&key).unwrap().in_flight += 1;
-            shared.settle(0, host, Settled::Done);
+            shared.settle(0, 0, Settled::Done);
         }
         assert_eq!(limit(), 3);
         // Retried segments go back in playlist order, ahead of later ones.
@@ -1144,7 +1217,7 @@ mod tests {
         ];
         let shared = Shared::new(&streams, &joins, 4);
         let control = TransferControl::default();
-        let host = "cdn.example";
+        let host = 0;
 
         let tasks = (0..4)
             .map(|_| shared.next_task(&streams, &control).unwrap())
@@ -1174,8 +1247,8 @@ mod tests {
         );
         {
             let state = shared.lock();
-            assert_eq!(state.paces[&(1, host.to_owned())].limit, 2);
-            assert_eq!(state.paces[&(0, host.to_owned())].limit, 4);
+            assert_eq!(state.paces[&(1, host)].limit, 2);
+            assert_eq!(state.paces[&(0, host)].limit, 4);
             assert_eq!(state.busy[host], 3);
         }
         // The audio is still furthest behind, so its next segment takes the free slot.
