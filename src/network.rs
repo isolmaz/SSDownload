@@ -37,9 +37,12 @@ const INSPECTION_HEADROOM: usize = 2;
 const LIVE_RECORDING_HEADROOM: usize = 2;
 const TUNNEL_WAIT_STEP: Duration = Duration::from_millis(50);
 /// A tunnel whose last bytes were the server's and that has been silent this long is treated as
-/// a kept-alive connection parked in the child's pool. A refused admission may close it: the
-/// pool notices the closed socket before its next reuse and dials again.
-const IDLE_TUNNEL_RECLAIM_AFTER: Duration = Duration::from_secs(2);
+/// a kept-alive connection parked in the child's pool, and a refused admission may close it; a
+/// pool normally notices the closed socket before its next reuse and dials again. The proxy
+/// cannot see inside TLS, so a server that pauses mid-answer (or after a TLS 1.3 session ticket,
+/// before the first response byte) looks the same: the delay is kept well above such pauses
+/// while staying below `TUNNEL_WAIT`.
+const IDLE_TUNNEL_RECLAIM_AFTER: Duration = Duration::from_secs(5);
 const RELAY_BUFFER: usize = 64 * 1024;
 const RELAY_POLL: Duration = Duration::from_millis(250);
 const ACQUIRE_POLL: Duration = Duration::from_millis(50);
@@ -158,6 +161,10 @@ impl NetworkGovernor {
         headroom: usize,
     ) -> Option<ConnectionLease> {
         let deadline = Instant::now() + timeout;
+        // The tunnel this request closed, until its relay has ended and released its slot: a
+        // closed relay notices within one poll step, and closing more meanwhile would cut
+        // pooled connections nobody is waiting for.
+        let mut reclaimed: Option<Arc<TunnelActivity>> = None;
         loop {
             if let Some(lease) = self.try_acquire_host_with_headroom(host.clone(), headroom) {
                 return Some(lease);
@@ -165,7 +172,12 @@ impl NetworkGovernor {
             if Instant::now() >= deadline {
                 return None;
             }
-            self.reclaim_idle_tunnel(&host, headroom);
+            if reclaimed
+                .as_ref()
+                .is_none_or(|tunnel| Arc::strong_count(tunnel) == 1)
+            {
+                reclaimed = self.reclaim_idle_tunnel(&host, headroom);
+            }
             let state = self.lock_state();
             let (next, _) = self
                 .inner
@@ -202,27 +214,22 @@ impl NetworkGovernor {
 
     /// Closes the longest-silent idle tunnel whose slot would let `host` in: any host when the
     /// global budget is full, otherwise only `host` itself. Its relay then ends and releases the
-    /// lease. A tunnel still waiting for the server's answer is never chosen.
-    fn reclaim_idle_tunnel(&self, host: &str, headroom: usize) {
+    /// lease. A tunnel the client spoke on last is never chosen.
+    fn reclaim_idle_tunnel(&self, host: &str, headroom: usize) -> Option<Arc<TunnelActivity>> {
         let host_full = {
             let state = self.lock_state();
             let count = state.hosts.get(host).copied().unwrap_or(0);
             count.saturating_add(state.wildcards) >= state.per_host_limit.saturating_add(headroom)
         };
         let mut tunnels = self.lock_tunnels();
-        let Some(id) = tunnels
+        let id = tunnels
             .iter()
             .filter(|(_, tunnel)| !host_full || tunnel.host == host)
             .filter_map(|(id, tunnel)| tunnel.parked_for().map(|idle| (*id, idle)))
             .filter(|(_, idle)| *idle >= IDLE_TUNNEL_RECLAIM_AFTER)
             .max_by_key(|(_, idle)| *idle)
-            .map(|(id, _)| id)
-        else {
-            return;
-        };
-        let Some(tunnel) = tunnels.remove(&id) else {
-            return;
-        };
+            .map(|(id, _)| id)?;
+        let tunnel = tunnels.remove(&id)?;
         drop(tunnels);
         crate::logging::record(
             crate::logging::Event::debug("proxy.reclaim")
@@ -232,6 +239,7 @@ impl NetworkGovernor {
         tunnel.reclaimed.store(true, Ordering::Release);
         let _ = tunnel.client.shutdown(Shutdown::Both);
         let _ = tunnel.upstream.shutdown(Shutdown::Both);
+        Some(tunnel)
     }
 
     fn lock_tunnels(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<TunnelActivity>>> {
@@ -1445,9 +1453,11 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
         return;
     }
     relay(client, upstream, &reclaimable.activity, &shared.stopping);
+    // The slot is free before the tunnel leaves the governor's list, so a request that waits
+    // for the tunnel it reclaimed finds the slot once the tunnel is gone.
+    drop(lease);
     drop(reclaimable);
     drop(registration);
-    drop(lease);
 }
 
 struct ProxyRequest {
@@ -2108,7 +2118,8 @@ mod tests {
 
     #[test]
     fn idle_kept_alive_tunnels_yield_their_slots_to_a_waiting_request() {
-        // A server that answers each request and then keeps the connection alive.
+        // A server that answers each request, keeps the connection alive and is slow to close
+        // it after the client's FIN, so a reclaimed relay ends on its own poll step.
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let target = format!("127.0.0.1:{}", server.local_addr().unwrap().port());
         thread::spawn(move || {
@@ -2117,7 +2128,11 @@ mod tests {
                 thread::spawn(move || {
                     let mut buffer = [0u8; 64];
                     while let Ok(read) = stream.read(&mut buffer) {
-                        if read == 0 || stream.write_all(b"pong").is_err() {
+                        if read == 0 {
+                            thread::sleep(Duration::from_secs(30));
+                            return;
+                        }
+                        if stream.write_all(b"pong").is_err() {
                             return;
                         }
                     }
