@@ -606,14 +606,25 @@ fn size_text(bytes: u64, estimated: bool) -> String {
 }
 
 /// The size the selected video and audio streams add up to, and whether any part of it is an
-/// estimate. A format that carries its own audio stands alone; separate audio formats add
-/// their sizes where known. An HLS variant's bitrate already covers its audio renditions,
-/// which carry none.
+/// estimate; without a video format, the audio alone. A format that carries its own audio
+/// stands alone; separate audio formats add their sizes where known. An HLS variant's bitrate
+/// already covers its audio renditions, which carry none.
 pub(super) fn selected_media_size(
     video: Option<&MediaFormat>,
     audio: &[&MediaFormat],
 ) -> Option<(u64, bool)> {
-    let video = video?;
+    let Some(video) = video else {
+        let sizes = audio
+            .iter()
+            .filter_map(|format| format.filesize)
+            .collect::<Vec<_>>();
+        return (!sizes.is_empty()).then(|| {
+            (
+                sizes.iter().sum(),
+                audio.iter().any(|format| format.size_estimated),
+            )
+        });
+    };
     let mut total = video.filesize?;
     let mut estimated = video.size_estimated;
     if !media_stream_present(video.audio_codec.as_deref()) {
@@ -628,6 +639,10 @@ pub(super) fn selected_media_size(
 }
 
 pub(super) unsafe fn refresh_media_size(f: &MediaFields) {
+    let audio_only = f
+        .kind_values
+        .get(combo_index(f.kind).max(0) as usize)
+        .is_some_and(|(kind, _)| *kind == DownloadKind::Audio);
     let index = SendMessageW(f.format, CB_GETCURSEL, 0, 0);
     let video = usize::try_from(index)
         .ok()
@@ -638,8 +653,10 @@ pub(super) unsafe fn refresh_media_size(f: &MediaFields) {
                 .or_else(|| f.video_formats.iter().flatten().next())
         });
     let selected = selected_list_indexes(f.audio_tracks);
-    // With no track chosen, the largest audio format stands for the automatic choice.
-    let audio = if selected.is_empty() {
+    // With no track chosen, the largest audio format stands for the automatic choice, which
+    // may take another one: the total is then an estimate.
+    let automatic = selected.is_empty();
+    let audio = if automatic {
         f.audio_formats
             .iter()
             .filter(|format| format.filesize.is_some())
@@ -652,8 +669,13 @@ pub(super) unsafe fn refresh_media_size(f: &MediaFields) {
             .filter_map(|index| f.audio_formats.get(index))
             .collect()
     };
-    let size = selected_media_size(video, &audio)
-        .map(|(bytes, estimated)| size_text(bytes, estimated))
+    let total = if audio_only {
+        selected_media_size(None, &audio)
+    } else {
+        video.and_then(|video| selected_media_size(Some(video), &audio))
+    };
+    let size = total
+        .map(|(bytes, estimated)| size_text(bytes, estimated || (automatic && !audio.is_empty())))
         .unwrap_or_else(|| crate::i18n::ui("bilinmiyor", "unknown").into());
     set_text(
         f.size,
@@ -1688,7 +1710,12 @@ mod tests {
             selected_media_size(Some(&format(None, false, "avc1", "none")), &[&english]),
             None
         );
-        assert_eq!(selected_media_size(None, &[&english]), None);
+        // Audio alone: the selected audio formats' known sizes.
+        assert_eq!(
+            selected_media_size(None, &[&english, &turkish, &hls_rendition]),
+            Some((100, true))
+        );
+        assert_eq!(selected_media_size(None, &[&hls_rendition]), None);
         assert_eq!(size_text(2 * 1024 * 1024 * 1024, true), "≈ 2.0 GB");
         assert_eq!(size_text(1536, false), "1.5 KB");
     }

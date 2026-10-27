@@ -185,8 +185,23 @@ function playerIdentity(media) {
   if (current) identity.current = current;
   return identity;
 }
-// Subtitle files this document's player loaded itself, newest last (see page-observer.js).
-const observedSubtitles = new Set();
+// Subtitle files this document's player loaded itself, newest last (see page-observer.js),
+// each with the page address and the playing video's source it was loaded for: a single-page
+// site that moves to the next episode, or a second video in the document, does not get them.
+const observedSubtitles = new Map();
+// Chapter, thumbnail and preview tracks are WebVTT as well, but not subtitles.
+const NOT_SUBTITLE_FILE = /chapter|thumb|sprite|storyboard|preview/i;
+function mediaSource(media) {
+  return media.currentSrc || media.src || "";
+}
+function observeSubtitle(url) {
+  if (NOT_SUBTITLE_FILE.test(fileName(url))) return;
+  const videos = [...queryMediaRoots("video")];
+  const playing = videos.find(video => video.paused === false) || (videos.length === 1 ? videos[0] : null);
+  observedSubtitles.delete(url);
+  observedSubtitles.set(url, { page: location.href, source: playing ? mediaSource(playing) : "" });
+  while (observedSubtitles.size > 32) observedSubtitles.delete(observedSubtitles.keys().next().value);
+}
 // Language names and codes a subtitle file name carries ("film.tr.vtt", "Turkish.srt"),
 // written without diacritics because file names are compared that way. Two-letter codes
 // that are also common English words are left out.
@@ -236,9 +251,11 @@ function playerTracks(media, playerId) {
       isDefault:track.default === true || track.hasAttribute?.("default") === true, playerId});
   }
   if (media.tagName === "VIDEO") {
-    for (const url of observedSubtitles) {
-      if (tracks.length >= 32 || tracks.some(track => track.url === url)) continue;
-      tracks.push({url, language:addressLanguage(url) || "und", label:fileName(url).slice(0,180), kind:"subtitles", isDefault:false, playerId});
+    for (const [url, loaded] of observedSubtitles) {
+      if (tracks.length >= 32 || tracks.some(track => track.url === url) || loaded.page !== location.href
+        || (loaded.source && loaded.source !== mediaSource(media))) continue;
+      // The app keeps a label within 200 bytes.
+      tracks.push({url, language:addressLanguage(url) || "und", label:fileName(url).slice(0,60), kind:"subtitles", isDefault:false, playerId});
     }
   }
   return tracks;
@@ -375,17 +392,24 @@ function dragTile(event) {
   tile.style.top = `${Math.min(Math.max(0, tileDrag.top + dy), Math.max(0, innerHeight - (tile.offsetHeight || 0)))}px`;
   event.stopImmediatePropagation();
 }
-function dropTile() {
+function dropTile(event) {
   const drag = tileDrag;
   tileDrag = null;
   if (!drag?.moved) return;
+  // A cancelled gesture (the browser took a touch for scrolling) moves nothing and is
+  // followed by no click.
+  if (event?.type === "pointercancel") {
+    updateOverlays();
+    return;
+  }
   draggedTile = drag.tile;
   const rect = tileAnchor(drag.tile);
   if (!rect) return;
   const box = drag.tile.getBoundingClientRect();
   const share = (offset, room) => room > 0 ? offset / room : 0;
   tilePlacement = validPlacement({ x: share(box.left - rect.left, rect.width - box.width), y: share(box.top - rect.top, rect.height - box.height) });
-  Promise.resolve(extensionApi.storage?.local?.set({ tilePlacement })).catch(() => {});
+  // An updated or removed extension throws here instead of rejecting.
+  try { Promise.resolve(extensionApi.storage?.local?.set({ tilePlacement })).catch(() => {}); } catch (_) {}
   updateOverlays();
 }
 
@@ -447,7 +471,7 @@ const TILE_FACES = {
   pressed: { background: "linear-gradient(135deg,#1B57CC,#0F347F)", boxShadow: "inset 0 2px 5px rgba(4,18,48,.45)", cursor: "pointer", opacity: "1" },
   disabled: { background: "linear-gradient(135deg,#8AA6DE,#6B84BE)", boxShadow: "none", cursor: "default", opacity: ".72" }
 };
-const TILE_CSS = "appearance:none;-webkit-appearance:none;position:fixed;z-index:2147483647;display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;margin:0;padding:7px 12px 7px 10px;border:1px solid rgba(255,255,255,.55);border-radius:10px;background:linear-gradient(135deg,#2369E8,#123E9B);color:#fff;-webkit-text-fill-color:#fff;font:600 13px/1.2 system-ui,sans-serif;text-align:left;text-decoration:none;text-transform:none;text-indent:0;text-shadow:none;letter-spacing:normal;white-space:nowrap;direction:ltr;unicode-bidi:isolate;width:auto;height:auto;min-width:0;min-height:0;max-width:none;max-height:none;overflow:visible;float:none;transform:none;visibility:visible;vertical-align:middle;user-select:none;-webkit-user-select:none;cursor:pointer;pointer-events:auto;box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 2px 6px rgba(9,36,93,.35);transition:background .12s ease,box-shadow .12s ease;outline:none;outline-offset:0";
+const TILE_CSS = "appearance:none;-webkit-appearance:none;position:fixed;z-index:2147483647;display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;margin:0;padding:7px 12px 7px 10px;border:1px solid rgba(255,255,255,.55);border-radius:10px;background:linear-gradient(135deg,#2369E8,#123E9B);color:#fff;-webkit-text-fill-color:#fff;font:600 13px/1.2 system-ui,sans-serif;text-align:left;text-decoration:none;text-transform:none;text-indent:0;text-shadow:none;letter-spacing:normal;white-space:nowrap;direction:ltr;unicode-bidi:isolate;width:auto;height:auto;min-width:0;min-height:0;max-width:none;max-height:none;overflow:visible;float:none;transform:none;visibility:visible;vertical-align:middle;user-select:none;-webkit-user-select:none;touch-action:none;cursor:pointer;pointer-events:auto;box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 2px 6px rgba(9,36,93,.35);transition:background .12s ease,box-shadow .12s ease;outline:none;outline-offset:0";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const tileLabels = new WeakMap();
 let tileSequence = 0;
@@ -1025,9 +1049,7 @@ if (typeof window !== "undefined") {
     const data=event.data;
     if(data.channel==="ssdownload-observed-subtitle") {
       if(typeof data.url!=="string" || data.url.length>16384 || !/^https?:/.test(data.url)) return;
-      observedSubtitles.delete(data.url);
-      observedSubtitles.add(data.url);
-      while(observedSubtitles.size>32) observedSubtitles.delete(observedSubtitles.values().next().value);
+      observeSubtitle(data.url);
       return;
     }
     if(data.channel!=="ssdownload-observed-manifest" || typeof data.url!=="string" || data.url.length>16384 || !/^https?:/.test(data.url)) return;

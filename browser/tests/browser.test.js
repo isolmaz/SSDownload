@@ -1605,6 +1605,18 @@ test("a tile dragged off the player's corner stays where it was dropped on every
   // The placement is shared through storage: another tab's drop to the far corner moves this tile.
   h.storageListener()({ tilePlacement: { newValue: { x: 1, y: 1 } } }, "local");
   assert.deepEqual(at(), [503, 344]);
+
+  // A drag the browser cancels (a touch taken for scrolling) saves nothing and puts the tile back.
+  const writes = h.storageWrites.length;
+  h.gesture(tile, "pointerdown", { clientX: 510, clientY: 350 });
+  h.gesture(tile, "pointermove", { clientX: 410, clientY: 250 });
+  h.gesture(tile, "pointercancel", { clientX: 410, clientY: 250 });
+  assert.equal(h.storageWrites.length, writes);
+  assert.deepEqual(at(), [503, 344]);
+  h.gesture(tile, "pointerdown", { clientX: 510, clientY: 350 });
+  h.gesture(tile, "pointerup", { clientX: 510, clientY: 350 });
+  h.gesture(tile, "click", { clientX: 510, clientY: 350 });
+  assert.equal(downloads(), 2, "the next press still activates the tile");
 });
 
 test("the shield leaves the page's own controls and phases alone", async () => {

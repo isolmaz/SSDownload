@@ -1203,6 +1203,7 @@ Use the existing jobs, or download new copies?"
             M_KIND => {
                 layout_dialog(dlg);
                 update_media_queue_enabled(dlg.hwnd, f, &dlg.app.snapshot());
+                refresh_media_size(f);
             }
             M_FORMAT | ID_MEDIA_AUDIO_TRACKS => refresh_media_size(f),
             ID_MEDIA_EXTERNAL_ADD => {

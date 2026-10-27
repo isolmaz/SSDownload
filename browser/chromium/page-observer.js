@@ -10,6 +10,17 @@
   const originals = {};
   let wrappers = null;
   const seen = new Set();
+  // Addresses HLS media playlists list: a WebVTT segment of a subtitle rendition is part of a
+  // stream, not a subtitle file of its own.
+  const playlistEntries = new Set();
+  function rememberPlaylistEntries(text, base) {
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      try { playlistEntries.add(new URL(line, base).href); } catch (_) {}
+      while (playlistEntries.size > 20000) playlistEntries.delete(playlistEntries.values().next().value);
+    }
+  }
   const send = window.postMessage.bind(window);
   // Correlates controls with the current worker session. Both the attribute and
   // messages are page-visible; the isolated script and worker enforce privacy.
@@ -90,6 +101,7 @@
       if (!/^https?:/.test(base) || base.length>16384) return;
       const subtitle=subtitleFormat(text);
       if(subtitle) {
+        if(playlistEntries.has(base)) return;
         const key=`subtitle\n${base}`;
         if(seen.has(key)) return;
         seen.add(key); while (seen.size > 64) seen.delete(seen.values().next().value);
@@ -100,6 +112,7 @@
       const trimmed=text.trimStart();
       const kind=trimmed.startsWith("#EXTM3U")?"hls":(/<MPD(?:\s|>)/i.test(trimmed.slice(0,2048)) || /dash\+xml|\.mpd(?:$|[?#])/i.test(`${type} ${base}`))?"dash":null;
       if(!kind) return;
+      if(kind==="hls") rememberPlaylistEntries(text,base);
       const raw=kind==="hls"?hlsRelations(text,base):dashRelations(text,base);
       const unique=new Map();
       for(const relation of raw) if(!unique.has(`${relation.role}\n${relation.url}`)) unique.set(`${relation.role}\n${relation.url}`,relation);

@@ -316,22 +316,25 @@ test("content discovery offers the subtitle files a player loaded itself",async(
     getAttribute(){return null;},querySelectorAll(selector){return selector==="track[src]"?[bare]:[];},
     getBoundingClientRect(){return {width:640,height:360,left:0,top:0,bottom:360};},checkVisibility(){return true;}};
   const document={baseURI:"https://site.example/watch",documentElement:{},title:"Page",querySelector(){return null;},
-    querySelectorAll(selector){return selector==="video, audio"?[media]:[];},addEventListener(){}};
+    querySelectorAll(selector){return ["video, audio","video"].includes(selector)?[media]:[];},addEventListener(){}};
   const listeners={};
   const window={addEventListener(name,listener){(listeners[name]||=[]).push(listener);},postMessage(){}};
+  const location={href:"https://site.example/watch",origin:"https://site.example"};
   class Observer{constructor(callback){this.callback=callback;}observe(){}}
   const context=vm.createContext({browser:{i18n:i18nApi(),runtime:{sendMessage(){return Promise.resolve({});},onMessage:event()}},
-    window,URL,document,location:{href:"https://site.example/watch",origin:"https://site.example"},MutationObserver:Observer,PerformanceObserver:Observer,
+    window,URL,document,location,MutationObserver:Observer,PerformanceObserver:Observer,
     setTimeout,clearTimeout,setInterval(){return 1;},JSON,String,Number,Map,Set,WeakMap,WeakSet,Array,Object,Date,Math});
   loadI18n(context);
   vm.runInContext(source("content.js"),context,{filename:"content.js"});
   vm.runInContext("overlayEnabled=true",context);
+  const offered=()=>JSON.parse(vm.runInContext("JSON.stringify(players()[0].tracks)",context)).map(track=>track.url);
   const observed=url=>{for(const listener of listeners.message) listener({source:window,data:{channel:"ssdownload-observed-subtitle",url,format:"vtt"}});};
   observed("https://cdn.example/vtt/awm4-tr-film-s01e07-webdl-trdual.vtt");
   observed("https://cdn.example/vtt/awm4-tr-film-subtitles01.eng.vtt");
   observed("https://cdn.example/vtt/9f8e7d.vtt");
   observed("https://cdn.example/vtt/Film%20T%C3%BCrk%C3%A7e.srt");
   observed("javascript:alert(1)");
+  observed("https://cdn.example/vtt/film-chapters.vtt");
   const tracks=JSON.parse(vm.runInContext("JSON.stringify(players()[0].tracks)",context));
   const id=tracks[0].playerId;
   assert.deepEqual(tracks,[
@@ -341,6 +344,15 @@ test("content discovery offers the subtitle files a player loaded itself",async(
     {url:"https://cdn.example/vtt/9f8e7d.vtt",language:"und",label:"9f8e7d.vtt",kind:"subtitles",isDefault:false,playerId:id},
     {url:"https://cdn.example/vtt/Film%20T%C3%BCrk%C3%A7e.srt",language:"tr",label:"Film Türkçe.srt",kind:"subtitles",isDefault:false,playerId:id}
   ]);
+
+  // The next episode on the same page: the earlier subtitles belong to the earlier source.
+  media.currentSrc="/episode-2.mp4";
+  assert.deepEqual(offered(),["https://site.example/subs/film.tr.vtt"]);
+  observed("https://cdn.example/vtt/episode-2.tr.vtt");
+  assert.deepEqual(offered(),["https://site.example/subs/film.tr.vtt","https://cdn.example/vtt/episode-2.tr.vtt"]);
+  // A single-page move to another address leaves them behind as well.
+  location.href="https://site.example/watch/next";
+  assert.deepEqual(offered(),["https://site.example/subs/film.tr.vtt"]);
 });
 
 test("page observer reports subtitle files but not thumbnail sprites or stream segments",async()=>{
@@ -373,6 +385,9 @@ test("page observer reports subtitle files but not thumbnail sprites or stream s
   await fetched("WEBVTT\n\n00:00.000 --> 00:05.000\nhttps://img.example/sprite?id=4#xywh=0,0,160,90\n","https://cdn.example/thumbs-2.vtt");
   await fetched("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n\n00:00.000 --> 00:02.000\nHi\n","https://cdn.example/sub-1.vtt");
   await fetched("<html>not a subtitle</html>","https://cdn.example/page.html");
+  // A subtitle rendition's segments are listed by its playlist, with or without a timestamp map.
+  await fetched("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg-1.vtt\n#EXT-X-ENDLIST\n","https://cdn.example/subs/tr.m3u8");
+  await fetched("WEBVTT\n\n00:00.000 --> 00:02.000\nHi\n","https://cdn.example/subs/seg-1.vtt");
   vm.runInContext(`const xhr=new XMLHttpRequest();xhr.responseText=${JSON.stringify("WEBVTT\n\n00:00.000 --> 00:01.000\nHi\n")};xhr.responseURL="https://cdn.example/xhr.tr.vtt";xhr.send();`,context);
   for(const load of loads) load();
   await vm.runInContext(`new Response(${JSON.stringify(film)},"/subs/film.vtt").text()`,context);

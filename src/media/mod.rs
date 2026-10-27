@@ -3163,6 +3163,73 @@ segment.ts
     }
 
     #[test]
+    fn external_subtitles_are_verified_as_each_container_stores_them() {
+        let subtitle = |language: &str| ExternalSubtitle {
+            url: "https://cdn.example/sub.vtt".into(),
+            language: language.into(),
+            kind: "subtitles".into(),
+            ..ExternalSubtitle::default()
+        };
+        let request = |container: &str, subtitles: Vec<ExternalSubtitle>| AddRequest {
+            kind: DownloadKind::Video,
+            container: Some(container.into()),
+            external_subtitles: subtitles,
+            ..Default::default()
+        };
+        let probe = |subtitles: &[(Option<&str>, i64)]| {
+            let mut streams = vec![
+                json!({"codec_type":"video","codec_name":"h264","start_time":"0","duration":"60"}),
+                json!({"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"60"}),
+            ];
+            for (language, default) in subtitles {
+                let mut stream = json!({"codec_type":"subtitle","codec_name":"mov_text","disposition":{"default": default}});
+                if let Some(language) = language {
+                    stream["tags"] = json!({"language": language});
+                }
+                streams.push(stream);
+            }
+            json!({"streams": streams, "format": {"start_time":"0","duration":"60"}})
+        };
+        let info = MediaInfo::default();
+        // ffmpeg's MP4 muxer enables the first subtitle when none is default; it reads back
+        // as default (checked with the bundled ffmpeg/ffprobe).
+        let mp4 = request("mp4", vec![subtitle("tr"), subtitle("en")]);
+        assert!(validate_probe(&probe(&[(Some("tur"), 1), (Some("eng"), 0)]), &mp4, &info).is_ok());
+        assert!(
+            validate_probe(&probe(&[(Some("tur"), 0), (Some("eng"), 0)]), &mp4, &info).is_err()
+        );
+        let chosen = request(
+            "mp4",
+            vec![
+                subtitle("tr"),
+                ExternalSubtitle {
+                    is_default: true,
+                    ..subtitle("en")
+                },
+            ],
+        );
+        assert!(validate_probe(
+            &probe(&[(Some("tur"), 0), (Some("eng"), 1)]),
+            &chosen,
+            &info
+        )
+        .is_ok());
+        assert!(validate_probe(
+            &probe(&[(Some("tur"), 1), (Some("eng"), 1)]),
+            &chosen,
+            &info
+        )
+        .is_err());
+        // Matroska writes no tag for an undetermined language, and keeps the flag as set.
+        let mkv = request("mkv", vec![subtitle("und")]);
+        assert!(validate_probe(&probe(&[(None, 0)]), &mkv, &info).is_ok());
+        assert!(validate_probe(&probe(&[(None, 1)]), &mkv, &info).is_err());
+        let turkish = request("mkv", vec![subtitle("tr")]);
+        assert!(validate_probe(&probe(&[(None, 0)]), &turkish, &info).is_err());
+        assert!(validate_probe(&probe(&[(Some("tur"), 0)]), &turkish, &info).is_ok());
+    }
+
+    #[test]
     fn multiple_audio_ids_languages_and_defaults_are_all_exact() {
         let info = media_info_from_json(&json!({"formats":[
             {"format_id":"v","height":720,"vcodec":"h264","acodec":"none"},

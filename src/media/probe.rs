@@ -363,16 +363,24 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 "Media verification: not all selected external subtitles are in the output"
             ));
         }
+        // An MP4 with no default subtitle enables its first one, which reads back as default.
+        let first_enabled = request.container.as_deref() == Some("mp4")
+            && !request
+                .external_subtitles
+                .iter()
+                .any(|subtitle| subtitle.is_default);
         for (index, selected) in request.external_subtitles.iter().enumerate() {
             let stream = subtitle_streams[index];
-            if stream["tags"]["language"]
-                .as_str()
-                .is_none_or(|actual| language_key(actual) != language_key(&selected.language))
-            {
+            // Matroska stores no tag for an undetermined language.
+            let language_matches = match stream["tags"]["language"].as_str() {
+                Some(actual) => language_key(actual) == language_key(&selected.language),
+                None => language_key(&selected.language) == language_key("und"),
+            };
+            if !language_matches {
                 bail!(crate::i18n::ui("Medya doğrulaması: harici altyazı dili/sırası seçilen track ile eşleşmiyor", "Media verification: the external subtitle language/order does not match the selected track"));
             }
             let is_default = stream["disposition"]["default"].as_i64() == Some(1);
-            if is_default != selected.is_default {
+            if is_default != (selected.is_default || (first_enabled && index == 0)) {
                 bail!(crate::i18n::ui(
                     "Medya doğrulaması: harici altyazı varsayılan işareti eşleşmiyor",
                     "Media verification: the external subtitle default flag does not match"
