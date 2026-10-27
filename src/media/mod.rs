@@ -3139,6 +3139,30 @@ segment.ts
     }
 
     #[test]
+    fn a_stream_without_a_size_is_estimated_from_its_bitrate_and_the_duration() {
+        let info = media_info_from_json(&json!({"duration": 1790.0, "formats":[
+            {"format_id":"hls-1924","tbr":1924.0,"vcodec":"avc1","acodec":"mp4a"},
+            {"format_id":"exact","filesize":5000,"filesize_approx":9000,"tbr":64.0,"vcodec":"none","acodec":"aac"},
+            {"format_id":"approx","filesize_approx":7000,"tbr":64.0,"vcodec":"none","acodec":"aac"},
+            {"format_id":"audio","vcodec":"none","acodec":"mp4a"}
+        ]}))
+        .unwrap();
+        let size = |id: &str| {
+            let format = info.formats.iter().find(|format| format.id == id).unwrap();
+            (format.filesize, format.size_estimated)
+        };
+        assert_eq!(size("hls-1924"), (Some(430_495_000), true));
+        assert_eq!(size("exact"), (Some(5000), false));
+        assert_eq!(size("approx"), (Some(7000), true));
+        assert_eq!(size("audio"), (None, false));
+        let unknown_length = media_info_from_json(&json!({"formats":[
+            {"format_id":"hls-1924","tbr":1924.0,"vcodec":"avc1","acodec":"mp4a"}
+        ]}))
+        .unwrap();
+        assert_eq!(unknown_length.formats[0].filesize, None);
+    }
+
+    #[test]
     fn multiple_audio_ids_languages_and_defaults_are_all_exact() {
         let info = media_info_from_json(&json!({"formats":[
             {"format_id":"v","height":720,"vcodec":"h264","acodec":"none"},

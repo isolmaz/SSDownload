@@ -310,6 +310,80 @@ test("content discovery keeps only actual track children of their player",async(
   assert.ok(!JSON.stringify(players).includes("wrong.vtt"));
 });
 
+test("content discovery offers the subtitle files a player loaded itself",async()=>{
+  const bare={src:"/subs/film.tr.vtt",kind:"subtitles",default:false,getAttribute(name){return name==="src"?this.src:null;},hasAttribute(){return false;}};
+  const media={tagName:"VIDEO",currentSrc:"/movie.mp4",src:"/movie.mp4",srcObject:null,paused:false,currentTime:1,readyState:3,duration:90,
+    getAttribute(){return null;},querySelectorAll(selector){return selector==="track[src]"?[bare]:[];},
+    getBoundingClientRect(){return {width:640,height:360,left:0,top:0,bottom:360};},checkVisibility(){return true;}};
+  const document={baseURI:"https://site.example/watch",documentElement:{},title:"Page",querySelector(){return null;},
+    querySelectorAll(selector){return selector==="video, audio"?[media]:[];},addEventListener(){}};
+  const listeners={};
+  const window={addEventListener(name,listener){(listeners[name]||=[]).push(listener);},postMessage(){}};
+  class Observer{constructor(callback){this.callback=callback;}observe(){}}
+  const context=vm.createContext({browser:{i18n:i18nApi(),runtime:{sendMessage(){return Promise.resolve({});},onMessage:event()}},
+    window,URL,document,location:{href:"https://site.example/watch",origin:"https://site.example"},MutationObserver:Observer,PerformanceObserver:Observer,
+    setTimeout,clearTimeout,setInterval(){return 1;},JSON,String,Number,Map,Set,WeakMap,WeakSet,Array,Object,Date,Math});
+  loadI18n(context);
+  vm.runInContext(source("content.js"),context,{filename:"content.js"});
+  vm.runInContext("overlayEnabled=true",context);
+  const observed=url=>{for(const listener of listeners.message) listener({source:window,data:{channel:"ssdownload-observed-subtitle",url,format:"vtt"}});};
+  observed("https://cdn.example/vtt/awm4-tr-film-s01e07-webdl-trdual.vtt");
+  observed("https://cdn.example/vtt/awm4-tr-film-subtitles01.eng.vtt");
+  observed("https://cdn.example/vtt/9f8e7d.vtt");
+  observed("https://cdn.example/vtt/Film%20T%C3%BCrk%C3%A7e.srt");
+  observed("javascript:alert(1)");
+  const tracks=JSON.parse(vm.runInContext("JSON.stringify(players()[0].tracks)",context));
+  const id=tracks[0].playerId;
+  assert.deepEqual(tracks,[
+    {url:"https://site.example/subs/film.tr.vtt",language:"tr",label:"",kind:"subtitles",isDefault:false,playerId:id},
+    {url:"https://cdn.example/vtt/awm4-tr-film-s01e07-webdl-trdual.vtt",language:"tr",label:"awm4-tr-film-s01e07-webdl-trdual.vtt",kind:"subtitles",isDefault:false,playerId:id},
+    {url:"https://cdn.example/vtt/awm4-tr-film-subtitles01.eng.vtt",language:"en",label:"awm4-tr-film-subtitles01.eng.vtt",kind:"subtitles",isDefault:false,playerId:id},
+    {url:"https://cdn.example/vtt/9f8e7d.vtt",language:"und",label:"9f8e7d.vtt",kind:"subtitles",isDefault:false,playerId:id},
+    {url:"https://cdn.example/vtt/Film%20T%C3%BCrk%C3%A7e.srt",language:"tr",label:"Film Türkçe.srt",kind:"subtitles",isDefault:false,playerId:id}
+  ]);
+});
+
+test("page observer reports subtitle files but not thumbnail sprites or stream segments",async()=>{
+  const posted=[];
+  let control;
+  const window={postMessage(value){posted.push(value);},addEventListener(name,listener){if(name==="message")control=listener;}};
+  class FixtureResponse {
+    constructor(text,url){this.value=text;this.url=url;this.headers={get(){return "text/plain";}};}
+    text(){return Promise.resolve(this.value);}
+    arrayBuffer(){return Promise.resolve(new TextEncoder().encode(this.value).buffer);}
+  }
+  const loads=[];
+  class FixtureXhr {
+    constructor(){this.responseType="";}
+    addEventListener(name,listener){if(name==="load")loads.push(()=>listener.call(this));}
+    send(){}
+    getResponseHeader(){return "text/vtt";}
+  }
+  const context=vm.createContext({window,document:{baseURI:"https://site.example/watch",documentElement:{getAttribute(name){return name==="data-ssdownload-observer-token"?"fixture-token":null;}}},URL,Response:FixtureResponse,XMLHttpRequest:FixtureXhr,
+    TextDecoder,TextEncoder,Reflect,Set,Map,JSON,String,Array,Object});
+  vm.runInContext(source("page-observer.js"),context,{filename:"page-observer.js"});
+  control({source:window,data:{channel:"ssdownload-observer-control",enabled:true,token:"fixture-token"}});
+  const cue=index=>`${index}\n00:00:0${index},000 --> 00:00:0${index},900\nLine ${index}\n\n`;
+  // A long film's subtitles exceed the manifest size bound and are still reported.
+  const film="﻿WEBVTT\n\n"+"00:00:01.000 --> 00:00:02.000\nMerhaba.\n\n".repeat(8000);
+  await vm.runInContext(`new Response(${JSON.stringify(film)},"/subs/film.vtt").text()`,context);
+  await vm.runInContext(`new Response(${JSON.stringify(cue(1)+cue(2))},"https://cdn.example/film.srt").text()`,context);
+  const fetched=(body,url)=>vm.runInContext(`new Response(${JSON.stringify(body)},${JSON.stringify(url)}).text()`,context);
+  await fetched("WEBVTT\n\n00:00.000 --> 00:05.000\nsprite.jpg#xywh=0,0,160,90\n","https://cdn.example/thumbs.vtt");
+  await fetched("WEBVTT\n\n00:00.000 --> 00:05.000\nhttps://img.example/sprite?id=4#xywh=0,0,160,90\n","https://cdn.example/thumbs-2.vtt");
+  await fetched("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n\n00:00.000 --> 00:02.000\nHi\n","https://cdn.example/sub-1.vtt");
+  await fetched("<html>not a subtitle</html>","https://cdn.example/page.html");
+  vm.runInContext(`const xhr=new XMLHttpRequest();xhr.responseText=${JSON.stringify("WEBVTT\n\n00:00.000 --> 00:01.000\nHi\n")};xhr.responseURL="https://cdn.example/xhr.tr.vtt";xhr.send();`,context);
+  for(const load of loads) load();
+  await vm.runInContext(`new Response(${JSON.stringify(film)},"/subs/film.vtt").text()`,context);
+  const subtitles=posted.filter(message=>message.channel==="ssdownload-observed-subtitle").map(message=>[message.url,message.format]);
+  assert.deepEqual(subtitles,[
+    ["https://site.example/subs/film.vtt","vtt"],
+    ["https://cdn.example/film.srt","srt"],
+    ["https://cdn.example/xhr.tr.vtt","vtt"]
+  ]);
+});
+
 test("page observer reports bounded HLS relations and its worker/MSE observation boundary",async()=>{
   const posted=[];
   let control;

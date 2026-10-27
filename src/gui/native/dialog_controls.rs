@@ -1598,6 +1598,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("En iyi kalite (otomatik)", "Best quality (automatic)"),
             );
             combo_select(f.format, 0);
+            f.size = dialog_label(dlg.hwnd, dlg.font, "", 0);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,

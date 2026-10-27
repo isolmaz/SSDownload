@@ -1204,6 +1204,7 @@ Use the existing jobs, or download new copies?"
                 layout_dialog(dlg);
                 update_media_queue_enabled(dlg.hwnd, f, &dlg.app.snapshot());
             }
+            M_FORMAT | ID_MEDIA_AUDIO_TRACKS => refresh_media_size(f),
             ID_MEDIA_EXTERNAL_ADD => {
                 let url = text(f.external_url).trim().to_string();
                 let language = text(f.external_language).trim().to_string();

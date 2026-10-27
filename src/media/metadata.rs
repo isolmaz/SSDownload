@@ -143,6 +143,10 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
 }
 
 pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
+    let duration = value
+        .get("duration")
+        .and_then(Value::as_f64)
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
     value
         .get("formats")
         .and_then(Value::as_array)
@@ -208,6 +212,19 @@ pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
+            let exact_size = format.get("filesize").and_then(Value::as_u64);
+            // HLS formats carry a bitrate (kbit/s) but no size; over the source's duration it
+            // gives the size the stream will take.
+            let estimated_size = format
+                .get("filesize_approx")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    let bitrate = format
+                        .get("tbr")
+                        .and_then(Value::as_f64)
+                        .filter(|kbits| kbits.is_finite() && *kbits > 0.0)?;
+                    Some((bitrate * 125.0 * duration?) as u64)
+                });
             Some(MediaFormat {
                 id,
                 label,
@@ -215,10 +232,8 @@ pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
                 width,
                 height,
                 fps,
-                filesize: format
-                    .get("filesize")
-                    .and_then(Value::as_u64)
-                    .or_else(|| format.get("filesize_approx").and_then(Value::as_u64)),
+                filesize: exact_size.or(estimated_size),
+                size_estimated: exact_size.is_none() && estimated_size.is_some(),
                 video_codec,
                 audio_codec,
                 language: string_field(format, "language"),

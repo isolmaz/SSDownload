@@ -5735,6 +5735,10 @@ struct MediaFields {
     renew_ids: Vec<String>,
     video_formats: Vec<Option<MediaFormat>>,
     audio_values: Vec<AudioSelection>,
+    /// The formats behind `audio_values`, in the same order.
+    audio_formats: Vec<MediaFormat>,
+    /// The selected streams' total size, below the quality list.
+    size: HWND,
     subtitle_values: Vec<SubtitleTrack>,
     external_values: Vec<ExternalSubtitle>,
     loaded_title: String,
@@ -6807,6 +6811,8 @@ unsafe fn show_media_picker(
                 renew_ids: Vec::new(),
                 video_formats: Vec::new(),
                 audio_values: Vec::new(),
+                audio_formats: Vec::new(),
+                size: null_mut(),
                 subtitle_values: Vec::new(),
                 external_values: base.external_subtitles.clone(),
                 loaded_title: String::new(),

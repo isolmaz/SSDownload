@@ -589,12 +589,79 @@ pub(super) fn media_format_label(format: &MediaFormat) -> String {
         .unwrap_or_default();
     let size = format
         .filesize
-        .map(|value| format!(" · {}", format_bytes(value)))
+        .map(|value| format!(" · {}", size_text(value, format.size_estimated)))
         .unwrap_or_default();
     format!(
         "{} — {} · {}{}{}{}{}",
         format.id, dimensions, format.extension, fps, codec, range, size
     )
+}
+
+fn size_text(bytes: u64, estimated: bool) -> String {
+    format!(
+        "{}{}",
+        if estimated { "≈ " } else { "" },
+        format_bytes(bytes)
+    )
+}
+
+/// The size the selected video and audio streams add up to, and whether any part of it is an
+/// estimate. A format that carries its own audio stands alone; separate audio formats add
+/// their sizes where known. An HLS variant's bitrate already covers its audio renditions,
+/// which carry none.
+pub(super) fn selected_media_size(
+    video: Option<&MediaFormat>,
+    audio: &[&MediaFormat],
+) -> Option<(u64, bool)> {
+    let video = video?;
+    let mut total = video.filesize?;
+    let mut estimated = video.size_estimated;
+    if !media_stream_present(video.audio_codec.as_deref()) {
+        for format in audio {
+            if let Some(size) = format.filesize {
+                total += size;
+                estimated |= format.size_estimated;
+            }
+        }
+    }
+    Some((total, estimated))
+}
+
+pub(super) unsafe fn refresh_media_size(f: &MediaFields) {
+    let index = SendMessageW(f.format, CB_GETCURSEL, 0, 0);
+    let video = usize::try_from(index)
+        .ok()
+        .and_then(|index| f.video_formats.get(index))
+        .and_then(|format| {
+            format
+                .as_ref()
+                .or_else(|| f.video_formats.iter().flatten().next())
+        });
+    let selected = selected_list_indexes(f.audio_tracks);
+    // With no track chosen, the largest audio format stands for the automatic choice.
+    let audio = if selected.is_empty() {
+        f.audio_formats
+            .iter()
+            .filter(|format| format.filesize.is_some())
+            .max_by_key(|format| format.filesize)
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        selected
+            .into_iter()
+            .filter_map(|index| f.audio_formats.get(index))
+            .collect()
+    };
+    let size = selected_media_size(video, &audio)
+        .map(|(bytes, estimated)| size_text(bytes, estimated))
+        .unwrap_or_else(|| crate::i18n::ui("bilinmiyor", "unknown").into());
+    set_text(
+        f.size,
+        &crate::i18n::ui_owned!(
+            format!("Toplam boyut: {size}"),
+            format!("Total size: {size}")
+        ),
+    );
 }
 
 pub(super) unsafe fn refresh_external_subtitle_list(f: &MediaFields) {
@@ -869,6 +936,7 @@ pub(super) unsafe fn populate_media(
 
     SendMessageW(f.audio_tracks, LB_RESETCONTENT, 0, 0);
     f.audio_values.clear();
+    f.audio_formats.clear();
     for format in info.formats.iter().filter(|value| {
         !value.has_drm
             && value.video_codec.as_deref() == Some("none")
@@ -916,7 +984,9 @@ pub(super) unsafe fn populate_media(
             SendMessageW(f.audio_tracks, LB_SETSEL, 1, index as isize);
         }
         f.audio_values.push(selection);
+        f.audio_formats.push(format.clone());
     }
+    refresh_media_size(f);
 
     SendMessageW(f.subtitles, LB_RESETCONTENT, 0, 0);
     f.subtitle_values = if info.subtitle_tracks.is_empty() {
@@ -1580,6 +1650,48 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_total_size_adds_separate_audio_and_marks_estimates() {
+        let format = |size: Option<u64>, estimated: bool, video: &str, audio: &str| MediaFormat {
+            filesize: size,
+            size_estimated: estimated,
+            video_codec: Some(video.into()),
+            audio_codec: Some(audio.into()),
+            ..MediaFormat::default()
+        };
+        let video_only = format(Some(900), false, "avc1", "none");
+        let english = format(Some(60), false, "none", "mp4a");
+        let turkish = format(Some(40), true, "none", "mp4a");
+        let hls_rendition = format(None, false, "none", "mp4a");
+        assert_eq!(
+            selected_media_size(Some(&video_only), &[&english]),
+            Some((960, false))
+        );
+        assert_eq!(
+            selected_media_size(Some(&video_only), &[&english, &turkish]),
+            Some((1000, true))
+        );
+        // An HLS variant's bitrate covers its audio renditions, which carry no size.
+        let variant = format(Some(1900), true, "avc1", "none");
+        assert_eq!(
+            selected_media_size(Some(&variant), &[&hls_rendition]),
+            Some((1900, true))
+        );
+        // A format with its own audio stands alone.
+        let muxed = format(Some(700), false, "avc1", "mp4a");
+        assert_eq!(
+            selected_media_size(Some(&muxed), &[&english]),
+            Some((700, false))
+        );
+        assert_eq!(
+            selected_media_size(Some(&format(None, false, "avc1", "none")), &[&english]),
+            None
+        );
+        assert_eq!(selected_media_size(None, &[&english]), None);
+        assert_eq!(size_text(2 * 1024 * 1024 * 1024, true), "≈ 2.0 GB");
+        assert_eq!(size_text(1536, false), "1.5 KB");
+    }
 
     #[test]
     fn a_thumbnail_is_opened_only_by_image_demuxers_and_the_local_file_protocol() {

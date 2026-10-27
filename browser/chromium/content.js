@@ -185,15 +185,61 @@ function playerIdentity(media) {
   if (current) identity.current = current;
   return identity;
 }
+// Subtitle files this document's player loaded itself, newest last (see page-observer.js).
+const observedSubtitles = new Set();
+// Language names and codes a subtitle file name carries ("film.tr.vtt", "Turkish.srt"),
+// written without diacritics because file names are compared that way. Two-letter codes
+// that are also common English words are left out.
+const SUBTITLE_LANGUAGES = (() => {
+  const languages = {
+    tr:"tur turkish turkce", en:"eng english ingilizce", de:"ger deu german deutsch almanca",
+    fr:"fre fra french francais fransizca", es:"spa spanish espanol ispanyolca",
+    pt:"por portuguese portugues portekizce", it:"ita italian italiano italyanca",
+    ru:"rus russian rusca", ar:"ara arabic arapca", ja:"jpn japanese japonca",
+    ko:"kor korean korece", zh:"chi zho chinese cince", nl:"dut nld dutch nederlands",
+    pl:"pol polish polski", sv:"swe swedish svenska", da:"dan danish dansk", fi:"fin finnish suomi",
+    el:"gre ell greek", cs:"cze ces czech cestina", hu:"hun hungarian magyar",
+    ro:"rum ron romanian romana", bg:"bul bulgarian", uk:"ukr ukrainian",
+    fa:"per fas persian farsi", az:"aze azerbaijani", hi:"hin hindi",
+    id:"ind indonesian", he:"heb hebrew", sr:"srp serbian", hr:"hrv croatian hrvatski"
+  };
+  const names = new Map();
+  for (const [code, words] of Object.entries(languages)) {
+    names.set(code, code);
+    for (const word of words.split(" ")) names.set(word, code);
+  }
+  for (const word of ["it", "id", "he", "hi", "uk"]) names.delete(word);
+  return names;
+})();
+function fileName(url) {
+  try { return decodeURIComponent(new URL(url).pathname.split("/").pop() || ""); }
+  catch (_) { return ""; }
+}
+// The language word nearest the file extension wins: "subtitles01.eng.vtt" is English.
+function addressLanguage(url) {
+  const words = fileName(url).toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "").replace(/\u0131/g, "i")
+    .replace(/\.[^.]*$/, "").split(/[^\p{L}]+/u).filter(Boolean);
+  for (let index = words.length - 1; index >= 0; index--) {
+    const code = SUBTITLE_LANGUAGES.get(words[index]);
+    if (code) return code;
+  }
+  return "";
+}
 function playerTracks(media, playerId) {
   const tracks=[];
   for (const track of [...media.querySelectorAll("track[src]")].slice(0,32)) {
     const url=absoluteUrl(track.src || track.getAttribute?.("src"));
     if(!url || url.length>16384) continue;
-    tracks.push({url, language:String(track.srclang || track.getAttribute?.("srclang") || "").slice(0,35),
+    tracks.push({url, language:String(track.srclang || track.getAttribute?.("srclang") || addressLanguage(url) || "und").slice(0,35),
       label:String(track.label || track.getAttribute?.("label") || "").slice(0,180),
       kind:String(track.kind || track.getAttribute?.("kind") || "subtitles").slice(0,32),
       isDefault:track.default === true || track.hasAttribute?.("default") === true, playerId});
+  }
+  if (media.tagName === "VIDEO") {
+    for (const url of observedSubtitles) {
+      if (tracks.length >= 32 || tracks.some(track => track.url === url)) continue;
+      tracks.push({url, language:addressLanguage(url) || "und", label:fileName(url).slice(0,180), kind:"subtitles", isDefault:false, playerId});
+    }
   }
   return tracks;
 }
@@ -297,6 +343,52 @@ const ownTiles = new WeakMap();
 const OWN_TILE_TYPES = ["pointerdown", "mousedown", "pointerup", "mouseup", "auxclick", "contextmenu", "click", "touchstart", "touchend", "keydown", "keyup"];
 const OWN_TILE_KEYS = new Set(["Enter", " "]);
 
+// Where the user dragged the tiles to, as fractions of the room the anchor box leaves around a
+// tile; null keeps them 8 px inside the anchor's top-left corner. One placement serves every
+// player, so a tile moved off a site's own controls stays clear of them on the next page.
+let tilePlacement = null;
+// A press on a tile becomes a drag once it moves 5 px; its release then moves the tile
+// instead of activating it.
+let tileDrag = null;
+let draggedTile = null;
+function validPlacement(value) {
+  const x = Number(value?.x), y = Number(value?.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) } : null;
+}
+function tileSpot(button, rect) {
+  if (!tilePlacement) return { left: rect.left + 8, top: rect.top + 8 };
+  return { left: rect.left + tilePlacement.x * Math.max(0, rect.width - (button.offsetWidth || 0)),
+    top: rect.top + tilePlacement.y * Math.max(0, rect.height - (button.offsetHeight || 0)) };
+}
+function tileAnchor(tile) {
+  for (const [node, button] of overlays) if (button === tile) return node.getBoundingClientRect();
+  return tile === pageOverlay ? playerContainerBox() : null;
+}
+function dragTile(event) {
+  if (!tileDrag) return;
+  const dx = event.clientX - tileDrag.x, dy = event.clientY - tileDrag.y;
+  if (!tileDrag.moved && Math.hypot(dx, dy) < 5) return;
+  tileDrag.moved = true;
+  const tile = tileDrag.tile;
+  tile.style.right = "auto";
+  tile.style.left = `${Math.min(Math.max(0, tileDrag.left + dx), Math.max(0, innerWidth - (tile.offsetWidth || 0)))}px`;
+  tile.style.top = `${Math.min(Math.max(0, tileDrag.top + dy), Math.max(0, innerHeight - (tile.offsetHeight || 0)))}px`;
+  event.stopImmediatePropagation();
+}
+function dropTile() {
+  const drag = tileDrag;
+  tileDrag = null;
+  if (!drag?.moved) return;
+  draggedTile = drag.tile;
+  const rect = tileAnchor(drag.tile);
+  if (!rect) return;
+  const box = drag.tile.getBoundingClientRect();
+  const share = (offset, room) => room > 0 ? offset / room : 0;
+  tilePlacement = validPlacement({ x: share(box.left - rect.left, rect.width - box.width), y: share(box.top - rect.top, rect.height - box.height) });
+  Promise.resolve(extensionApi.storage?.local?.set({ tilePlacement })).catch(() => {});
+  updateOverlays();
+}
+
 // The tile this event belongs to, or null for the page's own events. Identity walks the
 // target's ancestry, so a click that lands on the tile's glyph or label reaches the tile.
 function ownTileTarget(event) {
@@ -314,7 +406,8 @@ function ownTileEvent(event) {
   if (event.type === "click") {
     // One submission per user gesture: the click the browser generated for a real press or a
     // keyboard activation, on a tile that still offers its action.
-    if (event.isTrusted === true && event.button === 0 && overlayEnabled && !tile.hidden && !tile.disabled) ownTiles.get(tile).activate?.();
+    if (draggedTile === tile) draggedTile = null;
+    else if (event.isTrusted === true && event.button === 0 && overlayEnabled && !tile.hidden && !tile.disabled) ownTiles.get(tile).activate?.();
   } else if (event.type === "keydown" || event.type === "keyup") {
     // Only the keys a tile acts on are the tile's; every other key stays the page's event.
     if (!OWN_TILE_KEYS.has(event.key)) return;
@@ -324,13 +417,23 @@ function ownTileEvent(event) {
       event.preventDefault();
       ownTiles.get(tile).activate?.();
     }
-  } else if (event.type === "pointerdown") paintTile(tile, "pressed");
+  } else if (event.type === "pointerdown") {
+    paintTile(tile, "pressed");
+    draggedTile = null;
+    if (event.isTrusted === true && event.button === 0) {
+      const box = tile.getBoundingClientRect();
+      tileDrag = { tile, x: event.clientX, y: event.clientY, left: box.left, top: box.top, moved: false };
+      try { tile.setPointerCapture?.(event.pointerId); } catch (_) {}
+    }
+  }
   else if (event.type === "pointerup") paintTile(tile, "hover");
   event.stopImmediatePropagation();
 }
 
 // A document without a window is a bare test double, never a page the extension ships to.
 if (typeof window !== "undefined") {
+  window.addEventListener("pointermove", dragTile, true);
+  for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, dropTile, true);
   for (const type of OWN_TILE_TYPES) window.addEventListener(type, ownTileEvent, true);
 }
 
@@ -616,10 +719,12 @@ function frameOccupies(box) {
 // screen instead: the two tiles never fight over one click, and the page candidate itself
 // is unchanged.
 function placePageTile(button) {
+  if (tileDrag?.moved && tileDrag.tile === button) return;
   const width = button.offsetWidth || 0, height = button.offsetHeight || 0;
   const rect = playerContainerBox();
   if (rect && rect.bottom > PAGE_TILE_MARGIN && rect.top < innerHeight) {
-    const left = Math.max(0, rect.left + PAGE_TILE_MARGIN), top = Math.max(0, rect.top + PAGE_TILE_MARGIN);
+    const spot = tileSpot(button, rect);
+    const left = Math.max(0, spot.left), top = Math.max(0, spot.top);
     if (!frameOccupies({ left, top, right: left + width, bottom: top + height })) {
       button.style.right = "auto";
       button.style.left = `${left}px`;
@@ -712,8 +817,10 @@ function paintOverlays() {
       || node.checkVisibility?.()===false || description?.adSignals.length>=2 || hiddenMedia.has(node) || pageHidden();
     hideTile(button, withdrawn);
     if (button.disabled) paintTile(button, "disabled");
-    button.style.left = `${Math.max(0, rect.left + 8)}px`;
-    button.style.top = `${Math.max(0, rect.top + 8)}px`;
+    if (tileDrag?.moved && tileDrag.tile === button) continue;
+    const spot = tileSpot(button, rect);
+    button.style.left = `${Math.max(0, spot.left)}px`;
+    button.style.top = `${Math.max(0, spot.top)}px`;
   }
   updatePageOverlay(descriptions);
   if (tileMenu) placeTileMenu();
@@ -882,11 +989,12 @@ if (extensionApi.storage?.local) {
   // A site the user hid in the popup keeps discovery but shows no overlay button.
   const siteHidden=hosts=>Array.isArray(hosts)&&hosts.includes(location.hostname);
   let hostHidden=false;
-  Promise.resolve(extensionApi.storage.local.get({detectionEnabled:true,hiddenHosts:[],[SSDownloadI18n.STORAGE_KEY]:null})).then(saved=>{SSDownloadI18n.setLanguage(saved[SSDownloadI18n.STORAGE_KEY]);detectionOn=saved.detectionEnabled!==false;hostHidden=siteHidden(saved.hiddenHosts);overlayEnabled=detectionOn&&!hostHidden;if(overlayEnabled){lastScan="";report("scan");}observerControl();updateOverlays();}).catch(()=>{});
+  Promise.resolve(extensionApi.storage.local.get({detectionEnabled:true,hiddenHosts:[],tilePlacement:null,[SSDownloadI18n.STORAGE_KEY]:null})).then(saved=>{SSDownloadI18n.setLanguage(saved[SSDownloadI18n.STORAGE_KEY]);tilePlacement=validPlacement(saved.tilePlacement);detectionOn=saved.detectionEnabled!==false;hostHidden=siteHidden(saved.hiddenHosts);overlayEnabled=detectionOn&&!hostHidden;if(overlayEnabled){lastScan="";report("scan");}observerControl();updateOverlays();}).catch(()=>{});
   extensionApi.storage.onChanged?.addListener((changes,area)=>{
     if(area!=="local") return;
     // The desktop's language, stored by the worker: tiles are repainted in it at once.
     if(changes[SSDownloadI18n.STORAGE_KEY]) { SSDownloadI18n.setLanguage(changes[SSDownloadI18n.STORAGE_KEY].newValue); updateOverlays(); }
+    if(changes.tilePlacement) { tilePlacement=validPlacement(changes.tilePlacement.newValue); updateOverlays(); }
     if(!changes.detectionEnabled && !changes.hiddenHosts) return;
     if(changes.detectionEnabled) detectionOn=changes.detectionEnabled.newValue!==false;
     if(changes.hiddenHosts) hostHidden=siteHidden(changes.hiddenHosts.newValue);
@@ -915,6 +1023,13 @@ if (typeof window !== "undefined") {
       return;
     }
     const data=event.data;
+    if(data.channel==="ssdownload-observed-subtitle") {
+      if(typeof data.url!=="string" || data.url.length>16384 || !/^https?:/.test(data.url)) return;
+      observedSubtitles.delete(data.url);
+      observedSubtitles.add(data.url);
+      while(observedSubtitles.size>32) observedSubtitles.delete(observedSubtitles.values().next().value);
+      return;
+    }
     if(data.channel!=="ssdownload-observed-manifest" || typeof data.url!=="string" || data.url.length>16384 || !/^https?:/.test(data.url)) return;
     const roles=new Set(["variant","audio","init","segment"]);
     const relations=Array.isArray(data.relations)?data.relations.slice(0,200).flatMap(relation=>{

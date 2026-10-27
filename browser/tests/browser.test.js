@@ -1270,6 +1270,7 @@ function contentHarness(options = {}) {
     path.push(...ancestry);
     const event = {
       type, target, key: init.key, button: init.button ?? 0, isTrusted: init.isTrusted !== false,
+      clientX: init.clientX ?? 0, clientY: init.clientY ?? 0, pointerId: 1,
       defaultPrevented: false, propagationStopped: false, immediateStopped: false,
       preventDefault() { event.defaultPrevented = true; },
       stopPropagation() { event.propagationStopped = true; },
@@ -1571,6 +1572,39 @@ test("a page's own capture handler cannot take the tile's gesture", async () => 
   assert.equal(handoff.event, "download-video", "the tile still hands its candidate over");
   const scan = h.sent.find(message => message.event === "scan");
   assert.equal(handoff.playerId, scan.players[0].id, "the submission is the player this tile stands on");
+});
+
+test("a tile dragged off the player's corner stays where it was dropped on every player", async () => {
+  const h = contentHarness({ reply: { status: "ready", usageModes: { video: true, file: true, audio: true } } });
+  await vm.runInContext("refreshUsageModes()", h.context);
+  const [tile] = h.buttons;
+  const at = () => [parseFloat(tile.style.left), parseFloat(tile.style.top)];
+  const downloads = () => h.sent.filter(message => message.event === "download-video").length;
+  // The player spans 10..650 x 20..380; the tile (147x36) starts 8 px inside its corner.
+  assert.deepEqual(at(), [18, 28]);
+
+  h.gesture(tile, "pointerdown", { clientX: 20, clientY: 30 });
+  h.gesture(tile, "pointermove", { clientX: 320, clientY: 230 });
+  assert.deepEqual(at(), [318, 228], "the tile follows the pointer");
+  h.gesture(tile, "pointerup", { clientX: 320, clientY: 230 });
+  h.gesture(tile, "click", { clientX: 320, clientY: 230 });
+  assert.equal(downloads(), 0, "releasing a drag does not start a download");
+  const saved = h.storageWrites.at(-1).tilePlacement;
+  assert.ok(Math.abs(saved.x - 308 / 493) < 1e-9 && Math.abs(saved.y - 208 / 324) < 1e-9, JSON.stringify(saved));
+  vm.runInContext("updateOverlays()", h.context);
+  assert.deepEqual(at(), [318, 228], "a later layout pass keeps the dropped spot");
+
+  // A press that moves less than 5 px is still a click.
+  h.gesture(tile, "pointerdown", { clientX: 320, clientY: 230 });
+  h.gesture(tile, "pointermove", { clientX: 323, clientY: 232 });
+  h.gesture(tile, "pointerup", { clientX: 323, clientY: 232 });
+  h.gesture(tile, "click", { clientX: 323, clientY: 232 });
+  assert.equal(downloads(), 1);
+  assert.deepEqual(at(), [318, 228]);
+
+  // The placement is shared through storage: another tab's drop to the far corner moves this tile.
+  h.storageListener()({ tilePlacement: { newValue: { x: 1, y: 1 } } }, "local");
+  assert.deepEqual(at(), [503, 344]);
 });
 
 test("the shield leaves the page's own controls and phases alone", async () => {

@@ -74,11 +74,29 @@
     walk(xml.documentElement,base);
     return relations;
   }
+  // A subtitle file the player loaded itself: players that draw their own captions add no
+  // <track> element. Thumbnail sprites and HLS subtitle segments are WebVTT as well and are
+  // not subtitles of their own.
+  function subtitleFormat(text) {
+    const head=text.slice(0,4096).replace(/^\uFEFF/,"");
+    if(/^WEBVTT(?:[ \t]|\r?\n|$)/.test(head))
+      return /X-TIMESTAMP-MAP=/i.test(head) || /#xywh=|^\S+\.(?:jpe?g|png|webp|gif)(?:[?#]\S*)?$/im.test(head) ? null : "vtt";
+    return /^\s*\d+\r?\n\d{1,2}:\d{2}:\d{2},\d{3} --> /.test(head) ? "srt" : null;
+  }
   function observe(text, base, type="") {
-    if (!enabled || typeof text !== "string" || text.length > LIMIT / 2) return;
+    if (!enabled || typeof text !== "string") return;
     try {
       base = new URL(base, document.baseURI).href;
       if (!/^https?:/.test(base) || base.length>16384) return;
+      const subtitle=subtitleFormat(text);
+      if(subtitle) {
+        const key=`subtitle\n${base}`;
+        if(seen.has(key)) return;
+        seen.add(key); while (seen.size > 64) seen.delete(seen.values().next().value);
+        send({channel:"ssdownload-observed-subtitle",url:base,format:subtitle},"*");
+        return;
+      }
+      if (text.length > LIMIT / 2) return;
       const trimmed=text.trimStart();
       const kind=trimmed.startsWith("#EXTM3U")?"hls":(/<MPD(?:\s|>)/i.test(trimmed.slice(0,2048)) || /dash\+xml|\.mpd(?:$|[?#])/i.test(`${type} ${base}`))?"dash":null;
       if(!kind) return;

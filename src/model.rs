@@ -847,6 +847,8 @@ pub struct MediaFormat {
     pub height: Option<u32>,
     pub fps: Option<f64>,
     pub filesize: Option<u64>,
+    /// `filesize` is the extractor's estimate or the stream's bitrate over its duration.
+    pub size_estimated: bool,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
     pub language: Option<String>,
