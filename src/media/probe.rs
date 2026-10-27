@@ -536,6 +536,21 @@ pub(super) fn parse_clock_timestamp(value: &str) -> Option<f64> {
         .then_some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
+/// Whether FFmpeg reported a problem reading or decoding the file. The null muxer's own
+/// complaints about the decoded frames' timestamps are left out: an encoder that writes its
+/// last frame twice with one timestamp leaves a file that decodes and plays in full.
+fn decode_errors(stderr: &str) -> bool {
+    let mut muxer_line = false;
+    stderr
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .any(|line| {
+            muxer_line = line.starts_with("[null @ ")
+                || (muxer_line && line.trim_start().starts_with("Last message repeated"));
+            !muxer_line
+        })
+}
+
 pub(super) fn verify_media_output(
     path: &Path,
     request: &AddRequest,
@@ -594,7 +609,7 @@ pub(super) fn verify_media_output(
             Duration::from_secs(24 * 60 * 60),
             control,
         )?;
-        if !decoded.status.success() || !decoded.stderr.trim().is_empty() {
+        if !decoded.status.success() || decode_errors(&decoded.stderr) {
             bail!(crate::i18n::ui(
                 "Tam medya doğrulaması: ses/görüntü baştan sona çözülemedi",
                 "Full media verification: the audio/video could not be decoded from start to end"
@@ -651,7 +666,7 @@ pub(super) fn verify_media_output(
             "-".into(),
         ]);
         let decoded = run_capture(&tools.ffmpeg, &args, b"", Duration::from_secs(60), control)?;
-        if !decoded.status.success() || !decoded.stderr.trim().is_empty() {
+        if !decoded.status.success() || decode_errors(&decoded.stderr) {
             bail!(crate::i18n::ui(
                 "Medya doğrulaması: örneklenen başlangıç/orta/bitiş bölümü çözülemedi",
                 "Media verification: the sampled start/middle/end section could not be decoded"

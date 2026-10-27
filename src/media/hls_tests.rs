@@ -36,6 +36,21 @@ struct Fixture {
     server: Arc<Server>,
 }
 
+/// The cookie-jar folder (extractor documents included) is process-wide and set by the first
+/// `AppPaths`, so every test shares one profile: a test that finishes never removes the folder
+/// another test's download is using.
+fn shared_profile() -> AppPaths {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let root = ROOT.get_or_init(|| {
+        std::env::temp_dir().join(format!("ssdownload-hls-profile-{}", std::process::id()))
+    });
+    let mut paths = AppPaths::new(root.clone()).unwrap();
+    paths.tools_dir = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap())
+        .join("SSDownload")
+        .join("tools");
+    paths
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
@@ -49,10 +64,7 @@ impl Fixture {
         let root = std::env::temp_dir().join(format!("ssdownload-hls-{}", uuid::Uuid::new_v4()));
         let site = root.join("site");
         fs::create_dir_all(&site).unwrap();
-        let mut paths = AppPaths::new(root.join("profile")).unwrap();
-        paths.tools_dir = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap())
-            .join("SSDownload")
-            .join("tools");
+        let paths = shared_profile();
         let tools = tools::verified_toolchain(&paths, &TransferControl::default())
             .expect("the installed media tools");
         let encode = |input: &str, codec: &[&str], playlist: &str, segment: &str| {
@@ -419,4 +431,94 @@ fn a_download_started_from_the_picker_does_not_analyze_the_source_again() {
         .expect("the download");
 
     assert_eq!(masters(), analyzed);
+}
+
+/// An encoder that writes its last frame twice with one timestamp leaves a file that decodes in
+/// full; a damaged frame still fails verification.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_repeated_last_frame_timestamp_passes_verification_but_a_damaged_frame_does_not() {
+    let root = std::env::temp_dir().join(format!("ssdownload-verify-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    let ffmpeg = |args: &[&str]| {
+        let status = std::process::Command::new(&tools.ffmpeg)
+            .args(["-v", "error", "-y"])
+            .args(args)
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{args:?}");
+    };
+    ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=320x180:rate=25:duration=4",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=duration=4",
+        "-c:v",
+        "libopenh264",
+        "-g",
+        "50",
+        "-c:a",
+        "aac",
+        "-shortest",
+        "source.ts",
+    ]);
+    // The 100th and last frame takes its predecessor's presentation time; the others are
+    // shifted two frames later so presentation never precedes decoding.
+    ffmpeg(&[
+        "-i",
+        "source.ts",
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-bsf:v",
+        "setts=pts='if(eq(N\\,99)\\,PREV_OUTPTS\\,PTS+7200)'",
+        "repeated.ts",
+    ]);
+    ffmpeg(&["-i", "repeated.ts", "-c", "copy", "repeated.mp4"]);
+    ffmpeg(&["-i", "source.ts", "-c", "copy", "damaged.mp4"]);
+    let mut bytes = fs::read(root.join("damaged.mp4")).unwrap();
+    let middle = bytes.len() / 2;
+    let mut state = 0x9e37_79b9_u32;
+    for byte in &mut bytes[middle..middle + 16 * 1024] {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        *byte = state as u8;
+    }
+    fs::write(root.join("damaged.mp4"), bytes).unwrap();
+    let request = AddRequest {
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        ..AddRequest::default()
+    };
+    let verify = |name: &str| {
+        verify_media_output(
+            &root.join(name),
+            &request,
+            &MediaInfo::default(),
+            &tools,
+            &TransferControl::default(),
+        )
+    };
+
+    let repeated = verify("repeated.mp4");
+    let damaged = verify("damaged.mp4");
+    let _ = fs::remove_dir_all(&root);
+
+    repeated.expect("a repeated last timestamp is not a decoding error");
+    let error = damaged.expect_err("a damaged frame fails verification");
+    assert!(
+        error
+            .to_string()
+            .contains(crate::i18n::ui("çözülemedi", "could not be decoded")),
+        "{error}"
+    );
 }
