@@ -398,8 +398,9 @@ struct Task {
     not_before: Instant,
 }
 
-/// Parallel requests one host is given: halved when it answers 429 or 503, raised by one after
-/// a run of successes, never above the per-host bound.
+/// Parallel requests one stream sends to one host: halved when it answers 429 or 503, raised by
+/// one after a run of successes, never above the per-host bound. A host that throttles one
+/// stream's requests keeps serving the other stream at its full share.
 struct Pace {
     limit: usize,
     in_flight: usize,
@@ -414,7 +415,9 @@ struct Shared {
 
 struct Schedule {
     queues: Vec<VecDeque<Task>>,
-    hosts: HashMap<String, Pace>,
+    paces: HashMap<(usize, String), Pace>,
+    /// Requests in flight per host across all streams, never above `per_host`.
+    busy: HashMap<String, usize>,
     per_host: usize,
     remaining: usize,
     failure: Option<anyhow::Error>,
@@ -443,7 +446,8 @@ impl Shared {
         Self {
             state: Mutex::new(Schedule {
                 queues,
-                hosts: HashMap::new(),
+                paces: HashMap::new(),
+                busy: HashMap::new(),
                 per_host,
                 remaining,
                 failure: None,
@@ -473,8 +477,10 @@ impl Shared {
         self.wake.notify_all();
     }
 
-    /// The next due segment whose host has room, lowest playlist position first, so joins
-    /// advance while later segments arrive.
+    /// The next due segment whose host has room. Each stream offers its lowest playlist
+    /// position, so joins advance while later segments arrive, and the stream furthest behind
+    /// through its own playlist goes first, so video and audio finish together and a throttled
+    /// stream is not left for the end.
     fn next_task(&self, streams: &[NativeStream], control: &TransferControl) -> Option<Task> {
         let mut state = self.lock();
         loop {
@@ -484,8 +490,8 @@ impl Shared {
             let now = Instant::now();
             let mut earliest: Option<Instant> = None;
             let per_host = state.per_host;
-            let mut chosen = None;
-            'streams: for stream in 0..state.queues.len() {
+            let mut chosen: Option<(usize, usize, String)> = None;
+            for stream in 0..state.queues.len() {
                 for position in 0..state.queues[stream].len() {
                     let task = state.queues[stream][position];
                     if task.not_before > now {
@@ -493,21 +499,33 @@ impl Shared {
                             Some(earliest.map_or(task.not_before, |at| at.min(task.not_before)));
                         continue;
                     }
-                    let host = host_key(&streams[task.stream].segments[task.index]);
-                    let pace = state.hosts.entry(host).or_insert(Pace {
+                    let host = host_key(&streams[stream].segments[task.index]);
+                    let busy = state.busy.get(&host).copied().unwrap_or(0);
+                    let pace = state.paces.entry((stream, host.clone())).or_insert(Pace {
                         limit: per_host,
                         in_flight: 0,
                         successes: 0,
                         last_cut: None,
                     });
-                    if pace.in_flight < pace.limit {
-                        pace.in_flight += 1;
-                        chosen = Some((stream, position));
-                        break 'streams;
+                    if busy >= per_host || pace.in_flight >= pace.limit {
+                        continue;
                     }
+                    let behind = chosen.as_ref().is_none_or(|(other, at, _)| {
+                        let other_index = state.queues[*other][*at].index;
+                        task.index * streams[*other].segments.len()
+                            < other_index * streams[stream].segments.len()
+                    });
+                    if behind {
+                        chosen = Some((stream, position, host));
+                    }
+                    break;
                 }
             }
-            if let Some((stream, position)) = chosen {
+            if let Some((stream, position, host)) = chosen {
+                *state.busy.entry(host.clone()).or_default() += 1;
+                if let Some(pace) = state.paces.get_mut(&(stream, host)) {
+                    pace.in_flight += 1;
+                }
                 return state.queues[stream].remove(position);
             }
             let wait = earliest
@@ -522,10 +540,13 @@ impl Shared {
         }
     }
 
-    fn settle(&self, host: &str, outcome: Settled) {
+    fn settle(&self, stream: usize, host: &str, outcome: Settled) {
         let mut state = self.lock();
         let per_host = state.per_host;
-        if let Some(pace) = state.hosts.get_mut(host) {
+        if let Some(busy) = state.busy.get_mut(host) {
+            *busy = busy.saturating_sub(1);
+        }
+        if let Some(pace) = state.paces.get_mut(&(stream, host.to_owned())) {
             pace.in_flight = pace.in_flight.saturating_sub(1);
             match &outcome {
                 Settled::Done => {
@@ -601,8 +622,9 @@ enum Fetched {
 impl WorkerContext<'_> {
     fn work(&self) {
         while let Some(mut task) = self.shared.next_task(self.streams, self.control) {
-            let stream = &self.streams[task.stream];
-            let join = &self.joins[task.stream];
+            let stream_index = task.stream;
+            let stream = &self.streams[stream_index];
+            let join = &self.joins[stream_index];
             let host = host_key(&stream.segments[task.index]);
             let segment = segment_path(&join.joined, task.index);
             let mut url = stream.segments[task.index].clone();
@@ -616,7 +638,7 @@ impl WorkerContext<'_> {
             }
             match fetched {
                 Ok(Fetched::Done) => {
-                    self.shared.settle(&host, Settled::Done);
+                    self.shared.settle(stream_index, &host, Settled::Done);
                     if let Err(error) = join.mark_ready(task.index) {
                         self.shared.fail(error);
                     }
@@ -640,15 +662,15 @@ impl WorkerContext<'_> {
                             )),
                     );
                     self.shared
-                        .settle(&host, Settled::Retry { task, throttled });
+                        .settle(stream_index, &host, Settled::Retry { task, throttled });
                 }
                 Ok(Fetched::Retry { status, reason, .. }) => {
-                    self.shared.settle(&host, Settled::Failed);
+                    self.shared.settle(stream_index, &host, Settled::Failed);
                     self.shared
                         .fail(segment_failure(stream, task.index, status, &reason));
                 }
                 Ok(Fetched::Redirect(_)) => {
-                    self.shared.settle(&host, Settled::Failed);
+                    self.shared.settle(stream_index, &host, Settled::Failed);
                     self.shared.fail(segment_failure(
                         stream,
                         task.index,
@@ -657,7 +679,7 @@ impl WorkerContext<'_> {
                     ));
                 }
                 Err(error) => {
-                    self.shared.settle(&host, Settled::Failed);
+                    self.shared.settle(stream_index, &host, Settled::Failed);
                     self.shared.fail(error);
                 }
             }
@@ -822,7 +844,8 @@ fn report_until_done(context: &WorkerContext, progress: &mut dyn FnMut(TransferP
         let downloaded = context.received.load(Ordering::Relaxed);
         let now = Instant::now();
         window.push_back((now, downloaded));
-        while window.len() > 2 && now.duration_since(window[0].0) > Duration::from_secs(3) {
+        // A throttling host answers in bursts seconds apart; a shorter window reads zero between.
+        while window.len() > 2 && now.duration_since(window[0].0) > Duration::from_secs(10) {
             window.pop_front();
         }
         let (since, base) = window[0];
@@ -1043,7 +1066,8 @@ mod tests {
         let shared = Shared::new(&streams, &joins, 8);
         let control = TransferControl::default();
         let host = "cdn.example";
-        let limit = || shared.lock().hosts[host].limit;
+        let key = (0, host.to_owned());
+        let limit = || shared.lock().paces[&key].limit;
 
         let tasks = (0..8)
             .map(|_| shared.next_task(&streams, &control).unwrap())
@@ -1051,12 +1075,14 @@ mod tests {
         // The host has its full share in flight: nothing more is handed out for it.
         {
             let state = shared.lock();
-            assert_eq!(state.hosts[host].in_flight, state.hosts[host].limit);
+            assert_eq!(state.paces[&key].in_flight, state.paces[&key].limit);
+            assert_eq!(state.busy[host], 8);
         }
 
         // A burst of 429s halves the share once, not once per answer.
         for task in &tasks[..4] {
             shared.settle(
+                0,
                 host,
                 Settled::Retry {
                     task: *task,
@@ -1065,8 +1091,9 @@ mod tests {
             );
         }
         assert_eq!(limit(), 4);
-        shared.lock().hosts.get_mut(host).unwrap().last_cut = None;
+        shared.lock().paces.get_mut(&key).unwrap().last_cut = None;
         shared.settle(
+            0,
             host,
             Settled::Retry {
                 task: tasks[4],
@@ -1076,6 +1103,7 @@ mod tests {
         assert_eq!(limit(), 2);
         // A failed connection is retried without cutting the share.
         shared.settle(
+            0,
             host,
             Settled::Retry {
                 task: tasks[5],
@@ -1085,8 +1113,8 @@ mod tests {
         assert_eq!(limit(), 2);
         // Four successes per allowed request raise the share by one.
         for _ in 0..8 {
-            shared.lock().hosts.get_mut(host).unwrap().in_flight += 1;
-            shared.settle(host, Settled::Done);
+            shared.lock().paces.get_mut(&key).unwrap().in_flight += 1;
+            shared.settle(0, host, Settled::Done);
         }
         assert_eq!(limit(), 3);
         // Retried segments go back in playlist order, ahead of later ones.
@@ -1096,6 +1124,64 @@ mod tests {
             .take(6)
             .collect::<Vec<_>>();
         assert_eq!(order, [0, 1, 2, 3, 4, 5]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn streams_on_one_host_advance_together_and_are_throttled_apart() {
+        let root = std::env::temp_dir().join(format!("ssdownload-fair-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let streams = [
+            NativeStream {
+                role: "video",
+                ..one_host_stream(8)
+            },
+            one_host_stream(4),
+        ];
+        let joins = [
+            Join::resume(&root, &streams[0]).unwrap(),
+            Join::resume(&root, &streams[1]).unwrap(),
+        ];
+        let shared = Shared::new(&streams, &joins, 4);
+        let control = TransferControl::default();
+        let host = "cdn.example";
+
+        let tasks = (0..4)
+            .map(|_| shared.next_task(&streams, &control).unwrap())
+            .collect::<Vec<_>>();
+        // Each stream advances through its own playlist at the same rate, ties to the first.
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| (task.stream, task.index))
+                .collect::<Vec<_>>(),
+            [(0, 0), (1, 0), (0, 1), (0, 2)]
+        );
+        assert_eq!(shared.lock().busy[host], 4);
+
+        // The audio's 429 halves its own share only, and frees the host slot it held.
+        shared.settle(
+            1,
+            host,
+            Settled::Retry {
+                task: Task {
+                    attempt: 1,
+                    not_before: Instant::now() + Duration::from_secs(60),
+                    ..tasks[1]
+                },
+                throttled: true,
+            },
+        );
+        {
+            let state = shared.lock();
+            assert_eq!(state.paces[&(1, host.to_owned())].limit, 2);
+            assert_eq!(state.paces[&(0, host.to_owned())].limit, 4);
+            assert_eq!(state.busy[host], 3);
+        }
+        // The audio is still furthest behind, so its next segment takes the free slot.
+        let next = shared.next_task(&streams, &control).unwrap();
+        assert_eq!((next.stream, next.index), (1, 1));
+        assert_eq!(shared.lock().busy[host], 4);
         fs::remove_dir_all(root).unwrap();
     }
 
