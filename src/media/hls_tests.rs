@@ -385,3 +385,38 @@ fn a_playlist_the_app_does_not_download_itself_keeps_its_finished_video_through_
     let (_, last_video) = fixture.span("v");
     assert!(last_video < first_audio, "{first_audio} {last_video}");
 }
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_download_started_from_the_picker_does_not_analyze_the_source_again() {
+    let fixture = Fixture::new(Source {
+        video_seconds: 6,
+        audio_seconds: 6,
+        ..Source::default()
+    });
+    let analysis = InspectRequest {
+        url: fixture.master.clone(),
+        ..InspectRequest::default()
+    };
+    inspect_controlled(
+        &fixture.paths,
+        &analysis,
+        &TransferControl::default(),
+        &NetworkGovernor::new(16),
+    )
+    .expect("the picker's analysis");
+    let masters = || {
+        let requests = fixture.server.requests.lock().unwrap();
+        requests
+            .iter()
+            .filter(|name| *name == "master.m3u8")
+            .count()
+    };
+    let analyzed = masters();
+
+    fixture
+        .download(&TransferControl::default(), 16)
+        .expect("the download");
+
+    assert_eq!(masters(), analyzed);
+}

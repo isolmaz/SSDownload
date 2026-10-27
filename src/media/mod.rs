@@ -95,7 +95,9 @@ fn inspect_with_tools(
     control: &TransferControl,
     network: &NetworkGovernor,
 ) -> Result<MediaInfo> {
-    Ok(inspect_document_with_tools(request, toolchain, control, network)?.1)
+    let (value, info) = inspect_document_with_tools(request, toolchain, control, network)?;
+    remember_inspection(request, &value);
+    Ok(info)
 }
 
 fn inspect_document_with_tools(
@@ -239,6 +241,53 @@ fn inspect_document_with_tools(
     Ok((value, info))
 }
 
+/// How long an analysis answers the download of the same source: long enough to pick a
+/// quality and press Download, short enough for the signed addresses inside it to hold.
+const INSPECTION_REUSE: Duration = Duration::from_secs(120);
+
+/// The picker's latest analysis, keyed by everything that shapes it.
+static RECENT_INSPECTION: Mutex<Option<(String, Instant, Value)>> = Mutex::new(None);
+
+fn inspection_key(request: &InspectRequest) -> String {
+    use sha2::{Digest, Sha256};
+    let identity = serde_json::to_vec(&(
+        &request.url,
+        &request.headers,
+        &request.session_cookies,
+        &request.referer,
+        &request.page_url,
+        request.playlist,
+        request.live_from_start,
+    ))
+    .unwrap_or_default();
+    hex::encode(Sha256::digest(identity))
+}
+
+fn remember_inspection(request: &InspectRequest, value: &Value) {
+    *RECENT_INSPECTION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some((inspection_key(request), Instant::now(), value.clone()));
+}
+
+/// The analysis the picker just made for this exact source, taken once: a download started
+/// from the picker does not run yt-dlp a second time, and a retry analyzes afresh.
+fn reuse_inspection(request: &InspectRequest) -> Option<(Value, MediaInfo)> {
+    let mut recent = RECENT_INSPECTION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let matches = recent.as_ref().is_some_and(|(key, at, _)| {
+        at.elapsed() < INSPECTION_REUSE && *key == inspection_key(request)
+    });
+    if !matches {
+        return None;
+    }
+    let (_, _, value) = recent.take()?;
+    let info = media_info_from_json(&value).ok()?;
+    validate_single_selection(&info, request.playlist).ok()?;
+    Some((value, info))
+}
+
 fn validate_single_selection(info: &MediaInfo, playlist: bool) -> Result<()> {
     if !playlist && info.playlist_count.is_some_and(|count| count > 1) {
         crate::bail_code!(
@@ -310,8 +359,10 @@ pub(crate) fn download(
                 live_from_start: request.live_from_start,
                 ..InspectRequest::default()
             };
-            let mut inspected =
-                inspect_document_with_tools(&inspect_request, &toolchain, control, network);
+            let mut inspected = reuse_inspection(&inspect_request).map_or_else(
+                || inspect_document_with_tools(&inspect_request, &toolchain, control, network),
+                Ok,
+            );
             // Which sites keep a running stream from its beginning is yt-dlp's knowledge; where
             // it finds none, the stream is recorded from now on instead of failing.
             if inspected.is_err() && inspect_request.live_from_start && !control.stop_requested() {
@@ -2688,6 +2739,35 @@ mod tests;
 #[cfg(test)]
 mod output_validation_tests {
     use super::*;
+
+    #[test]
+    fn a_download_takes_the_pickers_analysis_of_the_same_source_once() {
+        let picked = InspectRequest {
+            url: "https://media.example/master.m3u8".into(),
+            referer: Some("https://site.example/".into()),
+            ..InspectRequest::default()
+        };
+        let analysis = json!({"title": "Film", "formats": [{"format_id": "hd", "url": "https://media.example/hd.m3u8"}]});
+        let other = InspectRequest {
+            referer: None,
+            ..picked.clone()
+        };
+
+        remember_inspection(&picked, &analysis);
+        // A different source neither gets nor discards it.
+        assert!(reuse_inspection(&other).is_none());
+        let (value, info) = reuse_inspection(&picked).expect("the picker's analysis");
+        assert_eq!(value, analysis);
+        assert_eq!(info.title, "Film");
+        // Taken once: a retry analyzes afresh.
+        assert!(reuse_inspection(&picked).is_none());
+
+        remember_inspection(&picked, &analysis);
+        if let Some((_, at, _)) = RECENT_INSPECTION.lock().unwrap().as_mut() {
+            *at = Instant::now() - INSPECTION_REUSE;
+        }
+        assert!(reuse_inspection(&picked).is_none());
+    }
     use serde_json::json;
     #[test]
     fn output_validation_rejects_missing_audio_and_wrong_duration_or_quality() {
