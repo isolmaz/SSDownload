@@ -1870,6 +1870,9 @@ struct TunnelActivity {
     opened: Instant,
     last_traffic_ms: AtomicU64,
     upstream_spoke_last: AtomicBool,
+    /// A chunk is being relayed; a write to a slow reader can block for longer than the
+    /// reclaim delay while the transfer is very much alive.
+    relaying: AtomicBool,
     reclaimed: AtomicBool,
 }
 
@@ -1882,9 +1885,12 @@ impl TunnelActivity {
     }
 
     /// How long the tunnel has been silent since the server last answered, or `None` while
-    /// the client spoke last and its request may still be waiting for a reply.
+    /// a chunk is in flight or the client spoke last and its request may still be waiting
+    /// for a reply.
     fn parked_for(&self) -> Option<Duration> {
-        if !self.upstream_spoke_last.load(Ordering::Acquire) {
+        if self.relaying.load(Ordering::Acquire)
+            || !self.upstream_spoke_last.load(Ordering::Acquire)
+        {
             return None;
         }
         let last = Duration::from_millis(self.last_traffic_ms.load(Ordering::Acquire));
@@ -1913,6 +1919,7 @@ impl ReclaimableTunnel {
             opened: Instant::now(),
             last_traffic_ms: AtomicU64::new(0),
             upstream_spoke_last: AtomicBool::new(false),
+            relaying: AtomicBool::new(false),
             reclaimed: AtomicBool::new(false),
         });
         let id = governor.inner.next_tunnel.fetch_add(1, Ordering::Relaxed);
@@ -1977,6 +1984,7 @@ fn relay(
         if ready == 0 {
             continue;
         }
+        activity.relaying.store(true, Ordering::Release);
         if polls[0].revents != 0 {
             // The server's end closes the tunnel: nothing it sends can follow.
             match relay_chunk(&mut upstream, &mut client, &mut buffer) {
@@ -1996,6 +2004,7 @@ fn relay(
             }
             last_traffic = Instant::now();
         }
+        activity.relaying.store(false, Ordering::Release);
     }
 }
 
@@ -2192,6 +2201,7 @@ mod tests {
             opened: Instant::now() - Duration::from_secs(60),
             last_traffic_ms: AtomicU64::new(0),
             upstream_spoke_last: AtomicBool::new(false),
+            relaying: AtomicBool::new(false),
             reclaimed: AtomicBool::new(false),
         });
         governor.lock_tunnels().insert(1, Arc::clone(&activity));
@@ -2220,6 +2230,21 @@ mod tests {
         activity
             .last_traffic_ms
             .store(0, std::sync::atomic::Ordering::Release);
+        activity
+            .relaying
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(governor
+            .acquire_host_for_tunnel("media.test".into(), Duration::from_millis(200), 0)
+            .is_none());
+        assert_eq!(
+            peer_state(),
+            "open",
+            "a chunk blocked on a slow reader is in flight"
+        );
+
+        activity
+            .relaying
+            .store(false, std::sync::atomic::Ordering::Release);
         assert!(governor
             .acquire_host_for_tunnel("media.test".into(), Duration::from_millis(200), 0)
             .is_none());
