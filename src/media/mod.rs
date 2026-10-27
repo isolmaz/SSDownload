@@ -3121,8 +3121,9 @@ segment.ts
         probe["streams"][1]["duration"] = json!("7033.0");
         assert!(validate_probe(&probe, &request, &info).is_err());
 
-        // Whole-second lengths are rounded: an hour of 6.006 s segments listed as 6 passes, a
-        // stream three segments short does not.
+        // Whole-second lengths are rounded: an hour of 6.006 s segments listed as 6 passes; a
+        // stream one segment short does not, against its counterpart's drift, nor three short
+        // against its own playlist.
         let rounded = source("6", 600, 600);
         (info.declared_video_durations, info.declared_audio_durations) =
             pinned_hls_declared_durations(&rounded);
@@ -3130,7 +3131,10 @@ segment.ts
         probe["streams"][0]["duration"] = json!("3603.6");
         probe["streams"][1]["duration"] = json!("3603.6");
         assert!(validate_probe(&probe, &request, &info).is_ok());
+        probe["streams"][1]["duration"] = json!("3597.6");
+        assert!(validate_probe(&probe, &request, &info).is_err());
         probe["streams"][1]["duration"] = json!("3585.6");
+        probe["streams"][0]["duration"] = json!("3585.6");
         assert!(validate_probe(&probe, &request, &info).is_err());
     }
 

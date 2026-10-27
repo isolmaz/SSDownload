@@ -67,19 +67,15 @@ pub(super) fn native_streams(
                 (Some("none"), audio) if audio != Some("none") => "audio",
                 _ => return None,
             };
+            if !extractor_cookies_are_known(format, request) {
+                return None;
+            }
             Some(NativeStream {
                 role,
                 format_id: codec("format_id")?.to_owned(),
                 language: codec("language").map(str::to_owned),
                 headers: stream_headers(format, request)?,
-                segments: Vec::new(),
-            })
-            .filter(|_| extractor_cookies_are_known(format, request))
-            .and_then(|stream| {
-                Some(NativeStream {
-                    segments: plain_segments(&manifest.body)?,
-                    ..stream
-                })
+                segments: plain_segments(&manifest.body)?,
             })
         })
         .collect::<Option<Vec<_>>>()?;

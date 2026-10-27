@@ -275,10 +275,31 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             }
         }
     }
+    // Rounding drifts both playlists alike, while a lost segment moves one stream alone: with
+    // whole-second lengths, the streams' distances from their own playlists have to agree.
+    let rounded = declared
+        && info
+            .declared_video_durations
+            .iter()
+            .chain(&info.declared_audio_durations)
+            .any(|length| length.fract() == 0.0);
+    let residual = |span: (f64, f64), lengths: &[f64]| {
+        lengths
+            .iter()
+            .map(|declared| span.1 - span.0 - declared)
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()))
+            .unwrap_or(0.0)
+    };
     if let Some(video) = video_spans.first().copied() {
         for (index, audio) in audio_spans.iter().enumerate() {
+            let drift_differs = rounded
+                && (residual(video, &info.declared_video_durations)
+                    - residual(*audio, &info.declared_audio_durations))
+                .abs()
+                    > end_tolerance;
             if (video.0 - audio.0).abs() > start_tolerance
                 || (!declared && (video.1 - audio.1).abs() > end_tolerance)
+                || drift_differs
             {
                 crate::bail_code!(
                     crate::error_codes::TRF_012,
