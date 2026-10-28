@@ -29,12 +29,10 @@ impl Store {
                 moved.push(format!(".corrupt-{stamp}"));
                 let moved = std::path::PathBuf::from(moved);
                 std::fs::rename(path, &moved).with_context(|| {
-                    crate::i18n::ui_owned!(
-                        format!("Bozuk veritabanı kenara alınamadı: {}", path.display()),
-                        format!(
-                            "The damaged database could not be moved aside: {}",
-                            path.display()
-                        )
+                    crate::i18n::ui_format!(
+                        "Bozuk veritabanı kenara alınamadı: {0}",
+                        "The damaged database could not be moved aside: {0}",
+                        path.display()
                     )
                 })?;
                 for suffix in ["-wal", "-shm"] {
@@ -43,16 +41,7 @@ impl Store {
                     let _ = std::fs::remove_file(side);
                 }
                 let mut store = Self::initialize(path)?;
-                store.warnings.push(crate::i18n::ui_owned!(
-                    format!(
-                        "İndirme veritabanı okunamadı; bozuk dosya {} olarak saklandı ve boş bir kuyruk açıldı.",
-                        moved.display()
-                    ),
-                    format!(
-                        "The download database could not be read; the damaged file was kept as {} and an empty queue was opened.",
-                        moved.display()
-                    )
-                ));
+                store.warnings.push(crate::i18n::ui_format!("İndirme veritabanı okunamadı; bozuk dosya {0} olarak saklandı ve boş bir kuyruk açıldı.", "The download database could not be read; the damaged file was kept as {0} and an empty queue was opened.", moved.display()));
                 Ok(store)
             }
             other => other,
@@ -62,22 +51,18 @@ impl Store {
     fn initialize(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
-                crate::i18n::ui_owned!(
-                    format!("Veritabanı klasörü oluşturulamadı: {}", parent.display()),
-                    format!(
-                        "The database folder could not be created: {}",
-                        parent.display()
-                    )
+                crate::i18n::ui_format!(
+                    "Veritabanı klasörü oluşturulamadı: {0}",
+                    "The database folder could not be created: {0}",
+                    parent.display()
                 )
             })?;
         }
         let connection = Connection::open(path).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("İndirme veritabanı açılamadı: {}", path.display()),
-                format!(
-                    "The download database could not be opened: {}",
-                    path.display()
-                )
+            crate::i18n::ui_format!(
+                "İndirme veritabanı açılamadı: {0}",
+                "The download database could not be opened: {0}",
+                path.display()
             )
         })?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -159,13 +144,10 @@ impl Store {
     pub(crate) fn load_jobs(&mut self) -> Result<Vec<Job>> {
         let restored = self.restore_quarantined()?;
         if restored > 0 {
-            self.warnings.push(crate::i18n::ui_owned!(
-                format!(
-                    "{restored} karantinadaki iş kaydı yeniden okunabildi ve listeye geri alındı."
-                ),
-                format!(
-                    "{restored} quarantined job record(s) could be read again and were restored."
-                )
+            self.warnings.push(crate::i18n::ui_format!(
+                "{restored} karantinadaki iş kaydı yeniden okunabildi ve listeye geri alındı.",
+                "{restored} quarantined job record(s) could be read again and were restored.",
+                restored = restored
             ));
         }
         let rows = self
@@ -194,10 +176,7 @@ impl Store {
                     )?;
                     tx.execute("DELETE FROM jobs WHERE id=?1", params![id])?;
                     tx.commit()?;
-                    self.warnings.push(crate::i18n::ui_owned!(
-                        format!("Okunamayan bir iş kaydı karantinaya alındı: {id}. Diğer indirmeler korundu."),
-                        format!("An unreadable job record was quarantined: {id}. Other downloads were kept.")
-                    ));
+                    self.warnings.push(crate::i18n::ui_format!("Okunamayan bir iş kaydı karantinaya alındı: {id}. Diğer indirmeler korundu.", "An unreadable job record was quarantined: {id}. Other downloads were kept.", id = id));
                 }
             }
         }

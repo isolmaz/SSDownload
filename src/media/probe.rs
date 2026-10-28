@@ -262,13 +262,20 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                         .map(|length| format!("{length:.1}"))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let tr_kind = if kind == "video" { "görüntü" } else { "ses" };
+                    let stream_name = if kind == "video" {
+                        crate::i18n::ui("görüntü", "video")
+                    } else {
+                        crate::i18n::ui("ses", "audio")
+                    };
                     crate::bail_code!(
                         crate::error_codes::TRF_012,
                         "{}",
-                        crate::i18n::ui_owned!(
-                            format!("Medya doğrulaması: {tr_kind} akışı {length:.1} sn, kaynak listesi {declared} sn bildiriyor (eksik ya da yinelenen parça)."),
-                            format!("Media verification: the {kind} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).")
+                        crate::i18n::ui_format!(
+                            "Medya doğrulaması: {stream} akışı {length:.1} sn, kaynak listesi {declared} sn bildiriyor (eksik ya da yinelenen parça).",
+                            "Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).",
+                            stream = stream_name,
+                            length = length,
+                            declared = declared
                         )
                     );
                 }
@@ -304,20 +311,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 crate::bail_code!(
                     crate::error_codes::TRF_012,
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!(
-                            "Medya doğrulaması: görüntü {:.1} sn, ses {} {:.1} sn; akış uzunlukları uyuşmuyor (eksik ya da yinelenen parça).",
-                            video.1 - video.0,
-                            index + 1,
-                            audio.1 - audio.0
-                        ),
-                        format!(
-                            "Media verification: video {:.1} s, audio {} {:.1} s; the stream lengths do not match (missing or duplicated fragment).",
-                            video.1 - video.0,
-                            index + 1,
-                            audio.1 - audio.0
-                        )
-                    )
+                    crate::i18n::ui_format!("Medya doğrulaması: görüntü {0:.1} sn, ses {1} {2:.1} sn; akış uzunlukları uyuşmuyor (eksik ya da yinelenen parça).", "Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).", video.1 - video.0, index + 1, audio.1 - audio.0)
                 );
             }
         }
@@ -342,15 +336,10 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             }) {
                 bail!(
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!(
-                            "Medya doğrulaması: seçilen altyazı çıktıda yok: {}",
-                            selected.language
-                        ),
-                        format!(
-                            "Media verification: the selected subtitle is not in the output: {}",
-                            selected.language
-                        )
+                    crate::i18n::ui_format!(
+                        "Medya doğrulaması: seçilen altyazı çıktıda yok: {0}",
+                        "Media verification: the selected subtitle is not in the output: {0}",
+                        selected.language
                     )
                 );
             }
@@ -403,9 +392,10 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
         }) {
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Medya doğrulaması: seçilen altyazı çıktıda yok: {language}"),
-                    format!("Media verification: the selected subtitle is not in the output: {language}")
+                crate::i18n::ui_format!(
+                    "Medya doğrulaması: seçilen altyazı çıktıda yok: {language}",
+                    "Media verification: the selected subtitle is not in the output: {language}",
+                    language = language
                 )
             );
         }
@@ -445,16 +435,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             if actual < expected - tolerance || actual > expected + tolerance + quantization {
                 bail!(
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!(
-                            "Medya doğrulaması: çıktı süresi kaynakla eşleşmiyor (erken bitiş toleransı {tolerance:.3} sn; geç bitiş {:.3} sn)",
-                            tolerance + quantization
-                        ),
-                        format!(
-                            "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {:.3} s)",
-                            tolerance + quantization
-                        )
-                    )
+                    crate::i18n::ui_format!("Medya doğrulaması: çıktı süresi kaynakla eşleşmiyor (erken bitiş toleransı {tolerance:.3} sn; geç bitiş {0:.3} sn)", "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)", tolerance + quantization, tolerance = tolerance)
                 );
             }
         }

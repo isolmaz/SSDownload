@@ -131,15 +131,10 @@ pub(super) fn postprocess_selected_streams(
     if !muxed.status.success() || !muxed.stderr.trim().is_empty() {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "Seçilen ses/altyazı akışları kayıpsız birleştirilemedi: {}",
-                    bounded_tail(&muxed.stderr, 4096)
-                ),
-                format!(
-                    "The selected audio/subtitle streams could not be merged losslessly: {}",
-                    bounded_tail(&muxed.stderr, 4096)
-                )
+            crate::i18n::ui_format!(
+                "Seçilen ses/altyazı akışları kayıpsız birleştirilemedi: {0}",
+                "The selected audio/subtitle streams could not be merged losslessly: {0}",
+                bounded_tail(&muxed.stderr, 4096)
             )
         );
     }
@@ -358,9 +353,10 @@ pub(super) fn download_external_subtitle(
         fs::remove_file(path)?;
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Harici altyazı sunucusu HTTP {status} döndürdü"),
-                format!("The external subtitle server returned HTTP {status}")
+            crate::i18n::ui_format!(
+                "Harici altyazı sunucusu HTTP {status} döndürdü",
+                "The external subtitle server returned HTTP {status}",
+                status = status
             )
         );
     }
@@ -428,15 +424,10 @@ pub(super) fn validate_external_subtitle_file(
         if last_end > duration + tolerance {
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!(
-                        "Harici altyazı zamanları medya süresinin dışında: {}",
-                        selected.language
-                    ),
-                    format!(
-                        "The external subtitle timings fall outside the media duration: {}",
-                        selected.language
-                    )
+                crate::i18n::ui_format!(
+                    "Harici altyazı zamanları medya süresinin dışında: {0}",
+                    "The external subtitle timings fall outside the media duration: {0}",
+                    selected.language
                 )
             );
         }

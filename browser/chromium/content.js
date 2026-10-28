@@ -501,7 +501,7 @@ const TILE_FACES = {
   pressed: { background: "linear-gradient(135deg,#1B57CC,#0F347F)", boxShadow: "inset 0 2px 5px rgba(4,18,48,.45)", cursor: "pointer", opacity: "1" },
   disabled: { background: "linear-gradient(135deg,#8AA6DE,#6B84BE)", boxShadow: "none", cursor: "default", opacity: ".72" }
 };
-const TILE_CSS = "appearance:none;-webkit-appearance:none;position:fixed;z-index:2147483647;display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;margin:0;padding:7px 12px 7px 10px;border:1px solid rgba(255,255,255,.55);border-radius:10px;background:linear-gradient(135deg,#2369E8,#123E9B);color:#fff;-webkit-text-fill-color:#fff;font:600 13px/1.2 system-ui,sans-serif;text-align:left;text-decoration:none;text-transform:none;text-indent:0;text-shadow:none;letter-spacing:normal;white-space:nowrap;direction:ltr;unicode-bidi:isolate;width:auto;height:auto;min-width:0;min-height:0;max-width:none;max-height:none;overflow:visible;float:none;transform:none;visibility:visible;vertical-align:middle;user-select:none;-webkit-user-select:none;touch-action:none;cursor:pointer;pointer-events:auto;box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 2px 6px rgba(9,36,93,.35);transition:background .12s ease,box-shadow .12s ease;outline:none;outline-offset:0";
+const TILE_CSS = "appearance:none;-webkit-appearance:none;position:fixed;z-index:2147483647;display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;margin:0;padding-block:7px;padding-inline:10px 12px;border:1px solid rgba(255,255,255,.55);border-radius:10px;background:linear-gradient(135deg,#2369E8,#123E9B);color:#fff;-webkit-text-fill-color:#fff;font:600 13px/1.2 system-ui,sans-serif;text-align:start;text-decoration:none;text-transform:none;text-indent:0;text-shadow:none;letter-spacing:normal;white-space:nowrap;unicode-bidi:isolate;width:auto;height:auto;min-width:0;min-height:0;max-width:none;max-height:none;overflow:visible;float:none;transform:none;visibility:visible;vertical-align:middle;user-select:none;-webkit-user-select:none;touch-action:none;cursor:pointer;pointer-events:auto;box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 2px 6px rgba(9,36,93,.35);transition:background .12s ease,box-shadow .12s ease;outline:none;outline-offset:0";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const tileLabels = new WeakMap();
 let tileSequence = 0;
@@ -517,9 +517,9 @@ const MENU_ITEM_FACES = {
   hover: { background: "#EEF3FF", boxShadow: "none", cursor: "pointer", opacity: "1" },
   pressed: { background: "#DCE6FF", boxShadow: "none", cursor: "pointer", opacity: "1" }
 };
-const TRIGGER_CSS = "display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;align-self:stretch;box-sizing:border-box;margin:-7px -12px -7px 2px;padding:0 9px;border:0;border-left:1px solid rgba(255,255,255,.35);border-radius:0 9px 9px 0;background:transparent;color:#fff;cursor:pointer;pointer-events:auto;outline:none";
-const MENU_CSS = "position:fixed;z-index:2147483647;display:flex;flex-direction:column;box-sizing:border-box;min-width:190px;margin:0;padding:4px;border:1px solid rgba(15,23,42,.12);border-radius:10px;background:#fff;color:#1F2937;-webkit-text-fill-color:#1F2937;font:500 13px/1.2 system-ui,sans-serif;text-align:left;text-transform:none;letter-spacing:normal;white-space:nowrap;direction:ltr;box-shadow:0 10px 28px rgba(15,23,42,.22);transform:none;visibility:visible;pointer-events:auto";
-const MENU_ITEM_CSS = "appearance:none;-webkit-appearance:none;display:block;box-sizing:border-box;width:100%;margin:0;padding:8px 12px;border:0;border-radius:7px;background:transparent;color:#1F2937;-webkit-text-fill-color:#1F2937;font:inherit;text-align:left;text-transform:none;text-decoration:none;letter-spacing:normal;white-space:nowrap;cursor:pointer;outline:none;box-shadow:none";
+const TRIGGER_CSS = "display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;align-self:stretch;box-sizing:border-box;margin-block:-7px;margin-inline:2px -12px;padding:0 9px;border:0;border-inline-start:1px solid rgba(255,255,255,.35);border-radius:0;border-start-end-radius:9px;border-end-end-radius:9px;background:transparent;color:#fff;cursor:pointer;pointer-events:auto;outline:none";
+const MENU_CSS = "position:fixed;z-index:2147483647;display:flex;flex-direction:column;box-sizing:border-box;min-width:190px;margin:0;padding:4px;border:1px solid rgba(15,23,42,.12);border-radius:10px;background:#fff;color:#1F2937;-webkit-text-fill-color:#1F2937;font:500 13px/1.2 system-ui,sans-serif;text-align:start;text-transform:none;letter-spacing:normal;white-space:nowrap;box-shadow:0 10px 28px rgba(15,23,42,.22);transform:none;visibility:visible;pointer-events:auto";
+const MENU_ITEM_CSS = "appearance:none;-webkit-appearance:none;display:block;box-sizing:border-box;width:100%;margin:0;padding:8px 12px;border:0;border-radius:7px;background:transparent;color:#1F2937;-webkit-text-fill-color:#1F2937;font:inherit;text-align:start;text-transform:none;text-decoration:none;letter-spacing:normal;white-space:nowrap;cursor:pointer;outline:none;box-shadow:none";
 
 function paintTile(button, state) {
   const faces = ownTiles.get(button)?.faces || TILE_FACES;
@@ -586,6 +586,7 @@ function toggleTileMenu(tile, trigger, choices) {
   menu.dataset.ssdownloadTile = "";
   menu.setAttribute("role", "menu");
   menu.style.cssText = MENU_CSS;
+  menu.style.direction = SSDownloadI18n.direction();
   let first = null;
   for (const choice of choices) {
     const item = document.createElement("button");
@@ -683,6 +684,13 @@ function downloadGlyph() {
 // Both kinds of tile are the same affordance: the application icon, one label child a
 // later pass rewrites without losing the glyph, the page's own hover, pressed, keyboard
 // and focus states, and the submission the shield calls for the user's gesture.
+// Only the label child is rewritten: `textContent` on the tile would drop the glyph. The tile
+// follows the language's writing direction, which a language change can flip.
+function labelTile(tile, text) {
+  tileLabels.get(tile).textContent = text;
+  tile.style.direction = SSDownloadI18n.direction();
+}
+
 function createTile(activate, choices) {
   const button = document.createElement("button");
   button.type = "button";
@@ -692,7 +700,7 @@ function createTile(activate, choices) {
   button.style.cssText = TILE_CSS;
   // Two children, so a later pass rewrites the label without losing the glyph.
   const labelNode = document.createElement("span");
-  labelNode.style.cssText = "display:block;flex:0 0 auto;margin:0;padding:0;color:#fff;-webkit-text-fill-color:#fff;font:inherit;line-height:1.2;white-space:nowrap;text-align:left;text-transform:none;letter-spacing:normal;pointer-events:none";
+  labelNode.style.cssText = "display:block;flex:0 0 auto;margin:0;padding:0;color:#fff;-webkit-text-fill-color:#fff;font:inherit;line-height:1.2;white-space:nowrap;text-align:start;text-transform:none;letter-spacing:normal;pointer-events:none";
   button.appendChild(downloadGlyph());
   button.appendChild(labelNode);
   if (choices) button.appendChild(createMenuTrigger(button, choices));
@@ -824,7 +832,7 @@ function updatePageOverlay(descriptions) {
     pageOverlay = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-page",mediaKind:"video",documentId,pageUrl:pageUrl(),pageTitle:pageTitle(),players:players(),sources:collectSources(),playerSignals:collectPlayerSignals()})), () => hideChoices(null));
     document.documentElement.appendChild(pageOverlay);
   }
-  tileLabels.get(pageOverlay).textContent = t("tilePage");
+  labelTile(pageOverlay, t("tilePage"));
   pageOverlay.title = usageModeTitle();
   hideTile(pageOverlay, false);
   placePageTile(pageOverlay);
@@ -857,8 +865,7 @@ function paintOverlays() {
       button = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-video",mediaKind:node.tagName==="AUDIO"||!usageModes?.video?"audio":"video",playerId:playerIds.get(node)?.id,documentId,pageUrl:pageUrl(),players:players(),sources:collectSources()})), () => hideChoices(node));
       document.documentElement.appendChild(button); overlays.set(node, button);
     }
-    // Only the label child is rewritten: `textContent` on the tile would drop the glyph.
-    tileLabels.get(button).textContent=mediaKind==="audio"?t("tileAudio"):t("tileVideo");
+    labelTile(button, mediaKind==="audio"?t("tileAudio"):t("tileVideo"));
     button.title=usageModeTitle();
     const rect = node.getBoundingClientRect();
     const description=descriptions.find(p=>p.id===playerIds.get(node)?.id);

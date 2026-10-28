@@ -6,9 +6,10 @@ use super::*;
 /// untranslated "invalid digit found in string".
 fn parse_number<T: std::str::FromStr>(value: &str, label: &str) -> anyhow::Result<T> {
     value.trim().parse().map_err(|_| {
-        anyhow::anyhow!(crate::i18n::ui_owned!(
-            format!("{label} geçerli bir sayı olmalıdır."),
-            format!("{label} must be a valid number.")
+        anyhow::anyhow!(crate::i18n::ui_format!(
+            "{label} geçerli bir sayı olmalıdır.",
+            "{label} must be a valid number.",
+            label = label
         ))
     })
 }
@@ -70,9 +71,10 @@ pub(super) unsafe fn queue_command(
                 .unwrap_or_default();
             if !confirm_removal(
                 hwnd,
-                &crate::i18n::ui_owned!(
-                    format!("\"{name}\" kuyruğu silinsin mi?"),
-                    format!("Delete the queue \"{name}\"?")
+                &crate::i18n::ui_format!(
+                    "\"{name}\" kuyruğu silinsin mi?",
+                    "Delete the queue \"{name}\"?",
+                    name = name
                 ),
             ) {
                 return Ok(());
@@ -180,14 +182,7 @@ pub(super) unsafe fn queue_command(
                 3 => CompletionAction::RunProgram {
                     program: PathBuf::from(text(f.program).trim()),
                     arguments: serde_json::from_str(&text(f.arguments)).map_err(|error| {
-                        anyhow::anyhow!(crate::i18n::ui_owned!(
-                            format!(
-                                "Program bağımsız değişkenleri bir JSON metin dizisi olmalı, örn. [\"-x\"]: {error}"
-                            ),
-                            format!(
-                                "Program arguments must be a JSON array of strings, e.g. [\"-x\"]: {error}"
-                            )
-                        ))
+                        anyhow::anyhow!(crate::i18n::ui_format!("Program bağımsız değişkenleri bir JSON metin dizisi olmalı, örn. [\"-x\"]: {error}", "Program arguments must be a JSON array of strings, e.g. [\"-x\"]: {error}", error = error))
                     })?,
                     countdown_seconds,
                 },
@@ -289,9 +284,10 @@ pub(super) unsafe fn rule_command(
                 .unwrap_or_default();
             if !confirm_removal(
                 hwnd,
-                &crate::i18n::ui_owned!(
-                    format!("\"{host}\" kuralı silinsin mi?"),
-                    format!("Delete the rule for \"{host}\"?")
+                &crate::i18n::ui_format!(
+                    "\"{host}\" kuralı silinsin mi?",
+                    "Delete the rule for \"{host}\"?",
+                    host = host
                 ),
             ) {
                 return Ok(());
@@ -363,9 +359,10 @@ pub(super) unsafe fn sync_command(
                 .unwrap_or_default();
             if !confirm_removal(
                 hwnd,
-                &crate::i18n::ui_owned!(
-                    format!("\"{url}\" eşitleme kaydı silinsin mi?"),
-                    format!("Delete the sync record for \"{url}\"?")
+                &crate::i18n::ui_format!(
+                    "\"{url}\" eşitleme kaydı silinsin mi?",
+                    "Delete the sync record for \"{url}\"?",
+                    url = url
                 ),
             ) {
                 return Ok(());
@@ -601,9 +598,10 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                     Err(error) => set_dialog_error(
                         dlg.hwnd,
                         dlg.error,
-                        &crate::i18n::ui_owned!(
-                            format!("Kurulum seçimi kaydedilemedi: {error:#}"),
-                            format!("The setup choice could not be saved: {error:#}")
+                        &crate::i18n::ui_format!(
+                            "Kurulum seçimi kaydedilemedi: {error:#}",
+                            "The setup choice could not be saved: {error:#}",
+                            error = error
                         ),
                         f.start,
                     ),
@@ -661,18 +659,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         .filter(|request| queued.contains(&normalized_job_url(&request.url)))
                         .count();
                     if duplicates > 0 {
-                        let body = crate::i18n::ui_owned!(
-                            format!(
-                                "{duplicates} adres zaten indirme listesinde.
-
-Mevcut işler kullanılsın mı, yoksa yeni kopyalar mı indirilsin?"
-                            ),
-                            format!(
-                                "{duplicates} address(es) are already in the download list.
-
-Use the existing jobs, or download new copies?"
-                            )
-                        );
+                        let body = crate::i18n::ui_format!("{duplicates} adres zaten indirme listesinde.\n\nMevcut işler kullanılsın mı, yoksa yeni kopyalar mı indirilsin?", "{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?", duplicates = duplicates);
                         let buttons = [
                             (IDYES, crate::i18n::ui("Mevcut işi kullan", "Use existing")),
                             (IDNO, crate::i18n::ui("Yeni kopya indir", "Download a copy")),
@@ -710,9 +697,10 @@ Use the existing jobs, or download new copies?"
                                 set_dialog_error(
                                     dlg.hwnd,
                                     dlg.error,
-                                    &crate::i18n::ui_owned!(
-                                        format!("İndirme eklenemedi: {e:#}"),
-                                        format!("The download could not be added: {e:#}")
+                                    &crate::i18n::ui_format!(
+                                        "İndirme eklenemedi: {e:#}",
+                                        "The download could not be added: {e:#}",
+                                        e = e
                                     ),
                                     null_mut(),
                                 );
@@ -724,9 +712,10 @@ Use the existing jobs, or download new copies?"
                     // one would stay on the status bar; one line states the batch.
                     if batch > 1 {
                         dlg.app.message(
-                            crate::i18n::ui_owned!(
-                                format!("{added} indirme eklendi"),
-                                format!("{added} download(s) added")
+                            crate::i18n::ui_format!(
+                                "{added} indirme eklendi",
+                                "{added} download(s) added",
+                                added = added
                             ),
                             false,
                         );
@@ -814,10 +803,7 @@ Use the existing jobs, or download new copies?"
                     .name("extension-install".into())
                     .spawn(|| {
                         if let Err(error) = crate::extension::register_external() {
-                            crate::gui::report_update_error(&crate::i18n::ui_owned!(
-                                format!("Eklenti Chrome/Edge için kaydedilemedi: {error:#}"),
-                                format!("The extension could not be registered with Chrome/Edge: {error:#}")
-                            ));
+                            crate::gui::report_update_error(&crate::i18n::ui_format!("Eklenti Chrome/Edge için kaydedilemedi: {error:#}", "The extension could not be registered with Chrome/Edge: {error:#}", error = error));
                             return;
                         }
                         if crate::extension::remove_legacy_policies()
@@ -871,9 +857,10 @@ Use the existing jobs, or download new copies?"
                         Err(e) => set_dialog_error(
                             dlg.hwnd,
                             dlg.error,
-                            &crate::i18n::ui_owned!(
-                                format!("Ayarlar kaydedilemedi: {e:#}"),
-                                format!("Settings could not be saved: {e:#}")
+                            &crate::i18n::ui_format!(
+                                "Ayarlar kaydedilemedi: {e:#}",
+                                "Settings could not be saved: {e:#}",
+                                e = e
                             ),
                             null_mut(),
                         ),
@@ -895,9 +882,10 @@ Use the existing jobs, or download new copies?"
                     set_dialog_error(
                         dlg.hwnd,
                         dlg.error,
-                        &crate::i18n::ui_owned!(
-                            format!("Kurulum başlatılamadı: {e:#}"),
-                            format!("The installation could not be started: {e:#}")
+                        &crate::i18n::ui_format!(
+                            "Kurulum başlatılamadı: {e:#}",
+                            "The installation could not be started: {e:#}",
+                            e = e
                         ),
                         null_mut(),
                     );
@@ -911,9 +899,10 @@ Use the existing jobs, or download new copies?"
                     set_dialog_error(
                         dlg.hwnd,
                         dlg.error,
-                        &crate::i18n::ui_owned!(
-                            format!("Güncelleme başlatılamadı: {e:#}"),
-                            format!("The update could not be started: {e:#}")
+                        &crate::i18n::ui_format!(
+                            "Güncelleme başlatılamadı: {e:#}",
+                            "The update could not be started: {e:#}",
+                            e = e
                         ),
                         null_mut(),
                     );
@@ -924,9 +913,10 @@ Use the existing jobs, or download new copies?"
                     set_dialog_error(
                         dlg.hwnd,
                         dlg.error,
-                        &crate::i18n::ui_owned!(
-                            format!("Tarayıcı kurulumu açılamadı: {e:#}"),
-                            format!("Browser setup could not be opened: {e:#}")
+                        &crate::i18n::ui_format!(
+                            "Tarayıcı kurulumu açılamadı: {e:#}",
+                            "Browser setup could not be opened: {e:#}",
+                            e = e
                         ),
                         null_mut(),
                     );
@@ -983,9 +973,10 @@ Use the existing jobs, or download new copies?"
                     set_dialog_error(
                         dlg.hwnd,
                         dlg.error,
-                        &crate::i18n::ui_owned!(
-                            format!("Teşhis paketi oluşturulamadı: {e:#}"),
-                            format!("The diagnostic package could not be created: {e:#}")
+                        &crate::i18n::ui_format!(
+                            "Teşhis paketi oluşturulamadı: {e:#}",
+                            "The diagnostic package could not be created: {e:#}",
+                            e = e
                         ),
                         f.list,
                     );
@@ -1119,9 +1110,10 @@ Use the existing jobs, or download new copies?"
                     let host = f.logins[index as usize].host.clone();
                     if confirm_removal(
                         dlg.hwnd,
-                        &crate::i18n::ui_owned!(
-                            format!("\"{host}\" girişi silinsin mi?"),
-                            format!("Delete the login for \"{host}\"?")
+                        &crate::i18n::ui_format!(
+                            "\"{host}\" girişi silinsin mi?",
+                            "Delete the login for \"{host}\"?",
+                            host = host
                         ),
                     ) {
                         f.logins.remove(index as usize);
@@ -1192,9 +1184,10 @@ Use the existing jobs, or download new copies?"
                 // the source that failed, and the application opens the folder
                 // it wrote it into.
                 if let Err(e) = dlg.app.dispatch(Action::Report { job_id: None }) {
-                    let error = crate::i18n::ui_owned!(
-                        format!("Hata bildirilemedi: {e:#}"),
-                        format!("The problem could not be reported: {e:#}")
+                    let error = crate::i18n::ui_format!(
+                        "Hata bildirilemedi: {e:#}",
+                        "The problem could not be reported: {e:#}",
+                        e = e
                     );
                     f.report_error = Some(error.clone());
                     set_dialog_error(dlg.hwnd, dlg.error, &error, null_mut());
@@ -1353,9 +1346,10 @@ Use the existing jobs, or download new copies?"
                             Err(e) => set_dialog_error(
                                 dlg.hwnd,
                                 dlg.error,
-                                &crate::i18n::ui_owned!(
-                                    format!("İşlem uygulanamadı: {e:#}"),
-                                    format!("The action could not be applied: {e:#}")
+                                &crate::i18n::ui_format!(
+                                    "İşlem uygulanamadı: {e:#}",
+                                    "The action could not be applied: {e:#}",
+                                    e = e
                                 ),
                                 f.action,
                             ),
@@ -1375,11 +1369,7 @@ Use the existing jobs, or download new copies?"
                 if let Some((id, name)) = target {
                     let answer = message(
                         dlg.hwnd,
-                        &crate::i18n::ui_owned!(format!(
-                            "\"{name}\" indirmesi iptal edilsin mi?\n\nParça dosyaları silinir; tamamlanmış çıktı korunur."
-                        ), format!(
-                            "Cancel the download \"{name}\"?\n\nFragment files are deleted; finished output is kept."
-                        )),
+                        &crate::i18n::ui_format!("\"{name}\" indirmesi iptal edilsin mi?\n\nParça dosyaları silinir; tamamlanmış çıktı korunur.", "Cancel the download \"{name}\"?\n\nFragment files are deleted; finished output is kept.", name = name),
                         crate::i18n::ui("İndirmeyi iptal et", "Cancel the download"),
                         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
                     );
@@ -1401,9 +1391,10 @@ Use the existing jobs, or download new copies?"
                             Err(e) => set_dialog_error(
                                 dlg.hwnd,
                                 dlg.error,
-                                &crate::i18n::ui_owned!(
-                                    format!("İptal edilemedi: {e:#}"),
-                                    format!("Could not cancel: {e:#}")
+                                &crate::i18n::ui_format!(
+                                    "İptal edilemedi: {e:#}",
+                                    "Could not cancel: {e:#}",
+                                    e = e
                                 ),
                                 f.cancel,
                             ),
@@ -1422,9 +1413,10 @@ Use the existing jobs, or download new copies?"
                             Err(e) => set_dialog_error(
                                 dlg.hwnd,
                                 dlg.error,
-                                &crate::i18n::ui_owned!(
-                                    format!("Dosya açılamadı: {e:#}"),
-                                    format!("The file could not be opened: {e:#}")
+                                &crate::i18n::ui_format!(
+                                    "Dosya açılamadı: {e:#}",
+                                    "The file could not be opened: {e:#}",
+                                    e = e
                                 ),
                                 f.open_file,
                             ),
@@ -1443,9 +1435,10 @@ Use the existing jobs, or download new copies?"
                             Err(e) => set_dialog_error(
                                 dlg.hwnd,
                                 dlg.error,
-                                &crate::i18n::ui_owned!(
-                                    format!("Klasör açılamadı: {e:#}"),
-                                    format!("The folder could not be opened: {e:#}")
+                                &crate::i18n::ui_format!(
+                                    "Klasör açılamadı: {e:#}",
+                                    "The folder could not be opened: {e:#}",
+                                    e = e
                                 ),
                                 f.open_folder,
                             ),
@@ -1473,9 +1466,10 @@ Use the existing jobs, or download new copies?"
                         Err(e) => set_dialog_error(
                             dlg.hwnd,
                             dlg.error,
-                            &crate::i18n::ui_owned!(
-                                format!("Hata bildirilemedi: {e:#}"),
-                                format!("The problem could not be reported: {e:#}")
+                            &crate::i18n::ui_format!(
+                                "Hata bildirilemedi: {e:#}",
+                                "The problem could not be reported: {e:#}",
+                                e = e
                             ),
                             f.report,
                         ),
@@ -1550,12 +1544,10 @@ pub(super) unsafe fn collect_settings(
     }
     .as_str()
     .to_string();
-    value.ui_language = if combo_index(f.ui_language) == 0 {
-        "tr"
-    } else {
-        "en"
-    }
-    .to_string();
+    value.ui_language = crate::i18n::LANGUAGES
+        .get(combo_index(f.ui_language) as usize)
+        .map_or("tr", |info| info.code)
+        .to_string();
     value.site_entries = check(f.site_entries);
     value.close_to_tray = check(f.tray);
     value.start_with_windows = check(f.startup);

@@ -29,7 +29,7 @@ The installer also registers the extension with Chrome and Edge (`HKCU\Software\
 - No `Cookie` or `Authorization` header is copied from network observation. A site's cookies are read **only after you allow it for that site** (**Allow session cookies for this site**) and the permission can be withdrawn at any time.
 - Taking over browser downloads is off by default; incognito downloads always stay in the browser.
 - To offer a player's subtitles, the extension notes the address of a subtitle file (WebVTT or SRT) the page's player has already loaded; it does not fetch or keep the file's text.
-- The extension contains no remote code and stores only its on/off state, the interface language the app reported (English or Turkish), the sites where you hid the button, where you dragged the button on the player, the sites where you allowed session cookies and short-lived per-tab discovery state.
+- The extension contains no remote code and stores only its on/off state, the interface language the app reported (one of its seven languages), the sites where you hid the button, where you dragged the button on the player, the sites where you allowed session cookies and short-lived per-tab discovery state.
 
 ### Extension permissions
 

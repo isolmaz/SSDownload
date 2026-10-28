@@ -105,9 +105,10 @@ impl App {
         }
         if settings_dirty {
             if let Err(error) = engine.update_settings(settings) {
-                startup_warning = Some(crate::i18n::ui_owned!(
-                    format!("Başlangıç ayarı eşitlenemedi: {error}"),
-                    format!("Startup setting could not be applied: {error}")
+                startup_warning = Some(crate::i18n::ui_format!(
+                    "Başlangıç ayarı eşitlenemedi: {error}",
+                    "Startup setting could not be applied: {error}",
+                    error = error
                 ));
             }
         }
@@ -150,32 +151,29 @@ impl App {
         // move into the quarantine folder here, with the path reported.
         match crate::update::reconcile_update_staging(app.paths()) {
             Ok(Some(folder)) => app.message(
-                crate::i18n::ui_owned!(
-                    format!(
-                        "Önceki güncelleme dosyası karantinaya taşındı:\n{}",
-                        folder.display()
-                    ),
-                    format!(
-                        "The previous update file was moved to quarantine:\n{}",
-                        folder.display()
-                    )
+                crate::i18n::ui_format!(
+                    "Önceki güncelleme dosyası karantinaya taşındı:\n{0}",
+                    "The previous update file was moved to quarantine:\n{0}",
+                    folder.display()
                 ),
                 false,
             ),
             Ok(None) => {}
             Err(error) => app.message(
-                crate::i18n::ui_owned!(
-                    format!("Güncelleme klasörü uzlaştırılamadı: {error:#}"),
-                    format!("The update folder could not be reconciled: {error:#}")
+                crate::i18n::ui_format!(
+                    "Güncelleme klasörü uzlaştırılamadı: {error:#}",
+                    "The update folder could not be reconciled: {error:#}",
+                    error = error
                 ),
                 true,
             ),
         }
         if let Some(error) = log_error {
             app.message(
-                crate::i18n::ui_owned!(
-                    format!("Olay günlüğü başlatılamadı: {error:#}"),
-                    format!("The event log could not be started: {error:#}")
+                crate::i18n::ui_format!(
+                    "Olay günlüğü başlatılamadı: {error:#}",
+                    "The event log could not be started: {error:#}",
+                    error = error
                 ),
                 true,
             );
@@ -389,9 +387,10 @@ impl App {
                     ui.inspect_control = None;
                     match result {
                         Ok(info) => {
-                            let text = crate::i18n::ui_owned!(
-                                format!("Medya bulundu: {}", info.title),
-                                format!("Media found: {}", info.title)
+                            let text = crate::i18n::ui_format!(
+                                "Medya bulundu: {0}",
+                                "Media found: {0}",
+                                info.title
                             );
                             ui.media = Some(info);
                             (text, false)
@@ -443,9 +442,10 @@ impl App {
                     result.job_ids = self.inner.engine.add(request.clone())?;
                     let count = result.job_ids.len();
                     self.message(
-                        crate::i18n::ui_owned!(
-                            format!("{count} indirme eklendi"),
-                            format!("{count} download(s) added")
+                        crate::i18n::ui_format!(
+                            "{count} indirme eklendi",
+                            "{count} download(s) added",
+                            count = count
                         ),
                         false,
                     );
@@ -508,17 +508,7 @@ impl App {
                             .iter()
                             .filter(|job| job.state == JobState::Completed)
                             .count() as u64,
-                        language: if snapshot
-                            .settings
-                            .ui_language
-                            .trim()
-                            .eq_ignore_ascii_case("en")
-                        {
-                            "en"
-                        } else {
-                            "tr"
-                        }
-                        .to_owned(),
+                        language: crate::i18n::code_of(&snapshot.settings.ui_language).to_owned(),
                     });
                     return Ok(result);
                 }
@@ -678,9 +668,10 @@ impl App {
                 validate_url(&request.url, false)?;
                 let count = self.inner.engine.add(request)?.len();
                 self.message(
-                    crate::i18n::ui_owned!(
-                        format!("{count} indirme kuyruğa eklendi."),
-                        format!("{count} download(s) added to the queue.")
+                    crate::i18n::ui_format!(
+                        "{count} indirme kuyruğa eklendi.",
+                        "{count} download(s) added to the queue.",
+                        count = count
                     ),
                     false,
                 );
@@ -723,14 +714,11 @@ impl App {
                         {
                             crate::logging::record(
                                 crate::logging::Event::warn("app.autostart_rollback").detail(
-                                    crate::i18n::ui_owned!(
-                                        format!(
-                                            "Otomatik başlatma ayarı geri alınamadı: {rollback:#}"
-                                        ),
-                                        format!(
-                                            "The autostart setting could not be rolled back: {rollback:#}"
-                                        )
-                                    ),
+                                    crate::i18n::ui_format!(
+                                    "Otomatik başlatma ayarı geri alınamadı: {rollback:#}",
+                                    "The autostart setting could not be rolled back: {rollback:#}",
+                                    rollback = rollback
+                                ),
                                 ),
                             );
                         }
@@ -905,9 +893,10 @@ impl App {
                                     )
                                 }
                                 Err(error) => {
-                                    let text = crate::i18n::ui_owned!(
-                                        format!("Video ve ses desteği: {error:#}"),
-                                        format!("Video and audio support: {error:#}")
+                                    let text = crate::i18n::ui_format!(
+                                        "Video ve ses desteği: {error:#}",
+                                        "Video and audio support: {error:#}",
+                                        error = error
                                     );
                                     ui.tools_error = Some(text.clone());
                                     (text, true)
@@ -974,17 +963,11 @@ impl App {
                     .collect::<Vec<_>>();
                 let package = crate::diagnose::package(self.paths(), &jobs, 24)?;
                 self.message(
-                    crate::i18n::ui_owned!(
-                        format!(
-                            "Teşhis paketi hazır. Klasör: {} · ZIP: {}",
-                            package.folder.display(),
-                            package.zip.display()
-                        ),
-                        format!(
-                            "Diagnostic package ready. Folder: {} · ZIP: {}",
-                            package.folder.display(),
-                            package.zip.display()
-                        )
+                    crate::i18n::ui_format!(
+                        "Teşhis paketi hazır. Klasör: {0} · ZIP: {1}",
+                        "Diagnostic package ready. Folder: {0} · ZIP: {1}",
+                        package.folder.display(),
+                        package.zip.display()
                     ),
                     false,
                 );
@@ -997,9 +980,10 @@ impl App {
                         Some(id) => {
                             let job = snapshot.jobs.iter().find(|job| job.id == id).with_context(
                                 || {
-                                    crate::i18n::ui_owned!(
-                                        format!("İndirme bulunamadı: {id}"),
-                                        format!("Download not found: {id}")
+                                    crate::i18n::ui_format!(
+                                        "İndirme bulunamadı: {id}",
+                                        "Download not found: {id}",
+                                        id = id
                                     )
                                 },
                             )?;
@@ -1100,36 +1084,30 @@ impl App {
                         match crate::diagnose::report(&paths, &jobs, 24, &context) {
                             Ok(package) => {
                                 app.message(
-                                    crate::i18n::ui_owned!(
-                                        format!(
-                                            "Hata raporu hazır. Klasör: {} · ZIP: {}",
-                                            package.folder.display(),
-                                            package.zip.display()
-                                        ),
-                                        format!(
-                                            "Failure report ready. Folder: {} · ZIP: {}",
-                                            package.folder.display(),
-                                            package.zip.display()
-                                        )
+                                    crate::i18n::ui_format!(
+                                        "Hata raporu hazır. Klasör: {0} · ZIP: {1}",
+                                        "Failure report ready. Folder: {0} · ZIP: {1}",
+                                        package.folder.display(),
+                                        package.zip.display()
                                     ),
                                     false,
                                 );
                                 if let Err(error) = open_path(&package.folder) {
                                     app.message(
-                                        crate::i18n::ui_owned!(
-                                            format!("Rapor klasörü açılamadı: {error:#}"),
-                                            format!(
-                                                "The report folder could not be opened: {error:#}"
-                                            )
+                                        crate::i18n::ui_format!(
+                                            "Rapor klasörü açılamadı: {error:#}",
+                                            "The report folder could not be opened: {error:#}",
+                                            error = error
                                         ),
                                         true,
                                     );
                                 }
                             }
                             Err(error) => app.message(
-                                crate::i18n::ui_owned!(
-                                    format!("Hata raporu oluşturulamadı: {error:#}"),
-                                    format!("The failure report could not be created: {error:#}")
+                                crate::i18n::ui_format!(
+                                    "Hata raporu oluşturulamadı: {error:#}",
+                                    "The failure report could not be created: {error:#}",
+                                    error = error
                                 ),
                                 true,
                             ),
@@ -1227,9 +1205,11 @@ impl App {
         }
         let added = jobs.len();
         self.message(
-            crate::i18n::ui_owned!(
-                format!("{added} indirme eklendi, {skipped} adres zaten listede"),
-                format!("{added} download(s) added, {skipped} address(es) already in the list")
+            crate::i18n::ui_format!(
+                "{added} indirme eklendi, {skipped} adres zaten listede",
+                "{added} download(s) added, {skipped} address(es) already in the list",
+                added = added,
+                skipped = skipped
             ),
             false,
         );
@@ -1379,9 +1359,11 @@ impl App {
         if count != 3 {
             return;
         }
-        let text = crate::logging::sanitize(&crate::i18n::ui_owned!(
-            format!("{code} bu oturumda üç kez tekrarlandı: {advice}"),
-            format!("{code} has occurred three times in this session: {advice}")
+        let text = crate::logging::sanitize(&crate::i18n::ui_format!(
+            "{code} bu oturumda üç kez tekrarlandı: {advice}",
+            "{code} has occurred three times in this session: {advice}",
+            advice = advice,
+            code = code
         ));
         {
             let mut ui = self.inner.ui.lock().unwrap_or_else(|e| e.into_inner());
@@ -1602,17 +1584,13 @@ fn crawl_site(
     if pages > 0 && pages == failed_pages {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "Site taranamadı: {}",
-                    last_failure.as_deref().unwrap_or("sayfalar alınamadı")
-                ),
-                format!(
-                    "Site could not be scanned: {}",
-                    last_failure
-                        .as_deref()
-                        .unwrap_or("pages could not be fetched")
-                )
+            crate::i18n::ui_format!(
+                "Site taranamadı: {0}",
+                "Site could not be scanned: {0}",
+                last_failure.as_deref().unwrap_or(crate::i18n::ui(
+                    "sayfalar alınamadı",
+                    "pages could not be fetched"
+                ))
             )
         );
     }
@@ -1670,9 +1648,10 @@ fn redirect_target(
     }
     let host = target.host_str().ok_or_else(unsupported)?.to_owned();
     if same_host_only && !same_crawl_site(&host, root_host) {
-        return Err(crate::i18n::ui_owned!(
-            format!("Başka bir siteye yönlendirme izlenmedi: {host}"),
-            format!("A redirect to another site was not followed: {host}")
+        return Err(crate::i18n::ui_format!(
+            "Başka bir siteye yönlendirme izlenmedi: {host}",
+            "A redirect to another site was not followed: {host}",
+            host = host
         ));
     }
     Ok(target)
@@ -1771,9 +1750,10 @@ fn open_path(path: &Path) -> Result<()> {
         let code = result as isize;
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Dosya/klasör açılamadı (Windows kodu {code})."),
-                format!("The file/folder could not be opened (Windows code {code}).")
+            crate::i18n::ui_format!(
+                "Dosya/klasör açılamadı (Windows kodu {code}).",
+                "The file/folder could not be opened (Windows code {code}).",
+                code = code
             )
         );
     }

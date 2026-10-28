@@ -50,16 +50,7 @@ impl ProcessJob {
                 CloseHandle(handle);
                 bail!(
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!(
-                            "Medya süreci Windows Job atamasından sonra başlatılamadı (NTSTATUS 0x{:08x})",
-                            resume_status as u32
-                        ),
-                        format!(
-                            "The media process could not be started after the Windows Job assignment (NTSTATUS 0x{:08x})",
-                            resume_status as u32
-                        )
-                    )
+                    crate::i18n::ui_format!("Medya süreci Windows Job atamasından sonra başlatılamadı (NTSTATUS 0x{0:08x})", "The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})", resume_status as u32)
                 );
             }
             Ok(Self(handle))

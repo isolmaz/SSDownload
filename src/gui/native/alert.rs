@@ -428,7 +428,7 @@ pub(super) unsafe fn run_alert_buttons(
     let client_width = text_width + icon_column + 2 * margin;
     let client_height = margin + body_height + gap + row + margin;
     let style = WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
-    let ex_style = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
+    let ex_style = owned_layout(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT);
     let mut frame = RECT {
         left: 0,
         top: 0,

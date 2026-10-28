@@ -30,9 +30,10 @@ unsafe extern "system" fn error_line_proc(
             let mut full = if message.is_empty() {
                 Vec::new()
             } else {
-                wide(&crate::i18n::ui_owned!(
-                    format!("{message}\r\n\r\n(Panoya kopyalamak için tıklayın)"),
-                    format!("{message}\r\n\r\n(Click to copy)")
+                wide(&crate::i18n::ui_format!(
+                    "{message}\r\n\r\n(Panoya kopyalamak için tıklayın)",
+                    "{message}\r\n\r\n(Click to copy)",
+                    message = message
                 ))
             };
             let mut info: TTTOOLINFOW = zeroed();
@@ -634,15 +635,16 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.ui_language = dialog_combo(dlg.hwnd, dlg.font, S_UI_LANGUAGE);
-            combo_add(f.ui_language, "Türkçe");
-            combo_add(f.ui_language, "English");
+            for info in &crate::i18n::LANGUAGES {
+                combo_add(f.ui_language, info.name);
+            }
+            let stored = crate::i18n::code_of(&f.value.ui_language);
             combo_select(
                 f.ui_language,
-                if f.value.ui_language.trim().eq_ignore_ascii_case("en") {
-                    1
-                } else {
-                    0
-                },
+                crate::i18n::LANGUAGES
+                    .iter()
+                    .position(|info| info.code == stored)
+                    .unwrap_or(0) as i32,
             );
             // Labels of the two transfer rows the simple page shows. They are
             // separate statics so the advanced page keeps its own wording for
@@ -1358,15 +1360,10 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                     )
                     .to_string()
                 } else {
-                    crate::i18n::ui_owned!(
-                        format!(
-                            "Seçili {} indirme için hız sınırı (KiB/sn, 0 = genel sınır):",
-                            f.ids.len()
-                        ),
-                        format!(
-                            "Speed limit for the {} selected download(s) (KiB/s, 0 = global limit):",
-                            f.ids.len()
-                        )
+                    crate::i18n::ui_format!(
+                        "Seçili {0} indirme için hız sınırı (KiB/sn, 0 = genel sınır):",
+                        "Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):",
+                        f.ids.len()
                     )
                 },
                 0,
@@ -1777,23 +1774,14 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             f.remember = dialog_check(
                 dlg.hwnd,
                 dlg.font,
-                &crate::i18n::ui_owned!(
-                    format!(
-                        "{} için bu seçimi hatırla ve bir daha sorma",
-                        if f.host.is_empty() {
-                            "Bu site"
-                        } else {
-                            f.host.as_str()
-                        }
-                    ),
-                    format!(
-                        "Remember this choice for {} and don't ask again",
-                        if f.host.is_empty() {
-                            "this site"
-                        } else {
-                            f.host.as_str()
-                        }
-                    )
+                &crate::i18n::ui_format!(
+                    "{0} için bu seçimi hatırla ve bir daha sorma",
+                    "Remember this choice for {0} and don't ask again",
+                    if f.host.is_empty() {
+                        crate::i18n::ui("Bu site", "this site")
+                    } else {
+                        f.host.as_str()
+                    }
                 ),
                 M_REMEMBER,
             );

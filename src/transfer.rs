@@ -152,25 +152,20 @@ impl std::fmt::Display for RetryableStatusError {
             Some(delay) => write!(
                 formatter,
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!(
-                        "Sunucu HTTP {} yanıtını verdi (Retry-After {} sn)",
-                        self.status,
-                        delay.as_secs()
-                    ),
-                    format!(
-                        "The server returned an HTTP {} response (Retry-After {} s)",
-                        self.status,
-                        delay.as_secs()
-                    ),
+                crate::i18n::ui_format!(
+                    "Sunucu HTTP {0} yanıtını verdi (Retry-After {1} sn)",
+                    "The server returned an HTTP {0} response (Retry-After {1} s)",
+                    self.status,
+                    delay.as_secs()
                 )
             ),
             None => write!(
                 formatter,
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Sunucu HTTP {} yanıtını verdi", self.status),
-                    format!("The server returned an HTTP {} response", self.status),
+                crate::i18n::ui_format!(
+                    "Sunucu HTTP {0} yanıtını verdi",
+                    "The server returned an HTTP {0} response",
+                    self.status
                 )
             ),
         }
@@ -207,9 +202,10 @@ impl std::fmt::Display for HttpStatusError {
         write!(
             formatter,
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Sunucu HTTP {} yanıtını verdi", self.status),
-                format!("The server returned an HTTP {} response", self.status),
+            crate::i18n::ui_format!(
+                "Sunucu HTTP {0} yanıtını verdi",
+                "The server returned an HTTP {0} response",
+                self.status
             )
         )
     }
@@ -466,12 +462,10 @@ pub(crate) fn download(
     let url = validate_source_url(&request.url)?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("Hedef klasör oluşturulamadı: {}", parent.display()),
-                format!(
-                    "The destination folder could not be created: {}",
-                    parent.display()
-                )
+            crate::i18n::ui_format!(
+                "Hedef klasör oluşturulamadı: {0}",
+                "The destination folder could not be created: {0}",
+                parent.display()
             )
         })?;
     }
@@ -780,9 +774,10 @@ fn download_http_single(
             .write(true)
             .open(&part)
             .with_context(|| {
-                crate::i18n::ui_owned!(
-                    format!("Geçici dosya açılamadı: {}", part.display()),
-                    format!("The temporary file could not be opened: {}", part.display())
+                crate::i18n::ui_format!(
+                    "Geçici dosya açılamadı: {0}",
+                    "The temporary file could not be opened: {0}",
+                    part.display()
                 )
             })?;
         file.set_len(0)?;
@@ -852,10 +847,7 @@ fn download_http_single(
                     if bytes != total {
                         bail!(
                             "{}",
-                            crate::i18n::ui_owned!(
-                                format!("Aktarım eksik kaldı: {bytes}/{total} bayt"),
-                                format!("Transfer incomplete: {bytes}/{total} bytes"),
-                            )
+                            crate::i18n::ui_format!("Aktarım eksik kaldı: {bytes}/{total} bayt", "Transfer incomplete: {bytes}/{total} bytes", bytes = bytes, total = total)
                         );
                     }
                 }
@@ -884,16 +876,7 @@ fn download_http_single(
                     total: remote.total,
                     speed: 0,
                     eta: None,
-                    phase: crate::i18n::ui_owned!(
-                        format!(
-                            "HTTP {status}; {} sn sonra tek bağlantıyla yeniden denenecek",
-                            delay.as_secs()
-                        ),
-                        format!(
-                            "HTTP {status}; retrying single connection in {} s",
-                            delay.as_secs()
-                        )
-                    ),
+                    phase: crate::i18n::ui_format!("HTTP {status}; {0} sn sonra tek bağlantıyla yeniden denenecek", "HTTP {status}; retrying single connection in {0} s", delay.as_secs(), status = status),
                 });
                 wait_for_retry(control, delay)?;
                 retries += 1;
@@ -909,16 +892,7 @@ fn download_http_single(
                     total: remote.total,
                     speed: 0,
                     eta: None,
-                    phase: crate::i18n::ui_owned!(
-                        format!(
-                            "Geçici ağ hatası; {} sn sonra tek bağlantıyla yeniden denenecek",
-                            delay.as_secs()
-                        ),
-                        format!(
-                            "Transient network error; retrying single connection in {} s",
-                            delay.as_secs()
-                        )
-                    ),
+                    phase: crate::i18n::ui_format!("Geçici ağ hatası; {0} sn sonra tek bağlantıyla yeniden denenecek", "Transient network error; retrying single connection in {0} s", delay.as_secs()),
                 });
                 wait_for_retry(control, delay)?;
                 retries += 1;
@@ -987,9 +961,10 @@ fn http_to_file(
         .read(true)
         .open(path)
         .with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("Geçici dosya açılamadı: {}", path.display()),
-                format!("The temporary file could not be opened: {}", path.display())
+            crate::i18n::ui_format!(
+                "Geçici dosya açılamadı: {0}",
+                "The temporary file could not be opened: {0}",
+                path.display()
             )
         })
         .map_err(AttemptFailure::Other)?;
@@ -1425,17 +1400,12 @@ fn download_segmented(
                             total: Some(total),
                             speed: 0,
                             eta: None,
-                            phase: crate::i18n::ui_owned!(
-                                format!(
-                                    "HTTP {status}; {} sn sonra {} bağlantıyla yeniden denenecek",
-                                    retry_after.as_secs(),
-                                    effective_workers,
-                                ),
-                                format!(
-                                    "HTTP {status}; retrying in {} s using {} connections",
-                                    retry_after.as_secs(),
-                                    effective_workers,
-                                )
+                            phase: crate::i18n::ui_format!(
+                                "HTTP {status}; {0} sn sonra {1} bağlantıyla yeniden denenecek",
+                                "HTTP {status}; retrying in {0} s using {1} connections",
+                                retry_after.as_secs(),
+                                effective_workers,
+                                status = status
                             ),
                         });
                     }
@@ -1464,17 +1434,11 @@ fn download_segmented(
                             total: Some(total),
                             speed: 0,
                             eta: None,
-                            phase: crate::i18n::ui_owned!(
-                                format!(
-                                "Geçici ağ hatası; {} sn sonra {} bağlantıyla yeniden denenecek",
+                            phase: crate::i18n::ui_format!(
+                                "Geçici ağ hatası; {0} sn sonra {1} bağlantıyla yeniden denenecek",
+                                "Transient network error; retrying in {0} s using {1} connections",
                                 retry_after.as_secs(),
-                                effective_workers,
-                            ),
-                                format!(
-                                "Transient network error; retrying in {} s using {} connections",
-                                retry_after.as_secs(),
-                                effective_workers,
-                            )
+                                effective_workers
                             ),
                         });
                     }
@@ -1508,14 +1472,11 @@ fn download_segmented(
                 speed,
                 eta: eta(Some(total), downloaded.min(total), speed),
                 // Shown after the state: "Downloading — 8 connections".
-                phase: crate::i18n::ui_owned!(
-                    format!("{effective_workers} bağlantı"),
-                    if effective_workers == 1 {
-                        "1 connection".to_string()
-                    } else {
-                        format!("{effective_workers} connections")
-                    }
-                ),
+                phase: if effective_workers == 1 {
+                    crate::i18n::ui("1 bağlantı", "1 connection").to_string()
+                } else {
+                    crate::i18n::ui_format!("{0} bağlantı", "{0} connections", effective_workers)
+                },
             });
             last_time = now;
             last_downloaded = downloaded;
@@ -1634,9 +1595,10 @@ impl DynamicRangeWorker<'_> {
             .read(true)
             .open(path)
             .with_context(|| {
-                crate::i18n::ui_owned!(
-                    format!("Geçici dosya açılamadı: {}", path.display()),
-                    format!("The temporary file could not be opened: {}", path.display())
+                crate::i18n::ui_format!(
+                    "Geçici dosya açılamadı: {0}",
+                    "The temporary file could not be opened: {0}",
+                    path.display()
                 )
             })
             .map_err(AttemptFailure::Other)?;
@@ -1765,9 +1727,11 @@ impl DynamicRangeWorker<'_> {
         if written != range.len() {
             return Err(AttemptFailure::Other(anyhow!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Byte aralığı eksik kaldı: {}/{}", written, range.len()),
-                    format!("Byte range incomplete: {}/{}", written, range.len()),
+                crate::i18n::ui_format!(
+                    "Byte aralığı eksik kaldı: {0}/{1}",
+                    "Byte range incomplete: {0}/{1}",
+                    written,
+                    range.len()
                 )
             )));
         }
@@ -1833,12 +1797,10 @@ fn prepare_dynamic_state(
         .write(true)
         .open(&part)
         .with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("Geçici dosya oluşturulamadı: {}", part.display()),
-                format!(
-                    "The temporary file could not be created: {}",
-                    part.display()
-                )
+            crate::i18n::ui_format!(
+                "Geçici dosya oluşturulamadı: {0}",
+                "The temporary file could not be created: {0}",
+                part.display()
             )
         })
         .map_err(AttemptFailure::Other)?;
@@ -2298,9 +2260,11 @@ fn download_ftp_resuming(
         if bytes != total {
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("FTP aktarımı eksik kaldı: {bytes}/{total} bayt"),
-                    format!("FTP transfer incomplete: {bytes}/{total} bytes"),
+                crate::i18n::ui_format!(
+                    "FTP aktarımı eksik kaldı: {bytes}/{total} bayt",
+                    "FTP transfer incomplete: {bytes}/{total} bytes",
+                    bytes = bytes,
+                    total = total
                 )
             );
         }

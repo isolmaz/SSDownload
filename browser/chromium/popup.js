@@ -31,6 +31,7 @@ function usable(reply) {
 // Static texts come from the data-i18n attributes of popup.html.
 function applyStaticTexts() {
   document.documentElement.lang = SSDownloadI18n.language();
+  document.documentElement.dir = SSDownloadI18n.direction();
   for (const node of document.querySelectorAll("[data-i18n]")) node.textContent = t(node.getAttribute("data-i18n"));
 }
 

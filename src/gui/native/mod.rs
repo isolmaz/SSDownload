@@ -1072,9 +1072,27 @@ fn extract_urls(value: &str) -> Vec<String> {
     result
 }
 
+/// `ex_style` plus the mirroring of this session's windows. The process default layout
+/// mirrors only windows without an owner, so dialogs and alerts copy it from here.
+unsafe fn owned_layout(ex_style: u32) -> u32 {
+    let mut layout = 0;
+    GetProcessDefaultLayout(&mut layout);
+    if layout & LAYOUT_RTL != 0 {
+        ex_style | WS_EX_LAYOUTRTL
+    } else {
+        ex_style
+    }
+}
+
 pub fn run(app: App, start_hidden: bool) -> Result<()> {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        // A right-to-left language mirrors every window the process creates from here on.
+        // Windows that already exist keep their direction, so switching to or from such a
+        // language changes the layout on the next start.
+        if crate::i18n::right_to_left() {
+            SetProcessDefaultLayout(LAYOUT_RTL);
+        }
         let ole = OleGuard(OleInitialize(null()) >= 0);
         let common = INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
@@ -2332,9 +2350,10 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
         append(
             help,
             ID_INSTALL_UPDATE,
-            &crate::i18n::ui_owned!(
-                format!("Güncellemeyi k&ur ({version})..."),
-                format!("&Install update ({version})...")
+            &crate::i18n::ui_format!(
+                "Güncellemeyi k&ur ({version})...",
+                "&Install update ({version})...",
+                version = version
             ),
         );
     }
@@ -2424,6 +2443,16 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
             SendMessageW(ui.list, LVM_SETCOLUMNW, index, &column as *const _ as isize);
         }
         set_text(ui.list, crate::i18n::ui("İndirme işleri", "Downloads"));
+        if (owned_layout(0) != 0) != crate::i18n::right_to_left() {
+            ui.app.message(
+                crate::i18n::ui(
+                    "Pencerelerin yönü SSDownload yeniden başlatıldığında değişir.",
+                    "The window layout changes direction the next time SSDownload starts.",
+                )
+                .into(),
+                false,
+            );
+        }
         ui.row_cache.clear();
         layout_main(ui);
         DrawMenuBar(ui.hwnd);
@@ -2568,8 +2597,10 @@ unsafe fn layout_main(ui: &MainUi) {
     ];
     let mut x = m;
     for (i, &button) in ui.toolbar.iter().take(5).enumerate() {
-        MoveWindow(button, x, top, widths[i], bh, 1);
-        x += widths[i] + gap;
+        // A longer translation widens its button instead of being cut off.
+        let width = widths[i].max(text_width(button) + scale(24, ui.dpi));
+        MoveWindow(button, x, top, width, bh, 1);
+        x += width + gap;
     }
     x = m;
     let search_top = top + bh + gap;
@@ -3011,18 +3042,21 @@ unsafe fn update_title_and_tray(ui: &mut MainUi) {
     let update = crate::update::available_version()
         .filter(|candidate| crate::update::is_newer(version, candidate))
         .map(|candidate| {
-            crate::i18n::ui_owned!(
-                format!(" · Güncelleme var ({candidate})"),
-                format!(" · Update available ({candidate})")
+            crate::i18n::ui_format!(
+                " · Güncelleme var ({candidate})",
+                " · Update available ({candidate})",
+                candidate = candidate
             )
         })
         .unwrap_or_default();
     let summary = if running.is_empty() {
         crate::i18n::ui("İndirme Yöneticisi", "Download Manager").to_string()
     } else {
-        crate::i18n::ui_owned!(
-            format!("{} indiriliyor · {}", running.len(), format_speed(speed)),
-            format!("{} downloading · {}", running.len(), format_speed(speed))
+        crate::i18n::ui_format!(
+            "{0} indiriliyor · {1}",
+            "{0} downloading · {1}",
+            running.len(),
+            format_speed(speed)
         )
     };
     let title = format!("SSDownload {version} — {summary}{update}");
@@ -3316,9 +3350,11 @@ unsafe fn show_tour(ui: &mut MainUi, replay: bool) {
                 (IDCANCEL, crate::i18n::ui("Atla", "Skip")),
             ]
         };
-        let title = crate::i18n::ui_owned!(
-            format!("SSDownload turu ({}/{})", index + 1, steps.len()),
-            format!("SSDownload tour ({}/{})", index + 1, steps.len())
+        let title = crate::i18n::ui_format!(
+            "SSDownload turu ({0}/{1})",
+            "SSDownload tour ({0}/{1})",
+            index + 1,
+            steps.len()
         );
         let answer = run_alert_buttons(ui.hwnd, body, &title, MB_ICONINFORMATION, Some(&buttons))
             .unwrap_or(IDCANCEL);
@@ -3546,9 +3582,11 @@ unsafe fn export_url_list(ui: &MainUi) {
     }
     set_text(
         ui.status,
-        &crate::i18n::ui_owned!(
-            format!("{} adres dışa aktarıldı: {}", urls.len(), path.display()),
-            format!("{} address(es) exported: {}", urls.len(), path.display())
+        &crate::i18n::ui_format!(
+            "{0} adres dışa aktarıldı: {1}",
+            "{0} address(es) exported: {1}",
+            urls.len(),
+            path.display()
         ),
     );
 }
@@ -4477,18 +4515,12 @@ unsafe fn remove_selected(ui: &MainUi) {
             .map(|job| job.name.as_str())
             .unwrap_or_default();
         (
-            crate::i18n::ui_owned!(format!("\"{name}\" kuyruktan kaldırılsın mı?\n\nEvet: indirilen/parça dosyasını da sil\nHayır: dosyayı diskte bırak\nİptal: işlem yapma"), format!("Remove \"{name}\" from the queue?\n\nYes: also delete the downloaded/partial file\nNo: keep the file on disk\nCancel: do nothing")),
+            crate::i18n::ui_format!("\"{name}\" kuyruktan kaldırılsın mı?\n\nEvet: indirilen/parça dosyasını da sil\nHayır: dosyayı diskte bırak\nİptal: işlem yapma", "Remove \"{name}\" from the queue?\n\nYes: also delete the downloaded/partial file\nNo: keep the file on disk\nCancel: do nothing", name = name),
             crate::i18n::ui("İndirmeyi kaldır", "Remove download"),
         )
     } else {
         (
-            crate::i18n::ui_owned!(format!(
-                "{} indirme kuyruktan kaldırılsın mı?\n\nEvet: indirilen/parça dosyalarını da sil\nHayır: dosyaları diskte bırak\nİptal: işlem yapma",
-                targets.len()
-            ), format!(
-                "Remove {} downloads from the queue?\n\nYes: also delete the downloaded/partial files\nNo: keep the files on disk\nCancel: do nothing",
-                targets.len()
-            )),
+            crate::i18n::ui_format!("{0} indirme kuyruktan kaldırılsın mı?\n\nEvet: indirilen/parça dosyalarını da sil\nHayır: dosyaları diskte bırak\nİptal: işlem yapma", "Remove {0} downloads from the queue?\n\nYes: also delete the downloaded/partial files\nNo: keep the files on disk\nCancel: do nothing", targets.len()),
             crate::i18n::ui("İndirmeleri kaldır", "Remove downloads"),
         )
     };
@@ -5300,9 +5332,10 @@ unsafe fn tray_menu(ui: &MainUi) -> HMENU {
         Some(version) => append(
             menu,
             ID_INSTALL_UPDATE,
-            &crate::i18n::ui_owned!(
-                format!("Güncellemeyi kur ({version})..."),
-                format!("Install update ({version})...")
+            &crate::i18n::ui_format!(
+                "Güncellemeyi kur ({version})...",
+                "Install update ({version})...",
+                version = version
             ),
         ),
         None => append(
@@ -6014,7 +6047,7 @@ unsafe fn create_dialog(
         0
     };
     let hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT | own_button,
+        owned_layout(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT | own_button),
         wide(CLASS_DIALOG).as_ptr(),
         wide(title).as_ptr(),
         WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_VSCROLL,
@@ -6040,9 +6073,10 @@ unsafe fn create_dialog(
         drop(Box::from_raw(raw));
         message(
             owner,
-            &crate::i18n::ui_owned!(
-                format!("İletişim penceresi açılamadı (Win32 {error})."),
-                format!("The dialog window could not be opened (Win32 {error}).")
+            &crate::i18n::ui_format!(
+                "İletişim penceresi açılamadı (Win32 {error}).",
+                "The dialog window could not be opened (Win32 {error}).",
+                error = error
             ),
             "SSDownload",
             MB_OK | MB_ICONERROR,
@@ -6668,7 +6702,7 @@ unsafe fn show_job_log(owner: HWND, app: App, job: &str, name: &str) {
     let title = if name.is_empty() {
         crate::i18n::ui("İş günlüğü", "Job log").to_string()
     } else {
-        crate::i18n::ui_owned!(format!("İş günlüğü - {name}"), format!("Job log - {name}"))
+        crate::i18n::ui_format!("İş günlüğü - {name}", "Job log - {name}", name = name)
     };
     run_modal(
         owner,
@@ -6782,9 +6816,10 @@ unsafe fn show_media_dialog(owner: HWND, app: App, base: AddRequest) {
     if let Err(e) = app.dispatch(Action::Inspect { request }) {
         message(
             owner,
-            &crate::i18n::ui_owned!(
-                format!("Analiz başlatılamadı:\n{e:#}"),
-                format!("Analysis could not be started:\n{e:#}")
+            &crate::i18n::ui_format!(
+                "Analiz başlatılamadı:\n{e:#}",
+                "Analysis could not be started:\n{e:#}",
+                e = e
             ),
             crate::i18n::ui("Video indir", "Video download"),
             MB_OK | MB_ICONERROR,
@@ -7327,17 +7362,9 @@ unsafe fn begin_job_view(dlg: &mut DialogUi, job_ids: Vec<String>) {
             .jobs
             .iter()
             .find(|job| &job.id == id)
-            .map(|job| {
-                crate::i18n::ui_owned!(
-                    format!("İndirme — {}", job.name),
-                    format!("Download — {}", job.name)
-                )
-            })
+            .map(|job| crate::i18n::ui_format!("İndirme — {0}", "Download — {0}", job.name))
             .unwrap_or_else(|| crate::i18n::ui("İndirme", "Download").to_string()),
-        ids => crate::i18n::ui_owned!(
-            format!("İndirme — {} öğe", ids.len()),
-            format!("Download — {} items", ids.len())
-        ),
+        ids => crate::i18n::ui_format!("İndirme — {0} öğe", "Download — {0} items", ids.len()),
     };
     if let DialogKind::Media(f) = &dlg.kind {
         release_thumbnail(f.thumbnail);
@@ -7468,17 +7495,11 @@ unsafe fn refresh_completion_countdown(hwnd: HWND, f: &QueueFields, snapshot: &A
         .and_then(|id| snapshot.settings.queues.iter().find(|q| q.id == id))
         .and_then(|q| q.quota.as_ref())
         .map(|q| {
-            crate::i18n::ui_owned!(
-                format!(
-                    "Kalan kota: {} / {}. ",
-                    format_bytes(q.limit_bytes.saturating_sub(q.consumed_bytes)),
-                    format_bytes(q.limit_bytes)
-                ),
-                format!(
-                    "Remaining quota: {} / {}. ",
-                    format_bytes(q.limit_bytes.saturating_sub(q.consumed_bytes)),
-                    format_bytes(q.limit_bytes)
-                )
+            crate::i18n::ui_format!(
+                "Kalan kota: {0} / {1}. ",
+                "Remaining quota: {0} / {1}. ",
+                format_bytes(q.limit_bytes.saturating_sub(q.consumed_bytes)),
+                format_bytes(q.limit_bytes)
             )
         })
         .unwrap_or_default();
@@ -7486,22 +7507,21 @@ unsafe fn refresh_completion_countdown(hwnd: HWND, f: &QueueFields, snapshot: &A
         let remaining = (countdown.deadline - chrono::Utc::now().timestamp()).max(0);
         set_text(
             f.countdown,
-            &crate::i18n::ui_owned!(
-                format!(
-                    "{quota}Bitiş eylemi {remaining} saniye içinde çalışacak; iptal edebilirsiniz."
-                ),
-                format!(
-                "{quota}The completion action will run in {remaining} seconds; you can cancel it."
-            )
+            &crate::i18n::ui_format!(
+                "{quota}Bitiş eylemi {remaining} saniye içinde çalışacak; iptal edebilirsiniz.",
+                "{quota}The completion action will run in {remaining} seconds; you can cancel it.",
+                quota = quota,
+                remaining = remaining
             ),
         );
         EnableWindow(GetDlgItem(hwnd, Q_CANCEL_COMPLETION), 1);
     } else {
         set_text(
             f.countdown,
-            &crate::i18n::ui_owned!(
-                format!("{quota}Etkin bitiş geri sayımı yok."),
-                format!("{quota}No completion countdown is active.")
+            &crate::i18n::ui_format!(
+                "{quota}Etkin bitiş geri sayımı yok.",
+                "{quota}No completion countdown is active.",
+                quota = quota
             ),
         );
         EnableWindow(GetDlgItem(hwnd, Q_CANCEL_COMPLETION), 0);
@@ -7746,15 +7766,19 @@ unsafe fn set_dialog_error(hwnd: HWND, error: HWND, value: &str, focus: HWND) {
 }
 fn parse_u8_range(value: &str, min: u8, max: u8, label: &str) -> std::result::Result<u8, String> {
     let n = value.trim().parse::<u8>().map_err(|_| {
-        crate::i18n::ui_owned!(
-            format!("{label} bir sayı olmalıdır."),
-            format!("{label} must be a number.")
+        crate::i18n::ui_format!(
+            "{label} bir sayı olmalıdır.",
+            "{label} must be a number.",
+            label = label
         )
     })?;
     if n < min || n > max {
-        Err(crate::i18n::ui_owned!(
-            format!("{label} {min}–{max} arasında olmalıdır."),
-            format!("{label} must be between {min} and {max}.")
+        Err(crate::i18n::ui_format!(
+            "{label} {min}–{max} arasında olmalıdır.",
+            "{label} must be between {min} and {max}.",
+            label = label,
+            max = max,
+            min = min
         ))
     } else {
         Ok(n)

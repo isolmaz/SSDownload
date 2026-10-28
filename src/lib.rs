@@ -7,6 +7,7 @@ pub mod error_codes;
 pub mod extension;
 pub mod gui;
 pub mod i18n;
+mod i18n_catalog;
 pub mod install;
 pub mod logging;
 pub mod media;

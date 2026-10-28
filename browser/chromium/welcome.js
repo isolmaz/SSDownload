@@ -6,6 +6,7 @@ const { t } = SSDownloadI18n;
 
 function applyStaticTexts() {
   document.documentElement.lang = SSDownloadI18n.language();
+  document.documentElement.dir = SSDownloadI18n.direction();
   for (const node of document.querySelectorAll("[data-i18n]")) node.textContent = t(node.getAttribute("data-i18n"));
 }
 

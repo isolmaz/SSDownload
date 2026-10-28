@@ -70,9 +70,10 @@ pub(crate) fn shell_target(path: &Path) -> Result<String, String> {
                 .all(|character| character == '\\' || character == '/')
     };
     if only_separators(&plain) {
-        return Err(crate::i18n::ui_owned!(
-            format!("Açılacak yol geçersiz: {plain}"),
-            format!("The path to open is invalid: {plain}")
+        return Err(crate::i18n::ui_format!(
+            "Açılacak yol geçersiz: {plain}",
+            "The path to open is invalid: {plain}",
+            plain = plain
         ));
     }
     Ok(plain)

@@ -2206,7 +2206,9 @@ test("a missing app is described in the language the app last reported, else in 
     { stored: undefined, browser: "tr", expected: /uygulaması bu bilgisayarda bulunamadı/, appMissing: true },
     { stored: undefined, browser: "en-GB", expected: /app was not found on this computer/, appMissing: true },
     { stored: undefined, browser: "tr-TR", expected: /uygulaması bu bilgisayarda bulunamadı/, appMissing: true },
-    { stored: undefined, browser: "de", expected: /app was not found on this computer/, appMissing: true }
+    { stored: undefined, browser: "de", expected: /SSDownload-App wurde auf diesem Computer nicht gefunden/, appMissing: true },
+    { stored: "de", browser: "tr", expected: /SSDownload-App wurde auf diesem Computer nicht gefunden/, appMissing: true },
+    { stored: undefined, browser: "ja", expected: /app was not found on this computer/, appMissing: true }
   ];
   for (const { stored, browser, expected, appMissing } of cases) {
     const h = backgroundHarness({ native: missing, browserLanguage: browser, local: stored ? { uiLanguage: stored } : {} });
@@ -2282,6 +2284,17 @@ test("the language reaches the popup: texts, state reading, buttons and the sour
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.el("site-label").textContent, "Hide the button on this site");
   assert.equal(h.el("open-app").textContent, "Open the app");
+  assert.equal(h.document.documentElement.dir, "ltr");
+
+  // Arabic is written right to left: the page turns its direction with its texts.
+  h.storeLanguage("ar");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.document.documentElement.lang, "ar");
+  assert.equal(h.document.documentElement.dir, "rtl");
+  assert.equal(h.el("close").textContent, "إغلاق");
+  h.storeLanguage("en");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.document.documentElement.dir, "ltr");
 });
 
 test("without the desktop app the popup shows only the setup view, whose button opens the download page", async () => {
@@ -2378,6 +2391,12 @@ test("the in-page tiles follow the stored language live and fall back to the bro
   assert.deepEqual(labels(video), ["Bu videoyu indir"], "a language written to storage repaints the tile at once");
   video.storageListener()({ uiLanguage: { newValue: "en" } }, "local");
   assert.deepEqual(labels(video), ["Download this video"]);
+  assert.equal(video.buttons[0].style.direction, "ltr");
+  video.storageListener()({ uiLanguage: { newValue: "ar" } }, "local");
+  assert.deepEqual(labels(video), ["تنزيل هذا الفيديو"]);
+  assert.equal(video.buttons[0].style.direction, "rtl", "an Arabic tile is laid out right to left");
+  video.storageListener()({ uiLanguage: { newValue: "en" } }, "local");
+  assert.equal(video.buttons[0].style.direction, "ltr", "and turns back with the language");
 
   const audio = await draw({ storedLanguage: "en", nodes: { "video, audio": [media("AUDIO")] } });
   assert.deepEqual(labels(audio), ["Download this audio"]);

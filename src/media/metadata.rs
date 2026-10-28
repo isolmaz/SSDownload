@@ -38,10 +38,7 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
             crate::bail_code!(
                 crate::error_codes::MED_004,
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Liste DRM korumalı bir öğe içeriyor ve güvenle indirilemez: {title}"),
-                    format!("The list contains a DRM-protected item and cannot be downloaded safely: {title}")
-                )
+                crate::i18n::ui_format!("Liste DRM korumalı bir öğe içeriyor ve güvenle indirilemez: {title}", "The list contains a DRM-protected item and cannot be downloaded safely: {title}", title = title)
             );
         }
     }
@@ -196,10 +193,10 @@ pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
             let codecs = match (video, audio) {
                 (Some(v), Some(a)) => format!("{v} + {a}"),
                 (Some(v), None) if stream_absent(audio_codec.as_deref()) => {
-                    crate::i18n::ui_owned!(format!("{v}, yalnız video"), format!("{v}, video only"))
+                    crate::i18n::ui_format!("{v}, yalnız video", "{v}, video only", v = v)
                 }
                 (None, Some(a)) if stream_absent(video_codec.as_deref()) => {
-                    crate::i18n::ui_owned!(format!("{a}, yalnız ses"), format!("{a}, audio only"))
+                    crate::i18n::ui_format!("{a}, yalnız ses", "{a}, audio only", a = a)
                 }
                 (Some(codec), None) | (None, Some(codec)) => codec.to_string(),
                 _ => String::new(),

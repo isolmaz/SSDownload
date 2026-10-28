@@ -1,7 +1,8 @@
 "use strict";
 
-// The extension is bilingual (English and Turkish). These are the structural checks: both
-// languages carry exactly the same keys and placeholders, every key the code asks for exists,
+// The extension speaks every language of LANGUAGES, English being the source. These are the
+// structural checks: all languages carry exactly the same keys and placeholders, every key the
+// code asks for exists,
 // no key is dead, and no user-visible text hides in the sources outside the catalog. The
 // behavioural checks (language follows the desktop, browser fallback) sit with the harnesses
 // in browser.test.js.
@@ -10,6 +11,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
 const { extensionDir, catalog } = require("./i18n-harness");
 
 const read = name => fs.readFileSync(path.join(extensionDir, name), "utf8");
@@ -28,15 +30,17 @@ const keyDifference = (left, right) => [
 ];
 
 test("the store locales carry the same keys, placeholders and a description for each", () => {
-  const en = json("_locales/en/messages.json"), tr = json("_locales/tr/messages.json");
-  assert.deepEqual(keyDifference(en, tr), [], "a key present in one store locale only");
-  for (const [language, messages] of [["en", en], ["tr", tr]]) {
+  const locales = fs.readdirSync(path.join(extensionDir, "_locales")).map(name => [name, json(`_locales/${name}/messages.json`)]);
+  const en = json("_locales/en/messages.json");
+  assert.ok(locales.length >= 2);
+  for (const [language, messages] of locales) {
+    assert.deepEqual(keyDifference(en, messages), [], `a key present in one store locale only (${language})`);
     assert.ok(Object.keys(messages).length > 0);
     for (const [key, entry] of Object.entries(messages)) {
       assert.equal(typeof entry.message, "string", `${language}/${key} has a message`);
       assert.notEqual(entry.message.trim(), "", `${language}/${key} is not empty`);
       assert.match(String(entry.description), /\S/, `${language}/${key} has a description`);
-      assert.deepEqual(Object.keys(entry.placeholders || {}).sort(), Object.keys((language === "en" ? tr : en)[key].placeholders || {}).sort(), `${key}: the placeholder sets differ`);
+      assert.deepEqual(Object.keys(entry.placeholders || {}).sort(), Object.keys(en[key].placeholders || {}).sort(), `${key}: the placeholder sets differ`);
     }
   }
   // The manifest keeps the English default and every __MSG_x__ it uses exists in both.
@@ -44,8 +48,8 @@ test("the store locales carry the same keys, placeholders and a description for 
   assert.equal(JSON.parse(manifestText).default_locale, "en");
   const used = [...manifestText.matchAll(/__MSG_([A-Za-z0-9_@]+)__/g)].map(match => match[1]);
   assert.ok(used.includes("extDescription"));
-  for (const key of used) assert.ok(key in en && key in tr, `${key} is missing from a store locale`);
-  assert.ok(en.extDescription.message.length <= 132 && tr.extDescription.message.length <= 132, "the store summary stays within 132 characters");
+  for (const key of used) assert.ok(key in en, `${key} is missing from the default store locale`);
+  for (const [language, messages] of locales) assert.ok(messages.extDescription.message.length <= 132, `the ${language} store summary stays within 132 characters`);
 });
 
 test("the parity check names a key removed from one language", () => {
@@ -55,18 +59,19 @@ test("the parity check names a key removed from one language", () => {
   assert.deepEqual(keyDifference(full, { ...full }), []);
 });
 
-test("the English and Turkish catalogs have the same keys and placeholders, none empty", () => {
-  const { MESSAGES } = catalog();
-  assert.deepEqual(keyDifference(MESSAGES.en, MESSAGES.tr), [], "a key present in one language only");
+test("every language has the same keys and placeholders as English, none empty", () => {
+  const { MESSAGES, LANGUAGES } = catalog();
+  assert.deepEqual(Object.keys(MESSAGES), [...LANGUAGES], "every listed language has a catalog");
+  for (const language of LANGUAGES) assert.deepEqual(keyDifference(MESSAGES.en, MESSAGES[language]), [], `a key present in one language only (${language})`);
   assert.ok(Object.keys(MESSAGES.en).length > 200, "the catalog holds the extension's texts");
-  for (const language of ["en", "tr"]) {
+  for (const language of LANGUAGES) {
     for (const [key, text] of Object.entries(MESSAGES[language])) {
       assert.match(key, /^[a-z][A-Za-z0-9]*$/, `${key}: keys are descriptive camelCase`);
       assert.equal(typeof text, "string", `${language}/${key}`);
       assert.notEqual(text.trim(), "", `${language}/${key} is empty`);
       assert.equal(text, text.trim(), `${language}/${key} has stray whitespace`);
       const set = placeholders(text);
-      assert.deepEqual(set, placeholders(MESSAGES[language === "en" ? "tr" : "en"][key] ?? ""), `${key}: the placeholder sets differ between languages`);
+      assert.deepEqual(set, placeholders(MESSAGES.en[key]), `${language}/${key}: the placeholder set differs from English`);
       assert.deepEqual(set, set.map((_, index) => index), `${language}/${key}: placeholders must be {0}, {1}, ... without gaps`);
       assert.doesNotMatch(text.replace(/\{\d+\}/g, ""), /[{}]/, `${language}/${key}: a stray brace`);
     }
@@ -92,7 +97,7 @@ test("every key the code asks for exists and no key is dead", () => {
   }
   for (const page of pages) for (const match of read(page).matchAll(/data-i18n="([^"]+)"/g)) note(match[1], page);
   assert.ok(used.size > 150);
-  for (const [key, where] of used) assert.ok(key in MESSAGES.en && key in MESSAGES.tr, `${key} (${where.join(", ")}) is not in the catalog`);
+  for (const [key, where] of used) assert.ok(key in MESSAGES.en, `${key} (${where.join(", ")}) is not in the catalog`);
   assert.deepEqual(Object.keys(MESSAGES.en).filter(key => !used.has(key)), [], "catalog keys no code refers to");
 });
 
@@ -157,9 +162,9 @@ test("no user-visible Turkish literal is left outside the catalog", () => {
   assert.deepEqual(found, []);
   // Texts without a single Turkish letter ("Kapat", "Algılama" style): no catalog text, in
   // either language, may appear verbatim in the sources, where it would be a hard-coded copy.
-  const { MESSAGES } = catalog();
+  const { MESSAGES, LANGUAGES } = catalog();
   const haystack = [...codeFiles, ...pages].map(name => [name, codeOnly(read(name)).map(line => line.code).join("\n")]);
-  for (const language of ["en", "tr"]) {
+  for (const language of LANGUAGES) {
     for (const [key, text] of Object.entries(MESSAGES[language])) {
       const needle = text.replace(/\{\d+\}.*$/s, "");
       if (needle.length < 4) continue;
@@ -184,7 +189,24 @@ test("the lookup substitutes placeholders and follows the language it is given",
   assert.equal(i18n.t("popupHideOnHost"), " için düğmeyi gösterme", "a missing argument is empty, like chrome.i18n");
   assert.equal(i18n.t("popupHideOnHost", "$& $1 {0}"), "$& $1 {0} için düğmeyi gösterme", "an argument is inserted literally");
   assert.equal(i18n.t("noSuchKey"), "noSuchKey", "an unknown key is visible, never silent");
-  assert.equal(i18n.setLanguage("de"), true, "an unsupported language forgets the app's choice");
+  assert.equal(i18n.setLanguage("ja"), true, "an unsupported language forgets the app's choice");
   assert.equal(i18n.language(), "en");
   assert.equal(i18n.setLanguage(undefined), false);
+});
+
+test("before the app reports a language the browser's own decides, by its primary language", () => {
+  const languageFor = uiLanguage => {
+    const context = vm.createContext({ browser: { i18n: { getUILanguage: () => uiLanguage } } });
+    vm.runInContext(read("i18n.js"), context, { filename: "i18n.js" });
+    return [context.SSDownloadI18n.language(), context.SSDownloadI18n.direction()];
+  };
+  const { LANGUAGES } = catalog();
+  for (const language of LANGUAGES) assert.equal(languageFor(language)[0], language);
+  assert.deepEqual(languageFor("tr-TR"), ["tr", "ltr"]);
+  assert.deepEqual(languageFor("en-GB"), ["en", "ltr"]);
+  assert.deepEqual(languageFor("ja"), ["en", "ltr"], "a language the extension lacks gets English");
+  assert.deepEqual(languageFor(""), ["en", "ltr"]);
+  assert.deepEqual(languageFor("ar-EG"), ["ar", "rtl"]);
+  assert.deepEqual(languageFor("pt-BR"), ["pt", "ltr"]);
+  assert.deepEqual(languageFor("de-AT"), ["de", "ltr"]);
 });

@@ -224,9 +224,10 @@ fn fetch_document(
     performed.map_err(|error| {
         anyhow!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Güncelleme akışına erişilemedi: {error}"),
-                format!("The update feed could not be reached: {error}")
+            crate::i18n::ui_format!(
+                "Güncelleme akışına erişilemedi: {error}",
+                "The update feed could not be reached: {error}",
+                error = error
             )
         )
     })?;
@@ -238,9 +239,10 @@ fn fetch_document(
         crate::bail_code!(
             crate::error_codes::UPD_001,
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Güncelleme akışı HTTP {status} döndürdü"),
-                format!("The update feed returned HTTP {status}"),
+            crate::i18n::ui_format!(
+                "Güncelleme akışı HTTP {status} döndürdü",
+                "The update feed returned HTTP {status}",
+                status = status
             )
         );
     }
@@ -439,12 +441,10 @@ pub(crate) fn create_quarantine_folder(paths: &AppPaths) -> Result<PathBuf> {
         .join("update-quarantine")
         .join(stamp.to_string());
     fs::create_dir_all(&dir).with_context(|| {
-        crate::i18n::ui_owned!(
-            format!("Karantina klasörü oluşturulamadı: {}", dir.display()),
-            format!(
-                "The quarantine folder could not be created: {}",
-                dir.display()
-            )
+        crate::i18n::ui_format!(
+            "Karantina klasörü oluşturulamadı: {0}",
+            "The quarantine folder could not be created: {0}",
+            dir.display()
         )
     })?;
     Ok(dir)
@@ -469,9 +469,10 @@ fn move_into_quarantine(folder: &Path, file: &Path) -> Result<()> {
     })?);
     if fs::rename(file, &destination).is_err() {
         fs::copy(file, &destination).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("Karantinaya kopyalama başarısız: {}", file.display()),
-                format!("Copying to quarantine failed: {}", file.display())
+            crate::i18n::ui_format!(
+                "Karantinaya kopyalama başarısız: {0}",
+                "Copying to quarantine failed: {0}",
+                file.display()
             )
         })?;
         retire_copied_original(file);
@@ -589,12 +590,10 @@ fn download_setup(
         fs::create_dir_all(parent)?;
     }
     let mut file = fs::File::create(destination).with_context(|| {
-        crate::i18n::ui_owned!(
-            format!("İndirme dosyası oluşturulamadı: {}", destination.display()),
-            format!(
-                "The download file could not be created: {}",
-                destination.display()
-            )
+        crate::i18n::ui_format!(
+            "İndirme dosyası oluşturulamadı: {0}",
+            "The download file could not be created: {0}",
+            destination.display()
         )
     })?;
     let mut easy = network.wildcard_easy(&Default::default())?;
@@ -669,9 +668,10 @@ fn download_setup(
         crate::bail_code!(
             crate::error_codes::UPD_003,
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Güncelleme sunucusu HTTP {status} döndürdü"),
-                format!("The update server returned HTTP {status}"),
+            crate::i18n::ui_format!(
+                "Güncelleme sunucusu HTTP {status} döndürdü",
+                "The update server returned HTTP {status}",
+                status = status
             )
         );
     }
@@ -707,9 +707,11 @@ struct DigestMismatch {
 
 impl std::fmt::Display for DigestMismatch {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&crate::i18n::ui_owned!(
-            format!("beklenen {}, alınan {}", self.expected, self.actual),
-            format!("expected {}, received {}", self.expected, self.actual)
+        formatter.write_str(&crate::i18n::ui_format!(
+            "beklenen {0}, alınan {1}",
+            "expected {0}, received {1}",
+            self.expected,
+            self.actual
         ))
     }
 }
@@ -720,18 +722,12 @@ impl std::error::Error for DigestMismatch {}
 fn digest_mismatch_message(expected: &str, actual: &str, quarantine: Option<&Path>) -> String {
     let moved = quarantine
         .map(|folder| {
-            crate::i18n::ui_owned!(
-                format!("\n\nDosya şu klasöre taşındı (kendiniz inceleyip silebilirsiniz):\n{}", folder.display()),
-                format!("\n\nThe file was moved to this folder (you can inspect and delete it yourself):\n{}", folder.display())
-            )
+            crate::i18n::ui_format!("\n\nDosya şu klasöre taşındı (kendiniz inceleyip silebilirsiniz):\n{0}", "\n\nThe file was moved to this folder (you can inspect and delete it yourself):\n{0}", folder.display())
         })
         .unwrap_or_default();
     crate::error_codes::coded(
         crate::error_codes::UPD_003,
-        crate::i18n::ui_owned!(
-            format!("SHA-256 özeti eşleşmedi. İndirilen kurulum dosyası güvenli değil.\nBeklenen: {expected}\nAlınan: {actual}{moved}"),
-            format!("SHA-256 digest does not match. The downloaded installer is not safe.\nExpected: {expected}\nReceived: {actual}{moved}")
-        ),
+        crate::i18n::ui_format!("SHA-256 özeti eşleşmedi. İndirilen kurulum dosyası güvenli değil.\nBeklenen: {expected}\nAlınan: {actual}{moved}", "SHA-256 digest does not match. The downloaded installer is not safe.\nExpected: {expected}\nReceived: {actual}{moved}", actual = actual, expected = expected, moved = moved),
     )
     .to_string()
 }
@@ -849,9 +845,10 @@ fn launch_install_helper(
         .map_err(|error| {
             crate::error_codes::coded(
                 crate::error_codes::UPD_004,
-                crate::i18n::ui_owned!(
-                    format!("Kurulum yardımcısı başlatılamadı: {error}"),
-                    format!("The setup helper could not be started: {error}")
+                crate::i18n::ui_format!(
+                    "Kurulum yardımcısı başlatılamadı: {error}",
+                    "The setup helper could not be started: {error}",
+                    error = error
                 ),
             )
         })?;
@@ -892,10 +889,7 @@ fn take_install_failure(paths: &AppPaths) -> Option<String> {
     } else {
         failure.reason
     };
-    Some(crate::i18n::ui_owned!(
-        format!("SSDownload{version} güncellemesi kurulamadı; mevcut sürüm yeniden başlatıldı.\n\nNeden: {reason}\n\nGüncellemeyi Yardım menüsünden yeniden deneyebilirsiniz."),
-        format!("The SSDownload{version} update could not be installed; the current version was restarted.\n\nReason: {reason}\n\nYou can retry the update from the Help menu.")
-    ))
+    Some(crate::i18n::ui_format!("SSDownload{version} güncellemesi kurulamadı; mevcut sürüm yeniden başlatıldı.\n\nNeden: {reason}\n\nGüncellemeyi Yardım menüsünden yeniden deneyebilirsiniz.", "The SSDownload{version} update could not be installed; the current version was restarted.\n\nReason: {reason}\n\nYou can retry the update from the Help menu.", reason = reason, version = version))
 }
 
 /// Reports a failed silent installation from the previous run, if the helper left a marker.
@@ -917,9 +911,10 @@ fn report_install_failure(paths: &AppPaths) {
         });
     if let Err(error) = spawned {
         crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
-            crate::i18n::ui_owned!(
-                format!("Kurulum hatası bildirimi başlatılamadı: {error}"),
-                format!("The install failure notice could not be started: {error}")
+            crate::i18n::ui_format!(
+                "Kurulum hatası bildirimi başlatılamadı: {error}",
+                "The install failure notice could not be started: {error}",
+                error = error
             ),
         ));
     }
@@ -986,20 +981,11 @@ fn open_in_browser(url: &str) -> bool {
 /// was installed.
 fn portable_update_outcome(manifest: &UpdateManifest) -> UpdateOutcome {
     let opened = open_in_browser(RELEASES_PAGE);
-    let mut message = crate::i18n::ui_owned!(
-        format!("Bu kopya kurulu bir sürüm değil (taşınabilir). Taşınabilir kopya, yeni taşınabilir ZIP dosyası indirilerek güncellenir: SSDownload {} paketini sürüm sayfasından indirip bu klasörün üzerine çıkarın.", manifest.version),
-        format!("This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {} package from the release page and extract it over this folder.", manifest.version)
-    );
+    let mut message = crate::i18n::ui_format!("Bu kopya kurulu bir sürüm değil (taşınabilir). Taşınabilir kopya, yeni taşınabilir ZIP dosyası indirilerek güncellenir: SSDownload {0} paketini sürüm sayfasından indirip bu klasörün üzerine çıkarın.", "This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {0} package from the release page and extract it over this folder.", manifest.version);
     message.push_str(&if opened {
-        crate::i18n::ui_owned!(
-            format!("\n\nSürüm sayfası tarayıcıda açıldı:\n{RELEASES_PAGE}"),
-            format!("\n\nThe release page was opened in your browser:\n{RELEASES_PAGE}")
-        )
+        crate::i18n::ui_format!("\n\nSürüm sayfası tarayıcıda açıldı:\n{RELEASES_PAGE}", "\n\nThe release page was opened in your browser:\n{RELEASES_PAGE}", RELEASES_PAGE = RELEASES_PAGE)
     } else {
-        crate::i18n::ui_owned!(
-            format!("\n\nSürüm sayfası açılamadı; bu adresi tarayıcıya yapıştırın:\n{RELEASES_PAGE}"),
-            format!("\n\nThe release page could not be opened; paste this address into your browser:\n{RELEASES_PAGE}")
-        )
+        crate::i18n::ui_format!("\n\nSürüm sayfası açılamadı; bu adresi tarayıcıya yapıştırın:\n{RELEASES_PAGE}", "\n\nThe release page could not be opened; paste this address into your browser:\n{RELEASES_PAGE}", RELEASES_PAGE = RELEASES_PAGE)
     });
     UpdateOutcome {
         success: true,
@@ -1096,12 +1082,13 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
                     dry_run: ctx.dry_run,
                 };
             }
-            let mut text = crate::i18n::ui_owned!(
-                format!("Güncelleme indirilemedi: {error:#}"),
-                format!("The update could not be downloaded: {error:#}")
+            let mut text = crate::i18n::ui_format!(
+                "Güncelleme indirilemedi: {error:#}",
+                "The update could not be downloaded: {error:#}",
+                error = error
             );
             if let Some(folder) = &quarantine {
-                text.push_str(&crate::i18n::ui_owned!(format!("\n\nKısmi indirme bu klasöre taşındı (istek üzerine inceleyip silebilirsiniz):\n{}", folder.display()), format!("\n\nThe partial download was moved to this folder (you can review and delete it if you wish):\n{}", folder.display())));
+                text.push_str(&crate::i18n::ui_format!("\n\nKısmi indirme bu klasöre taşındı (istek üzerine inceleyip silebilirsiniz):\n{0}", "\n\nThe partial download was moved to this folder (you can review and delete it if you wish):\n{0}", folder.display()));
             }
             return UpdateOutcome {
                 success: false,
@@ -1137,27 +1124,18 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
             let folder = quarantine_file(ctx.paths, &destination).ok();
             return UpdateOutcome {
                 success: false,
-                message: crate::i18n::ui_owned!(
-                    format!(
-                        "Güncelleme doğrulaması okunamadı: {error:#}{}",
-                        folder
-                            .as_ref()
-                            .map(|f| crate::i18n::ui_owned!(
-                                format!("\n\nDosya şu klasöre taşındı:\n{}", f.display()),
-                                format!("\n\nThe file was moved to this folder:\n{}", f.display())
-                            ))
-                            .unwrap_or_default()
-                    ),
-                    format!(
-                        "The update verification could not be read: {error:#}{}",
-                        folder
-                            .as_ref()
-                            .map(|f| crate::i18n::ui_owned!(
-                                format!("\n\nDosya şu klasöre taşındı:\n{}", f.display()),
-                                format!("\n\nThe file was moved to this folder:\n{}", f.display())
-                            ))
-                            .unwrap_or_default()
-                    )
+                message: crate::i18n::ui_format!(
+                    "Güncelleme doğrulaması okunamadı: {error:#}{moved}",
+                    "The update verification could not be read: {error:#}{moved}",
+                    error = error,
+                    moved = folder
+                        .as_ref()
+                        .map(|f| crate::i18n::ui_format!(
+                            "\n\nDosya şu klasöre taşındı:\n{0}",
+                            "\n\nThe file was moved to this folder:\n{0}",
+                            f.display()
+                        ))
+                        .unwrap_or_default()
                 ),
                 quarantine: folder,
                 dry_run: ctx.dry_run,
@@ -1191,7 +1169,7 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
         // quarantine instead of launching, and the message surfaces the path.
         let folder = quarantine_file(ctx.paths, &destination).ok();
         let message = match &folder {
-            Some(f) => crate::i18n::ui_owned!(format!("Deneme modu: kurulum başlatılmadı. Doğrulanan Setup dosyası şu klasöre taşındı:\n{}", f.display()), format!("Dry run: the installation was not started. The verified Setup file was moved to this folder:\n{}", f.display())),
+            Some(f) => crate::i18n::ui_format!("Deneme modu: kurulum başlatılmadı. Doğrulanan Setup dosyası şu klasöre taşındı:\n{0}", "Dry run: the installation was not started. The verified Setup file was moved to this folder:\n{0}", f.display()),
             None => crate::i18n::ui("Deneme modu: kurulum başlatılmadı.", "Dry run: the installation was not started.").into(),
         };
         return UpdateOutcome {
@@ -1217,39 +1195,18 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
                 let folder = quarantine_file(ctx.paths, &destination).ok();
                 return UpdateOutcome {
                     success: false,
-                    message: crate::i18n::ui_owned!(
-                        format!(
-                            "Kurulum başlatılamadı: {error:#}{}",
-                            folder
-                                .as_ref()
-                                .map(|f| crate::i18n::ui_owned!(
-                                    format!(
-                                        "\n\nKurulum dosyası şu klasöre taşındı:\n{}",
-                                        f.display()
-                                    ),
-                                    format!(
-                                        "\n\nThe installer file was moved to this folder:\n{}",
-                                        f.display()
-                                    )
-                                ))
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "The installation could not be started: {error:#}{}",
-                            folder
-                                .as_ref()
-                                .map(|f| crate::i18n::ui_owned!(
-                                    format!(
-                                        "\n\nKurulum dosyası şu klasöre taşındı:\n{}",
-                                        f.display()
-                                    ),
-                                    format!(
-                                        "\n\nThe installer file was moved to this folder:\n{}",
-                                        f.display()
-                                    )
-                                ))
-                                .unwrap_or_default()
-                        )
+                    message: crate::i18n::ui_format!(
+                        "Kurulum başlatılamadı: {error:#}{moved}",
+                        "The installation could not be started: {error:#}{moved}",
+                        error = error,
+                        moved = folder
+                            .as_ref()
+                            .map(|f| crate::i18n::ui_format!(
+                                "\n\nKurulum dosyası şu klasöre taşındı:\n{0}",
+                                "\n\nThe installer file was moved to this folder:\n{0}",
+                                f.display()
+                            ))
+                            .unwrap_or_default()
                     ),
                     quarantine: folder,
                     dry_run: false,
@@ -1257,7 +1214,7 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
             }
             UpdateOutcome {
                 success: true,
-                message: crate::i18n::ui_owned!(format!("SSDownload {} kuruluyor. Uygulama kısa süre içinde yeniden başlayacak. Kurulum dosyası, uygulama yeniden açıldığında karantina klasörüne taşınacak.", manifest.version), format!("SSDownload {} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.", manifest.version)),
+                message: crate::i18n::ui_format!("SSDownload {0} kuruluyor. Uygulama kısa süre içinde yeniden başlayacak. Kurulum dosyası, uygulama yeniden açıldığında karantina klasörüne taşınacak.", "SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.", manifest.version),
                 // The helper still reads this file; the next start moves it into
                 // the quarantine folder through `reconcile_update_staging`.
                 quarantine: None,
@@ -1268,33 +1225,18 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
             let folder = quarantine_file(ctx.paths, &destination).ok();
             UpdateOutcome {
                 success: false,
-                message: crate::i18n::ui_owned!(
-                    format!(
-                        "Kurulum yolu belirlenemedi: {error:#}{}",
-                        folder
-                            .as_ref()
-                            .map(|f| crate::i18n::ui_owned!(
-                                format!("\n\nKurulum dosyası şu klasöre taşındı:\n{}", f.display()),
-                                format!(
-                                    "\n\nThe installer file was moved to this folder:\n{}",
-                                    f.display()
-                                )
-                            ))
-                            .unwrap_or_default()
-                    ),
-                    format!(
-                        "The install path could not be determined: {error:#}{}",
-                        folder
-                            .as_ref()
-                            .map(|f| crate::i18n::ui_owned!(
-                                format!("\n\nKurulum dosyası şu klasöre taşındı:\n{}", f.display()),
-                                format!(
-                                    "\n\nThe installer file was moved to this folder:\n{}",
-                                    f.display()
-                                )
-                            ))
-                            .unwrap_or_default()
-                    )
+                message: crate::i18n::ui_format!(
+                    "Kurulum yolu belirlenemedi: {error:#}{moved}",
+                    "The install path could not be determined: {error:#}{moved}",
+                    error = error,
+                    moved = folder
+                        .as_ref()
+                        .map(|f| crate::i18n::ui_format!(
+                            "\n\nKurulum dosyası şu klasöre taşındı:\n{0}",
+                            "\n\nThe installer file was moved to this folder:\n{0}",
+                            f.display()
+                        ))
+                        .unwrap_or_default()
                 ),
                 quarantine: folder,
                 dry_run: false,
@@ -1361,9 +1303,10 @@ fn stamp_update_check(app: &crate::app::App) {
     stamped.last_update_check = chrono::Local::now().timestamp();
     if let Err(error) = app.update_settings_quiet(stamped) {
         crate::logging::record(crate::logging::Event::warn("update.settings_save").detail(
-            crate::i18n::ui_owned!(
-                format!("Güncelleme denetim damgası kaydedilemedi: {error:#}"),
-                format!("The update check time could not be saved: {error:#}")
+            crate::i18n::ui_format!(
+                "Güncelleme denetim damgası kaydedilemedi: {error:#}",
+                "The update check time could not be saved: {error:#}",
+                error = error
             ),
         ));
     }
@@ -1430,11 +1373,10 @@ pub fn startup_check(app: crate::app::App) {
                         if let Err(error) = app.update_settings_quiet(next) {
                             crate::logging::record(
                                 crate::logging::Event::warn("update.settings_save").detail(
-                                    crate::i18n::ui_owned!(
-                                        format!("Atlanan sürüm kaydedilemedi: {error:#}"),
-                                        format!(
-                                            "The skipped version could not be saved: {error:#}"
-                                        )
+                                    crate::i18n::ui_format!(
+                                        "Atlanan sürüm kaydedilemedi: {error:#}",
+                                        "The skipped version could not be saved: {error:#}",
+                                        error = error
                                     ),
                                 ),
                             );
@@ -1446,9 +1388,10 @@ pub fn startup_check(app: crate::app::App) {
         });
     if let Err(error) = spawned {
         crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
-            crate::i18n::ui_owned!(
-                format!("Güncelleme denetim iş parçacığı başlatılamadı: {error}"),
-                format!("The update check thread could not be started: {error}")
+            crate::i18n::ui_format!(
+                "Güncelleme denetim iş parçacığı başlatılamadı: {error}",
+                "The update check thread could not be started: {error}",
+                error = error
             ),
         ));
     }
@@ -1511,10 +1454,11 @@ pub fn check_now(app: crate::app::App) {
                                     if let Err(error) = app.update_settings_quiet(next) {
                                         crate::logging::record(
                                             crate::logging::Event::warn("update.settings_save")
-                                                .detail(crate::i18n::ui_owned!(
-                                                    format!("Atlanan sürüm kaydedilemedi: {error:#}"),
-                                                    format!("The skipped version could not be saved: {error:#}")
-                                                )),
+                                                .detail(crate::i18n::ui_format!(
+                                                "Atlanan sürüm kaydedilemedi: {error:#}",
+                                                "The skipped version could not be saved: {error:#}",
+                                                error = error
+                                            )),
                                         );
                                     }
                                 }
@@ -1522,31 +1466,28 @@ pub fn check_now(app: crate::app::App) {
                             }
                         }
                     } else {
-                        crate::gui::report_update_text(&crate::i18n::ui_owned!(
-                            format!(
-                                "SSDownload güncel: sürüm {} kullanımda.",
-                                env!("CARGO_PKG_VERSION")
-                            ),
-                            format!(
-                                "SSDownload is up to date; version {} is in use.",
-                                env!("CARGO_PKG_VERSION")
-                            )
+                        crate::gui::report_update_text(&crate::i18n::ui_format!(
+                            "SSDownload güncel: sürüm {0} kullanımda.",
+                            "SSDownload is up to date; version {0} is in use.",
+                            env!("CARGO_PKG_VERSION")
                         ));
                     }
                 }
                 Err(error) => {
-                    crate::gui::report_update_text(&crate::i18n::ui_owned!(
-                        format!("Güncelleme denetimi başarısız: {error:#}"),
-                        format!("The update check failed: {error:#}")
+                    crate::gui::report_update_text(&crate::i18n::ui_format!(
+                        "Güncelleme denetimi başarısız: {error:#}",
+                        "The update check failed: {error:#}",
+                        error = error
                     ));
                 }
             }
         });
     if let Err(error) = spawned {
         crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
-            crate::i18n::ui_owned!(
-                format!("Güncelleme denetim iş parçacığı başlatılamadı: {error}"),
-                format!("The update check thread could not be started: {error}")
+            crate::i18n::ui_format!(
+                "Güncelleme denetim iş parçacığı başlatılamadı: {error}",
+                "The update check thread could not be started: {error}",
+                error = error
             ),
         ));
     }

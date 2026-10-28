@@ -232,15 +232,10 @@ pub fn run_elevated(argument: &str) -> Result<()> {
     if (result as isize) <= 32 {
         anyhow::bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "Yönetici izniyle çalıştırma reddedildi (kod {})",
-                    result as isize
-                ),
-                format!(
-                    "Running as administrator was denied (code {})",
-                    result as isize
-                ),
+            crate::i18n::ui_format!(
+                "Yönetici izniyle çalıştırma reddedildi (kod {0})",
+                "Running as administrator was denied (code {0})",
+                result as isize
             )
         );
     }

@@ -45,9 +45,11 @@ fn spawn_owned(command: &mut Command, executable: &Path) -> Result<(Child, Proce
     let mut child = command.spawn().map_err(|error| {
         crate::error_codes::coded(
             crate::error_codes::TOL_003,
-            crate::i18n::ui_owned!(
-                format!("{} başlatılamadı: {error}", executable.display()),
-                format!("{} could not be started: {error}", executable.display())
+            crate::i18n::ui_format!(
+                "{0} başlatılamadı: {error}",
+                "{0} could not be started: {error}",
+                executable.display(),
+                error = error
             ),
         )
     })?;
@@ -124,15 +126,10 @@ pub(super) fn run_capture_with_proxy(
             crate::bail_code!(
                 crate::error_codes::MED_011,
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!(
-                        "Medya analizi {} saniye içinde tamamlanmadı",
-                        timeout.as_secs()
-                    ),
-                    format!(
-                        "The media analysis did not finish within {} seconds",
-                        timeout.as_secs()
-                    )
+                crate::i18n::ui_format!(
+                    "Medya analizi {0} saniye içinde tamamlanmadı",
+                    "The media analysis did not finish within {0} seconds",
+                    timeout.as_secs()
                 )
             );
         }
@@ -640,9 +637,10 @@ pub(super) fn completed_file_bytes(files: &HashSet<PathBuf>) -> u64 {
 }
 pub(super) fn path_bytes(path: &Path) -> Result<u64> {
     let metadata = fs::metadata(path).with_context(|| {
-        crate::i18n::ui_owned!(
-            format!("Tamamlanan medya bulunamadı: {}", path.display()),
-            format!("The completed media was not found: {}", path.display())
+        crate::i18n::ui_format!(
+            "Tamamlanan medya bulunamadı: {0}",
+            "The completed media was not found: {0}",
+            path.display()
         )
     })?;
     if metadata.is_file() {

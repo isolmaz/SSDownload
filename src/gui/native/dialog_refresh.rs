@@ -33,30 +33,16 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                                     ""
                                 };
                                 let failed_note = if result.failed_pages > 0 {
-                                    crate::i18n::ui_owned!(
-                                        format!(
-                                            ", {} sayfa alınamadı: {}",
-                                            result.failed_pages,
-                                            result.last_failure.clone().unwrap_or_default()
-                                        ),
-                                        format!(
-                                            ", {} pages could not be fetched: {}",
-                                            result.failed_pages,
-                                            result.last_failure.clone().unwrap_or_default()
-                                        )
+                                    crate::i18n::ui_format!(
+                                        ", {0} sayfa alınamadı: {1}",
+                                        ", {0} pages could not be fetched: {1}",
+                                        result.failed_pages,
+                                        result.last_failure.clone().unwrap_or_default()
                                     )
                                 } else {
                                     String::new()
                                 };
-                                set_text(dlg.error,&crate::i18n::ui_owned!(format!("{} sayfa, {} aday, {} bayt tarandı{truncated_note}{failed_note}; yalnız seçilen adaylar eklenir.",
-                                    result.pages_scanned,
-                                    result.candidates.len(),
-                                    result.bytes_scanned,
-                                ), format!("Scanned {} pages, {} candidates, {} bytes{truncated_note}{failed_note}; only the selected candidates are added.",
-                                    result.pages_scanned,
-                                    result.candidates.len(),
-                                    result.bytes_scanned,
-                                )));
+                                set_text(dlg.error,&crate::i18n::ui_format!("{0} sayfa, {1} aday, {2} bayt tarandı{truncated_note}{failed_note}; yalnız seçilen adaylar eklenir.", "Scanned {0} pages, {1} candidates, {2} bytes{truncated_note}{failed_note}; only the selected candidates are added.", result.pages_scanned, result.candidates.len(), result.bytes_scanned, failed_note = failed_note, truncated_note = truncated_note));
                                 EnableWindow(
                                     GetDlgItem(dlg.hwnd, C_ADD),
                                     (!result.candidates.is_empty()) as BOOL,
@@ -86,37 +72,21 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
         DialogKind::Tools(f) => {
             let mut body = String::new();
             for tool in &snapshot.tools {
-                body.push_str(&crate::i18n::ui_owned!(
-                    format!(
-                        "{}\r\n  Durum: {}\r\n  Sürüm: {}\r\n  Konum: {}\r\n\r\n",
-                        tool.name,
-                        if tool.installed {
-                            crate::i18n::ui("Kurulu", "Installed")
-                        } else {
-                            crate::i18n::ui("Kurulu değil", "Not installed")
-                        },
-                        if tool.version.is_empty() {
-                            "—"
-                        } else {
-                            &tool.version
-                        },
-                        tool.path.display()
-                    ),
-                    format!(
-                        "{}\r\n  Status: {}\r\n  Version: {}\r\n  Location: {}\r\n\r\n",
-                        tool.name,
-                        if tool.installed {
-                            crate::i18n::ui("Kurulu", "Installed")
-                        } else {
-                            crate::i18n::ui("Kurulu değil", "Not installed")
-                        },
-                        if tool.version.is_empty() {
-                            "—"
-                        } else {
-                            &tool.version
-                        },
-                        tool.path.display()
-                    )
+                body.push_str(&crate::i18n::ui_format!(
+                    "{0}\r\n  Durum: {1}\r\n  Sürüm: {2}\r\n  Konum: {3}\r\n\r\n",
+                    "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n",
+                    tool.name,
+                    if tool.installed {
+                        crate::i18n::ui("Kurulu", "Installed")
+                    } else {
+                        crate::i18n::ui("Kurulu değil", "Not installed")
+                    },
+                    if tool.version.is_empty() {
+                        "—"
+                    } else {
+                        &tool.version
+                    },
+                    tool.path.display()
                 ));
             }
             if body.is_empty() {
@@ -126,25 +96,15 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                 ));
             }
             if let Some(p) = &snapshot.tool_progress {
-                body.push_str(&crate::i18n::ui_owned!(
-                    format!(
-                        "\r\n{}: {}\r\nİndirilen: {}{}",
-                        p.name,
-                        p.message,
-                        format_bytes(p.downloaded),
-                        p.total
-                            .map(|t| format!(" / {}", format_bytes(t)))
-                            .unwrap_or_default()
-                    ),
-                    format!(
-                        "\r\n{}: {}\r\nDownloaded: {}{}",
-                        p.name,
-                        p.message,
-                        format_bytes(p.downloaded),
-                        p.total
-                            .map(|t| format!(" / {}", format_bytes(t)))
-                            .unwrap_or_default()
-                    )
+                body.push_str(&crate::i18n::ui_format!(
+                    "\r\n{0}: {1}\r\nİndirilen: {2}{3}",
+                    "\r\n{0}: {1}\r\nDownloaded: {2}{3}",
+                    p.name,
+                    p.message,
+                    format_bytes(p.downloaded),
+                    p.total
+                        .map(|t| format!(" / {}", format_bytes(t)))
+                        .unwrap_or_default()
                 ));
                 let percent = p
                     .total
@@ -205,9 +165,10 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             if snapshot.inspecting {
                 set_text(
                     f.summary,
-                    &crate::i18n::ui_owned!(
-                        format!("Video ve çözünürlükler hazırlanıyor.{status}"),
-                        format!("Preparing videos and resolutions.{status}")
+                    &crate::i18n::ui_format!(
+                        "Video ve çözünürlükler hazırlanıyor.{status}",
+                        "Preparing videos and resolutions.{status}",
+                        status = status
                     ),
                 );
                 EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
@@ -237,13 +198,10 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             } else {
                 set_text(
                     f.summary,
-                    &crate::i18n::ui_owned!(
-                        format!(
-                            "Bu kaynak için indirilebilir video seçenekleri doğrulanamadı.{status}"
-                        ),
-                        format!(
-                        "Downloadable video options could not be verified for this source.{status}"
-                    )
+                    &crate::i18n::ui_format!(
+                        "Bu kaynak için indirilebilir video seçenekleri doğrulanamadı.{status}",
+                        "Downloadable video options could not be verified for this source.{status}",
+                        status = status
                     ),
                 );
                 f.video_formats.clear();
@@ -350,9 +308,10 @@ pub(super) unsafe fn refresh_job_view(
             )),
         }
     } else {
-        summary.push_str(&crate::i18n::ui_owned!(
-            format!("{} indirme", f.ids.len()),
-            format!("{} downloads", f.ids.len())
+        summary.push_str(&crate::i18n::ui_format!(
+            "{0} indirme",
+            "{0} downloads",
+            f.ids.len()
         ));
         for (count, label) in [
             (completed, crate::i18n::ui("tamamlandı", "completed")),
@@ -377,55 +336,43 @@ pub(super) unsafe fn refresh_job_view(
     let mut processing = false;
     match job_view_job(snapshot, f) {
         None => {
-            detail.push_str(&crate::i18n::ui_owned!(format!(
-                "Bu iş artık kuyrukta değil.\r\nKimlik: {}\r\n\r\nBaşka bir pencereden kaldırılmış ya da tamamlanmış kayıtlar temizlenmiş olabilir.",
-                f.ids[f.selected]
-            ), format!(
-                "This job is no longer in the queue.\r\nId: {}\r\n\r\nIt may have been removed from another window, or completed entries may have been cleaned up.",
-                f.ids[f.selected]
-            )));
+            detail.push_str(&crate::i18n::ui_format!("Bu iş artık kuyrukta değil.\r\nKimlik: {0}\r\n\r\nBaşka bir pencereden kaldırılmış ya da tamamlanmış kayıtlar temizlenmiş olabilir.", "This job is no longer in the queue.\r\nId: {0}\r\n\r\nIt may have been removed from another window, or completed entries may have been cleaned up.", f.ids[f.selected]));
             action_label = crate::i18n::ui("Duraklat", "Pause");
             can_control = false;
             can_cancel = false;
             can_open = false;
         }
         Some(job) => {
-            detail.push_str(&crate::i18n::ui_owned!(
-                format!(
-                    "{}\r\nDurum: {}\r\nİlerleme: {}\r\nHız: {}\r\nKalan süre: {}\r\n",
-                    job.name,
-                    state_label(job),
-                    format_progress(job),
-                    format_speed(job.speed),
-                    format_eta(job.eta)
-                ),
-                format!(
-                    "{}\r\nState: {}\r\nProgress: {}\r\nSpeed: {}\r\nRemaining: {}\r\n",
-                    job.name,
-                    state_label(job),
-                    format_progress(job),
-                    format_speed(job.speed),
-                    format_eta(job.eta)
-                )
+            detail.push_str(&crate::i18n::ui_format!(
+                "{0}\r\nDurum: {1}\r\nİlerleme: {2}\r\nHız: {3}\r\nKalan süre: {4}\r\n",
+                "{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n",
+                job.name,
+                state_label(job),
+                format_progress(job),
+                format_speed(job.speed),
+                format_eta(job.eta)
             ));
             if !job.phase.trim().is_empty() {
-                detail.push_str(&crate::i18n::ui_owned!(
-                    format!("Aşama: {}\r\n", job.phase),
-                    format!("Phase: {}\r\n", job.phase)
+                detail.push_str(&crate::i18n::ui_format!(
+                    "Aşama: {0}\r\n",
+                    "Phase: {0}\r\n",
+                    job.phase
                 ));
             }
             if let Some(message) = job.error.as_deref() {
                 // The failure and its own text, so the reason is readable here
                 // instead of only in the main window's log.
-                detail.push_str(&crate::i18n::ui_owned!(
-                    format!("Hata: {message}\r\n"),
-                    format!("Error: {message}\r\n")
+                detail.push_str(&crate::i18n::ui_format!(
+                    "Hata: {message}\r\n",
+                    "Error: {message}\r\n",
+                    message = message
                 ));
             }
             if job.state == JobState::Completed {
-                detail.push_str(&crate::i18n::ui_owned!(
-                    format!("Kayıt: {}\r\n", job.path.display()),
-                    format!("Saved: {}\r\n", job.path.display())
+                detail.push_str(&crate::i18n::ui_format!(
+                    "Kayıt: {0}\r\n",
+                    "Saved: {0}\r\n",
+                    job.path.display()
                 ));
                 percent = 1000;
             } else if let Some(total) = job.total.filter(|total| *total > 0) {
@@ -499,9 +446,10 @@ pub(super) unsafe fn refresh_job_view(
                     state_label(job),
                     format_progress(job)
                 )),
-                None => rows.push_str(&crate::i18n::ui_owned!(
-                    format!("{id} — kuyrukta değil\r\n"),
-                    format!("{id} — not in the queue\r\n")
+                None => rows.push_str(&crate::i18n::ui_format!(
+                    "{id} — kuyrukta değil\r\n",
+                    "{id} — not in the queue\r\n",
+                    id = id
                 )),
             }
         }
@@ -558,15 +506,10 @@ pub(super) fn media_status_suffix(f: &MediaFields, snapshot: &AppSnapshot) -> St
         .iter()
         .find(|job| f.renew_ids.iter().any(|id| id == &job.id))
     {
-        parts.push(crate::i18n::ui_owned!(
-            format!(
-                "Bekleyen iş: {} · kaynağı yenilemek için Gelişmiş seçenekler",
-                job.name
-            ),
-            format!(
-                "Pending job: {} · use Advanced options to refresh the source",
-                job.name
-            )
+        parts.push(crate::i18n::ui_format!(
+            "Bekleyen iş: {0} · kaynağı yenilemek için Gelişmiş seçenekler",
+            "Pending job: {0} · use Advanced options to refresh the source",
+            job.name
         ));
     }
     if parts.is_empty() {
@@ -722,10 +665,7 @@ pub(super) unsafe fn refresh_media_size(f: &MediaFields) {
         .unwrap_or_else(|| crate::i18n::ui("bilinmiyor", "unknown").into());
     set_text(
         f.size,
-        &crate::i18n::ui_owned!(
-            format!("Toplam boyut: {size}"),
-            format!("Total size: {size}")
-        ),
+        &crate::i18n::ui_format!("Toplam boyut: {size}", "Total size: {size}", size = size),
     );
 }
 
@@ -869,19 +809,12 @@ pub(super) unsafe fn populate_media(
     let duration = info
         .duration
         .map(|d| {
-            crate::i18n::ui_owned!(
-                format!(
-                    " · Süre {:02}:{:02}:{:02}",
-                    d as u64 / 3600,
-                    (d as u64 / 60) % 60,
-                    d as u64 % 60
-                ),
-                format!(
-                    " · Duration {:02}:{:02}:{:02}",
-                    d as u64 / 3600,
-                    (d as u64 / 60) % 60,
-                    d as u64 % 60
-                )
+            crate::i18n::ui_format!(
+                " · Süre {0:02}:{1:02}:{2:02}",
+                " · Duration {0:02}:{1:02}:{2:02}",
+                d as u64 / 3600,
+                (d as u64 / 60) % 60,
+                d as u64 % 60
             )
         })
         .unwrap_or_else(|| {
@@ -890,9 +823,10 @@ pub(super) unsafe fn populate_media(
     let tolerance = info
         .duration_tolerance
         .map(|value| {
-            crate::i18n::ui_owned!(
-                format!(" · doğrulama toleransı ±{value:.1} sn"),
-                format!(" · verification tolerance ±{value:.1} s")
+            crate::i18n::ui_format!(
+                " · doğrulama toleransı ±{value:.1} sn",
+                " · verification tolerance ±{value:.1} s",
+                value = value
             )
         })
         .unwrap_or_default();
@@ -903,24 +837,20 @@ pub(super) unsafe fn populate_media(
     };
     let playlist_note = info
         .playlist_count
-        .map(|n| {
-            crate::i18n::ui_owned!(
-                format!(" · Playlist: {n} öğe"),
-                format!(" · Playlist: {n} items")
-            )
-        })
+        .map(|n| crate::i18n::ui_format!(" · Playlist: {n} öğe", " · Playlist: {n} items", n = n))
         .unwrap_or_default();
     set_text(
         f.summary,
-        &crate::i18n::ui_owned!(
-            format!(
-                "{}{}{}\r\nKaynak: {}{live_note}{playlist_note}{status}",
-                info.title, duration, tolerance, info.extractor,
-            ),
-            format!(
-                "{}{}{}\r\nSource: {}{live_note}{playlist_note}{status}",
-                info.title, duration, tolerance, info.extractor,
-            )
+        &crate::i18n::ui_format!(
+            "{0}{1}{2}\r\nKaynak: {3}{live_note}{playlist_note}{status}",
+            "{0}{1}{2}\r\nSource: {3}{live_note}{playlist_note}{status}",
+            info.title,
+            duration,
+            tolerance,
+            info.extractor,
+            live_note = live_note,
+            playlist_note = playlist_note,
+            status = status
         ),
     );
 
@@ -1031,9 +961,10 @@ pub(super) unsafe fn populate_media(
                 .unwrap_or_default(),
             format
                 .audio_channels
-                .map(|channels| crate::i18n::ui_owned!(
-                    format!(" · {channels} kanal"),
-                    format!(" · {channels} ch")
+                .map(|channels| crate::i18n::ui_format!(
+                    " · {channels} kanal",
+                    " · {channels} ch",
+                    channels = channels
                 ))
                 .unwrap_or_default()
         );
@@ -1309,11 +1240,10 @@ pub(super) unsafe fn queue_media(
                 if let Err(error) = app.update_settings_quiet(settings) {
                     message(
                         hwnd,
-                        &crate::i18n::ui_owned!(
-                            format!("İndirme eklendi; tercihler kaydedilemedi: {error}"),
-                            format!(
-                                "The download was added; preferences could not be saved: {error}"
-                            )
+                        &crate::i18n::ui_format!(
+                            "İndirme eklendi; tercihler kaydedilemedi: {error}",
+                            "The download was added; preferences could not be saved: {error}",
+                            error = error
                         ),
                         crate::i18n::ui("Video tercihi", "Video preferences"),
                         MB_OK | MB_ICONINFORMATION,
@@ -1326,9 +1256,10 @@ pub(super) unsafe fn queue_media(
             set_dialog_error(
                 hwnd,
                 error,
-                &crate::i18n::ui_owned!(
-                    format!("Medya kuyruğa eklenemedi: {e:#}"),
-                    format!("The media could not be queued: {e:#}")
+                &crate::i18n::ui_format!(
+                    "Medya kuyruğa eklenemedi: {e:#}",
+                    "The media could not be queued: {e:#}",
+                    e = e
                 ),
                 null_mut(),
             );
@@ -1356,9 +1287,10 @@ pub(super) unsafe fn refresh_media_renew_jobs(f: &mut MediaFields, snapshot: &Ap
             for (_, name) in &jobs {
                 combo_add(
                     f.renew_job,
-                    &crate::i18n::ui_owned!(
-                        format!("Bekleyen iş: {name}"),
-                        format!("Pending job: {name}")
+                    &crate::i18n::ui_format!(
+                        "Bekleyen iş: {name}",
+                        "Pending job: {name}",
+                        name = name
                     ),
                 );
             }

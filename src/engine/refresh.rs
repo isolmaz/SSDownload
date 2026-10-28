@@ -162,15 +162,10 @@ pub(super) fn restore_refresh_archive(archive: &RefreshArchive) -> Result<()> {
             );
         }
         fs::rename(saved, original).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!(
-                    "Arşivlenen çalışma verisi geri alınamadı: {}",
-                    saved.display()
-                ),
-                format!(
-                    "The archived work data could not be restored: {}",
-                    saved.display()
-                )
+            crate::i18n::ui_format!(
+                "Arşivlenen çalışma verisi geri alınamadı: {0}",
+                "The archived work data could not be restored: {0}",
+                saved.display()
             )
         })?;
     }

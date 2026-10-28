@@ -203,9 +203,10 @@ pub(crate) fn ensure(
         emit(
             progress,
             crate::i18n::ui("Temizlik", "Cleanup"),
-            &crate::i18n::ui_owned!(
-                format!("Eski araç dosyaları korundu: {error}"),
-                format!("Old tool files kept: {error}")
+            &crate::i18n::ui_format!(
+                "Eski araç dosyaları korundu: {error}",
+                "Old tool files kept: {error}",
+                error = error
             ),
             0,
             None,
@@ -504,9 +505,10 @@ pub(crate) fn ensure(
         emit(
             progress,
             crate::i18n::ui("Temizlik", "Cleanup"),
-            &crate::i18n::ui_owned!(
-                format!("Eski araç dosyaları korundu: {error}"),
-                format!("Old tool files kept: {error}")
+            &crate::i18n::ui_format!(
+                "Eski araç dosyaları korundu: {error}",
+                "Old tool files kept: {error}",
+                error = error
             ),
             0,
             None,
@@ -577,9 +579,10 @@ pub(crate) fn verified_toolchain(
             .ok_or_else(|| {
                 anyhow!(
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!("{name} etkin araç manifestinde bulunamadı"),
-                        format!("{name} was not found in the active tool manifest")
+                    crate::i18n::ui_format!(
+                        "{name} etkin araç manifestinde bulunamadı",
+                        "{name} was not found in the active tool manifest",
+                        name = name
                     )
                 )
             })?;
@@ -629,9 +632,10 @@ fn lock_verified_files(
             crate::bail_code!(
                 crate::error_codes::TOL_002,
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("{} değiştirilmiş veya bozulmuş", recorded.path.display()),
-                    format!("{} was modified or corrupted", recorded.path.display())
+                crate::i18n::ui_format!(
+                    "{0} değiştirilmiş veya bozulmuş",
+                    "{0} was modified or corrupted",
+                    recorded.path.display()
                 )
             );
         }
@@ -730,15 +734,11 @@ fn github_release(
         let body = String::from_utf8_lossy(&bytes);
         anyhow!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "GitHub geçersiz sürüm yanıtı döndürdü: {error}; {}",
-                    bounded(&body, 2048)
-                ),
-                format!(
-                    "GitHub returned an invalid release response: {error}; {}",
-                    bounded(&body, 2048)
-                )
+            crate::i18n::ui_format!(
+                "GitHub geçersiz sürüm yanıtı döndürdü: {error}; {0}",
+                "GitHub returned an invalid release response: {error}; {0}",
+                bounded(&body, 2048),
+                error = error
             )
         )
     })
@@ -753,15 +753,11 @@ fn exact_asset(release: &GithubRelease, name: &str) -> Result<GithubAsset> {
         .ok_or_else(|| {
             anyhow!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!(
-                        "{} yayınında gerekli {} varlığı bulunamadı",
-                        release.tag_name, name
-                    ),
-                    format!(
-                        "The required {} asset was not found in release {}",
-                        name, release.tag_name
-                    )
+                crate::i18n::ui_format!(
+                    "{1} yayınında gerekli {0} varlığı bulunamadı",
+                    "The required {0} asset was not found in release {1}",
+                    name,
+                    release.tag_name
                 )
             )
         })
@@ -803,16 +799,14 @@ fn fetch_text(
     network: &NetworkGovernor,
 ) -> Result<String> {
     let bytes = fetch_bytes(url, 8 * 1024 * 1024, None, control, network).with_context(|| {
-        crate::i18n::ui_owned!(
-            format!("{label} indirilemedi"),
-            format!("{label} could not be downloaded")
+        crate::i18n::ui_format!(
+            "{label} indirilemedi",
+            "{label} could not be downloaded",
+            label = label
         )
     })?;
     String::from_utf8(bytes).with_context(|| {
-        crate::i18n::ui_owned!(
-            format!("{label} UTF-8 değil"),
-            format!("{label} is not UTF-8")
-        )
+        crate::i18n::ui_format!("{label} UTF-8 değil", "{label} is not UTF-8", label = label)
     })
 }
 
@@ -853,9 +847,10 @@ fn fetch_bytes(
         if too_large {
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Sunucu yanıtı izin verilen {limit} bayt sınırını aştı"),
-                    format!("The server response exceeded the allowed {limit} byte limit"),
+                crate::i18n::ui_format!(
+                    "Sunucu yanıtı izin verilen {limit} bayt sınırını aştı",
+                    "The server response exceeded the allowed {limit} byte limit",
+                    limit = limit
                 )
             );
         }
@@ -869,9 +864,11 @@ fn fetch_bytes(
         let body = String::from_utf8_lossy(&data);
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("GitHub HTTP {status} döndürdü: {}", bounded(&body, 2048)),
-                format!("GitHub returned HTTP {status}: {}", bounded(&body, 2048)),
+            crate::i18n::ui_format!(
+                "GitHub HTTP {status} döndürdü: {0}",
+                "GitHub returned HTTP {status}: {0}",
+                bounded(&body, 2048),
+                status = status
             )
         );
     }
@@ -1007,9 +1004,10 @@ fn download_attempt(
     let existing = fs::metadata(destination).map(|m| m.len()).unwrap_or(0);
     let mut file = if existing > 0 && (asset.size == 0 || existing < asset.size) {
         let mut previous = File::open(destination).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("{} okunamadı", destination.display()),
-                format!("{} could not be read", destination.display())
+            crate::i18n::ui_format!(
+                "{0} okunamadı",
+                "{0} could not be read",
+                destination.display()
             )
         })?;
         let mut buffer = [0u8; 64 * 1024];
@@ -1025,16 +1023,18 @@ fn download_attempt(
             .append(true)
             .open(destination)
             .with_context(|| {
-                crate::i18n::ui_owned!(
-                    format!("{} açılamadı", destination.display()),
-                    format!("{} could not be opened", destination.display())
+                crate::i18n::ui_format!(
+                    "{0} açılamadı",
+                    "{0} could not be opened",
+                    destination.display()
                 )
             })?
     } else {
         File::create(destination).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("{} oluşturulamadı", destination.display()),
-                format!("{} could not be created", destination.display())
+            crate::i18n::ui_format!(
+                "{0} oluşturulamadı",
+                "{0} could not be created",
+                destination.display()
             )
         })?
     };
@@ -1109,9 +1109,10 @@ fn download_attempt(
             ));
         }
         return Err(error).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("{label} HTTPS indirmesi başarısız"),
-                format!("{label} HTTPS download failed")
+            crate::i18n::ui_format!(
+                "{label} HTTPS indirmesi başarısız",
+                "{label} HTTPS download failed",
+                label = label
             )
         });
     }
@@ -1119,9 +1120,11 @@ fn download_attempt(
     if !(200..300).contains(&status) {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("{label} indirmesi HTTP {status} döndürdü"),
-                format!("{label} download returned HTTP {status}"),
+            crate::i18n::ui_format!(
+                "{label} indirmesi HTTP {status} döndürdü",
+                "{label} download returned HTTP {status}",
+                label = label,
+                status = status
             )
         );
     }
@@ -1129,23 +1132,19 @@ fn download_attempt(
     file.sync_all()?;
     if asset.size > 0 && seen != asset.size {
         bail!("{}",
-            crate::i18n::ui_owned!(
-                format!("{label} indirme boyutu beklenenden farklı (beklenen {}, alınan {seen})", asset.size),
-                format!("{label} download size differs from the expected size (expected {}, received {seen})", asset.size),
-            ));
+            crate::i18n::ui_format!("{label} indirme boyutu beklenenden farklı (beklenen {0}, alınan {seen})", "{label} download size differs from the expected size (expected {0}, received {seen})", asset.size, label = label, seen = seen));
     }
     let actual = hex::encode(hasher.finalize());
     if !actual.eq_ignore_ascii_case(expected) {
         fs::remove_file(destination).ok();
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "{label} SHA-256 doğrulaması başarısız (beklenen {expected}, alınan {actual})"
-                ),
-                format!(
-                    "{label} SHA-256 verification failed (expected {expected}, received {actual})"
-                ),
+            crate::i18n::ui_format!(
+                "{label} SHA-256 doğrulaması başarısız (beklenen {expected}, alınan {actual})",
+                "{label} SHA-256 verification failed (expected {expected}, received {actual})",
+                actual = actual,
+                expected = expected,
+                label = label
             )
         );
     }
@@ -1199,9 +1198,10 @@ fn checksum_for(text: &str, filename: &str) -> Result<String> {
     }
     bail!(
         "{}",
-        crate::i18n::ui_owned!(
-            format!("Upstream checksum dosyasında {filename} için geçerli SHA-256 bulunamadı"),
-            format!("No valid SHA-256 for {filename} was found in the upstream checksum file"),
+        crate::i18n::ui_format!(
+            "Upstream checksum dosyasında {filename} için geçerli SHA-256 bulunamadı",
+            "No valid SHA-256 for {filename} was found in the upstream checksum file",
+            filename = filename
         )
     )
 }
@@ -1240,9 +1240,10 @@ fn extract_zip_safely(archive_path: &Path, destination: &Path) -> Result<()> {
         let enclosed = entry.enclosed_name().ok_or_else(|| {
             anyhow!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Arşiv güvenli olmayan yol içeriyor: {entry_name}"),
-                    format!("The archive contains an unsafe path: {entry_name}")
+                crate::i18n::ui_format!(
+                    "Arşiv güvenli olmayan yol içeriyor: {entry_name}",
+                    "The archive contains an unsafe path: {entry_name}",
+                    entry_name = entry_name
                 )
             )
         })?;
@@ -1265,13 +1266,10 @@ fn extract_zip_safely(archive_path: &Path, destination: &Path) -> Result<()> {
                 if !safe_windows_name(name) {
                     bail!(
                         "{}",
-                        crate::i18n::ui_owned!(
-                            format!(
-                                "Arşiv güvenli olmayan Windows dosya adı içeriyor: {entry_name}"
-                            ),
-                            format!(
-                                "The archive contains an unsafe Windows file name: {entry_name}"
-                            ),
+                        crate::i18n::ui_format!(
+                            "Arşiv güvenli olmayan Windows dosya adı içeriyor: {entry_name}",
+                            "The archive contains an unsafe Windows file name: {entry_name}",
+                            entry_name = entry_name
                         )
                     );
                 }
@@ -1282,9 +1280,10 @@ fn extract_zip_safely(archive_path: &Path, destination: &Path) -> Result<()> {
             if kind != 0 && kind != 0o100000 && kind != 0o040000 {
                 bail!(
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!("Arşiv desteklenmeyen bağlantı/özel dosya içeriyor: {entry_name}"),
-                        format!("The archive contains an unsupported link or special file: {entry_name}"),
+                    crate::i18n::ui_format!(
+                        "Arşiv desteklenmeyen bağlantı/özel dosya içeriyor: {entry_name}",
+                        "The archive contains an unsupported link or special file: {entry_name}",
+                        entry_name = entry_name
                     )
                 );
             }
@@ -1373,23 +1372,20 @@ fn find_file_named(root: &Path, filename: &str) -> Option<PathBuf> {
 fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<String> {
     let output =
         command_output_timeout(executable, args, Duration::from_secs(20)).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("{name} başlatılamadı"),
-                format!("{name} could not be started")
+            crate::i18n::ui_format!(
+                "{name} başlatılamadı",
+                "{name} could not be started",
+                name = name
             )
         })?;
     if !output.status.success() {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "{name} sürüm doğrulaması başarısız: {}",
-                    bounded(&String::from_utf8_lossy(&output.stderr), 4096)
-                ),
-                format!(
-                    "{name} version verification failed: {}",
-                    bounded(&String::from_utf8_lossy(&output.stderr), 4096)
-                ),
+            crate::i18n::ui_format!(
+                "{name} sürüm doğrulaması başarısız: {0}",
+                "{name} version verification failed: {0}",
+                bounded(&String::from_utf8_lossy(&output.stderr), 4096),
+                name = name
             )
         );
     }
@@ -1400,9 +1396,10 @@ fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<Stri
         .ok_or_else(|| {
             anyhow!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("{name} sürüm çıktısı boş"),
-                    format!("The {name} version output is empty")
+                crate::i18n::ui_format!(
+                    "{name} sürüm çıktısı boş",
+                    "The {name} version output is empty",
+                    name = name
                 )
             )
         })?;
@@ -1430,9 +1427,11 @@ fn command_output_timeout(
     let mut child = command.spawn().map_err(|error| {
         crate::error_codes::coded(
             crate::error_codes::TOL_003,
-            crate::i18n::ui_owned!(
-                format!("{} başlatılamadı: {error}", executable.display()),
-                format!("{} could not be started: {error}", executable.display())
+            crate::i18n::ui_format!(
+                "{0} başlatılamadı: {error}",
+                "{0} could not be started: {error}",
+                executable.display(),
+                error = error
             ),
         )
     })?;
@@ -1485,15 +1484,10 @@ fn command_output_timeout(
             let _ = child.wait();
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!(
-                        "Alt süreç {} saniye içinde yanıt vermedi",
-                        timeout.as_secs()
-                    ),
-                    format!(
-                        "The subprocess did not respond within {} s",
-                        timeout.as_secs()
-                    ),
+                crate::i18n::ui_format!(
+                    "Alt süreç {0} saniye içinde yanıt vermedi",
+                    "The subprocess did not respond within {0} s",
+                    timeout.as_secs()
                 )
             );
         }
@@ -1605,9 +1599,10 @@ fn read_manifest(path: &Path) -> Result<InstallManifest> {
             .ok_or_else(|| {
                 anyhow!(
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!("Araç manifestinde {name} eksik"),
-                        format!("{name} is missing from the tool manifest")
+                    crate::i18n::ui_format!(
+                        "Araç manifestinde {name} eksik",
+                        "{name} is missing from the tool manifest",
+                        name = name
                     )
                 )
             })?;
@@ -1622,9 +1617,10 @@ fn read_manifest(path: &Path) -> Result<InstallManifest> {
         {
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("{name} doğrulanmış dosya listesinde bulunamadı"),
-                    format!("{name} was not found in the verified file list"),
+                crate::i18n::ui_format!(
+                    "{name} doğrulanmış dosya listesinde bulunamadı",
+                    "{name} was not found in the verified file list",
+                    name = name
                 )
             );
         }

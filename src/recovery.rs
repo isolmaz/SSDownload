@@ -78,9 +78,10 @@ fn reject_link(path: &Path) -> Result<()> {
     if fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Dosya yolu yönlendirme içeriyor: {}", path.display()),
-                format!("The file path contains a redirection: {}", path.display())
+            crate::i18n::ui_format!(
+                "Dosya yolu yönlendirme içeriyor: {0}",
+                "The file path contains a redirection: {0}",
+                path.display()
             )
         );
     }

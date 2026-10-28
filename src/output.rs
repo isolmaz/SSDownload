@@ -53,14 +53,7 @@ impl OutputLock {
             let code = error.raw_os_error().unwrap_or(-1);
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!(
-                        "Dosya kilidi beklemesi Windows hatasıyla sonuçlandı (Win32 hata kodu {code}: {error})."
-                    ),
-                    format!(
-                        "Waiting for the file lock failed with a Windows error (Win32 error code {code}: {error})."
-                    )
-                )
+                crate::i18n::ui_format!("Dosya kilidi beklemesi Windows hatasıyla sonuçlandı (Win32 hata kodu {code}: {error}).", "Waiting for the file lock failed with a Windows error (Win32 error code {code}: {error}).", code = code, error = error)
             );
         }
         if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
@@ -186,18 +179,7 @@ pub(crate) fn require_space(output: &Path, required: u64) -> Result<()> {
     if available < required {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "Yeterli boş alan yok: {} MiB gerekli, {} MiB mevcut. İndirilen parçalar korundu.",
-                    required.div_ceil(1024 * 1024),
-                    available / (1024 * 1024)
-                ),
-                format!(
-                    "Not enough free space: {} MiB needed, {} MiB available. The downloaded parts were kept.",
-                    required.div_ceil(1024 * 1024),
-                    available / (1024 * 1024)
-                ),
-            )
+            crate::i18n::ui_format!("Yeterli boş alan yok: {0} MiB gerekli, {1} MiB mevcut. İndirilen parçalar korundu.", "Not enough free space: {0} MiB needed, {1} MiB available. The downloaded parts were kept.", required.div_ceil(1024 * 1024), available / (1024 * 1024))
         )
     }
     Ok(())

@@ -121,6 +121,7 @@ define! {
     TRF_011 => "SSD-TRF-011", "transfer", "fragment", Error, Retry, true, "Parça atlandı; akış baştan indirilecek", "A fragment was skipped; the stream will be downloaded from the start", "A fragment was skipped during the download, so the partial stream is discarded instead of being resumed.";
     TRF_012 => "SSD-TRF-012", "transfer", "validation", Error, Retry, true, "Akış bütünlüğü doğrulanamadı", "Stream integrity could not be verified", "An audio or video stream is shorter or longer than its source playlist declares, or, when the source declares no lengths, than its counterpart; that means missing or duplicated fragments.";
     TRF_013 => "SSD-TRF-013", "transfer", "source", Info, Retry, true, "Tarayıcı aktarımı kuyruk kotası, zaman veya eşzamanlılık sınırında durduruldu.", "Browser transfer stopped at the queue quota, time, or concurrency limit", "A browser transfer reached a queue policy limit; automatic resumption may wait for the policy to permit work.";
+    TRF_014 => "SSD-TRF-014", "transfer", "source", Warn, Report, false, "Bu iş tarayıcı aktarımıyla sürdürülemez", "This job cannot continue through a browser transfer", "The desktop refused to hand the job to a browser transfer (the job is unknown, finished, busy or not authorized, or browser transfer is off); the extension stops resuming it.";
     STO_001 => "SSD-STO-001", "storage", "bridge", Error, Retry, true, "Kuyruk veritabanı hatası", "Queue database error", "A SQLite operation failed.";
     STO_002 => "SSD-STO-002", "storage", "bridge", Error, Report, false, "Kayıtlı durum bozuk", "The stored state is corrupted", "Persisted state failed schema or invariant validation.";
     STO_003 => "SSD-STO-003", "storage", "source", Warn, Settings, false, "Kuyruk kotası dolu", "The queue quota is full", "A queue quota prevents accepting more jobs.";
@@ -156,8 +157,11 @@ pub fn definition(code: Code) -> Option<&'static Definition> {
 /// The message shown to a user, prefixed with the code so every surface reports it.
 pub fn labelled_message(code: Code) -> String {
     match definition(code) {
-        Some(entry) if crate::i18n::english() => format!("{} {}", code, entry.message_en),
-        Some(entry) => format!("{} {}", code, entry.message_tr),
+        Some(entry) => format!(
+            "{} {}",
+            code,
+            crate::i18n::ui(entry.message_tr, entry.message_en)
+        ),
         None => format!(
             "{code} {}",
             crate::i18n::ui("Bilinmeyen hata kodu", "Unknown error code")

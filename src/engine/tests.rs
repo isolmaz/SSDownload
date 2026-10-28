@@ -677,6 +677,55 @@ fn browser_policy_stop_persists_scheduled_state_before_releasing_generation() {
 }
 
 #[test]
+fn browser_transfer_refusals_carry_their_code() {
+    use crate::error_codes::{code_of_text, TRF_014};
+    let root = std::env::temp_dir().join(format!(
+        "ssdownload-engine-browser-refusal-{}",
+        Uuid::new_v4()
+    ));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let engine = Engine::open(paths).unwrap();
+    let id = engine
+        .add(AddRequest {
+            url: "https://example.test/browser-refused.bin".into(),
+            filename: Some("browser-refused.bin".into()),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..Default::default()
+        })
+        .unwrap()
+        .remove(0);
+    let sender_started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    let refusal = |id: &str| {
+        engine
+            .begin_browser_transfer(id, std::process::id(), sender_started_at)
+            .map(|_| ())
+            .unwrap_err()
+    };
+    assert_eq!(
+        code_of_text(&refusal(&id)),
+        Some(TRF_014),
+        "browser transfer is off"
+    );
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    assert_eq!(
+        code_of_text(&refusal("00000000-0000-4000-8000-000000000000")),
+        Some(TRF_014),
+        "an unknown job"
+    );
+    assert_eq!(
+        code_of_text(&refusal(&id)),
+        Some(TRF_014),
+        "a job not authorized for a browser transfer"
+    );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn disconnected_sender_releases_only_its_generation() {
     let root = std::env::temp_dir().join(format!(
         "ssdownload-engine-browser-sender-{}",

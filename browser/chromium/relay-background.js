@@ -260,10 +260,11 @@
       transfer = await transferCommand({ operation: "begin", id: state.jobId, total: null, etag: null, restart: false });
     } catch (error) {
       const reason = String(error?.message || error);
-      // The desktop words these refusals in its interface language (the engine's Turkish/English
-      // pairs, src/engine/mod.rs); both wordings end the job's automatic resumption, never just
-      // the Turkish one.
-      if (/İş bulunamadı|ayrılamaz|yetkilendirilmeli|Deneysel tarayıcı aktarımı|Job not found|cannot be set aside|must be authorized|Experimental browser transfer/i.test(reason)) {
+      // A refusal ends the job's automatic resumption. Current desktops tag it with SSD-TRF-014
+      // (code first, the sentence in the desktop's language after); older builds sent only the
+      // sentence, in Turkish or English. Both count.
+      if (globalThis.SSDownloadErrorCodes?.splitCode?.(reason)?.code === "SSD-TRF-014"
+        || /İş bulunamadı|ayrılamaz|yetkilendirilmeli|Deneysel tarayıcı aktarımı|Job not found|cannot be set aside|must be authorized|Experimental browser transfer/i.test(reason)) {
         jobs.delete(state.jobId);
       } else {
         state.reason = reason.slice(0, 500);

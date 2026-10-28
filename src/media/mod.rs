@@ -211,9 +211,10 @@ fn inspect_document_with_tools(
         crate::bail_code!(
             crate::error_codes::MED_006,
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Medya analizi başarısız: {detail}"),
-                format!("Media analysis failed: {detail}")
+            crate::i18n::ui_format!(
+                "Medya analizi başarısız: {detail}",
+                "Media analysis failed: {detail}",
+                detail = detail
             )
         );
     }
@@ -221,15 +222,10 @@ fn inspect_document_with_tools(
         crate::bail_code!(
             crate::error_codes::MED_006,
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "Medya analizi çıktısı {} MB sınırını aştı",
-                    MAX_INSPECT_OUTPUT / (1024 * 1024)
-                ),
-                format!(
-                    "The media analysis output exceeded the {} MB limit",
-                    MAX_INSPECT_OUTPUT / (1024 * 1024)
-                )
+            crate::i18n::ui_format!(
+                "Medya analizi çıktısı {0} MB sınırını aştı",
+                "The media analysis output exceeded the {0} MB limit",
+                MAX_INSPECT_OUTPUT / (1024 * 1024)
             )
         );
     }
@@ -379,9 +375,11 @@ pub(crate) fn download(
                 };
                 anyhow!(
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!("{} aşamasında {error:#}", failure_stage_label(phase)),
-                        format!("{} stage: {error:#}", failure_stage_label(phase))
+                    crate::i18n::ui_format!(
+                        "{0} aşamasında {error:#}",
+                        "{0} stage: {error:#}",
+                        failure_stage_label(phase),
+                        error = error
                     )
                 )
             })?;
@@ -748,12 +746,10 @@ pub(crate) fn download(
                     job_id,
                 )?;
                 progress(TransferProgress {
-                    phase: crate::i18n::ui_owned!(
-                        format!(
-                            "Aktarım ilerlemedi; bağlantı yenileniyor ({}).",
-                            stall_restarts
-                        ),
-                        format!("The transfer stalled; reconnecting ({}).", stall_restarts)
+                    phase: crate::i18n::ui_format!(
+                        "Aktarım ilerlemedi; bağlantı yenileniyor ({0}).",
+                        "The transfer stalled; reconnecting ({0}).",
+                        stall_restarts
                     ),
                     ..TransferProgress::default()
                 });
@@ -805,22 +801,7 @@ pub(crate) fn download(
                     if discarded.0 > 0 {
                         fragment_restarts = fragment_restarts.saturating_add(1);
                         progress(TransferProgress {
-                            phase: crate::i18n::ui_owned!(
-                                format!(
-                                    "Parça atlandı; yarım kalan {} dosya ({:.1} MB) atılıp akış baştan indiriliyor (deneme {}, {} bağlantı).",
-                                    discarded.0,
-                                    discarded.1 as f64 / (1024.0 * 1024.0),
-                                    fragment_restarts + 1,
-                                    fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)
-                                ),
-                                format!(
-                                    "A fragment was skipped; {} unfinished file(s) ({:.1} MB) discarded and the stream restarts (attempt {}, {} connection(s)).",
-                                    discarded.0,
-                                    discarded.1 as f64 / (1024.0 * 1024.0),
-                                    fragment_restarts + 1,
-                                    fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)
-                                )
-                            ),
+                            phase: crate::i18n::ui_format!("Parça atlandı; yarım kalan {0} dosya ({1:.1} MB) atılıp akış baştan indiriliyor (deneme {2}, {3} bağlantı).", "A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).", discarded.0, discarded.1 as f64 / (1024.0 * 1024.0), fragment_restarts + 1, fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)),
                             ..TransferProgress::default()
                         });
                         crate::logging::record_job(
@@ -834,16 +815,7 @@ pub(crate) fn download(
                             crate::bail_code!(
                                 crate::error_codes::TRF_011,
                                 "{}",
-                                crate::i18n::ui_owned!(
-                                    format!(
-                                        "Kaynak parçaları tekrar tekrar düşürdü; akış {} kez baştan indirildi ve bütünlük sağlanamadı. Kaynağı daha sonra yeniden deneyin.",
-                                        fragment_restarts
-                                    ),
-                                    format!(
-                                        "The source kept dropping fragments; the stream was restarted {} time(s) and integrity could not be ensured. Try the source again later.",
-                                        fragment_restarts
-                                    )
-                                )
+                                crate::i18n::ui_format!("Kaynak parçaları tekrar tekrar düşürdü; akış {0} kez baştan indirildi ve bütünlük sağlanamadı. Kaynağı daha sonra yeniden deneyin.", "The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.", fragment_restarts)
                             );
                         }
                         continue;
@@ -875,16 +847,7 @@ pub(crate) fn download(
                         crate::bail_code!(
                             crate::error_codes::MED_015,
                             "{}",
-                            crate::i18n::ui_owned!(
-                                format!(
-                                    "Seçilen kalite indirme anında kaynağın listesinde yok; kaynak yenilenmiş olabilir. Kaynağı yeniden çözümleyip var olan bir kaliteyi seçin. {}",
-                                    available_qualities(&info)
-                                ),
-                                format!(
-                                    "The selected quality was not in the source's list at download time; the source may have been refreshed. Analyze the source again and pick an available quality. {}",
-                                    available_qualities(&info)
-                                )
-                            )
+                            crate::i18n::ui_format!("Seçilen kalite indirme anında kaynağın listesinde yok; kaynak yenilenmiş olabilir. Kaynağı yeniden çözümleyip var olan bir kaliteyi seçin. {0}", "The selected quality was not in the source's list at download time; the source may have been refreshed. Analyze the source again and pick an available quality. {0}", available_qualities(&info))
                         );
                     }
                     let visible = non_debug_lines(&error);
@@ -903,20 +866,7 @@ pub(crate) fn download(
                     }
                     bail!(
                         "{}",
-                        crate::i18n::ui_owned!(
-                            format!(
-                                "{} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {}/1): {}",
-                                failure_stage_label(phase),
-                                u8::from(compatibility_retry),
-                                summary
-                            ),
-                            format!(
-                                "Media download failed at the {} stage (compatibility attempt: {}/1): {}",
-                                failure_stage_label(phase),
-                                u8::from(compatibility_retry),
-                                summary
-                            )
-                        )
+                        crate::i18n::ui_format!("{0} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {1}/1): {2}", "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}", failure_stage_label(phase), u8::from(compatibility_retry), summary)
                     );
                 }
                 break;
@@ -1141,15 +1091,10 @@ pub(crate) fn mux_browser_streams(
         let _ = fs::remove_file(&staged);
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "Tarayıcı medya akışları kayıpsız birleştirilemedi: {}",
-                    bounded_tail(&result.stderr, 4096)
-                ),
-                format!(
-                    "The browser media streams could not be merged losslessly: {}",
-                    bounded_tail(&result.stderr, 4096)
-                )
+            crate::i18n::ui_format!(
+                "Tarayıcı medya akışları kayıpsız birleştirilemedi: {0}",
+                "The browser media streams could not be merged losslessly: {0}",
+                bounded_tail(&result.stderr, 4096)
             )
         );
     }
@@ -1458,15 +1403,10 @@ fn remux_live_recording(
     if !written {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "Canlı kaydın kaydedilen kısmı dosyaya yazılamadı: {}",
-                    result.stderr.trim()
-                ),
-                format!(
-                    "The recorded part of the live stream could not be written to a file: {}",
-                    result.stderr.trim()
-                )
+            crate::i18n::ui_format!(
+                "Canlı kaydın kaydedilen kısmı dosyaya yazılamadı: {0}",
+                "The recorded part of the live stream could not be written to a file: {0}",
+                result.stderr.trim()
             )
         );
     }
@@ -1647,9 +1587,10 @@ fn available_qualities(info: &MediaInfo) -> String {
         .map(|height| format!("{height}p"))
         .collect::<Vec<_>>()
         .join(", ");
-    crate::i18n::ui_owned!(
-        format!("Analizde görülen çözünürlükler: {list}"),
-        format!("Resolutions seen in the analysis: {list}")
+    crate::i18n::ui_format!(
+        "Analizde görülen çözünürlükler: {list}",
+        "Resolutions seen in the analysis: {list}",
+        list = list
     )
 }
 
@@ -2379,10 +2320,7 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
             crate::bail_code!(
                 crate::error_codes::MED_012,
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Seçilen {height}p kalitesi artık bulunmuyor; başka kaliteye otomatik geçilmedi"),
-                    format!("The selected {height}p quality is no longer available; no automatic switch to another quality was made")
-                )
+                crate::i18n::ui_format!("Seçilen {height}p kalitesi artık bulunmuyor; başka kaliteye otomatik geçilmedi", "The selected {height}p quality is no longer available; no automatic switch to another quality was made", height = height)
             );
         }
     }
@@ -2399,12 +2337,10 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
                 crate::bail_code!(
                     crate::error_codes::MED_012,
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!("Seçilen ses parçasının dili değişti: {}", selection.id),
-                        format!(
-                            "The language of the selected audio track changed: {}",
-                            selection.id
-                        )
+                    crate::i18n::ui_format!(
+                        "Seçilen ses parçasının dili değişti: {0}",
+                        "The language of the selected audio track changed: {0}",
+                        selection.id
                     )
                 );
             }
@@ -2437,16 +2373,7 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
         if !subtitle_languages.insert(language_key(&selection.language)) {
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!(
-                        "Aynı dil için manuel ve otomatik altyazı birlikte veya yinelenerek seçilemez: {}",
-                        selection.language
-                    ),
-                    format!(
-                        "Manual and automatic subtitles for the same language cannot be selected together or twice: {}",
-                        selection.language
-                    )
-                )
+                crate::i18n::ui_format!("Aynı dil için manuel ve otomatik altyazı birlikte veya yinelenerek seçilemez: {0}", "Manual and automatic subtitles for the same language cannot be selected together or twice: {0}", selection.language)
             );
         }
         if !info.subtitle_tracks.iter().any(|track| {
@@ -2455,12 +2382,10 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
             crate::bail_code!(
                 crate::error_codes::MED_012,
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Seçilen altyazı artık bulunmuyor: {}", selection.language),
-                    format!(
-                        "The selected subtitle is no longer available: {}",
-                        selection.language
-                    )
+                crate::i18n::ui_format!(
+                    "Seçilen altyazı artık bulunmuyor: {0}",
+                    "The selected subtitle is no longer available: {0}",
+                    selection.language
                 )
             );
         }
@@ -2482,9 +2407,10 @@ fn validate_track_selection(request: &AddRequest, info: &MediaInfo) -> Result<()
             crate::bail_code!(
                 crate::error_codes::MED_012,
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Seçilen altyazı bulunamadı: {language}"),
-                    format!("The selected subtitle was not found: {language}")
+                crate::i18n::ui_format!(
+                    "Seçilen altyazı bulunamadı: {language}",
+                    "The selected subtitle was not found: {language}",
+                    language = language
                 )
             );
         }
@@ -2503,9 +2429,10 @@ fn exact_audio_format<'a>(info: &'a MediaInfo, id: &str) -> Result<&'a MediaForm
         .ok_or_else(|| {
             anyhow!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Seçilen ses parçası artık bulunmuyor: {id}"),
-                    format!("The selected audio track is no longer available: {id}")
+                crate::i18n::ui_format!(
+                    "Seçilen ses parçası artık bulunmuyor: {id}",
+                    "The selected audio track is no longer available: {id}",
+                    id = id
                 )
             )
         })
@@ -2638,7 +2565,7 @@ fn validate_format_id(value: &str, label: &str) -> Result<()> {
     {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(format!("{label} geçersiz"), format!("{label} is invalid"))
+            crate::i18n::ui_format!("{label} geçersiz", "{label} is invalid", label = label)
         );
     }
     Ok(())
@@ -2653,7 +2580,7 @@ fn validate_language(value: &str, label: &str) -> Result<()> {
     {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(format!("{label} geçersiz"), format!("{label} is invalid"))
+            crate::i18n::ui_format!("{label} geçersiz", "{label} is invalid", label = label)
         );
     }
     Ok(())
@@ -2723,10 +2650,7 @@ fn audio_conversion(request: &AddRequest) -> Result<Option<&'static str>> {
         "flac" => Ok(Some("flac")),
         other => bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Desteklenmeyen ses çıktısı: {other}. Kullanılabilir seçenekler: original, MP3, M4A, Opus, FLAC"),
-                format!("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC")
-            )
+            crate::i18n::ui_format!("Desteklenmeyen ses çıktısı: {other}. Kullanılabilir seçenekler: original, MP3, M4A, Opus, FLAC", "Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC", other = other)
         ),
     }
 }
@@ -2743,9 +2667,10 @@ fn validate_subtitle_languages(values: &[String]) -> Result<String> {
         {
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Geçersiz altyazı dili seçimi: {value}"),
-                    format!("Invalid subtitle language selection: {value}")
+                crate::i18n::ui_format!(
+                    "Geçersiz altyazı dili seçimi: {value}",
+                    "Invalid subtitle language selection: {value}",
+                    value = value
                 )
             );
         }

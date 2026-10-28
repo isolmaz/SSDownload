@@ -68,7 +68,7 @@ pub(super) unsafe fn paint_frame(hwnd: HWND) {
         y: client.top,
     };
     ClientToScreen(hwnd, &mut origin);
-    let left = origin.x - window.left;
+    let left = window_x(hwnd, &window, origin.x);
     let top = origin.y - window.top;
     let right = client.right - client.left + left;
     let bottom = client.bottom - client.top + top;
@@ -1053,12 +1053,21 @@ pub(super) unsafe fn paint_list_tail(ui: &MainUi, dc: HDC) {
         FillRect(dc, &column_line, line);
     }
 }
+/// The x coordinate a screen position has in `hwnd`'s window context. A mirrored
+/// window's context counts x from its right edge.
+pub(super) unsafe fn window_x(hwnd: HWND, window: &RECT, screen_x: i32) -> i32 {
+    if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_LAYOUTRTL != 0 {
+        window.right - screen_x
+    } else {
+        screen_x - window.left
+    }
+}
+
 /// The bar's own geometry: the strip box in window coordinates, the window
-/// origin that turns item rects into the same space, and the strip's bottom
+/// rect that turns item rects into the same space, and the strip's bottom
 /// edge, which is also the underline's clamp.
 pub(super) struct MenuStrip {
-    pub(super) window_left: i32,
-    pub(super) window_top: i32,
+    pub(super) window: RECT,
     pub(super) bar: RECT,
     pub(super) bottom: i32,
 }
@@ -1091,8 +1100,7 @@ pub(super) unsafe fn menu_strip(ui: &MainUi) -> Option<MenuStrip> {
         return None;
     }
     Some(MenuStrip {
-        window_left: window.left,
-        window_top: window.top,
+        window,
         bar: RECT {
             left: 0,
             top,
@@ -1166,11 +1174,13 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
         if GetMenuItemRect(ui.hwnd, menu, index as u32, &mut rect) == 0 {
             continue;
         }
+        let left = window_x(ui.hwnd, &strip.window, rect.left);
+        let right = window_x(ui.hwnd, &strip.window, rect.right);
         let item = RECT {
-            left: rect.left - strip.window_left,
-            top: rect.top - strip.window_top,
-            right: rect.right - strip.window_left,
-            bottom: rect.bottom - strip.window_top,
+            left: left.min(right),
+            top: rect.top - strip.window.top,
+            right: left.max(right),
+            bottom: rect.bottom - strip.window.top,
         };
         draw_menu_item(
             dc,

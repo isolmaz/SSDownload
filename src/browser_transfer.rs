@@ -704,9 +704,10 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 file.set_len(offset)?; // An unacknowledged crash tail is never treated as committed data.
                 file.seek(SeekFrom::Start(offset))?;
                 file.write_all(&bytes).map_err(|error| {
-                    let message = crate::i18n::ui_owned!(
-                        format!("Tarayıcı verisi diske yazılamadı: {error}"),
-                        format!("The browser data could not be written to disk: {error}"),
+                    let message = crate::i18n::ui_format!(
+                        "Tarayıcı verisi diske yazılamadı: {error}",
+                        "The browser data could not be written to disk: {error}",
+                        error = error
                     );
                     anyhow::Error::from(error).context(message)
                 })?;

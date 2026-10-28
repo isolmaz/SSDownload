@@ -39,9 +39,10 @@ pub(crate) fn verify_file_result(path: &Path, checksum: Option<&str>) -> Result<
 
 pub(super) fn digest_file(path: &Path) -> Result<String> {
     let mut file = File::open(path).with_context(|| {
-        crate::i18n::ui_owned!(
-            format!("Dosya okunamadı: {}", path.display()),
-            format!("The file could not be read: {}", path.display())
+        crate::i18n::ui_format!(
+            "Dosya okunamadı: {0}",
+            "The file could not be read: {0}",
+            path.display()
         )
     })?;
     let mut digest = Sha256::new();
@@ -286,18 +287,20 @@ pub(super) fn perform_synchronization(
     if matches!(status, 404 | 410) {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Senkronizasyon kaynağı silinmiş (HTTP {status}); önceki çıktı korundu"),
-                format!("The synchronization source is gone (HTTP {status}); the previous output was kept")
+            crate::i18n::ui_format!(
+                "Senkronizasyon kaynağı silinmiş (HTTP {status}); önceki çıktı korundu",
+                "The synchronization source is gone (HTTP {status}); the previous output was kept",
+                status = status
             )
         );
     }
     if !(200..300).contains(&status) {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Senkronizasyon sunucusu HTTP {status} döndürdü; önceki çıktı korundu"),
-                format!("The synchronization server returned HTTP {status}; the previous output was kept")
+            crate::i18n::ui_format!(
+                "Senkronizasyon sunucusu HTTP {status} döndürdü; önceki çıktı korundu",
+                "The synchronization server returned HTTP {status}; the previous output was kept",
+                status = status
             )
         );
     }

@@ -715,9 +715,10 @@ extern "C" fn curl_open_socket(
         let mut entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                state.fail(&crate::i18n::ui_owned!(
-                    format!("Ağ bağlantısı açılamadı: {error:#}"),
-                    format!("The network connection could not be opened: {error:#}")
+                state.fail(&crate::i18n::ui_format!(
+                    "Ağ bağlantısı açılamadı: {error:#}",
+                    "The network connection could not be opened: {error:#}",
+                    error = error
                 ));
                 return curl_sys::CURL_SOCKET_BAD;
             }

@@ -272,15 +272,10 @@ fn merge(
         let _ = fs::remove_file(&staged);
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!(
-                    "Görüntü ve ses akışları kayıpsız birleştirilemedi: {}",
-                    bounded_tail(&result.stderr, 4096)
-                ),
-                format!(
-                    "The video and audio streams could not be merged losslessly: {}",
-                    bounded_tail(&result.stderr, 4096)
-                )
+            crate::i18n::ui_format!(
+                "Görüntü ve ses akışları kayıpsız birleştirilemedi: {0}",
+                "The video and audio streams could not be merged losslessly: {0}",
+                bounded_tail(&result.stderr, 4096)
             )
         );
     }
@@ -866,21 +861,18 @@ fn segment_failure(
     status: Option<u32>,
     reason: &str,
 ) -> anyhow::Error {
-    let message = crate::i18n::ui_owned!(
-        format!(
-            "{} akışının {}. parçası {SEGMENT_ATTEMPTS} denemede indirilemedi: {reason}",
-            if stream.role == "video" {
-                "Görüntü"
-            } else {
-                "Ses"
-            },
-            index + 1
-        ),
-        format!(
-            "Segment {} of the {} stream failed after {SEGMENT_ATTEMPTS} attempts: {reason}",
-            index + 1,
-            stream.role
-        )
+    let stream_name = if stream.role == "video" {
+        crate::i18n::ui("Görüntü", "video")
+    } else {
+        crate::i18n::ui("Ses", "audio")
+    };
+    let message = crate::i18n::ui_format!(
+        "{1} akışının {0}. parçası {attempts} denemede indirilemedi: {reason}",
+        "Segment {0} of the {1} stream failed after {attempts} attempts: {reason}",
+        index + 1,
+        stream_name,
+        attempts = SEGMENT_ATTEMPTS,
+        reason = reason
     );
     match status.filter(|status| (400..600).contains(status)) {
         // The engine renews an expired source by the typed status, not by the sentence.

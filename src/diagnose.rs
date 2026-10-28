@@ -482,22 +482,18 @@ fn write_package(
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&target, bytes).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("Teşhis paketi yazılamadı: {}", target.display()),
-                format!(
-                    "The diagnostics package could not be written: {}",
-                    target.display()
-                )
+            crate::i18n::ui_format!(
+                "Teşhis paketi yazılamadı: {0}",
+                "The diagnostics package could not be written: {0}",
+                target.display()
             )
         })?;
     }
     let file = std::fs::File::create(&zip_path).with_context(|| {
-        crate::i18n::ui_owned!(
-            format!("Teşhis paketi oluşturulamadı: {}", zip_path.display()),
-            format!(
-                "The diagnostics package could not be created: {}",
-                zip_path.display()
-            )
+        crate::i18n::ui_format!(
+            "Teşhis paketi oluşturulamadı: {0}",
+            "The diagnostics package could not be created: {0}",
+            zip_path.display()
         )
     })?;
     let mut zip = zip::ZipWriter::new(file);
