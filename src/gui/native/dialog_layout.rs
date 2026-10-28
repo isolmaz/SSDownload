@@ -1300,11 +1300,11 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
         }
         DialogKind::Media(f) => {
-            // The thumbnail is a STATIC too, but it is placed on its own below,
-            // not as one of the field labels.
+            // The thumbnail and the total size are STATICs too, but they are placed on
+            // their own below, not as field labels.
             let labels: Vec<_> = child_statics(dlg.hwnd, dlg.error)
                 .into_iter()
-                .filter(|value| *value != f.thumbnail)
+                .filter(|value| *value != f.thumbnail && *value != f.size)
                 .collect();
             let media_kind = f
                 .kind_values
@@ -1382,6 +1382,15 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 1,
             );
             EnableWindow(f.format, (!audio_only) as BOOL);
+            // The selected streams' total size, right under the quality list.
+            MoveWindow(
+                f.size,
+                m,
+                format_top + line + scale(4, dlg.dpi),
+                cw,
+                scale(18, dlg.dpi),
+                1,
+            );
             // Advanced: track lists share one row and the external fields are
             // laid out for a 640 px window.
             field(3, m, advanced_top, cw);

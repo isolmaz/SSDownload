@@ -133,6 +133,22 @@ pub(super) fn format_selector(request: &AddRequest, info: &MediaInfo) -> Result<
     })
 }
 
+/// The formats a download of `request` takes from `info`, resolved as the download selects
+/// them; empty when that selection fails.
+pub(crate) fn selected_formats<'a>(
+    request: &AddRequest,
+    info: &'a MediaInfo,
+) -> Vec<&'a MediaFormat> {
+    let Ok(ids) =
+        format_selector(request, info).and_then(|selector| selected_format_ids(&selector, info))
+    else {
+        return Vec::new();
+    };
+    ids.iter()
+        .filter_map(|id| info.formats.iter().find(|format| format.id == *id))
+        .collect()
+}
+
 pub(super) fn requested_video_size(format: &MediaFormat, request: &AddRequest) -> bool {
     request
         .exact_height

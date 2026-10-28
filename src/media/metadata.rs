@@ -143,11 +143,26 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
 }
 
 pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
-    value
-        .get("formats")
-        .and_then(Value::as_array)
+    let duration = value
+        .get("duration")
+        .and_then(Value::as_f64)
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
+    // yt-dlp's generic extractor parses a body it reads as a playlist into `formats`; a direct
+    // link it names HLS without one was labelled by the URL's extension alone and is no playlist.
+    let guessed_playlist = value.get("direct").and_then(Value::as_bool) == Some(true)
+        && value
+            .get("protocol")
+            .and_then(Value::as_str)
+            .is_some_and(|protocol| protocol.contains("m3u8"));
+    let formats = match value.get("formats").and_then(Value::as_array) {
+        Some(formats) => formats.iter().collect(),
+        // yt-dlp leaves `formats` out when the extractor found one stream (a direct link the
+        // server labels as a download rather than as video); the info dict is that format.
+        None if value.get("url").is_some() && !guessed_playlist => vec![value],
+        None => Vec::new(),
+    };
+    formats
         .into_iter()
-        .flatten()
         .filter_map(|format| {
             let id = format.get("format_id").and_then(Value::as_str)?.to_string();
             let has_drm = explicit_drm(format);
@@ -208,6 +223,19 @@ pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
+            let exact_size = format.get("filesize").and_then(Value::as_u64);
+            // HLS formats carry a bitrate (kbit/s) but no size; over the source's duration it
+            // gives the size the stream will take.
+            let estimated_size = format
+                .get("filesize_approx")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    let bitrate = format
+                        .get("tbr")
+                        .and_then(Value::as_f64)
+                        .filter(|kbits| kbits.is_finite() && *kbits > 0.0)?;
+                    Some((bitrate * 125.0 * duration?) as u64)
+                });
             Some(MediaFormat {
                 id,
                 label,
@@ -215,10 +243,8 @@ pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
                 width,
                 height,
                 fps,
-                filesize: format
-                    .get("filesize")
-                    .and_then(Value::as_u64)
-                    .or_else(|| format.get("filesize_approx").and_then(Value::as_u64)),
+                filesize: exact_size.or(estimated_size),
+                size_estimated: exact_size.is_none() && estimated_size.is_some(),
                 video_codec,
                 audio_codec,
                 language: string_field(format, "language"),

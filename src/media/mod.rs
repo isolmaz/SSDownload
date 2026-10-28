@@ -42,6 +42,7 @@ pub(crate) use postprocess::validate_options;
 use postprocess::*;
 use probe::*;
 use process::*;
+pub(crate) use selection::selected_formats;
 use selection::*;
 use session::*;
 pub(crate) use session::{scoped_cookie_applies, sweep_stale_cookie_jars};
@@ -476,6 +477,17 @@ pub(crate) fn download(
     base_args.push("--verbose".into());
     if from_start {
         base_args.push("--live-from-start".into());
+    }
+    if live {
+        // FFmpeg records a live DASH stream into a plain MP4, whose index is written only when
+        // FFmpeg ends on its own, and finishing a recording stops it by force: fragments keep
+        // what was recorded readable. Keyframes cut fragments only in a video track, so a
+        // recording without video is cut every 5 s instead. Live HLS is recorded as MPEG-TS,
+        // which ignores these options.
+        base_args.extend([
+            "--downloader-args".into(),
+            "ffmpeg_o:-movflags +frag_keyframe+empty_moov -frag_duration 5000000".into(),
+        ]);
     }
     if let Some(source_info) = &source_info {
         base_args.extend(load_info_args(
@@ -1109,6 +1121,13 @@ pub(crate) fn mux_browser_streams(
         "The browser media target folder is missing",
     ))?;
     fs::create_dir_all(parent)?;
+    for subtitle in &subtitles {
+        if let Ok(text) = fs::read_to_string(&subtitle.path) {
+            if let Some(playable) = without_unmuxable_cues(&text) {
+                fs::write(&subtitle.path, playable)?;
+            }
+        }
+    }
     let staged = parent.join(format!(".browser-mux-{}.tmp", uuid::Uuid::new_v4()));
     let args = browser_mux_args(request, streams, &staged);
     let result = run_capture(
@@ -1802,22 +1821,25 @@ fn selection_is_fragmented(inspection: &Value, request: &AddRequest, selector: &
         else {
             return false;
         };
-        root.get("formats")
-            .and_then(Value::as_array)
-            .is_some_and(|formats| {
-                formats.iter().any(|format| {
-                    format
-                        .get("format_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| ids.iter().any(|selected| selected == id))
-                        && (format.get("protocol").and_then(Value::as_str).is_some_and(
-                            |protocol| protocol.contains("m3u8") || protocol.contains("dash"),
-                        ) || format
-                            .get("fragments")
-                            .and_then(Value::as_array)
-                            .is_some_and(|fragments| !fragments.is_empty()))
-                })
-            })
+        // A result without a format list is its own format, as in `parse_formats`.
+        let formats = match root.get("formats").and_then(Value::as_array) {
+            Some(formats) => formats.iter().collect(),
+            None => vec![root],
+        };
+        formats.into_iter().any(|format| {
+            format
+                .get("format_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| ids.iter().any(|selected| selected == id))
+                && (format
+                    .get("protocol")
+                    .and_then(Value::as_str)
+                    .is_some_and(|protocol| protocol.contains("m3u8") || protocol.contains("dash"))
+                    || format
+                        .get("fragments")
+                        .and_then(Value::as_array)
+                        .is_some_and(|fragments| !fragments.is_empty()))
+        })
     })
 }
 
@@ -3136,6 +3158,152 @@ segment.ts
         probe["streams"][1]["duration"] = json!("3585.6");
         probe["streams"][0]["duration"] = json!("3585.6");
         assert!(validate_probe(&probe, &request, &info).is_err());
+    }
+
+    #[test]
+    fn a_stream_without_a_size_is_estimated_from_its_bitrate_and_the_duration() {
+        let info = media_info_from_json(&json!({"duration": 1790.0, "formats":[
+            {"format_id":"hls-1924","tbr":1924.0,"vcodec":"avc1","acodec":"mp4a"},
+            {"format_id":"exact","filesize":5000,"filesize_approx":9000,"tbr":64.0,"vcodec":"none","acodec":"aac"},
+            {"format_id":"approx","filesize_approx":7000,"tbr":64.0,"vcodec":"none","acodec":"aac"},
+            {"format_id":"audio","vcodec":"none","acodec":"mp4a"}
+        ]}))
+        .unwrap();
+        let size = |id: &str| {
+            let format = info.formats.iter().find(|format| format.id == id).unwrap();
+            (format.filesize, format.size_estimated)
+        };
+        assert_eq!(size("hls-1924"), (Some(430_495_000), true));
+        assert_eq!(size("exact"), (Some(5000), false));
+        assert_eq!(size("approx"), (Some(7000), true));
+        assert_eq!(size("audio"), (None, false));
+        let unknown_length = media_info_from_json(&json!({"formats":[
+            {"format_id":"hls-1924","tbr":1924.0,"vcodec":"avc1","acodec":"mp4a"}
+        ]}))
+        .unwrap();
+        assert_eq!(unknown_length.formats[0].filesize, None);
+    }
+
+    #[test]
+    fn external_subtitles_are_verified_as_each_container_stores_them() {
+        let subtitle = |language: &str| ExternalSubtitle {
+            url: "https://cdn.example/sub.vtt".into(),
+            language: language.into(),
+            kind: "subtitles".into(),
+            ..ExternalSubtitle::default()
+        };
+        let request = |container: &str, subtitles: Vec<ExternalSubtitle>| AddRequest {
+            kind: DownloadKind::Video,
+            container: Some(container.into()).filter(|value: &String| !value.is_empty()),
+            external_subtitles: subtitles,
+            ..Default::default()
+        };
+        let probe_format = |format: &str, subtitles: &[(Option<&str>, i64)]| {
+            let mut streams = vec![
+                json!({"codec_type":"video","codec_name":"h264","start_time":"0","duration":"60"}),
+                json!({"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"60"}),
+            ];
+            for (language, default) in subtitles {
+                let mut stream = json!({"codec_type":"subtitle","codec_name":"mov_text","disposition":{"default": default}});
+                if let Some(language) = language {
+                    stream["tags"] = json!({"language": language});
+                }
+                streams.push(stream);
+            }
+            json!({"streams": streams, "format": {"format_name": format, "start_time":"0","duration":"60"}})
+        };
+        let probe =
+            |subtitles: &[(Option<&str>, i64)]| probe_format("mov,mp4,m4a,3gp,3g2,mj2", subtitles);
+        let probe_mkv =
+            |subtitles: &[(Option<&str>, i64)]| probe_format("matroska,webm", subtitles);
+        let info = MediaInfo::default();
+        // ffmpeg's MP4 muxer enables the first subtitle when none is default; it reads back
+        // as default (checked with the bundled ffmpeg/ffprobe).
+        let mp4 = request("mp4", vec![subtitle("tr"), subtitle("en")]);
+        assert!(validate_probe(&probe(&[(Some("tur"), 1), (Some("eng"), 0)]), &mp4, &info).is_ok());
+        assert!(
+            validate_probe(&probe(&[(Some("tur"), 0), (Some("eng"), 0)]), &mp4, &info).is_err()
+        );
+        let chosen = request(
+            "mp4",
+            vec![
+                subtitle("tr"),
+                ExternalSubtitle {
+                    is_default: true,
+                    ..subtitle("en")
+                },
+            ],
+        );
+        assert!(validate_probe(
+            &probe(&[(Some("tur"), 0), (Some("eng"), 1)]),
+            &chosen,
+            &info
+        )
+        .is_ok());
+        assert!(validate_probe(
+            &probe(&[(Some("tur"), 1), (Some("eng"), 1)]),
+            &chosen,
+            &info
+        )
+        .is_err());
+        // Without a container the source's MP4 is kept, and it enables its first subtitle too.
+        let kept = request("", vec![subtitle("tr"), subtitle("en")]);
+        assert!(
+            validate_probe(&probe(&[(Some("tur"), 1), (Some("eng"), 0)]), &kept, &info).is_ok()
+        );
+        assert!(
+            validate_probe(&probe(&[(Some("tur"), 0), (Some("eng"), 0)]), &kept, &info).is_err()
+        );
+        // Matroska writes no tag for an undetermined language, and keeps the flag as set.
+        let mkv = request("mkv", vec![subtitle("und")]);
+        assert!(validate_probe(&probe_mkv(&[(None, 0)]), &mkv, &info).is_ok());
+        assert!(validate_probe(&probe_mkv(&[(None, 1)]), &mkv, &info).is_err());
+        let turkish = request("mkv", vec![subtitle("tr")]);
+        assert!(validate_probe(&probe_mkv(&[(None, 0)]), &turkish, &info).is_err());
+        assert!(validate_probe(&probe_mkv(&[(Some("tur"), 0)]), &turkish, &info).is_ok());
+    }
+
+    #[test]
+    fn subtitle_cues_ffmpeg_cannot_store_are_dropped_or_joined() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\nOne\n\n\
+                   2\n00:00:03,50 --> 00:00:03,50\nInvisible\n\n\
+                   3\n00:00:04,000 --> 00:00:05,000\nWhere\n\n\
+                   4\n00:00:04,000 --> 00:00:06,000\nwhere.\n\n\
+                   5\n00:00:04,000 --> 00:00:05,000\nWhere\n\n\
+                   6\n00:00:05,500 --> 00:00:07,000\nOverlap\n";
+        assert_eq!(
+            without_unmuxable_cues(srt).unwrap(),
+            "1\n00:00:01,000 --> 00:00:02,000\nOne\n\n\
+             3\n00:00:04,000 --> 00:00:06,000\nWhere\nwhere.\n\n\
+             6\n00:00:05,500 --> 00:00:07,000\nOverlap\n"
+        );
+        let vtt =
+            "\u{feff}WEBVTT\r\n\r\nintro\r\n00:00:01.000 --> 00:00:02.000 align:start\r\nA\r\n\r\n\
+                   00:00:01.000 --> 00:00:03.000 line:0\r\nB\r\n";
+        assert_eq!(
+            without_unmuxable_cues(vtt).unwrap(),
+            "\u{feff}WEBVTT\n\nintro\n00:00:01.000 --> 00:00:03.000 align:start\nA\nB\n"
+        );
+        let clean =
+            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nA\n\n00:00:02.000 --> 00:00:04.000\nB\n";
+        assert_eq!(without_unmuxable_cues(clean), None);
+    }
+
+    #[test]
+    fn cue_rewrites_read_lines_and_times_as_ffmpeg_does() {
+        // A line of spaces stays inside its cue instead of becoming a cue break.
+        let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:01.000\nGone\n\n\
+                   00:00:02.000 --> 00:00:03.000\nA\n \nB\n";
+        assert_eq!(
+            without_unmuxable_cues(vtt).unwrap(),
+            "WEBVTT\n\n00:00:02.000 --> 00:00:03.000\nA\n \nB\n"
+        );
+        // FFmpeg reads `,5` as 5 ms, so both cues start at 2.005 s and become one.
+        let srt = "1\n00:00:02,5 --> 00:00:03,000\nA\n\n2\n00:00:02,005 --> 00:00:04,000\nB\n";
+        assert_eq!(
+            without_unmuxable_cues(srt).unwrap(),
+            "1\n00:00:02,5 --> 00:00:04,000\nA\nB\n"
+        );
     }
 
     #[test]

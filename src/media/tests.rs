@@ -50,6 +50,46 @@ fn unknown_codecs_do_not_hide_direct_media() {
 }
 
 #[test]
+fn a_single_stream_result_without_a_format_list_is_its_own_format() {
+    // yt-dlp's generic extractor for an MP4 the server sends as `binary/octet-stream`.
+    let info = media_info_from_json(&json!({
+        "_type": "video", "extractor": "generic", "direct": true, "title": "clip",
+        "format_id": "0", "url": "https://cdn.example/clip.mp4", "ext": "mp4",
+        "vcodec": null, "acodec": null
+    }))
+    .unwrap();
+    assert_eq!(
+        info.formats
+            .iter()
+            .map(|f| (f.id.as_str(), f.extension.as_str()))
+            .collect::<Vec<_>>(),
+        [("0", "mp4")]
+    );
+    let request = AddRequest {
+        url: "https://cdn.example/clip.mp4".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        ..AddRequest::default()
+    };
+    assert!(format_selector(&request, &info).is_ok());
+}
+
+#[test]
+fn a_direct_link_named_hls_only_by_its_extension_is_not_a_format() {
+    // yt-dlp's generic extractor for an ad server's `.m3u8` address that answers with JavaScript.
+    let error = media_info_from_json(&json!({
+        "_type": "video", "extractor": "generic", "direct": true, "title": "xbrjha6",
+        "format_id": "0", "url": "https://ads.example/cdn/manifest/video/xbrjha6.m3u8",
+        "ext": "m3u8", "protocol": "m3u8_native"
+    }))
+    .unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::MED_001)
+    );
+}
+
+#[test]
 fn explicitly_silent_video_cannot_be_selected_as_audio() {
     let info = media_info_from_json(&json!({"formats": [
         {"format_id": "video", "vcodec": "h264", "acodec": "none"}
@@ -832,6 +872,38 @@ fn fragmented_resume_follows_the_selected_format_protocol_not_the_page_address()
         ..page
     };
     assert!(selection_is_fragmented(&inspection, &manifest, "http-360"));
+    let single = json!({"id":"x","title":"t","format_id":"0","protocol":"m3u8_native",
+        "url":"https://cdn.example.test/live/index.m3u8","vcodec":"avc1","acodec":"aac"});
+    let page = AddRequest {
+        url: "https://example.test/watch?v=1".into(),
+        ..manifest
+    };
+    assert!(selection_is_fragmented(&single, &page, "0"));
+}
+
+#[test]
+fn the_automatic_choice_resolves_to_the_formats_the_download_takes() {
+    let info = media_info_from_json(&json!({"formats": [
+        {"format_id":"140","vcodec":"none","acodec":"mp4a.40.2","ext":"m4a"},
+        {"format_id":"251","vcodec":"none","acodec":"opus","ext":"webm"},
+        {"format_id":"137","vcodec":"avc1.640028","acodec":"none","height":1080,"ext":"mp4"},
+        {"format_id":"313","vcodec":"vp9","acodec":"none","height":2160,"ext":"webm"}
+    ]}))
+    .unwrap();
+    let ids = |container: &str| {
+        let request = AddRequest {
+            url: "https://example.test/watch?v=1".into(),
+            kind: DownloadKind::Video,
+            container: Some(container.into()),
+            ..AddRequest::default()
+        };
+        selected_formats(&request, &info)
+            .iter()
+            .map(|format| format.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids("mp4"), ["137", "140"]);
+    assert_eq!(ids("mkv"), ["313", "251"]);
 }
 
 #[test]

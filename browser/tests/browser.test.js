@@ -1270,6 +1270,7 @@ function contentHarness(options = {}) {
     path.push(...ancestry);
     const event = {
       type, target, key: init.key, button: init.button ?? 0, isTrusted: init.isTrusted !== false,
+      clientX: init.clientX ?? 0, clientY: init.clientY ?? 0, pointerId: init.pointerId ?? 1,
       defaultPrevented: false, propagationStopped: false, immediateStopped: false,
       preventDefault() { event.defaultPrevented = true; },
       stopPropagation() { event.propagationStopped = true; },
@@ -1396,6 +1397,34 @@ test("a player scrolled out of view sideways keeps no tile at the viewport edge"
   // player that a carousel moved entirely off the left side.
   assert.equal((await tileOf(player(-700, -60))).hidden, true, "a player left of the viewport has no tile");
   assert.equal((await tileOf(player(1400, 2040))).hidden, true, "a player right of the viewport has no tile");
+});
+
+test("a dragged placement keeps the tile on the part of a tall player that is on screen", async () => {
+  const tall = {
+    srcObject: null, currentSrc: "/movie.mp4", src: "/movie.mp4", tagName: "VIDEO",
+    getAttribute() { return null; }, querySelectorAll() { return []; },
+    getBoundingClientRect() { return { left: 10, top: 60, right: 1110, bottom: 1260, width: 1100, height: 1200 }; },
+    checkVisibility() { return true; }
+  };
+  const h = contentHarness({ reply: { status: "ready", usageModes: { video: true, file: true, audio: true } }, nodes: { "video, audio": [tall] } });
+  await vm.runInContext("refreshUsageModes()", h.context);
+  const tile = h.buttons.find(button => button.textContent === "Bu videoyu indir");
+  // Dropped on a player's bottom edge in another tab; this window is 800 px high and the tile 36 px.
+  h.storageListener()({ tilePlacement: { newValue: { x: 0, y: 1 } } }, "local");
+  assert.deepEqual([parseFloat(tile.style.left), parseFloat(tile.style.top)], [10, 764]);
+});
+
+test("media under visibility: hidden is reported as concealed and gets no tile", async () => {
+  const preview = {
+    srcObject: null, currentSrc: "/movie.mp4", src: "/movie.mp4", tagName: "VIDEO",
+    getAttribute() { return null; }, querySelectorAll() { return []; },
+    getBoundingClientRect() { return { left: 10, top: 20, right: 650, bottom: 380, width: 640, height: 360 }; },
+    checkVisibility(options) { return options?.visibilityProperty !== true; }
+  };
+  const h = contentHarness({ reply: { status: "ready", usageModes: { video: true, file: true, audio: true } }, nodes: { "video, audio": [preview] } });
+  await vm.runInContext("refreshUsageModes()", h.context);
+  assert.equal(JSON.parse(vm.runInContext("JSON.stringify(players())", h.context))[0].concealed, true);
+  assert.equal(h.buttons.find(button => button.textContent === "Bu videoyu indir")?.hidden ?? true, true);
 });
 
 test("a document without a media element offers its own page and drops the offer with the page", async () => {
@@ -1571,6 +1600,59 @@ test("a page's own capture handler cannot take the tile's gesture", async () => 
   assert.equal(handoff.event, "download-video", "the tile still hands its candidate over");
   const scan = h.sent.find(message => message.event === "scan");
   assert.equal(handoff.playerId, scan.players[0].id, "the submission is the player this tile stands on");
+});
+
+test("a tile dragged off the player's corner stays where it was dropped on every player", async () => {
+  const h = contentHarness({ reply: { status: "ready", usageModes: { video: true, file: true, audio: true } } });
+  await vm.runInContext("refreshUsageModes()", h.context);
+  const [tile] = h.buttons;
+  const at = () => [parseFloat(tile.style.left), parseFloat(tile.style.top)];
+  const downloads = () => h.sent.filter(message => message.event === "download-video").length;
+  // The player spans 10..650 x 20..380; the tile (147x36) starts 8 px inside its corner.
+  assert.deepEqual(at(), [18, 28]);
+
+  h.gesture(tile, "pointerdown", { clientX: 20, clientY: 30 });
+  h.gesture(tile, "pointermove", { clientX: 320, clientY: 230 });
+  assert.deepEqual(at(), [318, 228], "the tile follows the pointer");
+  // A second finger, or input a page script dispatches, neither moves nor drops the tile.
+  const before = h.storageWrites.length;
+  h.gesture(tile, "pointermove", { clientX: 600, clientY: 300, pointerId: 2 });
+  h.gesture(tile, "pointerup", { clientX: 600, clientY: 300, pointerId: 2 });
+  h.gesture(tile, "pointermove", { clientX: 600, clientY: 300, isTrusted: false });
+  h.gesture(tile, "pointerup", { clientX: 600, clientY: 300, isTrusted: false });
+  assert.deepEqual(at(), [318, 228]);
+  assert.equal(h.storageWrites.length, before);
+  h.gesture(tile, "pointerup", { clientX: 320, clientY: 230 });
+  h.gesture(tile, "click", { clientX: 320, clientY: 230 });
+  assert.equal(downloads(), 0, "releasing a drag does not start a download");
+  const saved = h.storageWrites.at(-1).tilePlacement;
+  assert.ok(Math.abs(saved.x - 308 / 493) < 1e-9 && Math.abs(saved.y - 208 / 324) < 1e-9, JSON.stringify(saved));
+  vm.runInContext("updateOverlays()", h.context);
+  assert.deepEqual(at(), [318, 228], "a later layout pass keeps the dropped spot");
+
+  // A press that moves less than 5 px is still a click.
+  h.gesture(tile, "pointerdown", { clientX: 320, clientY: 230 });
+  h.gesture(tile, "pointermove", { clientX: 323, clientY: 232 });
+  h.gesture(tile, "pointerup", { clientX: 323, clientY: 232 });
+  h.gesture(tile, "click", { clientX: 323, clientY: 232 });
+  assert.equal(downloads(), 1);
+  assert.deepEqual(at(), [318, 228]);
+
+  // The placement is shared through storage: another tab's drop to the far corner moves this tile.
+  h.storageListener()({ tilePlacement: { newValue: { x: 1, y: 1 } } }, "local");
+  assert.deepEqual(at(), [503, 344]);
+
+  // A drag the browser cancels (a touch taken for scrolling) saves nothing and puts the tile back.
+  const writes = h.storageWrites.length;
+  h.gesture(tile, "pointerdown", { clientX: 510, clientY: 350 });
+  h.gesture(tile, "pointermove", { clientX: 410, clientY: 250 });
+  h.gesture(tile, "pointercancel", { clientX: 410, clientY: 250 });
+  assert.equal(h.storageWrites.length, writes);
+  assert.deepEqual(at(), [503, 344]);
+  h.gesture(tile, "pointerdown", { clientX: 510, clientY: 350 });
+  h.gesture(tile, "pointerup", { clientX: 510, clientY: 350 });
+  h.gesture(tile, "click", { clientX: 510, clientY: 350 });
+  assert.equal(downloads(), 2, "the next press still activates the tile");
 });
 
 test("the shield leaves the page's own controls and phases alone", async () => {
@@ -1887,6 +1969,17 @@ test("direct players cannot block MSE inference or lend it their own manifest",a
   assert.equal(blob.url,'https://site.example/watch');
   assert.equal(blob.kind,'page');
   assert.equal(blob.downloadable,true);
+});
+
+test("a concealed seek preview neither offers itself nor makes the shown blob player ambiguous",async()=>{
+  const h=backgroundHarness();
+  await h.content({channel:'ssdownload-content',event:'scan',documentId:'d',pageUrl:'https://site.example/watch',players:[
+    {id:'main',urls:['blob:https://site.example/main'],visible:true,active:true},
+    {id:'scrub',urls:['blob:https://site.example/scrub'],visible:true,concealed:true,played:true,loop:true,muted:true}
+  ],sources:[]});
+  await h.events.headers.listeners[0]({tabId:7,frameId:0,statusCode:200,url:'https://cdn.example/main.m3u8',responseHeaders:[]});
+  const state=await h.state(7);
+  assert.deepEqual(state.videos.map(v=>[v.videoId.split(':').pop(),v.url]),[['main','https://cdn.example/main.m3u8']]);
 });
 
 test("a 403 player document cannot promote its Service video as a verified episode",async()=>{

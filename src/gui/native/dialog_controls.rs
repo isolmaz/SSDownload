@@ -1598,6 +1598,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("En iyi kalite (otomatik)", "Best quality (automatic)"),
             );
             combo_select(f.format, 0);
+            f.size = dialog_label(dlg.hwnd, dlg.font, "", 0);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
@@ -1634,7 +1635,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                     | WS_BORDER
                     | WS_VSCROLL
                     | LBS_EXTENDEDSEL as u32
-                    | LBS_NOINTEGRALHEIGHT as u32,
+                    | LBS_NOINTEGRALHEIGHT as u32
+                    | LBS_NOTIFY as u32,
                 WS_EX_CLIENTEDGE,
                 ID_MEDIA_AUDIO_TRACKS,
             );

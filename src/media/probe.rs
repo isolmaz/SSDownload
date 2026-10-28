@@ -363,16 +363,27 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 "Media verification: not all selected external subtitles are in the output"
             ));
         }
+        // An MP4 with no default subtitle enables its first one, which reads back as default.
+        // The file's own format decides: a request without a container keeps the source's.
+        let first_enabled = value["format"]["format_name"]
+            .as_str()
+            .is_some_and(|name| name.split(',').any(|format| format == "mp4"))
+            && !request
+                .external_subtitles
+                .iter()
+                .any(|subtitle| subtitle.is_default);
         for (index, selected) in request.external_subtitles.iter().enumerate() {
             let stream = subtitle_streams[index];
-            if stream["tags"]["language"]
-                .as_str()
-                .is_none_or(|actual| language_key(actual) != language_key(&selected.language))
-            {
+            // Matroska stores no tag for an undetermined language.
+            let language_matches = match stream["tags"]["language"].as_str() {
+                Some(actual) => language_key(actual) == language_key(&selected.language),
+                None => language_key(&selected.language) == language_key("und"),
+            };
+            if !language_matches {
                 bail!(crate::i18n::ui("Medya doğrulaması: harici altyazı dili/sırası seçilen track ile eşleşmiyor", "Media verification: the external subtitle language/order does not match the selected track"));
             }
             let is_default = stream["disposition"]["default"].as_i64() == Some(1);
-            if is_default != selected.is_default {
+            if is_default != (selected.is_default || (first_enabled && index == 0)) {
                 bail!(crate::i18n::ui(
                     "Medya doğrulaması: harici altyazı varsayılan işareti eşleşmiyor",
                     "Media verification: the external subtitle default flag does not match"
@@ -528,6 +539,21 @@ pub(super) fn parse_clock_timestamp(value: &str) -> Option<f64> {
         .then_some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
+/// Whether FFmpeg reported a problem reading or decoding the file. The null muxer's own
+/// complaints about the decoded frames' timestamps are left out: an encoder that writes its
+/// last frame twice with one timestamp leaves a file that decodes and plays in full.
+fn decode_errors(stderr: &str) -> bool {
+    let mut muxer_line = false;
+    stderr
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .any(|line| {
+            muxer_line = line.starts_with("[null @ ")
+                || (muxer_line && line.trim_start().starts_with("Last message repeated"));
+            !muxer_line
+        })
+}
+
 pub(super) fn verify_media_output(
     path: &Path,
     request: &AddRequest,
@@ -586,7 +612,7 @@ pub(super) fn verify_media_output(
             Duration::from_secs(24 * 60 * 60),
             control,
         )?;
-        if !decoded.status.success() || !decoded.stderr.trim().is_empty() {
+        if !decoded.status.success() || decode_errors(&decoded.stderr) {
             bail!(crate::i18n::ui(
                 "Tam medya doğrulaması: ses/görüntü baştan sona çözülemedi",
                 "Full media verification: the audio/video could not be decoded from start to end"
@@ -643,7 +669,7 @@ pub(super) fn verify_media_output(
             "-".into(),
         ]);
         let decoded = run_capture(&tools.ffmpeg, &args, b"", Duration::from_secs(60), control)?;
-        if !decoded.status.success() || !decoded.stderr.trim().is_empty() {
+        if !decoded.status.success() || decode_errors(&decoded.stderr) {
             bail!(crate::i18n::ui(
                 "Medya doğrulaması: örneklenen başlangıç/orta/bitiş bölümü çözülemedi",
                 "Media verification: the sampled start/middle/end section could not be decoded"

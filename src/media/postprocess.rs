@@ -213,25 +213,27 @@ pub(super) fn selected_output_args(
         "-c".into(),
         "copy".into(),
     ]);
+    // A request without a container keeps the source's, so the subtitle codec and the language
+    // tags follow the file being written.
+    let extension = staged
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let tag_container = matches!(extension.as_str(), "mp4" | "m4v" | "mov").then_some("mp4");
     if !subtitles.is_empty() {
-        args.extend([
-            "-c:s".into(),
-            if request.container.as_deref() == Some("mp4") {
-                "mov_text"
-            } else {
-                "srt"
-            }
-            .into(),
-        ]);
+        let codec = match extension.as_str() {
+            _ if tag_container.is_some() => "mov_text",
+            "webm" => "webvtt",
+            _ => "srt",
+        };
+        args.extend(["-c:s".into(), codec.into()]);
     }
     for index in 0..audio_count {
         if let Some(language) = selected_audio_language(request, index) {
             args.extend([
                 format!("-metadata:s:a:{index}"),
-                format!(
-                    "language={}",
-                    tag_language(language, request.container.as_deref())
-                ),
+                format!("language={}", tag_language(language, tag_container)),
             ]);
         }
         args.extend([
@@ -244,7 +246,7 @@ pub(super) fn selected_output_args(
             format!("-metadata:s:s:{index}"),
             format!(
                 "language={}",
-                tag_language(&selected.language, request.container.as_deref())
+                tag_language(&selected.language, tag_container)
             ),
             format!("-metadata:s:s:{index}"),
             format!("title={}", selected.label),
@@ -379,10 +381,12 @@ pub(super) fn validate_external_subtitle_file(
     source_tolerance: Option<f64>,
 ) -> Result<()> {
     let bytes = fs::read(path)?;
-    let text = std::str::from_utf8(&bytes).context(crate::i18n::ui(
+    let original = std::str::from_utf8(&bytes).context(crate::i18n::ui(
         "Harici altyazı UTF-8 değil",
         "The external subtitle is not UTF-8",
     ))?;
+    let playable = without_unmuxable_cues(original);
+    let text = playable.as_deref().unwrap_or(original);
     let is_vtt = text.trim_start_matches('\u{feff}').starts_with("WEBVTT");
     let mut cues = 0usize;
     let mut last_end = 0.0f64;
@@ -391,14 +395,14 @@ pub(super) fn validate_external_subtitle_file(
             "Harici altyazı zaman satırı geçersiz",
             "The external subtitle timing line is invalid",
         ))?;
-        let start = parse_clock_timestamp(start.trim()).ok_or_else(|| {
+        let start = parse_cue_timestamp(start).ok_or_else(|| {
             anyhow!(crate::i18n::ui(
                 "Harici altyazı başlangıç zamanı geçersiz",
                 "The external subtitle start time is invalid"
             ))
         })?;
         let end_token = end.split_ascii_whitespace().next().unwrap_or("");
-        let end = parse_clock_timestamp(end_token).ok_or_else(|| {
+        let end = parse_cue_timestamp(end_token).ok_or_else(|| {
             anyhow!(crate::i18n::ui(
                 "Harici altyazı bitiş zamanı geçersiz",
                 "The external subtitle end time is invalid"
@@ -437,7 +441,95 @@ pub(super) fn validate_external_subtitle_file(
             );
         }
     }
+    if let Some(playable) = playable {
+        fs::write(path, playable)?;
+    }
     Ok(())
+}
+
+/// Subtitle text without the cues FFmpeg cannot store, or `None` when every cue can stay.
+/// A cue that does not end after it starts shows nothing and is left out. Cues that start at
+/// the same moment become one cue: the subtitle demuxer hands them to the muxer with one
+/// timestamp, which the MP4 muxer rejects ("Non-monotonic DTS"), and FFmpeg itself drops only
+/// exact copies. Only an empty line ends a cue, as in FFmpeg's readers: a line of spaces is
+/// part of the cue's text.
+pub(super) fn without_unmuxable_cues(text: &str) -> Option<String> {
+    let mut blocks = vec![Vec::new()];
+    for line in text.lines() {
+        if !line.is_empty() {
+            blocks.last_mut().unwrap().push(line);
+        } else if !blocks.last().unwrap().is_empty() {
+            blocks.push(Vec::new());
+        }
+    }
+    let mut changed = false;
+    let mut kept: Vec<Vec<std::borrow::Cow<str>>> = Vec::with_capacity(blocks.len());
+    // Start time bits -> (kept block, its timing line, its end).
+    let mut starts = std::collections::HashMap::new();
+    for block in blocks.into_iter().filter(|block| !block.is_empty()) {
+        let times = block
+            .iter()
+            .position(|line| line.contains("-->"))
+            .and_then(|timing| {
+                let (start, end, _) = timing_parts(block[timing])?;
+                Some((
+                    timing,
+                    parse_cue_timestamp(start)?,
+                    parse_cue_timestamp(end)?,
+                ))
+            });
+        let Some((timing, start, end)) = times else {
+            kept.push(block.into_iter().map(Into::into).collect());
+            continue;
+        };
+        if end <= start {
+            changed = true;
+            continue;
+        }
+        let Some(&(index, kept_timing, kept_end)) = starts.get(&start.to_bits()) else {
+            starts.insert(start.to_bits(), (kept.len(), timing, end));
+            kept.push(block.into_iter().map(Into::into).collect());
+            continue;
+        };
+        changed = true;
+        let target = &mut kept[index];
+        let lines = &block[timing + 1..];
+        if !target[kept_timing + 1..]
+            .windows(lines.len().max(1))
+            .any(|kept_lines| kept_lines == lines)
+        {
+            target.extend(lines.iter().map(|&line| line.into()));
+        }
+        if end > kept_end {
+            let (kept_start, _, settings) = timing_parts(&target[kept_timing]).unwrap();
+            let (_, longer_end, _) = timing_parts(block[timing]).unwrap();
+            target[kept_timing] = format!("{kept_start} --> {longer_end}{settings}").into();
+            starts.insert(start.to_bits(), (index, kept_timing, end));
+        }
+    }
+    changed.then(|| {
+        let blocks = kept
+            .iter()
+            .map(|block| block.join("\n"))
+            .collect::<Vec<_>>();
+        blocks.join("\n\n") + "\n"
+    })
+}
+
+/// A cue time as FFmpeg's SRT and WebVTT demuxers read it: the digits after the separator are
+/// a whole number of milliseconds, so `00:00:03,61` is 3.061 s.
+fn parse_cue_timestamp(value: &str) -> Option<f64> {
+    let (clock, millis) = value.trim().rsplit_once([',', '.'])?;
+    let millis = millis.parse::<u32>().ok()?;
+    Some(parse_clock_timestamp(clock)? + f64::from(millis) / 1000.0)
+}
+
+/// The start, the end and the trailing cue settings of a `-->` timing line.
+fn timing_parts(line: &str) -> Option<(&str, &str, &str)> {
+    let (start, rest) = line.split_once("-->")?;
+    let rest = rest.trim_start();
+    let end = rest.split_ascii_whitespace().next()?;
+    Some((start.trim(), end, &rest[end.len()..]))
 }
 
 pub(super) fn looks_like_srt(text: &str) -> bool {

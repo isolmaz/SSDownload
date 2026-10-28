@@ -374,6 +374,7 @@ pub(super) unsafe fn refresh_job_view(
     let can_cancel: bool;
     let can_open: bool;
     let mut percent = 0usize;
+    let mut processing = false;
     match job_view_job(snapshot, f) {
         None => {
             detail.push_str(&crate::i18n::ui_owned!(format!(
@@ -430,6 +431,7 @@ pub(super) unsafe fn refresh_job_view(
             } else if let Some(total) = job.total.filter(|total| *total > 0) {
                 percent = ((job.downloaded.min(total) as u128 * 1000) / total as u128) as usize;
             }
+            processing = job.state == JobState::Processing;
             action_label = match job.state {
                 JobState::Failed => crate::i18n::ui("Yeniden dene", "Retry"),
                 JobState::Paused | JobState::Cancelled => crate::i18n::ui("Sürdür", "Resume"),
@@ -452,7 +454,26 @@ pub(super) unsafe fn refresh_job_view(
         set_text(f.action, action_label);
         f.action_label = action_label.to_string();
     }
-    SendMessageW(f.progress, PBM_SETPOS, percent, 0);
+    // The work after the download has no size: a full bar would look finished, so the bar
+    // moves instead.
+    let style = GetWindowLongW(f.progress, GWL_STYLE) as u32;
+    if (style & PBS_MARQUEE != 0) != processing {
+        let style = if processing {
+            style | PBS_MARQUEE
+        } else {
+            style & !PBS_MARQUEE
+        };
+        SetWindowLongW(f.progress, GWL_STYLE, style as i32);
+        SendMessageW(
+            f.progress,
+            PBM_SETMARQUEE,
+            processing as usize,
+            SWEEP_FRAME_MS as isize,
+        );
+    }
+    if !processing {
+        SendMessageW(f.progress, PBM_SETPOS, percent, 0);
+    }
     EnableWindow(f.action, can_control as BOOL);
     EnableWindow(f.cancel, can_cancel as BOOL);
     EnableWindow(f.open_file, can_open as BOOL);
@@ -589,12 +610,123 @@ pub(super) fn media_format_label(format: &MediaFormat) -> String {
         .unwrap_or_default();
     let size = format
         .filesize
-        .map(|value| format!(" · {}", format_bytes(value)))
+        .map(|value| format!(" · {}", size_text(value, format.size_estimated)))
         .unwrap_or_default();
     format!(
         "{} — {} · {}{}{}{}{}",
         format.id, dimensions, format.extension, fps, codec, range, size
     )
+}
+
+fn size_text(bytes: u64, estimated: bool) -> String {
+    format!(
+        "{}{}",
+        if estimated { "≈ " } else { "" },
+        format_bytes(bytes)
+    )
+}
+
+/// The size the selected video and audio streams add up to, and whether any part of it is an
+/// estimate; without a video format, the audio alone. A format that carries its own audio
+/// stands alone; separate audio formats add their sizes where known. An HLS variant's bitrate
+/// already covers its audio renditions, which carry none.
+pub(super) fn selected_media_size(
+    video: Option<&MediaFormat>,
+    audio: &[&MediaFormat],
+) -> Option<(u64, bool)> {
+    let Some(video) = video else {
+        let sizes = audio
+            .iter()
+            .filter_map(|format| format.filesize)
+            .collect::<Vec<_>>();
+        return (!sizes.is_empty()).then(|| {
+            (
+                sizes.iter().sum(),
+                audio.iter().any(|format| format.size_estimated),
+            )
+        });
+    };
+    let mut total = video.filesize?;
+    let mut estimated = video.size_estimated;
+    if !media_stream_present(video.audio_codec.as_deref()) {
+        for format in audio {
+            if let Some(size) = format.filesize {
+                total += size;
+                estimated |= format.size_estimated;
+            }
+        }
+    }
+    Some((total, estimated))
+}
+
+/// `f.base` with the output kind, the quality and the audio tracks chosen in the picker.
+unsafe fn chosen_streams(
+    f: &MediaFields,
+    kind: DownloadKind,
+    container: Option<String>,
+) -> AddRequest {
+    let mut request = f.base.clone();
+    request.kind = kind;
+    request.format_id = None;
+    request.video_format_id = None;
+    request.max_height = None;
+    request.exact_height = None;
+    request.audio_format_id = None;
+    request.audio_language = None;
+    request.audio_tracks.clear();
+    request.container = None;
+    if kind == DownloadKind::Video {
+        let selected_format = f
+            .video_formats
+            .get(combo_index(f.format).max(0) as usize)
+            .and_then(|format| format.as_ref());
+        request.video_format_id = selected_format.map(|format| format.id.clone());
+        request.exact_height = selected_format.and_then(|format| format.height);
+        request.max_height = request.exact_height;
+        request.container = container;
+    }
+    let mut audio: Vec<AudioSelection> = selected_list_indexes(f.audio_tracks)
+        .into_iter()
+        .filter_map(|index| f.audio_values.get(index).cloned())
+        .collect();
+    if audio.len() == 1 {
+        let selection = audio.remove(0);
+        request.audio_format_id = Some(selection.id);
+        request.audio_language = selection.language;
+    } else if kind == DownloadKind::Video {
+        request.audio_tracks = audio;
+    }
+    request
+}
+
+pub(super) unsafe fn refresh_media_size(f: &MediaFields) {
+    // The streams the download will take, so the automatic quality counts what the selector
+    // picks for the chosen container rather than the first listed quality.
+    let total = f
+        .kind_values
+        .get(combo_index(f.kind).max(0) as usize)
+        .cloned()
+        .and_then(|(kind, container)| {
+            let request = chosen_streams(f, kind, container);
+            let formats = crate::media::selected_formats(&request, &f.info);
+            if kind != DownloadKind::Video {
+                return selected_media_size(None, &formats);
+            }
+            let (video, audio): (Vec<_>, Vec<_>) = formats
+                .into_iter()
+                .partition(|format| format.video_codec.as_deref() != Some("none"));
+            selected_media_size(Some(video.first()?), &audio)
+        });
+    let size = total
+        .map(|(bytes, estimated)| size_text(bytes, estimated))
+        .unwrap_or_else(|| crate::i18n::ui("bilinmiyor", "unknown").into());
+    set_text(
+        f.size,
+        &crate::i18n::ui_owned!(
+            format!("Toplam boyut: {size}"),
+            format!("Total size: {size}")
+        ),
+    );
 }
 
 pub(super) unsafe fn refresh_external_subtitle_list(f: &MediaFields) {
@@ -869,6 +1001,7 @@ pub(super) unsafe fn populate_media(
 
     SendMessageW(f.audio_tracks, LB_RESETCONTENT, 0, 0);
     f.audio_values.clear();
+    f.info = info.clone();
     for format in info.formats.iter().filter(|value| {
         !value.has_drm
             && value.video_codec.as_deref() == Some("none")
@@ -917,6 +1050,7 @@ pub(super) unsafe fn populate_media(
         }
         f.audio_values.push(selection);
     }
+    refresh_media_size(f);
 
     SendMessageW(f.subtitles, LB_RESETCONTENT, 0, 0);
     f.subtitle_values = if info.subtitle_tracks.is_empty() {
@@ -1016,44 +1150,27 @@ pub(super) unsafe fn queue_media(
         set_dialog_error(hwnd, error, mode_error(kind), f.kind);
         return None;
     }
-    let mut request = f.base.clone();
-    request.kind = kind;
+    if kind != DownloadKind::Video && selected_list_indexes(f.audio_tracks).len() > 1 {
+        set_dialog_error(
+            hwnd,
+            error,
+            crate::i18n::ui(
+                "Yalnız ses çıktısında tam olarak bir ses parçası seçilebilir.",
+                "Exactly one audio track can be selected for audio-only output.",
+            ),
+            f.audio_tracks,
+        );
+        return None;
+    }
+    let mut request = chosen_streams(f, kind, container);
     request.live_from_start = f.from_start_offered && check(f.from_start);
-    request.format_id = None;
-    request.video_format_id = None;
-    request.max_height = None;
-    request.exact_height = None;
-    request.audio_format_id = None;
-    request.audio_language = None;
-    request.audio_tracks.clear();
     request.subtitle_languages.clear();
     request.subtitle_mode = None;
     request.subtitle_tracks.clear();
     request.external_subtitles.clear();
 
-    let audio_indexes = selected_list_indexes(f.audio_tracks);
     if kind == DownloadKind::Video {
-        let index = combo_index(f.format).max(0) as usize;
-        let selected_format = f
-            .video_formats
-            .get(index)
-            .and_then(|format| format.as_ref());
-        request.video_format_id = selected_format.map(|format| format.id.clone());
-        request.exact_height = selected_format.and_then(|format| format.height);
-        request.max_height = request.exact_height;
-        request.container = container;
         request.audio_format = None;
-        let selected_audio: Vec<AudioSelection> = audio_indexes
-            .into_iter()
-            .filter_map(|index| f.audio_values.get(index).cloned())
-            .collect();
-        if selected_audio.len() == 1 {
-            let selection = &selected_audio[0];
-            request.audio_format_id = Some(selection.id.clone());
-            request.audio_language = selection.language.clone();
-        } else {
-            request.audio_tracks = selected_audio;
-        }
         let selected_subtitles: Vec<SubtitleSelection> = selected_list_indexes(f.subtitles)
             .into_iter()
             .filter_map(|index| f.subtitle_values.get(index))
@@ -1090,26 +1207,6 @@ pub(super) unsafe fn queue_media(
             return None;
         }
     } else {
-        if audio_indexes.len() > 1 {
-            set_dialog_error(
-                hwnd,
-                error,
-                crate::i18n::ui(
-                    "Yalnız ses çıktısında tam olarak bir ses parçası seçilebilir.",
-                    "Exactly one audio track can be selected for audio-only output.",
-                ),
-                f.audio_tracks,
-            );
-            return None;
-        }
-        request.container = None;
-        if let Some(selection) = audio_indexes
-            .first()
-            .and_then(|index| f.audio_values.get(*index))
-        {
-            request.audio_format_id = Some(selection.id.clone());
-            request.audio_language = selection.language.clone();
-        }
         request.audio_format = match combo_index(f.audio) {
             1 => Some("mp3".into()),
             2 => Some("m4a".into()),
@@ -1580,6 +1677,53 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_total_size_adds_separate_audio_and_marks_estimates() {
+        let format = |size: Option<u64>, estimated: bool, video: &str, audio: &str| MediaFormat {
+            filesize: size,
+            size_estimated: estimated,
+            video_codec: Some(video.into()),
+            audio_codec: Some(audio.into()),
+            ..MediaFormat::default()
+        };
+        let video_only = format(Some(900), false, "avc1", "none");
+        let english = format(Some(60), false, "none", "mp4a");
+        let turkish = format(Some(40), true, "none", "mp4a");
+        let hls_rendition = format(None, false, "none", "mp4a");
+        assert_eq!(
+            selected_media_size(Some(&video_only), &[&english]),
+            Some((960, false))
+        );
+        assert_eq!(
+            selected_media_size(Some(&video_only), &[&english, &turkish]),
+            Some((1000, true))
+        );
+        // An HLS variant's bitrate covers its audio renditions, which carry no size.
+        let variant = format(Some(1900), true, "avc1", "none");
+        assert_eq!(
+            selected_media_size(Some(&variant), &[&hls_rendition]),
+            Some((1900, true))
+        );
+        // A format with its own audio stands alone.
+        let muxed = format(Some(700), false, "avc1", "mp4a");
+        assert_eq!(
+            selected_media_size(Some(&muxed), &[&english]),
+            Some((700, false))
+        );
+        assert_eq!(
+            selected_media_size(Some(&format(None, false, "avc1", "none")), &[&english]),
+            None
+        );
+        // Audio alone: the selected audio formats' known sizes.
+        assert_eq!(
+            selected_media_size(None, &[&english, &turkish, &hls_rendition]),
+            Some((100, true))
+        );
+        assert_eq!(selected_media_size(None, &[&hls_rendition]), None);
+        assert_eq!(size_text(2 * 1024 * 1024 * 1024, true), "≈ 2.0 GB");
+        assert_eq!(size_text(1536, false), "1.5 KB");
+    }
 
     #[test]
     fn a_thumbnail_is_opened_only_by_image_demuxers_and_the_local_file_protocol() {

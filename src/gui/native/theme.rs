@@ -805,6 +805,33 @@ fn progress_colour(state: JobState) -> u32 {
     }
 }
 
+/// How long the block of a processing job's bar takes from one end to the other.
+const SWEEP_ONE_WAY_MS: u64 = 1200;
+/// How often a processing bar is repainted while it sweeps.
+pub(super) const SWEEP_FRAME_MS: u32 = 40;
+
+/// The clock every processing bar sweeps by, so all of them move together.
+pub(super) fn sweep_clock() -> u64 {
+    unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() }
+}
+
+/// The start and end, from the bar's left edge, of the block a bar `width` wide shows while
+/// its job is processing: the work left has no size, so instead of a full bar that looks
+/// finished, a block a third of the bar wide travels to one end and back.
+pub(super) fn processing_sweep(clock: u64, width: i32) -> (i32, i32) {
+    let width = width.max(0);
+    let block = (width / 3).max(1).min(width);
+    let travel = (width - block) as u64;
+    let phase = clock % (2 * SWEEP_ONE_WAY_MS);
+    let along = if phase < SWEEP_ONE_WAY_MS {
+        phase
+    } else {
+        2 * SWEEP_ONE_WAY_MS - phase
+    };
+    let start = (travel * along / SWEEP_ONE_WAY_MS) as i32;
+    (start, start + block)
+}
+
 /// Share of the progress cell to fill: finished and failed jobs fill all of it.
 fn progress_fraction(state: JobState, downloaded: u64, total: Option<u64>) -> Option<f64> {
     match (state, total) {
@@ -824,18 +851,28 @@ pub(super) unsafe fn paint_row_progress(ui: &MainUi, dc: HDC, row: usize, cell: 
     else {
         return;
     };
-    let Some(fraction) = progress_fraction(job.state, job.downloaded, job.total) else {
-        return;
-    };
     // The last column and row of pixels are the grid lines.
     let inner = RECT {
         right: cell.right - 1,
         bottom: cell.bottom - 1,
         ..cell
     };
-    let filled = RECT {
-        right: inner.left + ((inner.right - inner.left) as f64 * fraction).round() as i32,
-        ..inner
+    let width = inner.right - inner.left;
+    let filled = if job.state == JobState::Processing {
+        let (start, end) = processing_sweep(sweep_clock(), width);
+        RECT {
+            left: inner.left + start,
+            right: inner.left + end,
+            ..inner
+        }
+    } else {
+        let Some(fraction) = progress_fraction(job.state, job.downloaded, job.total) else {
+            return;
+        };
+        RECT {
+            right: inner.left + (width as f64 * fraction).round() as i32,
+            ..inner
+        }
     };
     if filled.right <= filled.left {
         return;
@@ -1720,13 +1757,20 @@ pub(super) unsafe fn paint_progress(hwnd: HWND, dc: HDC) {
     let position = SendMessageW(hwnd, PBM_GETPOS, 0, 0) as i32;
     let span = (range.iHigh - range.iLow).max(1);
     let width = (client.right - client.left - 2).max(0);
-    let filled =
-        ((position - range.iLow).clamp(0, span) as i64 * width as i64 / span as i64) as i32;
-    if filled > 0 {
+    // A marquee bar is repainted on each step of its own timer.
+    let (start, end) = if GetWindowLongW(hwnd, GWL_STYLE) as u32 & PBS_MARQUEE != 0 {
+        processing_sweep(sweep_clock(), width)
+    } else {
+        (
+            0,
+            ((position - range.iLow).clamp(0, span) as i64 * width as i64 / span as i64) as i32,
+        )
+    };
+    if end > start {
         let bar = RECT {
-            left: client.left + 1,
+            left: client.left + 1 + start,
             top: client.top + 1,
-            right: client.left + 1 + filled,
+            right: client.left + 1 + end,
             bottom: client.bottom - 1,
         };
         FillRect(dc, &bar, palette_brush(DARK_ACCENT));
@@ -1791,8 +1835,24 @@ pub(super) unsafe extern "system" fn progress_proc(
 
 #[cfg(test)]
 mod tests {
-    use super::{progress_colour, progress_fraction, split_mnemonic};
+    use super::{
+        processing_sweep, progress_colour, progress_fraction, split_mnemonic, SWEEP_ONE_WAY_MS,
+    };
     use crate::model::JobState;
+
+    #[test]
+    fn a_processing_bar_sweeps_to_the_far_end_and_back() {
+        let at = |clock| processing_sweep(clock, 300);
+        assert_eq!(at(0), (0, 100));
+        assert_eq!(at(SWEEP_ONE_WAY_MS / 2), (100, 200));
+        assert_eq!(at(SWEEP_ONE_WAY_MS), (200, 300));
+        assert_eq!(at(SWEEP_ONE_WAY_MS * 3 / 2), (100, 200));
+        assert_eq!(at(SWEEP_ONE_WAY_MS * 2), (0, 100));
+        assert!(at(SWEEP_ONE_WAY_MS / 4).0 < at(SWEEP_ONE_WAY_MS / 2).0);
+        assert!(at(SWEEP_ONE_WAY_MS * 5 / 4).0 > at(SWEEP_ONE_WAY_MS * 3 / 2).0);
+        assert_eq!(processing_sweep(500, 0), (0, 0));
+        assert_eq!(processing_sweep(500, 2), (0, 1));
+    }
 
     /// WCAG relative luminance of a COLORREF (0x00BBGGRR).
     fn luminance(colour: u32) -> f64 {
