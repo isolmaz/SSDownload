@@ -51,6 +51,8 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{AllowSetForegroundWindow, WM_APP},
 };
 
+/// Spoken by the browser extension too: changing it blocks the release until both sides accept
+/// the previous value as well (CONTRIBUTING.md, "App and extension compatibility").
 const PROTOCOL_VERSION: u32 = 2;
 const HOST_NAME: &str = "com.ssdownload.desktop";
 const MAX_NATIVE_MESSAGE: usize = 1024 * 1024;

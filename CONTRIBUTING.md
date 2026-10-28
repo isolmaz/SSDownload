@@ -70,9 +70,24 @@ Contributions are licensed under the [MIT License](LICENSE.txt).
 
 The application ships from this repository's GitHub Releases: the Setup and portable ZIP and the signed update feed (`version.json`, `version.json.sig`). The browser extension ships through the Chrome Web Store. Requirements: NSIS 3.10 (`%LOCALAPPDATA%\Programs\nsis-3.10`), OpenSSL, an authenticated `gh`, and the two private keys outside the repository: `%LOCALAPPDATA%\SSDownload\keys\update-signing.key` (Ed25519, must match `FEED_PUBLIC_KEY` in `src/update.rs`) and `extension.key` (fixes the extension ID). Losing either key means installed copies can no longer verify updates or the extension ID changes, so keep an offline backup.
 
-1. Set the new version in `Cargo.toml` and `browser/chromium/manifest.json`, run `cargo check` to update `Cargo.lock`, and run `scripts\check.ps1`.
+1. Set the new version in `Cargo.toml` and `browser/chromium/manifest.json`, run `cargo check` to update `Cargo.lock`, and run `scripts\check.ps1`. Compare the bridge versions with the [compatibility table](#app-and-extension-compatibility): a change blocks the release until the conditions there hold.
 2. `scripts\package.ps1` builds the release and writes the Setup, portable ZIP, symbols ZIP and `SHA256SUMS` to `artifacts\<version>\app`.
 3. `scripts\package-extension.ps1` writes the store package `artifacts\<version>\extension\SSDownload-<version>-store.zip` (the manifest without `key`). Upload it to the Chrome Web Store item `hgndggnlfpnflkmnbddmcnfniamckham`. The first upload of the item must be built with `-FirstUpload`: it adds `key.pem`, which makes the store keep the manifest-key ID that the app registers and the native host allows. Never publish that ZIP.
-4. Commit and push, then `scripts\prepare-release.ps1 -PackageDir artifacts\<version>\app -Notes "<what changed>" -Publish` signs the feed, checks every checksum and creates the GitHub release with all assets. It refuses a `-Repository` that differs from `DEFAULT_FEED_BASE` in `src/update.rs`, and after publishing it reads `version.json` anonymously and fails unless the public feed serves the new version.
+4. Add the release to the compatibility table. Commit and push, then `scripts\prepare-release.ps1 -PackageDir artifacts\<version>\app -Notes "<what changed>" -Publish` signs the feed, checks every checksum and creates the GitHub release with all assets. It refuses a `-Repository` that differs from `DEFAULT_FEED_BASE` in `src/update.rs`, and after publishing it reads `version.json` anonymously and fails unless the public feed serves the new version.
 
 Optional Authenticode signing: `scripts\package.ps1 -SigningProfile <metadata.json>` (Azure Artifact Signing) or `-CertificateThumbprint <sha1> -TimestampServer <url>`.
+
+### App and extension compatibility
+
+The app and the extension work together only while they speak the same bridge protocol and capability version; their own version numbers play no part. The values live in `PROTOCOL_VERSION` (`src/bridge.rs`) and `CAPABILITY_VERSION` (`src/model.rs`); the extension sends the protocol in every request (`browser/chromium/background.js`, `relay-background.js`) and checks both in `validateCapabilities`. While neither value changes, any app works with any extension, so the store item may lag the app.
+
+The two sides never update together: Chrome installs an approved store version on its own within hours, an installed app updates only when its user accepts the update, and a store review can take days. Every pairing of an old and a new side therefore exists for a while. A release that changes either value is blocked until:
+
+- the new app still answers the previous protocol and capability version, and the new extension still works with an app that reports the previous values, each covered by a test;
+- the extension of that release is submitted to the Chrome Web Store together with the app release.
+
+Dropping a previous value is a later release of its own, published only after the store serves an extension that speaks the new values.
+
+| Releases | Bridge protocol | Capability version | Also accepts |
+|---|---|---|---|
+| 1.6.1 – 1.9.0 | 2 | 3 | – |
