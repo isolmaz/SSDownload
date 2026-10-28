@@ -345,10 +345,23 @@ test("content discovery offers the subtitle files a player loaded itself",async(
     {url:"https://cdn.example/vtt/Film%20T%C3%BCrk%C3%A7e.srt",language:"tr",label:"Film Türkçe.srt",kind:"subtitles",isDefault:false,playerId:id}
   ]);
 
+  // Names are read word by word: a title's "Chapter" or "Thumbelina" is no chapter or thumbnail
+  // track, a word joined to digits names no language, and a code that is a common word in
+  // another language counts only right before the extension.
+  const rejected=name=>vm.runInContext(`notSubtitleFile(${JSON.stringify(`https://cdn.example/${encodeURIComponent(name)}`)})`,context);
+  assert.deepEqual(["Stranger.Things.S01E01.Chapter.One.en.vtt","Thumbelina.1994.tr.vtt","film-chapters.vtt","thumbs01.vtt","video-chapter.vtt"].map(rejected),
+    [false,false,true,true,true]);
+  const language=name=>vm.runInContext(`addressLanguage(${JSON.stringify(`https://cdn.example/${encodeURIComponent(name)}`)})`,context);
+  assert.deepEqual(["la-casa-de-papel-s01e01.vtt","el-camino.vtt","Kurtlar Vadisi Pusu da bitti.srt","film-1080p-24hr.vtt","Film.de.vtt","Movie.Name.es.srt"].map(language),
+    ["","","","","de","es"]);
+
   // The next episode on the same page: the earlier subtitles belong to the earlier source.
   media.currentSrc="/episode-2.mp4";
   assert.deepEqual(offered(),["https://site.example/subs/film.tr.vtt"]);
   observed("https://cdn.example/vtt/episode-2.tr.vtt");
+  assert.deepEqual(offered(),["https://site.example/subs/film.tr.vtt","https://cdn.example/vtt/episode-2.tr.vtt"]);
+  // A fragment change stays on the same page.
+  location.href="https://site.example/watch#comments";
   assert.deepEqual(offered(),["https://site.example/subs/film.tr.vtt","https://cdn.example/vtt/episode-2.tr.vtt"]);
   // A single-page move to another address leaves them behind as well.
   location.href="https://site.example/watch/next";
@@ -385,6 +398,8 @@ test("page observer reports subtitle files but not thumbnail sprites or stream s
   await fetched("WEBVTT\n\n00:00.000 --> 00:05.000\nhttps://img.example/sprite?id=4#xywh=0,0,160,90\n","https://cdn.example/thumbs-2.vtt");
   await fetched("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n\n00:00.000 --> 00:02.000\nHi\n","https://cdn.example/sub-1.vtt");
   await fetched("<html>not a subtitle</html>","https://cdn.example/page.html");
+  // A response the page built itself has no address and is no file at the page's address.
+  await fetched("WEBVTT\n\n00:00.000 --> 00:02.000\nBuilt\n","");
   // A subtitle rendition's segments are listed by its playlist, with or without a timestamp map.
   await fetched("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg-1.vtt\n#EXT-X-ENDLIST\n","https://cdn.example/subs/tr.m3u8");
   await fetched("WEBVTT\n\n00:00.000 --> 00:02.000\nHi\n","https://cdn.example/subs/seg-1.vtt");

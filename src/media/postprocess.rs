@@ -395,14 +395,14 @@ pub(super) fn validate_external_subtitle_file(
             "Harici altyazı zaman satırı geçersiz",
             "The external subtitle timing line is invalid",
         ))?;
-        let start = parse_clock_timestamp(start.trim()).ok_or_else(|| {
+        let start = parse_cue_timestamp(start).ok_or_else(|| {
             anyhow!(crate::i18n::ui(
                 "Harici altyazı başlangıç zamanı geçersiz",
                 "The external subtitle start time is invalid"
             ))
         })?;
         let end_token = end.split_ascii_whitespace().next().unwrap_or("");
-        let end = parse_clock_timestamp(end_token).ok_or_else(|| {
+        let end = parse_cue_timestamp(end_token).ok_or_else(|| {
             anyhow!(crate::i18n::ui(
                 "Harici altyazı bitiş zamanı geçersiz",
                 "The external subtitle end time is invalid"
@@ -451,11 +451,12 @@ pub(super) fn validate_external_subtitle_file(
 /// A cue that does not end after it starts shows nothing and is left out. Cues that start at
 /// the same moment become one cue: the subtitle demuxer hands them to the muxer with one
 /// timestamp, which the MP4 muxer rejects ("Non-monotonic DTS"), and FFmpeg itself drops only
-/// exact copies.
+/// exact copies. Only an empty line ends a cue, as in FFmpeg's readers: a line of spaces is
+/// part of the cue's text.
 pub(super) fn without_unmuxable_cues(text: &str) -> Option<String> {
     let mut blocks = vec![Vec::new()];
     for line in text.lines() {
-        if !line.trim().is_empty() {
+        if !line.is_empty() {
             blocks.last_mut().unwrap().push(line);
         } else if !blocks.last().unwrap().is_empty() {
             blocks.push(Vec::new());
@@ -473,8 +474,8 @@ pub(super) fn without_unmuxable_cues(text: &str) -> Option<String> {
                 let (start, end, _) = timing_parts(block[timing])?;
                 Some((
                     timing,
-                    parse_clock_timestamp(start)?,
-                    parse_clock_timestamp(end)?,
+                    parse_cue_timestamp(start)?,
+                    parse_cue_timestamp(end)?,
                 ))
             });
         let Some((timing, start, end)) = times else {
@@ -513,6 +514,14 @@ pub(super) fn without_unmuxable_cues(text: &str) -> Option<String> {
             .collect::<Vec<_>>();
         blocks.join("\n\n") + "\n"
     })
+}
+
+/// A cue time as FFmpeg's SRT and WebVTT demuxers read it: the digits after the separator are
+/// a whole number of milliseconds, so `00:00:03,61` is 3.061 s.
+fn parse_cue_timestamp(value: &str) -> Option<f64> {
+    let (clock, millis) = value.trim().rsplit_once([',', '.'])?;
+    let millis = millis.parse::<u32>().ok()?;
+    Some(parse_clock_timestamp(clock)? + f64::from(millis) / 1000.0)
 }
 
 /// The start, the end and the trailing cue settings of a `-->` timing line.

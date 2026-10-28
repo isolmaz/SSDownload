@@ -872,6 +872,38 @@ fn fragmented_resume_follows_the_selected_format_protocol_not_the_page_address()
         ..page
     };
     assert!(selection_is_fragmented(&inspection, &manifest, "http-360"));
+    let single = json!({"id":"x","title":"t","format_id":"0","protocol":"m3u8_native",
+        "url":"https://cdn.example.test/live/index.m3u8","vcodec":"avc1","acodec":"aac"});
+    let page = AddRequest {
+        url: "https://example.test/watch?v=1".into(),
+        ..manifest
+    };
+    assert!(selection_is_fragmented(&single, &page, "0"));
+}
+
+#[test]
+fn the_automatic_choice_resolves_to_the_formats_the_download_takes() {
+    let info = media_info_from_json(&json!({"formats": [
+        {"format_id":"140","vcodec":"none","acodec":"mp4a.40.2","ext":"m4a"},
+        {"format_id":"251","vcodec":"none","acodec":"opus","ext":"webm"},
+        {"format_id":"137","vcodec":"avc1.640028","acodec":"none","height":1080,"ext":"mp4"},
+        {"format_id":"313","vcodec":"vp9","acodec":"none","height":2160,"ext":"webm"}
+    ]}))
+    .unwrap();
+    let ids = |container: &str| {
+        let request = AddRequest {
+            url: "https://example.test/watch?v=1".into(),
+            kind: DownloadKind::Video,
+            container: Some(container.into()),
+            ..AddRequest::default()
+        };
+        selected_formats(&request, &info)
+            .iter()
+            .map(|format| format.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids("mp4"), ["137", "140"]);
+    assert_eq!(ids("mkv"), ["313", "251"]);
 }
 
 #[test]

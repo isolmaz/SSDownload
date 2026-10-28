@@ -79,6 +79,8 @@ const CLASS_ALERT: &str = "SSDownload.AlertBox";
 const APP_TITLE: &str = "SSDownload — İndirme Yöneticisi";
 const TIMER_REFRESH: usize = 1;
 const TIMER_DIALOG: usize = 2;
+/// Repaints the bars of processing jobs while any job is processing.
+const TIMER_SWEEP: usize = 3;
 const WM_TRAY: u32 = WM_APP + 31;
 const TRAY_ID: u32 = 1;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
@@ -1661,6 +1663,20 @@ unsafe extern "system" fn main_proc(
         }
         WM_TIMER if wparam == TIMER_REFRESH => {
             refresh(ui, false);
+            if ui
+                .snapshot
+                .jobs
+                .iter()
+                .any(|job| job.state == JobState::Processing)
+            {
+                SetTimer(hwnd, TIMER_SWEEP, SWEEP_FRAME_MS, None);
+            } else {
+                KillTimer(hwnd, TIMER_SWEEP);
+            }
+            0
+        }
+        WM_TIMER if wparam == TIMER_SWEEP => {
+            sweep_processing_rows(ui);
             0
         }
         WM_COMMAND => {
@@ -1889,6 +1905,7 @@ unsafe extern "system" fn main_proc(
         }
         WM_NCDESTROY => {
             KillTimer(hwnd, TIMER_REFRESH);
+            KillTimer(hwnd, TIMER_SWEEP);
             RemoveClipboardFormatListener(hwnd);
             DragAcceptFiles(hwnd, 0);
             if !ui.drop_target.is_null() {
@@ -2942,6 +2959,39 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
 /// Age after which the media toolchain is refreshed at startup.
 const TOOLCHAIN_REFRESH_DAYS: i64 = 7;
 
+/// Repaints the progress cells of the processing rows on screen: their bars move while
+/// nothing about the job changes.
+unsafe fn sweep_processing_rows(ui: &MainUi) {
+    let top = SendMessageW(ui.list, LVM_GETTOPINDEX, 0, 0).max(0) as usize;
+    let page = SendMessageW(ui.list, LVM_GETCOUNTPERPAGE, 0, 0).max(0) as usize + 1;
+    for row in top..(top + page).min(ui.visible_ids.len()) {
+        let id = &ui.visible_ids[row];
+        if !ui
+            .snapshot
+            .jobs
+            .iter()
+            .any(|job| &job.id == id && job.state == JobState::Processing)
+        {
+            continue;
+        }
+        let mut cell = RECT {
+            left: LVIR_BOUNDS as i32,
+            top: 2,
+            right: 0,
+            bottom: 0,
+        };
+        if SendMessageW(
+            ui.list,
+            LVM_GETSUBITEMRECT,
+            row,
+            &mut cell as *mut _ as isize,
+        ) != 0
+        {
+            InvalidateRect(ui.list, &cell, 0);
+        }
+    }
+}
+
 /// "SSDownload 1.5.1 — 2 indiriliyor · 5,2 MB/sn" in the title and the tray tooltip,
 /// plus a progress bar on the tray icon; each is rewritten only when it changes.
 unsafe fn update_title_and_tray(ui: &mut MainUi) {
@@ -2983,9 +3033,12 @@ unsafe fn update_title_and_tray(ui: &mut MainUi) {
     if !ui.tray_added {
         return;
     }
-    let known = running
-        .iter()
-        .all(|job| job.total.is_some_and(|total| total > 0));
+    // A job that is processing has its whole size already: with only such jobs, a percentage
+    // would read as finished.
+    let known = !running.iter().all(|job| job.state == JobState::Processing)
+        && running
+            .iter()
+            .all(|job| job.total.is_some_and(|total| total > 0));
     let fraction = if running.is_empty() || !known {
         None
     } else {
@@ -3589,9 +3642,10 @@ unsafe fn update_taskbar_progress(ui: &mut MainUi) {
         .collect::<Vec<_>>();
     let (state, permille) = if running.is_empty() {
         (TBPF_NOPROGRESS, 0)
-    } else if running
-        .iter()
-        .all(|job| job.total.is_some_and(|total| total > 0))
+    } else if !running.iter().all(|job| job.state == JobState::Processing)
+        && running
+            .iter()
+            .all(|job| job.total.is_some_and(|total| total > 0))
     {
         let total = running
             .iter()
@@ -5735,8 +5789,8 @@ struct MediaFields {
     renew_ids: Vec<String>,
     video_formats: Vec<Option<MediaFormat>>,
     audio_values: Vec<AudioSelection>,
-    /// The formats behind `audio_values`, in the same order.
-    audio_formats: Vec<MediaFormat>,
+    /// The analysis the controls were filled from.
+    info: MediaInfo,
     /// The selected streams' total size, below the quality list.
     size: HWND,
     subtitle_values: Vec<SubtitleTrack>,
@@ -6811,7 +6865,7 @@ unsafe fn show_media_picker(
                 renew_ids: Vec::new(),
                 video_formats: Vec::new(),
                 audio_values: Vec::new(),
-                audio_formats: Vec::new(),
+                info: MediaInfo::default(),
                 size: null_mut(),
                 subtitle_values: Vec::new(),
                 external_values: base.external_subtitles.clone(),

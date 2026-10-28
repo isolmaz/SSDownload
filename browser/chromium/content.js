@@ -189,22 +189,30 @@ function playerIdentity(media) {
 // each with the page address and the playing video's source it was loaded for: a single-page
 // site that moves to the next episode, or a second video in the document, does not get them.
 const observedSubtitles = new Map();
-// Chapter, thumbnail and preview tracks are WebVTT as well, but not subtitles.
-const NOT_SUBTITLE_FILE = /chapter|thumb|sprite|storyboard|preview/i;
+// Chapter, thumbnail and preview tracks are WebVTT as well, but not subtitles. Their names are
+// compared word by word, so a title such as "Thumbelina" stays a subtitle; "chapter" counts
+// only as the last word, because episode titles carry it ("S01E01.Chapter.One.en.vtt").
+const NOT_SUBTITLE_WORDS = new Set(["chapters", "thumb", "thumbs", "thumbnail", "thumbnails", "sprite", "sprites",
+  "storyboard", "storyboards", "preview", "previews"]);
+function notSubtitleFile(url) {
+  const words = nameWords(url, /[^\p{L}]+/u);
+  return words.some(word => NOT_SUBTITLE_WORDS.has(word)) || words.at(-1) === "chapter";
+}
 function mediaSource(media) {
   return media.currentSrc || media.src || "";
 }
 function observeSubtitle(url) {
-  if (NOT_SUBTITLE_FILE.test(fileName(url))) return;
+  if (notSubtitleFile(url)) return;
   const videos = [...queryMediaRoots("video")];
   const playing = videos.find(video => video.paused === false) || (videos.length === 1 ? videos[0] : null);
   observedSubtitles.delete(url);
-  observedSubtitles.set(url, { page: location.href, source: playing ? mediaSource(playing) : "" });
+  observedSubtitles.set(url, { page: pageKey(), source: playing ? mediaSource(playing) : "" });
   while (observedSubtitles.size > 32) observedSubtitles.delete(observedSubtitles.keys().next().value);
 }
 // Language names and codes a subtitle file name carries ("film.tr.vtt", "Turkish.srt"),
 // written without diacritics because file names are compared that way. Two-letter codes
-// that are also common English words are left out.
+// that are also common English words are left out; those that are common words in other
+// languages count only as the name's last word.
 const SUBTITLE_LANGUAGES = (() => {
   const languages = {
     tr:"tur turkish turkce", en:"eng english ingilizce", de:"ger deu german deutsch almanca",
@@ -226,17 +234,23 @@ const SUBTITLE_LANGUAGES = (() => {
   for (const word of ["it", "id", "he", "hi", "uk"]) names.delete(word);
   return names;
 })();
+const LAST_WORD_LANGUAGES = new Set(["de", "da", "el", "en", "es", "por", "per"]);
 function fileName(url) {
   try { return decodeURIComponent(new URL(url).pathname.split("/").pop() || ""); }
   catch (_) { return ""; }
 }
-// The language word nearest the file extension wins: "subtitles01.eng.vtt" is English.
+// The words of a file name without its extension, lowercase and without diacritics.
+function nameWords(url, separator) {
+  return fileName(url).toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "").replace(/\u0131/g, "i")
+    .replace(/\.[^.]*$/, "").split(separator).filter(Boolean);
+}
+// The language word nearest the file extension wins: "subtitles01.eng.vtt" is English. A word
+// joined to digits ("24hr", "x264") names no language.
 function addressLanguage(url) {
-  const words = fileName(url).toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "").replace(/\u0131/g, "i")
-    .replace(/\.[^.]*$/, "").split(/[^\p{L}]+/u).filter(Boolean);
+  const words = nameWords(url, /[^\p{L}\p{N}]+/u);
   for (let index = words.length - 1; index >= 0; index--) {
     const code = SUBTITLE_LANGUAGES.get(words[index]);
-    if (code) return code;
+    if (code && (index === words.length - 1 || !LAST_WORD_LANGUAGES.has(words[index]))) return code;
   }
   return "";
 }
@@ -252,7 +266,7 @@ function playerTracks(media, playerId) {
   }
   if (media.tagName === "VIDEO") {
     for (const [url, loaded] of observedSubtitles) {
-      if (tracks.length >= 32 || tracks.some(track => track.url === url) || loaded.page !== location.href
+      if (tracks.length >= 32 || tracks.some(track => track.url === url) || loaded.page !== pageKey()
         || (loaded.source && loaded.source !== mediaSource(media))) continue;
       // The app keeps a label within 200 bytes.
       tracks.push({url, language:addressLanguage(url) || "und", label:fileName(url).slice(0,60), kind:"subtitles", isDefault:false, playerId});
@@ -292,10 +306,13 @@ function players() {
     if (media.autoplay && media.loop && (media.muted || media.defaultMuted)) adSignals.push("playback-pattern");
     if (hasSkipAdControl(media)) adSignals.push("skip-control");
     const elementTitle=media.getAttribute("title") || media.getAttribute("data-title") || "";
+    // Media under `visibility: hidden` (a seek-bar preview the player keeps loaded) is laid out
+    // but not shown, which checkVisibility() without options does not see.
+    const concealed=media.checkVisibility?.()!==false && media.checkVisibility?.({visibilityProperty:true})===false;
     return {id:identity.id, urls:[current, ...[...media.querySelectorAll("source[src]")].map(s=>s.src)].map(absoluteUrl).filter(Boolean),
       title:elementTitle || pageTitle(), explicitTitle:!!elementTitle, titleSource:elementTitle?"element":"page",
       poster:media.poster || "", active:media.paused === false, played:media.currentTime>0 || media.readyState>=2,
-      visible:!rect || (rect.width>=100 && rect.height>=60 && media.checkVisibility?.()!==false),
+      visible:!rect || (rect.width>=100 && rect.height>=60 && media.checkVisibility?.()!==false), concealed,
       since:identity.since, duration:Number.isFinite(media.duration)?media.duration:null,
       loop:media.loop===true, muted:media.muted===true || media.volume===0,
       userActivated:Date.now()-lastUserGestureAt<15000, adSignals,tracks:playerTracks(media,identity.id)};
@@ -360,9 +377,10 @@ const ownTiles = new WeakMap();
 const OWN_TILE_TYPES = ["pointerdown", "mousedown", "pointerup", "mouseup", "auxclick", "contextmenu", "click", "touchstart", "touchend", "keydown", "keyup"];
 const OWN_TILE_KEYS = new Set(["Enter", " "]);
 
-// Where the user dragged the tiles to, as fractions of the room the anchor box leaves around a
-// tile; null keeps them 8 px inside the anchor's top-left corner. One placement serves every
-// player, so a tile moved off a site's own controls stays clear of them on the next page.
+// Where the user dragged the tiles to, as fractions of the room the anchor's on-screen part
+// leaves around a tile, so a tile on a box taller or wider than the window stays in view; null
+// keeps them 8 px inside the anchor's top-left corner. One placement serves every player, so a
+// tile moved off a site's own controls stays clear of them on the next page.
 let tilePlacement = null;
 // A press on a tile becomes a drag once it moves 5 px; its release then moves the tile
 // instead of activating it.
@@ -372,17 +390,27 @@ function validPlacement(value) {
   const x = Number(value?.x), y = Number(value?.y);
   return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) } : null;
 }
+function onScreen(rect) {
+  const left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+  return { left, top, width: Math.max(0, Math.min(innerWidth, rect.left + rect.width) - left),
+    height: Math.max(0, Math.min(innerHeight, rect.top + rect.height) - top) };
+}
 function tileSpot(button, rect) {
   if (!tilePlacement) return { left: rect.left + 8, top: rect.top + 8 };
-  return { left: rect.left + tilePlacement.x * Math.max(0, rect.width - (button.offsetWidth || 0)),
-    top: rect.top + tilePlacement.y * Math.max(0, rect.height - (button.offsetHeight || 0)) };
+  const room = onScreen(rect);
+  return { left: room.left + tilePlacement.x * Math.max(0, room.width - (button.offsetWidth || 0)),
+    top: room.top + tilePlacement.y * Math.max(0, room.height - (button.offsetHeight || 0)) };
 }
 function tileAnchor(tile) {
   for (const [node, button] of overlays) if (button === tile) return node.getBoundingClientRect();
   return tile === pageOverlay ? playerContainerBox() : null;
 }
+// Only the pointer that pressed the tile, as the browser delivers it, moves or drops it.
+function dragPointer(event) {
+  return !!tileDrag && event?.isTrusted === true && event.pointerId === tileDrag.pointerId;
+}
 function dragTile(event) {
-  if (!tileDrag) return;
+  if (!dragPointer(event)) return;
   const dx = event.clientX - tileDrag.x, dy = event.clientY - tileDrag.y;
   if (!tileDrag.moved && Math.hypot(dx, dy) < 5) return;
   tileDrag.moved = true;
@@ -393,6 +421,7 @@ function dragTile(event) {
   event.stopImmediatePropagation();
 }
 function dropTile(event) {
+  if (!dragPointer(event)) return;
   const drag = tileDrag;
   tileDrag = null;
   if (!drag?.moved) return;
@@ -405,9 +434,10 @@ function dropTile(event) {
   draggedTile = drag.tile;
   const rect = tileAnchor(drag.tile);
   if (!rect) return;
+  const room = onScreen(rect);
   const box = drag.tile.getBoundingClientRect();
-  const share = (offset, room) => room > 0 ? offset / room : 0;
-  tilePlacement = validPlacement({ x: share(box.left - rect.left, rect.width - box.width), y: share(box.top - rect.top, rect.height - box.height) });
+  const share = (offset, space) => space > 0 ? offset / space : 0;
+  tilePlacement = validPlacement({ x: share(box.left - room.left, room.width - box.width), y: share(box.top - room.top, room.height - box.height) });
   // An updated or removed extension throws here instead of rejecting.
   try { Promise.resolve(extensionApi.storage?.local?.set({ tilePlacement })).catch(() => {}); } catch (_) {}
   updateOverlays();
@@ -446,7 +476,7 @@ function ownTileEvent(event) {
     draggedTile = null;
     if (event.isTrusted === true && event.button === 0) {
       const box = tile.getBoundingClientRect();
-      tileDrag = { tile, x: event.clientX, y: event.clientY, left: box.left, top: box.top, moved: false };
+      tileDrag = { tile, pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: box.left, top: box.top, moved: false };
       try { tile.setPointerCapture?.(event.pointerId); } catch (_) {}
     }
   }
@@ -736,11 +766,11 @@ function frameOccupies(box) {
   return false;
 }
 
-// The tile anchors to the player container while that container is on screen and the spot
-// is this document's own surface, and to the viewport's top-right corner otherwise, both
-// with an 8 px margin. The container's corner is where the embedded document keeps its own
-// affordance, so a document that hosts a frame there keeps its offer on the corner of the
-// screen instead: the two tiles never fight over one click, and the page candidate itself
+// The tile stands on the player container, where the tiles were dragged to, while that
+// container is on screen and the spot is this document's own surface, and 8 px inside the
+// viewport's top-right corner otherwise. An embedded document keeps its own affordance on its
+// player, so a document that hosts a frame under the spot keeps its offer on the corner of
+// the screen instead: the two tiles never fight over one click, and the page candidate itself
 // is unchanged.
 function placePageTile(button) {
   if (tileDrag?.moved && tileDrag.tile === button) return;
@@ -838,7 +868,7 @@ function paintOverlays() {
     // for that case instead.
     const withdrawn = (description && !description.urls.length && !description.active && !description.played) || rect.width < 100 || rect.height < minimumHeight || rect.bottom < 0 || rect.top > innerHeight
       || rect.right < 0 || rect.left > innerWidth
-      || node.checkVisibility?.()===false || description?.adSignals.length>=2 || hiddenMedia.has(node) || pageHidden();
+      || node.checkVisibility?.()===false || description?.concealed || description?.adSignals.length>=2 || hiddenMedia.has(node) || pageHidden();
     hideTile(button, withdrawn);
     if (button.disabled) paintTile(button, "disabled");
     if (tileDrag?.moved && tileDrag.tile === button) continue;

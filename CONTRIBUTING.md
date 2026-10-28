@@ -55,6 +55,7 @@ scripts/             Local checks, error-code generator and release scripts
 
 ## Conventions
 
+- Behaviour is general and never tied to one site: no code checks a particular site's host name, address or page layout. A fix follows from what the source does (how the server answers, what the playlist or the player contains), so it applies to every site that behaves the same way.
 - Match the surrounding code. Identifiers, comments and documentation are in English; interface text goes through `crate::i18n::ui("Türkçe", "English")` with both languages. The browser extension's text lives in `browser/chromium/i18n.js` (`t("key")`, English and Turkish with the same keys and `{0}` placeholders; the extension follows the app's language and `node --test browser/tests/*.test.js` checks both languages).
 - Threads are named `std::thread`s (no async runtime). Only the engine thread changes jobs, settings and the store; everything else sends it a command or reads a snapshot.
 - Start helper programs with argument arrays, never through a shell. Validate input at trust boundaries with the helpers in `src/validation.rs`.

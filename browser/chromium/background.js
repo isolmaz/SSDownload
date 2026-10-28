@@ -487,8 +487,11 @@ function videoRecords(tabId) {
     const directByPlayer=new Map(frame.players.map(p=>[p,roots.filter(item=>item.downloadable && inFrameDocument(item) && [...descendants(item)].some(u=>p.urls.includes(u)))]));
     const assigned=new Set([...directByPlayer.values()].flat());
     const manifests=roots.filter(item=>inFrameDocument(item) && ["hls","dash"].includes(item.kind) && item.lastSeen>=frame.since && !assigned.has(item));
-    const eligible=frame.players.filter(p=>(p.active || p.played || p.visible!==false) && p.urls.some(u=>u.startsWith("blob:")) && !directByPlayer.get(p).length);
-    for (const player of frame.players) {
+    // Concealed media that is not playing (a seek-bar preview) is no player the user watches:
+    // it neither offers a candidate nor makes the page's one blob player ambiguous.
+    const shown=frame.players.filter(p=>!p.concealed || p.active);
+    const eligible=shown.filter(p=>(p.active || p.played || p.visible!==false) && p.urls.some(u=>u.startsWith("blob:")) && !directByPlayer.get(p).length);
+    for (const player of shown) {
       if (!player.urls.length && !player.active && !player.played) continue;
       if (player.visible === false && !player.active && !player.played) continue;
       const direct = directByPlayer.get(player);
@@ -506,7 +509,7 @@ function videoRecords(tabId) {
       const preview = player.loop && player.muted && !player.userActivated;
       const frameTitle=frame.pageTitle || "";
       const descriptiveFrameTitle=descriptiveTitle(frameTitle,frame.url);
-      const onePlayer=frame.players.filter(p=>p.urls.length || p.active || p.played).length===1;
+      const onePlayer=shown.filter(p=>p.urls.length || p.active || p.played).length===1;
       const distinctPlayerTitle=player.title && player.title!==frameTitle && player.title!==frame.tabTitle && !/^(?:video|player|embed|master|index|manifest|stream|hls|dash)$/i.test(player.title.trim());
       const title = player.explicitTitle ? player.title : onePlayer && descriptiveFrameTitle ? frameTitle : onePlayer ? (frame.tabTitle || player.title) : distinctPlayerTitle ? player.title : t("playerTitleFallback", player.id);
       const titleSource=player.explicitTitle?"element":onePlayer&&descriptiveFrameTitle?"frame":onePlayer&&frame.tabTitle?"tab":distinctPlayerTitle?"player":"generic";
@@ -549,7 +552,7 @@ function videoRecords(tabId) {
     const signals = frame.playerSignals;
     const embeds = Array.isArray(signals?.embeds) ? signals.embeds : [];
     const signalled = embeds.length>0 || signals?.containers===true || signals?.playerScripts===true;
-    const considered = frame.players.filter(p=>(p.urls.length || p.active || p.played) && !(p.visible === false && !p.active && !p.played));
+    const considered = shown.filter(p=>(p.urls.length || p.active || p.played) && !(p.visible === false && !p.active && !p.played));
     const previewsOnly = considered.length>0 && considered.every(p=>p.loop && p.muted && !p.userActivated);
     if (result.length === produced && signalled && !previewsOnly && !observedUrls.has(frame.url)) {
       const blocked = frame.responseStatus >= 400;
@@ -1547,7 +1550,7 @@ async function handleContentMessage(message, sender) {
       const duration=Number(p.duration);
       return {id,title:String(p.title || sender.tab.title || t("videoTitleFallback")).slice(0,180),
         urls:(p.urls || []).filter(u => typeof u === "string" && u.length <= 16384 && (u.startsWith("blob:") || !!safeUrl(u))).slice(0,20), poster:safeUrl(p.poster)?.href || null,
-        explicitTitle:p.explicitTitle === true, titleSource:p.titleSource==="element"?"element":"page", visible:p.visible!==false, played:p.played===true,
+        explicitTitle:p.explicitTitle === true, titleSource:p.titleSource==="element"?"element":"page", visible:p.visible!==false, concealed:p.concealed===true, played:p.played===true,
         active:p.active === true, adSignals:signals.slice(0,6),tracks,duration:Number.isFinite(duration)&&duration>=0&&duration<=604800?duration:null,
         loop:p.loop === true, muted:p.muted === true, userActivated:p.userActivated === true};
     });

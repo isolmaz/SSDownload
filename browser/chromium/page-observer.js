@@ -94,8 +94,9 @@
       return /X-TIMESTAMP-MAP=/i.test(head) || /#xywh=|^\S+\.(?:jpe?g|png|webp|gif)(?:[?#]\S*)?$/im.test(head) ? null : "vtt";
     return /^\s*\d+\r?\n\d{1,2}:\d{2}:\d{2},\d{3} --> /.test(head) ? "srt" : null;
   }
+  // A response the page built itself has no address: its body is no file at the page's own.
   function observe(text, base, type="") {
-    if (!enabled || typeof text !== "string") return;
+    if (!enabled || typeof text !== "string" || !base) return;
     try {
       base = new URL(base, document.baseURI).href;
       if (!/^https?:/.test(base) || base.length>16384) return;

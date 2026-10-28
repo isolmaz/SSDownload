@@ -1834,7 +1834,9 @@ fn relay(
     let _ = upstream.set_write_timeout(Some(PROXY_RELAY_IDLE_TIMEOUT));
     // The server's bytes wait in `answer` until the client takes them: a client that leaves an
     // answer unread (a demuxer that opened every rendition of a stream) moves no bytes, and its
-    // tunnel gives the slot back like one that went quiet after the answer.
+    // tunnel gives the slot back like one that went quiet after the answer. Without a slot the
+    // tunnel still hands over what it holds, and takes a slot again before it passes on more
+    // bytes from either side; a closed end needs none.
     if client.set_nonblocking(true).is_err() {
         return;
     }
@@ -1873,10 +1875,17 @@ fn relay(
         let mut moved = false;
         if pending.is_empty() && polls[0].revents != 0 {
             // The server's end closes the tunnel: nothing it sends can follow.
-            match upstream.read(&mut answer) {
+            let read = match upstream.read(&mut answer) {
                 Ok(0) | Err(_) => return,
-                Ok(read) => pending = 0..read,
+                Ok(read) => read,
+            };
+            if lease.is_none() {
+                lease = reacquire_tunnel_slot(shared, host);
+                if lease.is_none() {
+                    return;
+                }
             }
+            pending = 0..read;
             upstream_spoke_last = true;
             last_traffic = Instant::now();
             moved = true;
@@ -1894,16 +1903,18 @@ fn relay(
             }
         }
         if client_open && polls[1].revents & (POLLRDNORM | POLLHUP | POLLERR) != 0 {
-            if lease.is_none() {
-                lease = reacquire_tunnel_slot(shared, host);
-                if lease.is_none() {
-                    return;
-                }
-            }
             let forwarded = match client.read(&mut request) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => Some(false),
                 Ok(0) | Err(_) => None,
-                Ok(read) => upstream.write_all(&request[..read]).ok().map(|()| true),
+                Ok(read) => {
+                    if lease.is_none() {
+                        lease = reacquire_tunnel_slot(shared, host);
+                        if lease.is_none() {
+                            return;
+                        }
+                    }
+                    upstream.write_all(&request[..read]).ok().map(|()| true)
+                }
             };
             match forwarded {
                 Some(false) => {}
@@ -1929,7 +1940,7 @@ fn relay(
     }
 }
 
-/// Waits for a slot for an open tunnel whose client speaks again; `None` once the proxy stops.
+/// Waits for a slot for an open tunnel that moves bytes again; `None` once the proxy stops.
 /// The tunnel holds no slot meanwhile, so the wait cannot block the transfers it waits for.
 fn reacquire_tunnel_slot(shared: &ProxyShared, host: &str) -> Option<ConnectionLease> {
     while !shared.stopping.load(Ordering::Acquire) {
@@ -2221,9 +2232,38 @@ mod tests {
             "the tunnel kept its slot while its client was not reading"
         );
 
-        // The open tunnel still delivers the whole answer once the client reads it.
+        // With its slot taken meanwhile, the tunnel hands over what it holds and waits for a
+        // slot before it passes on more of the answer.
+        let held = governor
+            .try_acquire_host("127.0.0.1".into())
+            .expect("free slot");
+        unread
+            .set_read_timeout(Some(Duration::from_millis(700)))
+            .unwrap();
         let mut received = 0;
         let mut buffer = vec![0u8; 1024 * 1024];
+        loop {
+            match unread.read(&mut buffer) {
+                Ok(read) => {
+                    assert!(read > 0, "the tunnel closed after {received} bytes");
+                    assert!(buffer[..read].iter().all(|&byte| byte == 7));
+                    received += read;
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    break
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+        assert!(received < ANSWER, "the whole answer passed without a slot");
+
+        // The open tunnel still delivers the whole answer once a slot is free.
+        drop(held);
+        unread
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
         while received < ANSWER {
             let read = unread.read(&mut buffer).unwrap();
             assert!(read > 0, "the tunnel closed after {received} bytes");
@@ -2231,6 +2271,25 @@ mod tests {
             received += read;
         }
         assert_eq!(received, ANSWER);
+    }
+
+    #[test]
+    fn a_tunnel_without_a_slot_closes_with_its_client_without_waiting_for_one() {
+        let target = answering_server();
+        let governor = NetworkGovernor::new(1);
+        let proxy = ExternalProxy::spawn(governor.clone(), TransferControl::default()).unwrap();
+        let (mut pooled, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        exchange(&mut pooled);
+        assert!(eventually(|| governor
+            .try_acquire_host("127.0.0.1".into())
+            .is_some()));
+        let _held = governor.try_acquire_host("127.0.0.1".into()).unwrap();
+        drop(pooled);
+        assert!(
+            eventually(|| proxy.shared.open_tunnels() == 0),
+            "the closed tunnel waited for a slot"
+        );
     }
 
     fn proxy_reply(proxy: &ExternalProxy, request: &str) -> String {

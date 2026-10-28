@@ -512,14 +512,23 @@ unsafe fn paint_card(card: &mut CardUi, dc: HDC) {
             bottom: y + scale(32, d),
         };
         fill(dc, bar, track);
-        let fraction = match (job.state, job.total) {
-            (JobState::Completed, _) => 1.0,
-            (_, Some(total)) if total > 0 => (job.downloaded as f64 / total as f64).min(1.0),
-            _ => 0.0,
-        };
-        let filled = RECT {
-            right: bar.left + ((bar.right - bar.left) as f64 * fraction) as i32,
-            ..bar
+        let filled = if job.state == JobState::Processing {
+            let (start, end) = processing_sweep(sweep_clock(), bar.right - bar.left);
+            RECT {
+                left: bar.left + start,
+                right: bar.left + end,
+                ..bar
+            }
+        } else {
+            let fraction = match (job.state, job.total) {
+                (JobState::Completed, _) => 1.0,
+                (_, Some(total)) if total > 0 => (job.downloaded as f64 / total as f64).min(1.0),
+                _ => 0.0,
+            };
+            RECT {
+                right: bar.left + ((bar.right - bar.left) as f64 * fraction) as i32,
+                ..bar
+            }
         };
         fill(dc, filled, state_colour(job, accent));
         let detail = match job.state {
@@ -732,6 +741,9 @@ unsafe extern "system" fn card_proc(
                 stack_cards();
             }
             InvalidateRect(hwnd, null(), 0);
+            // A processing job's bar moves, so the card repaints often while one is shown.
+            let processing = jobs.iter().any(|job| job.state == JobState::Processing);
+            SetTimer(hwnd, TIMER_CARD, if processing { SWEEP_FRAME_MS } else { 500 }, None);
             0
         }
         WM_MOUSEMOVE => {

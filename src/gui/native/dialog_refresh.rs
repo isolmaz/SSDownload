@@ -374,6 +374,7 @@ pub(super) unsafe fn refresh_job_view(
     let can_cancel: bool;
     let can_open: bool;
     let mut percent = 0usize;
+    let mut processing = false;
     match job_view_job(snapshot, f) {
         None => {
             detail.push_str(&crate::i18n::ui_owned!(format!(
@@ -430,6 +431,7 @@ pub(super) unsafe fn refresh_job_view(
             } else if let Some(total) = job.total.filter(|total| *total > 0) {
                 percent = ((job.downloaded.min(total) as u128 * 1000) / total as u128) as usize;
             }
+            processing = job.state == JobState::Processing;
             action_label = match job.state {
                 JobState::Failed => crate::i18n::ui("Yeniden dene", "Retry"),
                 JobState::Paused | JobState::Cancelled => crate::i18n::ui("Sürdür", "Resume"),
@@ -452,7 +454,26 @@ pub(super) unsafe fn refresh_job_view(
         set_text(f.action, action_label);
         f.action_label = action_label.to_string();
     }
-    SendMessageW(f.progress, PBM_SETPOS, percent, 0);
+    // The work after the download has no size: a full bar would look finished, so the bar
+    // moves instead.
+    let style = GetWindowLongW(f.progress, GWL_STYLE) as u32;
+    if (style & PBS_MARQUEE != 0) != processing {
+        let style = if processing {
+            style | PBS_MARQUEE
+        } else {
+            style & !PBS_MARQUEE
+        };
+        SetWindowLongW(f.progress, GWL_STYLE, style as i32);
+        SendMessageW(
+            f.progress,
+            PBM_SETMARQUEE,
+            processing as usize,
+            SWEEP_FRAME_MS as isize,
+        );
+    }
+    if !processing {
+        SendMessageW(f.progress, PBM_SETPOS, percent, 0);
+    }
     EnableWindow(f.action, can_control as BOOL);
     EnableWindow(f.cancel, can_cancel as BOOL);
     EnableWindow(f.open_file, can_open as BOOL);
@@ -638,44 +659,66 @@ pub(super) fn selected_media_size(
     Some((total, estimated))
 }
 
+/// `f.base` with the output kind, the quality and the audio tracks chosen in the picker.
+unsafe fn chosen_streams(
+    f: &MediaFields,
+    kind: DownloadKind,
+    container: Option<String>,
+) -> AddRequest {
+    let mut request = f.base.clone();
+    request.kind = kind;
+    request.format_id = None;
+    request.video_format_id = None;
+    request.max_height = None;
+    request.exact_height = None;
+    request.audio_format_id = None;
+    request.audio_language = None;
+    request.audio_tracks.clear();
+    request.container = None;
+    if kind == DownloadKind::Video {
+        let selected_format = f
+            .video_formats
+            .get(combo_index(f.format).max(0) as usize)
+            .and_then(|format| format.as_ref());
+        request.video_format_id = selected_format.map(|format| format.id.clone());
+        request.exact_height = selected_format.and_then(|format| format.height);
+        request.max_height = request.exact_height;
+        request.container = container;
+    }
+    let mut audio: Vec<AudioSelection> = selected_list_indexes(f.audio_tracks)
+        .into_iter()
+        .filter_map(|index| f.audio_values.get(index).cloned())
+        .collect();
+    if audio.len() == 1 {
+        let selection = audio.remove(0);
+        request.audio_format_id = Some(selection.id);
+        request.audio_language = selection.language;
+    } else if kind == DownloadKind::Video {
+        request.audio_tracks = audio;
+    }
+    request
+}
+
 pub(super) unsafe fn refresh_media_size(f: &MediaFields) {
-    let audio_only = f
+    // The streams the download will take, so the automatic quality counts what the selector
+    // picks for the chosen container rather than the first listed quality.
+    let total = f
         .kind_values
         .get(combo_index(f.kind).max(0) as usize)
-        .is_some_and(|(kind, _)| *kind == DownloadKind::Audio);
-    let index = SendMessageW(f.format, CB_GETCURSEL, 0, 0);
-    let video = usize::try_from(index)
-        .ok()
-        .and_then(|index| f.video_formats.get(index))
-        .and_then(|format| {
-            format
-                .as_ref()
-                .or_else(|| f.video_formats.iter().flatten().next())
+        .cloned()
+        .and_then(|(kind, container)| {
+            let request = chosen_streams(f, kind, container);
+            let formats = crate::media::selected_formats(&request, &f.info);
+            if kind != DownloadKind::Video {
+                return selected_media_size(None, &formats);
+            }
+            let (video, audio): (Vec<_>, Vec<_>) = formats
+                .into_iter()
+                .partition(|format| format.video_codec.as_deref() != Some("none"));
+            selected_media_size(Some(video.first()?), &audio)
         });
-    let selected = selected_list_indexes(f.audio_tracks);
-    // With no track chosen, the largest audio format stands for the automatic choice, which
-    // may take another one: the total is then an estimate.
-    let automatic = selected.is_empty();
-    let audio = if automatic {
-        f.audio_formats
-            .iter()
-            .filter(|format| format.filesize.is_some())
-            .max_by_key(|format| format.filesize)
-            .into_iter()
-            .collect::<Vec<_>>()
-    } else {
-        selected
-            .into_iter()
-            .filter_map(|index| f.audio_formats.get(index))
-            .collect()
-    };
-    let total = if audio_only {
-        selected_media_size(None, &audio)
-    } else {
-        video.and_then(|video| selected_media_size(Some(video), &audio))
-    };
     let size = total
-        .map(|(bytes, estimated)| size_text(bytes, estimated || (automatic && !audio.is_empty())))
+        .map(|(bytes, estimated)| size_text(bytes, estimated))
         .unwrap_or_else(|| crate::i18n::ui("bilinmiyor", "unknown").into());
     set_text(
         f.size,
@@ -958,7 +1001,7 @@ pub(super) unsafe fn populate_media(
 
     SendMessageW(f.audio_tracks, LB_RESETCONTENT, 0, 0);
     f.audio_values.clear();
-    f.audio_formats.clear();
+    f.info = info.clone();
     for format in info.formats.iter().filter(|value| {
         !value.has_drm
             && value.video_codec.as_deref() == Some("none")
@@ -1006,7 +1049,6 @@ pub(super) unsafe fn populate_media(
             SendMessageW(f.audio_tracks, LB_SETSEL, 1, index as isize);
         }
         f.audio_values.push(selection);
-        f.audio_formats.push(format.clone());
     }
     refresh_media_size(f);
 
@@ -1108,44 +1150,27 @@ pub(super) unsafe fn queue_media(
         set_dialog_error(hwnd, error, mode_error(kind), f.kind);
         return None;
     }
-    let mut request = f.base.clone();
-    request.kind = kind;
+    if kind != DownloadKind::Video && selected_list_indexes(f.audio_tracks).len() > 1 {
+        set_dialog_error(
+            hwnd,
+            error,
+            crate::i18n::ui(
+                "Yalnız ses çıktısında tam olarak bir ses parçası seçilebilir.",
+                "Exactly one audio track can be selected for audio-only output.",
+            ),
+            f.audio_tracks,
+        );
+        return None;
+    }
+    let mut request = chosen_streams(f, kind, container);
     request.live_from_start = f.from_start_offered && check(f.from_start);
-    request.format_id = None;
-    request.video_format_id = None;
-    request.max_height = None;
-    request.exact_height = None;
-    request.audio_format_id = None;
-    request.audio_language = None;
-    request.audio_tracks.clear();
     request.subtitle_languages.clear();
     request.subtitle_mode = None;
     request.subtitle_tracks.clear();
     request.external_subtitles.clear();
 
-    let audio_indexes = selected_list_indexes(f.audio_tracks);
     if kind == DownloadKind::Video {
-        let index = combo_index(f.format).max(0) as usize;
-        let selected_format = f
-            .video_formats
-            .get(index)
-            .and_then(|format| format.as_ref());
-        request.video_format_id = selected_format.map(|format| format.id.clone());
-        request.exact_height = selected_format.and_then(|format| format.height);
-        request.max_height = request.exact_height;
-        request.container = container;
         request.audio_format = None;
-        let selected_audio: Vec<AudioSelection> = audio_indexes
-            .into_iter()
-            .filter_map(|index| f.audio_values.get(index).cloned())
-            .collect();
-        if selected_audio.len() == 1 {
-            let selection = &selected_audio[0];
-            request.audio_format_id = Some(selection.id.clone());
-            request.audio_language = selection.language.clone();
-        } else {
-            request.audio_tracks = selected_audio;
-        }
         let selected_subtitles: Vec<SubtitleSelection> = selected_list_indexes(f.subtitles)
             .into_iter()
             .filter_map(|index| f.subtitle_values.get(index))
@@ -1182,26 +1207,6 @@ pub(super) unsafe fn queue_media(
             return None;
         }
     } else {
-        if audio_indexes.len() > 1 {
-            set_dialog_error(
-                hwnd,
-                error,
-                crate::i18n::ui(
-                    "Yalnız ses çıktısında tam olarak bir ses parçası seçilebilir.",
-                    "Exactly one audio track can be selected for audio-only output.",
-                ),
-                f.audio_tracks,
-            );
-            return None;
-        }
-        request.container = None;
-        if let Some(selection) = audio_indexes
-            .first()
-            .and_then(|index| f.audio_values.get(*index))
-        {
-            request.audio_format_id = Some(selection.id.clone());
-            request.audio_language = selection.language.clone();
-        }
         request.audio_format = match combo_index(f.audio) {
             1 => Some("mp3".into()),
             2 => Some("m4a".into()),

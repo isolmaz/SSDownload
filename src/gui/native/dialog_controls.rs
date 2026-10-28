@@ -1635,7 +1635,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                     | WS_BORDER
                     | WS_VSCROLL
                     | LBS_EXTENDEDSEL as u32
-                    | LBS_NOINTEGRALHEIGHT as u32,
+                    | LBS_NOINTEGRALHEIGHT as u32
+                    | LBS_NOTIFY as u32,
                 WS_EX_CLIENTEDGE,
                 ID_MEDIA_AUDIO_TRACKS,
             );

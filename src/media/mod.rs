@@ -42,6 +42,7 @@ pub(crate) use postprocess::validate_options;
 use postprocess::*;
 use probe::*;
 use process::*;
+pub(crate) use selection::selected_formats;
 use selection::*;
 use session::*;
 pub(crate) use session::{scoped_cookie_applies, sweep_stale_cookie_jars};
@@ -480,10 +481,12 @@ pub(crate) fn download(
     if live {
         // FFmpeg records a live DASH stream into a plain MP4, whose index is written only when
         // FFmpeg ends on its own, and finishing a recording stops it by force: fragments keep
-        // what was recorded readable. Live HLS is recorded as MPEG-TS, which ignores the flags.
+        // what was recorded readable. Keyframes cut fragments only in a video track, so a
+        // recording without video is cut every 5 s instead. Live HLS is recorded as MPEG-TS,
+        // which ignores these options.
         base_args.extend([
             "--downloader-args".into(),
-            "ffmpeg_o:-movflags +frag_keyframe+empty_moov".into(),
+            "ffmpeg_o:-movflags +frag_keyframe+empty_moov -frag_duration 5000000".into(),
         ]);
     }
     if let Some(source_info) = &source_info {
@@ -1818,22 +1821,25 @@ fn selection_is_fragmented(inspection: &Value, request: &AddRequest, selector: &
         else {
             return false;
         };
-        root.get("formats")
-            .and_then(Value::as_array)
-            .is_some_and(|formats| {
-                formats.iter().any(|format| {
-                    format
-                        .get("format_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| ids.iter().any(|selected| selected == id))
-                        && (format.get("protocol").and_then(Value::as_str).is_some_and(
-                            |protocol| protocol.contains("m3u8") || protocol.contains("dash"),
-                        ) || format
-                            .get("fragments")
-                            .and_then(Value::as_array)
-                            .is_some_and(|fragments| !fragments.is_empty()))
-                })
-            })
+        // A result without a format list is its own format, as in `parse_formats`.
+        let formats = match root.get("formats").and_then(Value::as_array) {
+            Some(formats) => formats.iter().collect(),
+            None => vec![root],
+        };
+        formats.into_iter().any(|format| {
+            format
+                .get("format_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| ids.iter().any(|selected| selected == id))
+                && (format
+                    .get("protocol")
+                    .and_then(Value::as_str)
+                    .is_some_and(|protocol| protocol.contains("m3u8") || protocol.contains("dash"))
+                    || format
+                        .get("fragments")
+                        .and_then(Value::as_array)
+                        .is_some_and(|fragments| !fragments.is_empty()))
+        })
     })
 }
 
@@ -3281,6 +3287,23 @@ segment.ts
         let clean =
             "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nA\n\n00:00:02.000 --> 00:00:04.000\nB\n";
         assert_eq!(without_unmuxable_cues(clean), None);
+    }
+
+    #[test]
+    fn cue_rewrites_read_lines_and_times_as_ffmpeg_does() {
+        // A line of spaces stays inside its cue instead of becoming a cue break.
+        let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:01.000\nGone\n\n\
+                   00:00:02.000 --> 00:00:03.000\nA\n \nB\n";
+        assert_eq!(
+            without_unmuxable_cues(vtt).unwrap(),
+            "WEBVTT\n\n00:00:02.000 --> 00:00:03.000\nA\n \nB\n"
+        );
+        // FFmpeg reads `,5` as 5 ms, so both cues start at 2.005 s and become one.
+        let srt = "1\n00:00:02,5 --> 00:00:03,000\nA\n\n2\n00:00:02,005 --> 00:00:04,000\nB\n";
+        assert_eq!(
+            without_unmuxable_cues(srt).unwrap(),
+            "1\n00:00:02,5 --> 00:00:04,000\nA\nB\n"
+        );
     }
 
     #[test]
