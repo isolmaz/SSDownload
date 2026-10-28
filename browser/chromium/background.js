@@ -1447,7 +1447,13 @@ if (api.alarms?.create) {
     refreshCapabilities().catch(() => {});
   });
 }
-api.runtime.onInstalled.addListener(()=>{createMenus().catch(()=>{});sessionReady.then(()=>applyActionState()).catch(()=>{});});
+// A fresh install on a computer without the desktop app (from the store, before the app) opens
+// the welcome page once: until the app is installed the extension does nothing at all.
+async function welcomeWithoutApp(){
+  const state=await refreshCapabilities();
+  if(state.status!=="ready"&&state.appMissing===true) await invoke(api.tabs,"create",{url:api.runtime.getURL("welcome.html")});
+}
+api.runtime.onInstalled.addListener(details=>{createMenus().catch(()=>{});sessionReady.then(()=>applyActionState()).catch(()=>{});if(details?.reason==="install")welcomeWithoutApp().catch(()=>{});});
 api.runtime.onStartup.addListener(()=>{createMenus().catch(()=>{});sessionReady.then(()=>applyActionState()).catch(()=>{});});
 api.runtime.onSuspend?.addListener(flushSession);
 api.tabs?.onActivated?.addListener?.(() => { createMenus().catch(() => {}); });

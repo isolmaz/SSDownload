@@ -44,6 +44,17 @@
     popupInvalidSender: "Invalid sender",
     popupInvalidContentSender: "Invalid content sender",
 
+    // ---- without the desktop app: the popup's setup view and the welcome page
+    setupRequiredTitle: "The SSDownload app is required",
+    setupText: "This extension works together with the free SSDownload app for Windows 10 and 11. Without the app it cannot download anything.",
+    setupStepInstall: "Download the app and run the installer.",
+    setupStepReload: "Start SSDownload and reload the page with the video.",
+    setupInstalled: "Already installed? Open Tools → Browser setup in the app and restart the browser.",
+    welcomeTitle: "Thanks for installing SSDownload",
+    welcomeText: "One more step: the extension works together with the free SSDownload app for Windows 10 and 11. Install the app, and the download button appears on the videos you play.",
+    welcomeDownload: "Download the app for Windows — free",
+    welcomePrivacy: "No account, no telemetry: everything stays on your PC.",
+
     // ---- in-page tile and page status
     tileVideo: "Download this video",
     tileAudio: "Download this audio",
@@ -292,6 +303,17 @@
     popupUnknownCommand: "Bilinmeyen komut",
     popupInvalidSender: "Geçersiz gönderici",
     popupInvalidContentSender: "Geçersiz içerik göndericisi",
+
+    // ---- without the desktop app: the popup's setup view and the welcome page
+    setupRequiredTitle: "SSDownload uygulaması gerekli",
+    setupText: "Bu eklenti, Windows 10 ve 11 için ücretsiz SSDownload uygulamasıyla birlikte çalışır. Uygulama olmadan hiçbir şey indiremez.",
+    setupStepInstall: "Uygulamayı indirip kurulumu çalıştırın.",
+    setupStepReload: "SSDownload'u başlatın ve videonun olduğu sayfayı yenileyin.",
+    setupInstalled: "Zaten kurulu mu? Uygulamada Araçlar → Tarayıcı kurulumu'nu açın ve tarayıcıyı yeniden başlatın.",
+    welcomeTitle: "SSDownload'u kurduğunuz için teşekkürler",
+    welcomeText: "Bir adım kaldı: eklenti, Windows 10 ve 11 için ücretsiz SSDownload uygulamasıyla birlikte çalışır. Uygulamayı kurun; oynattığınız videoların üzerinde indirme düğmesi görünür.",
+    welcomeDownload: "Windows uygulamasını indir — ücretsiz",
+    welcomePrivacy: "Hesap yok, telemetri yok: her şey bilgisayarınızda kalır.",
 
     // ---- in-page tile and page status
     tileVideo: "Bu videoyu indir",

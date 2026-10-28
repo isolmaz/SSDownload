@@ -6,7 +6,8 @@
 const popupApi = globalThis.browser || chrome;
 const { t } = SSDownloadI18n;
 const DOWNLOAD_PAGE = "https://ssdownload.isolmaz.com/download";
-// Without the desktop app (not installed, or not Windows) the main button leads to its download page.
+// Without the desktop app (not installed, or not Windows) nothing else in the popup can work, so
+// it shows only the setup view, whose button opens the app's download page.
 let appMissing = false;
 // The last state the worker reported: the labels that depend on it are redrawn on a language change.
 let lastState = null;
@@ -33,11 +34,10 @@ function applyStaticTexts() {
   for (const node of document.querySelectorAll("[data-i18n]")) node.textContent = t(node.getAttribute("data-i18n"));
 }
 
-// The labels whose wording depends on the last state: the switch reading, the main button and
-// the per-site switch.
+// The labels whose wording depends on the last state: the switch reading (none without the app)
+// and the per-site switch.
 function drawLabels() {
-  document.getElementById("state").textContent = !lastState ? "" : lastState.detectionEnabled ? t("stateOn") : t("stateOff");
-  document.getElementById("open-app").textContent = appMissing ? t("popupDownloadApp") : t("popupOpenApp");
+  document.getElementById("state").textContent = !lastState || appMissing ? "" : lastState.detectionEnabled ? t("stateOn") : t("stateOff");
   document.getElementById("site-label").textContent = lastState?.host ? t("popupHideOnHost", lastState.host) : t("popupHideOnThisSite");
 }
 
@@ -48,6 +48,8 @@ function show(state) {
   // user looks; the "Open the app" button below is the explicit action that starts it.
   document.getElementById("status").textContent = state.capabilityError || "";
   appMissing = state.appMissing === true;
+  document.getElementById("setup").hidden = !appMissing;
+  document.getElementById("main").hidden = appMissing;
   const hide = document.getElementById("hide-site");
   hide.checked = state.siteHidden === true;
   hide.disabled = !state.host;
@@ -100,12 +102,11 @@ document.getElementById("detection").addEventListener("change", async (event) =>
 document.getElementById("hide-site").addEventListener("change", async (event) => {
   await apply(await ask("hide-site", { value: event.target.checked }));
 });
+document.getElementById("setup-download").addEventListener("click", () => {
+  popupApi.tabs.create({ url: DOWNLOAD_PAGE });
+  window.close();
+});
 document.getElementById("open-app").addEventListener("click", async () => {
-  if (appMissing) {
-    popupApi.tabs.create({ url: DOWNLOAD_PAGE });
-    window.close();
-    return;
-  }
   const reply = await ask("open-app");
   if (reply.error) document.getElementById("status").textContent = reply.error;
   else window.close();

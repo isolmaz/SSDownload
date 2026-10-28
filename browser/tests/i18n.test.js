@@ -17,6 +17,8 @@ const json = name => JSON.parse(read(name));
 const scripts = fs.readdirSync(extensionDir).filter(name => name.endsWith(".js"));
 // The catalog itself and the generated error-code mirror hold no UI text of their own.
 const codeFiles = scripts.filter(name => name !== "i18n.js");
+// The extension's own pages, whose static texts come from their data-i18n attributes.
+const pages = ["popup.html", "welcome.html"];
 
 const placeholders = text => [...new Set([...text.matchAll(/\{(\d+)\}/g)].map(match => Number(match[1])))].sort((a, b) => a - b);
 // What one side has that the other lacks (both directions), the check every parity test runs.
@@ -81,14 +83,14 @@ test("every key the code asks for exists and no key is dead", () => {
   const note = (key, where) => used.set(key, [...(used.get(key) || []), where]);
   for (const name of codeFiles) {
     for (const match of read(name).matchAll(/(?<![\w$])t\(\s*(["'`])([^"'`]*)\1/g)) note(match[2], name);
-    // A call whose key is not a literal could not be checked: the only one allowed is the popup's
-    // data-i18n loop, whose keys are the attributes of popup.html, checked below.
+    // A call whose key is not a literal could not be checked: the only one allowed is the pages'
+    // data-i18n loop, whose keys are the attributes of popup.html and welcome.html, checked below.
     for (const match of read(name).matchAll(/(?<![\w$.])t\(\s*(?!["'`)])/g)) {
       if (read(name).startsWith('t(node.getAttribute("data-i18n"))', match.index)) continue;
       assert.fail(`${name}: t() with a computed key at offset ${match.index}`);
     }
   }
-  for (const match of read("popup.html").matchAll(/data-i18n="([^"]+)"/g)) note(match[1], "popup.html");
+  for (const page of pages) for (const match of read(page).matchAll(/data-i18n="([^"]+)"/g)) note(match[1], page);
   assert.ok(used.size > 150);
   for (const [key, where] of used) assert.ok(key in MESSAGES.en && key in MESSAGES.tr, `${key} (${where.join(", ")}) is not in the catalog`);
   assert.deepEqual(Object.keys(MESSAGES.en).filter(key => !used.has(key)), [], "catalog keys no code refers to");
@@ -99,9 +101,11 @@ test("i18n.js comes first in every context", () => {
   const manifest = json("manifest.json");
   const isolated = manifest.content_scripts.find(entry => entry.js.includes("content.js"));
   assert.deepEqual(isolated.js, ["i18n.js", "relay-sha256.js", "content.js", "relay-content.js"]);
-  const popup = read("popup.html");
-  assert.ok(popup.indexOf('src="i18n.js"') > 0 && popup.indexOf('src="i18n.js"') < popup.indexOf('src="popup.js"'));
-  assert.match(popup, /<html lang="en">/);
+  for (const page of pages) {
+    const html = read(page), script = `src="${page.replace(".html", ".js")}"`;
+    assert.ok(html.indexOf('src="i18n.js"') > 0 && html.indexOf('src="i18n.js"') < html.indexOf(script), `${page} loads i18n.js before its script`);
+    assert.match(html, /<html lang="en">/);
+  }
   // The main-world script has no extension API and no text of its own.
   const mainWorld = manifest.content_scripts.find(entry => entry.world === "MAIN");
   assert.deepEqual(mainWorld.js, ["page-observer.js"]);
@@ -143,7 +147,7 @@ test("no user-visible Turkish literal is left outside the catalog", () => {
     /İş bulunamadı\|ayrılamaz\|yetkilendirilmeli\|Deneysel tarayıcı aktarımı\|Job not found\|cannot be set aside\|must be authorized\|Experimental browser transfer/,
     /kuyruk kotası, zaman veya eşzamanlılık sınırında durduruldu\|queue quota, time, or concurrency limit/];
   const found = [];
-  for (const name of [...codeFiles, "popup.html"]) {
+  for (const name of [...codeFiles, ...pages]) {
     for (const { index, code } of codeOnly(read(name))) {
       if (!/[çğıöşüÇĞİÖŞÜ]/.test(code)) continue;
       if (appReplyMatchers.some(matcher => matcher.test(code))) continue;
@@ -154,7 +158,7 @@ test("no user-visible Turkish literal is left outside the catalog", () => {
   // Texts without a single Turkish letter ("Kapat", "Algılama" style): no catalog text, in
   // either language, may appear verbatim in the sources, where it would be a hard-coded copy.
   const { MESSAGES } = catalog();
-  const haystack = [...codeFiles, "popup.html"].map(name => [name, codeOnly(read(name)).map(line => line.code).join("\n")]);
+  const haystack = [...codeFiles, ...pages].map(name => [name, codeOnly(read(name)).map(line => line.code).join("\n")]);
   for (const language of ["en", "tr"]) {
     for (const [key, text] of Object.entries(MESSAGES[language])) {
       const needle = text.replace(/\{\d+\}.*$/s, "");

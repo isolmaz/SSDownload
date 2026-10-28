@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSDownload</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f5f5f7; --card:#fff; --text:#1d1d1f; --muted:#6e6e73; --line:rgba(0,0,0,.08); --accent:#0071e3; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111113; --card:#1c1c1e; --text:#f5f5f7; --muted:#a1a1a6; --line:rgba(255,255,255,.12); --accent:#2997ff; } }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; }
+  main { box-sizing:border-box; width:min(560px, calc(100% - 32px)); margin:32px 0; padding:40px 40px 32px; background:var(--card); border:1px solid var(--line); border-radius:16px; text-align:center; }
+  h1 { margin:18px 0 10px; font-size:26px; line-height:1.25; }
+  p { margin:0 0 20px; color:var(--muted); }
+  ol { max-width:400px; margin:0 auto 26px; padding-left:22px; text-align:left; }
+  li { margin:6px 0; }
+  .download { display:inline-block; padding:12px 26px; border-radius:980px; background:var(--accent); color:#fff; font-weight:600; text-decoration:none; }
+  .hint { margin:22px 0 0; font-size:13px; }
+  .privacy { margin:8px 0 0; font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+<img src="icons/icon128.png" width="80" height="80" alt="">
+<h1 data-i18n="welcomeTitle"></h1>
+<p data-i18n="welcomeText"></p>
+<ol><li data-i18n="setupStepInstall"></li><li data-i18n="setupStepReload"></li></ol>
+<a class="download" href="https://ssdownload.isolmaz.com/download" data-i18n="welcomeDownload"></a>
+<p class="hint" data-i18n="setupInstalled"></p>
+<p class="privacy" data-i18n="welcomePrivacy"></p>
+</main>
+<script src="i18n.js"></script>
+<script src="welcome.js"></script>
+</body>
+</html>
