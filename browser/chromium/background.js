@@ -938,6 +938,8 @@ async function pageHtmlFor(tabId, frameId) {
     return boundedPageHtml(reply?.html);
   } catch (_) { return null; }
 }
+// The protocol and capability version the app has to report. Changing them blocks the release
+// until both sides accept the previous values as well (CONTRIBUTING.md, "App and extension compatibility").
 function validateCapabilities(response) {
   const value=response?.result?.capabilities, modes=value?.usage_modes;
   if(!response || response.ok!==true || value?.protocol!==2 || value?.capability_version!==3

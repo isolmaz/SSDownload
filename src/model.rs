@@ -18,6 +18,8 @@ pub enum DownloadKind {
     Audio,
 }
 
+/// Checked by the browser extension: changing it blocks the release until both sides accept the
+/// previous value as well (CONTRIBUTING.md, "App and extension compatibility").
 pub const CAPABILITY_VERSION: u32 = 3;
 pub const ONBOARDING_VERSION: u32 = 1;
 pub const DEFAULT_QUEUE_ID: &str = "default";
