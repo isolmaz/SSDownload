@@ -682,6 +682,7 @@ pub(crate) fn download(
             ),
         ]);
         progress(TransferProgress {
+            processing: false,
             downloaded: completed_file_bytes(&completed_files),
             total: None,
             speed: 0,
@@ -765,6 +766,7 @@ pub(crate) fn download(
                         "Live recording finished; processing the recorded part",
                     )
                     .into(),
+                    processing: true,
                     ..TransferProgress::default()
                 });
                 let kept = keep_live_recording(&output_plan, request, &toolchain, control)?;
@@ -888,6 +890,7 @@ pub(crate) fn download(
     )?;
     let bytes = path_bytes(&result_path)?;
     progress(TransferProgress {
+        processing: false,
         downloaded: bytes,
         total: Some(bytes),
         speed: 0,
@@ -1639,11 +1642,31 @@ fn network_media_failure(error: &str) -> bool {
         || lower.contains("503 service unavailable")
 }
 
+/// A stored failure text lowercased for matching, read alike whatever interface language wrote
+/// it: every language's name of a failure stage becomes the English one, and each stable code
+/// the text carries adds its English message.
+pub(crate) fn failure_reading(error: &str) -> String {
+    let mut lower = error.to_ascii_lowercase();
+    for (tr, en) in FAILURE_STAGES {
+        for wording in crate::i18n::wordings(tr, en) {
+            lower = lower.replace(&wording.to_ascii_lowercase(), &en.to_ascii_lowercase());
+        }
+    }
+    for entry in crate::error_codes::TABLE
+        .iter()
+        .filter(|entry| error.contains(entry.code.0))
+    {
+        lower.push('\n');
+        lower.push_str(&entry.message_en.to_ascii_lowercase());
+    }
+    lower
+}
+
 pub(crate) fn classify_download_error(
     error: &str,
     request: &AddRequest,
 ) -> (&'static str, &'static str) {
-    let lower = error.to_ascii_lowercase();
+    let lower = failure_reading(error);
     let kind = if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
         "tls"
     } else if lower.contains("resolve host")
@@ -1711,7 +1734,10 @@ pub(crate) fn classify_download_error(
         || lower.contains("variant playlist")
     {
         "alt liste"
-    } else if lower.contains("medya analizi başarısız") || lower.contains("media analysis failed")
+    } else if lower.contains("medya analizi başarısız")
+        || lower.contains("media analysis failed")
+        || lower.contains("media extractor failed")
+        || lower.contains("discovery")
     {
         if media_manifest_url(&request.url) {
             "ana liste"
@@ -1929,21 +1955,28 @@ fn media_manifest_url(value: &str) -> bool {
         .is_some_and(|extension| matches!(extension.as_str(), "m3u8" | "mpd"))
 }
 
-/// The wording of a failure stage returned by [`classify_download_error`]. The stage keys are
-/// stable Turkish identifiers (the diagnostics and the classifier match them); only this display
-/// text is localized, and the classifier recognizes both languages' wording.
+/// The failure stages [`classify_download_error`] returns. The Turkish wording is also the
+/// stable stage key the diagnostics match; only the display text is localized.
+const FAILURE_STAGES: [(&str, &str); 9] = [
+    ("keşif", "discovery"),
+    ("ana liste", "main playlist"),
+    ("alt liste", "sub-playlist"),
+    ("seçilen ses", "selected audio"),
+    ("altyazı", "subtitle"),
+    ("başlatma parçası", "initialization segment"),
+    ("medya parçası", "media segment"),
+    ("doğrulama", "verification"),
+    ("medya kaynağı", "media source"),
+];
+
+/// The wording of a failure stage returned by [`classify_download_error`].
 fn failure_stage_label(stage: &str) -> &'static str {
-    match stage {
-        "keşif" => crate::i18n::ui("keşif", "discovery"),
-        "ana liste" => crate::i18n::ui("ana liste", "main playlist"),
-        "alt liste" => crate::i18n::ui("alt liste", "sub-playlist"),
-        "seçilen ses" => crate::i18n::ui("seçilen ses", "selected audio"),
-        "altyazı" => crate::i18n::ui("altyazı", "subtitle"),
-        "başlatma parçası" => crate::i18n::ui("başlatma parçası", "initialization segment"),
-        "medya parçası" => crate::i18n::ui("medya parçası", "media segment"),
-        "doğrulama" => crate::i18n::ui("doğrulama", "verification"),
-        _ => crate::i18n::ui("medya kaynağı", "media source"),
+    for (tr, en) in FAILURE_STAGES {
+        if tr == stage {
+            return crate::i18n::ui(tr, en);
+        }
     }
+    crate::i18n::ui("medya kaynağı", "media source")
 }
 
 fn marked_download_failure_phase(error: &str) -> Option<&'static str> {

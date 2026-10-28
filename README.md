@@ -40,7 +40,7 @@
 
 The builds are not code-signed yet, so SmartScreen may warn on first run. The release page lists the SHA-256 of every file. Installed copies update themselves after you accept the signed update.
 
-The app speaks **Turkish, English, Arabic, Spanish, Portuguese (Brazil), French and German**: it starts in your Windows display language (English when Windows uses another one), and **Settings → General** switches it. In Arabic the windows are laid out right to left. The browser extension, the command line and the installer speak the same languages; the extension and the command line follow the app's choice.
+The app speaks **Turkish, English, Arabic, Spanish, Portuguese (Brazil), French and German**: it starts in your Windows display language (English when Windows uses another one), and **Settings → General** switches it. In Arabic the windows are laid out right to left. The browser extension, the command line and the installer speak the same languages; the extension and the command line follow the app's choice, while the extension's name and summary in the store and on the browser's extensions page follow the browser's language.
 
 ## Documentation
 

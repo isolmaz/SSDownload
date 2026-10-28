@@ -22,7 +22,7 @@ Everything beyond the [README](../README.md): installation details, every menu, 
 
 ## Browser extension
 
-The Chrome/Edge extension adds the overlay button on videos, the right-click entries and optional download takeover. It talks only to the desktop app on the same computer. Its own text (button, popup, menus and messages) is in the app's languages and follows the app's interface language (**Settings → General**); until the app has reported it (not installed, not running, an older version), the browser's language decides when the extension has it, English otherwise. In Arabic the popup, the welcome page and the button on the video are laid out right to left.
+The Chrome/Edge extension adds the overlay button on videos, the right-click entries and optional download takeover. It talks only to the desktop app on the same computer. Its own text (button, popup, menus and messages) is in the app's languages and follows the app's interface language (**Settings → General**); until the app has reported it (not installed, not running, an older version), the browser's language decides when the extension has it, English otherwise. In Arabic the popup, the welcome page and the button on the video are laid out right to left. The extension's name and summary in the store and on the browser's extensions page follow the browser's language.
 
 - **Automatic:** Setup (and `register-native-host.cmd` for the portable ZIP) registers the [Chrome Web Store extension](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham) with Chrome and Edge for your Windows user. The next time the browser starts it shows a "New extension added" notice: click **Enable extension**. Close every browser window first if the notice does not appear. If you remove the extension in the browser, it stays removed. Uninstalling SSDownload removes the registration, and the browser then removes the extension.
 - **Settings → General → Install the extension in browsers** repeats the registration and opens the Chrome Web Store page, where **Add to Chrome** installs it at once. It also removes the force-install policy entries that versions up to 1.6.1 wrote, because Chrome blocks the extension while one exists. If those entries need administrator rights, the app asks first (`ssdownload-cli --remove-extension-policies`).
@@ -91,7 +91,7 @@ The Basic level shows only **General**; the other tabs keep their saved values.
 
 | Symptom | What to do |
 |---|---|
-| The browser cannot connect | Make sure the app and extension versions match; register the copy you use. |
+| The browser cannot connect | When the app or the extension is older than the other, the message says which one to update: the app through **Help → Check for updates**, the extension by the browser's own update or at once on its extensions page (Developer mode, **Update**). Otherwise register the copy you use. |
 | A second launch while SSDownload runs | The running copy comes to the front; no second instance starts. If that copy is still closing, the new one starts as soon as it has exited. |
 | Download stays disabled after analysis | Read the error, fix the source or session, analyze again. |
 | A quality or track disappeared | Analyze again and choose an available option; nothing is substituted silently. |

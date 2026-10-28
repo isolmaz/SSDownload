@@ -3260,7 +3260,7 @@ impl Actor {
                 job.eta = value.eta;
                 job.phase = stage.clone();
                 job.live = active.control.is_live();
-                job.state = if processing_phase(&job.phase) {
+                job.state = if value.processing {
                     JobState::Processing
                 } else {
                     JobState::Downloading
@@ -4810,14 +4810,6 @@ fn job_host(value: &str) -> String {
         .ok()
         .and_then(|url| crate::network::canonical_host(&url).ok())
         .unwrap_or_default()
-}
-
-fn processing_phase(phase: &str) -> bool {
-    let phase = phase.to_lowercase();
-    phase.contains("işlen")
-        || phase.contains("birleştir")
-        || phase.contains("processing")
-        || phase.contains("mux")
 }
 
 fn source_refresh_required() -> anyhow::Error {

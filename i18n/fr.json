@@ -307,7 +307,7 @@
   "File name (optional, for a single URL):": "Nom de fichier (facultatif, pour une seule URL) :",
   "File name:": "Nom du fichier :",
   "File — reliably transfer regular file links": "Fichier — transférer de façon fiable les liens de fichiers classiques",
-  "Finish live recordin&g and keep it": "Terminer l'enregistrement en &direct et le conserver",
+  "Finish live recordin&g and keep it": "Terminer l'enre&gistrement en direct et le conserver",
   "Finish live recording and keep it": "Terminer l'enregistrement en direct et le conserver",
   "Finish the scan first": "Terminez d'abord l'analyse",
   "Folder": "Dossier",
@@ -1519,7 +1519,6 @@
   "Unsafe redirect rejected": "Redirection non sûre refusée",
   "Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC": "Sortie audio non prise en charge : {other}. Options disponibles : original, MP3, M4A, Opus, FLAC",
   "Unsupported or unprotected queue record": "Enregistrement de file d'attente non pris en charge ou non protégé",
-  "Unsupported protocol version: {version}": "Version de protocole non prise en charge : {version}",
   "Unsupported proxy type": "Type de proxy non pris en charge",
   "Unsupported redirect address": "Adresse de redirection non prise en charge",
   "Unsupported tool manifest version": "Version de manifeste d'outil non prise en charge",
@@ -1682,5 +1681,7 @@
   "{quota}No completion countdown is active.": "{quota}Aucun compte à rebours de fin n'est actif.",
   "{quota}The completion action will run in {remaining} seconds; you can cancel it.": "{quota}L'action de fin s'exécutera dans {remaining} secondes ; vous pouvez l'annuler.",
   "{restored} quarantined job record(s) could be read again and were restored.": "{restored} enregistrement(s) de tâche mis en quarantaine ont pu être relus et restaurés.",
-  "{v}, video only": "{v}, vidéo uniquement"
+  "{v}, video only": "{v}, vidéo uniquement",
+  "This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.": "Cette application SSDownload est plus ancienne que l’extension du navigateur (l’extension utilise le protocole {version}, l’application le protocole {supported}). Mettez à jour l’application : Aide → Rechercher les mises à jour.",
+  "The SSDownload browser extension is older than this app (the extension speaks protocol {version}, the app {supported}). The browser updates it on its own; to update it now, turn on Developer mode on the browser's extensions page and click Update.": "L’extension SSDownload du navigateur est plus ancienne que cette application (l’extension utilise le protocole {version}, l’application le protocole {supported}). Le navigateur la met à jour de lui-même ; pour la mettre à jour tout de suite, activez « Mode développeur » sur la page des extensions du navigateur, puis cliquez sur « Mettre à jour »."
 }

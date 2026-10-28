@@ -94,6 +94,7 @@
     // ---- shared status and refusals (service worker)
     capabilitiesNotVerified: "Desktop capabilities have not been verified yet.",
     capabilityProtocolMismatch: "The desktop app's capability protocol is incompatible. Update the SSDownload desktop app.",
+    capabilityExtensionOutdated: "This extension is older than the SSDownload app. The browser updates it on its own; to update it now, turn on Developer mode on the extensions page and click Update.",
     extensionOff: "SSDownload is off. Click the toolbar icon to turn it on.",
     videoModeOff: "The video usage mode is disabled.",
     audioModeOff: "The audio usage mode is disabled.",
@@ -354,6 +355,7 @@
     // ---- shared status and refusals (service worker)
     capabilitiesNotVerified: "Masaüstü özellikleri henüz doğrulanmadı.",
     capabilityProtocolMismatch: "Masaüstü uygulamasının özellik protokolü uyumsuz. SSDownload masaüstü uygulamasını güncelleyin.",
+    capabilityExtensionOutdated: "Bu eklenti SSDownload uygulamasından eski. Tarayıcı eklentiyi kendisi günceller; hemen güncellemek için uzantılar sayfasında Geliştirici modunu açıp Güncelle'ye tıklayın.",
     extensionOff: "SSDownload kapalı. Açmak için araç çubuğundaki simgeye tıklayın.",
     videoModeOff: "Video kullanım modu kapalı.",
     audioModeOff: "Ses kullanım modu kapalı.",
@@ -614,6 +616,7 @@
     // ---- shared status and refusals (service worker)
     capabilitiesNotVerified: "لم يتم التحقق من إمكانات سطح المكتب بعد.",
     capabilityProtocolMismatch: "بروتوكول إمكانات تطبيق سطح المكتب غير متوافق. حدّث تطبيق SSDownload لسطح المكتب.",
+    capabilityExtensionOutdated: "هذه الإضافة أقدم من تطبيق SSDownload. يحدّثها المتصفح تلقائيًا؛ ولتحديثها الآن، فعّل «وضع مطوّر البرامج» في صفحة الإضافات، ثم انقر «تحديث».",
     extensionOff: "SSDownload معطّل. انقر على أيقونة شريط الأدوات لتشغيله.",
     videoModeOff: "وضع استخدام الفيديو معطّل.",
     audioModeOff: "وضع استخدام الصوت معطّل.",
@@ -874,6 +877,7 @@
     // ---- shared status and refusals (service worker)
     capabilitiesNotVerified: "Todavía no se han verificado las capacidades de la aplicación de escritorio.",
     capabilityProtocolMismatch: "El protocolo de capacidades de la aplicación de escritorio no es compatible. Actualizar la aplicación de escritorio de SSDownload.",
+    capabilityExtensionOutdated: "Esta extensión es más antigua que la aplicación SSDownload. El navegador la actualiza por sí mismo; para actualizarla ahora, activar el Modo de desarrollador en la página de extensiones y hacer clic en Actualizar.",
     extensionOff: "SSDownload está desactivado. Hacer clic en el icono de la barra de herramientas para activarlo.",
     videoModeOff: "El modo de uso de vídeo está desactivado.",
     audioModeOff: "El modo de uso de audio está desactivado.",
@@ -1134,6 +1138,7 @@
     // ---- shared status and refusals (service worker)
     capabilitiesNotVerified: "Os recursos do desktop ainda não foram verificados.",
     capabilityProtocolMismatch: "O protocolo de recursos do aplicativo de desktop é incompatível. Atualize o aplicativo SSDownload de desktop.",
+    capabilityExtensionOutdated: "Esta extensão é mais antiga que o aplicativo SSDownload. O navegador a atualiza sozinho; para atualizá-la agora, ative o Modo do desenvolvedor na página de extensões e clique em Atualizar.",
     extensionOff: "O SSDownload está desligado. Clique no ícone da barra de ferramentas para ligá-lo.",
     videoModeOff: "O modo de uso de vídeo está desativado.",
     audioModeOff: "O modo de uso de áudio está desativado.",
@@ -1394,6 +1399,7 @@
     // ---- shared status and refusals (service worker)
     capabilitiesNotVerified: "Les fonctions du bureau n'ont pas encore été vérifiées.",
     capabilityProtocolMismatch: "Le protocole de fonctions de l'application de bureau est incompatible. Mettez à jour l'application de bureau SSDownload.",
+    capabilityExtensionOutdated: "Cette extension est plus ancienne que l’application SSDownload. Le navigateur la met à jour de lui-même ; pour la mettre à jour tout de suite, activez « Mode développeur » sur la page des extensions, puis cliquez sur « Mettre à jour ».",
     extensionOff: "SSDownload est désactivé. Cliquez sur l'icône de la barre d'outils pour l'activer.",
     videoModeOff: "Le mode d'utilisation vidéo est désactivé.",
     audioModeOff: "Le mode d'utilisation audio est désactivé.",
@@ -1654,6 +1660,7 @@
     // ---- shared status and refusals (service worker)
     capabilitiesNotVerified: "Die Funktionen der Desktop-App wurden noch nicht geprüft.",
     capabilityProtocolMismatch: "Das Funktionsprotokoll der Desktop-App ist inkompatibel. Aktualisieren Sie die SSDownload-Desktop-App.",
+    capabilityExtensionOutdated: "Diese Erweiterung ist älter als die SSDownload-App. Der Browser aktualisiert sie selbst; um sie jetzt zu aktualisieren, aktivieren Sie auf der Erweiterungsseite den Entwicklermodus und klicken Sie auf Aktualisieren.",
     extensionOff: "SSDownload ist aus. Klicken Sie auf das Symbol in der Symbolleiste, um es einzuschalten.",
     videoModeOff: "Der Verwendungszweck Video ist deaktiviert.",
     audioModeOff: "Der Verwendungszweck Audio ist deaktiviert.",

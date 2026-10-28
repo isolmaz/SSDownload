@@ -540,6 +540,7 @@ fn restart_from_zero(
     remove_if_exists(&state_path(output));
     cleanup_legacy_segments(output);
     progress(TransferProgress {
+        processing: false,
         downloaded: 0,
         total,
         speed: 0,
@@ -872,6 +873,7 @@ fn download_http_single(
             }) if retries + 1 < MAX_RANGE_ATTEMPTS => {
                 let delay = retry_after.unwrap_or_else(|| range_retry_delay(retries));
                 progress(TransferProgress {
+                    processing: false,
                     downloaded: offset,
                     total: remote.total,
                     speed: 0,
@@ -888,6 +890,7 @@ fn download_http_single(
             Err(AttemptFailure::RetryableTransport(_)) if retries + 1 < MAX_RANGE_ATTEMPTS => {
                 let delay = range_retry_delay(retries);
                 progress(TransferProgress {
+                    processing: false,
                     downloaded: offset,
                     total: remote.total,
                     speed: 0,
@@ -1023,6 +1026,7 @@ fn http_to_file(
                     let speed = ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64;
                     let total = remote.total;
                     progress(TransferProgress {
+                        processing: false,
                         downloaded: current,
                         total,
                         speed,
@@ -1129,6 +1133,7 @@ fn http_to_file(
     let elapsed = started.elapsed().as_secs_f64().max(0.001);
     let speed = (written as f64 / elapsed) as u64;
     progress(TransferProgress {
+        processing: false,
         downloaded: current,
         total: remote.total,
         speed,
@@ -1396,6 +1401,7 @@ fn download_segmented(
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
                         progress(TransferProgress {
+                            processing: false,
                             downloaded: completed.iter().map(|range| range.len()).sum(),
                             total: Some(total),
                             speed: 0,
@@ -1430,6 +1436,7 @@ fn download_segmented(
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
                         progress(TransferProgress {
+                            processing: false,
                             downloaded: completed.iter().map(|range| range.len()).sum(),
                             total: Some(total),
                             speed: 0,
@@ -1467,6 +1474,7 @@ fn download_segmented(
             let elapsed = now.duration_since(last_time).as_secs_f64().max(0.001);
             let speed = ((downloaded.saturating_sub(last_downloaded)) as f64 / elapsed) as u64;
             progress(TransferProgress {
+                processing: false,
                 downloaded: downloaded.min(total),
                 total: Some(total),
                 speed,
@@ -1522,6 +1530,7 @@ fn download_segmented(
         )));
     }
     progress(TransferProgress {
+        processing: false,
         downloaded: total,
         total: Some(total),
         speed: ((total.saturating_sub(baseline)) as f64
@@ -2208,6 +2217,7 @@ fn download_ftp_resuming(
                 let elapsed = now.duration_since(last).as_secs_f64().max(0.001);
                 let speed = ((current - last_bytes) as f64 / elapsed) as u64;
                 progress(TransferProgress {
+                    processing: false,
                     downloaded: current,
                     total: remote.total,
                     speed,

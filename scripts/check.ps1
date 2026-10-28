@@ -44,7 +44,10 @@ try {
     Invoke-Step 'cargo fmt --check' { cargo fmt --check }
     Invoke-Step 'cargo clippy -D warnings' { cargo clippy --locked --all-targets -- -D warnings }
     Invoke-Step 'cargo test' { cargo test --locked }
-    if (Test-Command 'python') {
+    # The Windows Store alias answers to `python` without being an interpreter.
+    $pythonVersion = $null
+    try { $pythonVersion = (& python --version 2>$null | Select-Object -First 1) } catch { $pythonVersion = $null }
+    if ($pythonVersion -match '^Python 3\.') {
         Invoke-Step 'translation catalogs' { python scripts/i18n.py check }
     } else {
         $skipped += 'translation catalogs (Python 3 is not installed)'

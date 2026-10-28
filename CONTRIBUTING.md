@@ -11,7 +11,7 @@ Bug reports and pull requests are welcome.
 
 ## Build
 
-Requirements: Windows 10/11 x64, Visual Studio C++ Build Tools with the Windows SDK, [rustup](https://rustup.rs) (the toolchain pinned in `rust-toolchain.toml` installs itself) and Node.js 20+ for the extension tests.
+Requirements: Windows 10/11 x64, Visual Studio C++ Build Tools with the Windows SDK, [rustup](https://rustup.rs) (the toolchain pinned in `rust-toolchain.toml` installs itself), Python 3 for the translation catalogs and Node.js 20+ for the extension tests.
 
 ```powershell
 cargo build --locked
@@ -22,13 +22,13 @@ cargo run --locked --bin ssdownload -- --data-dir .qa\dev-profile   # separate p
 
 ## Checks
 
-Pull requests and pushes to `main` run the same checks on GitHub Actions (`.github/workflows/ci.yml`: `cargo fmt --check`, Clippy with warnings as errors, `cargo test`, the extension tests and `cargo build`, all `--locked` on Windows). Run them on your machine first:
+Pull requests and pushes to `main` run the same checks on GitHub Actions (`.github/workflows/ci.yml`: `cargo fmt --check`, Clippy with warnings as errors, `cargo test`, the translation catalog check, the extension tests and `cargo build`, all `--locked` on Windows). Run them on your machine first:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1
 ```
 
-It runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the extension tests (`node --test`) and `cargo audit` when it is installed. `scripts\install-hooks.ps1` installs it as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
+It runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the translation catalog check (`python scripts/i18n.py check`), the extension tests (`node --test`) and `cargo audit` when it is installed; a step whose tool is missing is reported as skipped. `scripts\install-hooks.ps1` installs it as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
 
 The HLS end-to-end tests download from a local server through the media tools the app installed in `%LOCALAPPDATA%\SSDownload\tools`, so they run only on request. They cover the app's own HLS downloader and the yt-dlp path; the yt-dlp one waits out its fragment retries and takes about five minutes:
 
@@ -45,6 +45,7 @@ src/engine/          The single engine thread that owns jobs, settings and the S
 src/transfer.rs      Segmented HTTP/HTTPS/FTP downloads (libcurl)
 src/media/           yt-dlp / FFmpeg pipeline; src/tools.rs installs and verifies the tools
 src/gui/native/      The Win32 interface
+src/i18n.rs          Interface languages; src/i18n_catalog.rs is generated from i18n/<code>.json
 src/bridge.rs        Native messaging and the local named pipe
 src/update.rs        Signed update feed
 browser/chromium/    The Chrome/Edge extension (Manifest V3), loadable as is
@@ -56,7 +57,7 @@ scripts/             Local checks, error-code generator and release scripts
 ## Conventions
 
 - Behaviour is general and never tied to one site: no code checks a particular site's host name, address or page layout. A fix follows from what the source does (how the server answers, what the playlist or the player contains), so it applies to every site that behaves the same way.
-- Match the surrounding code. Identifiers, comments and documentation are in English; interface text goes through `crate::i18n::ui("Türkçe", "English")`, or `crate::i18n::ui_format!("Türkçe {0}", "English {0}", value)` for a template, with both languages written at the call. Arabic, Spanish, Portuguese, French and German translate the English text in `i18n/<code>.json` (English text → translation). After adding or changing a text, add its translation to each catalog and run `python scripts/i18n.py build`, which regenerates `src/i18n_catalog.rs`; `python scripts/i18n.py check` (also run by `scripts/check.ps1` and CI) lists missing and stale entries, changed placeholders, `&` access letters and tab shortcuts. A translated template is checked by the compiler as well: it has to use every argument of the call. The browser extension's text lives in `browser/chromium/i18n.js` (`t("key")`, every language with the same keys and `{0}` placeholders; the extension follows the app's language and `node --test browser/tests/*.test.js` checks all languages). The installer's texts are the `LangString` lines of `packaging/installer.nsi`.
+- Match the surrounding code. Identifiers, comments and documentation are in English; interface text goes through `crate::i18n::ui("Türkçe", "English")`, or `crate::i18n::ui_format!("Türkçe {0}", "English {0}", value)` for a template, with both languages written at the call. Arabic, Spanish, Portuguese, French and German translate the English text in `i18n/<code>.json` (English text → translation). After adding or changing a text, add its translation to each catalog and run `python scripts/i18n.py build`, which regenerates `src/i18n_catalog.rs`; `python scripts/i18n.py check` (also run by `scripts/check.ps1` and CI) lists missing and stale entries, changed placeholders, `&` access letters and tab shortcuts, and two items of one menu that share an access letter in any language. A translated template is checked by the compiler as well: it has to use every argument of the call. The browser extension's text lives in `browser/chromium/i18n.js` (`t("key")`, every language with the same keys and `{0}` placeholders; the extension follows the app's language and `node --test browser/tests/*.test.js` checks all languages). The installer's texts are the `LangString` lines of `packaging/installer.nsi`.
 - Threads are named `std::thread`s (no async runtime). Only the engine thread changes jobs, settings and the store; everything else sends it a command or reads a snapshot.
 - Start helper programs with argument arrays, never through a shell. Validate input at trust boundaries with the helpers in `src/validation.rs`.
 - User-visible failures use `bail_code!` with a permanent `SSD-<area>-<number>` code. Codes are never renumbered or reused: edit the table in `scripts/generate-error-codes.py` and run it; it rewrites `src/error_codes.rs` and `browser/chromium/codes.js`.

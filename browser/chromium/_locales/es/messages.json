@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "SSDownload – Descargar videos y archivos",
+    "description": "Store name and the name on the extensions page (at most 75 characters)."
+  },
+  "extDescription": {
+    "message": "Gestor de descargas para Windows: descarga videos, audio y archivos, elige la calidad y reanuda. Requiere la app gratis SSDownload.",
+    "description": "Store summary and the description on the extensions page (at most 132 characters)."
+  }
+}

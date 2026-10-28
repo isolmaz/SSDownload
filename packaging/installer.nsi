@@ -218,11 +218,10 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\SSDownload"
+  ; The uninstall shortcut is named in the installer's language, so an earlier install may have
+  ; left it under another language's name. The folder holds only SSDownload's own shortcuts.
+  Delete "$SMPROGRAMS\SSDownload\*.lnk"
   CreateShortcut "$SMPROGRAMS\SSDownload\SSDownload.lnk" "$INSTDIR\ssdownload.exe" "" "$INSTDIR\app.ico" 0 SW_SHOWNORMAL
-  ; The uninstall shortcut is named in the installer's language; an earlier install may have
-  ; left it under the other language's name.
-  Delete "$SMPROGRAMS\SSDownload\SSDownload kaldır.lnk"
-  Delete "$SMPROGRAMS\SSDownload\Uninstall SSDownload.lnk"
   CreateShortcut "$SMPROGRAMS\SSDownload\$(SHORTCUT_UNINSTALL).lnk" "$INSTDIR\Uninstall.exe"
 
   WriteRegStr HKCU "${PRODUCT_KEY}" "DisplayName" "SSDownload"
@@ -297,10 +296,9 @@ Section "Uninstall"
   ExecWait '$\"$INSTDIR\ssdownload.exe$\" --disable-autostart' $0
   DeleteRegKey HKCU "${PRODUCT_KEY}"
 
-  Delete "$SMPROGRAMS\SSDownload\SSDownload.lnk"
-  ; The uninstaller may run in another language than the installer did: remove both names.
-  Delete "$SMPROGRAMS\SSDownload\SSDownload kaldır.lnk"
-  Delete "$SMPROGRAMS\SSDownload\Uninstall SSDownload.lnk"
+  ; The uninstall shortcut carries the installer's language in its name, which need not be the
+  ; uninstaller's. The folder holds only SSDownload's own shortcuts.
+  Delete "$SMPROGRAMS\SSDownload\*.lnk"
   RMDir "$SMPROGRAMS\SSDownload"
 
   Delete /REBOOTOK "$INSTDIR\ssdownload.exe"

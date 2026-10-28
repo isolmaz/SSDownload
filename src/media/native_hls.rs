@@ -232,6 +232,7 @@ pub(super) fn download_streams(
         downloaded: received.load(Ordering::Relaxed),
         total: Some(received.load(Ordering::Relaxed)),
         phase: crate::i18n::ui("Medya işleniyor", "Processing media").into(),
+        processing: true,
         ..TransferProgress::default()
     });
     merge(streams, &joins, workspace, request, tools, control)
@@ -904,6 +905,7 @@ fn report_until_done(context: &WorkerContext, progress: &mut dyn FnMut(TransferP
         };
         let total = estimated_total(context);
         progress(TransferProgress {
+            processing: false,
             downloaded,
             total,
             speed,

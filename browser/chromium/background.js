@@ -942,7 +942,10 @@ function validateCapabilities(response) {
   const value=response?.result?.capabilities, modes=value?.usage_modes;
   if(!response || response.ok!==true || value?.protocol!==2 || value?.capability_version!==3
     || !modes || typeof modes.video!=="boolean" || typeof modes.file!=="boolean" || typeof modes.audio!=="boolean") {
-    throw new Error(t("capabilityProtocolMismatch"));
+    // An app with a later protocol or capability set than this extension knows makes the
+    // extension the side to update; anything else asks for the app's update.
+    const laterApp=value?.protocol>2 || (value?.protocol===2 && value?.capability_version>3);
+    throw new Error(laterApp?t("capabilityExtensionOutdated"):t("capabilityProtocolMismatch"));
   }
   // Authorized source refreshes are the only jobs the browser transfer may start;
   // the desktop lists them here and re-checks the identity on every start.

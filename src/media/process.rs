@@ -235,10 +235,10 @@ impl RunningDownload {
         let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_overflow = overflow.clone();
         let stdout_thread = thread::spawn(move || {
-            for line in bounded_lines(stdout, MAX_ERROR_BYTES) {
+            for line in cut_lines(stdout, MAX_ERROR_BYTES) {
                 match line {
-                    Ok(line) => {
-                        if line_was_truncated(&line) {
+                    Ok((line, truncated)) => {
+                        if truncated {
                             reader_overflow.store(true, std::sync::atomic::Ordering::Relaxed);
                             continue;
                         }
@@ -430,6 +430,7 @@ impl LiveRecordingGauge {
             0
         };
         Some(TransferProgress {
+            processing: false,
             downloaded: base.saturating_add(bytes),
             total: None,
             speed,
@@ -597,6 +598,7 @@ pub(super) fn handle_machine_line(
                 } else {
                     crate::i18n::ui("Medya indiriliyor", "Downloading media").into()
                 },
+                processing: status == "finished",
             });
         }
     } else if line.starts_with(POSTPROCESS_PREFIX) {
@@ -606,6 +608,7 @@ pub(super) fn handle_machine_line(
             speed: 0,
             eta: None,
             phase: crate::i18n::ui("FFmpeg ile işleniyor", "Processing with FFmpeg").into(),
+            processing: true,
         });
     } else if let Some(json_path) = line.strip_prefix(FILE_PREFIX) {
         if let Ok(path) = serde_json::from_str::<String>(json_path) {
@@ -779,21 +782,27 @@ pub(super) fn bounded_tail(value: &str, max: usize) -> String {
     format!("…{}", &value[start..])
 }
 
-/// Suffix of a line that `bounded_lines` cut at its byte limit (user-visible in error text).
-fn truncation_marker() -> &'static str {
-    crate::i18n::ui(" [satır kesildi]", " [line truncated]")
-}
-
-/// Whether `bounded_lines` cut this line; both languages' markers count, as the interface
-/// language can change while a tool keeps running.
-fn line_was_truncated(line: &str) -> bool {
-    line.ends_with(" [satır kesildi]") || line.ends_with(" [line truncated]")
-}
-
+/// Lines of `reader` for error text: a line cut at its byte limit ends with a marker.
 pub(super) fn bounded_lines<R: Read>(
     reader: R,
     limit: usize,
 ) -> impl Iterator<Item = std::io::Result<String>> {
+    cut_lines(reader, limit).map(|line| {
+        line.map(|(text, truncated)| {
+            if truncated {
+                text + crate::i18n::ui(" [satır kesildi]", " [line truncated]")
+            } else {
+                text
+            }
+        })
+    })
+}
+
+/// Lines of `reader`, each kept to `limit` bytes, with whether the line was cut.
+pub(super) fn cut_lines<R: Read>(
+    reader: R,
+    limit: usize,
+) -> impl Iterator<Item = std::io::Result<(String, bool)>> {
     let mut reader = BufReader::new(reader);
     std::iter::from_fn(move || {
         let mut line = Vec::new();
@@ -805,13 +814,7 @@ pub(super) fn bounded_lines<R: Read>(
                 Err(e) => return Some(Err(e)),
             };
             if buffer.is_empty() {
-                return seen.then(|| {
-                    Ok(format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&line),
-                        if truncated { truncation_marker() } else { "" }
-                    ))
-                });
+                return seen.then(|| Ok((String::from_utf8_lossy(&line).into_owned(), truncated)));
             }
             seen = true;
             let end = buffer
@@ -825,10 +828,11 @@ pub(super) fn bounded_lines<R: Read>(
             line.extend_from_slice(&buffer[..keep]);
             reader.consume(end);
             if newline {
-                return Some(Ok(format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']),
-                    if truncated { truncation_marker() } else { "" }
+                return Some(Ok((
+                    String::from_utf8_lossy(&line)
+                        .trim_end_matches(['\r', '\n'])
+                        .to_string(),
+                    truncated,
                 )));
             }
         }

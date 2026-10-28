@@ -47,9 +47,12 @@ test("the store locales carry the same keys, placeholders and a description for 
   const manifestText = read("manifest.json");
   assert.equal(JSON.parse(manifestText).default_locale, "en");
   const used = [...manifestText.matchAll(/__MSG_([A-Za-z0-9_@]+)__/g)].map(match => match[1]);
-  assert.ok(used.includes("extDescription"));
+  assert.ok(used.includes("extName") && used.includes("extDescription"));
   for (const key of used) assert.ok(key in en, `${key} is missing from the default store locale`);
-  for (const [language, messages] of locales) assert.ok(messages.extDescription.message.length <= 132, `the ${language} store summary stays within 132 characters`);
+  for (const [language, messages] of locales) {
+    assert.ok(messages.extName.message.length <= 75, `the ${language} store name stays within 75 characters`);
+    assert.ok(messages.extDescription.message.length <= 132, `the ${language} store summary stays within 132 characters`);
+  }
 });
 
 test("the parity check names a key removed from one language", () => {

@@ -78,13 +78,24 @@ const PIPE_NAME_RELEASE_WINDOW: Duration = Duration::from_secs(5);
 pub const MAIN_WINDOW_CLASS: &str = "SSDownload.MainWindow";
 pub const WM_RAISE_WINDOW: u32 = WM_APP + 36;
 
-/// The reply to a request that speaks another protocol version than this build.
+/// The reply to a request that speaks another protocol version than this build: it names the
+/// older side and how to update it.
 fn unsupported_version(version: u32) -> String {
-    crate::i18n::ui_format!(
-        "Desteklenmeyen iletişim sürümü: {version}",
-        "Unsupported protocol version: {version}",
-        version = version
-    )
+    if version > PROTOCOL_VERSION {
+        crate::i18n::ui_format!(
+            "Bu SSDownload uygulaması tarayıcı eklentisinden eski (eklenti {version}. iletişim sürümünü, uygulama {supported}. sürümü kullanıyor). Uygulamayı güncelleyin: Yardım → Güncellemeleri denetle.",
+            "This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.",
+            version = version,
+            supported = PROTOCOL_VERSION
+        )
+    } else {
+        crate::i18n::ui_format!(
+            "SSDownload tarayıcı eklentisi bu uygulamadan eski (eklenti {version}. iletişim sürümünü, uygulama {supported}. sürümü kullanıyor). Tarayıcı eklentiyi kendisi günceller; hemen güncellemek için tarayıcının uzantılar sayfasında Geliştirici modunu açıp Güncelle'ye tıklayın.",
+            "The SSDownload browser extension is older than this app (the extension speaks protocol {version}, the app {supported}). The browser updates it on its own; to update it now, turn on Developer mode on the browser's extensions page and click Update.",
+            version = version,
+            supported = PROTOCOL_VERSION
+        )
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2362,6 +2373,23 @@ mod tests {
             replies[0].message,
             unsupported_version(PROTOCOL_VERSION + 1)
         );
+        // A later client means this app is the older side, an earlier one the extension.
+        // Unit tests run in Turkish.
+        let update_app = "Yardım → Güncellemeleri denetle";
+        assert!(replies[0].message.contains(update_app), "{replies:?}");
+        let (result, older) = run_host(
+            &paths,
+            &[],
+            &[WireRequest {
+                version: PROTOCOL_VERSION - 1,
+                action: None,
+            }],
+        );
+        result.expect("the host keeps serving");
+        assert!(!older[0].ok);
+        assert_eq!(older[0].message, unsupported_version(PROTOCOL_VERSION - 1));
+        assert!(!older[0].message.contains(update_app), "{older:?}");
+        assert!(older[0].message.contains("Geliştirici modunu"), "{older:?}");
         let events = logged_events(&paths);
         let mismatch = events
             .iter()

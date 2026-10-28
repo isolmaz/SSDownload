@@ -381,7 +381,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // all three are advanced-only.
             let schedule = genel && !simple;
             // The labels carry the "(SS:DD)" hint, so their slots are sized for
-            // the longer of the two languages' text.
+            // the longest language's text.
             let clock_w = scale(56, dlg.dpi);
             place(f.schedule, schedule, cx, row_y, scale(194, dlg.dpi), line);
             place_static(
@@ -784,7 +784,6 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 .get(1)
                 .map_or(0, |label| text_width(*label))
                 .max(scale(40, dlg.dpi));
-            field(1, 0, in_row(0), 40, line);
             if let Some(label) = labels.get(1) {
                 MoveWindow(*label, m, in_row(0), name_w, line, 1);
             }

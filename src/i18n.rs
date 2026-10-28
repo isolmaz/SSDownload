@@ -140,6 +140,16 @@ pub fn ui(tr: &'static str, en: &'static str) -> &'static str {
     }
 }
 
+/// The wording of a Turkish/English pair in every language, for reading back a text written
+/// while another language was active.
+pub fn wordings(tr: &'static str, en: &'static str) -> impl Iterator<Item = &'static str> {
+    LANGUAGES.iter().map(move |info| match info.language {
+        Language::Turkish => tr,
+        Language::English => en,
+        other => translated(other, en).unwrap_or(en),
+    })
+}
+
 fn translated(language: Language, en: &str) -> Option<&'static str> {
     let texts = crate::i18n_catalog::texts(language);
     texts

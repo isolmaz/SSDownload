@@ -71,7 +71,7 @@ unsafe fn prepare_error_line(dlg: &DialogUi) {
             | SS_NOPREFIX as isize,
     );
     let tip = CreateWindowExW(
-        WS_EX_TOPMOST,
+        owned_layout(WS_EX_TOPMOST),
         wide("tooltips_class32").as_ptr(),
         null(),
         WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
@@ -1804,6 +1804,12 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 WS_CHILD | 0x000E | 0x0200,
                 0,
                 M_THUMBNAIL,
+            );
+            // A control of a mirrored dialog draws mirrored; the picture keeps its own sides.
+            SetWindowLongPtrW(
+                f.thumbnail,
+                GWL_EXSTYLE,
+                GetWindowLongPtrW(f.thumbnail, GWL_EXSTYLE) & !(WS_EX_LAYOUTRTL as isize),
             );
             dialog_button(
                 dlg.hwnd,

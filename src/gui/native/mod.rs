@@ -4287,7 +4287,7 @@ fn can_pause_or_resume(job: &Job) -> bool {
             ))
 }
 fn short_error(job: &Job, value: &str) -> &'static str {
-    let lower = value.to_ascii_lowercase();
+    let lower = crate::media::failure_reading(value);
     if source_refresh_available(job)
         && (job.state == JobState::AwaitingSource
             || lower.contains("kaynak")

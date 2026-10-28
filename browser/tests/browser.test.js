@@ -587,6 +587,19 @@ test("the switch and an incompatible desktop block every media entry with a visi
   assert.equal((await incompatible.state(7)).status.error, true, "the refusal must reach the page as a visible error");
 });
 
+test("a capability mismatch names the side that has to be updated", async () => {
+  const h = backgroundHarness({ local: { uiLanguage: "en" } });
+  await h.settle();
+  const refusal = (protocol, version) => vm.runInContext(`(() => {
+    try { validateCapabilities({ ok: true, result: { capabilities: { protocol: ${protocol}, capability_version: ${version},
+      usage_modes: { video: true, file: true, audio: true } } } }); return null; } catch (error) { return error.message; } })()`, h.context);
+  assert.match(refusal(2, 4), /This extension is older than the SSDownload app/);
+  assert.match(refusal(3, 1), /This extension is older than the SSDownload app/);
+  assert.match(refusal(2, 2), /Update the SSDownload desktop app/);
+  assert.match(refusal(1, 9), /Update the SSDownload desktop app/);
+  assert.equal(refusal(2, 3), null);
+});
+
 test("site-level entries exist only while the desktop offers them", async () => {
   const pageUrl = "https://site.example/watch";
   const capability = (extra = {}) => async request => request?.action?.type === "capabilities"

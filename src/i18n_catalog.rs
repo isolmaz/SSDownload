@@ -27,22 +27,22 @@ static AR: &[(&str, &str)] = &[
     ("&About SSDownload", "&حول SSDownload"),
     ("&Audio download...\tCtrl+Shift+N", "تنزيل &صوت...\tCtrl+Shift+N"),
     ("&Batch download...", "تنزيل &دفعي..."),
-    ("&Browser setup...", "إعداد ال&متصفح..."),
+    ("&Browser setup...", "إعداد المت&صفح..."),
     ("&Check for updates...", "التحقق من ال&تحديثات..."),
     ("&Clear completed", "م&سح المكتملة"),
     ("&Diagnostics...", "ال&تشخيص..."),
     ("&Downloads", "ال&تنزيلات"),
     ("&Event log...", "سجل ال&أحداث..."),
     ("&File", "&ملف"),
-    ("&Help", "ال&مساعدة"),
+    ("&Help", "&المساعدة"),
     ("&Import list...", "استيراد ال&قائمة..."),
-    ("&Install media support...", "تثبيت دعم ال&وسائط..."),
+    ("&Install media support...", "ت&ثبيت دعم الوسائط..."),
     ("&Keyboard shortcuts", "اختصارات &لوحة المفاتيح"),
     ("&Media tools...", "أدوات ال&وسائط..."),
-    ("&Mini panel", "اللوحة ال&مصغّرة"),
+    ("&Mini panel", "اللوحة الم&صغّرة"),
     ("&New download...\tCtrl+N", "تنزيل &جديد...\tCtrl+N"),
     ("&Open file\tEnter", "ف&تح الملف\tEnter"),
-    ("&Pause / resume selected\tSpace", "إيقاف &مؤقت / استئناف المحدّد\tSpace"),
+    ("&Pause / resume selected\tSpace", "&إيقاف مؤقت / استئناف المحدّد\tSpace"),
     ("&Queue manager...", "مدير &قوائم الانتظار..."),
     ("&Refresh source address...", "تحديث &عنوان المصدر..."),
     ("&Settings...", "&الإعدادات..."),
@@ -283,11 +283,11 @@ static AR: &[(&str, &str)] = &[
     ("File name (optional, for a single URL):", "اسم الملف (اختياري، لعنوان URL واحد):"),
     ("File name:", "اسم الملف:"),
     ("File — reliably transfer regular file links", "الملفات — نقل روابط الملفات العادية بموثوقية"),
-    ("Finish live recordin&g and keep it", "إنهاء التسجيل ال&مباشر والاحتفاظ به"),
+    ("Finish live recordin&g and keep it", "إن&هاء التسجيل المباشر والاحتفاظ به"),
     ("Finish live recording and keep it", "إنهاء التسجيل المباشر والاحتفاظ به"),
     ("Finish the scan first", "أنهِ الفحص أولًا"),
     ("Folder", "المجلد"),
-    ("Folder &rules...", "قواعد ال&مجلدات..."),
+    ("Folder &rules...", "قواعد الم&جلدات..."),
     ("Folder rule IDs must be unique.", "يجب أن تكون معرّفات قواعد المجلدات فريدة."),
     ("Folder rule types must be unique.", "يجب أن تكون أنواع قواعد المجلدات فريدة."),
     ("Folder rules", "قواعد المجلدات"),
@@ -337,7 +337,7 @@ static AR: &[(&str, &str)] = &[
     ("Invalid tool destination", "وجهة الأداة غير صالحة"),
     ("Invalid tools operation id", "معرّف عملية الأدوات غير صالح"),
     ("Invalid video format or resolution preference", "تفضيل تنسيق الفيديو أو الدقة غير صالح"),
-    ("Job &log...", "سجل ال&مهمة..."),
+    ("Job &log...", "سجل الم&همة..."),
     ("Job and connection limits must be between 1 and 16.", "يجب أن تكون حدود المهام والاتصالات بين 1 و16."),
     ("Job log", "سجل المهمة"),
     ("Job not found", "لم يُعثر على المهمة"),
@@ -476,7 +476,7 @@ static AR: &[(&str, &str)] = &[
     ("Open SSDownload and check its status", "افتح نافذة SSDownload وتحقّق من حالتها."),
     ("Open download folder", "فتح مجلد التنزيل"),
     ("Open file", "فتح الملف"),
-    ("Open fol&der", "فتح ال&مجلد"),
+    ("Open fol&der", "فتح الم&جلد"),
     ("Open in the Chrome Web Store", "فتح في متجر Chrome الإلكتروني"),
     ("Open log folder", "فتح مجلد السجلات"),
     ("Open page", "فتح الصفحة"),
@@ -491,7 +491,7 @@ static AR: &[(&str, &str)] = &[
     ("Output:", "المخرجات:"),
     ("Overall speed limit (KiB/s, 0 = unlimited):", "حد السرعة الإجمالي (KiB/s، 0 = غير محدود):"),
     ("Ownership of the work folder could not be proven; files were kept", "تعذّر إثبات ملكية مجلد العمل؛ تم الاحتفاظ بالملفات"),
-    ("Pa&use all", "إيقاف ال&كل مؤقتًا"),
+    ("Pa&use all", "إي&قاف الكل مؤقتًا"),
     ("Page size must be between 1 and 500", "يجب أن يكون حجم الصفحة بين 1 و500"),
     ("Partitioned and unpartitioned values for the same cookie cannot be combined safely", "لا يمكن دمج قيم partition وقيم بلا partition لملف تعريف الارتباط نفسه بأمان"),
     ("Password (empty = keep):", "كلمة المرور (فارغ = الإبقاء):"),
@@ -542,8 +542,8 @@ static AR: &[(&str, &str)] = &[
     ("Queues:", "قوائم الانتظار:"),
     ("Quota", "الحصة"),
     ("Quota (bytes; 0: unlimited):", "الحصة (بايت؛ 0: غير محدودة):"),
-    ("R&emove selected\tDelete", "إزا&لة المحدد\tDelete"),
-    ("Re&sume all", "استئناف ال&كل"),
+    ("R&emove selected\tDelete", "إ&زالة المحدد\tDelete"),
+    ("Re&sume all", "استئ&ناف الكل"),
     ("Reading status...", "جارٍ قراءة الحالة..."),
     ("Ready", "جاهز"),
     ("Receiving the browser transfer securely", "جارٍ استلام النقل من المتصفح بأمان"),
@@ -643,8 +643,8 @@ static AR: &[(&str, &str)] = &[
     ("Shut down the computer", "إيقاف تشغيل الكمبيوتر"),
     ("Shut down when done", "إيقاف تشغيل الكمبيوتر عند الانتهاء"),
     ("Single and multiple audio selections cannot be combined.", "لا يمكن الجمع بين اختيار الصوت الفردي واختيار الصوت المتعدد."),
-    ("Site e&xplorer...", "مستكشف ال&مواقع..."),
-    ("Site lo&gins...", "تسجيلات الدخول إلى ال&مواقع..."),
+    ("Site e&xplorer...", "مست&كشف المواقع..."),
+    ("Site lo&gins...", "تسجيلات الد&خول إلى المواقع..."),
     ("Site logins", "تسجيلات دخول المواقع"),
     ("Site permission is required; allow this site in the browser extension.", "يلزم إذن الموقع؛ اسمح لهذا الموقع في إضافة المتصفح."),
     ("Site session: included", "جلسة الموقع: مضمّنة"),
@@ -656,7 +656,7 @@ static AR: &[(&str, &str)] = &[
     ("Source preparation was stopped", "توقّف تحضير المصدر"),
     ("Source refresh stopped", "توقّف تحديث المصدر"),
     ("Speed", "السرعة"),
-    ("Speed &limit...", "حد ال&سرعة..."),
+    ("Speed &limit...", "حد الس&رعة..."),
     ("Speed limit", "حد السرعة"),
     ("Speed limit (KiB/s, 0 = unlimited):", "حد السرعة (KiB/s، 0 = غير محدود):"),
     ("Start", "بدء"),
@@ -672,7 +672,7 @@ static AR: &[(&str, &str)] = &[
     ("Stream integrity could not be verified", "تعذّر التحقق من سلامة البث"),
     ("Subtitle embedding is only supported for video output", "دمج الترجمة مدعوم لمخرجات الفيديو فقط"),
     ("Subtitle language", "لغة الترجمة"),
-    ("Syn&c manager...", "مدير ال&مزامنة..."),
+    ("Syn&c manager...", "مدير الم&زامنة..."),
     ("Sync policies:", "سياسات المزامنة:"),
     ("Synchronization IDs must be unique.", "يجب أن تكون معرّفات المزامنة فريدة."),
     ("Synchronization is already running.", "المزامنة تعمل بالفعل."),
@@ -1450,22 +1450,22 @@ static ES: &[(&str, &str)] = &[
     ("&Batch download...", "Descarga por &lotes..."),
     ("&Browser setup...", "Instalación del &navegador..."),
     ("&Check for updates...", "&Buscar actualizaciones..."),
-    ("&Clear completed", "&Quitar completadas"),
+    ("&Clear completed", "Q&uitar completadas"),
     ("&Diagnostics...", "&Diagnóstico..."),
     ("&Downloads", "&Descargas"),
     ("&Event log...", "&Registro de eventos..."),
     ("&File", "&Archivo"),
-    ("&Help", "&Ayuda"),
-    ("&Import list...", "Importar &lista..."),
-    ("&Install media support...", "Instalar compatibilidad &multimedia..."),
-    ("&Keyboard shortcuts", "&Atajos de teclado"),
+    ("&Help", "Ay&uda"),
+    ("&Import list...", "&Importar lista..."),
+    ("&Install media support...", "Instalar com&patibilidad multimedia..."),
+    ("&Keyboard shortcuts", "Atajos de &teclado"),
     ("&Media tools...", "Herramientas &multimedia..."),
     ("&Mini panel", "&Mini panel"),
     ("&New download...\tCtrl+N", "&Nueva descarga...\tCtrl+N"),
     ("&Open file\tEnter", "&Abrir archivo\tEnter"),
     ("&Pause / resume selected\tSpace", "&Pausar / reanudar lo seleccionado\tSpace"),
     ("&Queue manager...", "&Administrador de colas..."),
-    ("&Refresh source address...", "&Actualizar dirección de origen..."),
+    ("&Refresh source address...", "Actualizar &dirección de origen..."),
     ("&Settings...", "&Configuración..."),
     ("&Tools", "&Herramientas"),
     ("&Video download...\tCtrl+Shift+N", "Descarga de &vídeo...\tCtrl+Shift+N"),
@@ -1681,7 +1681,7 @@ static ES: &[(&str, &str)] = &[
     ("Event details are too long or contain multiple lines", "Los detalles del evento son demasiado largos o contienen varias líneas"),
     ("Event log", "Registro de eventos"),
     ("Event log:", "Registro de eventos:"),
-    ("Ex&port list...", "Exportar &lista..."),
+    ("Ex&port list...", "&Exportar lista..."),
     ("Exact host:", "Host exacto:"),
     ("Exactly one audio track can be selected for audio-only output.", "Solo se puede seleccionar exactamente una pista de audio para la salida de solo audio."),
     ("Exit", "Salir"),
@@ -1708,7 +1708,7 @@ static ES: &[(&str, &str)] = &[
     ("Finish live recording and keep it", "Terminar la grabación en directo y conservarla"),
     ("Finish the scan first", "Terminar primero el análisis"),
     ("Folder", "Carpeta"),
-    ("Folder &rules...", "Reglas de &carpeta..."),
+    ("Folder &rules...", "Reg&las de carpeta..."),
     ("Folder rule IDs must be unique.", "Los ID de las reglas de carpeta deben ser únicos."),
     ("Folder rule types must be unique.", "Los tipos de regla de carpeta deben ser únicos."),
     ("Folder rules", "Reglas de carpeta"),
@@ -1897,7 +1897,7 @@ static ES: &[(&str, &str)] = &[
     ("Open SSDownload and check its status", "Abrir SSDownload y comprobar su estado"),
     ("Open download folder", "Abrir carpeta de descargas"),
     ("Open file", "Abrir archivo"),
-    ("Open fol&der", "Abrir car&peta"),
+    ("Open fol&der", "Abrir carp&eta"),
     ("Open in the Chrome Web Store", "Abrir en Chrome Web Store"),
     ("Open log folder", "Abrir carpeta de registros"),
     ("Open page", "Abrir página"),
@@ -2064,8 +2064,8 @@ static ES: &[(&str, &str)] = &[
     ("Shut down the computer", "Apagar el equipo"),
     ("Shut down when done", "Apagar al terminar"),
     ("Single and multiple audio selections cannot be combined.", "No se pueden combinar la selección de un solo audio y la de varios audios."),
-    ("Site e&xplorer...", "Explorador de &sitios..."),
-    ("Site lo&gins...", "Inicios de sesión en si&tios..."),
+    ("Site e&xplorer...", "&Explorador de sitios..."),
+    ("Site lo&gins...", "&Inicios de sesión en sitios..."),
     ("Site logins", "Inicios de sesión en sitios"),
     ("Site permission is required; allow this site in the browser extension.", "Se necesita permiso del sitio; hay que permitir este sitio en la extensión del navegador."),
     ("Site session: included", "Sesión del sitio: incluida"),
@@ -2077,7 +2077,7 @@ static ES: &[(&str, &str)] = &[
     ("Source preparation was stopped", "Se detuvo la preparación del origen"),
     ("Source refresh stopped", "Actualización del origen detenida"),
     ("Speed", "Velocidad"),
-    ("Speed &limit...", "&Límite de velocidad..."),
+    ("Speed &limit...", "Límite de &velocidad..."),
     ("Speed limit", "Límite de velocidad"),
     ("Speed limit (KiB/s, 0 = unlimited):", "Velocidad máx. (KiB/s, 0 = sin límite):"),
     ("Start", "Iniciar"),
@@ -2093,7 +2093,7 @@ static ES: &[(&str, &str)] = &[
     ("Stream integrity could not be verified", "No se pudo verificar la integridad del flujo"),
     ("Subtitle embedding is only supported for video output", "La incrustación de subtítulos solo es compatible con la salida de vídeo"),
     ("Subtitle language", "Idioma de los subtítulos"),
-    ("Syn&c manager...", "&Administrador de sincronización..."),
+    ("Syn&c manager...", "Administrador de &sincronización..."),
     ("Sync policies:", "Políticas de sincronización:"),
     ("Synchronization IDs must be unique.", "Los IDs de sincronización deben ser únicos."),
     ("Synchronization is already running.", "La sincronización ya está en ejecución."),
@@ -2870,16 +2870,16 @@ static PT: &[(&str, &str)] = &[
     ("&Audio download...\tCtrl+Shift+N", "Download de á&udio...\tCtrl+Shift+N"),
     ("&Batch download...", "Download em &lote..."),
     ("&Browser setup...", "Configurar o &navegador..."),
-    ("&Check for updates...", "Verificar &atualizações..."),
+    ("&Check for updates...", "&Verificar atualizações..."),
     ("&Clear completed", "&Limpar concluídos"),
-    ("&Diagnostics...", "Diagnós&tico..."),
+    ("&Diagnostics...", "&Diagnóstico..."),
     ("&Downloads", "&Downloads"),
     ("&Event log...", "&Log de eventos..."),
     ("&File", "&Arquivo"),
-    ("&Help", "&Ajuda"),
+    ("&Help", "Aj&uda"),
     ("&Import list...", "&Importar lista..."),
-    ("&Install media support...", "Instalar suporte a &mídia..."),
-    ("&Keyboard shortcuts", "Atalhos de &teclado"),
+    ("&Install media support...", "&Instalar suporte a mídia..."),
+    ("&Keyboard shortcuts", "&Atalhos de teclado"),
     ("&Media tools...", "Ferramentas de &mídia..."),
     ("&Mini panel", "&Mini painel"),
     ("&New download...\tCtrl+N", "&Novo download...\tCtrl+N"),
@@ -3125,7 +3125,7 @@ static PT: &[(&str, &str)] = &[
     ("File name (optional, for a single URL):", "Nome do arquivo (opcional, para uma única URL):"),
     ("File name:", "Nome do arquivo:"),
     ("File — reliably transfer regular file links", "Arquivo — transferir links de arquivos comuns com confiabilidade"),
-    ("Finish live recordin&g and keep it", "Concluir a gravação ao vivo e &mantê-la"),
+    ("Finish live recordin&g and keep it", "&Concluir a gravação ao vivo e mantê-la"),
     ("Finish live recording and keep it", "Concluir a gravação ao vivo e mantê-la"),
     ("Finish the scan first", "Conclua primeiro a varredura"),
     ("Folder", "Pasta"),
@@ -3318,7 +3318,7 @@ static PT: &[(&str, &str)] = &[
     ("Open SSDownload and check its status", "Abra o SSDownload e verifique o status"),
     ("Open download folder", "Abrir pasta de download"),
     ("Open file", "Abrir arquivo"),
-    ("Open fol&der", "Abrir &pasta"),
+    ("Open fol&der", "A&brir pasta"),
     ("Open in the Chrome Web Store", "Abrir na Chrome Web Store"),
     ("Open log folder", "Abrir pasta de logs"),
     ("Open page", "Abrir página"),
@@ -3333,7 +3333,7 @@ static PT: &[(&str, &str)] = &[
     ("Output:", "Saída:"),
     ("Overall speed limit (KiB/s, 0 = unlimited):", "Limite geral de velocidade (KiB/s, 0 = ilimitado):"),
     ("Ownership of the work folder could not be proven; files were kept", "A propriedade da pasta de trabalho não pôde ser comprovada; os arquivos foram mantidos"),
-    ("Pa&use all", "Pausar &tudo"),
+    ("Pa&use all", "Pau&sar tudo"),
     ("Page size must be between 1 and 500", "O tamanho da página deve estar entre 1 e 500"),
     ("Partitioned and unpartitioned values for the same cookie cannot be combined safely", "Valores particionados e não particionados do mesmo cookie não podem ser combinados com segurança"),
     ("Password (empty = keep):", "Senha (vazio = manter):"),
@@ -3384,8 +3384,8 @@ static PT: &[(&str, &str)] = &[
     ("Queues:", "Filas:"),
     ("Quota", "Cota"),
     ("Quota (bytes; 0: unlimited):", "Cota do período (bytes; 0: ilimitada):"),
-    ("R&emove selected\tDelete", "Re&mover selecionados\tDelete"),
-    ("Re&sume all", "Retomar &tudo"),
+    ("R&emove selected\tDelete", "&Remover selecionados\tDelete"),
+    ("Re&sume all", "Ret&omar tudo"),
     ("Reading status...", "Lendo o status..."),
     ("Ready", "Pronto"),
     ("Receiving the browser transfer securely", "Recebendo a transferência do navegador com segurança"),
@@ -3421,7 +3421,7 @@ static PT: &[(&str, &str)] = &[
     ("Resume all", "Retomar tudo"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Retome esta tarefa a partir da transferência pelo navegador na aba de origem; o método de transferência não foi alterado."),
     ("Retry", "Tentar novamente"),
-    ("Retry &failed", "&Tentar novamente os que falharam"),
+    ("Retry &failed", "Tentar &novamente os que falharam"),
     ("Retry count", "Número de novas tentativas"),
     ("Retry count (0–20):", "Número de novas tentativas (0–20):"),
     ("Review the settings", "Revise as configurações"),
@@ -3485,8 +3485,8 @@ static PT: &[(&str, &str)] = &[
     ("Shut down the computer", "Desligar o computador"),
     ("Shut down when done", "Desligar o computador ao concluir"),
     ("Single and multiple audio selections cannot be combined.", "Seleções de áudio únicas e múltiplas não podem ser combinadas."),
-    ("Site e&xplorer...", "Rastreador de &sites..."),
-    ("Site lo&gins...", "Logins &de sites..."),
+    ("Site e&xplorer...", "&Rastreador de sites..."),
+    ("Site lo&gins...", "Lo&gins de sites..."),
     ("Site logins", "Logins de sites"),
     ("Site permission is required; allow this site in the browser extension.", "É necessária permissão do site; permita este site na extensão do navegador."),
     ("Site session: included", "Sessão do site: incluída"),
@@ -4546,7 +4546,7 @@ static FR: &[(&str, &str)] = &[
     ("File name (optional, for a single URL):", "Nom de fichier (facultatif, pour une seule URL) :"),
     ("File name:", "Nom du fichier :"),
     ("File — reliably transfer regular file links", "Fichier — transférer de façon fiable les liens de fichiers classiques"),
-    ("Finish live recordin&g and keep it", "Terminer l'enregistrement en &direct et le conserver"),
+    ("Finish live recordin&g and keep it", "Terminer l'enre&gistrement en direct et le conserver"),
     ("Finish live recording and keep it", "Terminer l'enregistrement en direct et le conserver"),
     ("Finish the scan first", "Terminez d'abord l'analyse"),
     ("Folder", "Dossier"),
@@ -5713,14 +5713,14 @@ static DE: &[(&str, &str)] = &[
     ("&Batch download...", "&Stapel-Download..."),
     ("&Browser setup...", "&Browser-Einrichtung..."),
     ("&Check for updates...", "Nach &Updates suchen..."),
-    ("&Clear completed", "&Abgeschlossene entfernen"),
+    ("&Clear completed", "A&bgeschlossene entfernen"),
     ("&Diagnostics...", "Dia&gnose..."),
-    ("&Downloads", "&Downloads"),
-    ("&Event log...", "&Ereignisprotokoll..."),
+    ("&Downloads", "Do&wnloads"),
+    ("&Event log...", "E&reignisprotokoll..."),
     ("&File", "&Datei"),
     ("&Help", "&Hilfe"),
     ("&Import list...", "Liste &importieren..."),
-    ("&Install media support...", "&Medienunterstützung installieren..."),
+    ("&Install media support...", "Medienunterstützung &installieren..."),
     ("&Keyboard shortcuts", "&Tastenkombinationen"),
     ("&Media tools...", "&Medienwerkzeuge..."),
     ("&Mini panel", "&Mini-Panel"),
@@ -5728,7 +5728,7 @@ static DE: &[(&str, &str)] = &[
     ("&Open file\tEnter", "Datei &öffnen\tEnter"),
     ("&Pause / resume selected\tSpace", "&Ausgewählte pausieren / fortsetzen\tSpace"),
     ("&Queue manager...", "&Warteschlangenverwaltung..."),
-    ("&Refresh source address...", "Quelladresse &aktualisieren..."),
+    ("&Refresh source address...", "&Quelladresse aktualisieren..."),
     ("&Settings...", "&Einstellungen..."),
     ("&Tools", "&Extras"),
     ("&Video download...\tCtrl+Shift+N", "&Video herunterladen...\tCtrl+Shift+N"),
@@ -5929,7 +5929,7 @@ static DE: &[(&str, &str)] = &[
     ("Embedded and external subtitles cannot be mixed in one request.", "Eingebettete und externe Untertitel können nicht in einer Anfrage gemischt werden."),
     ("Embedded subtitles (Ctrl/Shift, multiple):", "Eingebettete Untertitel (Ctrl/Shift, mehrere):"),
     ("Enable experimental browser transfer — memory and integrity limits apply to large files", "Experimentelle Browser-Übertragung aktivieren — Speicher- und Integritätsgrenzen gelten für große Dateien"),
-    ("End (HH:MM):", "Ende HH:MM:"),
+    ("End (HH:MM):", "Ende (HH:MM):"),
     ("End:", "Ende:"),
     ("Enter a single URL to download a video.", "Geben Sie eine einzelne URL ein, um ein Video herunterzuladen."),
     ("Enter a valid HTTP/HTTPS URL for the external subtitle.", "Geben Sie eine gültige HTTP/HTTPS-URL für den externen Untertitel ein."),
@@ -5967,7 +5967,7 @@ static DE: &[(&str, &str)] = &[
     ("File name (optional, for a single URL):", "Dateiname (optional, für eine einzelne URL):"),
     ("File name:", "Dateiname:"),
     ("File — reliably transfer regular file links", "Datei — reguläre Dateilinks zuverlässig übertragen"),
-    ("Finish live recordin&g and keep it", "Live-Aufnahme beenden und &behalten"),
+    ("Finish live recordin&g and keep it", "Live-Aufnahme beenden und be&halten"),
     ("Finish live recording and keep it", "Live-Aufnahme beenden und behalten"),
     ("Finish the scan first", "Schließen Sie zuerst den Scan ab"),
     ("Folder", "Ordner"),
@@ -6227,7 +6227,7 @@ static DE: &[(&str, &str)] = &[
     ("Quota", "Kontingent"),
     ("Quota (bytes; 0: unlimited):", "Kontingent (Byte; 0: unbegrenzt):"),
     ("R&emove selected\tDelete", "Ausgewählte &entfernen\tDelete"),
-    ("Re&sume all", "&Alle fortsetzen"),
+    ("Re&sume all", "Alle &fortsetzen"),
     ("Reading status...", "Status wird gelesen..."),
     ("Ready", "Bereit"),
     ("Receiving the browser transfer securely", "Browser-Übertragung wird sicher empfangen"),
@@ -6263,7 +6263,7 @@ static DE: &[(&str, &str)] = &[
     ("Resume all", "Alle fortsetzen"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Setzen Sie diesen Auftrag über die Browser-Übertragung auf dem Quell-Tab fort; die Übertragungsmethode wurde nicht geändert."),
     ("Retry", "Wiederholen"),
-    ("Retry &failed", "&Fehlgeschlagene wiederholen"),
+    ("Retry &failed", "Fehlgeschlagene &wiederholen"),
     ("Retry count", "Anzahl Wiederholungen"),
     ("Retry count (0–20):", "Anzahl Wiederholungen (0–20):"),
     ("Review the settings", "Prüfen Sie die Einstellungen"),
@@ -6299,7 +6299,7 @@ static DE: &[(&str, &str)] = &[
     ("Scheduled limit (KiB/s):", "Zeitgesteuertes Limit (KiB/s):"),
     ("Scheduled speed limit", "Zeitgesteuertes Geschwindigkeitslimit"),
     ("Search:", "Suchen:"),
-    ("Select &all\tCtrl+A", "&Alle auswählen\tCtrl+A"),
+    ("Select &all\tCtrl+A", "Alle a&uswählen\tCtrl+A"),
     ("Select a completion action", "Wählen Sie eine Aktion nach Abschluss"),
     ("Select a download job. Press Ctrl+N to add a URL or drag a link onto the window.", "Wählen Sie einen Download-Auftrag aus. Drücken Sie Ctrl+N, um eine URL hinzuzufügen, oder ziehen Sie einen Link in das Fenster."),
     ("Select a job.", "Wählen Sie einen Auftrag aus."),
@@ -6327,7 +6327,7 @@ static DE: &[(&str, &str)] = &[
     ("Shut down the computer", "Computer herunterfahren"),
     ("Shut down when done", "Nach Abschluss Computer herunterfahren"),
     ("Single and multiple audio selections cannot be combined.", "Einzelne und mehrere Audioauswahlen können nicht kombiniert werden."),
-    ("Site e&xplorer...", "Website-&Explorer..."),
+    ("Site e&xplorer...", "Website-E&xplorer..."),
     ("Site lo&gins...", "Website-&Anmeldungen..."),
     ("Site logins", "Website-Anmeldungen"),
     ("Site permission is required; allow this site in the browser extension.", "Eine Website-Berechtigung ist erforderlich; erlauben Sie diese Website in der Browser-Erweiterung."),
@@ -7410,6 +7410,9 @@ macro_rules! __ui_template_ar {
     ("The SOCKS5 connection was refused (code {0})") => {
         "رُفض اتصال SOCKS5 (الرمز {0})"
     };
+    ("The SSDownload browser extension is older than this app (the extension speaks protocol {version}, the app {supported}). The browser updates it on its own; to update it now, turn on Developer mode on the browser's extensions page and click Update.") => {
+        "إضافة SSDownload للمتصفح أقدم من هذا التطبيق (بروتوكول الإضافة: {version}، وبروتوكول التطبيق: {supported}). يحدّثها المتصفح تلقائيًا؛ ولتحديثها الآن، فعّل «وضع مطوّر البرامج» في صفحة الإضافات، ثم انقر «تحديث»."
+    };
     ("The SSDownload{version} update could not be installed; the current version was restarted.\n\nReason: {reason}\n\nYou can retry the update from the Help menu.") => {
         "تعذّر تثبيت تحديث SSDownload{version}؛ تمت إعادة تشغيل الإصدار الحالي.\n\nالسبب: {reason}\n\nيمكنك إعادة محاولة التحديث من قائمة المساعدة."
     };
@@ -7734,6 +7737,9 @@ macro_rules! __ui_template_ar {
     ("The {name} version output is empty") => {
         "مخرجات إصدار {name} فارغة"
     };
+    ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
+        "تطبيق SSDownload هذا أقدم من إضافة المتصفح (بروتوكول الإضافة: {version}، وبروتوكول التطبيق: {supported}). حدّث التطبيق: المساعدة ← التحقق من التحديثات."
+    };
     ("This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {0} package from the release page and extract it over this folder.") => {
         "هذه النسخة محمولة وغير مثبّتة. تُحدَّث النسخة المحمولة بتنزيل ملف ZIP المحمول الجديد: نزّل حزمة SSDownload {0} من صفحة الإصدار وفكّها فوق هذا المجلد."
     };
@@ -7757,9 +7763,6 @@ macro_rules! __ui_template_ar {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "مخرجات صوت غير مدعومة: {other}. الخيارات المتاحة: original وMP3 وM4A وOpus وFLAC"
-    };
-    ("Unsupported protocol version: {version}") => {
-        "إصدار بروتوكول غير مدعوم: {version}"
     };
     ("Video and audio support: {error:#}") => {
         "دعم الفيديو والصوت: {error:#}"
@@ -8216,6 +8219,9 @@ macro_rules! __ui_template_es {
     ("The SOCKS5 connection was refused (code {0})") => {
         "Se rechazó la conexión SOCKS5 (código {0})"
     };
+    ("The SSDownload browser extension is older than this app (the extension speaks protocol {version}, the app {supported}). The browser updates it on its own; to update it now, turn on Developer mode on the browser's extensions page and click Update.") => {
+        "La extensión del navegador SSDownload es más antigua que esta aplicación (la extensión usa el protocolo {version}, la aplicación {supported}). El navegador la actualiza por sí mismo; para actualizarla ahora, activar el Modo de desarrollador en la página de extensiones del navegador y hacer clic en Actualizar."
+    };
     ("The SSDownload{version} update could not be installed; the current version was restarted.\n\nReason: {reason}\n\nYou can retry the update from the Help menu.") => {
         "No se pudo instalar la actualización de SSDownload{version}; se reinició la versión actual.\n\nMotivo: {reason}\n\nSe puede reintentar la actualización desde el menú Ayuda."
     };
@@ -8540,6 +8546,9 @@ macro_rules! __ui_template_es {
     ("The {name} version output is empty") => {
         "La salida de la versión de {name} está vacía"
     };
+    ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
+        "Esta aplicación SSDownload es más antigua que la extensión del navegador (la extensión usa el protocolo {version}, la aplicación {supported}). Actualizar la aplicación: Ayuda → Buscar actualizaciones."
+    };
     ("This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {0} package from the release page and extract it over this folder.") => {
         "Esta copia es portátil y no está instalada. Una copia portátil se actualiza descargando el nuevo ZIP portátil: descargar el paquete SSDownload {0} desde la página de versiones y extraerlo sobre esta carpeta."
     };
@@ -8563,9 +8572,6 @@ macro_rules! __ui_template_es {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "Salida de audio no admitida: {other}. Opciones disponibles: original, MP3, M4A, Opus, FLAC"
-    };
-    ("Unsupported protocol version: {version}") => {
-        "Versión de protocolo no admitida: {version}"
     };
     ("Video and audio support: {error:#}") => {
         "Compatibilidad con vídeo y audio: {error:#}"
@@ -8771,7 +8777,7 @@ macro_rules! __ui_template_pt {
         " · {channels} canais"
     };
     ("&Install update ({version})...") => {
-        "Instalar &atualização ({version})..."
+        "&Instalar atualização ({version})..."
     };
     (", {0} pages could not be fetched: {1}") => {
         ", {0} páginas não puderam ser obtidas: {1}"
@@ -9021,6 +9027,9 @@ macro_rules! __ui_template_pt {
     };
     ("The SOCKS5 connection was refused (code {0})") => {
         "A conexão SOCKS5 foi recusada (código {0})"
+    };
+    ("The SSDownload browser extension is older than this app (the extension speaks protocol {version}, the app {supported}). The browser updates it on its own; to update it now, turn on Developer mode on the browser's extensions page and click Update.") => {
+        "A extensão do navegador SSDownload é mais antiga que este aplicativo (a extensão usa o protocolo {version}; o aplicativo, o {supported}). O navegador a atualiza sozinho; para atualizá-la agora, ative o Modo do desenvolvedor na página de extensões do navegador e clique em Atualizar."
     };
     ("The SSDownload{version} update could not be installed; the current version was restarted.\n\nReason: {reason}\n\nYou can retry the update from the Help menu.") => {
         "A atualização do SSDownload{version} não pôde ser instalada; a versão atual foi reiniciada.\n\nMotivo: {reason}\n\nVocê pode tentar a atualização novamente pelo menu Ajuda."
@@ -9346,6 +9355,9 @@ macro_rules! __ui_template_pt {
     ("The {name} version output is empty") => {
         "A saída da versão de {name} está vazia"
     };
+    ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
+        "Este aplicativo SSDownload é mais antigo que a extensão do navegador (a extensão usa o protocolo {version}; o aplicativo, o {supported}). Atualize o aplicativo: Ajuda → Verificar atualizações."
+    };
     ("This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {0} package from the release page and extract it over this folder.") => {
         "Esta cópia é portátil, não instalada. Uma cópia portátil é atualizada baixando o novo ZIP portátil: baixe o pacote SSDownload {0} na página de versões e extraia-o sobre esta pasta."
     };
@@ -9369,9 +9381,6 @@ macro_rules! __ui_template_pt {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "Saída de áudio não suportada: {other}. Opções disponíveis: original, MP3, M4A, Opus, FLAC"
-    };
-    ("Unsupported protocol version: {version}") => {
-        "Versão de protocolo não suportada: {version}"
     };
     ("Video and audio support: {error:#}") => {
         "Suporte a vídeo e áudio: {error:#}"
@@ -9828,6 +9837,9 @@ macro_rules! __ui_template_fr {
     ("The SOCKS5 connection was refused (code {0})") => {
         "La connexion SOCKS5 a été refusée (code {0})"
     };
+    ("The SSDownload browser extension is older than this app (the extension speaks protocol {version}, the app {supported}). The browser updates it on its own; to update it now, turn on Developer mode on the browser's extensions page and click Update.") => {
+        "L’extension SSDownload du navigateur est plus ancienne que cette application (l’extension utilise le protocole {version}, l’application le protocole {supported}). Le navigateur la met à jour de lui-même ; pour la mettre à jour tout de suite, activez « Mode développeur » sur la page des extensions du navigateur, puis cliquez sur « Mettre à jour »."
+    };
     ("The SSDownload{version} update could not be installed; the current version was restarted.\n\nReason: {reason}\n\nYou can retry the update from the Help menu.") => {
         "La mise à jour SSDownload{version} n'a pas pu être installée ; la version actuelle a été redémarrée.\n\nRaison : {reason}\n\nVous pouvez réessayer la mise à jour depuis le menu Aide."
     };
@@ -10152,6 +10164,9 @@ macro_rules! __ui_template_fr {
     ("The {name} version output is empty") => {
         "La sortie de version de {name} est vide"
     };
+    ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
+        "Cette application SSDownload est plus ancienne que l’extension du navigateur (l’extension utilise le protocole {version}, l’application le protocole {supported}). Mettez à jour l’application : Aide → Rechercher les mises à jour."
+    };
     ("This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {0} package from the release page and extract it over this folder.") => {
         "Cette copie est portable, et non installée. Une copie portable se met à jour en téléchargeant le nouveau ZIP portable : téléchargez le paquet SSDownload {0} depuis la page de version et extrayez-le dans ce dossier."
     };
@@ -10175,9 +10190,6 @@ macro_rules! __ui_template_fr {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "Sortie audio non prise en charge : {other}. Options disponibles : original, MP3, M4A, Opus, FLAC"
-    };
-    ("Unsupported protocol version: {version}") => {
-        "Version de protocole non prise en charge : {version}"
     };
     ("Video and audio support: {error:#}") => {
         "Prise en charge vidéo et audio : {error:#}"
@@ -10383,7 +10395,7 @@ macro_rules! __ui_template_de {
         " · {channels} Kanäle"
     };
     ("&Install update ({version})...") => {
-        "Update &installieren ({version})..."
+        "Update i&nstallieren ({version})..."
     };
     (", {0} pages could not be fetched: {1}") => {
         ", {0} Seiten konnten nicht abgerufen werden: {1}"
@@ -10633,6 +10645,9 @@ macro_rules! __ui_template_de {
     };
     ("The SOCKS5 connection was refused (code {0})") => {
         "Die SOCKS5-Verbindung wurde abgelehnt (Code {0})"
+    };
+    ("The SSDownload browser extension is older than this app (the extension speaks protocol {version}, the app {supported}). The browser updates it on its own; to update it now, turn on Developer mode on the browser's extensions page and click Update.") => {
+        "Die SSDownload-Browser-Erweiterung ist älter als diese App (die Erweiterung nutzt Protokoll {version}, die App {supported}). Der Browser aktualisiert sie selbst; um sie jetzt zu aktualisieren, aktivieren Sie auf der Erweiterungsseite des Browsers den Entwicklermodus und klicken Sie auf Aktualisieren."
     };
     ("The SSDownload{version} update could not be installed; the current version was restarted.\n\nReason: {reason}\n\nYou can retry the update from the Help menu.") => {
         "Das Update auf SSDownload{version} konnte nicht installiert werden; die aktuelle Version wurde neu gestartet.\n\nGrund: {reason}\n\nSie können das Update über das Menü „Hilfe“ erneut versuchen."
@@ -10958,6 +10973,9 @@ macro_rules! __ui_template_de {
     ("The {name} version output is empty") => {
         "Die Versionsausgabe von {name} ist leer"
     };
+    ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
+        "Diese SSDownload-App ist älter als die Browser-Erweiterung (die Erweiterung nutzt Protokoll {version}, die App {supported}). Aktualisieren Sie die App: Hilfe → Nach Updates suchen."
+    };
     ("This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {0} package from the release page and extract it over this folder.") => {
         "Diese Kopie ist portabel und nicht installiert. Eine portable Kopie wird aktualisiert, indem das neue portable ZIP heruntergeladen wird: Laden Sie das Paket SSDownload {0} von der Versionsseite herunter und entpacken Sie es über diesem Ordner."
     };
@@ -10981,9 +10999,6 @@ macro_rules! __ui_template_de {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "Nicht unterstützte Audioausgabe: {other}. Verfügbare Optionen: original, MP3, M4A, Opus, FLAC"
-    };
-    ("Unsupported protocol version: {version}") => {
-        "Nicht unterstützte Protokollversion: {version}"
     };
     ("Video and audio support: {error:#}") => {
         "Video- und Audiounterstützung: {error:#}"

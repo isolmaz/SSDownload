@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "SSDownload – تنزيل الفيديو ومدير التنزيلات",
+    "description": "Store name and the name on the extensions page (at most 75 characters)."
+  },
+  "extDescription": {
+    "message": "أداة تحميل الفيديو ومدير تنزيلات لنظام Windows: اختر الجودة واستأنف التنزيل وسجّل البث المباشر. يتطلب تطبيق SSDownload المجاني.",
+    "description": "Store summary and the description on the extensions page (at most 132 characters)."
+  }
+}

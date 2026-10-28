@@ -8,8 +8,10 @@ English text in `i18n/<code>.json`, a JSON object from English text to translati
                                      Turkish wording and where it is used, for translators
     python scripts/i18n.py build     compiles i18n/*.json into src/i18n_catalog.rs
     python scripts/i18n.py check     fails on an untranslated or stale catalog entry, a
-                                     placeholder or menu marker a translation changes, a text
-                                     the extractor cannot read, or an out-of-date i18n_catalog.rs
+                                     placeholder or menu marker a translation changes, two items
+                                     of one menu that share an access letter in any language, a
+                                     text the extractor cannot read, or an out-of-date
+                                     i18n_catalog.rs
 """
 import json
 import pathlib
@@ -374,10 +376,63 @@ def mnemonics(text):
     return len(re.findall(r"&(?!&)", text.replace("&&", "")))
 
 
+def access_letter(text):
+    """The letter `&` marks in a menu label, lowercased, or None."""
+    match = re.search(r"&(.)", text.replace("&&", ""))
+    return match.group(1).casefold() if match else None
+
+
+def menus():
+    """The items of every window menu: {(place, menu): [(line, [(tr, en), ...])]}.
+
+    A menu is the variable `append()` and `AppendMenuW()` add to inside one function; an item is
+    one call, and a label chosen by a condition (Pause or Resume) lists each of its pairs."""
+    found = {}
+    for path in sorted((SOURCE / "gui" / "native").glob("*.rs")):
+        text = code_only(path.read_text(encoding="utf-8"))
+        functions = [(match.start(), match.group(1)) for match in re.finditer(r"\bfn\s+([a-z_][a-z0-9_]*)", text)]
+        for call in re.finditer(r"(?<![\w.])(append|AppendMenuW)\s*\(", text):
+            arguments = split_top(text[call.end():closing(text, call.end())])
+            label = arguments[2] if call.group(1) == "append" and len(arguments) == 3 else arguments[3] if len(arguments) == 4 else ""
+            items = []
+            for ui in re.finditer(r"(?:crate::i18n::)?\b(ui|ui_format!)\s*\(", label):
+                parts = split_top(label[ui.end():closing(label, ui.end())])
+                if len(parts) >= 2 and literal_value(parts[0]) is not None and literal_value(parts[1]) is not None:
+                    items.append((literal_value(parts[0]), literal_value(parts[1])))
+            if not items:
+                continue
+            function = next((name for start, name in reversed(functions) if start < call.start()), "")
+            place = f"{path.relative_to(ROOT).as_posix()} fn {function}"
+            line = text[:call.start()].count("\n") + 1
+            found.setdefault((place, arguments[0]), []).append((line, items))
+    return found
+
+
+def menu_letter_clashes(catalogs):
+    problems = []
+    for (place, menu), items in menus().items():
+        for code in ["tr", "en"] + [code for code, _ in LANGUAGES]:
+            users = {}
+            for line, pairs in items:
+                letters = set()
+                for tr, en in pairs:
+                    text = {"tr": tr, "en": en}.get(code, catalogs.get(code, {}).get(en))
+                    if text and access_letter(text):
+                        letters.add(access_letter(text))
+                for letter in letters:
+                    users.setdefault(letter, []).append((line, pairs[0][1]))
+            for letter, owners in sorted(users.items()):
+                if len(owners) > 1:
+                    names = ", ".join(json.dumps(en, ensure_ascii=False) for _, en in owners)
+                    problems.append(f"{place}, menu {menu} ({code}): access letter {letter!r} is shared by {names}")
+    return problems
+
+
 def check(extraction):
     problems = list(extraction.problems)
+    catalogs = {}
     for code, _ in LANGUAGES:
-        catalog = load_catalog(code)
+        catalog = catalogs[code] = load_catalog(code)
         for en in sorted(set(extraction.entries) - set(catalog)):
             problems.append(f"i18n/{code}.json: no translation of {json.dumps(en, ensure_ascii=False)[:120]}")
         for en in sorted(set(catalog) - set(extraction.entries)):
@@ -397,6 +452,7 @@ def check(extraction):
                 problems.append(f"{label}: the shortcut after the tab must stay {en.split(chr(9), 1)[-1]!r}")
             if en.endswith("\n") != translation.endswith("\n") or en.startswith("\n") != translation.startswith("\n"):
                 problems.append(f"{label}: leading or trailing line breaks differ")
+    problems += menu_letter_clashes(catalogs)
     if not GENERATED.exists() or GENERATED.read_text(encoding="utf-8") != generate(extraction):
         problems.append("src/i18n_catalog.rs is out of date: run python scripts/i18n.py build")
     return problems
