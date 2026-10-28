@@ -404,9 +404,10 @@ fn http_connect(
         ),
         other => bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Proxy tüneli açılamadı (HTTP {other})"),
-                format!("The proxy tunnel could not be opened (HTTP {other})"),
+            crate::i18n::ui_format!(
+                "Proxy tüneli açılamadı (HTTP {other})",
+                "The proxy tunnel could not be opened (HTTP {other})",
+                other = other
             )
         ),
     }
@@ -509,9 +510,10 @@ fn socks5_connect(
     if reply[1] != 0x00 {
         bail!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("SOCKS5 bağlantısı reddedildi (kod {})", reply[1]),
-                format!("The SOCKS5 connection was refused (code {})", reply[1]),
+            crate::i18n::ui_format!(
+                "SOCKS5 bağlantısı reddedildi (kod {0})",
+                "The SOCKS5 connection was refused (code {0})",
+                reply[1]
             )
         );
     }

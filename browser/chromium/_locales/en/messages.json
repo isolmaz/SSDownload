@@ -1,6 +1,10 @@
 {
+  "extName": {
+    "message": "SSDownload – Video Downloader & Manager",
+    "description": "Store name and the name on the extensions page (at most 75 characters)."
+  },
   "extDescription": {
-    "message": "Sends videos, audio and files from your browser to the SSDownload download manager for Windows. Requires the free SSDownload app.",
+    "message": "Video downloader and download manager for Windows: pick quality, resume, record live streams. Requires the free SSDownload app.",
     "description": "Store summary and the description on the extensions page (at most 132 characters)."
   }
 }

@@ -345,10 +345,7 @@ pub(super) fn reconcile_media_workspace(
             let current = read_media_source_state(workspace).map_err(|error| {
                 anyhow!(
                     "{}",
-                    crate::i18n::ui_owned!(
-                        format!("Mevcut HLS/DASH parçalarının uyumluluk kanıtı yok veya bozuk; eserler korundu. Açık yeniden başlatma gerekir: {error:#}"),
-                        format!("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}")
-                    )
+                    crate::i18n::ui_format!("Mevcut HLS/DASH parçalarının uyumluluk kanıtı yok veya bozuk; eserler korundu. Açık yeniden başlatma gerekir: {error:#}", "The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}", error = error)
                 )
             })?;
             if current.request == fingerprint && current.evidence == *evidence {
@@ -591,10 +588,7 @@ pub(crate) fn prepare_source_refresh(
     let current = read_media_source_state(&workspace).map_err(|error| {
         anyhow!(
             "{}",
-            crate::i18n::ui_owned!(
-                format!("Mevcut HLS/DASH parçalarının kalıcı kaynak/akış/parça kanıtı yok; eserler korundu. Açık yeniden başlatma gerekir: {error:#}"),
-                format!("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}")
-            )
+            crate::i18n::ui_format!("Mevcut HLS/DASH parçalarının kalıcı kaynak/akış/parça kanıtı yok; eserler korundu. Açık yeniden başlatma gerekir: {error:#}", "The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}", error = error)
         )
     })?;
     let previous_fingerprint = request_fingerprint(previous)?;

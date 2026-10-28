@@ -1,6 +1,10 @@
 {
+  "extName": {
+    "message": "SSDownload – Video İndirme Yöneticisi",
+    "description": "Store name and the name on the extensions page (at most 75 characters)."
+  },
   "extDescription": {
-    "message": "Videoları, sesleri ve dosyaları tarayıcıdan Windows için SSDownload indirme yöneticisine gönderir. Ücretsiz uygulama gerekir.",
+    "message": "Windows için video indirici ve indirme yöneticisi: kaliteyi seçin, kaldığı yerden sürdürün. Ücretsiz SSDownload uygulaması gerekir.",
     "description": "Store summary and the description on the extensions page (at most 132 characters)."
   }
 }

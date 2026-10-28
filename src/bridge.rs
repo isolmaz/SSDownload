@@ -1,6 +1,6 @@
 use crate::{
     app::App,
-    i18n::{ui, ui_owned},
+    i18n::ui,
     model::{Action, AppSnapshot, BridgeResponse, Settings},
     paths::AppPaths,
 };
@@ -78,12 +78,24 @@ const PIPE_NAME_RELEASE_WINDOW: Duration = Duration::from_secs(5);
 pub const MAIN_WINDOW_CLASS: &str = "SSDownload.MainWindow";
 pub const WM_RAISE_WINDOW: u32 = WM_APP + 36;
 
-/// The reply to a request that speaks another protocol version than this build.
+/// The reply to a request that speaks another protocol version than this build: it names the
+/// older side and how to update it.
 fn unsupported_version(version: u32) -> String {
-    ui_owned!(
-        format!("Desteklenmeyen iletişim sürümü: {version}"),
-        format!("Unsupported protocol version: {version}")
-    )
+    if version > PROTOCOL_VERSION {
+        crate::i18n::ui_format!(
+            "Bu SSDownload uygulaması tarayıcı eklentisinden eski (eklenti {version}. iletişim sürümünü, uygulama {supported}. sürümü kullanıyor). Uygulamayı güncelleyin: Yardım → Güncellemeleri denetle.",
+            "This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.",
+            version = version,
+            supported = PROTOCOL_VERSION
+        )
+    } else {
+        crate::i18n::ui_format!(
+            "SSDownload tarayıcı eklentisi bu uygulamadan eski (eklenti {version}. iletişim sürümünü, uygulama {supported}. sürümü kullanıyor). Tarayıcı eklentiyi kendisi günceller; hemen güncellemek için tarayıcının uzantılar sayfasında Geliştirici modunu açıp Güncelle'ye tıklayın.",
+            "The SSDownload browser extension is older than this app (the extension speaks protocol {version}, the app {supported}). The browser updates it on its own; to update it now, turn on Developer mode on the browser's extensions page and click Update.",
+            version = version,
+            supported = PROTOCOL_VERSION
+        )
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -123,9 +135,11 @@ fn win32_error(tr: &'static str, en: &'static str) -> anyhow::Error {
     let context = ui(tr, en);
     anyhow!(
         "{}",
-        ui_owned!(
-            format!("{context} (Windows hata kodu {code})"),
-            format!("{context} (Windows error code {code})")
+        crate::i18n::ui_format!(
+            "{context} (Windows hata kodu {code})",
+            "{context} (Windows error code {code})",
+            code = code,
+            context = context
         )
     )
 }
@@ -377,15 +391,10 @@ fn wait_for_message(
         if size > MAX_PIPE_MESSAGE {
             bail!(
                 "{}",
-                ui_owned!(
-                    format!(
-                        "Yerel iletişim iletisi {} bayt sınırını aşıyor",
-                        MAX_PIPE_MESSAGE
-                    ),
-                    format!(
-                        "The local message exceeds the {} byte limit",
-                        MAX_PIPE_MESSAGE
-                    )
+                crate::i18n::ui_format!(
+                    "Yerel iletişim iletisi {0} bayt sınırını aşıyor",
+                    "The local message exceeds the {0} byte limit",
+                    MAX_PIPE_MESSAGE
                 )
             );
         }
@@ -421,15 +430,10 @@ fn write_message(handle: windows_sys::Win32::Foundation::HANDLE, data: &[u8]) ->
     if data.len() > MAX_PIPE_MESSAGE {
         bail!(
             "{}",
-            ui_owned!(
-                format!(
-                    "Yerel iletişim yanıtı {} bayt sınırını aşıyor",
-                    MAX_PIPE_MESSAGE
-                ),
-                format!(
-                    "The local reply exceeds the {} byte limit",
-                    MAX_PIPE_MESSAGE
-                )
+            crate::i18n::ui_format!(
+                "Yerel iletişim yanıtı {0} bayt sınırını aşıyor",
+                "The local reply exceeds the {0} byte limit",
+                MAX_PIPE_MESSAGE
             )
         );
     }
@@ -520,9 +524,10 @@ fn connect_pipe_checked(paths: &AppPaths, owner_is_ours: OwnerCheck) -> Result<O
         crate::bail_code!(
             crate::error_codes::BRG_005,
             "{}",
-            crate::i18n::ui_owned!(
-                format!("SSDownload çalışan örneğine bağlanılamadı (Windows hata kodu {code})"),
-                format!("Could not connect to the running SSDownload instance (Windows error code {code})")
+            crate::i18n::ui_format!(
+                "SSDownload çalışan örneğine bağlanılamadı (Windows hata kodu {code})",
+                "Could not connect to the running SSDownload instance (Windows error code {code})",
+                code = code
             )
         );
     }
@@ -559,10 +564,7 @@ fn verify_pipe_server(pipe: HANDLE, owner_is_ours: OwnerCheck) -> Result<()> {
         Err(error) => crate::bail_code!(
             crate::error_codes::BRG_005,
             "{}",
-            ui_owned!(
-                format!("SSDownload yerel iletişim kanalını sunan sürecin sahibi doğrulanamadı; hiçbir şey gönderilmedi ({error:#})"),
-                format!("The owner of the process serving the SSDownload local pipe could not be verified; nothing was sent ({error:#})")
-            )
+            crate::i18n::ui_format!("SSDownload yerel iletişim kanalını sunan sürecin sahibi doğrulanamadı; hiçbir şey gönderilmedi ({error:#})", "The owner of the process serving the SSDownload local pipe could not be verified; nothing was sent ({error:#})", error = error)
         ),
     }
 }
@@ -681,9 +683,10 @@ fn process_pipe_client(app: &App, pipe: windows_sys::Win32::Foundation::HANDLE) 
         Err(error) => BridgeResponse {
             result: None,
             ok: false,
-            message: ui_owned!(
-                format!("Geçersiz yerel iletişim iletisi: {error}"),
-                format!("Invalid local message: {error}")
+            message: crate::i18n::ui_format!(
+                "Geçersiz yerel iletişim iletisi: {error}",
+                "Invalid local message: {error}",
+                error = error
             ),
             snapshot: None,
         },
@@ -851,9 +854,10 @@ fn transact_checked(
         crate::bail_code!(
             crate::error_codes::BRG_005,
             "{}",
-            crate::i18n::ui_owned!(
-                format!("SSDownload çalışan örneğine bağlanılamadı (Windows hata kodu {code})"),
-                format!("Could not connect to the running SSDownload instance (Windows error code {code})")
+            crate::i18n::ui_format!(
+                "SSDownload çalışan örneğine bağlanılamadı (Windows hata kodu {code})",
+                "Could not connect to the running SSDownload instance (Windows error code {code})",
+                code = code
             )
         );
     }
@@ -1247,14 +1251,7 @@ fn ensure_desktop_ready(paths: &AppPaths) -> Result<BridgeResponse> {
                     Err(_) => {
                         return Err(anyhow!(
                             "{}",
-                            ui_owned!(
-                                format!(
-                                    "SSDownload başlatıldı ancak yerel iletişim hazır olmadı: {first_error}"
-                                ),
-                                format!(
-                                    "SSDownload started but local communication did not become ready: {first_error}"
-                                )
-                            )
+                            crate::i18n::ui_format!("SSDownload başlatıldı ancak yerel iletişim hazır olmadı: {first_error}", "SSDownload started but local communication did not become ready: {first_error}", first_error = first_error)
                         ))
                     }
                 }
@@ -1301,9 +1298,10 @@ fn read_native_message(input: &mut impl Read) -> Result<Option<Vec<u8>>> {
         crate::bail_code!(
             crate::error_codes::BRG_002,
             "{}",
-            ui_owned!(
-                format!("Native Messaging iletisi geçersiz boyutta: {length}"),
-                format!("The Native Messaging message has an invalid size: {length}")
+            crate::i18n::ui_format!(
+                "Native Messaging iletisi geçersiz boyutta: {length}",
+                "The Native Messaging message has an invalid size: {length}",
+                length = length
             )
         );
     }
@@ -1449,9 +1447,10 @@ fn serve_native_host(
             Err(error) => BridgeResponse {
                 result: None,
                 ok: false,
-                message: ui_owned!(
-                    format!("Geçersiz Native Messaging iletisi: {error}"),
-                    format!("Invalid Native Messaging message: {error}")
+                message: crate::i18n::ui_format!(
+                    "Geçersiz Native Messaging iletisi: {error}",
+                    "Invalid Native Messaging message: {error}",
+                    error = error
                 ),
                 snapshot: None,
             },
@@ -1459,9 +1458,10 @@ fn serve_native_host(
                 log.record(crate::logging::Event::failure(
                     "bridge.protocol_mismatch",
                     crate::error_codes::BRG_006,
-                    ui_owned!(
-                        format!("istemci sürümü {}", request.version),
-                        format!("client version {}", request.version)
+                    crate::i18n::ui_format!(
+                        "istemci sürümü {0}",
+                        "client version {0}",
+                        request.version
                     ),
                 ));
                 BridgeResponse {
@@ -1559,13 +1559,10 @@ fn registry_set_default(key_path: &str, value: &Path) -> Result<()> {
     if status != 0 {
         bail!(
             "{}",
-            ui_owned!(
-                format!(
-                    "Native host kayıt defteri anahtarı oluşturulamadı (Windows hata kodu {status})"
-                ),
-                format!(
-                    "The native host registry key could not be created (Windows error code {status})"
-                )
+            crate::i18n::ui_format!(
+                "Native host kayıt defteri anahtarı oluşturulamadı (Windows hata kodu {status})",
+                "The native host registry key could not be created (Windows error code {status})",
+                status = status
             )
         );
     }
@@ -1584,13 +1581,10 @@ fn registry_set_default(key_path: &str, value: &Path) -> Result<()> {
     if status != 0 {
         bail!(
             "{}",
-            ui_owned!(
-                format!(
-                    "Native host kayıt defteri değeri yazılamadı (Windows hata kodu {status})"
-                ),
-                format!(
-                    "The native host registry value could not be written (Windows error code {status})"
-                )
+            crate::i18n::ui_format!(
+                "Native host kayıt defteri değeri yazılamadı (Windows hata kodu {status})",
+                "The native host registry value could not be written (Windows error code {status})",
+                status = status
             )
         );
     }
@@ -1605,13 +1599,10 @@ fn registry_delete_tree(key_path: &str) -> Result<()> {
     } else {
         bail!(
             "{}",
-            ui_owned!(
-                format!(
-                    "Native host kayıt defteri anahtarı silinemedi (Windows hata kodu {status})"
-                ),
-                format!(
-                    "The native host registry key could not be deleted (Windows error code {status})"
-                )
+            crate::i18n::ui_format!(
+                "Native host kayıt defteri anahtarı silinemedi (Windows hata kodu {status})",
+                "The native host registry key could not be deleted (Windows error code {status})",
+                status = status
             )
         )
     }
@@ -1631,12 +1622,10 @@ pub fn register(executable: &Path, paths: &AppPaths) -> Result<()> {
     let _lock = crate::output::OutputLock::acquire(&manifest_root().join("registration"))?;
     let owned_root = installation_root(executable)?;
     let executable = executable.canonicalize().with_context(|| {
-        ui_owned!(
-            format!(
-                "Çalıştırılabilir dosya bulunamadı: {}",
-                executable.display()
-            ),
-            format!("The executable was not found: {}", executable.display())
+        crate::i18n::ui_format!(
+            "Çalıştırılabilir dosya bulunamadı: {0}",
+            "The executable was not found: {0}",
+            executable.display()
         )
     })?;
     // Browser launchers do not reliably accept Rust's extended-length Windows prefix.
@@ -2384,6 +2373,23 @@ mod tests {
             replies[0].message,
             unsupported_version(PROTOCOL_VERSION + 1)
         );
+        // A later client means this app is the older side, an earlier one the extension.
+        // Unit tests run in Turkish.
+        let update_app = "Yardım → Güncellemeleri denetle";
+        assert!(replies[0].message.contains(update_app), "{replies:?}");
+        let (result, older) = run_host(
+            &paths,
+            &[],
+            &[WireRequest {
+                version: PROTOCOL_VERSION - 1,
+                action: None,
+            }],
+        );
+        result.expect("the host keeps serving");
+        assert!(!older[0].ok);
+        assert_eq!(older[0].message, unsupported_version(PROTOCOL_VERSION - 1));
+        assert!(!older[0].message.contains(update_app), "{older:?}");
+        assert!(older[0].message.contains("Geliştirici modunu"), "{older:?}");
         let events = logged_events(&paths);
         let mismatch = events
             .iter()

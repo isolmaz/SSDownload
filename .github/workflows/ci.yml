@@ -36,6 +36,9 @@ jobs:
       - name: cargo test
         run: cargo test --locked
 
+      - name: Translation catalogs
+        run: python scripts/i18n.py check
+
       - name: Browser extension tests
         run: |
           $suites = Get-ChildItem browser/tests -Filter '*.test.js' | ForEach-Object { $_.FullName }

@@ -50,15 +50,6 @@ const INSTANCE_HANDOFF_MIN_SLEEP: Duration = Duration::from_millis(100);
 /// Backoff cap, so a busy instance is polled at a steady pace instead of spinning.
 const INSTANCE_HANDOFF_MAX_SLEEP: Duration = Duration::from_millis(500);
 
-/// The library keeps `i18n::ui_owned!` to itself, so the binary selects the same way: only the
-/// chosen branch is formatted.
-macro_rules! ui_owned {
-    ($tr:expr, $en:expr $(,)?) => {{
-        let text: String = if i18n::english() { $en } else { $tr };
-        text
-    }};
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The CLI and the native host never open the app, so they read the profile's language here,
@@ -95,9 +86,10 @@ fn main() {
                 }
             }
         } else {
-            let text = wide(&ui_owned!(
-                format!("SSDownload başlatılamadı:\n\n{error:#}"),
-                format!("SSDownload could not start:\n\n{error:#}")
+            let text = wide(&crate::i18n::ui_format!(
+                "SSDownload başlatılamadı:\n\n{error:#}",
+                "SSDownload could not start:\n\n{error:#}",
+                error = error
             ));
             unsafe {
                 MessageBoxW(
@@ -366,9 +358,11 @@ fn run(args: &[String]) -> Result<()> {
                 };
                 bail!(
                     "{}",
-                    ui_owned!(
-                        format!("SSDownload çalışıyor ancak yanıt vermiyor ({pipe}; {window})."),
-                        format!("SSDownload is running but not responding ({pipe}; {window}).")
+                    crate::i18n::ui_format!(
+                        "SSDownload çalışıyor ancak yanıt vermiyor ({pipe}; {window}).",
+                        "SSDownload is running but not responding ({pipe}; {window}).",
+                        pipe = pipe,
+                        window = window
                     )
                 );
             }
@@ -652,28 +646,28 @@ fn await_handover(
 ) -> Result<Waited> {
     let deadline = Instant::now() + budget;
     let silent = || {
-        ui_owned!(
-            format!(
-                "yerel iletişim kanalı {} saniye boyunca yanıtsız kaldı",
-                budget.as_secs()
-            ),
-            format!(
-                "the local channel did not answer for {} seconds",
-                budget.as_secs()
-            )
+        crate::i18n::ui_format!(
+            "yerel iletişim kanalı {0} saniye boyunca yanıtsız kaldı",
+            "the local channel did not answer for {0} seconds",
+            budget.as_secs()
         )
     };
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let verdict = match outcome.recv_timeout(remaining.min(INSTANCE_HANDOFF_MAX_SLEEP)) {
             Ok(Handover::Accepted) => return Ok(Waited::Accepted),
-            Ok(Handover::Unanswered { attempts, error }) if error.is_empty() => Some(ui_owned!(
-                format!("yerel iletişim kanalı {attempts} kez denendi"),
-                format!("the local channel was tried {attempts} times")
-            )),
-            Ok(Handover::Unanswered { attempts, error }) => Some(ui_owned!(
-                format!("yerel iletişim kanalı {attempts} kez denendi, son yanıt: {error}"),
-                format!("the local channel was tried {attempts} times, last reply: {error}")
+            Ok(Handover::Unanswered { attempts, error }) if error.is_empty() => {
+                Some(crate::i18n::ui_format!(
+                    "yerel iletişim kanalı {attempts} kez denendi",
+                    "the local channel was tried {attempts} times",
+                    attempts = attempts
+                ))
+            }
+            Ok(Handover::Unanswered { attempts, error }) => Some(crate::i18n::ui_format!(
+                "yerel iletişim kanalı {attempts} kez denendi, son yanıt: {error}",
+                "the local channel was tried {attempts} times, last reply: {error}",
+                attempts = attempts,
+                error = error
             )),
             Err(RecvTimeoutError::Disconnected) => Some(silent()),
             Err(RecvTimeoutError::Timeout) => (Instant::now() >= deadline).then(silent),
@@ -756,9 +750,10 @@ fn has(args: &[String], flag: &str) -> bool {
     args.iter().any(|arg| arg == flag)
 }
 fn missing_value(flag: &str) -> String {
-    ui_owned!(
-        format!("{flag} için değer eksik"),
-        format!("Missing value for {flag}")
+    crate::i18n::ui_format!(
+        "{flag} için değer eksik",
+        "Missing value for {flag}",
+        flag = flag
     )
 }
 fn value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>> {
@@ -873,9 +868,10 @@ fn validate_arguments(args: &[String]) -> Result<()> {
         } else {
             bail!(
                 "{}",
-                ui_owned!(
-                    format!("Bilinmeyen seçenek: {item}. --help kullanın."),
-                    format!("Unknown option: {item}. Use --help.")
+                crate::i18n::ui_format!(
+                    "Bilinmeyen seçenek: {item}. --help kullanın.",
+                    "Unknown option: {item}. Use --help.",
+                    item = item
                 )
             );
         }

@@ -54,6 +54,7 @@ const ERROR_CODES = {
   "SSD-TRF-011": { area: "transfer", stage: "fragment", severity: "error", action: "retry", retryable: true },
   "SSD-TRF-012": { area: "transfer", stage: "validation", severity: "error", action: "retry", retryable: true },
   "SSD-TRF-013": { area: "transfer", stage: "source", severity: "info", action: "retry", retryable: true },
+  "SSD-TRF-014": { area: "transfer", stage: "source", severity: "warn", action: "report", retryable: false },
   "SSD-STO-001": { area: "storage", stage: "bridge", severity: "error", action: "retry", retryable: true },
   "SSD-STO-002": { area: "storage", stage: "bridge", severity: "error", action: "report", retryable: false },
   "SSD-STO-003": { area: "storage", stage: "source", severity: "warn", action: "settings", retryable: false },

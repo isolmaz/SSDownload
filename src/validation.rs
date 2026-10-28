@@ -73,7 +73,7 @@ pub(crate) fn validate_new_job(settings: &Settings, request: &AddRequest) -> Res
             DownloadKind::Video => "video",
             DownloadKind::Audio => crate::i18n::ui("ses", "audio"),
         };
-        bail!("{}", crate::i18n::ui_owned!(format!("{kind} indirmeleri kullanım amacınızda kapalı. Ayarlar > Kullanım amacı bölümünden etkinleştirin."), format!("{kind} downloads are disabled for your usage purpose. Enable them in Settings > Usage purpose.")));
+        bail!("{}", crate::i18n::ui_format!("{kind} indirmeleri kullanım amacınızda kapalı. Ayarlar > Kullanım amacı bölümünden etkinleştirin.", "{kind} downloads are disabled for your usage purpose. Enable them in Settings > Usage purpose.", kind = kind));
     }
     if request.audio_format_id.is_some() && !request.audio_tracks.is_empty() {
         bail!(
@@ -637,9 +637,10 @@ fn validate_sync_policy(policy: &SyncPolicy) -> Result<()> {
         if value.is_some_and(|value| value.len() > 8192 || value.contains(['\r', '\n', '\0'])) {
             bail!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Senkronizasyon {label} doğrulayıcısı geçersiz."),
-                    format!("Invalid synchronization {label} validator.")
+                crate::i18n::ui_format!(
+                    "Senkronizasyon {label} doğrulayıcısı geçersiz.",
+                    "Invalid synchronization {label} validator.",
+                    label = label
                 )
             );
         }

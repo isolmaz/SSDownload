@@ -1,6 +1,6 @@
 # SSDownload guide
 
-Everything beyond the [README](../README.md): installation details, every menu, setting and shortcut, recovery and the command line. A new installation starts in the Windows display language (Turkish on a Turkish Windows, English otherwise) and can be switched in **Settings → General**; the command line and the browser extension follow it. Menu names below are given in English with the Turkish label in parentheses where it helps.
+Everything beyond the [README](../README.md): installation details, every menu, setting and shortcut, recovery and the command line. A new installation starts in the Windows display language when the app has it (Turkish, English, Arabic, Spanish, Portuguese, French or German; English otherwise) and can be switched in **Settings → General**; the command line and the browser extension follow it. Menu names below are given in English with the Turkish label in parentheses where it helps.
 
 - [Install](#install)
 - [Browser extension](#browser-extension)
@@ -22,14 +22,14 @@ Everything beyond the [README](../README.md): installation details, every menu, 
 
 ## Browser extension
 
-The Chrome/Edge extension adds the overlay button on videos, the right-click entries and optional download takeover. It talks only to the desktop app on the same computer. Its own text (button, popup, menus and messages) is English or Turkish and follows the app's interface language (**Settings → General**); until the app has reported it (not installed, not running, an older version), the browser's language decides: Turkish in a Turkish browser, English otherwise.
+The Chrome/Edge extension adds the overlay button on videos, the right-click entries and optional download takeover. It talks only to the desktop app on the same computer. Its own text (button, popup, menus and messages) is in the app's languages and follows the app's interface language (**Settings → General**); until the app has reported it (not installed, not running, an older version), the browser's language decides when the extension has it, English otherwise. In Arabic the popup, the welcome page and the button on the video are laid out right to left. The extension's name and summary in the store and on the browser's extensions page follow the browser's language.
 
 - **Automatic:** Setup (and `register-native-host.cmd` for the portable ZIP) registers the [Chrome Web Store extension](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham) with Chrome and Edge for your Windows user. The next time the browser starts it shows a "New extension added" notice: click **Enable extension**. Close every browser window first if the notice does not appear. If you remove the extension in the browser, it stays removed. Uninstalling SSDownload removes the registration, and the browser then removes the extension.
 - **Settings → General → Install the extension in browsers** repeats the registration and opens the Chrome Web Store page, where **Add to Chrome** installs it at once. It also removes the force-install policy entries that versions up to 1.6.1 wrote, because Chrome blocks the extension while one exists. If those entries need administrator rights, the app asks first (`ssdownload-cli --remove-extension-policies`).
 - **Without the store:** open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, choose **Load unpacked** and select the `browser\chromium` folder next to `ssdownload.exe` (installed copies: `%LOCALAPPDATA%\Programs\SSDownload\browser\chromium`). **Tools → Browser setup** opens that folder and the steps. The bundled copy has the same extension ID, so the browser connects it to the app the same way.
 - **Toolbar popup:** the discovery switch (`ON`/`OFF` in English, `AÇIK`/`KAPALI` in Turkish), **Hide the button on this site** (discovery and context entries stay), the page's media list (each entry opens the desktop picker) and **Open the app**. When the app cannot be reached, the popup says why. After a handover the icon badge counts completed downloads. Browsing alone never starts SSDownload: only an action you take (download, picker, Open the app) does.
 - **Video button menu:** the arrow at the right end of the button on a video opens **Hide on this video**, **Hide on this page** and **Hide on this site**. The first two last until the page is reloaded or left; the site choice is the popup's **Hide the button on this site**, where it is turned back on.
-- **Extension without the app** (installed from the store first, or on macOS/Linux): it adds no video button, no context entries and takes over no downloads; browser downloads continue as usual. The popup says the app was not found and its main button becomes **Download the app**, which opens the download page. SSDownload itself runs on Windows only.
+- **Extension without the app** (installed from the store first, or on macOS/Linux): it adds no video button, no context entries and takes over no downloads; browser downloads continue as usual. A fresh install that finds no app opens a welcome page once, saying the extension needs the free Windows app, with a button to its download page. The popup then shows only **The SSDownload app is required**, the two setup steps and **Download the app**; once the app answers, the normal popup is back. SSDownload itself runs on Windows only.
 - If the browser cannot connect, check that the app and extension versions match and register the copy you use (`register-native-host.cmd` or reinstall).
 
 ## Downloading
@@ -71,7 +71,7 @@ Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt
 
 | Tab | Controls |
 |---|---|
-| **General** | Interface level (Basic or Advanced) and interface language (Turkish or English; the browser extension follows it); download folder; usage profiles; clipboard detection; start with Windows; minimize to tray; completion notification; dark title bar and controls; site entries in the browser; daily working hours; update check; extension install. |
+| **General** | Interface level (Basic or Advanced) and interface language (Türkçe, English, العربية, Español, Português, Français or Deutsch; the browser extension follows it, and switching to or from Arabic mirrors the windows the next time the app starts); download folder; usage profiles; clipboard detection; start with Windows; minimize to tray; completion notification; dark title bar and controls; site entries in the browser; daily working hours; update check; extension install. |
 | **Advanced** | Concurrent jobs (1–16); connections per file (1–16); media fragment concurrency (1–16); per-host jobs and connections (1–16); global speed limit (KiB/s, 0 = unlimited); retry count (0–20); experimental browser transfer; event log level and host recording. |
 | **Network** | Proxy: the Windows setting, none, or manual `http://` / `socks5://` with an optional user name and password; a scheduled speed limit (daily window and KiB/s). |
 | **Behaviour** | Keep Windows awake while downloading; completion sound; completion card; browser download takeover; hold on a metered connection; the Ctrl+Shift+D hotkey; double-click action; history retention in days (0 keeps everything). |
@@ -91,7 +91,7 @@ The Basic level shows only **General**; the other tabs keep their saved values.
 
 | Symptom | What to do |
 |---|---|
-| The browser cannot connect | Make sure the app and extension versions match; register the copy you use. |
+| The browser cannot connect | When the app or the extension is older than the other, the message says which one to update: the app through **Help → Check for updates**, the extension by the browser's own update or at once on its extensions page (Developer mode, **Update**). Otherwise register the copy you use. |
 | A second launch while SSDownload runs | The running copy comes to the front; no second instance starts. If that copy is still closing, the new one starts as soon as it has exited. |
 | Download stays disabled after analysis | Read the error, fix the source or session, analyze again. |
 | A quality or track disappeared | Analyze again and choose an available option; nothing is substituted silently. |
@@ -104,7 +104,7 @@ The Basic level shows only **General**; the other tabs keep their saved values.
 
 ## Error codes and logs
 
-- Classified failures carry permanent `SSD-<area>-<number>` codes with Turkish and English messages. Areas: `BRG` browser bridge, `MED` media resolution, `NET` network, `TRF` transfer, `STO` storage, `RCV` recovery, `TOL` media tools, `UPD` updates, `EXT` extension. Codes are never renumbered or reused.
+- Classified failures carry permanent `SSD-<area>-<number>` codes with a message in every interface language. Areas: `BRG` browser bridge, `MED` media resolution, `NET` network, `TRF` transfer, `STO` storage, `RCV` recovery, `TOL` media tools, `UPD` updates, `EXT` extension. Codes are never renumbered or reused.
 - Logs live in `<profile>\logs\`: `events-YYYYMMDD.jsonl` and `ssdownload-YYYYMMDD.log`, rotating at 5 MB with five kept and removed after 30 days, plus per-job timelines in `logs\jobs\`. The browser connection appends its refusals to the same files (channel `native-host`) and leaves rotation to the app; it writes nothing when it cannot read the profile settings. URLs are logged without credentials, query or fragment; with **Log site names** off, site names are hidden as well, also in error messages that repeat the download's site or name a host after `host:`, `host=` or `connect to`.
 - **Report problem** (on a failed analysis or job) and **Tools → Diagnostics** write a local folder and ZIP. Nothing is uploaded; look through it before sharing it in an issue. A **Report problem** folder can include the failing page's markup as `sayfa.html`, unredacted: the copy the browser handed over or, without one, the page read once by the app (address without query or fragment, no cookies, credentials or referer).
 

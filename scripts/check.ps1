@@ -3,8 +3,8 @@
 # every release.
 #
 # Steps: cargo fmt --check, Clippy with warnings as errors, the Rust tests, the
-# browser-extension tests (Node.js) and, when installed, cargo audit. A step that
-# cannot run is reported as skipped, never as passed.
+# translation catalog check (Python), the browser-extension tests (Node.js) and, when
+# installed, cargo audit. A step that cannot run is reported as skipped, never as passed.
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1
@@ -44,6 +44,14 @@ try {
     Invoke-Step 'cargo fmt --check' { cargo fmt --check }
     Invoke-Step 'cargo clippy -D warnings' { cargo clippy --locked --all-targets -- -D warnings }
     Invoke-Step 'cargo test' { cargo test --locked }
+    # The Windows Store alias answers to `python` without being an interpreter.
+    $pythonVersion = $null
+    try { $pythonVersion = (& python --version 2>$null | Select-Object -First 1) } catch { $pythonVersion = $null }
+    if ($pythonVersion -match '^Python 3\.') {
+        Invoke-Step 'translation catalogs' { python scripts/i18n.py check }
+    } else {
+        $skipped += 'translation catalogs (Python 3 is not installed)'
+    }
     if (Test-Command 'node') {
         $suites = Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'browser\tests') -Filter '*.test.js' | ForEach-Object { $_.FullName }
         Invoke-Step 'browser extension tests' { node --test @suites }

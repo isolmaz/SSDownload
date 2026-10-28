@@ -64,32 +64,87 @@ VIAddVersionKey /LANG=1055 "LegalCopyright" "Copyright (c) 2026 SSDownload contr
 !insertmacro MUI_UNPAGE_FINISH
 
 ; The first language is the fallback for a Windows display language the installer does not
-; have, so English comes first and Turkish is chosen for a Turkish Windows.
+; have, so English comes first; a Windows in one of the other languages gets that language.
 !insertmacro MUI_LANGUAGE "English"
 !insertmacro MUI_LANGUAGE "Turkish"
+!insertmacro MUI_LANGUAGE "Arabic"
+!insertmacro MUI_LANGUAGE "Spanish"
+!insertmacro MUI_LANGUAGE "PortugueseBR"
+!insertmacro MUI_LANGUAGE "French"
+!insertmacro MUI_LANGUAGE "German"
 
 LangString BRANDING_TEXT ${LANG_ENGLISH} "SSDownload ${VERSION} — per-user installation"
 LangString BRANDING_TEXT ${LANG_TURKISH} "SSDownload ${VERSION} — kullanıcı başına kurulum"
+LangString BRANDING_TEXT ${LANG_ARABIC} "SSDownload ${VERSION} — تثبيت لكل مستخدم"
+LangString BRANDING_TEXT ${LANG_SPANISH} "SSDownload ${VERSION} — instalación por usuario"
+LangString BRANDING_TEXT ${LANG_PORTUGUESEBR} "SSDownload ${VERSION} — instalação por usuário"
+LangString BRANDING_TEXT ${LANG_FRENCH} "SSDownload ${VERSION} — installation pour l'utilisateur"
+LangString BRANDING_TEXT ${LANG_GERMAN} "SSDownload ${VERSION} — Installation für den aktuellen Benutzer"
 BrandingText "$(BRANDING_TEXT)"
 
 LangString FINISH_RUN_TEXT ${LANG_ENGLISH} "Start SSDownload"
 LangString FINISH_RUN_TEXT ${LANG_TURKISH} "SSDownload uygulamasını başlat"
+LangString FINISH_RUN_TEXT ${LANG_ARABIC} "بدء تشغيل SSDownload"
+LangString FINISH_RUN_TEXT ${LANG_SPANISH} "Iniciar SSDownload"
+LangString FINISH_RUN_TEXT ${LANG_PORTUGUESEBR} "Iniciar o SSDownload"
+LangString FINISH_RUN_TEXT ${LANG_FRENCH} "Démarrer SSDownload"
+LangString FINISH_RUN_TEXT ${LANG_GERMAN} "SSDownload starten"
 LangString SEC_CORE_NAME ${LANG_ENGLISH} "SSDownload (required)"
 LangString SEC_CORE_NAME ${LANG_TURKISH} "SSDownload (gerekli)"
+LangString SEC_CORE_NAME ${LANG_ARABIC} "SSDownload (مطلوب)"
+LangString SEC_CORE_NAME ${LANG_SPANISH} "SSDownload (obligatorio)"
+LangString SEC_CORE_NAME ${LANG_PORTUGUESEBR} "SSDownload (obrigatório)"
+LangString SEC_CORE_NAME ${LANG_FRENCH} "SSDownload (requis)"
+LangString SEC_CORE_NAME ${LANG_GERMAN} "SSDownload (erforderlich)"
 LangString SEC_AUTOSTART_NAME ${LANG_ENGLISH} "Start with Windows"
 LangString SEC_AUTOSTART_NAME ${LANG_TURKISH} "Windows ile başlat"
+LangString SEC_AUTOSTART_NAME ${LANG_ARABIC} "البدء مع Windows"
+LangString SEC_AUTOSTART_NAME ${LANG_SPANISH} "Iniciar con Windows"
+LangString SEC_AUTOSTART_NAME ${LANG_PORTUGUESEBR} "Iniciar com o Windows"
+LangString SEC_AUTOSTART_NAME ${LANG_FRENCH} "Démarrer avec Windows"
+LangString SEC_AUTOSTART_NAME ${LANG_GERMAN} "Mit Windows starten"
 LangString ERR_INSTALL_DIR ${LANG_ENGLISH} "Choose an empty folder or an existing SSDownload installation folder. Other files will not be overwritten."
 LangString ERR_INSTALL_DIR ${LANG_TURKISH} "Boş bir klasör veya mevcut SSDownload kurulum klasörünü seçin. Diğer dosyaların üzerine yazılmayacak."
+LangString ERR_INSTALL_DIR ${LANG_ARABIC} "اختر مجلدًا فارغًا أو مجلد تثبيت SSDownload موجودًا. لن يتم الكتابة فوق الملفات الأخرى."
+LangString ERR_INSTALL_DIR ${LANG_SPANISH} "Seleccione una carpeta vacía o una carpeta de instalación de SSDownload ya existente. No se sobrescribirán otros archivos."
+LangString ERR_INSTALL_DIR ${LANG_PORTUGUESEBR} "Escolha uma pasta vazia ou a pasta de instalação existente do SSDownload. Outros arquivos não serão substituídos."
+LangString ERR_INSTALL_DIR ${LANG_FRENCH} "Choisissez un dossier vide ou un dossier d'installation SSDownload existant. Les autres fichiers ne seront pas écrasés."
+LangString ERR_INSTALL_DIR ${LANG_GERMAN} "Wählen Sie einen leeren Ordner oder einen vorhandenen SSDownload-Installationsordner. Andere Dateien werden nicht überschrieben."
 LangString ERR_WINDOWS_64 ${LANG_ENGLISH} "SSDownload requires 64-bit Windows 10 or 11."
 LangString ERR_WINDOWS_64 ${LANG_TURKISH} "SSDownload, 64-bit Windows 10 veya 11 gerektirir."
+LangString ERR_WINDOWS_64 ${LANG_ARABIC} "يتطلب SSDownload نظام Windows 10 أو 11 بمعمارية 64 بت."
+LangString ERR_WINDOWS_64 ${LANG_SPANISH} "SSDownload requiere Windows 10 u 11 de 64 bits."
+LangString ERR_WINDOWS_64 ${LANG_PORTUGUESEBR} "O SSDownload requer Windows 10 ou 11 de 64 bits."
+LangString ERR_WINDOWS_64 ${LANG_FRENCH} "SSDownload nécessite Windows 10 ou 11 en 64 bits."
+LangString ERR_WINDOWS_64 ${LANG_GERMAN} "SSDownload benötigt 64-Bit-Windows 10 oder 11."
 LangString ERR_REGISTER_HOST ${LANG_ENGLISH} "The browser Native Messaging registration could not be created (exit code $0). Setup could not be completed."
 LangString ERR_REGISTER_HOST ${LANG_TURKISH} "Tarayıcı Native Messaging kaydı oluşturulamadı (çıkış kodu $0). Kurulum tamamlanamadı."
+LangString ERR_REGISTER_HOST ${LANG_ARABIC} "تعذّر إنشاء تسجيل Native Messaging الخاص بالمتصفح (رمز الخروج $0). تعذّر إكمال الإعداد."
+LangString ERR_REGISTER_HOST ${LANG_SPANISH} "No se ha podido crear el registro de mensajería nativa del navegador (código de salida $0). No se ha podido completar la instalación."
+LangString ERR_REGISTER_HOST ${LANG_PORTUGUESEBR} "Não foi possível criar o registro do Native Messaging no navegador (código de saída $0). A instalação não pôde ser concluída."
+LangString ERR_REGISTER_HOST ${LANG_FRENCH} "L'enregistrement Native Messaging du navigateur n'a pas pu être créé (code de sortie $0). L'installation n'a pas pu être terminée."
+LangString ERR_REGISTER_HOST ${LANG_GERMAN} "Die Native-Messaging-Registrierung für den Browser konnte nicht erstellt werden (Exitcode $0). Die Installation konnte nicht abgeschlossen werden."
 LangString DETAIL_COMPONENTS ${LANG_ENGLISH} "Downloading and installing missing components…"
 LangString DETAIL_COMPONENTS ${LANG_TURKISH} "Eksik bileşenler indiriliyor ve kuruluyor…"
+LangString DETAIL_COMPONENTS ${LANG_ARABIC} "جارٍ تنزيل المكونات المفقودة وتثبيتها…"
+LangString DETAIL_COMPONENTS ${LANG_SPANISH} "Descargando e instalando los componentes que faltan…"
+LangString DETAIL_COMPONENTS ${LANG_PORTUGUESEBR} "Baixando e instalando os componentes ausentes…"
+LangString DETAIL_COMPONENTS ${LANG_FRENCH} "Téléchargement et installation des composants manquants…"
+LangString DETAIL_COMPONENTS ${LANG_GERMAN} "Fehlende Komponenten werden heruntergeladen und installiert…"
 LangString WARN_COMPONENTS ${LANG_ENGLISH} "Missing components could not be downloaded. SSDownload will try again when it starts."
 LangString WARN_COMPONENTS ${LANG_TURKISH} "Eksik bileşenler indirilemedi. SSDownload açıldığında yeniden deneyecek."
+LangString WARN_COMPONENTS ${LANG_ARABIC} "تعذّر تنزيل المكونات المفقودة. سيحاول SSDownload مرة أخرى عند بدء التشغيل."
+LangString WARN_COMPONENTS ${LANG_SPANISH} "No se han podido descargar los componentes que faltan. SSDownload volverá a intentarlo al iniciarse."
+LangString WARN_COMPONENTS ${LANG_PORTUGUESEBR} "Não foi possível baixar os componentes ausentes. O SSDownload tentará novamente ao iniciar."
+LangString WARN_COMPONENTS ${LANG_FRENCH} "Les composants manquants n'ont pas pu être téléchargés. SSDownload réessaiera au démarrage."
+LangString WARN_COMPONENTS ${LANG_GERMAN} "Fehlende Komponenten konnten nicht heruntergeladen werden. SSDownload versucht es beim Start erneut."
 LangString SHORTCUT_UNINSTALL ${LANG_ENGLISH} "Uninstall SSDownload"
 LangString SHORTCUT_UNINSTALL ${LANG_TURKISH} "SSDownload kaldır"
+LangString SHORTCUT_UNINSTALL ${LANG_ARABIC} "إلغاء تثبيت SSDownload"
+LangString SHORTCUT_UNINSTALL ${LANG_SPANISH} "Desinstalar SSDownload"
+LangString SHORTCUT_UNINSTALL ${LANG_PORTUGUESEBR} "Desinstalar o SSDownload"
+LangString SHORTCUT_UNINSTALL ${LANG_FRENCH} "Désinstaller SSDownload"
+LangString SHORTCUT_UNINSTALL ${LANG_GERMAN} "SSDownload deinstallieren"
 
 Function ValidateInstallDirectory
   IfFileExists "$INSTDIR\ssdownload.install" valid_directory
@@ -163,11 +218,10 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\SSDownload"
+  ; The uninstall shortcut is named in the installer's language, so an earlier install may have
+  ; left it under another language's name. The folder holds only SSDownload's own shortcuts.
+  Delete "$SMPROGRAMS\SSDownload\*.lnk"
   CreateShortcut "$SMPROGRAMS\SSDownload\SSDownload.lnk" "$INSTDIR\ssdownload.exe" "" "$INSTDIR\app.ico" 0 SW_SHOWNORMAL
-  ; The uninstall shortcut is named in the installer's language; an earlier install may have
-  ; left it under the other language's name.
-  Delete "$SMPROGRAMS\SSDownload\SSDownload kaldır.lnk"
-  Delete "$SMPROGRAMS\SSDownload\Uninstall SSDownload.lnk"
   CreateShortcut "$SMPROGRAMS\SSDownload\$(SHORTCUT_UNINSTALL).lnk" "$INSTDIR\Uninstall.exe"
 
   WriteRegStr HKCU "${PRODUCT_KEY}" "DisplayName" "SSDownload"
@@ -211,8 +265,18 @@ SectionEnd
 
 LangString DESC_SEC_CORE ${LANG_TURKISH} "Uygulama, tarayıcı eklentileri, lisanslar, Başlat menüsü kısayolları, Native Messaging kaydı ve eksik bileşenlerin indirilmesi."
 LangString DESC_SEC_CORE ${LANG_ENGLISH} "Application, browser extensions, licenses, Start Menu shortcuts, Native Messaging registration, and downloading missing components."
+LangString DESC_SEC_CORE ${LANG_ARABIC} "التطبيق، وإضافات المتصفح، والتراخيص، واختصارات قائمة ابدأ، وتسجيل Native Messaging، وتنزيل المكونات المفقودة."
+LangString DESC_SEC_CORE ${LANG_SPANISH} "Aplicación, extensiones del navegador, licencias, accesos directos del menú Inicio, registro de mensajería nativa y descarga de los componentes que faltan."
+LangString DESC_SEC_CORE ${LANG_PORTUGUESEBR} "Aplicativo, extensões do navegador, licenças, atalhos do Menu Iniciar, registro do Native Messaging e download dos componentes ausentes."
+LangString DESC_SEC_CORE ${LANG_FRENCH} "Application, extensions de navigateur, licences, raccourcis du menu Démarrer, enregistrement Native Messaging et téléchargement des composants manquants."
+LangString DESC_SEC_CORE ${LANG_GERMAN} "Anwendung, Browsererweiterungen, Lizenzen, Startmenü-Verknüpfungen, Native-Messaging-Registrierung und Download fehlender Komponenten."
 LangString DESC_SEC_AUTOSTART ${LANG_TURKISH} "SSDownload uygulamasını oturum açıldığında arka planda başlatır."
 LangString DESC_SEC_AUTOSTART ${LANG_ENGLISH} "Starts SSDownload in the background when you sign in."
+LangString DESC_SEC_AUTOSTART ${LANG_ARABIC} "يبدأ SSDownload في الخلفية عند تسجيل الدخول."
+LangString DESC_SEC_AUTOSTART ${LANG_SPANISH} "Inicia SSDownload en segundo plano al iniciar sesión."
+LangString DESC_SEC_AUTOSTART ${LANG_PORTUGUESEBR} "Inicia o SSDownload em segundo plano quando você fizer login."
+LangString DESC_SEC_AUTOSTART ${LANG_FRENCH} "Lance SSDownload en arrière-plan à l'ouverture de session."
+LangString DESC_SEC_AUTOSTART ${LANG_GERMAN} "Startet SSDownload bei der Anmeldung im Hintergrund."
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_CORE} $(DESC_SEC_CORE)
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_AUTOSTART} $(DESC_SEC_AUTOSTART)
@@ -232,10 +296,9 @@ Section "Uninstall"
   ExecWait '$\"$INSTDIR\ssdownload.exe$\" --disable-autostart' $0
   DeleteRegKey HKCU "${PRODUCT_KEY}"
 
-  Delete "$SMPROGRAMS\SSDownload\SSDownload.lnk"
-  ; The uninstaller may run in another language than the installer did: remove both names.
-  Delete "$SMPROGRAMS\SSDownload\SSDownload kaldır.lnk"
-  Delete "$SMPROGRAMS\SSDownload\Uninstall SSDownload.lnk"
+  ; The uninstall shortcut carries the installer's language in its name, which need not be the
+  ; uninstaller's. The folder holds only SSDownload's own shortcuts.
+  Delete "$SMPROGRAMS\SSDownload\*.lnk"
   RMDir "$SMPROGRAMS\SSDownload"
 
   Delete /REBOOTOK "$INSTDIR\ssdownload.exe"

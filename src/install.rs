@@ -1,8 +1,4 @@
-use crate::{
-    bridge,
-    i18n::{ui, ui_owned},
-    paths::AppPaths,
-};
+use crate::{bridge, i18n::ui, paths::AppPaths};
 use anyhow::{bail, Context, Result};
 use std::{
     ffi::{OsStr, OsString},
@@ -26,12 +22,10 @@ pub fn register_current(paths: &AppPaths) -> Result<()> {
     if !executable.is_file() {
         bail!(
             "{}",
-            ui_owned!(
-                format!(
-                    "Çalıştırılabilir dosya bulunamadı: {}",
-                    executable.display()
-                ),
-                format!("The executable was not found: {}", executable.display())
+            crate::i18n::ui_format!(
+                "Çalıştırılabilir dosya bulunamadı: {0}",
+                "The executable was not found: {0}",
+                executable.display()
             )
         );
     }
@@ -202,23 +196,19 @@ pub fn mark_download(path: &Path, source: &str) -> Result<()> {
 
 fn mark_download_path(path: &Path, body: &[u8]) -> Result<()> {
     let metadata = fs::symlink_metadata(path).with_context(|| {
-        ui_owned!(
-            format!("İşaretlenecek indirme bulunamadı: {}", path.display()),
-            format!("The download to mark was not found: {}", path.display())
+        crate::i18n::ui_format!(
+            "İşaretlenecek indirme bulunamadı: {0}",
+            "The download to mark was not found: {0}",
+            path.display()
         )
     })?;
     if metadata.file_type().is_symlink() {
         bail!(
             "{}",
-            ui_owned!(
-                format!(
-                    "İndirme işareti sembolik bağlantıya uygulanamaz: {}",
-                    path.display()
-                ),
-                format!(
-                    "The download mark cannot be applied to a symbolic link: {}",
-                    path.display()
-                )
+            crate::i18n::ui_format!(
+                "İndirme işareti sembolik bağlantıya uygulanamaz: {0}",
+                "The download mark cannot be applied to a symbolic link: {0}",
+                path.display()
             )
         );
     }
@@ -234,9 +224,10 @@ fn mark_download_path(path: &Path, body: &[u8]) -> Result<()> {
     if !metadata.is_file() {
         bail!(
             "{}",
-            ui_owned!(
-                format!("İndirme normal bir dosya değil: {}", path.display()),
-                format!("The download is not a regular file: {}", path.display())
+            crate::i18n::ui_format!(
+                "İndirme normal bir dosya değil: {0}",
+                "The download is not a regular file: {0}",
+                path.display()
             )
         );
     }
@@ -279,15 +270,10 @@ fn mark_download_path(path: &Path, body: &[u8]) -> Result<()> {
         .truncate(true)
         .open(&stream_path)
         .with_context(|| {
-            ui_owned!(
-                format!(
-                    "Windows indirme kaynağı işareti yazılamadı: {}",
-                    path.display()
-                ),
-                format!(
-                    "The Windows download source mark could not be written: {}",
-                    path.display()
-                )
+            crate::i18n::ui_format!(
+                "Windows indirme kaynağı işareti yazılamadı: {0}",
+                "The Windows download source mark could not be written: {0}",
+                path.display()
             )
         })?;
     stream.write_all(body).context(ui(
@@ -331,46 +317,49 @@ fn write_browser_setup(browser_root: &Path, paths: &AppPaths) -> Result<PathBuf>
     let chromium_path = html_escape(&chromium.display().to_string());
     let chromium_url = html_escape(chromium_url.as_str());
 
-    let english = crate::i18n::english();
-    let text = |tr: &'static str, en: &'static str| if english { en } else { tr };
     let store_url = html_escape(crate::extension::WEB_STORE_LISTING_URL);
     let extension_id = crate::extension::CHROME_EXTENSION_ID;
-    let lang = text("tr", "en");
-    let title = text(
+    let lang = crate::i18n::code();
+    let dir = if crate::i18n::right_to_left() {
+        "rtl"
+    } else {
+        "ltr"
+    };
+    let title = ui(
         "SSDownload tarayıcı eklentisi",
         "SSDownload browser extension",
     );
-    let intro = text(
+    let intro = ui(
         "SSDownload, eklentiyi Chrome ve Edge'e kendisi ekler. Tarayıcıyı bir sonraki açışınızda çıkan <b>Yeni eklenti eklendi</b> uyarısında <b>Eklentiyi etkinleştir</b>'e tıklayın.",
         "SSDownload adds the extension to Chrome and Edge itself. The next time you open the browser, click <b>Enable extension</b> on the <b>New extension added</b> notice.",
     );
-    let store_heading = text("Uyarıyı görmediyseniz", "Didn't see the notice?");
-    let store_body = text(
+    let store_heading = ui("Uyarıyı görmediyseniz", "Didn't see the notice?");
+    let store_body = ui(
         "Tarayıcıyı tamamen kapatıp yeniden açın veya eklentiyi Chrome Web Mağazası'ndan ekleyin. Edge, Chrome Web Mağazası eklentilerini de kurar.",
         "Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.",
     );
-    let store_button = text("Chrome Web Mağazası'nda aç", "Open in the Chrome Web Store");
-    let manual_heading = text("Mağaza olmadan yükleme", "Loading without the store");
-    let manual_steps = text(
+    let store_button = ui("Chrome Web Mağazası'nda aç", "Open in the Chrome Web Store");
+    let manual_heading = ui("Mağaza olmadan yükleme", "Loading without the store");
+    let manual_steps = ui(
         "<li>Adres çubuğunda <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) açın.</li><li><b>Geliştirici modu</b>nu açın.</li><li><b>Paketlenmemiş öğe yükle</b>'yi seçip aşağıdaki klasörü gösterin.</li>",
         "<li>Open <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) in the address bar.</li><li>Turn on <b>Developer mode</b>.</li><li>Choose <b>Load unpacked</b> and select the folder below.</li>",
     );
-    let folder_button = text("Eklenti klasörünü aç", "Open the extension folder");
-    let id_label = text("Eklenti kimliği", "Extension ID");
-    let host_heading = text("Uygulama bağlantısı", "Connection to the app");
-    let host_body = text(
+    let folder_button = ui("Eklenti klasörünü aç", "Open the extension folder");
+    let id_label = ui("Eklenti kimliği", "Extension ID");
+    let host_heading = ui("Uygulama bağlantısı", "Connection to the app");
+    let host_body = ui(
         "Eklenti yalnızca bu bilgisayardaki SSDownload ile konuşur. Bağlantı kurulamazsa SSDownload'u açıp <b>Araçlar → Tarayıcı kurulumu</b>'nu yeniden çalıştırın veya <code>ssdownload.exe --register-host</code> komutunu kullanın. Eklenti indirilen dosyaları hiçbir zaman çalıştırmaz.",
         "The extension talks only to SSDownload on this computer. If it cannot connect, open SSDownload and run <b>Tools → Browser setup</b> again, or use <code>ssdownload.exe --register-host</code>. The extension never runs downloaded files.",
     );
 
     let html = format!(
         r#"<!doctype html>
-<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="{lang}" dir="{dir}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <style>
 :root{{color-scheme:light dark;font-family:"Segoe UI",system-ui,sans-serif;background:#eef4fb;color:#15243b}}
 body{{margin:0}}main{{max-width:880px;margin:40px auto;padding:0 22px}}header{{background:linear-gradient(135deg,#1458c4,#17a3a3);color:white;border-radius:18px;padding:30px;box-shadow:0 12px 34px #1234}}
-h1{{margin:0 0 8px;font-size:30px}}header p{{margin:0;line-height:1.55}}section{{background:#fff;color:#15243b;margin:20px 0;padding:24px;border-radius:14px;box-shadow:0 5px 18px #17304c18}}h2{{margin-top:0}}ol{{padding-left:24px;line-height:1.65}}pre{{overflow-wrap:anywhere;white-space:pre-wrap;background:#e9f0f8;border:1px solid #ccdaea;padding:12px;border-radius:8px;user-select:all}}a.button{{display:inline-block;background:#1458c4;color:#fff;text-decoration:none;padding:10px 15px;border-radius:8px;font-weight:600}}small{{color:#52657a}}@media(prefers-color-scheme:dark){{:root{{background:#0d1725;color:#e9f1fc}}section{{background:#17263a;color:#e9f1fc}}pre{{background:#0f1d2e;border-color:#334b67}}small{{color:#aec0d5}}}}
+h1{{margin:0 0 8px;font-size:30px}}header p{{margin:0;line-height:1.55}}section{{background:#fff;color:#15243b;margin:20px 0;padding:24px;border-radius:14px;box-shadow:0 5px 18px #17304c18}}h2{{margin-top:0}}ol{{padding-inline-start:24px;line-height:1.65}}pre{{overflow-wrap:anywhere;white-space:pre-wrap;background:#e9f0f8;border:1px solid #ccdaea;padding:12px;border-radius:8px;user-select:all}}a.button{{display:inline-block;background:#1458c4;color:#fff;text-decoration:none;padding:10px 15px;border-radius:8px;font-weight:600}}small{{color:#52657a}}@media(prefers-color-scheme:dark){{:root{{background:#0d1725;color:#e9f1fc}}section{{background:#17263a;color:#e9f1fc}}pre{{background:#0f1d2e;border-color:#334b67}}small{{color:#aec0d5}}}}
 </style></head><body><main>
 <header><h1>{title}</h1><p>{intro}</p></header>
 <section><h2>{store_heading}</h2><p>{store_body}</p><p><a class="button" href="{store_url}">{store_button}</a></p></section>
@@ -418,9 +407,10 @@ pub fn open_web_store() -> Result<()> {
     if result as isize <= 32 {
         bail!(
             "{}",
-            ui_owned!(
-                format!("ShellExecuteW başarısız oldu (kod {})", result as isize),
-                format!("ShellExecuteW failed (code {})", result as isize)
+            crate::i18n::ui_format!(
+                "ShellExecuteW başarısız oldu (kod {0})",
+                "ShellExecuteW failed (code {0})",
+                result as isize
             )
         );
     }
@@ -447,9 +437,10 @@ fn shell_open(path: &Path) -> Result<()> {
     if result as isize <= 32 {
         bail!(
             "{}",
-            ui_owned!(
-                format!("ShellExecuteW başarısız oldu (kod {})", result as isize),
-                format!("ShellExecuteW failed (code {})", result as isize)
+            crate::i18n::ui_format!(
+                "ShellExecuteW başarısız oldu (kod {0})",
+                "ShellExecuteW failed (code {0})",
+                result as isize
             )
         );
     }

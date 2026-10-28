@@ -381,18 +381,20 @@ impl Engine {
             store.save_settings(&settings)?;
         }
         if let Err(error) = validate_settings(&settings) {
-            store.warnings.push(crate::i18n::ui_owned!(
-                format!("Ayar sınırları düzeltildi: {error}"),
-                format!("Settings limits were corrected: {error}")
+            store.warnings.push(crate::i18n::ui_format!(
+                "Ayar sınırları düzeltildi: {error}",
+                "Settings limits were corrected: {error}",
+                error = error
             ));
             repair_settings(&mut settings, &paths);
             store.save_settings(&settings)?;
         }
         crate::proxy::configure_site_logins(&settings.site_logins);
         if let Err(error) = crate::proxy::configure(&settings.proxy) {
-            store.warnings.push(crate::i18n::ui_owned!(
-                format!("Proxy ayarı uygulanamadı, doğrudan bağlanılıyor: {error:#}"),
-                format!("The proxy setting could not be applied; connecting directly: {error:#}")
+            store.warnings.push(crate::i18n::ui_format!(
+                "Proxy ayarı uygulanamadı, doğrudan bağlanılıyor: {error:#}",
+                "The proxy setting could not be applied; connecting directly: {error:#}",
+                error = error
             ));
         }
         let network = NetworkGovernor::new(settings.per_host_limit);
@@ -465,9 +467,10 @@ impl Engine {
                                 )),
                         );
                         if let Err(error) = crate::recovery::acknowledge(&paths, job) {
-                            store.warnings.push(crate::i18n::ui_owned!(
-                                format!("Geçici dosyalar temizlenemedi: {error}"),
-                                format!("Temporary files could not be cleaned up: {error}")
+                            store.warnings.push(crate::i18n::ui_format!(
+                                "Geçici dosyalar temizlenemedi: {error}",
+                                "Temporary files could not be cleaned up: {error}",
+                                error = error
                             ));
                         }
                     }
@@ -1035,12 +1038,10 @@ impl Actor {
             .or_else(|| matching_folder(&self.settings.folder_rules, &url, request.kind))
             .unwrap_or_else(|| self.settings.download_dir.clone());
         std::fs::create_dir_all(&directory).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("İndirme klasörü oluşturulamadı: {}", directory.display()),
-                format!(
-                    "The download folder could not be created: {}",
-                    directory.display()
-                )
+            crate::i18n::ui_format!(
+                "İndirme klasörü oluşturulamadı: {0}",
+                "The download folder could not be created: {0}",
+                directory.display()
             )
         })?;
         let suggested = request
@@ -1626,9 +1627,10 @@ impl Actor {
         self.store.delete_job(id)?;
         self.jobs.remove(id);
         if let Err(error) = crate::recovery::forget(&self.paths, id) {
-            self.warning = Some(crate::i18n::ui_owned!(
-                format!("Eski tamamlama kaydı silinemedi: {error}"),
-                format!("The old completion record could not be deleted: {error}")
+            self.warning = Some(crate::i18n::ui_format!(
+                "Eski tamamlama kaydı silinemedi: {error}",
+                "The old completion record could not be deleted: {error}",
+                error = error
             ));
         }
         self.maybe_begin_completions();
@@ -1661,9 +1663,10 @@ impl Actor {
         for (id, _) in completed {
             self.jobs.remove(&id);
             if let Err(error) = crate::recovery::forget(&self.paths, &id) {
-                self.warning = Some(crate::i18n::ui_owned!(
-                    format!("Eski tamamlama kaydı silinemedi: {error}"),
-                    format!("The old completion record could not be deleted: {error}")
+                self.warning = Some(crate::i18n::ui_format!(
+                    "Eski tamamlama kaydı silinemedi: {error}",
+                    "The old completion record could not be deleted: {error}",
+                    error = error
                 ));
             }
         }
@@ -1729,15 +1732,10 @@ impl Actor {
             );
         }
         std::fs::create_dir_all(&settings.download_dir).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!(
-                    "İndirme klasörü oluşturulamadı: {}",
-                    settings.download_dir.display()
-                ),
-                format!(
-                    "The download folder could not be created: {}",
-                    settings.download_dir.display()
-                )
+            crate::i18n::ui_format!(
+                "İndirme klasörü oluşturulamadı: {0}",
+                "The download folder could not be created: {0}",
+                settings.download_dir.display()
             )
         })?;
         let local = Local::now();
@@ -2139,14 +2137,7 @@ impl Actor {
                 }
             }
             if let Some(error) = rollback_error {
-                return Err(save_error).context(crate::i18n::ui_owned!(
-                    format!(
-                        "Kaynak yenileme kaydedilemedi ve çalışma durumu geri alınamadı: {error:#}"
-                    ),
-                    format!(
-                        "The source refresh could not be saved and the work state could not be restored: {error:#}"
-                    )
-                ));
+                return Err(save_error).context(crate::i18n::ui_format!("Kaynak yenileme kaydedilemedi ve çalışma durumu geri alınamadı: {error:#}", "The source refresh could not be saved and the work state could not be restored: {error:#}", error = error));
             }
             return Err(save_error).context(crate::i18n::ui(
                 "Kaynak yenileme atomik olarak kaydedilemedi",
@@ -2156,14 +2147,7 @@ impl Actor {
 
         let finalization_error = if media_staged {
             media::finish_source_refresh(&output).err().map(|error| {
-                crate::i18n::ui_owned!(
-                    format!(
-                        "Kaynak yenileme kaydedildi ancak medya çalışma kaydı henüz tamamlanamadı: {error:#}"
-                    ),
-                    format!(
-                        "The source refresh was saved but the media work record is not finished yet: {error:#}"
-                    )
-                )
+                crate::i18n::ui_format!("Kaynak yenileme kaydedildi ancak medya çalışma kaydı henüz tamamlanamadı: {error:#}", "The source refresh was saved but the media work record is not finished yet: {error:#}", error = error)
             })
         } else {
             None
@@ -2178,9 +2162,11 @@ impl Actor {
             .into();
             updated.updated_at = Utc::now().timestamp();
             if let Err(error) = self.store.save_job(&updated) {
-                self.warning = Some(crate::i18n::ui_owned!(
-                    format!("{message} Ayrıca güvenli duraklatma kaydedilemedi: {error:#}"),
-                    format!("{message} The safe pause could not be saved either: {error:#}")
+                self.warning = Some(crate::i18n::ui_format!(
+                    "{message} Ayrıca güvenli duraklatma kaydedilemedi: {error:#}",
+                    "{message} The safe pause could not be saved either: {error:#}",
+                    error = error,
+                    message = message
                 ));
             }
         }
@@ -2479,8 +2465,11 @@ impl Actor {
         sender_pid: u32,
         sender_started_at: u64,
     ) -> Result<(Job, u64)> {
+        // These refusals carry SSD-TRF-014, which tells the extension in any interface
+        // language to stop resuming the job.
         if !self.settings.experimental_browser_transfer {
-            bail!(
+            crate::bail_code!(
+                crate::error_codes::TRF_014,
                 "{}",
                 crate::i18n::ui(
                     "Deneysel tarayıcı aktarımı bu profilde açık değil.",
@@ -2488,17 +2477,20 @@ impl Actor {
                 )
             );
         }
-        let mut job = self
-            .jobs
-            .get(id)
-            .cloned()
-            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
+        let Some(mut job) = self.jobs.get(id).cloned() else {
+            crate::bail_code!(
+                crate::error_codes::TRF_014,
+                "{}",
+                crate::i18n::ui("İş bulunamadı", "Job not found")
+            );
+        };
         if job.state == JobState::Completed
             || job.remove_requested.is_some()
             || self.active.contains_key(id)
             || self.browser_transfers.contains_key(id)
         {
-            bail!(
+            crate::bail_code!(
+                crate::error_codes::TRF_014,
                 "{}",
                 crate::i18n::ui(
                     "Bu iş tarayıcı aktarımı için ayrılamaz.",
@@ -2512,7 +2504,8 @@ impl Actor {
                 .get(id)
                 .is_some_and(|grant| grant.expires_at > Utc::now().timestamp())
         {
-            bail!(
+            crate::bail_code!(
+                crate::error_codes::TRF_014,
                 "{}",
                 crate::i18n::ui(
                     "Tarayıcı aktarımı önce masaüstünde bu iş için yetkilendirilmeli.",
@@ -3127,9 +3120,10 @@ impl Actor {
                 self.completion_events.push(CompletionEvent {
                     queue_id: queue_id.into(),
                     occurred_at: Utc::now().timestamp(),
-                    message: crate::i18n::ui_owned!(
-                        format!("{} kuyruğu tamamlandı.", queue.display_name()),
-                        format!("The {} queue has finished.", queue.display_name())
+                    message: crate::i18n::ui_format!(
+                        "{0} kuyruğu tamamlandı.",
+                        "The {0} queue has finished.",
+                        queue.display_name()
                     ),
                 });
                 self.completion_armed.remove(queue_id);
@@ -3216,9 +3210,10 @@ impl Actor {
             queue_id: countdown.queue_id,
             occurred_at: Utc::now().timestamp(),
             message: outcome.unwrap_or_else(|error| {
-                crate::i18n::ui_owned!(
-                    format!("Bitiş eylemi başlatılamadı: {error}"),
-                    format!("The completion action could not be started: {error}")
+                crate::i18n::ui_format!(
+                    "Bitiş eylemi başlatılamadı: {error}",
+                    "The completion action could not be started: {error}",
+                    error = error
                 )
             }),
         });
@@ -3265,7 +3260,7 @@ impl Actor {
                 job.eta = value.eta;
                 job.phase = stage.clone();
                 job.live = active.control.is_live();
-                job.state = if processing_phase(&job.phase) {
+                job.state = if value.processing {
                     JobState::Processing
                 } else {
                     JobState::Downloading
@@ -3491,9 +3486,10 @@ impl Actor {
                 job.error = install::mark_download(&job.path, &job.request.url)
                     .err()
                     .map(|error| {
-                        crate::i18n::ui_owned!(
-                            format!("Windows indirme işareti uygulanamadı: {error:#}"),
-                            format!("Could not apply the Windows download mark: {error:#}")
+                        crate::i18n::ui_format!(
+                            "Windows indirme işareti uygulanamadı: {error:#}",
+                            "Could not apply the Windows download mark: {error:#}",
+                            error = error
                         )
                     });
                 self.retry_at.remove(id);
@@ -3553,9 +3549,10 @@ impl Actor {
                     if let Some(retry_at) = Instant::now().checked_add(delay) {
                         self.retry_at.insert(id.into(), retry_at);
                         job.state = JobState::Queued;
-                        job.phase = crate::i18n::ui_owned!(
-                            format!("{} saniye sonra yeniden denenecek", delay.as_secs()),
-                            format!("Retrying in {} seconds", delay.as_secs())
+                        job.phase = crate::i18n::ui_format!(
+                            "{0} saniye sonra yeniden denenecek",
+                            "Retrying in {0} seconds",
+                            delay.as_secs()
                         );
                         crate::logging::record_job(
                             id,
@@ -3601,9 +3598,10 @@ impl Actor {
                 self.jobs.insert(id.into(), job.clone());
                 if job.state == JobState::Completed {
                     if let Err(error) = crate::recovery::acknowledge(&self.paths, &job) {
-                        job.error = Some(crate::i18n::ui_owned!(
-                            format!("Geçici dosyalar temizlenemedi: {error}"),
-                            format!("Temporary files could not be cleaned up: {error}")
+                        job.error = Some(crate::i18n::ui_format!(
+                            "Geçici dosyalar temizlenemedi: {error}",
+                            "Temporary files could not be cleaned up: {error}",
+                            error = error
                         ));
                         self.warning = job.error.clone();
                         self.jobs.insert(id.into(), job.clone());
@@ -3622,9 +3620,10 @@ impl Actor {
                 )
                 .into();
                 self.jobs.insert(id.into(), job);
-                self.persistence_error = Some(crate::i18n::ui_owned!(
-                    format!("Kuyruk kaydedilemedi: {error}. Son dosya kurtarma kaydı korundu."),
-                    format!("Queue could not be saved: {error}. Last recovery record was kept.")
+                self.persistence_error = Some(crate::i18n::ui_format!(
+                    "Kuyruk kaydedilemedi: {error}. Son dosya kurtarma kaydı korundu.",
+                    "Queue could not be saved: {error}. Last recovery record was kept.",
+                    error = error
                 ));
             }
         }
@@ -3633,9 +3632,10 @@ impl Actor {
     fn persist_job(&mut self, id: &str) {
         if let Some(job) = self.jobs.get(id) {
             if let Err(error) = self.store.save_job(job) {
-                self.persistence_error = Some(crate::i18n::ui_owned!(
-                    format!("Kuyruk kaydedilemedi: {error}"),
-                    format!("The queue could not be saved: {error}")
+                self.persistence_error = Some(crate::i18n::ui_format!(
+                    "Kuyruk kaydedilemedi: {error}",
+                    "The queue could not be saved: {error}",
+                    error = error
                 ));
             }
         }
@@ -3659,22 +3659,16 @@ impl Actor {
         }
         for (id, generation) in grantless {
             if let Err(error) = self.revoke_exited_browser_transfer(&id, generation) {
-                self.persistence_error = Some(crate::i18n::ui_owned!(
-                    format!("Kapanan tarayıcı aktarımı duraklatılamadı: {error}"),
-                    format!("The closed browser transfer could not be paused: {error}")
+                self.persistence_error = Some(crate::i18n::ui_format!(
+                    "Kapanan tarayıcı aktarımı duraklatılamadı: {error}",
+                    "The closed browser transfer could not be paused: {error}",
+                    error = error
                 ));
                 self.publish();
             }
         }
         if newly_orphaned > 0 {
-            self.warning = Some(crate::i18n::ui_owned!(
-                format!(
-                    "Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar {newly_orphaned} ağ izni güvenli olarak tutuluyor"
-                ),
-                format!(
-                    "The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed"
-                )
-            ));
+            self.warning = Some(crate::i18n::ui_format!("Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar {newly_orphaned} ağ izni güvenli olarak tutuluyor", "The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed", newly_orphaned = newly_orphaned));
         }
     }
 
@@ -3887,18 +3881,7 @@ impl Actor {
         if free >= remaining {
             return false;
         }
-        let message = crate::i18n::ui_owned!(
-            format!(
-                "Hedef diskte yeterli yer yok: {} MiB gerekli, {} MiB boş. Yer açıp sürdürün.",
-                remaining.div_ceil(1024 * 1024),
-                free / (1024 * 1024)
-            ),
-            format!(
-                "Not enough space on the destination disk: {} MiB needed, {} MiB free. Free some space and resume.",
-                remaining.div_ceil(1024 * 1024),
-                free / (1024 * 1024)
-            )
-        );
+        let message = crate::i18n::ui_format!("Hedef diskte yeterli yer yok: {0} MiB gerekli, {1} MiB boş. Yer açıp sürdürün.", "Not enough space on the destination disk: {0} MiB needed, {1} MiB free. Free some space and resume.", remaining.div_ceil(1024 * 1024), free / (1024 * 1024));
         if let Some(job) = self.jobs.get_mut(id) {
             job.state = JobState::Paused;
             job.force_start = false;
@@ -4323,14 +4306,7 @@ impl Actor {
         }
         if self.network_limit_pending {
             let limit = self.settings.per_host_limit;
-            warnings.push(crate::i18n::ui_owned!(
-                format!(
-                    "Sunucu başına {limit} bağlantı sınırı yeni bağlantılara uygulanıyor; açık aktarım soketleri kapanana kadar tam olarak yürürlükte değil"
-                ),
-                format!(
-                    "The limit of {limit} connections per server applies to new connections; it is not fully in effect until open transfer sockets close"
-                )
-            ));
+            warnings.push(crate::i18n::ui_format!("Sunucu başına {limit} bağlantı sınırı yeni bağlantılara uygulanıyor; açık aktarım soketleri kapanana kadar tam olarak yürürlükte değil", "The limit of {limit} connections per server applies to new connections; it is not fully in effect until open transfer sockets close", limit = limit));
         }
         value.warning = (!warnings.is_empty()).then(|| warnings.join("\n"));
         match self.snapshot.write() {
@@ -4416,12 +4392,10 @@ fn run_job(
     // deleted or renamed since the job was queued must be recreated first.
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| {
-            crate::i18n::ui_owned!(
-                format!("Hedef klasör oluşturulamadı: {}", parent.display()),
-                format!(
-                    "The destination folder could not be created: {}",
-                    parent.display()
-                )
+            crate::i18n::ui_format!(
+                "Hedef klasör oluşturulamadı: {0}",
+                "The destination folder could not be created: {0}",
+                parent.display()
             )
         })?;
     }
@@ -4838,14 +4812,6 @@ fn job_host(value: &str) -> String {
         .unwrap_or_default()
 }
 
-fn processing_phase(phase: &str) -> bool {
-    let phase = phase.to_lowercase();
-    phase.contains("işlen")
-        || phase.contains("birleştir")
-        || phase.contains("processing")
-        || phase.contains("mux")
-}
-
 fn source_refresh_required() -> anyhow::Error {
     anyhow!(
         "{}",
@@ -4858,9 +4824,10 @@ fn source_refresh_required() -> anyhow::Error {
 
 /// The persistence failure that stops downloads, in the interface language.
 fn queue_save_stopped(error: &impl std::fmt::Display) -> String {
-    crate::i18n::ui_owned!(
-        format!("Kuyruk kaydedilemedi: {error}. İndirmeler durduruldu."),
-        format!("The queue could not be saved: {error}. Downloads were stopped.")
+    crate::i18n::ui_format!(
+        "Kuyruk kaydedilemedi: {error}. İndirmeler durduruldu.",
+        "The queue could not be saved: {error}. Downloads were stopped.",
+        error = error
     )
 }
 

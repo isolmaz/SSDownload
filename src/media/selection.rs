@@ -31,9 +31,10 @@ pub(super) fn format_selector(request: &AddRequest, info: &MediaInfo) -> Result<
         let format = info.formats.iter().find(|f| f.id == id).ok_or_else(|| {
             anyhow!(
                 "{}",
-                crate::i18n::ui_owned!(
-                    format!("Seçilen kalite/biçim kullanılabilir DRM'siz formatlar arasında değil: {id}"),
-                    format!("The selected quality/format is not among the available DRM-free formats: {id}")
+                crate::i18n::ui_format!(
+                    "Seçilen kalite/biçim kullanılabilir DRM'siz formatlar arasında değil: {id}",
+                    "The selected quality/format is not among the available DRM-free formats: {id}",
+                    id = id
                 )
             )
         })?;

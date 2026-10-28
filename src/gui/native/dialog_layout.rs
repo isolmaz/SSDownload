@@ -333,16 +333,13 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(18, dlg.dpi),
                 purpose,
             );
-            let mode_w = scale(58, dlg.dpi);
-            for (i, control) in [f.mode_video, f.mode_file, f.mode_audio].iter().enumerate() {
-                place(
-                    *control,
-                    purpose,
-                    field_x + mode_w * i as i32,
-                    row_y,
-                    mode_w,
-                    line,
-                );
+            // Each box is as wide as its caption, so a longer translation moves the
+            // next one along instead of running into it.
+            let mut mode_x = field_x;
+            for control in [f.mode_video, f.mode_file, f.mode_audio] {
+                let mode_w = scale(58, dlg.dpi).max(text_width(control) + scale(24, dlg.dpi));
+                place(control, purpose, mode_x, row_y, mode_w, line);
+                mode_x += mode_w;
             }
             if !simple {
                 row_y += step;
@@ -384,7 +381,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // all three are advanced-only.
             let schedule = genel && !simple;
             // The labels carry the "(SS:DD)" hint, so their slots are sized for
-            // the longer of the two languages' text.
+            // the longest language's text.
             let clock_w = scale(56, dlg.dpi);
             place(f.schedule, schedule, cx, row_y, scale(194, dlg.dpi), line);
             place_static(
@@ -782,8 +779,22 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 (edit_top - gap - m - scale(20, dlg.dpi)).max(scale(90, dlg.dpi)),
                 1,
             );
-            field(1, 0, in_row(0), 40, line);
-            MoveWindow(f.name, x(44), in_row(0), cw - scale(300, dlg.dpi), line, 1);
+            // The name label follows its text; the field keeps its right edge.
+            let name_w = labels
+                .get(1)
+                .map_or(0, |label| text_width(*label))
+                .max(scale(40, dlg.dpi));
+            if let Some(label) = labels.get(1) {
+                MoveWindow(*label, m, in_row(0), name_w, line, 1);
+            }
+            MoveWindow(
+                f.name,
+                m + name_w + scale(4, dlg.dpi),
+                in_row(0),
+                cw - scale(300, dlg.dpi) - (name_w - scale(40, dlg.dpi)),
+                line,
+                1,
+            );
             move_id(
                 dlg.hwnd,
                 Q_CREATE,

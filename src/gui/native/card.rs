@@ -416,10 +416,7 @@ unsafe fn paint_card(card: &mut CardUi, dc: HDC) {
         CardKind::Panel => {
             // The rows are capped; the title still counts every listed download.
             let total = snapshot.jobs.iter().filter(|job| in_panel(job)).count();
-            crate::i18n::ui_owned!(
-                format!("İndirmeler ({total})"),
-                format!("Downloads ({total})")
-            )
+            crate::i18n::ui_format!("İndirmeler ({total})", "Downloads ({total})", total = total)
         }
         CardKind::Jobs(_) => "SSDownload".to_string(),
     };
@@ -532,9 +529,10 @@ unsafe fn paint_card(card: &mut CardUi, dc: HDC) {
         };
         fill(dc, filled, state_colour(job, accent));
         let detail = match job.state {
-            JobState::Completed => crate::i18n::ui_owned!(
-                format!("Tamamlandı · {}", format_bytes(job.downloaded)),
-                format!("Completed · {}", format_bytes(job.downloaded))
+            JobState::Completed => crate::i18n::ui_format!(
+                "Tamamlandı · {0}",
+                "Completed · {0}",
+                format_bytes(job.downloaded)
             ),
             JobState::Downloading | JobState::Processing | JobState::Connecting => format!(
                 "{} · {} · {}",
@@ -712,6 +710,8 @@ unsafe extern "system" fn card_proc(
             let mut client: RECT = zeroed();
             GetClientRect(hwnd, &mut client);
             let memory = CreateCompatibleDC(dc);
+            // A mirrored card paints its buffer mirrored too, so the copy keeps text readable.
+            SetLayout(memory, GetLayout(dc));
             let bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
             let old = SelectObject(memory, bitmap as HGDIOBJ);
             paint_card(card, memory);

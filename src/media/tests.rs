@@ -1416,3 +1416,69 @@ fn every_ffmpeg_input_carries_its_own_protocol_whitelist() {
     );
     assert_each_input_is_guarded(&tagged, "file,pipe", 3);
 }
+
+#[test]
+fn the_processing_state_comes_from_the_tool_stage_not_the_phase_text() {
+    let mut seen = Vec::new();
+    let mut completed = HashSet::new();
+    let (mut last_path, mut seen_bytes) = (None, 0);
+    for line in [
+        format!("{PROGRESS_PREFIX}downloading	100	1000	50	9"),
+        format!("{PROGRESS_PREFIX}finished	1000	1000	0	0"),
+        format!("{POSTPROCESS_PREFIX}started"),
+    ] {
+        process::handle_machine_line(
+            &line,
+            &mut |value| seen.push(value.processing),
+            &mut completed,
+            &mut last_path,
+            &mut seen_bytes,
+        );
+    }
+    assert_eq!(seen, [false, true, true]);
+}
+
+#[test]
+fn a_failure_is_classified_alike_in_every_interface_language() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    let timeout = crate::error_codes::definition(crate::error_codes::NET_007).unwrap();
+    let english = |stage: &str| {
+        classify_download_error(
+            &format!("{stage}: SSD-NET-007 {}", timeout.message_en),
+            &request,
+        )
+    };
+    assert_eq!(english("media segment"), ("medya parçası", "timeout"));
+    assert_eq!(english("discovery"), ("keşif", "timeout"));
+    let messages: Vec<_> = {
+        let (tr, en) = (timeout.message_tr, timeout.message_en);
+        crate::i18n::wordings(tr, en).collect()
+    };
+    for (tr, en) in FAILURE_STAGES {
+        for (stage, message) in crate::i18n::wordings(tr, en).zip(&messages) {
+            assert_eq!(
+                classify_download_error(&format!("{stage}: SSD-NET-007 {message}"), &request),
+                english(en),
+                "{stage}: {message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
+    let lines: Vec<_> = process::cut_lines("short\nabcdefghij\nlast".as_bytes(), 6)
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            ("short".to_string(), false),
+            ("abcdef".to_string(), true),
+            ("last".to_string(), false)
+        ]
+    );
+}

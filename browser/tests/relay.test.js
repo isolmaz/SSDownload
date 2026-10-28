@@ -14,6 +14,8 @@ function runRelayBackground(globals){
   globals.browser.i18n||=i18nApi();
   const relayContext=vm.createContext(globals);
   loadI18n(relayContext);
+  // The worker imports the code table before the relay, as service-worker.js does.
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../chromium/codes.js"),"utf8"),relayContext);
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../chromium/relay-background.js"),"utf8"),relayContext);
 }
 const Sha256=context.SSDownloadRelaySha256;
@@ -106,7 +108,9 @@ for(const [language,sentence] of [["Turkish","Tarayıcı aktarımı kuyruk kotas
   assert.equal(running.state,"running");assert.equal(running.automaticResume,false);
 });
 
-for(const [language,refusal] of [["Turkish","Bu iş tarayıcı aktarımı için ayrılamaz."],["English","This job cannot be set aside for a browser transfer."],["Turkish job-gone","İş bulunamadı"],["English job-gone","Job not found"]]) test(`a desktop refusal in ${language} ends the automatic resumption of a paused relay`,async()=>{
+// A current desktop tags the refusal with SSD-TRF-014 and words the sentence in any of its
+// languages; an older one sent the bare Turkish or English sentence.
+for(const [language,refusal] of [["Turkish","Bu iş tarayıcı aktarımı için ayrılamaz."],["English","This job cannot be set aside for a browser transfer."],["Turkish job-gone","İş bulunamadı"],["English job-gone","Job not found"],["German coded","SSD-TRF-014 Dieser Auftrag kann nicht für eine Browserübertragung zurückgestellt werden."]]) test(`a desktop refusal in ${language} ends the automatic resumption of a paused relay`,async()=>{
   const jobId="12345678-1234-4234-8234-123456789abc";
   const token="a".repeat(64),request={url:"https://media.example/file.bin",source_identity:{frame_id:0,document_id:"document",page_url:"https://site.example/watch"}};
   let listener,onNativeMessage,resumeTimer,beginCount=0,initialStart;

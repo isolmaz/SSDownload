@@ -580,7 +580,8 @@ pub struct Settings {
     pub logging_hosts: bool,
     /// Desktop surface depth: `simple` | `advanced`.
     pub ui_mode: String,
-    /// Interface language: `tr` | `en`. A new profile starts with the Windows display language.
+    /// Interface language: a code of `i18n::LANGUAGES`. A new profile starts with the Windows
+    /// display language.
     pub ui_language: String,
     /// Developer mode: suppresses the first-run wizard and keeps the
     /// diagnostics, media-tools and raw tool-name surfaces visible.
@@ -779,7 +780,8 @@ pub struct Capabilities {
     /// Number of completed jobs in the queue; the extension badges an increase.
     #[serde(default)]
     pub completed_jobs: u64,
-    /// The interface language of the app (`"tr"` or `"en"`); the extension shows its own text in it.
+    /// The interface language code of the app (one of `i18n::LANGUAGES`); the extension shows its
+    /// own text in it.
     #[serde(default)]
     pub language: String,
 }
@@ -902,6 +904,10 @@ pub struct TransferProgress {
     pub speed: u64,
     pub eta: Option<u64>,
     pub phase: String,
+    /// The bytes are in and the result is being processed (joined, converted, checked); the
+    /// job shows the processing state rather than a nearly full download.
+    #[serde(default)]
+    pub processing: bool,
 }
 #[derive(Debug, Clone)]
 pub struct TransferResult {
