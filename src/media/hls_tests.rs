@@ -522,3 +522,115 @@ fn a_repeated_last_frame_timestamp_passes_verification_but_a_damaged_frame_does_
         "{error}"
     );
 }
+
+/// Speech-recognition captions can hold cues that end where they start and two cues that start
+/// together; they still reach the MP4 as one subtitle track, also when the request names no
+/// container and the source's MP4 is kept.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn captions_with_empty_and_simultaneous_cues_mux_into_mp4() {
+    let root = std::env::temp_dir().join(format!("ssdownload-captions-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    let status = std::process::Command::new(&tools.ffmpeg)
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+        .arg("testsrc=size=320x180:rate=25:duration=8")
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=duration=8",
+            "-c:v",
+            "libopenh264",
+        ])
+        .args(["-c:a", "aac", "-shortest", "video.mp4"])
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let captions = "1\n00:00:01,50 --> 00:00:01,50\nInvisible\n\n\
+                    2\n00:00:03,01 --> 00:00:03,61\nWhere\n\n\
+                    3\n00:00:03,01 --> 00:00:03,61\nwhere.\n\n\
+                    4\n00:00:05,00 --> 00:00:06,00\nThere\n";
+    fs::write(root.join("served.srt"), captions).unwrap();
+    fs::write(root.join("captions.srt"), captions).unwrap();
+    let request = AddRequest {
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        external_subtitles: vec![ExternalSubtitle {
+            language: "en".into(),
+            label: "English".into(),
+            ..ExternalSubtitle::default()
+        }],
+        ..AddRequest::default()
+    };
+    let kept_request = AddRequest {
+        container: None,
+        ..request.clone()
+    };
+    let mux = |request: &AddRequest, subtitle: &str, output: &str| {
+        let args = selected_output_args(
+            &root.join("video.mp4"),
+            &[root.join(subtitle)],
+            &root.join(output),
+            request,
+            1,
+        );
+        std::process::Command::new(&tools.ffmpeg)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let verify = |request: &AddRequest, output: &str| {
+        verify_media_output(
+            &root.join(output),
+            request,
+            &MediaInfo::default(),
+            &tools,
+            &TransferControl::default(),
+        )
+    };
+
+    let served = mux(&request, "served.srt", "served.mp4");
+    let checked = validate_external_subtitle_file(
+        &root.join("captions.srt"),
+        &request.external_subtitles[0],
+        Some(8.0),
+        None,
+    );
+    let muxed = mux(&request, "captions.srt", "captions.mp4");
+    let verified = verify(&request, "captions.mp4");
+    // A request without a container keeps the source's MP4.
+    let kept = mux(&kept_request, "captions.srt", "kept.mp4");
+    let kept_verified = verify(&kept_request, "kept.mp4");
+    let text = std::process::Command::new(&tools.ffmpeg)
+        .args(["-v", "error", "-i"])
+        .arg(root.join("captions.mp4"))
+        .args(["-map", "0:s", "-f", "srt", "-"])
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&root);
+
+    assert!(
+        !served.status.success(),
+        "the captions as served cannot be stored in MP4"
+    );
+    checked.expect("the captions pass validation");
+    assert!(
+        muxed.status.success() && muxed.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&muxed.stderr)
+    );
+    let text = String::from_utf8_lossy(&text.stdout).replace("\r\n", "\n");
+    assert!(text.contains("Where\nwhere."), "{text}");
+    assert!(text.contains("There"), "{text}");
+    assert!(!text.contains("Invisible"), "{text}");
+    verified.expect("the MP4 with the captions passes verification");
+    assert!(
+        kept.status.success() && kept.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&kept.stderr)
+    );
+    kept_verified.expect("the kept MP4 with the captions passes verification");
+}

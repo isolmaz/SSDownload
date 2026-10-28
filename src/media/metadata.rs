@@ -147,11 +147,22 @@ pub(super) fn parse_formats(value: &Value) -> Vec<MediaFormat> {
         .get("duration")
         .and_then(Value::as_f64)
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
-    value
-        .get("formats")
-        .and_then(Value::as_array)
+    // yt-dlp's generic extractor parses a body it reads as a playlist into `formats`; a direct
+    // link it names HLS without one was labelled by the URL's extension alone and is no playlist.
+    let guessed_playlist = value.get("direct").and_then(Value::as_bool) == Some(true)
+        && value
+            .get("protocol")
+            .and_then(Value::as_str)
+            .is_some_and(|protocol| protocol.contains("m3u8"));
+    let formats = match value.get("formats").and_then(Value::as_array) {
+        Some(formats) => formats.iter().collect(),
+        // yt-dlp leaves `formats` out when the extractor found one stream (a direct link the
+        // server labels as a download rather than as video); the info dict is that format.
+        None if value.get("url").is_some() && !guessed_playlist => vec![value],
+        None => Vec::new(),
+    };
+    formats
         .into_iter()
-        .flatten()
         .filter_map(|format| {
             let id = format.get("format_id").and_then(Value::as_str)?.to_string();
             let has_drm = explicit_drm(format);

@@ -477,6 +477,15 @@ pub(crate) fn download(
     if from_start {
         base_args.push("--live-from-start".into());
     }
+    if live {
+        // FFmpeg records a live DASH stream into a plain MP4, whose index is written only when
+        // FFmpeg ends on its own, and finishing a recording stops it by force: fragments keep
+        // what was recorded readable. Live HLS is recorded as MPEG-TS, which ignores the flags.
+        base_args.extend([
+            "--downloader-args".into(),
+            "ffmpeg_o:-movflags +frag_keyframe+empty_moov".into(),
+        ]);
+    }
     if let Some(source_info) = &source_info {
         base_args.extend(load_info_args(
             &source_info.info_path,
@@ -1109,6 +1118,13 @@ pub(crate) fn mux_browser_streams(
         "The browser media target folder is missing",
     ))?;
     fs::create_dir_all(parent)?;
+    for subtitle in &subtitles {
+        if let Ok(text) = fs::read_to_string(&subtitle.path) {
+            if let Some(playable) = without_unmuxable_cues(&text) {
+                fs::write(&subtitle.path, playable)?;
+            }
+        }
+    }
     let staged = parent.join(format!(".browser-mux-{}.tmp", uuid::Uuid::new_v4()));
     let args = browser_mux_args(request, streams, &staged);
     let result = run_capture(
@@ -3172,11 +3188,11 @@ segment.ts
         };
         let request = |container: &str, subtitles: Vec<ExternalSubtitle>| AddRequest {
             kind: DownloadKind::Video,
-            container: Some(container.into()),
+            container: Some(container.into()).filter(|value: &String| !value.is_empty()),
             external_subtitles: subtitles,
             ..Default::default()
         };
-        let probe = |subtitles: &[(Option<&str>, i64)]| {
+        let probe_format = |format: &str, subtitles: &[(Option<&str>, i64)]| {
             let mut streams = vec![
                 json!({"codec_type":"video","codec_name":"h264","start_time":"0","duration":"60"}),
                 json!({"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"60"}),
@@ -3188,8 +3204,12 @@ segment.ts
                 }
                 streams.push(stream);
             }
-            json!({"streams": streams, "format": {"start_time":"0","duration":"60"}})
+            json!({"streams": streams, "format": {"format_name": format, "start_time":"0","duration":"60"}})
         };
+        let probe =
+            |subtitles: &[(Option<&str>, i64)]| probe_format("mov,mp4,m4a,3gp,3g2,mj2", subtitles);
+        let probe_mkv =
+            |subtitles: &[(Option<&str>, i64)]| probe_format("matroska,webm", subtitles);
         let info = MediaInfo::default();
         // ffmpeg's MP4 muxer enables the first subtitle when none is default; it reads back
         // as default (checked with the bundled ffmpeg/ffprobe).
@@ -3220,13 +3240,47 @@ segment.ts
             &info
         )
         .is_err());
+        // Without a container the source's MP4 is kept, and it enables its first subtitle too.
+        let kept = request("", vec![subtitle("tr"), subtitle("en")]);
+        assert!(
+            validate_probe(&probe(&[(Some("tur"), 1), (Some("eng"), 0)]), &kept, &info).is_ok()
+        );
+        assert!(
+            validate_probe(&probe(&[(Some("tur"), 0), (Some("eng"), 0)]), &kept, &info).is_err()
+        );
         // Matroska writes no tag for an undetermined language, and keeps the flag as set.
         let mkv = request("mkv", vec![subtitle("und")]);
-        assert!(validate_probe(&probe(&[(None, 0)]), &mkv, &info).is_ok());
-        assert!(validate_probe(&probe(&[(None, 1)]), &mkv, &info).is_err());
+        assert!(validate_probe(&probe_mkv(&[(None, 0)]), &mkv, &info).is_ok());
+        assert!(validate_probe(&probe_mkv(&[(None, 1)]), &mkv, &info).is_err());
         let turkish = request("mkv", vec![subtitle("tr")]);
-        assert!(validate_probe(&probe(&[(None, 0)]), &turkish, &info).is_err());
-        assert!(validate_probe(&probe(&[(Some("tur"), 0)]), &turkish, &info).is_ok());
+        assert!(validate_probe(&probe_mkv(&[(None, 0)]), &turkish, &info).is_err());
+        assert!(validate_probe(&probe_mkv(&[(Some("tur"), 0)]), &turkish, &info).is_ok());
+    }
+
+    #[test]
+    fn subtitle_cues_ffmpeg_cannot_store_are_dropped_or_joined() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\nOne\n\n\
+                   2\n00:00:03,50 --> 00:00:03,50\nInvisible\n\n\
+                   3\n00:00:04,000 --> 00:00:05,000\nWhere\n\n\
+                   4\n00:00:04,000 --> 00:00:06,000\nwhere.\n\n\
+                   5\n00:00:04,000 --> 00:00:05,000\nWhere\n\n\
+                   6\n00:00:05,500 --> 00:00:07,000\nOverlap\n";
+        assert_eq!(
+            without_unmuxable_cues(srt).unwrap(),
+            "1\n00:00:01,000 --> 00:00:02,000\nOne\n\n\
+             3\n00:00:04,000 --> 00:00:06,000\nWhere\nwhere.\n\n\
+             6\n00:00:05,500 --> 00:00:07,000\nOverlap\n"
+        );
+        let vtt =
+            "\u{feff}WEBVTT\r\n\r\nintro\r\n00:00:01.000 --> 00:00:02.000 align:start\r\nA\r\n\r\n\
+                   00:00:01.000 --> 00:00:03.000 line:0\r\nB\r\n";
+        assert_eq!(
+            without_unmuxable_cues(vtt).unwrap(),
+            "\u{feff}WEBVTT\n\nintro\n00:00:01.000 --> 00:00:03.000 align:start\nA\nB\n"
+        );
+        let clean =
+            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nA\n\n00:00:02.000 --> 00:00:04.000\nB\n";
+        assert_eq!(without_unmuxable_cues(clean), None);
     }
 
     #[test]

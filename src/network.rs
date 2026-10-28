@@ -1831,10 +1831,16 @@ fn relay(
     // so a silent tunnel cannot consume a worker forever. Readiness is polled in
     // short steps because a blocked Winsock recv is not woken by a shutdown
     // issued from another thread; cancellation is checked between steps.
-    for stream in [&client, &upstream] {
-        let _ = stream.set_write_timeout(Some(PROXY_RELAY_IDLE_TIMEOUT));
+    let _ = upstream.set_write_timeout(Some(PROXY_RELAY_IDLE_TIMEOUT));
+    // The server's bytes wait in `answer` until the client takes them: a client that leaves an
+    // answer unread (a demuxer that opened every rendition of a stream) moves no bytes, and its
+    // tunnel gives the slot back like one that went quiet after the answer.
+    if client.set_nonblocking(true).is_err() {
+        return;
     }
-    let mut buffer = vec![0u8; RELAY_BUFFER];
+    let mut answer = vec![0u8; RELAY_BUFFER];
+    let mut pending = 0..0;
+    let mut request = vec![0u8; RELAY_BUFFER];
     let mut lease = Some(lease);
     let mut client_open = true;
     let mut upstream_spoke_last = false;
@@ -1842,44 +1848,83 @@ fn relay(
     while !shared.stopping.load(Ordering::Acquire)
         && last_traffic.elapsed() < PROXY_RELAY_IDLE_TIMEOUT
     {
-        let mut polls = [&upstream, &client].map(|stream| WSAPOLLFD {
+        if upstream_spoke_last && last_traffic.elapsed() >= IDLE_SLOT_RELEASE_AFTER {
+            lease = None;
+        }
+        let client_events = (if client_open { POLLRDNORM } else { 0 })
+            | (if pending.is_empty() { 0 } else { POLLOUT });
+        let mut polls = [
+            (&upstream, if pending.is_empty() { POLLRDNORM } else { 0 }),
+            (&client, client_events),
+        ]
+        .map(|(stream, events)| WSAPOLLFD {
             fd: stream.as_raw_socket() as _,
-            events: POLLRDNORM as _,
+            events: events as _,
             revents: 0,
         });
-        let watched = if client_open { 2 } else { 1 };
+        let watched = if client_events == 0 { 1 } else { 2 };
         let ready = unsafe { WSAPoll(polls.as_mut_ptr(), watched, RELAY_POLL.as_millis() as i32) };
         if ready < 0 {
             return;
         }
         if ready == 0 {
-            if upstream_spoke_last && last_traffic.elapsed() >= IDLE_SLOT_RELEASE_AFTER {
-                lease = None;
-            }
             continue;
         }
-        if polls[0].revents != 0 {
+        let mut moved = false;
+        if pending.is_empty() && polls[0].revents != 0 {
             // The server's end closes the tunnel: nothing it sends can follow.
-            if relay_chunk(&mut upstream, &mut client, &mut buffer).is_none() {
-                return;
+            match upstream.read(&mut answer) {
+                Ok(0) | Err(_) => return,
+                Ok(read) => pending = 0..read,
             }
             upstream_spoke_last = true;
             last_traffic = Instant::now();
+            moved = true;
         }
-        if client_open && polls[1].revents != 0 {
+        if !pending.is_empty() {
+            match client.write(&answer[pending.clone()]) {
+                Ok(0) => return,
+                Ok(written) => {
+                    pending.start += written;
+                    last_traffic = Instant::now();
+                    moved = true;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(_) => return,
+            }
+        }
+        if client_open && polls[1].revents & (POLLRDNORM | POLLHUP | POLLERR) != 0 {
             if lease.is_none() {
                 lease = reacquire_tunnel_slot(shared, host);
                 if lease.is_none() {
                     return;
                 }
             }
-            if relay_chunk(&mut client, &mut upstream, &mut buffer).is_none() {
-                // A client half-close still lets the server finish its answer.
-                client_open = false;
-                let _ = upstream.shutdown(Shutdown::Write);
+            let forwarded = match client.read(&mut request) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => Some(false),
+                Ok(0) | Err(_) => None,
+                Ok(read) => upstream.write_all(&request[..read]).ok().map(|()| true),
+            };
+            match forwarded {
+                Some(false) => {}
+                Some(true) => {
+                    upstream_spoke_last = false;
+                    last_traffic = Instant::now();
+                    moved = true;
+                }
+                None => {
+                    // A client half-close still lets the server finish its answer.
+                    client_open = false;
+                    let _ = upstream.shutdown(Shutdown::Write);
+                    upstream_spoke_last = false;
+                    last_traffic = Instant::now();
+                    moved = true;
+                }
             }
-            upstream_spoke_last = false;
-            last_traffic = Instant::now();
+        }
+        // A closed client is reported ready on every poll while it still has bytes to take.
+        if !moved {
+            thread::sleep(ACQUIRE_POLL);
         }
     }
 }
@@ -1897,18 +1942,6 @@ fn reacquire_tunnel_slot(shared: &ProxyShared, host: &str) -> Option<ConnectionL
         }
     }
     None
-}
-
-/// Moves one readable chunk; `None` once the reader has ended or either side failed.
-fn relay_chunk(reader: &mut TcpStream, writer: &mut TcpStream, buffer: &mut [u8]) -> Option<()> {
-    loop {
-        match reader.read(buffer) {
-            Ok(0) => return None,
-            Ok(read) => return writer.write_all(&buffer[..read]).ok(),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return None,
-        }
-    }
 }
 
 fn write_proxy_error(mut client: TcpStream, status: u16, message: &str) -> io::Result<()> {
@@ -2159,6 +2192,45 @@ mod tests {
         let (_, status) = open_tunnel(&proxy, &target);
         assert!(status.starts_with("HTTP/1.1 503"), "{status}");
         assert!(started.elapsed() >= super::TUNNEL_WAIT);
+    }
+
+    #[test]
+    fn a_tunnel_whose_client_leaves_the_answer_unread_gives_its_slot_back() {
+        const ANSWER: usize = 32 * 1024 * 1024;
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("127.0.0.1:{}", server.local_addr().unwrap().port());
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = server.accept() {
+                let mut request = [0u8; 4];
+                if stream.read_exact(&mut request).is_ok() {
+                    let _ = stream.write_all(&vec![7u8; ANSWER]);
+                }
+                thread::sleep(Duration::from_secs(30));
+            }
+        });
+        let governor = NetworkGovernor::new(1);
+        let proxy = ExternalProxy::spawn(governor.clone(), TransferControl::default()).unwrap();
+        let (mut unread, status) = open_tunnel(&proxy, &target);
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        unread.write_all(b"ping").unwrap();
+
+        // The answer fills the socket buffers while the client reads none of it, as a demuxer
+        // does with a rendition it opened and does not need yet.
+        assert!(
+            eventually(|| governor.try_acquire_host("127.0.0.1".into()).is_some()),
+            "the tunnel kept its slot while its client was not reading"
+        );
+
+        // The open tunnel still delivers the whole answer once the client reads it.
+        let mut received = 0;
+        let mut buffer = vec![0u8; 1024 * 1024];
+        while received < ANSWER {
+            let read = unread.read(&mut buffer).unwrap();
+            assert!(read > 0, "the tunnel closed after {received} bytes");
+            assert!(buffer[..read].iter().all(|&byte| byte == 7));
+            received += read;
+        }
+        assert_eq!(received, ANSWER);
     }
 
     fn proxy_reply(proxy: &ExternalProxy, request: &str) -> String {

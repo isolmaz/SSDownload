@@ -364,7 +364,10 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             ));
         }
         // An MP4 with no default subtitle enables its first one, which reads back as default.
-        let first_enabled = request.container.as_deref() == Some("mp4")
+        // The file's own format decides: a request without a container keeps the source's.
+        let first_enabled = value["format"]["format_name"]
+            .as_str()
+            .is_some_and(|name| name.split(',').any(|format| format == "mp4"))
             && !request
                 .external_subtitles
                 .iter()

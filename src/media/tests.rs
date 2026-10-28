@@ -50,6 +50,46 @@ fn unknown_codecs_do_not_hide_direct_media() {
 }
 
 #[test]
+fn a_single_stream_result_without_a_format_list_is_its_own_format() {
+    // yt-dlp's generic extractor for an MP4 the server sends as `binary/octet-stream`.
+    let info = media_info_from_json(&json!({
+        "_type": "video", "extractor": "generic", "direct": true, "title": "clip",
+        "format_id": "0", "url": "https://cdn.example/clip.mp4", "ext": "mp4",
+        "vcodec": null, "acodec": null
+    }))
+    .unwrap();
+    assert_eq!(
+        info.formats
+            .iter()
+            .map(|f| (f.id.as_str(), f.extension.as_str()))
+            .collect::<Vec<_>>(),
+        [("0", "mp4")]
+    );
+    let request = AddRequest {
+        url: "https://cdn.example/clip.mp4".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        ..AddRequest::default()
+    };
+    assert!(format_selector(&request, &info).is_ok());
+}
+
+#[test]
+fn a_direct_link_named_hls_only_by_its_extension_is_not_a_format() {
+    // yt-dlp's generic extractor for an ad server's `.m3u8` address that answers with JavaScript.
+    let error = media_info_from_json(&json!({
+        "_type": "video", "extractor": "generic", "direct": true, "title": "xbrjha6",
+        "format_id": "0", "url": "https://ads.example/cdn/manifest/video/xbrjha6.m3u8",
+        "ext": "m3u8", "protocol": "m3u8_native"
+    }))
+    .unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::MED_001)
+    );
+}
+
+#[test]
 fn explicitly_silent_video_cannot_be_selected_as_audio() {
     let info = media_info_from_json(&json!({"formats": [
         {"format_id": "video", "vcodec": "h264", "acodec": "none"}
