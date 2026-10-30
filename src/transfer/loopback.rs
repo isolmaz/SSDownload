@@ -142,11 +142,9 @@ fn an_interrupted_segmented_download_resumes_by_requesting_only_the_missing_rang
     assert!(part_path(&output).exists() && !output.exists());
     // Only the recorded ranges are retained, not the preallocated part file or the bytes of
     // the leases that were still running.
-    assert_eq!(
-        retained_bytes(&output),
-        done.iter().map(|(start, end)| end - start).sum::<u64>()
-    );
-    assert!(retained_bytes(&output) < fs::metadata(part_path(&output)).unwrap().len());
+    let recorded = done.iter().map(|(start, end)| end - start).sum::<u64>();
+    assert_eq!(retained_bytes(&output), Some(recorded));
+    assert!(recorded < fs::metadata(part_path(&output)).unwrap().len());
     assert!(!control.restarted());
     server.wait_idle();
     let first_attempt = server.log().len();
@@ -197,7 +195,7 @@ fn a_source_that_changes_between_attempts_restarts_and_publishes_the_new_version
     assert!(fs::metadata(part_path(&output)).unwrap().len() > 0);
     assert_eq!(
         retained_bytes(&output),
-        fs::metadata(part_path(&output)).unwrap().len()
+        Some(fs::metadata(part_path(&output)).unwrap().len())
     );
     assert!(!control.restarted());
     server.wait_idle();

@@ -1598,8 +1598,8 @@ pub(super) unsafe fn collect_settings(
         0,
         20,
         crate::i18n::ui(
-            "İlerlemesiz art arda deneme sayısı",
-            "Attempts in a row without progress",
+            "İlerlemesiz art arda yeniden deneme sayısı",
+            "Retries in a row without progress",
         ),
     )
     .map_err(|e| (e, f.retry))?;

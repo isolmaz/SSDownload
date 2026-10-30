@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -380,8 +380,8 @@ pub struct Job {
     pub phase: String,
     pub created_at: i64,
     pub updated_at: i64,
-    /// Attempts in a row that ended without new retained bytes; a retryable failure after
-    /// progress, a manual resume and a source refresh start the count again.
+    /// Failed attempts in a row that kept nothing new; a retryable failure after progress, a
+    /// manual resume and a source refresh start the count again.
     pub attempts: u32,
     #[serde(default)]
     pub work_dir: Option<PathBuf>,
@@ -930,8 +930,8 @@ pub struct TransferControl {
     finish: Arc<AtomicBool>,
     /// The transfer discarded the bytes it had retained and started over.
     restarted: Arc<AtomicBool>,
-    /// The attempt ended with more retained bytes than it began with.
-    progressed: Arc<AtomicBool>,
+    /// The bytes the attempt retained when it began and when it ended, when both are known.
+    retained: Arc<Mutex<Option<(u64, u64)>>>,
     /// A request of the attempt was answered 429 or 503.
     throttled: Arc<AtomicBool>,
 }
@@ -979,11 +979,11 @@ impl TransferControl {
     pub fn restarted(&self) -> bool {
         self.restarted.load(Ordering::Acquire)
     }
-    pub fn mark_progressed(&self) {
-        self.progressed.store(true, Ordering::Release);
+    pub fn set_retained(&self, before: u64, after: u64) {
+        *self.retained.lock().unwrap_or_else(|e| e.into_inner()) = Some((before, after));
     }
-    pub fn progressed(&self) -> bool {
-        self.progressed.load(Ordering::Acquire)
+    pub fn retained(&self) -> Option<(u64, u64)> {
+        *self.retained.lock().unwrap_or_else(|e| e.into_inner())
     }
     pub fn mark_throttled(&self) {
         self.throttled.store(true, Ordering::Release);

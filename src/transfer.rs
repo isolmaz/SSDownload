@@ -297,13 +297,18 @@ pub(crate) fn preserves_partial(error: &anyhow::Error) -> bool {
 
 /// The bytes of `output` that a later attempt builds on: the ranges the resume state records
 /// for a segmented download, the length of the part file for a sequential one. Bytes that a
-/// lease received but the state does not record are not counted.
-pub(crate) fn retained_bytes(output: &Path) -> u64 {
-    match read_state(&state_path(output)) {
+/// lease received but the state does not record are not counted. `None` while the record
+/// exists but cannot be read, when the amount is unknown.
+pub(crate) fn retained_bytes(output: &Path) -> Option<u64> {
+    let path = state_path(output);
+    if unreadable_state(&path).is_some() {
+        return None;
+    }
+    Some(match read_state(&path) {
         Some(state) if state.segmented => state.completed.iter().map(|range| range.len()).sum(),
         Some(_) => fs::metadata(part_path(output)).map_or(0, |meta| meta.len()),
         None => 0,
-    }
+    })
 }
 
 pub(crate) fn has_artifacts(output: &Path) -> bool {
@@ -2606,6 +2611,9 @@ fn verify_range_support(
         transfer.perform()
     };
     let headers = response.borrow().clone();
+    if matches!(headers.status, 429 | 503) {
+        control.mark_throttled();
+    }
     if !fresh && validators_changed(&headers, remote) {
         return Err(AttemptFailure::ResourceChanged);
     }
@@ -4138,7 +4146,7 @@ mod tests {
         assert_eq!(code(&error), Some(crate::error_codes::TRF_003), "{error:#}");
         assert!(!part.exists() && !state.exists());
         assert!(!output.exists());
-        assert_eq!(retained_bytes(&output), 0);
+        assert_eq!(retained_bytes(&output), Some(0));
 
         // A checksum that is not a digest says nothing about the downloaded bytes.
         fs::write(&part, b"payload").unwrap();
@@ -5421,6 +5429,28 @@ mod tests {
             .share_mode(0)
             .open(path)
             .unwrap()
+    }
+
+    #[test]
+    fn retained_bytes_are_unknown_while_the_resume_record_cannot_be_read() {
+        let directory = TestDirectory::new("retained-unknown");
+        let output = directory.0.join("payload.bin");
+        assert_eq!(retained_bytes(&output), Some(0));
+        fs::write(part_path(&output), b"payload").unwrap();
+        write_state(
+            &state_path(&output),
+            &ResumeState {
+                version: STATE_VERSION,
+                ..ResumeState::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(retained_bytes(&output), Some(7));
+
+        let held = hold_exclusively(&state_path(&output));
+        assert_eq!(retained_bytes(&output), None);
+        drop(held);
+        assert_eq!(retained_bytes(&output), Some(7));
     }
 
     #[test]

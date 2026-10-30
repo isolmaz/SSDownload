@@ -526,20 +526,25 @@ pub(crate) fn has_partial_output(output: &Path) -> bool {
 
 /// The size of the tool's output files in the workspace of `output`, partial and finished
 /// streams alike: what a later attempt continues from. Workspace state files start with a dot.
-pub(crate) fn retained_bytes(output: &Path) -> u64 {
+/// `None` when the folder cannot be listed for another reason than not existing.
+pub(crate) fn retained_bytes(output: &Path) -> Option<u64> {
     let Ok(owner) = crate::output::identity(output) else {
-        return 0;
+        return Some(0);
     };
-    let Ok(entries) = fs::read_dir(workspace_path(output, &owner)) else {
-        return 0;
+    let entries = match fs::read_dir(workspace_path(output, &owner)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(0),
+        Err(_) => return None,
     };
-    entries
-        .flatten()
-        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-        .filter_map(|entry| fs::metadata(entry.path()).ok())
-        .filter(|metadata| metadata.is_file())
-        .map(|metadata| metadata.len())
-        .fold(0u64, u64::saturating_add)
+    Some(
+        entries
+            .flatten()
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+            .filter_map(|entry| fs::metadata(entry.path()).ok())
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| metadata.len())
+            .fold(0u64, u64::saturating_add),
+    )
 }
 
 #[derive(Debug)]

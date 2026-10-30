@@ -555,8 +555,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "İlerlemesiz art arda deneme sayısı:",
-                    "Attempts in a row without progress:",
+                    "İlerlemesiz art arda yeniden deneme:",
+                    "Retries in a row without progress:",
                 ),
                 0,
             );
