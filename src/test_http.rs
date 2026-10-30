@@ -8,7 +8,7 @@ use std::{
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -158,6 +158,7 @@ struct Shared {
     target_requests: AtomicUsize,
     ranged_connections: AtomicUsize,
     open: AtomicUsize,
+    body_bytes: AtomicU64,
     stop: AtomicBool,
     log: Mutex<Vec<Logged>>,
     sockets: Mutex<Vec<TcpStream>>,
@@ -182,6 +183,7 @@ impl Server {
             target_requests: AtomicUsize::new(0),
             ranged_connections: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
+            body_bytes: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             log: Mutex::new(Vec::new()),
             sockets: Mutex::new(Vec::new()),
@@ -204,6 +206,11 @@ impl Server {
 
     pub fn log(&self) -> Vec<Logged> {
         self.shared.log.lock().unwrap().clone()
+    }
+
+    /// Body bytes written to sockets so far, whether or not the client read them.
+    pub fn body_bytes_sent(&self) -> u64 {
+        self.shared.body_bytes.load(Ordering::Acquire)
     }
 
     /// Blocks until every connection has closed and no request has arrived for a moment, so
@@ -700,11 +707,14 @@ fn answer(
         _ => config.throttle,
     };
     let sent = cut_after.unwrap_or(length);
-    write_body(stream, reply.version, start, sent, rate) && sent == length && !reply.close
+    write_body(stream, &shared.body_bytes, reply.version, start, sent, rate)
+        && sent == length
+        && !reply.close
 }
 
 fn write_body(
     stream: &mut TcpStream,
+    counter: &AtomicU64,
     version: u8,
     start: u64,
     length: u64,
@@ -723,6 +733,7 @@ fn write_body(
         if stream.write_all(&chunk[..count]).is_err() {
             return false;
         }
+        counter.fetch_add(count as u64, Ordering::AcqRel);
         sent += count as u64;
         if let Some(rate) = rate {
             let due = Duration::from_secs_f64(sent as f64 / rate as f64);
@@ -919,6 +930,16 @@ mod tests {
         assert_eq!(answer.status, 200);
         assert_eq!(answer.body, pattern(1, 1000));
         assert_eq!(answer.header("Accept-Ranges"), Some("bytes"));
+    }
+
+    #[test]
+    fn body_bytes_sent_counts_the_body_of_every_get_and_nothing_of_a_head() {
+        let server = Server::start(config(1000));
+        let mut connection = connect(&server);
+        request(&mut connection, "HEAD", "/", &[]);
+        request(&mut connection, "GET", "/", &["Range: bytes=0-9"]);
+        request(&mut connection, "GET", "/", &[]);
+        assert_eq!(server.body_bytes_sent(), 1010);
     }
 
     #[test]

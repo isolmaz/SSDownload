@@ -37,7 +37,6 @@ pub(crate) struct RemoteInfo {
     total: Option<u64>,
     etag: Option<String>,
     last_modified: Option<String>,
-    accept_ranges: bool,
     content_type: Option<String>,
     filename: Option<String>,
 }
@@ -52,7 +51,6 @@ struct ResponseHeaders {
     filename: Option<String>,
     content_length: Option<u64>,
     content_range: Option<ContentRange>,
-    accept_ranges: bool,
     retry_after: Option<Duration>,
     headers_complete: bool,
 }
@@ -556,7 +554,7 @@ fn restart_from_zero(
 fn download_http_resuming(
     request: &AddRequest,
     output: &Path,
-    remote: RemoteInfo,
+    mut remote: RemoteInfo,
     control: &TransferControl,
     network: &NetworkGovernor,
     connections: u8,
@@ -566,19 +564,26 @@ fn download_http_resuming(
     // length, or timestamp. A caller-supplied full SHA-256 is proof only when
     // it does not conflict with present strong validators; mixed bytes can never
     // be published unless the final digest matches.
-    let stable = has_resume_identity(&remote, request.checksum.as_deref());
-    let segment_count = remote
-        .total
-        .map(|total| {
-            // Sockets beyond the per-host cap would only wait for a permit while holding a range.
-            (total / MIN_SEGMENT_SIZE)
-                .max(1)
-                .min(u64::from(connections))
-                .min(u64::from(network.per_host_limit().max(1))) as u8
-        })
-        .unwrap_or(1);
+    let mut stable = has_resume_identity(&remote, request.checksum.as_deref());
+    let segment_count_for = |remote: &RemoteInfo| {
+        remote
+            .total
+            .map(|total| {
+                // Sockets beyond the per-host cap would only wait for a permit while holding a range.
+                (total / MIN_SEGMENT_SIZE)
+                    .max(1)
+                    .min(u64::from(connections))
+                    .min(u64::from(network.per_host_limit().max(1))) as u8
+            })
+            .unwrap_or(1)
+    };
+    let mut segment_count = segment_count_for(&remote);
 
     let existing_state = read_state(&state_path(output));
+    // With nothing on disk there is no identity to protect: the ranged probe, not the advisory
+    // HEAD, describes the file that the following requests fetch.
+    let fresh =
+        existing_state.is_none() && !part_path(output).exists() && !legacy_segments_exist(output);
     let sequential_resume = existing_state.as_ref().is_some_and(|state| {
         state.version == STATE_VERSION && !state.segmented && part_path(output).exists()
     });
@@ -613,14 +618,19 @@ fn download_http_resuming(
         .unwrap_or(false);
     let range_supported = if reusable_ranges {
         true
-    } else if !sequential_resume
-        && stable
-        && remote.total.is_some()
-        && remote.accept_ranges
-        && segment_count > 1
-    {
-        match verify_range_support(request, &remote, control, network) {
-            Ok(supported) => supported,
+    } else if !sequential_resume && stable && remote.total.is_some() && segment_count > 1 {
+        match verify_range_support(request, &remote, fresh, control, network) {
+            Ok(Some(headers)) => {
+                if fresh {
+                    remote.total = headers.content_range.and_then(|range| range.total);
+                    remote.etag = headers.etag;
+                    remote.last_modified = headers.last_modified;
+                    segment_count = segment_count_for(&remote);
+                    stable = has_resume_identity(&remote, request.checksum.as_deref());
+                }
+                segment_count > 1 && stable
+            }
+            Ok(None) => false,
             Err(AttemptFailure::ResourceChanged) => {
                 return Err(preserved_partial(crate::i18n::ui(
                     "Kaynak kimliği değişti; doğrulanmış parçalar kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
@@ -628,19 +638,14 @@ fn download_http_resuming(
                 )))
             }
             Err(AttemptFailure::Other(error)) => return Err(error),
-            // Probe transport and status failures have always meant that range support
-            // is unproven, so retain the existing single-transfer fallback.
+            // Probe transport and status failures leave range support unproven, so the
+            // download continues over a single connection.
             Err(_) => false,
         }
     } else {
         false
     };
-    if !sequential_resume
-        && stable
-        && remote.total.is_some()
-        && remote.accept_ranges
-        && range_supported
-    {
+    if !sequential_resume && stable && remote.total.is_some() && range_supported {
         match download_segmented(
             request,
             output,
@@ -651,7 +656,7 @@ fn download_http_resuming(
             progress,
         ) {
             Ok(result) => return Ok(result),
-            Err(AttemptFailure::RangeRejected)
+            Err(AttemptFailure::RangeRejected | AttemptFailure::ResourceChanged)
                 if read_state(&state_path(output)).is_some_and(|state| {
                     state.version == STATE_VERSION
                         && state.segmented
@@ -666,7 +671,8 @@ fn download_http_resuming(
                 }) =>
             {
                 // No range was durably accepted, so truncating the allocated sparse
-                // file cannot discard resumable data or combine different resources.
+                // file cannot discard resumable data or combine different resources. A server
+                // whose validators differ from one request to the next ends up here.
                 return download_http_single(
                     request, output, &remote, control, network, progress, false,
                 );
@@ -745,8 +751,7 @@ fn download_http_single(
                 )
             })
             .unwrap_or(false)
-        && remote.total.map(|total| offset <= total).unwrap_or(true)
-        && remote.accept_ranges;
+        && remote.total.map(|total| offset <= total).unwrap_or(true);
     if !resumable && offset > 0 {
         if let Some(error) = previous
             .is_none()
@@ -785,20 +790,7 @@ fn download_http_single(
         file.sync_all()?;
     }
 
-    write_state(
-        &state_path,
-        &ResumeState {
-            version: STATE_VERSION,
-            url: hex::encode(Sha256::digest(remote.url.as_str().as_bytes())),
-            etag: remote.etag.clone(),
-            last_modified: remote.last_modified.clone(),
-            total: remote.total,
-            segmented: false,
-            connections: 1,
-            checksum: normalized_checksum(request.checksum.as_deref()),
-            completed: Vec::new(),
-        },
-    )?;
+    write_state(&state_path, &single_state(request, remote))?;
 
     let mut current = remote.url.clone();
     let original_origin = remote.credential_origin.clone();
@@ -819,6 +811,7 @@ fn download_http_single(
             &current,
             &original_origin,
             &part,
+            &state_path,
             offset,
             expected,
             remote,
@@ -844,7 +837,12 @@ fn download_http_single(
                     continue;
                 }
                 let bytes = offset.saturating_add(written);
-                if let Some(total) = remote.total {
+                let total = if offset == 0 {
+                    adopt_full_response(remote, &headers).total
+                } else {
+                    remote.total
+                };
+                if let Some(total) = total {
                     if bytes != total {
                         bail!(
                             "{}",
@@ -926,6 +924,7 @@ fn http_to_file(
     url: &Url,
     original_origin: &(String, String, u16),
     path: &Path,
+    state: &Path,
     offset: u64,
     expected: ExpectedResponse,
     remote: &RemoteInfo,
@@ -1006,6 +1005,19 @@ fn http_to_file(
                 }
                 if !response_allows_remote_body(&write_response.borrow(), expected, remote) {
                     return Ok(0);
+                }
+                if written == 0 && matches!(expected, ExpectedResponse::Full) {
+                    // The state has to describe the bytes before the first one is written.
+                    let adopted = adopt_full_response(remote, &write_response.borrow());
+                    if adopted.etag != remote.etag
+                        || adopted.last_modified != remote.last_modified
+                        || adopted.total != remote.total
+                    {
+                        if let Err(error) = write_state(state, &single_state(request, &adopted)) {
+                            *write_error.borrow_mut() = Some(std::io::Error::other(error));
+                            return Ok(0);
+                        }
+                    }
                 }
                 if let Err(error) = file.write_all(data) {
                     *write_error.borrow_mut() = Some(error);
@@ -1094,7 +1106,7 @@ fn http_to_file(
             Ok(()) => Err(AttemptFailure::RangeRejected),
         };
     }
-    if validators_changed(&headers, remote) {
+    if identity_changed(&headers, expected, remote) {
         return Err(AttemptFailure::ResourceChanged);
     }
     if !response_allows_body(&headers, expected) {
@@ -2381,7 +2393,6 @@ fn probe_http(
             total,
             etag: headers.etag,
             last_modified: headers.last_modified,
-            accept_ranges: headers.accept_ranges || headers.status == 206,
             content_type: headers.content_type,
             filename: headers.filename,
         });
@@ -2426,18 +2437,25 @@ fn probe_ftp(
         total: length,
         etag: None,
         last_modified: modified,
-        accept_ranges: false,
         content_type: None,
         filename: None,
     })
 }
 
+/// Asks for the first byte. Range support is proven only by a 206 whose `Content-Range` names
+/// that byte and a known total; `Accept-Ranges` and the answer to HEAD prove nothing. Returns
+/// the response headers of such an answer. A 200 is not read: the body is abandoned at its
+/// first chunk, so the download that follows is the only transfer of the full body.
+///
+/// With `fresh` nothing is on disk, so the request carries no `If-Range` and the answer's total
+/// and validators are the caller's to adopt. Otherwise the answer has to match `remote`.
 fn verify_range_support(
     request: &AddRequest,
     remote: &RemoteInfo,
+    fresh: bool,
     control: &TransferControl,
     network: &NetworkGovernor,
-) -> std::result::Result<bool, AttemptFailure> {
+) -> std::result::Result<Option<ResponseHeaders>, AttemptFailure> {
     let mut easy = network
         .easy_for_url(&remote.url, control)
         .map_err(AttemptFailure::Other)?;
@@ -2451,7 +2469,7 @@ fn verify_range_support(
         request,
         &remote.url,
         &remote.credential_origin,
-        range_validator(remote),
+        range_validator(remote).filter(|_| !fresh),
     )?)
     .map_err(anyhow::Error::from)?;
     let response = Rc::new(RefCell::new(ResponseHeaders::default()));
@@ -2460,7 +2478,7 @@ fn verify_range_support(
     let expected = ExpectedResponse::Range {
         start: 0,
         end: Some(0),
-        total: remote.total,
+        total: remote.total.filter(|_| !fresh),
     };
     let result = {
         let mut transfer = easy.transfer();
@@ -2475,20 +2493,28 @@ fn verify_range_support(
             .map_err(anyhow::Error::from)?;
         transfer
             .write_function(move |data| {
-                if response_allows_remote_body(&body_response.borrow(), expected, remote) {
-                    Ok(data.len())
+                let headers = body_response.borrow();
+                let allowed = if fresh {
+                    response_allows_body(&headers, expected)
                 } else {
-                    Ok(0)
-                }
+                    response_allows_remote_body(&headers, expected, remote)
+                };
+                Ok(if allowed { data.len() } else { 0 })
             })
             .map_err(anyhow::Error::from)?;
         transfer.perform()
     };
     let headers = response.borrow().clone();
-    if validators_changed(&headers, remote) {
+    if !fresh && validators_changed(&headers, remote) {
         return Err(AttemptFailure::ResourceChanged);
     }
-    Ok(result.is_ok() && response_allows_body(&headers, expected))
+    let known_total = headers
+        .content_range
+        .is_some_and(|range| range.total.is_some());
+    Ok(
+        (result.is_ok() && known_total && response_allows_body(&headers, expected))
+            .then_some(headers),
+    )
 }
 
 pub(crate) fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
@@ -2659,7 +2685,6 @@ fn parse_header_line(headers: &mut ResponseHeaders, bytes: &[u8]) {
         }
         "content-length" => headers.content_length = value.parse().ok(),
         "content-range" => headers.content_range = parse_content_range(value),
-        "accept-ranges" => headers.accept_ranges = value.eq_ignore_ascii_case("bytes"),
         "retry-after" => headers.retry_after = parse_retry_after(value),
         _ => {}
     }
@@ -2756,7 +2781,43 @@ fn response_allows_remote_body(
     expected: ExpectedResponse,
     remote: &RemoteInfo,
 ) -> bool {
-    response_allows_body(headers, expected) && !validators_changed(headers, remote)
+    response_allows_body(headers, expected) && !identity_changed(headers, expected, remote)
+}
+
+/// A full response starts the file from nothing, so nothing on disk depends on the probe's
+/// validators and the response's own are adopted (`adopt_full_response`). Every ranged
+/// response continues bytes that are already on disk and has to match them.
+fn identity_changed(
+    headers: &ResponseHeaders,
+    expected: ExpectedResponse,
+    remote: &RemoteInfo,
+) -> bool {
+    matches!(expected, ExpectedResponse::Range { .. }) && validators_changed(headers, remote)
+}
+
+/// The file as a full response describes it. The probe, which may be a HEAD, fills in only the
+/// total that the response leaves out.
+fn adopt_full_response(remote: &RemoteInfo, headers: &ResponseHeaders) -> RemoteInfo {
+    RemoteInfo {
+        total: headers.content_length.or(remote.total),
+        etag: headers.etag.clone(),
+        last_modified: headers.last_modified.clone(),
+        ..remote.clone()
+    }
+}
+
+fn single_state(request: &AddRequest, remote: &RemoteInfo) -> ResumeState {
+    ResumeState {
+        version: STATE_VERSION,
+        url: source_url_digest(&remote.url),
+        etag: remote.etag.clone(),
+        last_modified: remote.last_modified.clone(),
+        total: remote.total,
+        segmented: false,
+        connections: 1,
+        checksum: normalized_checksum(request.checksum.as_deref()),
+        completed: Vec::new(),
+    }
 }
 
 /// A missing validator neither proves nor disproves remote identity. Only two
@@ -3379,7 +3440,6 @@ mod tests {
             total: Some(100),
             etag: etag.map(str::to_owned),
             last_modified: None,
-            accept_ranges: true,
             content_type: None,
             filename: None,
         }
