@@ -2288,7 +2288,7 @@ mod retry_budget {
             ..Config::default()
         });
         let root = TempDir::new("retry-flipping-identity");
-        let engine = engine_with_retry_limit(&root.0, 1);
+        let engine = engine_with_retry_limit(&root.0, 2);
         let id = add_download(&engine, &server, &root.0.join("out"), None);
 
         let job = finished_job(&engine, &id);
@@ -2318,7 +2318,65 @@ mod retry_budget {
 
         let job = finished_job(&engine, &id);
         assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
-        assert_eq!(attempts_made(&server), 3);
+        assert_eq!(attempts_made(&server), 2);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_refreshed_source_with_a_restart_is_judged_afresh_not_against_the_old_high_mark() {
+        // The old source keeps 600 KiB before the job is paused. The refreshed source restarts
+        // the download and is cut every 300 KiB: each attempt retains more than the one before,
+        // although never more than the old source had.
+        let old = Server::start(Config {
+            size: MIB,
+            cut_body: Some(CutBody {
+                after_bytes: 600 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let new = Server::start(Config {
+            size: MIB,
+            cut_body: Some(CutBody {
+                after_bytes: 300 * 1024,
+                responses: usize::MAX,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-refresh");
+        let engine = engine_with_retry_limit(&root.0, 1);
+        let id = engine
+            .add(AddRequest {
+                filename: Some("refresh.bin".into()),
+                page_url: Some("https://example.test/watch/refresh".into()),
+                source_identity: Some(SourceIdentity {
+                    video_id: "refresh-video".into(),
+                    frame_id: 7,
+                    document_id: None,
+                    page_url: "https://example.test/watch/refresh".into(),
+                }),
+                ..file_request(old.url("/payload.bin"), &root.0.join("out"))
+            })
+            .unwrap()
+            .remove(0);
+        wait_until("the cut response", || {
+            old.log().iter().any(|entry| entry.body_cut)
+        });
+        old.wait_idle();
+        engine.pause(&id).unwrap();
+        wait_until("the pause", || job_state(&engine, &id) == JobState::Paused);
+
+        let ticket = engine.begin_source_refresh(&id).unwrap();
+        let mut request = (*ticket.request).clone();
+        request.url = new.url("/payload.bin");
+        engine
+            .complete_source_refresh(&id, &ticket.token, request, true)
+            .unwrap();
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(file_sha256(&job.path), pattern_sha256(1, MIB));
+        assert_eq!(attempts_made(&new), 4);
         engine.shutdown();
     }
 

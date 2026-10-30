@@ -380,8 +380,9 @@ pub struct Job {
     pub phase: String,
     pub created_at: i64,
     pub updated_at: i64,
-    /// Failed attempts in a row that kept nothing new; a retryable failure after progress, a
-    /// manual resume and a source refresh start the count again.
+    /// Attempts in a row since the last progress, that attempt included: 1 after a retryable
+    /// failure that kept new bytes, one more for each such failure that kept nothing. A manual
+    /// resume and a source refresh start the count again at 0.
     pub attempts: u32,
     #[serde(default)]
     pub work_dir: Option<PathBuf>,

@@ -2180,6 +2180,7 @@ impl Actor {
         let queue_id = job_queue_id(&updated).to_owned();
         self.jobs.insert(active.id.clone(), updated);
         self.source_refresh.remove(&active.id);
+        self.forget_retry_state(&active.id);
         self.completion_armed.insert(queue_id);
         self.publish();
         if let Some(message) = finalization_error {
@@ -3325,6 +3326,9 @@ impl Actor {
                         uncapped.direct.max(uncapped.media_fragments).max(1)
                     });
                 let progressed = attempt_progressed(&mut self.retained_high, &id, &active.control);
+                if result.is_ok() || matches!(active.desired, DesiredStop::Remove { .. }) {
+                    self.forget_retry_state(&id);
+                }
                 let _ = active.handle.join();
                 match active.desired {
                     DesiredStop::Remove { delete_file, .. } => {
@@ -3560,11 +3564,12 @@ impl Actor {
                 job.speed = 0;
                 job.eta = None;
                 job.error = Some(message.clone());
-                // The retry limit counts failed attempts in a row that kept nothing new. With a
-                // limit of 0 nothing is retried, whatever the attempt kept.
+                // The retry limit counts retries in a row that kept nothing new. An attempt that
+                // kept bytes starts the count at one: the failure that the retries follow. With
+                // a limit of 0 nothing is retried, whatever the attempt kept.
                 if retryable {
                     job.attempts = if failure.progressed && self.settings.retry_limit > 0 {
-                        0
+                        1
                     } else {
                         job.attempts.saturating_add(1)
                     };
@@ -4983,7 +4988,8 @@ struct TransferFailure {
     retryable: bool,
     retry_after: Option<Duration>,
     source_refresh: bool,
-    /// The attempt ended with more retained bytes than it began with.
+    /// The attempt ended above the most the job had retained before; the engine judges it when
+    /// the attempt ends.
     progressed: bool,
     /// The server answered 429 or 503.
     throttled: bool,

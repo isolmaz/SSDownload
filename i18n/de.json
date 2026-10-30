@@ -637,7 +637,7 @@
   "Resume all": "Alle fortsetzen",
   "Resume this job from the browser transfer on its source tab; the transfer method was not changed.": "Setzen Sie diesen Auftrag über die Browser-Übertragung auf dem Quell-Tab fort; die Übertragungsmethode wurde nicht geändert.",
   "Retries in a row without progress": "Die Anzahl der Wiederholungen ohne Fortschritt in Folge",
-  "Retries in a row without progress:": "Wiederholungen ohne Fortschritt in Folge:",
+  "Retries in a row without progress:": "Wdh. in Folge ohne Fortschritt:",
   "Retries without progress": "Wiederholungen ohne Fortschritt",
   "Retry": "Wiederholen",
   "Retry &failed": "Fehlgeschlagene &wiederholen",

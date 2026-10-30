@@ -637,7 +637,7 @@
   "Resume all": "Retomar tudo",
   "Resume this job from the browser transfer on its source tab; the transfer method was not changed.": "Retome esta tarefa a partir da transferência pelo navegador na aba de origem; o método de transferência não foi alterado.",
   "Retries in a row without progress": "O número de novas tentativas seguidas sem progresso",
-  "Retries in a row without progress:": "Novas tentativas seguidas sem progresso:",
+  "Retries in a row without progress:": "Tentativas seguidas sem progresso:",
   "Retries without progress": "Novas tentativas sem progresso",
   "Retry": "Tentar novamente",
   "Retry &failed": "Tentar &novamente os que falharam",
