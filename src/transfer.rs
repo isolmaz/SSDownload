@@ -41,6 +41,9 @@ enum Retained {
     Vouched,
     /// Earlier bytes: each ranged response has to carry a validator equal to the record's.
     Unvouched,
+    /// Earlier bytes, and this attempt's probe reports an ETag other than the recorded one:
+    /// only the recorded strong ETag, carried by the ranged response itself, proves the file.
+    Disputed,
 }
 
 #[derive(Debug, Clone)]
@@ -608,8 +611,9 @@ fn download_http_resuming(
     // Retained bytes are bound to the record written with them, not to what the advisory probe
     // reports now: the ranged requests below send the record's validator in `If-Range` and
     // accept only a `Content-Range` with the record's total. Each such response must also
-    // carry a validator equal to the record's, unless this attempt's probe already does
-    // (`Retained`).
+    // carry a validator equal to the record's, unless this attempt's probe or a supplied
+    // SHA-256 already vouches for the record; a probe that reports another ETag disputes it
+    // (`retention`).
     if let Some(state) = &existing_state {
         remote.total = state.total;
         remote.etag = state.etag.clone();
@@ -666,21 +670,11 @@ fn download_http_resuming(
                 ) || legacy_state_matches(state, &remote))
         })
         .unwrap_or(false);
-    if reusable_ranges || sequential_resume {
-        let guarded = existing_state.as_ref().is_some_and(|state| {
-            vouches_for_record(
-                &remote,
-                probe.etag.as_deref(),
-                probe.last_modified.as_deref(),
-                probe.total,
-            ) || normalized_checksum(request.checksum.as_deref())
-                .is_some_and(|checksum| state.checksum.as_deref() == Some(checksum.as_str()))
-        });
-        remote.retained = if guarded {
-            Retained::Vouched
-        } else {
-            Retained::Unvouched
-        };
+    if let Some(state) = existing_state
+        .as_ref()
+        .filter(|_| reusable_ranges || sequential_resume)
+    {
+        remote.retained = retention(state, &remote, &probe, request.checksum.as_deref());
     }
     // A fresh download sends the probe unless HEAD reported a size too small to split or an
     // earlier ranged request already showed that the server ignores ranges; its answer
@@ -2887,19 +2881,25 @@ fn identity_changed(
     expected: ExpectedResponse,
     remote: &RemoteInfo,
 ) -> bool {
+    let (etag, last_modified) = (headers.etag.as_deref(), headers.last_modified.as_deref());
+    let total = headers.content_range.and_then(|range| range.total);
     matches!(expected, ExpectedResponse::Range { .. })
         && (validators_changed(headers, remote)
-            || (remote.retained == Retained::Unvouched
-                && !vouches_for_record(
-                    remote,
-                    headers.etag.as_deref(),
-                    headers.last_modified.as_deref(),
-                    headers.content_range.and_then(|range| range.total),
-                )))
+            || match remote.retained {
+                Retained::None | Retained::Vouched => false,
+                Retained::Unvouched => !vouches_for_record(remote, etag, last_modified, total),
+                Retained::Disputed => !saved_etag_matches(remote, etag),
+            })
+}
+
+/// Whether the recorded ETag is strong and `etag` equals it.
+fn saved_etag_matches(remote: &RemoteInfo, etag: Option<&str>) -> bool {
+    remote.etag.as_deref().is_some_and(is_strong_etag) && etag == remote.etag.as_deref()
 }
 
 /// Whether the given validators and total positively identify the file that `remote` records:
-/// an equal strong ETag, or an equal Last-Modified with the exact recorded total. A missing
+/// an equal strong ETag, or an equal Last-Modified with the exact recorded total and no
+/// ETag that disagrees with the recorded one (as in `modification_identity`). A missing
 /// validator proves nothing.
 fn vouches_for_record(
     remote: &RemoteInfo,
@@ -2907,16 +2907,59 @@ fn vouches_for_record(
     last_modified: Option<&str>,
     total: Option<u64>,
 ) -> bool {
-    let strong =
-        remote.etag.as_deref().is_some_and(is_strong_etag) && etag == remote.etag.as_deref();
+    let etags_disagree = remote
+        .etag
+        .as_deref()
+        .zip(etag)
+        .is_some_and(|(recorded, given)| recorded != given);
     let dated = remote
         .last_modified
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
         && last_modified == remote.last_modified.as_deref()
         && remote.total.is_some()
-        && total == remote.total;
-    strong || dated
+        && total == remote.total
+        && !etags_disagree;
+    saved_etag_matches(remote, etag) || dated
+}
+
+/// How the requests of an attempt that continues the bytes recorded in `state` are bound to
+/// them. `record` is the remote filled from the state, `probe` is this attempt's HEAD.
+///
+/// A probe that reports another ETag disputes the record, and then neither a date, a
+/// validator-less answer nor the probe itself proves anything. A supplied SHA-256 guards the
+/// result, except against a strong ETag that conflicts with the recorded strong one.
+fn retention(
+    state: &ResumeState,
+    record: &RemoteInfo,
+    probe: &RemoteInfo,
+    checksum: Option<&str>,
+) -> Retained {
+    let disputed = record
+        .etag
+        .as_deref()
+        .zip(probe.etag.as_deref())
+        .is_some_and(|(recorded, reported)| recorded != reported);
+    let strong_conflict = disputed
+        && record.etag.as_deref().is_some_and(is_strong_etag)
+        && probe.etag.as_deref().is_some_and(is_strong_etag);
+    let digest_guards = !strong_conflict
+        && normalized_checksum(checksum)
+            .is_some_and(|digest| state.checksum.as_deref() == Some(digest.as_str()));
+    if digest_guards {
+        Retained::Vouched
+    } else if disputed {
+        Retained::Disputed
+    } else if vouches_for_record(
+        record,
+        probe.etag.as_deref(),
+        probe.last_modified.as_deref(),
+        probe.total,
+    ) {
+        Retained::Vouched
+    } else {
+        Retained::Unvouched
+    }
 }
 
 /// A 200 whose end is marked only by the closing connection: nothing in the response tells a
@@ -3737,6 +3780,121 @@ mod tests {
             expected,
             &vouched
         ));
+    }
+
+    #[test]
+    fn a_date_never_proves_a_file_whose_etag_disagrees() {
+        let date = "Wed, 01 Jan 2026 00:00:00 GMT";
+        let record = |etag: &str| RemoteInfo {
+            last_modified: Some(date.into()),
+            ..remote_with_etag(Some(etag))
+        };
+        let proves = |recorded: &str, etag: Option<&str>| {
+            vouches_for_record(&record(recorded), etag, Some(date), Some(100))
+        };
+        assert!(proves("\"v1\"", None));
+        assert!(proves("\"v1\"", Some("\"v1\"")));
+        assert!(!proves("\"v1\"", Some("\"v2\"")));
+        assert!(!proves("W/\"v1\"", Some("W/\"v2\"")));
+        assert!(proves("W/\"v1\"", None));
+
+        // Once the probe reports another ETag, only the recorded strong ETag on the ranged
+        // answer proves the file.
+        let mut disputed = record("\"v1\"");
+        disputed.retained = Retained::Disputed;
+        let partial = |etag: Option<&str>| {
+            let mut headers = ResponseHeaders {
+                status: 206,
+                etag: etag.map(str::to_owned),
+                last_modified: Some(date.into()),
+                headers_complete: true,
+                ..Default::default()
+            };
+            headers.content_range = parse_content_range("bytes 10-99/100");
+            headers
+        };
+        let expected = ExpectedResponse::Range {
+            start: 10,
+            end: None,
+            total: Some(100),
+        };
+        assert!(!identity_changed(
+            &partial(Some("\"v1\"")),
+            expected,
+            &disputed
+        ));
+        assert!(identity_changed(&partial(None), expected, &disputed));
+        disputed.etag = Some("W/\"v1\"".into());
+        assert!(identity_changed(
+            &partial(Some("W/\"v1\"")),
+            expected,
+            &disputed
+        ));
+    }
+
+    #[test]
+    fn a_probe_that_reports_another_etag_disputes_the_record() {
+        let date = "Wed, 01 Jan 2026 00:00:00 GMT";
+        let digest = "ab".repeat(32);
+        let state = |etag: Option<&str>, checksum: Option<&str>| ResumeState {
+            version: STATE_VERSION,
+            etag: etag.map(str::to_owned),
+            last_modified: Some(date.into()),
+            total: Some(100),
+            checksum: checksum.map(str::to_owned),
+            ..Default::default()
+        };
+        let retention_of =
+            |state: &ResumeState, probe_etag: Option<&str>, supplied: Option<&str>| {
+                let record = RemoteInfo {
+                    last_modified: state.last_modified.clone(),
+                    ..remote_with_etag(state.etag.as_deref())
+                };
+                let probe = RemoteInfo {
+                    last_modified: Some(date.into()),
+                    ..remote_with_etag(probe_etag)
+                };
+                retention(state, &record, &probe, supplied)
+            };
+        let strong = state(Some("\"v1\""), None);
+        assert_eq!(
+            retention_of(&strong, Some("\"v1\""), None),
+            Retained::Vouched
+        );
+        assert_eq!(retention_of(&strong, None, None), Retained::Vouched);
+        assert_eq!(
+            retention_of(&strong, Some("\"v2\""), None),
+            Retained::Disputed
+        );
+        let weak = state(Some("W/\"v1\""), None);
+        assert_eq!(
+            retention_of(&weak, Some("W/\"v2\""), None),
+            Retained::Disputed
+        );
+
+        // A digest guards the result, but not against a conflicting strong ETag.
+        let guarded = state(Some("\"v1\""), Some(&digest));
+        assert_eq!(
+            retention_of(&guarded, Some("\"v2\""), Some(&digest)),
+            Retained::Disputed
+        );
+        assert_eq!(
+            retention_of(&guarded, Some("W/\"v2\""), Some(&digest)),
+            Retained::Vouched
+        );
+        assert_eq!(
+            retention_of(&guarded, Some("\"v2\""), Some(&"cd".repeat(32))),
+            Retained::Disputed
+        );
+        let undated = ResumeState {
+            etag: None,
+            last_modified: None,
+            ..state(None, Some(&digest))
+        };
+        assert_eq!(
+            retention_of(&undated, Some("\"v2\""), Some(&digest)),
+            Retained::Vouched
+        );
     }
 
     #[test]

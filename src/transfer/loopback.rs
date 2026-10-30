@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::test_http::{
-    file_sha256, pattern_sha256, Config, CutBody, Logged, RangeSupport, RetryAfter, Scripted,
-    Server, TempDir,
+    file_sha256, pattern_sha256, Config, CutBody, EtagKind, Logged, RangeSupport, RetryAfter,
+    Scripted, Server, TempDir,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -835,27 +835,126 @@ fn resuming_against_a_server_that_ignores_ranges_asks_for_a_range_once() {
     assert_eq!(second[1].if_range.as_deref(), Some("\"v1\""));
 }
 
+/// Version 2 replaces the file between two attempts with the same size, and the server
+/// answers the resume without any proof of identity that the changed file could not give too.
+/// Whatever the weakness is (`tweak`), the second attempt has to restart and publish version 2.
+fn swapped_file_restarts(tweak: impl Fn(&mut Config), digest_of_version_2: bool) {
+    for (connections, size, rate) in [(1u8, MIB, MIB), (2, 40 * MIB + 4_097, 32 * MIB)] {
+        swapped_file_restarts_over(connections, size, rate, &tweak, digest_of_version_2);
+    }
+}
+
 #[test]
 fn a_same_size_changed_file_is_not_resumed_into_the_old_partial_over_one_connection() {
-    changed_same_size_file_restarts(1, MIB, MIB);
+    swapped_file_restarts_over(
+        1,
+        MIB,
+        MIB,
+        &|config| {
+            config.ignore_if_range = true;
+            config.partial_without_validators = true;
+        },
+        false,
+    );
 }
 
 #[test]
 fn a_same_size_changed_file_is_not_resumed_into_the_old_partial_over_several_connections() {
-    changed_same_size_file_restarts(2, 40 * MIB + 4_097, 32 * MIB);
+    swapped_file_restarts_over(
+        2,
+        40 * MIB + 4_097,
+        32 * MIB,
+        &|config| {
+            config.ignore_if_range = true;
+            config.partial_without_validators = true;
+        },
+        false,
+    );
+}
+
+#[test]
+fn a_matching_last_modified_does_not_prove_a_file_whose_etag_changed() {
+    // Strong ETag, `If-Range` ignored, no validator on the resume answer, the same
+    // `Last-Modified` on both versions: only the ETag tells them apart.
+    swapped_file_restarts(
+        |config| {
+            config.ignore_if_range = true;
+            config.partial_without_validators = true;
+            config.last_modified_fixed = true;
+        },
+        false,
+    );
+}
+
+#[test]
+fn a_weak_etag_that_changed_is_not_hidden_by_a_matching_last_modified() {
+    swapped_file_restarts(
+        |config| {
+            config.etag = EtagKind::Weak;
+            config.last_modified_fixed = true;
+        },
+        false,
+    );
+}
+
+#[test]
+fn a_strong_etag_dropped_from_an_answer_that_keeps_last_modified_does_not_prove_the_file() {
+    // A server that honoured `If-Range` would answer with the whole new file.
+    swapped_file_restarts(
+        |config| {
+            config.ignore_if_range = true;
+            config.partial_without_etag = true;
+            config.last_modified_fixed = true;
+        },
+        false,
+    );
+}
+
+#[test]
+fn a_weak_etag_dropped_from_an_answer_that_keeps_last_modified_does_not_prove_the_file() {
+    swapped_file_restarts(
+        |config| {
+            config.etag = EtagKind::Weak;
+            config.partial_without_etag = true;
+            config.last_modified_fixed = true;
+        },
+        false,
+    );
+}
+
+#[test]
+fn a_supplied_digest_does_not_vouch_against_a_conflicting_strong_etag() {
+    // The digest is that of version 2. Vouching for the version-1 partial would mix the two
+    // and fail the final check; the conflicting HEAD ETag restarts the download instead.
+    swapped_file_restarts(
+        |config| {
+            config.ignore_if_range = true;
+            config.partial_without_validators = true;
+        },
+        true,
+    );
 }
 
 /// The server ignores `If-Range` and its resume answers carry no validators, so only this
 /// attempt's HEAD could vouch for the old bytes, and it describes version 2.
-fn changed_same_size_file_restarts(connections: u8, size: u64, rate: u64) {
-    let server = Server::start(Config {
+fn swapped_file_restarts_over(
+    connections: u8,
+    size: u64,
+    rate: u64,
+    tweak: &dyn Fn(&mut Config),
+    digest_of_version_2: bool,
+) {
+    let mut config = Config {
         size,
         throttle: Some(rate),
-        ignore_if_range: true,
-        partial_without_validators: true,
         ..Config::default()
-    });
-    let request = request_for(&server);
+    };
+    tweak(&mut config);
+    let server = Server::start(config);
+    let request = AddRequest {
+        checksum: digest_of_version_2.then(|| pattern_sha256(2, size)),
+        ..request_for(&server)
+    };
     let directory = TempDir::new("changed-same-size");
     let output = directory.0.join("payload.bin");
     let state_file = state_path(&output);

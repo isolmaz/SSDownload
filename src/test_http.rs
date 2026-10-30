@@ -97,6 +97,10 @@ pub struct Config {
     pub ignore_if_range: bool,
     /// A 206 answer to a request with `If-Range` carries no `ETag` and no `Last-Modified`.
     pub partial_without_validators: bool,
+    /// A 206 answer to a request with `If-Range` carries no `ETag` but keeps `Last-Modified`.
+    pub partial_without_etag: bool,
+    /// Both body versions carry the first version's `Last-Modified`.
+    pub last_modified_fixed: bool,
     /// Bytes per second on every connection.
     pub throttle: Option<u64>,
     /// Bytes per second on the k-th admitted connection (from 0, counted in the order the log
@@ -130,6 +134,8 @@ impl Default for Config {
             switch_version_after: None,
             ignore_if_range: false,
             partial_without_validators: false,
+            partial_without_etag: false,
+            last_modified_fixed: false,
             throttle: None,
             slow_connection: None,
             max_connections: None,
@@ -603,11 +609,14 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             Some(format!("{weak}\"v{version}{unique}\""))
         }
     };
-    let last_modified = config.last_modified.then_some(if version == 1 {
-        "Mon, 01 Jan 2024 00:00:00 GMT"
-    } else {
-        "Tue, 02 Jan 2024 00:00:00 GMT"
-    });
+    let last_modified =
+        config
+            .last_modified
+            .then_some(if version == 1 || config.last_modified_fixed {
+                "Mon, 01 Jan 2024 00:00:00 GMT"
+            } else {
+                "Tue, 02 Jan 2024 00:00:00 GMT"
+            });
     let mut identity = Vec::new();
     if config.accept_ranges_header {
         identity.push("Accept-Ranges: bytes".to_owned());
@@ -677,6 +686,9 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
                     let mut headers = identity;
                     if config.partial_without_validators && request.header("if-range").is_some() {
                         headers.retain(|header| header.starts_with("Accept-Ranges"));
+                    }
+                    if config.partial_without_etag && request.header("if-range").is_some() {
+                        headers.retain(|header| !header.starts_with("ETag:"));
                     }
                     headers.push(format!("Content-Range: bytes {start}-{end}/{size}"));
                     Reply {
