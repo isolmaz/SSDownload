@@ -278,8 +278,9 @@ fn an_existing_file_at_the_target_name_is_kept_and_the_download_gets_another_nam
 
 const BENCH_SIZE: u64 = 128 * MIB;
 const BENCH_RATE: u64 = 4 * MIB;
-/// The first range worker's socket: connection 0 answers the HEAD probe and 1 the range probe.
-const SLOW_CONNECTION: usize = 2;
+/// The first connection that starts with a ranged GET above byte 0, so the slow socket does
+/// not depend on how many probe connections come first.
+const SLOW_CONNECTION: usize = 0;
 
 /// Downloads the benchmark file with the connection values the engine would pass to
 /// `download` and prints seconds and MiB/s. A failed attempt starts the next one at once,
@@ -359,36 +360,33 @@ fn bench_default_connections() {
 #[test]
 #[ignore = "benchmark: cargo test --lib bench_ -- --ignored --nocapture --test-threads=1"]
 fn bench_eight_connections() {
-    let (_, per_host_limit) = default_settings();
     bench(
-        "8 connections requested, 4 MiB/s each",
+        "8 connections and per-host limit 8, 4 MiB/s each",
         throttled(),
         8,
-        per_host_limit,
+        8,
     );
 }
 
 #[test]
 #[ignore = "benchmark: cargo test --lib bench_ -- --ignored --nocapture --test-threads=1"]
 fn bench_one_slow_connection() {
-    let (_, per_host_limit) = default_settings();
     bench(
-        "8 connections requested, one at 0.5 MiB/s",
+        "8 connections and per-host limit 8, one at 0.5 MiB/s",
         Config {
             slow_connection: Some((SLOW_CONNECTION, MIB / 2)),
             ..throttled()
         },
         8,
-        per_host_limit,
+        8,
     );
 }
 
 #[test]
 #[ignore = "benchmark: cargo test --lib bench_ -- --ignored --nocapture --test-threads=1"]
 fn bench_dropped_connections() {
-    let (_, per_host_limit) = default_settings();
     bench(
-        "8 connections requested, first 6 responses cut",
+        "8 connections and per-host limit 8, first 6 responses cut",
         Config {
             cut_body: Some(CutBody {
                 after_bytes: 4 * MIB,
@@ -397,21 +395,20 @@ fn bench_dropped_connections() {
             ..throttled()
         },
         8,
-        per_host_limit,
+        8,
     );
 }
 
 #[test]
 #[ignore = "benchmark: cargo test --lib bench_ -- --ignored --nocapture --test-threads=1"]
 fn bench_ranges_without_accept_ranges_header() {
-    let (_, per_host_limit) = default_settings();
     bench(
-        "8 connections requested, no Accept-Ranges header",
+        "8 connections and per-host limit 8, no Accept-Ranges header",
         Config {
             accept_ranges_header: false,
             ..throttled()
         },
         8,
-        per_host_limit,
+        8,
     );
 }

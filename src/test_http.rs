@@ -89,8 +89,9 @@ pub struct Config {
     pub switch_version_after: Option<usize>,
     /// Bytes per second on every connection.
     pub throttle: Option<u64>,
-    /// Bytes per second on the connection with this index (from 0, in accept order),
-    /// replacing `throttle` there.
+    /// Bytes per second on the k-th connection (from 0, in accept order) whose first request
+    /// is a GET with a `Range` starting above 0, replacing `throttle` there. Probes and
+    /// other connections do not count.
     pub slow_connection: Option<(usize, u64)>,
     pub max_connections: Option<usize>,
     pub over_limit: OverLimit,
@@ -154,6 +155,7 @@ struct Shared {
     bodies: AtomicUsize,
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
+    ranged_connections: AtomicUsize,
     open: AtomicUsize,
     stop: AtomicBool,
     log: Mutex<Vec<Logged>>,
@@ -177,6 +179,7 @@ impl Server {
             bodies: AtomicUsize::new(0),
             scripted: AtomicUsize::new(0),
             target_requests: AtomicUsize::new(0),
+            ranged_connections: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             log: Mutex::new(Vec::new()),
@@ -369,12 +372,29 @@ fn serve(shared: &Shared, stream: TcpStream, connection: usize, over_limit: bool
     };
     let mut reader = BufReader::new(reader_stream);
     let mut stream = stream;
+    let mut first_request_is_slow = None;
     while let Some(request) = read_request(&mut reader) {
-        if !answer(shared, &mut stream, connection, &request, over_limit) {
+        let slow = *first_request_is_slow.get_or_insert_with(|| is_slow(shared, &request));
+        if !answer(shared, &mut stream, connection, &request, over_limit, slow) {
             break;
         }
     }
     let _ = stream.shutdown(Shutdown::Write);
+}
+
+/// Judged on a connection's first request: whether it is the configured slow connection.
+fn is_slow(shared: &Shared, request: &Request) -> bool {
+    let Some((slow, _)) = shared.config.slow_connection else {
+        return false;
+    };
+    let above_zero = request.method == "GET"
+        && request
+            .header("range")
+            .and_then(|spec| spec.strip_prefix("bytes="))
+            .and_then(|spec| spec.split('-').next())
+            .and_then(|start| start.trim().parse::<u64>().ok())
+            .is_some_and(|start| start > 0);
+    above_zero && shared.ranged_connections.fetch_add(1, Ordering::AcqRel) == slow
 }
 
 struct Reply {
@@ -602,6 +622,7 @@ fn answer(
     connection: usize,
     request: &Request,
     over_limit: bool,
+    slow: bool,
 ) -> bool {
     let config = &shared.config;
     let index = shared.requests.fetch_add(1, Ordering::AcqRel);
@@ -651,7 +672,7 @@ fn answer(
         return !reply.close;
     };
     let rate = match config.slow_connection {
-        Some((slow, rate)) if slow == connection => Some(rate),
+        Some((_, rate)) if slow => Some(rate),
         _ => config.throttle,
     };
     let sent = cut_after.unwrap_or(length);
@@ -999,15 +1020,22 @@ mod tests {
         });
         assert!(timed(&mut connect(&throttled)) >= Duration::from_millis(450));
 
+        // Only a connection that starts with a GET whose range begins above 0 can be slow, and
+        // the index counts those connections alone.
         let one_slow = Server::start(Config {
             slow_connection: Some((1, 32 * 1024)),
-            ..config(16 * 1024)
+            ..config(64 * 1024)
         });
-        let mut first = connect(&one_slow);
-        request(&mut first, "HEAD", "/", &[]);
-        let mut second = connect(&one_slow);
-        assert!(timed(&mut second) >= Duration::from_millis(450));
-        assert_eq!(one_slow.log()[1].connection, 1);
+        request(&mut connect(&one_slow), "HEAD", "/", &[]);
+        request(&mut connect(&one_slow), "GET", "/", &["Range: bytes=0-0"]);
+        let mut first_ranged = connect(&one_slow);
+        request(&mut first_ranged, "GET", "/", &["Range: bytes=1-10"]);
+        let mut second_ranged = connect(&one_slow);
+        let began = Instant::now();
+        let slow = request(&mut second_ranged, "GET", "/", &["Range: bytes=100-16483"]);
+        assert_eq!(slow.body.len(), 16 * 1024);
+        assert!(began.elapsed() >= Duration::from_millis(450));
+        assert_eq!(one_slow.log()[3].connection, 3);
     }
 
     #[test]
