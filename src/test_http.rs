@@ -93,6 +93,10 @@ pub struct Config {
     /// Requests from this index on (counting every request, from 0) get the second body
     /// version and its validators.
     pub switch_version_after: Option<usize>,
+    /// A `Range` request is answered 206 whatever its `If-Range` says.
+    pub ignore_if_range: bool,
+    /// A 206 answer to a request with `If-Range` carries no `ETag` and no `Last-Modified`.
+    pub partial_without_validators: bool,
     /// Bytes per second on every connection.
     pub throttle: Option<u64>,
     /// Bytes per second on the k-th admitted connection (from 0, counted in the order the log
@@ -124,6 +128,8 @@ impl Default for Config {
             vary_etag: false,
             last_modified: true,
             switch_version_after: None,
+            ignore_if_range: false,
+            partial_without_validators: false,
             throttle: None,
             slow_connection: None,
             max_connections: None,
@@ -166,6 +172,8 @@ struct Shared {
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
     ranged_connections: AtomicUsize,
+    /// Index of the first request that gets the second body version.
+    switch_from: AtomicUsize,
     open: AtomicUsize,
     body_bytes: AtomicU64,
     stop: AtomicBool,
@@ -184,8 +192,10 @@ impl Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
+        let switch_from = AtomicUsize::new(config.switch_version_after.unwrap_or(usize::MAX));
         let shared = Arc::new(Shared {
             config,
+            switch_from,
             requests: AtomicUsize::new(0),
             cuts: AtomicUsize::new(0),
             scripted: AtomicUsize::new(0),
@@ -215,6 +225,12 @@ impl Server {
 
     pub fn log(&self) -> Vec<Logged> {
         self.shared.log.lock().unwrap().clone()
+    }
+
+    /// Every request from now on gets the second body version and its validators.
+    pub fn switch_version_now(&self) {
+        let seen = self.shared.requests.load(Ordering::Acquire);
+        self.shared.switch_from.store(seen, Ordering::Release);
     }
 
     /// Body bytes written to sockets so far, whether or not the client read them.
@@ -570,9 +586,10 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
         }
     }
 
-    let version = match config.switch_version_after {
-        Some(after) if index >= after => 2,
-        _ => 1,
+    let version = if index >= shared.switch_from.load(Ordering::Acquire) {
+        2
+    } else {
+        1
     };
     let etag = match config.etag {
         EtagKind::Absent => None,
@@ -632,13 +649,14 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             ..Reply::empty(200)
         },
         "GET" => {
-            let if_range_holds = request.header("if-range").is_none_or(|validator| {
-                if validator.starts_with('"') {
-                    etag.as_deref() == Some(validator)
-                } else {
-                    last_modified == Some(validator)
-                }
-            });
+            let if_range_holds = config.ignore_if_range
+                || request.header("if-range").is_none_or(|validator| {
+                    if validator.starts_with('"') {
+                        etag.as_deref() == Some(validator)
+                    } else {
+                        last_modified == Some(validator)
+                    }
+                });
             let slice = match request.header("range") {
                 Some(spec) if config.ranges == RangeSupport::Honour && if_range_holds => {
                     wanted(spec, size)
@@ -657,6 +675,9 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
                 },
                 Wanted::Part(start, end) => {
                     let mut headers = identity;
+                    if config.partial_without_validators && request.header("if-range").is_some() {
+                        headers.retain(|header| header.starts_with("Accept-Ranges"));
+                    }
                     headers.push(format!("Content-Range: bytes {start}-{end}/{size}"));
                     Reply {
                         headers,

@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::test_http::{
-    file_sha256, pattern_sha256, Config, CutBody, Logged, RangeSupport, Server, TempDir,
+    file_sha256, pattern_sha256, Config, CutBody, Logged, RangeSupport, RetryAfter, Scripted,
+    Server, TempDir,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -633,6 +634,45 @@ fn progress_reports_the_size_that_the_delivering_response_states() {
 }
 
 #[test]
+fn a_retry_notice_does_not_report_the_head_length_as_the_size() {
+    let size = MIB;
+    // The empty 200 is the answer to the HEAD and says the file is empty; the first GET is
+    // then refused and retried.
+    let server = Server::start(Config {
+        size,
+        scripted: vec![
+            Scripted {
+                status: 200,
+                retry_after: None,
+            },
+            Scripted {
+                status: 429,
+                retry_after: Some(RetryAfter::Seconds(0)),
+            },
+        ],
+        ..Config::default()
+    });
+    let directory = TempDir::new("retry-total");
+    let output = directory.0.join("payload.bin");
+    let mut notices = Vec::new();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |progress| notices.push((progress.total, progress.phase.to_string())),
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    let retry = notices
+        .iter()
+        .find(|(_, phase)| phase.contains("429"))
+        .unwrap_or_else(|| panic!("no retry notice in {notices:?}"));
+    assert_eq!(retry.0, None);
+}
+
+#[test]
 fn a_single_connection_download_resumes_when_the_head_disagrees_with_the_get() {
     let size = MIB;
     let server = Server::start(Config {
@@ -793,6 +833,146 @@ fn resuming_against_a_server_that_ignores_ranges_asks_for_a_range_once() {
         ]
     );
     assert_eq!(second[1].if_range.as_deref(), Some("\"v1\""));
+}
+
+#[test]
+fn a_same_size_changed_file_is_not_resumed_into_the_old_partial_over_one_connection() {
+    changed_same_size_file_restarts(1, MIB, MIB);
+}
+
+#[test]
+fn a_same_size_changed_file_is_not_resumed_into_the_old_partial_over_several_connections() {
+    changed_same_size_file_restarts(2, 40 * MIB + 4_097, 32 * MIB);
+}
+
+/// The server ignores `If-Range` and its resume answers carry no validators, so only this
+/// attempt's HEAD could vouch for the old bytes, and it describes version 2.
+fn changed_same_size_file_restarts(connections: u8, size: u64, rate: u64) {
+    let server = Server::start(Config {
+        size,
+        throttle: Some(rate),
+        ignore_if_range: true,
+        partial_without_validators: true,
+        ..Config::default()
+    });
+    let request = request_for(&server);
+    let directory = TempDir::new("changed-same-size");
+    let output = directory.0.join("payload.bin");
+    let state_file = state_path(&output);
+
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let interrupted = fetch(
+        &request,
+        &output,
+        &control,
+        connections,
+        connections,
+        &mut |progress| {
+            let started = if connections == 1 {
+                progress.downloaded > 0
+            } else {
+                read_state(&state_file).is_some_and(|state| !state.completed.is_empty())
+            };
+            if started {
+                cancel.cancel();
+            }
+        },
+    );
+    assert!(interrupted.is_err());
+    assert!(part_path(&output).exists());
+    server.wait_idle();
+    server.switch_version_now();
+
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    )
+    .unwrap_or_else(|error| panic!("{connections} connection(s): {error:#}"));
+    assert_eq!(
+        file_sha256(&result.path),
+        pattern_sha256(2, size),
+        "{connections} connection(s)"
+    );
+    assert!(!part_path(&output).exists() && !state_path(&output).exists());
+}
+
+#[test]
+fn a_probe_that_matches_the_record_vouches_for_a_partial_answer_without_validators() {
+    let size = MIB;
+    let server = Server::start(Config {
+        size,
+        partial_without_validators: true,
+        throttle: Some(MIB),
+        ..Config::default()
+    });
+    let request = request_for(&server);
+    let directory = TempDir::new("head-vouches");
+    let output = directory.0.join("payload.bin");
+
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let interrupted = fetch(&request, &output, &control, 1, 1, &mut |progress| {
+        if progress.downloaded > 0 {
+            cancel.cancel();
+        }
+    });
+    assert!(interrupted.is_err());
+    let kept = fs::metadata(part_path(&output)).unwrap().len();
+    assert!(kept > 0 && kept < size);
+    server.wait_idle();
+    let first_attempt = server.log().len();
+
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    server.wait_idle();
+    let log = server.log();
+    let resumed = log[first_attempt..]
+        .iter()
+        .filter(|entry| entry.method == "GET")
+        .collect::<Vec<_>>();
+    assert_eq!(resumed.len(), 1, "{log:?}");
+    assert_eq!(resumed[0].range, Some(format!("bytes={kept}-")));
+    assert_eq!(resumed[0].status, 206);
+}
+
+#[test]
+fn a_close_delimited_body_that_ends_before_the_head_length_is_not_published() {
+    let size = 3 * MIB + 11;
+    let server = Server::start(Config {
+        size,
+        get_length_header: false,
+        cut_body: Some(CutBody {
+            after_bytes: MIB,
+            responses: 10,
+        }),
+        ..Config::default()
+    });
+    let directory = TempDir::new("truncated-close-delimited");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    );
+    assert!(result.is_err());
+    assert!(!output.exists());
+    assert_eq!(fs::metadata(part_path(&output)).unwrap().len(), MIB);
 }
 
 #[test]

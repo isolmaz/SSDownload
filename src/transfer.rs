@@ -30,6 +30,19 @@ const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 const IO_BUFFER: usize = 1024 * 1024;
 const STATE_VERSION: u8 = 3;
 
+/// How the requests of an attempt are bound to bytes that an earlier attempt left on disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Retained {
+    /// No earlier bytes: a response only must not contradict the validators it is compared with.
+    #[default]
+    None,
+    /// Earlier bytes, and something other than the response already vouches for the record:
+    /// this attempt's probe carries an equal validator, or a supplied SHA-256 guards the result.
+    Vouched,
+    /// Earlier bytes: each ranged response has to carry a validator equal to the record's.
+    Unvouched,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RemoteInfo {
     url: Url,
@@ -37,6 +50,7 @@ pub(crate) struct RemoteInfo {
     total: Option<u64>,
     etag: Option<String>,
     last_modified: Option<String>,
+    retained: Retained,
     content_type: Option<String>,
     filename: Option<String>,
 }
@@ -53,6 +67,8 @@ struct ResponseHeaders {
     content_range: Option<ContentRange>,
     retry_after: Option<Duration>,
     headers_complete: bool,
+    http1: bool,
+    chunked: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -588,9 +604,12 @@ fn download_http_resuming(
     progress: &mut dyn FnMut(TransferProgress),
 ) -> Result<TransferResult> {
     let existing_state = read_state(&state_path(output));
+    let probe = remote.clone();
     // Retained bytes are bound to the record written with them, not to what the advisory probe
     // reports now: the ranged requests below send the record's validator in `If-Range` and
-    // accept only a `Content-Range` with the record's total, which proves the identity.
+    // accept only a `Content-Range` with the record's total. Each such response must also
+    // carry a validator equal to the record's, unless this attempt's probe already does
+    // (`Retained`).
     if let Some(state) = &existing_state {
         remote.total = state.total;
         remote.etag = state.etag.clone();
@@ -647,6 +666,22 @@ fn download_http_resuming(
                 ) || legacy_state_matches(state, &remote))
         })
         .unwrap_or(false);
+    if reusable_ranges || sequential_resume {
+        let guarded = existing_state.as_ref().is_some_and(|state| {
+            vouches_for_record(
+                &remote,
+                probe.etag.as_deref(),
+                probe.last_modified.as_deref(),
+                probe.total,
+            ) || normalized_checksum(request.checksum.as_deref())
+                .is_some_and(|checksum| state.checksum.as_deref() == Some(checksum.as_str()))
+        });
+        remote.retained = if guarded {
+            Retained::Vouched
+        } else {
+            Retained::Unvouched
+        };
+    }
     // A fresh download sends the probe unless HEAD reported a size too small to split or an
     // earlier ranged request already showed that the server ignores ranges; its answer
     // supplies the total and the identity that HEAD may lack.
@@ -879,8 +914,16 @@ fn download_http_single(
                     continue;
                 }
                 let bytes = offset.saturating_add(written);
-                if let Some(total) = expected_total(expected, &headers, remote) {
-                    if bytes != total {
+                // A length that the response states is exact. A body that only the closing
+                // connection ends can be cut short unnoticed, so it has to reach the length
+                // the probe reported.
+                let (total, exact) = match expected_total(expected, &headers, remote) {
+                    Some(total) => (Some(total), true),
+                    None if close_delimited(&headers) => (remote.total, false),
+                    None => (None, true),
+                };
+                if let Some(total) = total {
+                    if bytes < total || (exact && bytes > total) {
                         bail!(
                             "{}",
                             crate::i18n::ui_format!("Aktarım eksik kaldı: {bytes}/{total} bayt", "Transfer incomplete: {bytes}/{total} bytes", bytes = bytes, total = total)
@@ -914,7 +957,7 @@ fn download_http_single(
                 progress(TransferProgress {
                     processing: false,
                     downloaded: offset,
-                    total: remote.total,
+                    total: expected_total(expected, &ResponseHeaders::default(), remote),
                     speed: 0,
                     eta: None,
                     phase: crate::i18n::ui_format!("HTTP {status}; {0} sn sonra tek bağlantıyla yeniden denenecek", "HTTP {status}; retrying single connection in {0} s", delay.as_secs(), status = status),
@@ -931,7 +974,7 @@ fn download_http_single(
                 progress(TransferProgress {
                     processing: false,
                     downloaded: offset,
-                    total: remote.total,
+                    total: expected_total(expected, &ResponseHeaders::default(), remote),
                     speed: 0,
                     eta: None,
                     phase: crate::i18n::ui_format!("Geçici ağ hatası; {0} sn sonra tek bağlantıyla yeniden denenecek", "Transient network error; retrying single connection in {0} s", delay.as_secs()),
@@ -1773,7 +1816,7 @@ impl DynamicRangeWorker<'_> {
                 Ok(()) => Err(AttemptFailure::RangeRejected),
             };
         }
-        if validators_changed(&headers, remote) {
+        if identity_changed(&headers, expected, remote) {
             return Err(AttemptFailure::ResourceChanged);
         }
         if !response_allows_body(&headers, expected) {
@@ -2439,6 +2482,7 @@ fn probe_http(
             total,
             etag: headers.etag,
             last_modified: headers.last_modified,
+            retained: Retained::None,
             content_type: headers.content_type,
             filename: headers.filename,
         });
@@ -2483,6 +2527,7 @@ fn probe_ftp(
         total: length,
         etag: None,
         last_modified: modified,
+        retained: Retained::None,
         content_type: None,
         filename: None,
     })
@@ -2699,6 +2744,7 @@ fn parse_header_line(headers: &mut ResponseHeaders, bytes: &[u8]) {
     let trimmed = line.trim_end_matches(['\r', '\n']);
     if trimmed.starts_with("HTTP/") {
         *headers = ResponseHeaders::default();
+        headers.http1 = trimmed.starts_with("HTTP/1.");
         headers.status = trimmed
             .split_whitespace()
             .nth(1)
@@ -2730,6 +2776,9 @@ fn parse_header_line(headers: &mut ResponseHeaders, bytes: &[u8]) {
             )
         }
         "content-length" => headers.content_length = value.parse().ok(),
+        "transfer-encoding" => {
+            headers.chunked = value.to_ascii_lowercase().contains("chunked");
+        }
         "content-range" => headers.content_range = parse_content_range(value),
         "retry-after" => headers.retry_after = parse_retry_after(value),
         _ => {}
@@ -2838,7 +2887,42 @@ fn identity_changed(
     expected: ExpectedResponse,
     remote: &RemoteInfo,
 ) -> bool {
-    matches!(expected, ExpectedResponse::Range { .. }) && validators_changed(headers, remote)
+    matches!(expected, ExpectedResponse::Range { .. })
+        && (validators_changed(headers, remote)
+            || (remote.retained == Retained::Unvouched
+                && !vouches_for_record(
+                    remote,
+                    headers.etag.as_deref(),
+                    headers.last_modified.as_deref(),
+                    headers.content_range.and_then(|range| range.total),
+                )))
+}
+
+/// Whether the given validators and total positively identify the file that `remote` records:
+/// an equal strong ETag, or an equal Last-Modified with the exact recorded total. A missing
+/// validator proves nothing.
+fn vouches_for_record(
+    remote: &RemoteInfo,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    total: Option<u64>,
+) -> bool {
+    let strong =
+        remote.etag.as_deref().is_some_and(is_strong_etag) && etag == remote.etag.as_deref();
+    let dated = remote
+        .last_modified
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && last_modified == remote.last_modified.as_deref()
+        && remote.total.is_some()
+        && total == remote.total;
+    strong || dated
+}
+
+/// A 200 whose end is marked only by the closing connection: nothing in the response tells a
+/// complete body from a truncated one.
+fn close_delimited(headers: &ResponseHeaders) -> bool {
+    headers.http1 && headers.status == 200 && headers.content_length.is_none() && !headers.chunked
 }
 
 /// The file as a full response describes it. A length the response leaves out stays unknown;
@@ -3509,6 +3593,7 @@ mod tests {
             total: Some(100),
             etag: etag.map(str::to_owned),
             last_modified: None,
+            retained: Retained::None,
             content_type: None,
             filename: None,
         }
@@ -3579,6 +3664,101 @@ mod tests {
         assert!(response_allows_remote_body(&headers, expected, &remote));
         headers.etag = None;
         assert!(response_allows_remote_body(&headers, expected, &remote));
+    }
+
+    #[test]
+    fn bytes_left_by_an_earlier_attempt_need_a_validator_equal_to_the_record() {
+        let expected = ExpectedResponse::Range {
+            start: 10,
+            end: None,
+            total: Some(100),
+        };
+        let partial = |etag: Option<&str>, last_modified: Option<&str>| {
+            let mut headers = ResponseHeaders {
+                status: 206,
+                etag: etag.map(str::to_owned),
+                last_modified: last_modified.map(str::to_owned),
+                headers_complete: true,
+                ..Default::default()
+            };
+            headers.content_range = parse_content_range("bytes 10-99/100");
+            headers
+        };
+        let date = "Wed, 01 Jan 2026 00:00:00 GMT";
+        let with = |retained, etag: Option<&str>, last_modified: Option<&str>| RemoteInfo {
+            retained,
+            last_modified: last_modified.map(str::to_owned),
+            ..remote_with_etag(etag)
+        };
+
+        // Without earlier bytes a missing validator disproves nothing.
+        let fresh = with(Retained::None, Some("\"v1\""), None);
+        assert!(!identity_changed(&partial(None, None), expected, &fresh));
+
+        let unvouched = with(Retained::Unvouched, Some("\"v1\""), None);
+        assert!(identity_changed(&partial(None, None), expected, &unvouched));
+        assert!(identity_changed(
+            &partial(Some("W/\"v1\""), None),
+            expected,
+            &unvouched
+        ));
+        assert!(identity_changed(
+            &partial(Some("\"v2\""), None),
+            expected,
+            &unvouched
+        ));
+        assert!(!identity_changed(
+            &partial(Some("\"v1\""), None),
+            expected,
+            &unvouched
+        ));
+
+        // A date vouches only for the recorded length, and a weak ETag is no identity.
+        let dated = with(Retained::Unvouched, Some("W/\"a\""), Some(date));
+        assert!(!identity_changed(
+            &partial(None, Some(date)),
+            expected,
+            &dated
+        ));
+        assert!(identity_changed(
+            &partial(None, Some("Thu, 02 Jan 2026 00:00:00 GMT")),
+            expected,
+            &dated
+        ));
+        let mut shorter = partial(None, Some(date));
+        shorter.content_range = parse_content_range("bytes 10-99/101");
+        assert!(identity_changed(&shorter, expected, &dated));
+
+        // The probe of this attempt may vouch instead.
+        let vouched = with(Retained::Vouched, Some("\"v1\""), None);
+        assert!(!identity_changed(&partial(None, None), expected, &vouched));
+        assert!(identity_changed(
+            &partial(Some("\"v2\""), None),
+            expected,
+            &vouched
+        ));
+    }
+
+    #[test]
+    fn only_a_response_with_http1_framing_that_names_no_end_is_close_delimited() {
+        let parse = |lines: &[&str]| {
+            let mut headers = ResponseHeaders::default();
+            for line in lines {
+                parse_header_line(&mut headers, format!("{line}\r\n").as_bytes());
+            }
+            headers
+        };
+        assert!(close_delimited(&parse(&["HTTP/1.1 200 OK"])));
+        assert!(!close_delimited(&parse(&[
+            "HTTP/1.1 200 OK",
+            "Content-Length: 5"
+        ])));
+        assert!(!close_delimited(&parse(&[
+            "HTTP/1.1 200 OK",
+            "Transfer-Encoding: chunked"
+        ])));
+        assert!(!close_delimited(&parse(&["HTTP/2 200"])));
+        assert!(!close_delimited(&parse(&["HTTP/1.1 206 Partial Content"])));
     }
 
     #[test]
