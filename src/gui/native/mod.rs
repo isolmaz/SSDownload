@@ -4441,7 +4441,7 @@ unsafe fn update_details(ui: &MainUi) {
         crate::i18n::ui("İlerleme", "Progress"), format_progress(job),
         crate::i18n::ui("Hız", "Speed"), format_speed(job.speed),
         crate::i18n::ui("Kalan", "Remaining"), format_eta(job.eta),
-        crate::i18n::ui("Deneme", "Attempts"), job.attempts,
+        crate::i18n::ui("İlerlemesiz yeniden deneme", "Retries without progress"), job.attempts.saturating_sub(1),
         crate::i18n::ui("Zamanlama", "Schedule"), scheduled,
         crate::i18n::ui("Konum", "Location"), job.path.display(),
         crate::i18n::ui("URL", "URL"), display_url(&job.request.url),

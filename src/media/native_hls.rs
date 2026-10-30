@@ -697,6 +697,9 @@ impl WorkerContext<'_> {
                     reason,
                 }) if task.attempt + 1 < SEGMENT_ATTEMPTS => {
                     let throttled = matches!(status, Some(429 | 503));
+                    if throttled {
+                        self.control.mark_throttled();
+                    }
                     let backoff = Duration::from_secs(1 << task.attempt.min(4)).min(MAX_BACKOFF);
                     task.attempt += 1;
                     task.not_before = Instant::now()

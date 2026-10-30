@@ -329,6 +329,9 @@ struct Actor {
     active: HashMap<String, ActiveJob>,
     retry_at: HashMap<String, Instant>,
     retry_connection_caps: HashMap<String, u8>,
+    /// The most bytes each job has retained so far in this session. An attempt is progress
+    /// only above it, so work that is discarded and fetched again cannot renew the budget.
+    retained_high: HashMap<String, u64>,
     source_refresh: HashMap<String, SourceRefreshGrant>,
     source_refresh_workers: HashMap<u64, ActiveSourceRefresh>,
     browser_transfers: BTreeMap<String, BrowserTransferLease>,
@@ -548,6 +551,7 @@ impl Engine {
                     active: HashMap::new(),
                     retry_at: HashMap::new(),
                     retry_connection_caps: HashMap::new(),
+                    retained_high: HashMap::new(),
                     source_refresh: HashMap::new(),
                     source_refresh_workers: HashMap::new(),
                     browser_transfers: BTreeMap::new(),
@@ -1217,7 +1221,7 @@ impl Actor {
             }
             if !pause {
                 self.completion_armed.insert(job_queue_id(&job).to_owned());
-                self.retry_connection_caps.remove(&job.id);
+                self.forget_retry_state(&job.id);
             }
             self.retry_at.remove(&job.id);
             crate::logging::record_job(
@@ -1564,7 +1568,7 @@ impl Actor {
         self.store.save_job(&job)?;
         self.jobs.insert(id.into(), job.clone());
         self.retry_at.remove(id);
-        self.retry_connection_caps.remove(id);
+        self.forget_retry_state(id);
         crate::logging::record_job(
             id,
             crate::logging::Event::info("job.cancelled")
@@ -2176,6 +2180,7 @@ impl Actor {
         let queue_id = job_queue_id(&updated).to_owned();
         self.jobs.insert(active.id.clone(), updated);
         self.source_refresh.remove(&active.id);
+        self.forget_retry_state(&active.id);
         self.completion_armed.insert(queue_id);
         self.publish();
         if let Some(message) = finalization_error {
@@ -3302,7 +3307,7 @@ impl Actor {
             WorkerEvent::Finished {
                 id,
                 generation,
-                result,
+                mut result,
             } => {
                 let Some(active) = self.active.remove(&id) else {
                     return;
@@ -3315,6 +3320,15 @@ impl Actor {
                     .direct_connections
                     .max(active.media_fragment_connections)
                     .max(1);
+                let configured_connections =
+                    self.jobs.get(&id).map_or(retry_connection_cap, |job| {
+                        let uncapped = self.allocation_with_cap(&job.request, None);
+                        uncapped.direct.max(uncapped.media_fragments).max(1)
+                    });
+                let progressed = attempt_progressed(&mut self.retained_high, &id, &active.control);
+                if result.is_ok() || matches!(active.desired, DesiredStop::Remove { .. }) {
+                    self.forget_retry_state(&id);
+                }
                 let _ = active.handle.join();
                 match active.desired {
                     DesiredStop::Remove { delete_file, .. } => {
@@ -3353,7 +3367,15 @@ impl Actor {
                         }
                     }
                     DesiredStop::None => {
-                        self.update_retry_connection_cap(&id, retry_connection_cap, &result);
+                        if let Err(failure) = &mut result {
+                            failure.progressed = progressed;
+                        }
+                        self.update_retry_connection_cap(
+                            &id,
+                            retry_connection_cap,
+                            configured_connections,
+                            &result,
+                        );
                         self.finish_job(&id, result)
                     }
                 }
@@ -3421,10 +3443,16 @@ impl Actor {
         }
     }
 
+    fn forget_retry_state(&mut self, id: &str) {
+        self.retry_connection_caps.remove(id);
+        self.retained_high.remove(id);
+    }
+
     fn update_retry_connection_cap(
         &mut self,
         id: &str,
         attempted_connections: u8,
+        configured_connections: u8,
         result: &std::result::Result<TransferResult, TransferFailure>,
     ) {
         match result {
@@ -3432,16 +3460,29 @@ impl Actor {
             | Err(TransferFailure {
                 retryable: false, ..
             }) => {
-                self.retry_connection_caps.remove(id);
+                self.forget_retry_state(id);
             }
             Err(TransferFailure {
-                retryable: true, ..
+                retryable: true,
+                progressed,
+                throttled,
+                ..
             }) => {
-                let reduced = (attempted_connections / 2).max(1);
-                self.retry_connection_caps
-                    .entry(id.into())
-                    .and_modify(|cap| *cap = (*cap).min(reduced))
-                    .or_insert(reduced);
+                let current = self.retry_connection_caps.get(id).copied();
+                match retry_connection_cap_after(
+                    current,
+                    attempted_connections,
+                    configured_connections,
+                    *progressed,
+                    *throttled,
+                ) {
+                    Some(cap) => {
+                        self.retry_connection_caps.insert(id.into(), cap);
+                    }
+                    None => {
+                        self.retry_connection_caps.remove(id);
+                    }
+                }
             }
         }
     }
@@ -3504,7 +3545,7 @@ impl Actor {
                             "dosya={} bayt={} deneme={}",
                             crate::logging::file_name(&job.path),
                             result.bytes,
-                            job.attempts
+                            job.attempts.saturating_add(1)
                         )),
                 );
                 if let Some(warning) = &job.error {
@@ -3523,6 +3564,16 @@ impl Actor {
                 job.speed = 0;
                 job.eta = None;
                 job.error = Some(message.clone());
+                // The retry limit counts retries in a row that kept nothing new. An attempt that
+                // kept bytes starts the count at one: the failure that the retries follow. With
+                // a limit of 0 nothing is retried, whatever the attempt kept.
+                if retryable {
+                    job.attempts = if failure.progressed {
+                        1
+                    } else {
+                        job.attempts.saturating_add(1)
+                    };
+                }
                 if failure.source_refresh {
                     job.state = JobState::AwaitingSource;
                     job.phase = crate::i18n::ui(
@@ -3582,7 +3633,7 @@ impl Actor {
             }
         }
         if job.state == JobState::Failed {
-            self.retry_connection_caps.remove(id);
+            self.forget_retry_state(id);
             self.completion_armed.remove(&queue_id);
             if self
                 .completion_countdown
@@ -3937,7 +3988,6 @@ impl Actor {
         job.error = None;
         job.speed = 0;
         job.eta = None;
-        job.attempts = job.attempts.saturating_add(1);
         job.updated_at = Utc::now().timestamp();
         self.store.save_job(job)?;
         let job_copy = job.clone();
@@ -3978,7 +4028,7 @@ impl Actor {
                         )
                     ))
                 })
-                .map_err(|error| transfer_failure(&job_copy.request, error));
+                .map_err(|error| attempt_failure(&job_copy.request, error, &thread_control));
                 let _ = sender.send(Message::Worker(WorkerEvent::Finished {
                     id: worker_id,
                     generation,
@@ -4134,7 +4184,14 @@ impl Actor {
     }
 
     fn connection_allocation(&self, id: &str, request: &AddRequest) -> ConnectionAllocation {
-        let retry_cap = self.retry_connection_caps.get(id).copied();
+        self.allocation_with_cap(request, self.retry_connection_caps.get(id).copied())
+    }
+
+    fn allocation_with_cap(
+        &self,
+        request: &AddRequest,
+        retry_cap: Option<u8>,
+    ) -> ConnectionAllocation {
         let direct =
             requested_connection_count(request.connections, self.settings.connections, retry_cap);
         let media_fragments = requested_connection_count(
@@ -4431,6 +4488,14 @@ fn run_job(
             )
         );
     }
+    let retained = |output: &Path| {
+        if use_media {
+            media::retained_bytes(output)
+        } else {
+            transfer::retained_bytes(output)
+        }
+    };
+    let retained_before = retained(output);
     let result = if use_media {
         request.connections = Some(allocation.media_fragments);
         media::download(paths, &request, output, control, network, progress, &job.id)
@@ -4445,7 +4510,13 @@ fn run_job(
             prepared,
             progress,
         )
-    }?;
+    };
+    if result.is_err() {
+        if let (Some(before), Some(after)) = (retained_before, retained(output)) {
+            control.set_retained(before, after);
+        }
+    }
+    let result = result?;
     if job.work_dir.is_some() {
         crate::recovery::publish(paths, job, result)
     } else {
@@ -4917,6 +4988,11 @@ struct TransferFailure {
     retryable: bool,
     retry_after: Option<Duration>,
     source_refresh: bool,
+    /// The attempt ended above the most the job had retained before; the engine judges it when
+    /// the attempt ends.
+    progressed: bool,
+    /// The server answered 429 or 503.
+    throttled: bool,
 }
 
 fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailure {
@@ -4926,7 +5002,58 @@ fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailu
         retry_after: transfer::retry_after(&error),
         source_refresh: source_refresh_needed(request, &error),
         message: safe_error(request, &detail),
+        progressed: false,
+        throttled: transfer::http_status(&error)
+            .or_else(|| http_status_in_text(&detail.to_lowercase()))
+            .is_some_and(|status| matches!(status, 429 | 503)),
     }
+}
+
+/// What a failed attempt reports to the engine: the transfer's own flags join the error.
+fn attempt_failure(
+    request: &AddRequest,
+    error: anyhow::Error,
+    control: &TransferControl,
+) -> TransferFailure {
+    let failure = transfer_failure(request, error);
+    TransferFailure {
+        throttled: failure.throttled || control.throttled(),
+        ..failure
+    }
+}
+
+/// Whether an attempt that just ended kept more bytes than this job has retained before. A
+/// restart from the beginning, a live recording and an amount that could not be measured never
+/// count. `high` remembers the most the job has retained.
+fn attempt_progressed(
+    high: &mut HashMap<String, u64>,
+    id: &str,
+    control: &TransferControl,
+) -> bool {
+    let Some((before, after)) = control.retained() else {
+        return false;
+    };
+    let floor = high.get(id).copied().unwrap_or(0).max(before);
+    high.insert(id.into(), floor.max(after));
+    after > floor && !control.restarted() && !control.is_live()
+}
+
+/// The connection cap for a job's next attempt after `attempted` connections ended
+/// retryably. An attempt that kept new bytes and met no 429 or 503 gives one step of the
+/// current cap back (doubling, up to the configured count, which is no cap); any other halves it.
+fn retry_connection_cap_after(
+    current: Option<u8>,
+    attempted: u8,
+    configured: u8,
+    progressed: bool,
+    throttled: bool,
+) -> Option<u8> {
+    if progressed && !throttled {
+        let restored = current?.saturating_mul(2);
+        return (restored < configured).then_some(restored);
+    }
+    let reduced = (attempted / 2).max(1);
+    Some(current.map_or(reduced, |cap| cap.min(reduced)))
 }
 
 fn retryable_status(status: u32) -> bool {

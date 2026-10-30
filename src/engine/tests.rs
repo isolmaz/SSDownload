@@ -2110,3 +2110,458 @@ fn a_job_waiting_for_a_new_source_is_neither_paused_nor_started_by_bulk_commands
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
 }
+
+mod retry_budget {
+    use super::*;
+    use crate::test_http::{
+        file_sha256, pattern_sha256, Config, CutBody, Logged, Scripted, Server, TempDir,
+    };
+
+    const MIB: u64 = 1024 * 1024;
+
+    fn engine_with_retry_limit(root: &Path, retry_limit: u8) -> Engine {
+        let engine = Engine::open(AppPaths::new(root.to_path_buf()).unwrap()).unwrap();
+        let mut settings = engine.snapshot().settings.clone();
+        settings.retry_limit = retry_limit;
+        settings.per_host_limit = 4;
+        engine.update_settings(settings).unwrap();
+        engine
+    }
+
+    fn add_download(
+        engine: &Engine,
+        server: &Server,
+        directory: &Path,
+        checksum: Option<&str>,
+    ) -> String {
+        engine
+            .add(AddRequest {
+                checksum: checksum.map(str::to_owned),
+                ..file_request(server.url("/payload.bin"), directory)
+            })
+            .unwrap()
+            .remove(0)
+    }
+
+    fn finished_job(engine: &Engine, id: &str) -> Job {
+        wait_until("the job to end", || job_state(engine, id).is_terminal());
+        engine
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|job| job.id == id)
+            .unwrap()
+            .clone()
+    }
+
+    /// Every attempt of a download opens with one HEAD probe.
+    fn attempts_made(server: &Server) -> usize {
+        server
+            .log()
+            .iter()
+            .filter(|entry| entry.method == "HEAD")
+            .count()
+    }
+
+    /// The GETs that carry file data, from the `attempt`th attempt (from 1) on.
+    fn data_gets_of_attempt(log: &[Logged], attempt: usize) -> Vec<&Logged> {
+        let mut heads = 0;
+        log.iter()
+            .filter(|entry| {
+                if entry.method == "HEAD" {
+                    heads += 1;
+                }
+                heads == attempt
+                    && entry.method == "GET"
+                    && entry.range.as_deref() != Some("bytes=0-0")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_download_that_drops_more_often_than_the_limit_finishes_while_each_attempt_keeps_bytes() {
+        let size = MIB;
+        let server = Server::start(Config {
+            size,
+            cut_body: Some(CutBody {
+                after_bytes: 150 * 1024,
+                responses: 3,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-progress");
+        let engine = engine_with_retry_limit(&root.0, 1);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(file_sha256(&job.path), pattern_sha256(1, size));
+        // Three attempts end early after keeping bytes, more than the limit of one, and the
+        // fourth finishes the file.
+        assert_eq!(attempts_made(&server), 4);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_limit_of_zero_retries_nothing_even_after_an_attempt_that_kept_bytes() {
+        let server = Server::start(Config {
+            size: MIB,
+            cut_body: Some(CutBody {
+                after_bytes: 150 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-zero");
+        let engine = engine_with_retry_limit(&root.0, 0);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed);
+        assert_eq!(attempts_made(&server), 1);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_source_that_keeps_answering_with_a_server_error_ends_after_the_limit_plus_one_attempts() {
+        let server = Server::start(Config {
+            size: MIB,
+            scripted: vec![
+                Scripted {
+                    status: 500,
+                    retry_after: None,
+                };
+                50
+            ],
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-server-error");
+        let engine = engine_with_retry_limit(&root.0, 2);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed);
+        // Each attempt sends the HEAD probe and gives up on its answer.
+        assert_eq!(server.log().len(), 3);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_server_that_cuts_every_range_before_it_completes_ends_after_the_limit_plus_one_attempts() {
+        // Every lease is cut after 1 MiB: bytes arrive on each attempt, but no range is ever
+        // recorded as complete, so nothing is retained.
+        let server = Server::start(Config {
+            size: 12 * MIB,
+            cut_body: Some(CutBody {
+                after_bytes: MIB,
+                responses: usize::MAX,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-no-range");
+        let engine = engine_with_retry_limit(&root.0, 1);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed);
+        assert!(
+            server.body_bytes_sent() > MIB,
+            "no body bytes were received"
+        );
+        assert_eq!(attempts_made(&server), 2);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_source_whose_identity_changes_every_other_attempt_ends_after_the_limit() {
+        // The tag changes after every second attempt. The attempt after a change restarts and
+        // keeps one cut's worth, the next one resumes and regrows to what the job had retained
+        // before the change: more than that attempt started with, but never more than the job
+        // has retained at any time.
+        let server = Server::start(Config {
+            size: MIB,
+            etag_rotation_heads: Some(2),
+            cut_body: Some(CutBody {
+                after_bytes: 150 * 1024,
+                responses: usize::MAX,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-flipping-identity");
+        let engine = engine_with_retry_limit(&root.0, 2);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed);
+        assert_eq!(attempts_made(&server), 4);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn an_attempt_that_restarted_is_no_progress_although_it_retains_more_than_the_job_ever_had() {
+        // The tag changes with every attempt, so each one restarts from the beginning, and each
+        // cut lets more bytes through than the one before: the retained amount grows past the
+        // earlier high mark, yet the restarts keep counting against the limit.
+        let server = Server::start(Config {
+            size: MIB,
+            etag_rotation_heads: Some(1),
+            cut_body: Some(CutBody {
+                after_bytes: 100 * 1024,
+                responses: usize::MAX,
+            }),
+            cut_growth: 100 * 1024,
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-restart-regrows");
+        let engine = engine_with_retry_limit(&root.0, 1);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        assert_eq!(attempts_made(&server), 2);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_refreshed_source_with_a_restart_is_judged_afresh_not_against_the_old_high_mark() {
+        // The old source keeps 600 KiB before the job is paused. The refreshed source restarts
+        // the download and is cut every 300 KiB: each attempt retains more than the one before,
+        // although never more than the old source had.
+        let old = Server::start(Config {
+            size: MIB,
+            cut_body: Some(CutBody {
+                after_bytes: 600 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let new = Server::start(Config {
+            size: MIB,
+            cut_body: Some(CutBody {
+                after_bytes: 300 * 1024,
+                responses: usize::MAX,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-refresh");
+        let engine = engine_with_retry_limit(&root.0, 1);
+        let id = engine
+            .add(AddRequest {
+                filename: Some("refresh.bin".into()),
+                page_url: Some("https://example.test/watch/refresh".into()),
+                source_identity: Some(SourceIdentity {
+                    video_id: "refresh-video".into(),
+                    frame_id: 7,
+                    document_id: None,
+                    page_url: "https://example.test/watch/refresh".into(),
+                }),
+                ..file_request(old.url("/payload.bin"), &root.0.join("out"))
+            })
+            .unwrap()
+            .remove(0);
+        wait_until("the cut response", || {
+            old.log().iter().any(|entry| entry.body_cut)
+        });
+        old.wait_idle();
+        engine.pause(&id).unwrap();
+        wait_until("the pause", || job_state(&engine, &id) == JobState::Paused);
+
+        // Paused is reported before the download thread has stopped, which refuses the
+        // refresh without changing anything.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let ticket = loop {
+            match engine.begin_source_refresh(&id) {
+                Ok(ticket) => break ticket,
+                Err(error) => {
+                    assert!(Instant::now() < deadline, "{error:#}");
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+        };
+        let mut request = (*ticket.request).clone();
+        request.url = new.url("/payload.bin");
+        engine
+            .complete_source_refresh(&id, &ticket.token, request, true)
+            .unwrap();
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(file_sha256(&job.path), pattern_sha256(1, MIB));
+        assert_eq!(attempts_made(&new), 4);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_checksum_that_never_matches_ends_the_download_although_the_attempts_moved_bytes() {
+        let size = MIB;
+        let server = Server::start(Config {
+            size,
+            cut_body: Some(CutBody {
+                after_bytes: 150 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-checksum");
+        let limit = 1u8;
+        let engine = engine_with_retry_limit(&root.0, limit);
+        let id = add_download(&engine, &server, &root.0.join("out"), Some(&"0".repeat(64)));
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed);
+        assert!(
+            job.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SSD-TRF-003"),
+            "{:?}",
+            job.error
+        );
+        // The first attempt keeps bytes and does not count; every attempt that downloads the
+        // file and fails the digest does, so at most the limit plus one of them are made.
+        assert!(attempts_made(&server) <= 1 + usize::from(limit) + 1);
+        assert!(!job.path.exists());
+        let left = fs::read_dir(job.work_dir.as_ref().unwrap())
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.contains(".ssdownload."))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(left.is_empty(), "partial files left behind: {left:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn an_attempt_cut_short_by_closing_the_app_is_not_counted() {
+        let root = TempDir::new("retry-shutdown");
+        let server = FileServer::start(vec![("/slow.bin".into(), vec![1; 4096], true)]);
+        let engine = Engine::open(AppPaths::new(root.0.clone()).unwrap()).unwrap();
+        let id = engine
+            .add(file_request(server.url("/slow.bin"), &root.0.join("out")))
+            .unwrap()
+            .remove(0);
+        wait_until("the request to reach the server", || {
+            !server.hits.lock().unwrap().is_empty()
+        });
+        engine.shutdown();
+
+        server.release();
+        let engine = Engine::open(AppPaths::new(root.0.clone()).unwrap()).unwrap();
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(job.attempts, 0);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_progressing_attempt_without_throttling_gives_the_connections_back_to_the_next_attempt() {
+        // Four connections are configured. The HEAD of the first attempt is answered 500, which
+        // halves the cap to two. The second attempt downloads the first half and loses the
+        // second one three times: it kept bytes and met no 429 or 503, so the cap is restored
+        // and the third attempt splits what is left over four connections instead of two.
+        let size = 16 * MIB;
+        let server = Server::start(Config {
+            size,
+            scripted: vec![Scripted {
+                status: 500,
+                retry_after: None,
+            }],
+            cut_body: Some(CutBody {
+                after_bytes: MIB,
+                responses: 3,
+            }),
+            cut_from: 8 * MIB,
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-cap-restored");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(file_sha256(&job.path), pattern_sha256(1, size));
+        let log = server.log();
+        assert_eq!(attempts_made(&server), 3);
+        // With two connections the remaining half is one lease; with four it is split in two.
+        assert_eq!(data_gets_of_attempt(&log, 3).len(), 2);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn the_cap_rule_halves_without_progress_and_restores_the_current_cap_one_step() {
+        let configured = 8;
+        let mut cap = retry_connection_cap_after(None, 8, configured, false, false);
+        assert_eq!(cap, Some(4));
+        cap = retry_connection_cap_after(cap, 4, configured, false, false);
+        assert_eq!(cap, Some(2));
+        // Progress that met a 429 or 503 is no reason to give connections back.
+        assert_eq!(
+            retry_connection_cap_after(cap, 2, configured, true, true),
+            Some(1)
+        );
+        // The step is taken from the cap, not from the connections the attempt happened to use.
+        assert_eq!(
+            retry_connection_cap_after(cap, 1, configured, true, false),
+            Some(4)
+        );
+        cap = retry_connection_cap_after(cap, 2, configured, true, false);
+        assert_eq!(cap, Some(4));
+        assert_eq!(
+            retry_connection_cap_after(cap, 4, configured, true, false),
+            None
+        );
+        // An attempt at the full count that progressed leaves no cap behind.
+        assert_eq!(
+            retry_connection_cap_after(None, 8, configured, true, false),
+            None
+        );
+    }
+
+    #[test]
+    fn a_failure_is_throttled_when_the_error_or_the_transfer_saw_429_or_503() {
+        let request = file_request("https://files.example.test/a.bin".into(), Path::new("out"));
+        let control = TransferControl::default();
+        let plain = |message: &str| attempt_failure(&request, anyhow!("{message}"), &control);
+        assert!(!plain("connection reset").throttled);
+        assert!(plain("HTTP Error 429: Too Many Requests").throttled);
+        assert!(plain("HTTP Error 503: Service Unavailable").throttled);
+        assert!(!plain("HTTP Error 500: Server Error").throttled);
+
+        control.mark_throttled();
+        assert!(plain("connection reset").throttled);
+    }
+
+    #[test]
+    fn an_attempt_progresses_only_above_the_most_the_job_ever_retained() {
+        let mut high = HashMap::new();
+        let ended = |before, after| {
+            let control = TransferControl::default();
+            control.set_retained(before, after);
+            control
+        };
+        // An amount that could not be measured is no progress.
+        assert!(!attempt_progressed(
+            &mut high,
+            "job",
+            &TransferControl::default()
+        ));
+        assert!(attempt_progressed(&mut high, "job", &ended(0, 100)));
+        // Regrowing to what the job already had retained is not progress.
+        assert!(!attempt_progressed(&mut high, "job", &ended(40, 100)));
+        assert!(attempt_progressed(&mut high, "job", &ended(100, 101)));
+        // A restart never is, but what it retained still raises the mark.
+        let restarted = ended(101, 500);
+        restarted.mark_restarted();
+        assert!(!attempt_progressed(&mut high, "job", &restarted));
+        assert!(!attempt_progressed(&mut high, "job", &ended(101, 400)));
+        // A live recording never is.
+        let live = ended(500, 900);
+        live.mark_live();
+        assert!(!attempt_progressed(&mut high, "job", &live));
+        // Other jobs have their own mark.
+        assert!(attempt_progressed(&mut high, "other", &ended(0, 5)));
+    }
+}

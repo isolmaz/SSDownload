@@ -111,6 +111,13 @@ pub struct Config {
     pub max_connections: Option<usize>,
     pub over_limit: OverLimit,
     pub cut_body: Option<CutBody>,
+    /// Each cut response lets this many more body bytes through than the one before it.
+    pub cut_growth: u64,
+    /// Only responses whose body starts at or after this offset are cut.
+    pub cut_from: u64,
+    /// The ETag changes after every this many `HEAD` requests, so that the requests of one
+    /// attempt (a `HEAD` and the transfers after it) share a tag.
+    pub etag_rotation_heads: Option<usize>,
     pub scripted: Vec<Scripted>,
     pub redirect: Option<Redirect>,
     /// Request headers copied into the log, matched case-insensitively.
@@ -141,6 +148,9 @@ impl Default for Config {
             max_connections: None,
             over_limit: OverLimit::Unavailable(None),
             cut_body: None,
+            cut_growth: 0,
+            cut_from: 0,
+            etag_rotation_heads: None,
             scripted: Vec::new(),
             redirect: None,
             logged_headers: vec!["authorization".into(), "cookie".into(), "referer".into()],
@@ -175,6 +185,7 @@ struct Shared {
     config: Config,
     requests: AtomicUsize,
     cuts: AtomicUsize,
+    heads: AtomicUsize,
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
     ranged_connections: AtomicUsize,
@@ -204,6 +215,7 @@ impl Server {
             switch_from,
             requests: AtomicUsize::new(0),
             cuts: AtomicUsize::new(0),
+            heads: AtomicUsize::new(0),
             scripted: AtomicUsize::new(0),
             target_requests: AtomicUsize::new(0),
             ranged_connections: AtomicUsize::new(0),
@@ -603,6 +615,13 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             let weak = if kind == EtagKind::Weak { "W/" } else { "" };
             let unique = if config.vary_etag {
                 format!("-{index}")
+            } else if let Some(every) = config.etag_rotation_heads {
+                let heads = if request.method == "HEAD" {
+                    shared.heads.fetch_add(1, Ordering::AcqRel) + 1
+                } else {
+                    shared.heads.load(Ordering::Acquire)
+                };
+                format!("-e{}", heads.saturating_sub(1) / every)
             } else {
                 String::new()
             };
@@ -723,9 +742,13 @@ fn answer(
     let index = shared.requests.fetch_add(1, Ordering::AcqRel);
     let reply = plan(shared, request, index, over_limit);
     let cut_after = config.cut_body.and_then(|cut| {
-        let (_, length) = reply.body?;
-        (length > cut.after_bytes && shared.cuts.fetch_add(1, Ordering::AcqRel) < cut.responses)
-            .then_some(cut.after_bytes)
+        let (start, length) = reply.body?;
+        if start < config.cut_from || length <= cut.after_bytes {
+            return None;
+        }
+        let cut_index = shared.cuts.fetch_add(1, Ordering::AcqRel);
+        (cut_index < cut.responses)
+            .then(|| (cut.after_bytes + cut_index as u64 * config.cut_growth).min(length))
     });
     let mut log = shared.log.lock().unwrap();
     let slow = *slow.get_or_insert_with(|| !over_limit && is_slow(shared, request));

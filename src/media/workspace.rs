@@ -524,6 +524,29 @@ pub(crate) fn has_partial_output(output: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The size of the tool's output files in the workspace of `output`, partial and finished
+/// streams alike: what a later attempt continues from. Workspace state files start with a dot.
+/// `None` when the folder cannot be listed for another reason than not existing.
+pub(crate) fn retained_bytes(output: &Path) -> Option<u64> {
+    let Ok(owner) = crate::output::identity(output) else {
+        return Some(0);
+    };
+    let entries = match fs::read_dir(workspace_path(output, &owner)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(0),
+        Err(_) => return None,
+    };
+    Some(
+        entries
+            .flatten()
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+            .filter_map(|entry| fs::metadata(entry.path()).ok())
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| metadata.len())
+            .fold(0u64, u64::saturating_add),
+    )
+}
+
 #[derive(Debug)]
 pub(crate) struct PreparedSourceRefresh {
     action: PreparedSourceRefreshAction,

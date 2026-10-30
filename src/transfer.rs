@@ -295,6 +295,22 @@ pub(crate) fn preserves_partial(error: &anyhow::Error) -> bool {
         .any(|cause| cause.downcast_ref::<PreservedPartialError>().is_some())
 }
 
+/// The bytes of `output` that a later attempt builds on: the ranges the resume state records
+/// for a segmented download, the length of the part file for a sequential one. Bytes that a
+/// lease received but the state does not record are not counted. `None` while the record
+/// exists but cannot be read, when the amount is unknown.
+pub(crate) fn retained_bytes(output: &Path) -> Option<u64> {
+    let path = state_path(output);
+    if unreadable_state(&path).is_some() {
+        return None;
+    }
+    Some(match read_state(&path) {
+        Some(state) if state.segmented => state.completed.iter().map(|range| range.len()).sum(),
+        Some(_) => fs::metadata(part_path(output)).map_or(0, |meta| meta.len()),
+        None => 0,
+    })
+}
+
 pub(crate) fn has_artifacts(output: &Path) -> bool {
     output.exists()
         || crate::media::has_partial_output(output)
@@ -556,7 +572,7 @@ fn download_http(
     ) {
         Err(error) if preserves_partial(&error) && !control.stop_requested() => {
             let ranges_ignored = ranges_ignored(&error);
-            restart_from_zero(output, remote.total, progress);
+            restart_from_zero(output, remote.total, control, progress);
             download_http_resuming(
                 request,
                 output,
@@ -576,8 +592,10 @@ fn download_http(
 fn restart_from_zero(
     output: &Path,
     total: Option<u64>,
+    control: &TransferControl,
     progress: &mut dyn FnMut(TransferProgress),
 ) {
+    control.mark_restarted();
     remove_if_exists(&part_path(output));
     remove_if_exists(&state_path(output));
     cleanup_legacy_segments(output);
@@ -1161,6 +1179,7 @@ fn http_to_file(
         return Ok((headers, 0));
     }
     if matches!(headers.status, 429 | 503) {
+        control.mark_throttled();
         return Err(AttemptFailure::RetryableStatus {
             status: headers.status,
             retry_after: headers.retry_after,
@@ -1783,6 +1802,7 @@ impl DynamicRangeWorker<'_> {
             )));
         }
         if matches!(headers.status, 429 | 503) {
+            control.mark_throttled();
             return Err(AttemptFailure::RetryableStatus {
                 status: headers.status,
                 retry_after: headers.retry_after,
@@ -2193,7 +2213,7 @@ fn download_ftp(
     let remote = probe_ftp(request, url, control, network)?;
     match download_ftp_resuming(request, output, &remote, control, network, progress) {
         Err(error) if preserves_partial(&error) && !control.stop_requested() => {
-            restart_from_zero(output, remote.total, progress);
+            restart_from_zero(output, remote.total, control, progress);
             download_ftp_resuming(request, output, &remote, control, network, progress)
         }
         other => other,
@@ -2458,6 +2478,7 @@ fn probe_http(
             }
         }
         if matches!(headers.status, 429 | 503) {
+            control.mark_throttled();
             return Err(retryable_status_error(headers.status, headers.retry_after));
         }
         if !(200..300).contains(&headers.status) {
@@ -2590,6 +2611,9 @@ fn verify_range_support(
         transfer.perform()
     };
     let headers = response.borrow().clone();
+    if matches!(headers.status, 429 | 503) {
+        control.mark_throttled();
+    }
     if !fresh && validators_changed(&headers, remote) {
         return Err(AttemptFailure::ResourceChanged);
     }
@@ -4122,6 +4146,7 @@ mod tests {
         assert_eq!(code(&error), Some(crate::error_codes::TRF_003), "{error:#}");
         assert!(!part.exists() && !state.exists());
         assert!(!output.exists());
+        assert_eq!(retained_bytes(&output), Some(0));
 
         // A checksum that is not a digest says nothing about the downloaded bytes.
         fs::write(&part, b"payload").unwrap();
@@ -5404,6 +5429,28 @@ mod tests {
             .share_mode(0)
             .open(path)
             .unwrap()
+    }
+
+    #[test]
+    fn retained_bytes_are_unknown_while_the_resume_record_cannot_be_read() {
+        let directory = TestDirectory::new("retained-unknown");
+        let output = directory.0.join("payload.bin");
+        assert_eq!(retained_bytes(&output), Some(0));
+        fs::write(part_path(&output), b"payload").unwrap();
+        write_state(
+            &state_path(&output),
+            &ResumeState {
+                version: STATE_VERSION,
+                ..ResumeState::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(retained_bytes(&output), Some(7));
+
+        let held = hold_exclusively(&state_path(&output));
+        assert_eq!(retained_bytes(&output), None);
+        drop(held);
+        assert_eq!(retained_bytes(&output), Some(7));
     }
 
     #[test]
