@@ -8,7 +8,7 @@ use std::{
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -80,6 +80,12 @@ pub struct Config {
     /// `Content-Length` of the `HEAD` answer when it should differ from the body size.
     pub head_content_length: Option<u64>,
     pub head_not_allowed: bool,
+    /// The `HEAD` answer carries this `ETag` instead of the one a `GET` gets.
+    pub head_etag: Option<String>,
+    /// The `HEAD` answer carries no validators and no `Content-Length`.
+    pub head_bare: bool,
+    /// Without it a `GET` answer has no `Content-Length` and its body ends with the connection.
+    pub get_length_header: bool,
     pub etag: EtagKind,
     /// Every request gets its own ETag for the same body.
     pub vary_etag: bool,
@@ -87,6 +93,14 @@ pub struct Config {
     /// Requests from this index on (counting every request, from 0) get the second body
     /// version and its validators.
     pub switch_version_after: Option<usize>,
+    /// A `Range` request is answered 206 whatever its `If-Range` says.
+    pub ignore_if_range: bool,
+    /// A 206 answer to a request with `If-Range` carries no `ETag` and no `Last-Modified`.
+    pub partial_without_validators: bool,
+    /// A 206 answer to a request with `If-Range` carries no `ETag` but keeps `Last-Modified`.
+    pub partial_without_etag: bool,
+    /// Both body versions carry the first version's `Last-Modified`.
+    pub last_modified_fixed: bool,
     /// Bytes per second on every connection.
     pub throttle: Option<u64>,
     /// Bytes per second on the k-th admitted connection (from 0, counted in the order the log
@@ -111,10 +125,17 @@ impl Default for Config {
             accept_ranges_header: true,
             head_content_length: None,
             head_not_allowed: false,
+            head_etag: None,
+            head_bare: false,
+            get_length_header: true,
             etag: EtagKind::Strong,
             vary_etag: false,
             last_modified: true,
             switch_version_after: None,
+            ignore_if_range: false,
+            partial_without_validators: false,
+            partial_without_etag: false,
+            last_modified_fixed: false,
             throttle: None,
             slow_connection: None,
             max_connections: None,
@@ -157,7 +178,10 @@ struct Shared {
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
     ranged_connections: AtomicUsize,
+    /// Index of the first request that gets the second body version.
+    switch_from: AtomicUsize,
     open: AtomicUsize,
+    body_bytes: AtomicU64,
     stop: AtomicBool,
     log: Mutex<Vec<Logged>>,
     sockets: Mutex<Vec<TcpStream>>,
@@ -174,14 +198,17 @@ impl Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
+        let switch_from = AtomicUsize::new(config.switch_version_after.unwrap_or(usize::MAX));
         let shared = Arc::new(Shared {
             config,
+            switch_from,
             requests: AtomicUsize::new(0),
             cuts: AtomicUsize::new(0),
             scripted: AtomicUsize::new(0),
             target_requests: AtomicUsize::new(0),
             ranged_connections: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
+            body_bytes: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             log: Mutex::new(Vec::new()),
             sockets: Mutex::new(Vec::new()),
@@ -204,6 +231,17 @@ impl Server {
 
     pub fn log(&self) -> Vec<Logged> {
         self.shared.log.lock().unwrap().clone()
+    }
+
+    /// Every request from now on gets the second body version and its validators.
+    pub fn switch_version_now(&self) {
+        let seen = self.shared.requests.load(Ordering::Acquire);
+        self.shared.switch_from.store(seen, Ordering::Release);
+    }
+
+    /// Body bytes written to sockets so far, whether or not the client read them.
+    pub fn body_bytes_sent(&self) -> u64 {
+        self.shared.body_bytes.load(Ordering::Acquire)
     }
 
     /// Blocks until every connection has closed and no request has arrived for a moment, so
@@ -431,6 +469,7 @@ struct Reply {
     body: Option<(u64, u64)>,
     version: u8,
     close: bool,
+    omit_length: bool,
 }
 
 impl Reply {
@@ -442,6 +481,7 @@ impl Reply {
             body: None,
             version: 1,
             close: false,
+            omit_length: false,
         }
     }
 }
@@ -552,9 +592,10 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
         }
     }
 
-    let version = match config.switch_version_after {
-        Some(after) if index >= after => 2,
-        _ => 1,
+    let version = if index >= shared.switch_from.load(Ordering::Acquire) {
+        2
+    } else {
+        1
     };
     let etag = match config.etag {
         EtagKind::Absent => None,
@@ -568,11 +609,14 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             Some(format!("{weak}\"v{version}{unique}\""))
         }
     };
-    let last_modified = config.last_modified.then_some(if version == 1 {
-        "Mon, 01 Jan 2024 00:00:00 GMT"
-    } else {
-        "Tue, 02 Jan 2024 00:00:00 GMT"
-    });
+    let last_modified =
+        config
+            .last_modified
+            .then_some(if version == 1 || config.last_modified_fixed {
+                "Mon, 01 Jan 2024 00:00:00 GMT"
+            } else {
+                "Tue, 02 Jan 2024 00:00:00 GMT"
+            });
     let mut identity = Vec::new();
     if config.accept_ranges_header {
         identity.push("Accept-Ranges: bytes".to_owned());
@@ -591,20 +635,37 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             reply.headers.push("Allow: GET".into());
             reply
         }
+        "HEAD" if config.head_bare => Reply {
+            omit_length: true,
+            ..Reply::empty(200)
+        },
         "HEAD" => Reply {
-            headers: identity,
+            headers: match &config.head_etag {
+                Some(head_etag) => identity
+                    .into_iter()
+                    .map(|header| {
+                        if header.starts_with("ETag:") {
+                            format!("ETag: {head_etag}")
+                        } else {
+                            header
+                        }
+                    })
+                    .collect(),
+                None => identity,
+            },
             length: config.head_content_length.unwrap_or(size),
             version,
             ..Reply::empty(200)
         },
         "GET" => {
-            let if_range_holds = request.header("if-range").is_none_or(|validator| {
-                if validator.starts_with('"') {
-                    etag.as_deref() == Some(validator)
-                } else {
-                    last_modified == Some(validator)
-                }
-            });
+            let if_range_holds = config.ignore_if_range
+                || request.header("if-range").is_none_or(|validator| {
+                    if validator.starts_with('"') {
+                        etag.as_deref() == Some(validator)
+                    } else {
+                        last_modified == Some(validator)
+                    }
+                });
             let slice = match request.header("range") {
                 Some(spec) if config.ranges == RangeSupport::Honour && if_range_holds => {
                     wanted(spec, size)
@@ -617,10 +678,18 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
                     length: size,
                     body: Some((0, size)),
                     version,
+                    close: !config.get_length_header,
+                    omit_length: !config.get_length_header,
                     ..Reply::empty(200)
                 },
                 Wanted::Part(start, end) => {
                     let mut headers = identity;
+                    if config.partial_without_validators && request.header("if-range").is_some() {
+                        headers.retain(|header| header.starts_with("Accept-Ranges"));
+                    }
+                    if config.partial_without_etag && request.header("if-range").is_some() {
+                        headers.retain(|header| !header.starts_with("ETag:"));
+                    }
                     headers.push(format!("Content-Range: bytes {start}-{end}/{size}"));
                     Reply {
                         headers,
@@ -684,7 +753,9 @@ fn answer(
         head.push_str(header);
         head.push_str("\r\n");
     }
-    head.push_str(&format!("Content-Length: {}\r\n", reply.length));
+    if !reply.omit_length {
+        head.push_str(&format!("Content-Length: {}\r\n", reply.length));
+    }
     if reply.close {
         head.push_str("Connection: close\r\n");
     }
@@ -700,11 +771,14 @@ fn answer(
         _ => config.throttle,
     };
     let sent = cut_after.unwrap_or(length);
-    write_body(stream, reply.version, start, sent, rate) && sent == length && !reply.close
+    write_body(stream, &shared.body_bytes, reply.version, start, sent, rate)
+        && sent == length
+        && !reply.close
 }
 
 fn write_body(
     stream: &mut TcpStream,
+    counter: &AtomicU64,
     version: u8,
     start: u64,
     length: u64,
@@ -723,6 +797,7 @@ fn write_body(
         if stream.write_all(&chunk[..count]).is_err() {
             return false;
         }
+        counter.fetch_add(count as u64, Ordering::AcqRel);
         sent += count as u64;
         if let Some(rate) = rate {
             let due = Duration::from_secs_f64(sent as f64 / rate as f64);
@@ -919,6 +994,67 @@ mod tests {
         assert_eq!(answer.status, 200);
         assert_eq!(answer.body, pattern(1, 1000));
         assert_eq!(answer.header("Accept-Ranges"), Some("bytes"));
+    }
+
+    #[test]
+    fn body_bytes_sent_counts_the_body_of_every_get_and_nothing_of_a_head() {
+        let server = Server::start(config(1000));
+        let mut connection = connect(&server);
+        request(&mut connection, "HEAD", "/", &[]);
+        request(&mut connection, "GET", "/", &["Range: bytes=0-9"]);
+        request(&mut connection, "GET", "/", &[]);
+        // The server counts a chunk after it has written it, so the client may see the last
+        // answer first; a closed connection and an idle server leave the count final.
+        drop(connection);
+        server.wait_idle();
+        assert_eq!(server.body_bytes_sent(), 1010);
+    }
+
+    #[test]
+    fn head_and_get_answers_can_disagree_or_leave_out_their_framing() {
+        let server = Server::start(Config {
+            head_etag: Some("\"head\"".into()),
+            ..config(100)
+        });
+        let mut connection = connect(&server);
+        assert_eq!(
+            request(&mut connection, "HEAD", "/", &[]).header("ETag"),
+            Some("\"head\"")
+        );
+        assert_eq!(
+            request(&mut connection, "GET", "/", &[]).header("ETag"),
+            Some("\"v1\"")
+        );
+
+        let bare = Server::start(Config {
+            head_bare: true,
+            ..config(100)
+        });
+        let answer = request(&mut connect(&bare), "HEAD", "/", &[]);
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.header("Content-Length"), None);
+        assert_eq!(answer.header("ETag"), None);
+        assert_eq!(answer.header("Last-Modified"), None);
+
+        let unframed = Server::start(Config {
+            get_length_header: false,
+            ..config(100)
+        });
+        let mut connection = connect(&unframed);
+        let (status, headers) = {
+            connection
+                .get_mut()
+                .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+                .unwrap();
+            read_head(&mut connection).unwrap()
+        };
+        assert_eq!(status, 200);
+        assert!(headers
+            .iter()
+            .all(|(name, _)| !name.eq_ignore_ascii_case("content-length")));
+        let mut body = Vec::new();
+        connection.read_to_end(&mut body).unwrap();
+        assert_eq!(body, pattern(1, 100));
     }
 
     #[test]
