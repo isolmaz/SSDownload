@@ -652,7 +652,7 @@ fn settle_part(part: &Path, length: u64) -> Result<()> {
 /// part file through a second handle and through the sink's own, and only then records the
 /// length reached, so `synced` never claims a byte that was not written before the flush.
 /// Periodic cycles run beside the transfer and, when one fails, leave the last record in place;
-/// `checkpoint` is the one that has to succeed.
+/// `checkpoint` waits for them, has to flush, and writes the record as its `Record` asks.
 struct SequentialSink {
     file: Arc<File>,
     cycle: Cycle<u64>,
