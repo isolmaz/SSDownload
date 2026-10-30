@@ -34,12 +34,16 @@ fn fetch(
     )
 }
 
-/// Half-open byte ranges of the ranged GETs, without the one-byte range-support probe.
-fn ranged_gets(log: &[Logged], total: u64) -> Vec<(u64, u64)> {
+/// The GETs that carry file data: all but the one-byte range-support probe.
+fn data_gets(log: &[Logged]) -> impl Iterator<Item = &Logged> {
     log.iter()
-        .filter(|entry| entry.method == "GET")
+        .filter(|entry| entry.method == "GET" && entry.range.as_deref() != Some("bytes=0-0"))
+}
+
+/// Half-open byte ranges of the ranged data GETs.
+fn ranged_gets(log: &[Logged], total: u64) -> Vec<(u64, u64)> {
+    data_gets(log)
         .filter_map(|entry| entry.range.as_deref())
-        .filter(|range| *range != "bytes=0-0")
         .map(|range| {
             let (start, end) = range
                 .strip_prefix("bytes=")
@@ -91,9 +95,8 @@ fn segmented_download_over_several_connections_has_exactly_the_source_bytes() {
 
     let log = server.log();
     assert_tiles(ranged_gets(&log, size), size);
-    let mut connections = log
-        .iter()
-        .filter(|entry| entry.method == "GET" && entry.range.is_some())
+    let mut connections = data_gets(&log)
+        .filter(|entry| entry.range.is_some())
         .map(|entry| entry.connection)
         .collect::<Vec<_>>();
     connections.sort_unstable();
@@ -136,6 +139,7 @@ fn an_interrupted_segmented_download_resumes_by_requesting_only_the_missing_rang
         "the interruption left {done:?} of {size} bytes"
     );
     assert!(part_path(&output).exists() && !output.exists());
+    server.wait_idle();
     let first_attempt = server.log().len();
 
     let result = fetch(
@@ -182,6 +186,7 @@ fn a_source_that_changes_between_attempts_restarts_and_publishes_the_new_version
     });
     assert!(interrupted.is_err());
     assert!(fs::metadata(part_path(&output)).unwrap().len() > 0);
+    server.wait_idle();
     let first_attempt = server.log();
     assert_eq!(
         first_attempt
@@ -319,9 +324,7 @@ fn bench(label: &str, server_config: Config, connections: u8, per_host_limit: u8
         "{label}"
     );
     let log = server.log();
-    let sockets = log
-        .iter()
-        .filter(|entry| entry.method == "GET")
+    let sockets = data_gets(&log)
         .map(|entry| entry.connection)
         .collect::<std::collections::BTreeSet<_>>();
     println!(
@@ -386,7 +389,7 @@ fn bench_one_slow_connection() {
 #[ignore = "benchmark: cargo test --lib bench_ -- --ignored --nocapture --test-threads=1"]
 fn bench_dropped_connections() {
     bench(
-        "8 connections and per-host limit 8, first 6 responses cut",
+        "8 connections and per-host limit 8, first 6 responses longer than 4 MiB cut after 4 MiB",
         Config {
             cut_body: Some(CutBody {
                 after_bytes: 4 * MIB,

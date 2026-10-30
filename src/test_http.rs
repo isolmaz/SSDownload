@@ -89,9 +89,10 @@ pub struct Config {
     pub switch_version_after: Option<usize>,
     /// Bytes per second on every connection.
     pub throttle: Option<u64>,
-    /// Bytes per second on the k-th connection (from 0, in accept order) whose first request
-    /// is a GET with a `Range` starting above 0, replacing `throttle` there. Probes and
-    /// other connections do not count.
+    /// Bytes per second on the k-th admitted connection (from 0, counted in the order the log
+    /// records their first requests) whose first request is a GET with a `Range` starting
+    /// above 0, replacing `throttle` there. Probes, refused connections and connections that
+    /// start otherwise do not count.
     pub slow_connection: Option<(usize, u64)>,
     pub max_connections: Option<usize>,
     pub over_limit: OverLimit,
@@ -152,7 +153,7 @@ impl Logged {
 struct Shared {
     config: Config,
     requests: AtomicUsize,
-    bodies: AtomicUsize,
+    cuts: AtomicUsize,
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
     ranged_connections: AtomicUsize,
@@ -176,7 +177,7 @@ impl Server {
         let shared = Arc::new(Shared {
             config,
             requests: AtomicUsize::new(0),
-            bodies: AtomicUsize::new(0),
+            cuts: AtomicUsize::new(0),
             scripted: AtomicUsize::new(0),
             target_requests: AtomicUsize::new(0),
             ranged_connections: AtomicUsize::new(0),
@@ -203,6 +204,25 @@ impl Server {
 
     pub fn log(&self) -> Vec<Logged> {
         self.shared.log.lock().unwrap().clone()
+    }
+
+    /// Blocks until every connection has closed and no request has arrived for a moment, so
+    /// that the log holds every request the client sent before it stopped.
+    pub fn wait_idle(&self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut seen = usize::MAX;
+        let mut settled = 0;
+        while settled < 3 {
+            let requests = self.shared.requests.load(Ordering::Acquire);
+            if self.shared.open.load(Ordering::Acquire) == 0 && requests == seen {
+                settled += 1;
+            } else {
+                settled = 0;
+            }
+            seen = requests;
+            assert!(Instant::now() < deadline, "the server never went idle");
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -372,17 +392,23 @@ fn serve(shared: &Shared, stream: TcpStream, connection: usize, over_limit: bool
     };
     let mut reader = BufReader::new(reader_stream);
     let mut stream = stream;
-    let mut first_request_is_slow = None;
+    let mut slow = None;
     while let Some(request) = read_request(&mut reader) {
-        let slow = *first_request_is_slow.get_or_insert_with(|| is_slow(shared, &request));
-        if !answer(shared, &mut stream, connection, &request, over_limit, slow) {
+        if !answer(
+            shared,
+            &mut stream,
+            connection,
+            &request,
+            over_limit,
+            &mut slow,
+        ) {
             break;
         }
     }
     let _ = stream.shutdown(Shutdown::Write);
 }
 
-/// Judged on a connection's first request: whether it is the configured slow connection.
+/// Judged on an admitted connection's first request: whether it is the configured slow one.
 fn is_slow(shared: &Shared, request: &Request) -> bool {
     let Some((slow, _)) = shared.config.slow_connection else {
         return false;
@@ -622,22 +648,19 @@ fn answer(
     connection: usize,
     request: &Request,
     over_limit: bool,
-    slow: bool,
+    slow: &mut Option<bool>,
 ) -> bool {
     let config = &shared.config;
     let index = shared.requests.fetch_add(1, Ordering::AcqRel);
     let reply = plan(shared, request, index, over_limit);
-    let cut_after = reply
-        .body
-        .filter(|(_, length)| *length > 0)
-        .and_then(|(_, length)| {
-            let position = shared.bodies.fetch_add(1, Ordering::AcqRel);
-            config
-                .cut_body
-                .filter(|cut| position < cut.responses && length > cut.after_bytes)
-                .map(|cut| cut.after_bytes)
-        });
-    shared.log.lock().unwrap().push(Logged {
+    let cut_after = config.cut_body.and_then(|cut| {
+        let (_, length) = reply.body?;
+        (length > cut.after_bytes && shared.cuts.fetch_add(1, Ordering::AcqRel) < cut.responses)
+            .then_some(cut.after_bytes)
+    });
+    let mut log = shared.log.lock().unwrap();
+    let slow = *slow.get_or_insert_with(|| !over_limit && is_slow(shared, request));
+    log.push(Logged {
         connection,
         method: request.method.clone(),
         path: request.path.clone(),
@@ -654,6 +677,7 @@ fn answer(
         status: reply.status,
         body_cut: cut_after.is_some(),
     });
+    drop(log);
 
     let mut head = format!("HTTP/1.1 {} {}\r\n", reply.status, reason(reply.status));
     for header in &reply.headers {
@@ -1039,6 +1063,48 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_connection_does_not_take_the_slow_slot() {
+        let server = Server::start(Config {
+            slow_connection: Some((0, 32 * 1024)),
+            max_connections: Some(1),
+            ..config(64 * 1024)
+        });
+        // Admitted first, but it sends its first request after the refused one.
+        let mut admitted = connect(&server);
+        let refused = request(&mut connect(&server), "GET", "/", &["Range: bytes=1-10"]);
+        assert_eq!(refused.status, 503);
+        let began = Instant::now();
+        let slow = request(&mut admitted, "GET", "/", &["Range: bytes=1-16384"]);
+        assert_eq!(slow.body.len(), 16 * 1024);
+        assert!(began.elapsed() >= Duration::from_millis(450));
+    }
+
+    #[test]
+    fn wait_idle_returns_after_a_request_that_was_sent_and_abandoned_is_logged() {
+        let server = Server::start(config(10));
+        let mut connection = connect(&server);
+        connection
+            .get_mut()
+            .write_all(
+                b"GET /late HTTP/1.1
+Host: test
+
+",
+            )
+            .unwrap();
+        drop(connection);
+        server.wait_idle();
+        assert_eq!(
+            server
+                .log()
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/late"]
+        );
+    }
+
+    #[test]
     fn connections_beyond_the_maximum_get_503_with_retry_after() {
         for (retry_after, expected) in [
             (None, None),
@@ -1085,6 +1151,9 @@ mod tests {
             }),
             ..config(1000)
         });
+        // A response that is not longer than the cut point is never cut and uses no slot.
+        let short = request(&mut connect(&server), "GET", "/", &["Range: bytes=0-49"]);
+        assert_eq!(short.body, pattern(1, 1000)[..50]);
         for _ in 0..2 {
             let mut connection = connect(&server);
             let (status, _) = {
@@ -1107,7 +1176,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.body_cut)
                 .collect::<Vec<_>>(),
-            [true, true, false]
+            [false, true, true, false]
         );
     }
 
