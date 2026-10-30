@@ -1196,6 +1196,32 @@ fn pause_cycles_for(pause: Duration) {
     TEST_PAUSE.with(|current| current.set(pause));
 }
 
+/// The steps of every cycle, split at the step that begins a cycle.
+fn cycles() -> Vec<Vec<&'static str>> {
+    let mut cycles: Vec<Vec<&'static str>> = Vec::new();
+    for step in steps() {
+        if step == "counted" {
+            cycles.push(Vec::new());
+        }
+        cycles
+            .last_mut()
+            .expect("a cycle begins by counting")
+            .push(step);
+    }
+    cycles
+}
+
+/// The steps of a cycle that works on `writers` handles: it flushes through the handle of its
+/// own and through every writer, and only then records.
+fn cycle_of(writers: u8, recorded: bool) -> Vec<&'static str> {
+    let mut cycle = vec!["counted", "flushed"];
+    cycle.extend(std::iter::repeat_n("writer flushed", usize::from(writers)));
+    if recorded {
+        cycle.push("recorded");
+    }
+    cycle
+}
+
 /// Cycles that flushed the part file and wrote a record.
 fn checkpoint_cycles() -> usize {
     steps().iter().filter(|step| **step == "recorded").count()
@@ -1556,6 +1582,78 @@ fn a_segmented_download_survives_periodic_checkpoints_that_fail() {
     survives_periodic_checkpoints_that_fail(2, 24 * MIB);
 }
 
+/// Runs a one-connection download while the record cannot be replaced from the first byte until
+/// `fetch` returns, and no periodic cycle runs: only the cycle at the end could write it.
+fn fetch_with_a_record_that_cannot_be_written(
+    config: Config,
+) -> (TempDir, PathBuf, Result<TransferResult>) {
+    let server = Server::start(config);
+    checkpoint_every(NEVER, u64::MAX);
+    let directory = TempDir::new("final-record");
+    let output = directory.0.join("payload.bin");
+    let state_file = state_path(&output);
+    let mut held = None;
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |progress| {
+            if held.is_none() && progress.downloaded > 0 {
+                held = Some(hold_against_replacement(&state_file));
+            }
+        },
+    );
+    assert!(held.is_some(), "the record was never held");
+    drop(held);
+    (directory, output, result)
+}
+
+#[test]
+fn a_one_connection_download_completes_when_only_the_final_record_cannot_be_written() {
+    let size = 6 * MIB;
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(Config {
+        size,
+        throttle: Some(4 * MIB),
+        ..Config::default()
+    });
+    let result = result.unwrap_or_else(|error| panic!("{error:#}"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert!(!part_path(&output).exists());
+}
+
+#[test]
+fn a_transport_error_stays_a_transport_error_when_the_record_cannot_be_written() {
+    let size = 6 * MIB;
+    let cut = 3 * MIB;
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(Config {
+        size,
+        throttle: Some(4 * MIB),
+        cut_body: Some(CutBody {
+            after_bytes: cut,
+            responses: 1,
+        }),
+        ..Config::default()
+    });
+    let error = result.expect_err("the body was cut");
+    // The engine retries what carries a libcurl transport error and not a disk error.
+    let chain = error.chain().collect::<Vec<_>>();
+    assert!(
+        chain
+            .iter()
+            .any(|cause| cause.downcast_ref::<curl::Error>().is_some()),
+        "{error:#}"
+    );
+    assert!(
+        !chain
+            .iter()
+            .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()),
+        "{error:#}"
+    );
+    assert_eq!(fs::metadata(part_path(&output)).unwrap().len(), cut);
+}
+
 fn flushes_before_it_records(connections: u8) {
     let size = 12 * MIB;
     let server = Server::start(Config {
@@ -1576,15 +1674,20 @@ fn flushes_before_it_records(connections: u8) {
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
-    // Every cycle reads the counts first, flushes second and records last, and none overlaps
-    // another: a periodic cycle and the one at the end.
-    let steps = steps();
-    assert!(
-        steps.len() >= 6 && steps.len().is_multiple_of(3),
-        "{steps:?}"
-    );
-    for cycle in steps.chunks(3) {
-        assert_eq!(cycle, ["counted", "flushed", "recorded"], "{steps:?}");
+    // Every cycle reads the counts first, flushes the part file through its own handle and
+    // through every writer handle, and records last, and none overlaps another: the periodic
+    // ones and the one at the end. The end of a one-connection download is flushed and not
+    // recorded, because the record is deleted when the file is published.
+    let cycles = cycles();
+    assert!(cycles.len() >= 3, "{:?}", steps());
+    for (index, cycle) in cycles.iter().enumerate() {
+        let last = index + 1 == cycles.len();
+        assert_eq!(
+            *cycle,
+            cycle_of(connections, connections > 1 || !last),
+            "{:?}",
+            steps()
+        );
     }
 }
 
@@ -1624,8 +1727,13 @@ fn the_end_waits_for_the_running_cycle(connections: u8) {
     // The cycle at the end starts only after the running one has recorded; no second periodic
     // cycle starts while one is running.
     assert_eq!(
-        steps(),
-        ["counted", "flushed", "recorded", "counted", "flushed", "recorded"]
+        cycles(),
+        [
+            cycle_of(connections, true),
+            cycle_of(connections, connections > 1)
+        ],
+        "{:?}",
+        steps()
     );
 }
 

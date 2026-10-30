@@ -34,8 +34,8 @@ const STATE_VERSION: u8 = 3;
 /// once `bytes` are waiting, whichever comes first. A crash or power loss costs about that
 /// much transfer. A cycle is a flush of the part file and an atomic write of the state (two
 /// more syncs), so it is spaced out in time; the byte limit bounds the data a cycle has to
-/// flush and the transfer a crash can cost on a fast link. Pausing, stopping, a failed transfer
-/// and the end of the transfer always run a cycle.
+/// flush and the transfer a crash can cost on a fast link. Pausing, stopping, a lost connection
+/// and the end of the transfer run a cycle at once.
 #[derive(Debug, Clone, Copy)]
 struct Cadence {
     interval: Duration,
@@ -100,8 +100,8 @@ impl Pace {
     }
 }
 
-/// What the cycles of a download did and in which order ("counted", "flushed", "recorded" or
-/// "failed"), kept for tests.
+/// What the cycles of a download did and in which order ("counted", "flushed", "writer
+/// flushed", "recorded" or "failed"), kept for tests.
 #[derive(Clone, Default)]
 struct Steps(
     #[cfg(test)] Arc<std::sync::Mutex<Vec<&'static str>>>,
@@ -152,30 +152,108 @@ thread_local! {
     static TEST_PAUSE: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
-/// The flush-and-record step of a checkpoint: flushes the part file, and only then writes the
-/// record. It runs on a helper thread through a handle of its own, so that neither the writers
-/// nor the loop that schedules them wait for the disk, and at most one runs at a time. The
-/// handle must be a separate open, not a duplicate of a writer's: a flush holds back the
-/// other I/O on its file object until it ends, and that is what a separate open avoids.
-/// `covers` is what the running cycle will have made durable and recorded.
-struct Cycle<T> {
-    flush: Arc<File>,
+/// What a cycle does with the record once the part file is durable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Record {
+    /// A record that cannot be written fails the cycle.
+    Required,
+    /// The record is tried; when it cannot be written the previous one stays valid.
+    Attempted,
+    /// No record: the part file is about to be published and the record deleted.
+    Skipped,
+}
+
+/// The handles and the record that a cycle works on.
+struct Disk {
+    /// A handle that no writer uses, so that a flush through it holds back no write.
+    flush: File,
+    /// Every handle that writes the part file.
+    writers: Vec<Arc<File>>,
     state_path: PathBuf,
-    /// Added to a failed flush; the error of a failed record write carries its own context.
+    /// Added to a failed flush; the error of a failed record write is passed on as it is.
     flush_context: Option<&'static str>,
     steps: Steps,
+}
+
+impl Disk {
+    /// Flushes through the flush handle, which drains most of the dirty data without holding
+    /// back a writer, and then through every writer handle, so that no handle that wrote a byte
+    /// the record will claim goes unflushed.
+    fn flush(&self) -> Result<()> {
+        let describe = |error: std::io::Error| match self.flush_context {
+            Some(context) => anyhow!(error).context(context),
+            None => anyhow!(error),
+        };
+        self.flush.sync_all().map_err(describe)?;
+        self.steps.note("flushed");
+        for writer in &self.writers {
+            writer.sync_all().map_err(describe)?;
+            self.steps.note("writer flushed");
+        }
+        Ok(())
+    }
+
+    /// Flushes, and only then writes `state`. Returns whether the record was written.
+    fn flush_then_record(&self, state: &ResumeState, record: Record) -> Result<bool> {
+        if let Err(error) = self.flush() {
+            self.steps.note("failed");
+            return Err(error);
+        }
+        if record == Record::Skipped {
+            return Ok(false);
+        }
+        self.steps.pause();
+        match write_state(&self.state_path, state) {
+            Ok(()) => {
+                self.steps.note("recorded");
+                Ok(true)
+            }
+            Err(error) => {
+                self.steps.note("failed");
+                if record == Record::Required {
+                    Err(error)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+    }
+}
+
+/// The flush-and-record step of a checkpoint. A periodic one runs on a helper thread, so that
+/// neither the writers nor the loop that schedules them wait for the disk, and at most one runs
+/// at a time; the ones that must succeed run on the caller's thread after the running one.
+/// `covers` is what the running cycle will have made durable and recorded.
+struct Cycle<T> {
+    disk: Arc<Disk>,
     running: Option<(thread::JoinHandle<Result<()>>, T)>,
 }
 
 impl<T> Cycle<T> {
-    fn new(flush: File, state_path: &Path, flush_context: Option<&'static str>) -> Self {
+    fn new(
+        flush: File,
+        writers: Vec<Arc<File>>,
+        state_path: &Path,
+        flush_context: Option<&'static str>,
+    ) -> Self {
         Self {
-            flush: Arc::new(flush),
-            state_path: state_path.to_path_buf(),
-            flush_context,
-            steps: Steps::current(),
+            disk: Arc::new(Disk {
+                flush,
+                writers,
+                state_path: state_path.to_path_buf(),
+                flush_context,
+                steps: Steps::current(),
+            }),
             running: None,
         }
+    }
+
+    fn state_path(&self) -> &Path {
+        &self.disk.state_path
+    }
+
+    fn note(&self, step: &'static str) {
+        self.disk.steps.note(step);
     }
 
     fn busy(&self) -> bool {
@@ -186,17 +264,21 @@ impl<T> Cycle<T> {
         self.running.as_ref().map(|(_, covers)| covers)
     }
 
-    fn start(&mut self, state: ResumeState, covers: T) {
+    /// Starts a periodic cycle. A thread that cannot be created is a cycle that failed, and is
+    /// returned like one.
+    fn start(&mut self, state: ResumeState, covers: T) -> Option<(T, Result<()>)> {
         debug_assert!(self.running.is_none(), "one cycle runs at a time");
-        let (flush, path, context, steps) = (
-            self.flush.clone(),
-            self.state_path.clone(),
-            self.flush_context,
-            self.steps.clone(),
-        );
-        let handle =
-            thread::spawn(move || flush_then_record(&flush, &path, &state, context, &steps));
-        self.running = Some((handle, covers));
+        let disk = self.disk.clone();
+        let spawned = thread::Builder::new()
+            .name("checkpoint".into())
+            .spawn(move || disk.flush_then_record(&state, Record::Required).map(|_| ()));
+        match spawned {
+            Ok(handle) => {
+                self.running = Some((handle, covers));
+                None
+            }
+            Err(error) => Some(report_periodic(covers, Err(anyhow!(error)))),
+        }
     }
 
     /// The outcome of the running cycle, if it has ended.
@@ -218,18 +300,13 @@ impl<T> Cycle<T> {
         let result = handle
             .join()
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-        Some((covers, result))
+        Some(report_periodic(covers, result))
     }
 
-    /// Runs a cycle on this thread, for the checkpoints that must succeed.
-    fn run(&self, state: &ResumeState) -> Result<()> {
-        flush_then_record(
-            &self.flush,
-            &self.state_path,
-            state,
-            self.flush_context,
-            &self.steps,
-        )
+    /// Runs a cycle on this thread, for the checkpoints that must succeed. Returns whether the
+    /// record was written.
+    fn run(&self, state: &ResumeState, record: Record) -> Result<bool> {
+        self.disk.flush_then_record(state, record)
     }
 }
 
@@ -243,26 +320,16 @@ impl<T> Drop for Cycle<T> {
     }
 }
 
-fn flush_then_record(
-    flush: &File,
-    state_path: &Path,
-    state: &ResumeState,
-    flush_context: Option<&'static str>,
-    steps: &Steps,
-) -> Result<()> {
-    let result = flush
-        .sync_all()
-        .map_err(|error| match flush_context {
-            Some(context) => anyhow!(error).context(context),
-            None => anyhow!(error),
-        })
-        .and_then(|()| {
-            steps.note("flushed");
-            steps.pause();
-            write_state(state_path, state)
-        });
-    steps.note(if result.is_ok() { "recorded" } else { "failed" });
-    result
+/// The outcome of a periodic cycle. A failure does not end the transfer, so it is only logged.
+fn report_periodic<T>(covers: T, result: Result<()>) -> (T, Result<()>) {
+    if let Err(error) = &result {
+        crate::logging::record(
+            crate::logging::Event::warn("transfer.checkpoint_failed")
+                .outcome(crate::logging::Outcome::Failed)
+                .detail(format!("{error:#}")),
+        );
+    }
+    (covers, result)
 }
 
 /// How the requests of an attempt are bound to bytes that an earlier attempt left on disk.
@@ -582,13 +649,12 @@ fn settle_part(part: &Path, length: u64) -> Result<()> {
 }
 
 /// The part file of a one-connection transfer together with its record. A cycle flushes the
-/// part file through a second handle and only then records the length reached, so `synced`
-/// never claims a byte that was not written before the flush (see `Checkpoints` for why a
-/// flush through another handle covers what this one wrote). Periodic cycles run beside the
-/// transfer and, when one fails, leave the last record in place; `checkpoint` is the one that
-/// has to succeed.
+/// part file through a second handle and through the sink's own, and only then records the
+/// length reached, so `synced` never claims a byte that was not written before the flush.
+/// Periodic cycles run beside the transfer and, when one fails, leave the last record in place;
+/// `checkpoint` is the one that has to succeed.
 struct SequentialSink {
-    file: File,
+    file: Arc<File>,
     cycle: Cycle<u64>,
     state: ResumeState,
     /// Where this transfer began in the part file.
@@ -614,9 +680,10 @@ impl SequentialSink {
                 part.display()
             )
         })?;
+        let file = Arc::new(file);
         Ok(Self {
+            cycle: Cycle::new(flush, vec![file.clone()], state_path, None),
             file,
-            cycle: Cycle::new(flush, state_path, None),
             state,
             start,
             written: 0,
@@ -635,7 +702,7 @@ impl SequentialSink {
         if self.waiting() == 0 {
             self.pace.restart();
         }
-        self.file.write_all(data)?;
+        (&*self.file).write_all(data)?;
         self.written += data.len() as u64;
         if !self.cycle.busy() && self.pace.due(self.waiting()) {
             self.begin();
@@ -645,7 +712,7 @@ impl SequentialSink {
 
     /// Replaces the record's identity, for a transfer that has written nothing yet.
     fn adopt(&mut self, state: ResumeState) -> Result<()> {
-        write_state(&self.cycle.state_path, &state)?;
+        write_state(self.cycle.state_path(), &state)?;
         self.state = state;
         Ok(())
     }
@@ -659,10 +726,12 @@ impl SequentialSink {
 
     /// Starts a periodic cycle for everything written so far.
     fn begin(&mut self) {
-        self.cycle.steps.note("counted");
+        self.cycle.note("counted");
         self.pace.restart();
         let record = self.record_of(self.written);
-        self.cycle.start(record, self.written);
+        if let Some(ended) = self.cycle.start(record, self.written) {
+            self.absorb(ended);
+        }
     }
 
     /// Takes in the outcome of a periodic cycle that has ended. A failed one changes nothing:
@@ -682,20 +751,22 @@ impl SequentialSink {
         }
     }
 
-    /// Makes everything written so far durable and recorded, after any cycle in progress.
-    fn checkpoint(&mut self) -> Result<()> {
+    /// Makes everything written so far durable, after any cycle in progress, and records it as
+    /// `record` says. Fails when the flush fails, or when a required record cannot be written.
+    fn checkpoint(&mut self, record: Record) -> Result<()> {
         if let Some(ended) = self.cycle.wait() {
             self.absorb(ended);
         }
         if self.written == self.recorded {
             return Ok(());
         }
-        self.cycle.steps.note("counted");
+        self.cycle.note("counted");
         let written = self.written;
-        self.cycle.run(&self.record_of(written))?;
-        self.recorded = written;
-        self.state.synced = Some(self.start + written);
-        self.pace.restart();
+        if self.cycle.run(&self.record_of(written), record)? {
+            self.recorded = written;
+            self.state.synced = Some(self.start + written);
+            self.pace.restart();
+        }
         Ok(())
     }
 }
@@ -1563,7 +1634,7 @@ fn http_to_file(
 
     let headers = response.borrow().clone();
     if control.stop_requested() {
-        sink.checkpoint().map_err(|error| {
+        sink.checkpoint(Record::Required).map_err(|error| {
             AttemptFailure::Other(error.context(crate::i18n::ui(
                 "Duraklatılan kısmi dosya diske yazılamadı",
                 "The paused partial file could not be written to disk",
@@ -1627,7 +1698,7 @@ fn http_to_file(
             ),
         );
         if sink.written > 0 {
-            sink.checkpoint().map_err(|sync_error| {
+            sink.checkpoint(Record::Attempted).map_err(|sync_error| {
                 AttemptFailure::Other(sync_error.context(crate::i18n::ui(
                     "Kısmi dosya diske yazılamadı",
                     "The partial file could not be written to disk",
@@ -1640,7 +1711,7 @@ fn http_to_file(
         }
         return Err(AttemptFailure::RetryableTransport(error));
     }
-    sink.checkpoint().map_err(|error| {
+    sink.checkpoint(Record::Skipped).map_err(|error| {
         AttemptFailure::Other(error.context(crate::i18n::ui(
             "Geçici dosya yazılamadı",
             "The temporary file could not be written",
@@ -1713,17 +1784,19 @@ struct Snapshot {
 /// ranges the counts describe; bytes written after the counts were read are not claimed. The
 /// state therefore lists only bytes that were written and then flushed.
 ///
-/// The flush runs on a helper thread through a handle of its own (`Cycle`), because a flush
-/// holds back every other write on its handle until it returns: about 30 ms for 64 MiB on an
-/// SSD, and longer on slower disks. That relies on a flush through any handle writing back the
-/// dirty data of the whole file, whichever handle wrote it. Windows keeps one cache per file
-/// stream that all handles of the stream share (a file system allocates one
-/// `SECTION_OBJECT_POINTERS` per stream), and `FlushFileBuffers` is documented to write "all
-/// the buffered information for a specified file". The documentation does not state in so many
-/// words that this includes data written through other handles. On NTFS it does: a flush
-/// through a second handle takes as long as the data written through the first needs, and
-/// leaves nothing for a later flush through the first. It is not verified on network shares or
-/// other file systems.
+/// Flushed means that every handle that wrote a recorded byte has been flushed. Each worker
+/// writes through its own handle and the ledger keeps all of them open until the transfer ends,
+/// so a handle is never closed with a recorded byte unflushed, whether its lease finished,
+/// dropped or is still running; the cycle flushes each of them before it writes the record. The
+/// record does not rest on a flush through one handle covering what another handle wrote.
+///
+/// The cycle flushes first through one more handle that no worker uses, on a helper thread
+/// (`Cycle`), and that flush only keeps the stalls short: a flush holds back every other write
+/// on its handle until it returns, about 30 ms for 64 MiB on an SSD and longer on slower disks.
+/// Where a flush writes back the dirty data of the whole file, as on NTFS, it drains almost
+/// everything and the flushes of the worker handles that follow hold their workers back for
+/// well under a millisecond. Where a flush covers only the data of its own handle, each worker
+/// waits for the flush of its own data and the record stays correct.
 struct Checkpoints {
     cycle: Cycle<Snapshot>,
     /// The record's identity; `completed` is filled in at each write.
@@ -1742,15 +1815,17 @@ struct Checkpoints {
 impl Checkpoints {
     fn new(
         flush: File,
+        writers: Vec<Arc<File>>,
         state_path: &Path,
         state: ResumeState,
         completed: Vec<ByteRange>,
         total: u64,
-        workers: usize,
     ) -> Self {
+        let workers = writers.len();
         Self {
             cycle: Cycle::new(
                 flush,
+                writers,
                 state_path,
                 Some(crate::i18n::ui(
                     "Aralık diske yazılamadı",
@@ -1861,7 +1936,7 @@ impl Checkpoints {
             self.pace.restart();
             return Ok(None);
         }
-        self.cycle.steps.note("counted");
+        self.cycle.note("counted");
         let mut all = self.completed.clone();
         all.extend(fresh.iter().copied());
         let completed = normalize_completed(&all, self.total)?;
@@ -1883,7 +1958,9 @@ impl Checkpoints {
     /// merged into a record.
     fn begin(&mut self) -> std::result::Result<(), AttemptFailure> {
         if let Some((record, snapshot)) = self.snapshot()? {
-            self.cycle.start(record, snapshot);
+            if let Some(ended) = self.cycle.start(record, snapshot) {
+                let _ = self.absorb(ended);
+            }
         }
         Ok(())
     }
@@ -1920,14 +1997,13 @@ impl Checkpoints {
         let Some((record, snapshot)) = self.snapshot()? else {
             return Ok(());
         };
-        let result = self.cycle.run(&record);
+        let result = self.cycle.run(&record, Record::Required).map(|_| ());
         self.absorb((snapshot, result))
             .map_err(AttemptFailure::Other)
     }
 }
 
-/// Writes all of `data` at `offset` without relying on the file position, which the other
-/// writers of the handle move.
+/// Writes all of `data` at `offset` without relying on the file position.
 fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> std::io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !data.is_empty() {
@@ -1986,7 +2062,8 @@ fn download_segmented(
     let lease_size = total
         .div_ceil(u64::from(count.max(1)))
         .clamp(MIN_SEGMENT_SIZE, MAX_SEGMENT_SIZE);
-    // Every worker writes through its own handle and the checkpoints flush through one more.
+    // Every worker writes through its own handle, the checkpoints keep all of them to flush
+    // them, and flush through one more.
     let open_part = || {
         OpenOptions::new()
             .write(true)
@@ -2002,15 +2079,15 @@ fn download_segmented(
     };
     let flush_file = open_part()?;
     let worker_files = (0..worker_count)
-        .map(|_| open_part())
+        .map(|_| open_part().map(Arc::new))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut ledger = Checkpoints::new(
         flush_file,
+        worker_files.clone(),
         &state_path,
         state,
         completed,
         total,
-        worker_count,
     );
     let (event_tx, event_rx) = mpsc::sync_channel::<RangeEvent>(worker_count * 2);
     // Raised when the scheduler gives up, so workers stop their current range at once
@@ -2335,7 +2412,8 @@ fn download_segmented(
             )
         )));
     }
-    // The write handle is closed before the part file is renamed.
+    // The workers have ended, so dropping the ledger closes every handle on the part file before
+    // it is renamed.
     drop(ledger);
     progress(TransferProgress {
         processing: false,
@@ -3021,7 +3099,7 @@ fn download_ftp_resuming(
         transfer.perform()
     };
     if control.stop_requested() {
-        sink.checkpoint().context(crate::i18n::ui(
+        sink.checkpoint(Record::Required).context(crate::i18n::ui(
             "Duraklatılan FTP dosyası diske yazılamadı",
             "The paused FTP file could not be written to disk",
         ))?;
@@ -3043,7 +3121,7 @@ fn download_ftp_resuming(
                 "The FTP server refused to resume; the next attempt restarts the download from the beginning",
             )));
         }
-        sink.checkpoint().context(crate::i18n::ui(
+        sink.checkpoint(Record::Attempted).context(crate::i18n::ui(
             "Kısmi dosya diske yazılamadı",
             "The partial file could not be written to disk",
         ))?;
@@ -3056,7 +3134,7 @@ fn download_ftp_resuming(
             ),
         ));
     }
-    sink.checkpoint().context(crate::i18n::ui(
+    sink.checkpoint(Record::Skipped).context(crate::i18n::ui(
         "Kısmi dosya diske yazılamadı",
         "The partial file could not be written to disk",
     ))?;
@@ -3074,6 +3152,7 @@ fn download_ftp_resuming(
             );
         }
     }
+    drop(sink);
     finalize_part(
         output,
         &part,
