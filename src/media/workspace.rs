@@ -524,6 +524,24 @@ pub(crate) fn has_partial_output(output: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The size of the tool's output files in the workspace of `output`, partial and finished
+/// streams alike: what a later attempt continues from. Workspace state files start with a dot.
+pub(crate) fn retained_bytes(output: &Path) -> u64 {
+    let Ok(owner) = crate::output::identity(output) else {
+        return 0;
+    };
+    let Ok(entries) = fs::read_dir(workspace_path(output, &owner)) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        .filter_map(|entry| fs::metadata(entry.path()).ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .fold(0u64, u64::saturating_add)
+}
+
 #[derive(Debug)]
 pub(crate) struct PreparedSourceRefresh {
     action: PreparedSourceRefreshAction,

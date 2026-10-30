@@ -1597,7 +1597,10 @@ pub(super) unsafe fn collect_settings(
         &text(f.retry),
         0,
         20,
-        crate::i18n::ui("Yeniden deneme", "Retry count"),
+        crate::i18n::ui(
+            "İlerlemesiz art arda deneme sayısı",
+            "Attempts in a row without progress",
+        ),
     )
     .map_err(|e| (e, f.retry))?;
     let speed_limit_kib = text(f.speed).trim().parse::<u64>().map_err(|_| {

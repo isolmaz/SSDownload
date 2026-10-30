@@ -554,7 +554,10 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Yeniden deneme sayısı (0–20):", "Retry count (0–20):"),
+                crate::i18n::ui(
+                    "İlerlemesiz art arda deneme sayısı:",
+                    "Attempts in a row without progress:",
+                ),
                 0,
             );
             f.retry = dialog_edit(dlg.hwnd, dlg.font, S_RETRY, false, true);

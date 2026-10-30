@@ -3315,6 +3315,11 @@ impl Actor {
                     .direct_connections
                     .max(active.media_fragment_connections)
                     .max(1);
+                let configured_connections =
+                    self.jobs.get(&id).map_or(retry_connection_cap, |job| {
+                        let uncapped = self.allocation_with_cap(&job.request, None);
+                        uncapped.direct.max(uncapped.media_fragments).max(1)
+                    });
                 let _ = active.handle.join();
                 match active.desired {
                     DesiredStop::Remove { delete_file, .. } => {
@@ -3353,7 +3358,12 @@ impl Actor {
                         }
                     }
                     DesiredStop::None => {
-                        self.update_retry_connection_cap(&id, retry_connection_cap, &result);
+                        self.update_retry_connection_cap(
+                            &id,
+                            retry_connection_cap,
+                            configured_connections,
+                            &result,
+                        );
                         self.finish_job(&id, result)
                     }
                 }
@@ -3425,6 +3435,7 @@ impl Actor {
         &mut self,
         id: &str,
         attempted_connections: u8,
+        configured_connections: u8,
         result: &std::result::Result<TransferResult, TransferFailure>,
     ) {
         match result {
@@ -3435,13 +3446,26 @@ impl Actor {
                 self.retry_connection_caps.remove(id);
             }
             Err(TransferFailure {
-                retryable: true, ..
+                retryable: true,
+                progressed,
+                throttled,
+                ..
             }) => {
-                let reduced = (attempted_connections / 2).max(1);
-                self.retry_connection_caps
-                    .entry(id.into())
-                    .and_modify(|cap| *cap = (*cap).min(reduced))
-                    .or_insert(reduced);
+                let current = self.retry_connection_caps.get(id).copied();
+                match retry_connection_cap_after(
+                    current,
+                    attempted_connections,
+                    configured_connections,
+                    *progressed,
+                    *throttled,
+                ) {
+                    Some(cap) => {
+                        self.retry_connection_caps.insert(id.into(), cap);
+                    }
+                    None => {
+                        self.retry_connection_caps.remove(id);
+                    }
+                }
             }
         }
     }
@@ -3523,6 +3547,10 @@ impl Actor {
                 job.speed = 0;
                 job.eta = None;
                 job.error = Some(message.clone());
+                // The retry limit counts attempts in a row that kept nothing new.
+                if retryable && failure.progressed {
+                    job.attempts = 0;
+                }
                 if failure.source_refresh {
                     job.state = JobState::AwaitingSource;
                     job.phase = crate::i18n::ui(
@@ -3978,7 +4006,14 @@ impl Actor {
                         )
                     ))
                 })
-                .map_err(|error| transfer_failure(&job_copy.request, error));
+                .map_err(|error| {
+                    let failure = transfer_failure(&job_copy.request, error);
+                    TransferFailure {
+                        progressed: thread_control.progressed(),
+                        throttled: failure.throttled || thread_control.throttled(),
+                        ..failure
+                    }
+                });
                 let _ = sender.send(Message::Worker(WorkerEvent::Finished {
                     id: worker_id,
                     generation,
@@ -4134,7 +4169,14 @@ impl Actor {
     }
 
     fn connection_allocation(&self, id: &str, request: &AddRequest) -> ConnectionAllocation {
-        let retry_cap = self.retry_connection_caps.get(id).copied();
+        self.allocation_with_cap(request, self.retry_connection_caps.get(id).copied())
+    }
+
+    fn allocation_with_cap(
+        &self,
+        request: &AddRequest,
+        retry_cap: Option<u8>,
+    ) -> ConnectionAllocation {
         let direct =
             requested_connection_count(request.connections, self.settings.connections, retry_cap);
         let media_fragments = requested_connection_count(
@@ -4431,6 +4473,14 @@ fn run_job(
             )
         );
     }
+    let retained = |output: &Path| {
+        if use_media {
+            media::retained_bytes(output)
+        } else {
+            transfer::retained_bytes(output)
+        }
+    };
+    let retained_before = retained(output);
     let result = if use_media {
         request.connections = Some(allocation.media_fragments);
         media::download(paths, &request, output, control, network, progress, &job.id)
@@ -4445,7 +4495,12 @@ fn run_job(
             prepared,
             progress,
         )
-    }?;
+    };
+    // Bytes that a restart discarded and fetched again were not kept by the failed attempt.
+    if result.is_err() && !control.restarted() && retained(output) > retained_before {
+        control.mark_progressed();
+    }
+    let result = result?;
     if job.work_dir.is_some() {
         crate::recovery::publish(paths, job, result)
     } else {
@@ -4917,6 +4972,10 @@ struct TransferFailure {
     retryable: bool,
     retry_after: Option<Duration>,
     source_refresh: bool,
+    /// The attempt ended with more retained bytes than it began with.
+    progressed: bool,
+    /// The server answered 429 or 503.
+    throttled: bool,
 }
 
 fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailure {
@@ -4926,7 +4985,29 @@ fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailu
         retry_after: transfer::retry_after(&error),
         source_refresh: source_refresh_needed(request, &error),
         message: safe_error(request, &detail),
+        progressed: false,
+        throttled: transfer::http_status(&error)
+            .or_else(|| http_status_in_text(&detail.to_lowercase()))
+            .is_some_and(|status| matches!(status, 429 | 503)),
     }
+}
+
+/// The connection cap for a job's next attempt after `attempted` connections ended
+/// retryably. An attempt that kept new bytes and met no 429 or 503 gives one step of the cap
+/// back (doubling, up to the configured count, which is no cap); any other halves it.
+fn retry_connection_cap_after(
+    current: Option<u8>,
+    attempted: u8,
+    configured: u8,
+    progressed: bool,
+    throttled: bool,
+) -> Option<u8> {
+    if progressed && !throttled {
+        let restored = attempted.saturating_mul(2);
+        return (restored < configured).then_some(restored);
+    }
+    let reduced = (attempted / 2).max(1);
+    Some(current.map_or(reduced, |cap| cap.min(reduced)))
 }
 
 fn retryable_status(status: u32) -> bool {

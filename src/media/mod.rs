@@ -49,7 +49,7 @@ pub(crate) use session::{scoped_cookie_applies, sweep_stale_cookie_jars};
 use workspace::*;
 pub(crate) use workspace::{
     cancel_source_refresh, finish_source_refresh, has_partial_output, prepare_source_refresh,
-    stage_source_refresh, PreparedSourceRefresh,
+    retained_bytes, stage_source_refresh, PreparedSourceRefresh,
 };
 
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10 * 60);

@@ -380,6 +380,8 @@ pub struct Job {
     pub phase: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Attempts in a row that ended without new retained bytes; a retryable failure after
+    /// progress, a manual resume and a source refresh start the count again.
     pub attempts: u32,
     #[serde(default)]
     pub work_dir: Option<PathBuf>,
@@ -926,6 +928,12 @@ pub struct TransferControl {
     /// End a live recording now and keep what was recorded. Kept apart from the stop state,
     /// which would also stop the verification that runs on the kept file.
     finish: Arc<AtomicBool>,
+    /// The transfer discarded the bytes it had retained and started over.
+    restarted: Arc<AtomicBool>,
+    /// The attempt ended with more retained bytes than it began with.
+    progressed: Arc<AtomicBool>,
+    /// A request of the attempt was answered 429 or 503.
+    throttled: Arc<AtomicBool>,
 }
 impl TransferControl {
     pub fn pause(&self) {
@@ -964,6 +972,24 @@ impl TransferControl {
     }
     pub fn finish_requested(&self) -> bool {
         self.finish.load(Ordering::Acquire)
+    }
+    pub fn mark_restarted(&self) {
+        self.restarted.store(true, Ordering::Release);
+    }
+    pub fn restarted(&self) -> bool {
+        self.restarted.load(Ordering::Acquire)
+    }
+    pub fn mark_progressed(&self) {
+        self.progressed.store(true, Ordering::Release);
+    }
+    pub fn progressed(&self) -> bool {
+        self.progressed.load(Ordering::Acquire)
+    }
+    pub fn mark_throttled(&self) {
+        self.throttled.store(true, Ordering::Release);
+    }
+    pub fn throttled(&self) -> bool {
+        self.throttled.load(Ordering::Acquire)
     }
 }
 
