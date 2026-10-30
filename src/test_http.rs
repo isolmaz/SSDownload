@@ -80,6 +80,12 @@ pub struct Config {
     /// `Content-Length` of the `HEAD` answer when it should differ from the body size.
     pub head_content_length: Option<u64>,
     pub head_not_allowed: bool,
+    /// The `HEAD` answer carries this `ETag` instead of the one a `GET` gets.
+    pub head_etag: Option<String>,
+    /// The `HEAD` answer carries no validators and no `Content-Length`.
+    pub head_bare: bool,
+    /// Without it a `GET` answer has no `Content-Length` and its body ends with the connection.
+    pub get_length_header: bool,
     pub etag: EtagKind,
     /// Every request gets its own ETag for the same body.
     pub vary_etag: bool,
@@ -111,6 +117,9 @@ impl Default for Config {
             accept_ranges_header: true,
             head_content_length: None,
             head_not_allowed: false,
+            head_etag: None,
+            head_bare: false,
+            get_length_header: true,
             etag: EtagKind::Strong,
             vary_etag: false,
             last_modified: true,
@@ -438,6 +447,7 @@ struct Reply {
     body: Option<(u64, u64)>,
     version: u8,
     close: bool,
+    omit_length: bool,
 }
 
 impl Reply {
@@ -449,6 +459,7 @@ impl Reply {
             body: None,
             version: 1,
             close: false,
+            omit_length: false,
         }
     }
 }
@@ -598,8 +609,24 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             reply.headers.push("Allow: GET".into());
             reply
         }
+        "HEAD" if config.head_bare => Reply {
+            omit_length: true,
+            ..Reply::empty(200)
+        },
         "HEAD" => Reply {
-            headers: identity,
+            headers: match &config.head_etag {
+                Some(head_etag) => identity
+                    .into_iter()
+                    .map(|header| {
+                        if header.starts_with("ETag:") {
+                            format!("ETag: {head_etag}")
+                        } else {
+                            header
+                        }
+                    })
+                    .collect(),
+                None => identity,
+            },
             length: config.head_content_length.unwrap_or(size),
             version,
             ..Reply::empty(200)
@@ -624,6 +651,8 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
                     length: size,
                     body: Some((0, size)),
                     version,
+                    close: !config.get_length_header,
+                    omit_length: !config.get_length_header,
                     ..Reply::empty(200)
                 },
                 Wanted::Part(start, end) => {
@@ -691,7 +720,9 @@ fn answer(
         head.push_str(header);
         head.push_str("\r\n");
     }
-    head.push_str(&format!("Content-Length: {}\r\n", reply.length));
+    if !reply.omit_length {
+        head.push_str(&format!("Content-Length: {}\r\n", reply.length));
+    }
     if reply.close {
         head.push_str("Connection: close\r\n");
     }
@@ -939,7 +970,58 @@ mod tests {
         request(&mut connection, "HEAD", "/", &[]);
         request(&mut connection, "GET", "/", &["Range: bytes=0-9"]);
         request(&mut connection, "GET", "/", &[]);
+        // The server counts a chunk after it has written it, so the client may see the last
+        // answer first; a closed connection and an idle server leave the count final.
+        drop(connection);
+        server.wait_idle();
         assert_eq!(server.body_bytes_sent(), 1010);
+    }
+
+    #[test]
+    fn head_and_get_answers_can_disagree_or_leave_out_their_framing() {
+        let server = Server::start(Config {
+            head_etag: Some("\"head\"".into()),
+            ..config(100)
+        });
+        let mut connection = connect(&server);
+        assert_eq!(
+            request(&mut connection, "HEAD", "/", &[]).header("ETag"),
+            Some("\"head\"")
+        );
+        assert_eq!(
+            request(&mut connection, "GET", "/", &[]).header("ETag"),
+            Some("\"v1\"")
+        );
+
+        let bare = Server::start(Config {
+            head_bare: true,
+            ..config(100)
+        });
+        let answer = request(&mut connect(&bare), "HEAD", "/", &[]);
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.header("Content-Length"), None);
+        assert_eq!(answer.header("ETag"), None);
+        assert_eq!(answer.header("Last-Modified"), None);
+
+        let unframed = Server::start(Config {
+            get_length_header: false,
+            ..config(100)
+        });
+        let mut connection = connect(&unframed);
+        let (status, headers) = {
+            connection
+                .get_mut()
+                .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+                .unwrap();
+            read_head(&mut connection).unwrap()
+        };
+        assert_eq!(status, 200);
+        assert!(headers
+            .iter()
+            .all(|(name, _)| !name.eq_ignore_ascii_case("content-length")));
+        let mut body = Vec::new();
+        connection.read_to_end(&mut body).unwrap();
+        assert_eq!(body, pattern(1, 100));
     }
 
     #[test]

@@ -211,14 +211,24 @@ fn a_source_that_changes_between_attempts_restarts_and_publishes_the_new_version
     let log = server.log();
     let second_attempt = &log[first_attempt.len()..];
     assert_eq!(second_attempt[0].method, "HEAD");
+    // The stored validator is offered once with the resume request; the new version answers it
+    // with a full body, so no old byte is accepted and the restart is a single plain GET.
+    let ranged = second_attempt
+        .iter()
+        .filter(|entry| entry.range.is_some())
+        .collect::<Vec<_>>();
     assert!(
-        second_attempt
-            .iter()
-            .all(|entry| entry.range.is_none() && entry.if_range.is_none()),
-        "the restart asked for old bytes: {second_attempt:?}"
+        ranged.len() <= 1
+            && ranged
+                .iter()
+                .all(|entry| entry.if_range.as_deref() == Some("\"v1\"") && entry.status == 200),
+        "{second_attempt:?}"
     );
     assert_eq!(
-        second_attempt.iter().filter(|e| e.method == "GET").count(),
+        second_attempt
+            .iter()
+            .filter(|e| e.method == "GET" && e.range.is_none())
+            .count(),
         1
     );
 }
@@ -478,12 +488,311 @@ fn the_state_of_an_interrupted_fresh_download_names_the_response_that_wrote_the_
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     server.wait_idle();
     let log = server.log();
+    // Every response carries a new ETag, so the stored one is refused (200) and no old byte is
+    // accepted: the restart is one plain GET.
+    let second = &log[first_attempt.len()..];
     assert!(
-        log[first_attempt.len()..]
+        second
             .iter()
-            .all(|entry| entry.range.is_none() && entry.if_range.is_none()),
-        "the restart asked for old bytes: {log:?}"
+            .filter(|entry| entry.range.is_some())
+            .all(|entry| entry.if_range.as_deref() == Some("\"v1-1\"") && entry.status == 200),
+        "{second:?}"
     );
+    assert_eq!(
+        second
+            .iter()
+            .filter(|entry| entry.method == "GET" && entry.range.is_none())
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_fresh_probe_carries_no_if_range_so_a_head_with_other_validators_still_segments() {
+    let size = 24 * MIB + 5;
+    let server = Server::start(Config {
+        size,
+        head_etag: Some("\"h\"".into()),
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("head-validators");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+
+    server.wait_idle();
+    let log = server.log();
+    let probe = log
+        .iter()
+        .find(|entry| entry.range.as_deref() == Some("bytes=0-0"))
+        .unwrap();
+    assert_eq!((probe.if_range.as_deref(), probe.status), (None, 206));
+    assert_tiles(ranged_gets(&log, size), size);
+    // The ranges are bound to the validator of the GET that answered the probe, not HEAD's.
+    for entry in data_gets(&log) {
+        assert_eq!(entry.if_range.as_deref(), Some("\"v1\""), "{entry:?}");
+        assert_eq!(entry.status, 206, "{entry:?}");
+    }
+    let connections = data_gets(&log)
+        .map(|entry| entry.connection)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(connections.len() > 1, "{connections:?}");
+}
+
+#[test]
+fn a_head_without_length_or_validators_does_not_prevent_the_range_probe() {
+    let size = 24 * MIB + 5;
+    let server = Server::start(Config {
+        size,
+        head_bare: true,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("bare-head");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+
+    server.wait_idle();
+    let log = server.log();
+    assert_tiles(ranged_gets(&log, size), size);
+    let connections = data_gets(&log)
+        .map(|entry| entry.connection)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(connections.len() > 1, "{connections:?}");
+}
+
+#[test]
+fn a_full_response_without_a_length_is_not_measured_against_the_head_length() {
+    let size = 3 * MIB + 11;
+    let server = Server::start(Config {
+        size,
+        head_content_length: Some(7),
+        get_length_header: false,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("unframed-get");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(result.bytes, size);
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+}
+
+#[test]
+fn progress_reports_the_size_that_the_delivering_response_states() {
+    let size = 2 * MIB;
+    let server = Server::start(Config {
+        size,
+        head_content_length: Some(7),
+        throttle: Some(4 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("progress-total");
+    let output = directory.0.join("payload.bin");
+    let mut totals = Vec::new();
+    fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |progress| totals.push(progress.total),
+    )
+    .unwrap();
+    assert!(!totals.is_empty());
+    assert!(
+        totals.iter().all(|total| *total == Some(size)),
+        "{totals:?}"
+    );
+}
+
+#[test]
+fn a_single_connection_download_resumes_when_the_head_disagrees_with_the_get() {
+    let size = MIB;
+    let server = Server::start(Config {
+        size,
+        head_etag: Some("\"h\"".into()),
+        throttle: Some(MIB),
+        ..Config::default()
+    });
+    let request = request_for(&server);
+    let directory = TempDir::new("resume-head-differs");
+    let output = directory.0.join("payload.bin");
+
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let interrupted = fetch(&request, &output, &control, 1, 1, &mut |progress| {
+        if progress.downloaded > 0 {
+            cancel.cancel();
+        }
+    });
+    assert!(interrupted.is_err());
+    let kept = fs::metadata(part_path(&output)).unwrap().len();
+    assert!(kept > 0 && kept < size);
+    server.wait_idle();
+    let first_attempt = server.log().len();
+
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    server.wait_idle();
+    let log = server.log();
+    let resumed = log[first_attempt..]
+        .iter()
+        .filter(|entry| entry.method == "GET")
+        .collect::<Vec<_>>();
+    assert_eq!(resumed.len(), 1, "{log:?}");
+    assert_eq!(resumed[0].range, Some(format!("bytes={kept}-")));
+    assert_eq!(resumed[0].if_range.as_deref(), Some("\"v1\""));
+    assert_eq!(resumed[0].status, 206);
+}
+
+#[test]
+fn an_interrupted_segmented_download_resumes_when_the_head_disagrees_with_the_get() {
+    let size = 40 * MIB + 4_097;
+    let server = Server::start(Config {
+        size,
+        head_etag: Some("\"h\"".into()),
+        throttle: Some(32 * MIB),
+        ..Config::default()
+    });
+    let request = request_for(&server);
+    let directory = TempDir::new("segmented-resume-head-differs");
+    let output = directory.0.join("payload.bin");
+    let state_file = state_path(&output);
+
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let interrupted = fetch(&request, &output, &control, 2, 2, &mut |_| {
+        if read_state(&state_file).is_some_and(|state| !state.completed.is_empty()) {
+            cancel.cancel();
+        }
+    });
+    assert!(interrupted.is_err());
+    let done = read_state(&state_file)
+        .unwrap()
+        .completed
+        .iter()
+        .map(|range| (range.start, range.end))
+        .collect::<Vec<_>>();
+    assert!(!done.is_empty() && done.iter().map(|(start, end)| end - start).sum::<u64>() < size);
+    server.wait_idle();
+    let first_attempt = server.log().len();
+
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    server.wait_idle();
+    let log = server.log();
+    let resumed = &log[first_attempt..];
+    let mut requested = ranged_gets(resumed, size);
+    assert!(!requested.is_empty());
+    for entry in resumed.iter().filter(|entry| entry.method == "GET") {
+        assert_eq!(entry.if_range.as_deref(), Some("\"v1\""), "{entry:?}");
+        assert_eq!(entry.status, 206, "{entry:?}");
+    }
+    requested.extend(done);
+    assert_tiles(requested, size);
+}
+
+#[test]
+fn resuming_against_a_server_that_ignores_ranges_asks_for_a_range_once() {
+    let size = 8 * MIB;
+    let server = Server::start(Config {
+        size,
+        ranges: RangeSupport::Ignore,
+        accept_ranges_header: false,
+        throttle: Some(4 * MIB),
+        ..Config::default()
+    });
+    let request = request_for(&server);
+    let directory = TempDir::new("resume-ignored-ranges");
+    let output = directory.0.join("payload.bin");
+
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let interrupted = fetch(&request, &output, &control, 4, 4, &mut |progress| {
+        if progress.downloaded > 0 {
+            cancel.cancel();
+        }
+    });
+    assert!(interrupted.is_err());
+    let kept = fs::metadata(part_path(&output)).unwrap().len();
+    assert!(kept > 0 && kept < size);
+    server.wait_idle();
+    let first_attempt = server.log().len();
+
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    server.wait_idle();
+    let log = server.log();
+    let second = &log[first_attempt..];
+    // HEAD, the resume request (answered with the full body and abandoned), then one plain GET:
+    // the 200 already showed that ranges are ignored, so no one-byte probe follows.
+    assert_eq!(
+        second
+            .iter()
+            .map(|entry| (
+                entry.method.as_str(),
+                entry.range.as_deref().map(str::to_owned),
+                entry.status
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("HEAD", None, 200),
+            ("GET", Some(format!("bytes={kept}-")), 200),
+            ("GET", None, 200)
+        ]
+    );
+    assert_eq!(second[1].if_range.as_deref(), Some("\"v1\""));
 }
 
 #[test]

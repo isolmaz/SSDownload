@@ -123,6 +123,8 @@ enum ExpectedResponse {
 enum AttemptFailure {
     Interrupted,
     RangeRejected,
+    /// A ranged request answered with a full body (200): the server does not honour ranges.
+    RangeIgnored,
     ResourceChanged,
     RetryableStatus {
         status: u32,
@@ -219,6 +221,8 @@ impl std::error::Error for HttpStatusError {}
 #[derive(Debug)]
 pub(crate) struct PreservedPartialError {
     message: &'static str,
+    /// The failing request was a ranged one that the server answered with a full body.
+    ranges_ignored: bool,
 }
 
 impl std::fmt::Display for PreservedPartialError {
@@ -230,7 +234,25 @@ impl std::fmt::Display for PreservedPartialError {
 impl std::error::Error for PreservedPartialError {}
 
 fn preserved_partial(message: &'static str) -> anyhow::Error {
-    anyhow!(PreservedPartialError { message })
+    anyhow!(PreservedPartialError {
+        message,
+        ranges_ignored: false
+    })
+}
+
+fn preserved_partial_after(failure: &AttemptFailure, message: &'static str) -> anyhow::Error {
+    anyhow!(PreservedPartialError {
+        message,
+        ranges_ignored: matches!(failure, AttemptFailure::RangeIgnored)
+    })
+}
+
+fn ranges_ignored(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<PreservedPartialError>()
+            .is_some_and(|partial| partial.ranges_ignored)
+    })
 }
 
 /// The HTTP status carried anywhere in the error chain.
@@ -510,9 +532,11 @@ fn download_http(
         control,
         network,
         connections,
+        false,
         progress,
     ) {
         Err(error) if preserves_partial(&error) && !control.stop_requested() => {
+            let ranges_ignored = ranges_ignored(&error);
             restart_from_zero(output, remote.total, progress);
             download_http_resuming(
                 request,
@@ -521,6 +545,7 @@ fn download_http(
                 control,
                 network,
                 connections,
+                ranges_ignored,
                 progress,
             )
         }
@@ -551,6 +576,7 @@ fn restart_from_zero(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn download_http_resuming(
     request: &AddRequest,
     output: &Path,
@@ -558,28 +584,33 @@ fn download_http_resuming(
     control: &TransferControl,
     network: &NetworkGovernor,
     connections: u8,
+    ranges_ignored: bool,
     progress: &mut dyn FnMut(TransferProgress),
 ) -> Result<TransferResult> {
+    let existing_state = read_state(&state_path(output));
+    // Retained bytes are bound to the record written with them, not to what the advisory probe
+    // reports now: the ranged requests below send the record's validator in `If-Range` and
+    // accept only a `Content-Range` with the record's total, which proves the identity.
+    if let Some(state) = &existing_state {
+        remote.total = state.total;
+        remote.etag = state.etag.clone();
+        remote.last_modified = state.last_modified.clone();
+    }
     // Dynamic ranges are reusable only with content identity, not merely a URL,
     // length, or timestamp. A caller-supplied full SHA-256 is proof only when
     // it does not conflict with present strong validators; mixed bytes can never
     // be published unless the final digest matches.
     let mut stable = has_resume_identity(&remote, request.checksum.as_deref());
     let segment_count_for = |remote: &RemoteInfo| {
-        remote
-            .total
-            .map(|total| {
-                // Sockets beyond the per-host cap would only wait for a permit while holding a range.
-                (total / MIN_SEGMENT_SIZE)
-                    .max(1)
-                    .min(u64::from(connections))
-                    .min(u64::from(network.per_host_limit().max(1))) as u8
-            })
-            .unwrap_or(1)
+        // Sockets beyond the per-host cap would only wait for a permit while holding a range.
+        let allowed = u64::from(connections).min(u64::from(network.per_host_limit().max(1)));
+        // A size the probe did not report is no reason to rule out ranges.
+        remote.total.map_or(allowed, |total| {
+            (total / MIN_SEGMENT_SIZE).max(1).min(allowed)
+        }) as u8
     };
     let mut segment_count = segment_count_for(&remote);
 
-    let existing_state = read_state(&state_path(output));
     // With nothing on disk there is no identity to protect: the ranged probe, not the advisory
     // HEAD, describes the file that the following requests fetch.
     let fresh =
@@ -616,9 +647,17 @@ fn download_http_resuming(
                 ) || legacy_state_matches(state, &remote))
         })
         .unwrap_or(false);
+    // A fresh download sends the probe unless HEAD reported a size too small to split or an
+    // earlier ranged request already showed that the server ignores ranges; its answer
+    // supplies the total and the identity that HEAD may lack.
+    let probe_wanted = if fresh {
+        !ranges_ignored && segment_count > 1
+    } else {
+        !sequential_resume && stable && remote.total.is_some() && segment_count > 1
+    };
     let range_supported = if reusable_ranges {
         true
-    } else if !sequential_resume && stable && remote.total.is_some() && segment_count > 1 {
+    } else if probe_wanted {
         match verify_range_support(request, &remote, fresh, control, network) {
             Ok(Some(headers)) => {
                 if fresh {
@@ -656,8 +695,11 @@ fn download_http_resuming(
             progress,
         ) {
             Ok(result) => return Ok(result),
-            Err(AttemptFailure::RangeRejected | AttemptFailure::ResourceChanged)
-                if read_state(&state_path(output)).is_some_and(|state| {
+            Err(
+                AttemptFailure::RangeRejected
+                | AttemptFailure::RangeIgnored
+                | AttemptFailure::ResourceChanged,
+            ) if read_state(&state_path(output)).is_some_and(|state| {
                     state.version == STATE_VERSION
                         && state.segmented
                         && state.completed.is_empty()
@@ -677,8 +719,8 @@ fn download_http_resuming(
                     request, output, &remote, control, network, progress, false,
                 );
             }
-            Err(AttemptFailure::RangeRejected) => {
-                return Err(preserved_partial(crate::i18n::ui(
+            Err(failure @ (AttemptFailure::RangeRejected | AttemptFailure::RangeIgnored)) => {
+                return Err(preserved_partial_after(&failure, crate::i18n::ui(
                     "Sunucu byte aralığını reddetti; doğrulanmış parçalar kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
                     "The server rejected the byte range; the verified parts cannot be reused and the next attempt restarts the download from the beginning",
                 )))
@@ -837,12 +879,7 @@ fn download_http_single(
                     continue;
                 }
                 let bytes = offset.saturating_add(written);
-                let total = if offset == 0 {
-                    adopt_full_response(remote, &headers).total
-                } else {
-                    remote.total
-                };
-                if let Some(total) = total {
+                if let Some(total) = expected_total(expected, &headers, remote) {
                     if bytes != total {
                         bail!(
                             "{}",
@@ -859,8 +896,12 @@ fn download_http_single(
                     request.checksum.as_deref(),
                 );
             }
-            Err(AttemptFailure::RangeRejected | AttemptFailure::ResourceChanged) if offset > 0 => {
-                return Err(preserved_partial(crate::i18n::ui(
+            Err(
+                failure @ (AttemptFailure::RangeRejected
+                | AttemptFailure::RangeIgnored
+                | AttemptFailure::ResourceChanged),
+            ) if offset > 0 => {
+                return Err(preserved_partial_after(&failure, crate::i18n::ui(
                     "Sürdürme yanıtı kaynak kimliğini kanıtlamadı; kısmi dosya kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
                     "The resume response did not prove the source identity; the partial file cannot be reused and the next attempt restarts the download from the beginning",
                 )))
@@ -905,7 +946,11 @@ fn download_http_single(
             Err(AttemptFailure::RetryableTransport(error)) | Err(AttemptFailure::Other(error)) => {
                 return Err(error)
             }
-            Err(AttemptFailure::RangeRejected | AttemptFailure::ResourceChanged) => {
+            Err(
+                AttemptFailure::RangeRejected
+                | AttemptFailure::RangeIgnored
+                | AttemptFailure::ResourceChanged,
+            ) => {
                 bail!(
                     "{}",
                     crate::i18n::ui(
@@ -1036,7 +1081,7 @@ fn http_to_file(
                     let elapsed = now.duration_since(last_report).as_secs_f64().max(0.001);
                     let current = offset.saturating_add(written);
                     let speed = ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64;
-                    let total = remote.total;
+                    let total = expected_total(expected, &write_response.borrow(), remote);
                     progress(TransferProgress {
                         processing: false,
                         downloaded: current,
@@ -1110,7 +1155,7 @@ fn http_to_file(
         return Err(AttemptFailure::ResourceChanged);
     }
     if !response_allows_body(&headers, expected) {
-        return Err(AttemptFailure::RangeRejected);
+        return Err(range_refusal(&headers));
     }
     if let Err(error) = perform_result {
         let error = governed_transport_error(
@@ -1144,12 +1189,13 @@ fn http_to_file(
     let current = offset.saturating_add(written);
     let elapsed = started.elapsed().as_secs_f64().max(0.001);
     let speed = (written as f64 / elapsed) as u64;
+    let total = expected_total(expected, &headers, remote);
     progress(TransferProgress {
         processing: false,
         downloaded: current,
-        total: remote.total,
+        total,
         speed,
-        eta: eta(remote.total, current, speed),
+        eta: eta(total, current, speed),
         phase: crate::i18n::ui("İndiriliyor", "Downloading").into(),
     });
     Ok((headers, written))
@@ -1731,7 +1777,7 @@ impl DynamicRangeWorker<'_> {
             return Err(AttemptFailure::ResourceChanged);
         }
         if !response_allows_body(&headers, expected) {
-            return Err(AttemptFailure::RangeRejected);
+            return Err(range_refusal(&headers));
         }
         if let Err(error) = perform_result {
             return Err(AttemptFailure::RetryableTransport(
@@ -2795,14 +2841,37 @@ fn identity_changed(
     matches!(expected, ExpectedResponse::Range { .. }) && validators_changed(headers, remote)
 }
 
-/// The file as a full response describes it. The probe, which may be a HEAD, fills in only the
-/// total that the response leaves out.
+/// The file as a full response describes it. A length the response leaves out stays unknown;
+/// the probe's, which may come from a HEAD, is not a substitute.
 fn adopt_full_response(remote: &RemoteInfo, headers: &ResponseHeaders) -> RemoteInfo {
     RemoteInfo {
-        total: headers.content_length.or(remote.total),
+        total: headers.content_length,
         etag: headers.etag.clone(),
         last_modified: headers.last_modified.clone(),
         ..remote.clone()
+    }
+}
+
+/// The size of the file as far as the answer to the request in flight knows it: a full
+/// response states its own; a ranged one continues the file the record describes.
+fn expected_total(
+    expected: ExpectedResponse,
+    headers: &ResponseHeaders,
+    remote: &RemoteInfo,
+) -> Option<u64> {
+    match expected {
+        ExpectedResponse::Full => headers.content_length,
+        ExpectedResponse::Range { .. } => remote.total,
+    }
+}
+
+/// Why a ranged request that did not conflict with the stored validators got no usable
+/// partial answer: a 200 means the server does not honour ranges.
+fn range_refusal(headers: &ResponseHeaders) -> AttemptFailure {
+    if headers.status == 200 {
+        AttemptFailure::RangeIgnored
+    } else {
+        AttemptFailure::RangeRejected
     }
 }
 
