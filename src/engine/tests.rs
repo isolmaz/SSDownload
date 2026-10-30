@@ -2247,28 +2247,31 @@ mod retry_budget {
     }
 
     #[test]
-    fn a_server_that_cuts_every_range_before_it_completes_ends_after_the_limit_plus_one_attempts() {
-        // Every lease is cut after 1 MiB: bytes arrive on each attempt, but no range is ever
-        // recorded as complete, so nothing is retained.
+    fn a_server_that_cuts_every_range_still_finishes_because_each_cut_keeps_its_bytes() {
+        // Every response longer than 1 MiB is cut after 1 MiB. A lease that is cut resumes
+        // where it stopped, so each cut makes progress and the limit of one is never used up.
+        let size = 12 * MIB;
         let server = Server::start(Config {
-            size: 12 * MIB,
+            size,
             cut_body: Some(CutBody {
                 after_bytes: MIB,
                 responses: usize::MAX,
             }),
             ..Config::default()
         });
-        let root = TempDir::new("retry-no-range");
+        let root = TempDir::new("retry-cut-keeps-bytes");
         let engine = engine_with_retry_limit(&root.0, 1);
         let id = add_download(&engine, &server, &root.0.join("out"), None);
 
         let job = finished_job(&engine, &id);
-        assert_eq!(job.state, JobState::Failed);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(file_sha256(&job.path), pattern_sha256(1, size));
+        // Nothing a cut response delivered is fetched again.
         assert!(
-            server.body_bytes_sent() > MIB,
-            "no body bytes were received"
+            server.body_bytes_sent() < size + MIB,
+            "{} body bytes for a {size} byte file",
+            server.body_bytes_sent()
         );
-        assert_eq!(attempts_made(&server), 2);
         engine.shutdown();
     }
 
@@ -2470,7 +2473,7 @@ mod retry_budget {
                 retry_after: None,
             }],
             cut_body: Some(CutBody {
-                after_bytes: MIB,
+                after_bytes: 256 * 1024,
                 responses: 3,
             }),
             cut_from: 8 * MIB,
@@ -2485,7 +2488,8 @@ mod retry_budget {
         assert_eq!(file_sha256(&job.path), pattern_sha256(1, size));
         let log = server.log();
         assert_eq!(attempts_made(&server), 3);
-        // With two connections the remaining half is one lease; with four it is split in two.
+        // With two connections the rest of the second half is one lease; with four it is split
+        // in two.
         assert_eq!(data_gets_of_attempt(&log, 3).len(), 2);
         engine.shutdown();
     }

@@ -3,11 +3,12 @@
 
 use super::*;
 use crate::test_http::{
-    file_sha256, pattern_sha256, Config, CutBody, EtagKind, Logged, RangeSupport, RetryAfter,
-    Scripted, Server, TempDir,
+    file_sha256, pattern, pattern_sha256, Config, CutBody, EtagKind, Logged, RangeSupport,
+    RetryAfter, Scripted, Server, TempDir,
 };
 
 const MIB: u64 = 1024 * 1024;
+const NEVER: Duration = Duration::from_secs(3600);
 
 fn request_for(server: &Server) -> AddRequest {
     AddRequest {
@@ -123,8 +124,8 @@ fn an_interrupted_segmented_download_resumes_by_requesting_only_the_missing_rang
 
     let control = TransferControl::default();
     let cancel = control.clone();
-    let interrupted = fetch(&request, &output, &control, 2, 2, &mut |_| {
-        if read_state(&state_file).is_some_and(|state| !state.completed.is_empty()) {
+    let interrupted = fetch(&request, &output, &control, 2, 2, &mut |progress| {
+        if progress.downloaded > 0 {
             cancel.cancel();
         }
     });
@@ -741,8 +742,8 @@ fn an_interrupted_segmented_download_resumes_when_the_head_disagrees_with_the_ge
 
     let control = TransferControl::default();
     let cancel = control.clone();
-    let interrupted = fetch(&request, &output, &control, 2, 2, &mut |_| {
-        if read_state(&state_file).is_some_and(|state| !state.completed.is_empty()) {
+    let interrupted = fetch(&request, &output, &control, 2, 2, &mut |progress| {
+        if progress.downloaded > 0 {
             cancel.cancel();
         }
     });
@@ -966,7 +967,6 @@ fn swapped_file_restarts_over(
     };
     let directory = TempDir::new("changed-same-size");
     let output = directory.0.join("payload.bin");
-    let state_file = state_path(&output);
 
     let control = TransferControl::default();
     let cancel = control.clone();
@@ -977,12 +977,7 @@ fn swapped_file_restarts_over(
         connections,
         connections,
         &mut |progress| {
-            let started = if connections == 1 {
-                progress.downloaded > 0
-            } else {
-                read_state(&state_file).is_some_and(|state| !state.completed.is_empty())
-            };
-            if started {
+            if progress.downloaded > 0 {
                 cancel.cancel();
             }
         },
@@ -1182,6 +1177,460 @@ fn an_existing_file_at_the_target_name_is_kept_and_the_download_gets_another_nam
     assert_eq!(result.path.parent(), output.parent());
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     assert!(!part_path(&output).exists() && !state_path(&output).exists());
+}
+
+/// Checkpoints the downloads that the current test thread starts after `interval` or once
+/// `bytes` are waiting. The cadence and the cycle count belong to the test thread, so tests do
+/// not affect each other.
+fn checkpoint_every(interval: Duration, bytes: u64) {
+    TEST_CADENCE.with(|cadence| cadence.set(Some(Cadence { interval, bytes })));
+}
+
+fn checkpoint_cycles() -> usize {
+    TEST_CYCLES.with(std::cell::Cell::get)
+}
+
+fn stop_after(control: &TransferControl, delay: Duration) -> thread::JoinHandle<()> {
+    let control = control.clone();
+    thread::spawn(move || {
+        thread::sleep(delay);
+        control.cancel();
+    })
+}
+
+/// Checks every byte that `state` claims against the part file, and returns how many it claims.
+fn assert_claims_are_exact(state: &ResumeState, part: &[u8], expected: &[u8]) -> u64 {
+    let claimed = if state.segmented {
+        state
+            .completed
+            .iter()
+            .map(|range| (range.start as usize, range.end as usize))
+            .collect::<Vec<_>>()
+    } else {
+        let synced = state
+            .synced
+            .expect("a record written by this release states the synced length");
+        vec![(0, synced as usize)]
+    };
+    for &(start, end) in &claimed {
+        assert!(
+            end <= part.len() && part[start..end] == expected[start..end],
+            "the record claims {start}..{end}, which the part file does not hold"
+        );
+    }
+    claimed
+        .iter()
+        .map(|(start, end)| (end - start) as u64)
+        .sum()
+}
+
+/// What the record of `output` claims, checked against the part file; 0 without a record.
+fn claimed_bytes(output: &Path, expected: &[u8]) -> u64 {
+    match read_state(&state_path(output)) {
+        Some(state) => {
+            let part = fs::read(part_path(output)).unwrap_or_default();
+            assert_claims_are_exact(&state, &part, expected)
+        }
+        None => 0,
+    }
+}
+
+#[test]
+fn a_lease_that_drops_resumes_from_where_it_stopped() {
+    let size = 24 * MIB + 12_345;
+    let cut = 5 * MIB;
+    let server = Server::start(Config {
+        size,
+        cut_body: Some(CutBody {
+            after_bytes: cut,
+            responses: 1,
+        }),
+        ..Config::default()
+    });
+    // No cadence checkpoint can run, so only the drop itself records what the lease wrote.
+    checkpoint_every(NEVER, u64::MAX);
+    let directory = TempDir::new("lease-drop");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+
+    server.wait_idle();
+    let log = server.log();
+    let ranges = ranged_gets(&log, size);
+    let (start, end) = data_gets(&log)
+        .filter(|entry| entry.range.is_some())
+        .zip(ranges.iter())
+        .find(|(entry, _)| entry.body_cut)
+        .map(|(_, range)| *range)
+        .expect("a lease was cut");
+    let again = ranges
+        .iter()
+        .filter(|&&(from, to)| to == end && from > start)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        again,
+        [&(start + cut, end)],
+        "the cut lease {start}..{end} was requested again"
+    );
+    let mut covered = ranges.clone();
+    let index = covered
+        .iter()
+        .position(|range| *range == (start, end))
+        .unwrap();
+    covered[index].1 = start + cut;
+    assert_tiles(covered, size);
+}
+
+#[test]
+fn the_number_of_checkpoints_follows_the_cadence_not_the_number_of_leases() {
+    let size = 64 * MIB;
+    let server = Server::start(Config {
+        size,
+        ..Config::default()
+    });
+    let bytes = 24 * MIB;
+    checkpoint_every(NEVER, bytes);
+    let directory = TempDir::new("checkpoint-count");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+
+    server.wait_idle();
+    let leases = ranged_gets(&server.log(), size).len();
+    assert!(leases >= 8, "{leases} leases");
+    // Every cycle but the one at the end records at least `bytes`.
+    let cycles = checkpoint_cycles();
+    assert!(
+        cycles as u64 <= size / bytes + 1,
+        "{cycles} flush and state-write cycles for {leases} leases"
+    );
+}
+
+#[test]
+fn the_cadence_alone_triggers_a_checkpoint_that_records_bytes_the_part_file_holds() {
+    let size = 20 * MIB;
+    for (connections, interval, bytes) in [
+        (2u8, NEVER, MIB),
+        (2, Duration::from_millis(50), u64::MAX),
+        (1, NEVER, MIB),
+        (1, Duration::from_millis(50), u64::MAX),
+    ] {
+        let label = format!("{connections} connection(s), {interval:?} or {bytes} bytes");
+        let server = Server::start(Config {
+            size,
+            throttle: Some(4 * MIB),
+            ..Config::default()
+        });
+        checkpoint_every(interval, bytes);
+        let directory = TempDir::new("cadence");
+        let output = directory.0.join("payload.bin");
+        let control = TransferControl::default();
+        let cancel = control.clone();
+        let state_file = state_path(&output);
+        let mut observed = None;
+        let cycles_before = checkpoint_cycles();
+        // The download takes seconds at this rate, so a checkpoint that the cadence alone
+        // triggers has to come before it ends.
+        let result = fetch(
+            &request_for(&server),
+            &output,
+            &control,
+            connections,
+            connections,
+            &mut |progress| {
+                if observed.is_none()
+                    && checkpoint_cycles() > cycles_before
+                    && progress.downloaded < size
+                {
+                    // Read at once: the transfer goes on writing until it notices the stop.
+                    observed = read_state(&state_file).zip(fs::read(part_path(&output)).ok());
+                    cancel.cancel();
+                }
+            },
+        );
+        assert!(result.is_err(), "{label}");
+        let (observed, part) =
+            observed.unwrap_or_else(|| panic!("{label}: no record after a checkpoint"));
+        let claimed = assert_claims_are_exact(&observed, &part, &pattern(1, size));
+        assert!(claimed > 0 && claimed < size, "{label}: {claimed} bytes");
+    }
+}
+
+fn every_stop_leaves_a_record_of_true_bytes(connections: u8, size: u64, rate: u64, step: u64) {
+    let server = Server::start(Config {
+        size,
+        throttle: Some(rate),
+        ..Config::default()
+    });
+    checkpoint_every(NEVER, MIB);
+    let request = request_for(&server);
+    let expected = pattern(1, size);
+    let mut interrupted = 0;
+    for stop in 0..20u64 {
+        let label = format!("stop {stop}");
+        let directory = TempDir::new("stop-points");
+        let output = directory.0.join("payload.bin");
+        let control = TransferControl::default();
+        let watcher = stop_after(&control, Duration::from_millis(10 + stop * step));
+        let mut reported = 0;
+        let first = fetch(
+            &request,
+            &output,
+            &control,
+            connections,
+            connections,
+            &mut |progress| reported = reported.max(progress.downloaded),
+        );
+        watcher.join().unwrap();
+        server.wait_idle();
+        if let Ok(result) = first {
+            assert_eq!(
+                file_sha256(&result.path),
+                pattern_sha256(1, size),
+                "{label}"
+            );
+            continue;
+        }
+        interrupted += 1;
+        let claimed = claimed_bytes(&output, &expected);
+        assert_eq!(retained_bytes(&output), Some(claimed), "{label}");
+        // Whatever the transfer had received when it stopped is recorded.
+        assert!(
+            claimed >= reported,
+            "{label}: {claimed} recorded, {reported} reported"
+        );
+        let recorded = read_state(&state_path(&output))
+            .filter(|state| state.segmented)
+            .map(|state| {
+                state
+                    .completed
+                    .iter()
+                    .map(|range| (range.start, range.end))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let first_attempt = server.log().len();
+        let result = fetch(
+            &request,
+            &output,
+            &TransferControl::default(),
+            connections,
+            connections,
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+        assert_eq!(
+            file_sha256(&result.path),
+            pattern_sha256(1, size),
+            "{label}"
+        );
+        assert!(!part_path(&output).exists() && !state_path(&output).exists());
+        server.wait_idle();
+        let log = server.log();
+        let resumed = &log[first_attempt..];
+        if connections > 1 {
+            let mut requested = ranged_gets(resumed, size);
+            requested.extend(recorded);
+            assert_tiles(requested, size);
+        } else if claimed > 0 && claimed < size {
+            let gets = data_gets(resumed).collect::<Vec<_>>();
+            assert_eq!(gets.len(), 1, "{label}: {resumed:?}");
+            assert_eq!(gets[0].range, Some(format!("bytes={claimed}-")), "{label}");
+        }
+    }
+    assert!(interrupted > 0, "no stop interrupted the download");
+}
+
+#[test]
+fn stopping_a_segmented_download_at_any_point_leaves_a_record_of_true_bytes() {
+    every_stop_leaves_a_record_of_true_bytes(2, 24 * MIB + 4_097, 32 * MIB, 25);
+}
+
+#[test]
+fn stopping_a_one_connection_download_at_any_point_leaves_a_record_of_true_bytes() {
+    every_stop_leaves_a_record_of_true_bytes(1, 12 * MIB + 17, 32 * MIB, 18);
+}
+
+#[test]
+fn a_part_file_longer_than_its_recorded_length_is_cut_back_on_resume() {
+    let size = 3 * MIB + 17;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(2 * MIB),
+        ..Config::default()
+    });
+    let request = request_for(&server);
+    let directory = TempDir::new("longer-part");
+    let output = directory.0.join("payload.bin");
+
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let interrupted = fetch(&request, &output, &control, 1, 1, &mut |progress| {
+        if progress.downloaded > 0 {
+            cancel.cancel();
+        }
+    });
+    assert!(interrupted.is_err());
+    let synced = read_state(&state_path(&output)).unwrap().synced.unwrap();
+    assert!(synced > 0 && synced < size);
+    assert_eq!(fs::metadata(part_path(&output)).unwrap().len(), synced);
+    // What a power loss leaves behind when the file length reached the disk before the data;
+    // the junk reaches past the end of the file.
+    let mut part = OpenOptions::new()
+        .append(true)
+        .open(part_path(&output))
+        .unwrap();
+    part.write_all(&vec![0xAA; size as usize]).unwrap();
+    drop(part);
+    assert_eq!(retained_bytes(&output), Some(synced));
+    server.wait_idle();
+    let first_attempt = server.log().len();
+
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    server.wait_idle();
+    let log = server.log();
+    let resumed = log[first_attempt..]
+        .iter()
+        .filter(|entry| entry.method == "GET")
+        .collect::<Vec<_>>();
+    assert_eq!(resumed.len(), 1, "{log:?}");
+    assert_eq!(resumed[0].range, Some(format!("bytes={synced}-")));
+    assert_eq!(resumed[0].status, 206);
+}
+
+/// The text of a resume record as the release before this one writes it: no `synced` field.
+fn previous_release_state(server: &Server, size: u64, segmented: bool, completed: &str) -> String {
+    let digest = source_url_digest(&Url::parse(&server.url("/payload.bin")).unwrap());
+    format!(
+        r#"{{"version":3,"url":"{digest}","etag":"\"v1\"","last_modified":"Mon, 01 Jan 2024 00:00:00 GMT","total":{size},"segmented":{segmented},"connections":{},"checksum":null,"completed":{completed}}}"#,
+        if segmented { 2 } else { 1 }
+    )
+}
+
+#[test]
+fn a_one_connection_record_of_the_previous_release_resumes_from_the_length_of_the_part_file() {
+    let size = 3 * MIB + 17;
+    let held = 1_000_003usize;
+    let server = Server::start(Config {
+        size,
+        ..Config::default()
+    });
+    let directory = TempDir::new("previous-single");
+    let output = directory.0.join("payload.bin");
+    fs::write(part_path(&output), &pattern(1, size)[..held]).unwrap();
+    fs::write(
+        state_path(&output),
+        previous_release_state(&server, size, false, "[]"),
+    )
+    .unwrap();
+    assert_eq!(read_state(&state_path(&output)).unwrap().synced, None);
+    assert_eq!(retained_bytes(&output), Some(held as u64));
+
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    let log = server.log();
+    let gets = log
+        .iter()
+        .filter(|entry| entry.method == "GET")
+        .collect::<Vec<_>>();
+    assert_eq!(gets.len(), 1, "{log:?}");
+    assert_eq!(gets[0].range, Some(format!("bytes={held}-")));
+    assert_eq!(gets[0].if_range.as_deref(), Some("\"v1\""));
+    assert_eq!(gets[0].status, 206);
+}
+
+#[test]
+fn a_segmented_record_of_the_previous_release_resumes_with_only_the_missing_ranges() {
+    let size = 24 * MIB + 12_345;
+    let done = 8 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("previous-segmented");
+    let output = directory.0.join("payload.bin");
+    let mut part = File::create(part_path(&output)).unwrap();
+    part.write_all(&pattern(1, size)[..done as usize]).unwrap();
+    part.set_len(size).unwrap();
+    drop(part);
+    fs::write(
+        state_path(&output),
+        previous_release_state(
+            &server,
+            size,
+            true,
+            &format!(r#"[{{"start":0,"end":{done}}}]"#),
+        ),
+    )
+    .unwrap();
+    assert_eq!(retained_bytes(&output), Some(done));
+
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    server.wait_idle();
+    let mut requested = ranged_gets(&server.log(), size);
+    requested.push((0, done));
+    assert_tiles(requested, size);
+}
+
+#[test]
+fn a_record_keeps_the_format_of_the_previous_release_except_for_the_synced_length() {
+    let segmented = ResumeState {
+        completed: vec![ByteRange { start: 0, end: 5 }],
+        segmented: true,
+        ..ResumeState::default()
+    };
+    let text = String::from_utf8(serde_json::to_vec(&segmented).unwrap()).unwrap();
+    assert!(!text.contains("synced"), "{text}");
+    let single = ResumeState {
+        synced: Some(7),
+        ..ResumeState::default()
+    };
+    let text = String::from_utf8(serde_json::to_vec(&single).unwrap()).unwrap();
+    assert!(text.ends_with(r#""completed":[],"synced":7}"#), "{text}");
 }
 
 const BENCH_SIZE: u64 = 128 * MIB;

@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc,
     },
     thread,
@@ -29,6 +29,51 @@ const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 const IO_BUFFER: usize = 1024 * 1024;
 const STATE_VERSION: u8 = 3;
+
+/// When written data is made durable and the resume state is updated: after `interval`, or
+/// once `bytes` are waiting, whichever comes first. A crash or power loss costs at most that
+/// much transfer. A cycle is a flush of the part file and an atomic write of the state (two
+/// more syncs), so it is spaced out in time; the byte limit bounds the data a cycle has to
+/// flush and the transfer a crash can cost on a fast link. Pausing, stopping, a failed lease
+/// or transfer and the end of the transfer always run a cycle.
+#[derive(Debug, Clone, Copy)]
+struct Cadence {
+    interval: Duration,
+    bytes: u64,
+}
+
+impl Cadence {
+    const DEFAULT: Self = Self {
+        interval: Duration::from_secs(5),
+        bytes: 64 * 1024 * 1024,
+    };
+
+    fn current() -> Self {
+        #[cfg(test)]
+        if let Some(cadence) = TEST_CADENCE.with(std::cell::Cell::get) {
+            return cadence;
+        }
+        Self::DEFAULT
+    }
+
+    /// `since` is when the oldest of the `waiting` bytes was written.
+    fn due(self, since: Instant, waiting: u64) -> bool {
+        waiting > 0 && (waiting >= self.bytes || since.elapsed() >= self.interval)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Replaces the cadence of the downloads that the current test thread starts.
+    static TEST_CADENCE: std::cell::Cell<Option<Cadence>> = const { std::cell::Cell::new(None) };
+    /// Completed flush-and-record cycles of the downloads that the current test thread ran.
+    static TEST_CYCLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn note_cycle() {
+    #[cfg(test)]
+    TEST_CYCLES.with(|cycles| cycles.set(cycles.get() + 1));
+}
 
 /// How the requests of an attempt are bound to bytes that an earlier attempt left on disk.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -110,6 +155,11 @@ struct ResumeState {
     checksum: Option<String>,
     /// Durably accepted, nonoverlapping ranges in the sparse part file.
     completed: Vec<ByteRange>,
+    /// One-connection transfers: the leading bytes of the part file that were written and then
+    /// flushed to disk; the file can be longer. Absent in records of earlier releases, whose
+    /// resume point is the length of the part file. Earlier releases ignore the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    synced: Option<u64>,
 }
 
 impl Default for ResumeState {
@@ -124,6 +174,7 @@ impl Default for ResumeState {
             connections: 1,
             checksum: None,
             completed: Vec::new(),
+            synced: None,
         }
     }
 }
@@ -296,8 +347,8 @@ pub(crate) fn preserves_partial(error: &anyhow::Error) -> bool {
 }
 
 /// The bytes of `output` that a later attempt builds on: the ranges the resume state records
-/// for a segmented download, the length of the part file for a sequential one. Bytes that a
-/// lease received but the state does not record are not counted. `None` while the record
+/// for a segmented download, the recorded length of the part file for a sequential one. Bytes
+/// that were received but the state does not record are not counted. `None` while the record
 /// exists but cannot be read, when the amount is unknown.
 pub(crate) fn retained_bytes(output: &Path) -> Option<u64> {
     let path = state_path(output);
@@ -306,9 +357,109 @@ pub(crate) fn retained_bytes(output: &Path) -> Option<u64> {
     }
     Some(match read_state(&path) {
         Some(state) if state.segmented => state.completed.iter().map(|range| range.len()).sum(),
-        Some(_) => fs::metadata(part_path(output)).map_or(0, |meta| meta.len()),
+        Some(state) => resume_point(
+            &state,
+            fs::metadata(part_path(output)).map_or(0, |meta| meta.len()),
+        ),
         None => 0,
     })
+}
+
+/// The length of the part file that a one-connection transfer continues from: the flushed
+/// length its record states, or the whole file when the record states none (it was written by
+/// an earlier release).
+fn resume_point(state: &ResumeState, part_bytes: u64) -> u64 {
+    state
+        .synced
+        .map_or(part_bytes, |synced| synced.min(part_bytes))
+}
+
+/// Cuts the part file back to `length`, the point a resumed one-connection transfer continues
+/// from, and flushes what remains, so the record written next claims only bytes on disk.
+fn settle_part(part: &Path, length: u64) -> Result<()> {
+    let file = OpenOptions::new().write(true).open(part).with_context(|| {
+        crate::i18n::ui_format!(
+            "Geçici dosya açılamadı: {0}",
+            "The temporary file could not be opened: {0}",
+            part.display()
+        )
+    })?;
+    file.set_len(length)?;
+    file.sync_all().context(crate::i18n::ui(
+        "Kısmi dosya diske yazılamadı",
+        "The partial file could not be written to disk",
+    ))
+}
+
+/// The part file of a one-connection transfer together with its record. `checkpoint` flushes
+/// the file and only then records the length reached, so `synced` never claims a byte that
+/// was not written before the flush. One handle does all the writing and the flushing.
+struct SequentialSink {
+    file: File,
+    state_path: PathBuf,
+    state: ResumeState,
+    /// Where this transfer began in the part file.
+    start: u64,
+    written: u64,
+    /// The part of `written` that the record covers.
+    recorded: u64,
+    /// When the first byte not yet recorded was written.
+    since: Instant,
+    cadence: Cadence,
+}
+
+impl SequentialSink {
+    fn new(file: File, state_path: &Path, state: ResumeState, start: u64) -> Self {
+        Self {
+            file,
+            state_path: state_path.to_path_buf(),
+            state,
+            start,
+            written: 0,
+            recorded: 0,
+            since: Instant::now(),
+            cadence: Cadence::current(),
+        }
+    }
+
+    fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
+        if self.written == self.recorded {
+            self.since = Instant::now();
+        }
+        self.file.write_all(data)?;
+        self.written += data.len() as u64;
+        if self.cadence.due(self.since, self.written - self.recorded) {
+            self.checkpoint().map_err(std::io::Error::other)?;
+        }
+        Ok(())
+    }
+
+    /// Replaces the record's identity, for a transfer that has written nothing yet.
+    fn adopt(&mut self, state: ResumeState) -> Result<()> {
+        write_state(&self.state_path, &state)?;
+        self.state = state;
+        Ok(())
+    }
+
+    fn checkpoint(&mut self) -> Result<()> {
+        if self.written == self.recorded {
+            return Ok(());
+        }
+        self.file.sync_all()?;
+        let synced = self.start + self.written;
+        write_state(
+            &self.state_path,
+            &ResumeState {
+                synced: Some(synced),
+                ..self.state.clone()
+            },
+        )?;
+        self.state.synced = Some(synced);
+        self.recorded = self.written;
+        self.since = Instant::now();
+        note_cycle();
+        Ok(())
+    }
 }
 
 pub(crate) fn has_artifacts(output: &Path) -> bool {
@@ -825,7 +976,13 @@ fn download_http_single(
                     normalized_checksum(request.checksum.as_deref()).as_deref(),
                 )
         });
-    let offset = if restart_empty_dynamic { 0 } else { part_bytes };
+    let offset = if restart_empty_dynamic {
+        0
+    } else {
+        previous
+            .as_ref()
+            .map_or(part_bytes, |state| resume_point(state, part_bytes))
+    };
     let resumable = permit_resume
         && offset > 0
         && previous
@@ -854,6 +1011,9 @@ fn download_http_single(
             "The partial file's source identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning",
         )));
     }
+    if resumable {
+        settle_part(&part, offset)?;
+    }
     if remote.total == Some(offset) && offset > 0 && resumable {
         return finalize_part(
             &final_name(output, request, remote, None),
@@ -879,7 +1039,7 @@ fn download_http_single(
         file.sync_all()?;
     }
 
-    write_state(&state_path, &single_state(request, remote))?;
+    write_state(&state_path, &single_state(request, remote, offset))?;
 
     let mut current = remote.url.clone();
     let original_origin = remote.credential_origin.clone();
@@ -1076,13 +1236,13 @@ fn http_to_file(
     }
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| AttemptFailure::Other(e.into()))?;
+    let mut sink = SequentialSink::new(file, state, single_state(request, remote, offset), offset);
 
     let response = Rc::new(RefCell::new(ResponseHeaders::default()));
     let callback_response = response.clone();
     let write_response = response.clone();
     let io_error = Rc::new(RefCell::new(None::<std::io::Error>));
     let write_error = io_error.clone();
-    let mut written = 0u64;
     let started = Instant::now();
     let mut last_report = Instant::now();
     let mut last_bytes = offset;
@@ -1106,24 +1266,23 @@ fn http_to_file(
                 if !response_allows_remote_body(&write_response.borrow(), expected, remote) {
                     return Ok(0);
                 }
-                if written == 0 && matches!(expected, ExpectedResponse::Full) {
+                if sink.written == 0 && matches!(expected, ExpectedResponse::Full) {
                     // The state has to describe the bytes before the first one is written.
                     let adopted = adopt_full_response(remote, &write_response.borrow());
                     if adopted.etag != remote.etag
                         || adopted.last_modified != remote.last_modified
                         || adopted.total != remote.total
                     {
-                        if let Err(error) = write_state(state, &single_state(request, &adopted)) {
+                        if let Err(error) = sink.adopt(single_state(request, &adopted, 0)) {
                             *write_error.borrow_mut() = Some(std::io::Error::other(error));
                             return Ok(0);
                         }
                     }
                 }
-                if let Err(error) = file.write_all(data) {
+                if let Err(error) = sink.write(data) {
                     *write_error.borrow_mut() = Some(error);
                     return Ok(0);
                 }
-                written = written.saturating_add(data.len() as u64);
                 throttle(
                     control,
                     divisor,
@@ -1134,7 +1293,7 @@ fn http_to_file(
                 let now = Instant::now();
                 if now.duration_since(last_report) >= Duration::from_millis(200) {
                     let elapsed = now.duration_since(last_report).as_secs_f64().max(0.001);
-                    let current = offset.saturating_add(written);
+                    let current = offset.saturating_add(sink.written);
                     let speed = ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64;
                     let total = expected_total(expected, &write_response.borrow(), remote);
                     progress(TransferProgress {
@@ -1159,8 +1318,8 @@ fn http_to_file(
 
     let headers = response.borrow().clone();
     if control.stop_requested() {
-        file.sync_all().map_err(|error| {
-            AttemptFailure::Other(anyhow!(error).context(crate::i18n::ui(
+        sink.checkpoint().map_err(|error| {
+            AttemptFailure::Other(error.context(crate::i18n::ui(
                 "Duraklatılan kısmi dosya diske yazılamadı",
                 "The paused partial file could not be written to disk",
             )))
@@ -1222,9 +1381,9 @@ fn http_to_file(
                 "The network transfer did not complete",
             ),
         );
-        if written > 0 {
-            file.sync_all().map_err(|sync_error| {
-                AttemptFailure::Other(anyhow!(sync_error).context(crate::i18n::ui(
+        if sink.written > 0 {
+            sink.checkpoint().map_err(|sync_error| {
+                AttemptFailure::Other(sync_error.context(crate::i18n::ui(
                     "Kısmi dosya diske yazılamadı",
                     "The partial file could not be written to disk",
                 )))
@@ -1236,12 +1395,13 @@ fn http_to_file(
         }
         return Err(AttemptFailure::RetryableTransport(error));
     }
-    file.flush().map_err(|e| {
-        AttemptFailure::Other(anyhow!(e).context(crate::i18n::ui(
+    sink.checkpoint().map_err(|error| {
+        AttemptFailure::Other(error.context(crate::i18n::ui(
             "Geçici dosya yazılamadı",
             "The temporary file could not be written",
         )))
     })?;
+    let written = sink.written;
     let current = offset.saturating_add(written);
     let elapsed = started.elapsed().as_secs_f64().max(0.001);
     let speed = (written as f64 / elapsed) as u64;
@@ -1269,15 +1429,211 @@ enum RangeCommand {
 }
 
 enum RangeEvent {
-    Progress {
-        worker: usize,
-        bytes: u64,
-    },
     Complete {
         worker: usize,
         work: RangeWork,
         result: std::result::Result<(), AttemptFailure>,
     },
+}
+
+/// A range handed to a worker, of which the first `recorded` bytes are in the resume state.
+struct Lease {
+    range: ByteRange,
+    recorded: u64,
+}
+
+impl Lease {
+    /// The part of the range that the state does not record.
+    fn rest(&self) -> Option<ByteRange> {
+        let rest = ByteRange {
+            start: self.range.start + self.recorded,
+            end: self.range.end,
+        };
+        (rest.len() > 0).then_some(rest)
+    }
+}
+
+/// What the workers have written to the part file and what the resume state records of it.
+///
+/// All workers write through `file`, positionally, and the scheduler flushes that same handle.
+/// `FlushFileBuffers` is documented to write "all the buffered information for a specified
+/// file", not that of one handle, and the cache it drains belongs to the file, so a flush
+/// through any handle should cover bytes written through the others; the documentation does
+/// not say so explicitly. Sharing one handle makes the guarantee independent of the answer: a
+/// flush through the handle that wrote a byte, started after that write returned, makes the
+/// byte durable.
+///
+/// A worker publishes how many bytes of its lease it has written, after each write returns.
+/// A checkpoint reads those counts, flushes, and only then records the ranges the counts
+/// describe; bytes written after the counts were read are not claimed. The state therefore
+/// lists only bytes that were written and then flushed.
+struct Checkpoints {
+    file: Arc<File>,
+    state_path: PathBuf,
+    /// The record's identity; `completed` is filled in at each write.
+    state: ResumeState,
+    total: u64,
+    /// Recorded ranges, sorted and merged.
+    completed: Vec<ByteRange>,
+    /// Ranges of finished leases that are written but not yet recorded.
+    unrecorded: Vec<ByteRange>,
+    leases: Vec<Option<Lease>>,
+    written: Vec<Arc<AtomicU64>>,
+    /// When the oldest byte not yet recorded was written.
+    since: Instant,
+    cadence: Cadence,
+}
+
+impl Checkpoints {
+    fn new(
+        file: Arc<File>,
+        state_path: &Path,
+        state: ResumeState,
+        completed: Vec<ByteRange>,
+        total: u64,
+        workers: usize,
+    ) -> Self {
+        Self {
+            file,
+            state_path: state_path.to_path_buf(),
+            state,
+            total,
+            completed,
+            unrecorded: Vec::new(),
+            leases: (0..workers).map(|_| None).collect(),
+            written: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
+            since: Instant::now(),
+            cadence: Cadence::current(),
+        }
+    }
+
+    /// The counter that `worker` raises as it writes its lease.
+    fn counter(&self, worker: usize) -> Arc<AtomicU64> {
+        self.written[worker].clone()
+    }
+
+    fn assign(&mut self, worker: usize, range: ByteRange) {
+        // The worker is idle, so nothing writes its counter while it is reset.
+        self.written[worker].store(0, Ordering::Release);
+        self.leases[worker] = Some(Lease { range, recorded: 0 });
+    }
+
+    fn recorded_bytes(&self) -> u64 {
+        self.completed.iter().map(|range| range.len()).sum()
+    }
+
+    /// Bytes written and not recorded: finished leases and the unrecorded part of the others.
+    fn waiting(&self) -> u64 {
+        let finished = self.unrecorded.iter().map(|range| range.len()).sum::<u64>();
+        let running = self
+            .leases
+            .iter()
+            .zip(&self.written)
+            .filter_map(|(lease, written)| {
+                let lease = lease.as_ref()?;
+                Some(
+                    written
+                        .load(Ordering::Acquire)
+                        .saturating_sub(lease.recorded),
+                )
+            })
+            .sum::<u64>();
+        finished + running
+    }
+
+    fn downloaded(&self) -> u64 {
+        self.recorded_bytes() + self.waiting()
+    }
+
+    fn due(&mut self) -> bool {
+        let waiting = self.waiting();
+        if waiting == 0 {
+            self.since = Instant::now();
+        }
+        self.cadence.due(self.since, waiting)
+    }
+
+    /// The lease of `worker` ended with every byte written.
+    fn finish(&mut self, worker: usize) {
+        if let Some(rest) = self.leases[worker].take().and_then(|lease| lease.rest()) {
+            self.unrecorded.push(rest);
+        }
+    }
+
+    /// The lease of `worker` ended early. What it wrote is recorded first, so the range that
+    /// is returned for another try starts where the lease stopped.
+    fn abandon(&mut self, worker: usize) -> std::result::Result<Option<ByteRange>, AttemptFailure> {
+        let wrote = self.leases[worker]
+            .as_ref()
+            .is_some_and(|lease| self.written[worker].load(Ordering::Acquire) > lease.recorded);
+        if wrote {
+            self.checkpoint()?;
+        }
+        Ok(self.leases[worker].take().and_then(|lease| lease.rest()))
+    }
+
+    /// Flushes the part file, then records everything written before the flush began.
+    fn checkpoint(&mut self) -> std::result::Result<(), AttemptFailure> {
+        let mut reached = Vec::new();
+        let mut fresh = self.unrecorded.clone();
+        for (worker, lease) in self.leases.iter().enumerate() {
+            let Some(lease) = lease else { continue };
+            let written = self.written[worker].load(Ordering::Acquire);
+            if written > lease.recorded {
+                fresh.push(ByteRange {
+                    start: lease.range.start + lease.recorded,
+                    end: lease.range.start + written,
+                });
+                reached.push((worker, written));
+            }
+        }
+        if fresh.is_empty() {
+            self.since = Instant::now();
+            return Ok(());
+        }
+        self.file.sync_all().map_err(|error| {
+            AttemptFailure::Other(anyhow!(error).context(crate::i18n::ui(
+                "Aralık diske yazılamadı",
+                "The range could not be written to disk",
+            )))
+        })?;
+        let mut all = self.completed.clone();
+        all.extend(fresh);
+        let completed = normalize_completed(&all, self.total)?;
+        write_state(
+            &self.state_path,
+            &ResumeState {
+                completed: completed.clone(),
+                ..self.state.clone()
+            },
+        )
+        .map_err(AttemptFailure::Other)?;
+        self.completed = completed;
+        self.unrecorded.clear();
+        for (worker, written) in reached {
+            if let Some(lease) = &mut self.leases[worker] {
+                lease.recorded = written;
+            }
+        }
+        self.since = Instant::now();
+        note_cycle();
+        Ok(())
+    }
+}
+
+/// Writes all of `data` at `offset` without relying on the file position, which the other
+/// writers of the handle move.
+fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !data.is_empty() {
+        let written = file.seek_write(data, offset)?;
+        if written == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        data = &data[written..];
+        offset += written as u64;
+    }
+    Ok(())
 }
 
 fn download_segmented(
@@ -1301,7 +1657,7 @@ fn download_segmented(
     let part = part_path(output);
     let state_path = state_path(output);
     let mut state = prepare_dynamic_state(request, output, remote, total, count)?;
-    let mut completed = normalize_completed(&state.completed, total)?;
+    let completed = normalize_completed(&state.completed, total)?;
     state.completed = completed.clone();
     write_state(&state_path, &state).map_err(AttemptFailure::Other)?;
 
@@ -1325,6 +1681,25 @@ fn download_segmented(
     let lease_size = total
         .div_ceil(u64::from(count.max(1)))
         .clamp(MIN_SEGMENT_SIZE, MAX_SEGMENT_SIZE);
+    let file = OpenOptions::new()
+        .write(true)
+        .open(&part)
+        .with_context(|| {
+            crate::i18n::ui_format!(
+                "Geçici dosya açılamadı: {0}",
+                "The temporary file could not be opened: {0}",
+                part.display()
+            )
+        })
+        .map_err(AttemptFailure::Other)?;
+    let mut ledger = Checkpoints::new(
+        Arc::new(file),
+        &state_path,
+        state,
+        completed,
+        total,
+        worker_count,
+    );
     let (event_tx, event_rx) = mpsc::sync_channel::<RangeEvent>(worker_count * 2);
     // Raised when the scheduler gives up, so workers stop their current range at once
     // instead of finishing it for nobody.
@@ -1340,7 +1715,8 @@ fn download_segmented(
         let events = event_tx.clone();
         let request = request.clone();
         let remote = remote.clone();
-        let part = part.clone();
+        let file = ledger.file.clone();
+        let written = ledger.counter(worker);
         let control = control.clone();
         let abort = abort.clone();
         let busy = busy.clone();
@@ -1351,7 +1727,8 @@ fn download_segmented(
                 network,
                 request: &request,
                 remote: &remote,
-                path: &part,
+                file: &file,
+                written: &written,
                 control: &control,
                 abort: &abort,
                 busy: &busy,
@@ -1371,10 +1748,7 @@ fn download_segmented(
                 let RangeCommand::Download(work) = command else {
                     break;
                 };
-                let updates = events.clone();
-                let result = downloader.download(work.range, &mut |bytes| {
-                    let _ = updates.try_send(RangeEvent::Progress { worker, bytes });
-                });
+                let result = downloader.download(work.range);
                 if events
                     .send(RangeEvent::Complete {
                         worker,
@@ -1394,7 +1768,6 @@ fn download_segmented(
     let mut idle = (0..worker_count).rev().collect::<Vec<_>>();
     let mut active = 0usize;
     let mut effective_workers = worker_count;
-    let mut active_bytes = vec![0u64; worker_count];
     let mut retry_not_before = Instant::now();
     let mut last_split: Option<Instant> = None;
     let mut successful_since_failure = 0usize;
@@ -1427,7 +1800,7 @@ fn download_segmented(
                 last_split = Some(Instant::now());
             }
             let worker = idle.pop().expect("idle worker disappeared");
-            active_bytes[worker] = 0;
+            ledger.assign(worker, work.range);
             busy.fetch_add(1, Ordering::AcqRel);
             if senders[worker].send(RangeCommand::Download(work)).is_err() {
                 break 'scheduler Err(AttemptFailure::Other(anyhow!(
@@ -1459,9 +1832,6 @@ fn download_segmented(
             Duration::from_millis(200)
         };
         match event_rx.recv_timeout(wait) {
-            Ok(RangeEvent::Progress { worker, bytes }) => {
-                active_bytes[worker] = bytes;
-            }
             Ok(RangeEvent::Complete {
                 worker,
                 work,
@@ -1469,21 +1839,10 @@ fn download_segmented(
             }) => {
                 active = active.saturating_sub(1);
                 busy.fetch_sub(1, Ordering::AcqRel);
-                active_bytes[worker] = 0;
                 idle.push(worker);
                 match result {
                     Ok(()) => {
-                        completed.push(work.range);
-                        completed = match normalize_completed(&completed, total) {
-                            Ok(value) => value,
-                            Err(error) => break 'scheduler Err(error),
-                        };
-                        state.completed = completed.clone();
-                        // The range worker syncs the data first. Only then is
-                        // the atomic state allowed to claim those bytes.
-                        if let Err(error) = write_state(&state_path, &state) {
-                            break 'scheduler Err(AttemptFailure::Other(error));
-                        }
+                        ledger.finish(worker);
                         successful_since_failure += 1;
                         if effective_workers < worker_count
                             && successful_since_failure >= effective_workers.max(1) * 2
@@ -1507,16 +1866,19 @@ fn download_segmented(
                                 )
                             )));
                         };
-                        pending.push(RangeWork {
-                            range: work.range,
-                            attempts: work.attempts + 1,
-                        });
+                        match ledger.abandon(worker) {
+                            Ok(rest) => pending.extend(rest.map(|range| RangeWork {
+                                range,
+                                attempts: work.attempts + 1,
+                            })),
+                            Err(error) => break 'scheduler Err(error),
+                        }
                         effective_workers = (effective_workers / 2).max(1);
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
                         progress(TransferProgress {
                             processing: false,
-                            downloaded: completed.iter().map(|range| range.len()).sum(),
+                            downloaded: ledger.downloaded(),
                             total: Some(total),
                             speed: 0,
                             eta: None,
@@ -1542,16 +1904,19 @@ fn download_segmented(
                                 )
                             )));
                         };
-                        pending.push(RangeWork {
-                            range: work.range,
-                            attempts: work.attempts + 1,
-                        });
+                        match ledger.abandon(worker) {
+                            Ok(rest) => pending.extend(rest.map(|range| RangeWork {
+                                range,
+                                attempts: work.attempts + 1,
+                            })),
+                            Err(error) => break 'scheduler Err(error),
+                        }
                         effective_workers = (effective_workers / 2).max(1);
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
                         progress(TransferProgress {
                             processing: false,
-                            downloaded: completed.iter().map(|range| range.len()).sum(),
+                            downloaded: ledger.downloaded(),
                             total: Some(total),
                             speed: 0,
                             eta: None,
@@ -1581,10 +1946,15 @@ fn download_segmented(
             }
         }
 
+        if ledger.due() {
+            if let Err(error) = ledger.checkpoint() {
+                break Err(error);
+            }
+        }
+
         let now = Instant::now();
         if now.duration_since(last_time) >= Duration::from_millis(200) {
-            let durable = completed.iter().map(|range| range.len()).sum::<u64>();
-            let downloaded = durable.saturating_add(active_bytes.iter().sum::<u64>());
+            let downloaded = ledger.downloaded();
             let elapsed = now.duration_since(last_time).as_secs_f64().max(0.001);
             let speed = ((downloaded.saturating_sub(last_downloaded)) as f64 / elapsed) as u64;
             progress(TransferProgress {
@@ -1626,10 +1996,26 @@ fn download_segmented(
             )));
         }
     }
-    outcome?;
+    // Every writer has stopped, so the counts are final. A pause, a stop or a failure keeps
+    // what was written; a source that rejected a range, ignored ranges or changed is about to
+    // be discarded, and only what earlier checkpoints recorded stands.
+    let settled = match &outcome {
+        Err(
+            AttemptFailure::RangeRejected
+            | AttemptFailure::RangeIgnored
+            | AttemptFailure::ResourceChanged,
+        ) => Ok(()),
+        _ => ledger.checkpoint(),
+    };
+    if let Err(failure) = outcome {
+        return Err(match (failure, settled) {
+            (AttemptFailure::Interrupted, Err(error)) => error,
+            (failure, _) => failure,
+        });
+    }
+    settled?;
 
-    let completed = normalize_completed(&completed, total)?;
-    if completed
+    if ledger.completed
         != vec![ByteRange {
             start: 0,
             end: total,
@@ -1643,6 +2029,8 @@ fn download_segmented(
             )
         )));
     }
+    // The write handle is closed before the part file is renamed.
+    drop(ledger);
     progress(TransferProgress {
         processing: false,
         downloaded: total,
@@ -1669,18 +2057,17 @@ struct DynamicRangeWorker<'a> {
     network: NetworkGovernor,
     request: &'a AddRequest,
     remote: &'a RemoteInfo,
-    path: &'a Path,
+    /// The part file's one write handle, shared by all workers (see `Checkpoints`).
+    file: &'a File,
+    /// Bytes of the current lease written so far, read by the scheduler's checkpoints.
+    written: &'a AtomicU64,
     control: &'a TransferControl,
     abort: &'a AtomicBool,
     busy: &'a AtomicUsize,
 }
 
 impl DynamicRangeWorker<'_> {
-    fn download(
-        &mut self,
-        range: ByteRange,
-        report: &mut dyn FnMut(u64),
-    ) -> std::result::Result<(), AttemptFailure> {
+    fn download(&mut self, range: ByteRange) -> std::result::Result<(), AttemptFailure> {
         let abort = self.abort;
         if abort.load(Ordering::Acquire) {
             return Err(AttemptFailure::Interrupted);
@@ -1695,7 +2082,7 @@ impl DynamicRangeWorker<'_> {
         let easy = self.easy.as_mut().expect("range worker handle missing");
         let request = self.request;
         let remote = self.remote;
-        let path = self.path;
+        let (file, counter) = (self.file, self.written);
         let control = self.control;
         let busy = self.busy;
         // Do not reset a governed handle: libcurl reset clears its socket callbacks.
@@ -1713,28 +2100,12 @@ impl DynamicRangeWorker<'_> {
         )?)
         .map_err(anyhow::Error::from)?;
 
-        let mut file = OpenOptions::new()
-            .write(true)
-            .read(true)
-            .open(path)
-            .with_context(|| {
-                crate::i18n::ui_format!(
-                    "Geçici dosya açılamadı: {0}",
-                    "The temporary file could not be opened: {0}",
-                    path.display()
-                )
-            })
-            .map_err(AttemptFailure::Other)?;
-        file.seek(SeekFrom::Start(range.start))
-            .map_err(|error| AttemptFailure::Other(error.into()))?;
-
         let response = Rc::new(RefCell::new(ResponseHeaders::default()));
         let callback_response = response.clone();
         let write_response = response.clone();
         let io_error = Rc::new(RefCell::new(None::<std::io::Error>));
         let write_error = io_error.clone();
         let mut written = 0u64;
-        let mut last_report = Instant::now();
         let mut throttle_started = Instant::now();
         let mut throttle_cost = 0u64;
         let expected = ExpectedResponse::Range {
@@ -1762,11 +2133,12 @@ impl DynamicRangeWorker<'_> {
                     if data.len() as u64 > remaining {
                         return Ok(0);
                     }
-                    if let Err(error) = file.write_all(data) {
+                    if let Err(error) = write_all_at(file, data, range.start + written) {
                         *write_error.borrow_mut() = Some(error);
                         return Ok(0);
                     }
                     written += data.len() as u64;
+                    counter.store(written, Ordering::Release);
                     throttle(
                         control,
                         busy.load(Ordering::Acquire) as u64,
@@ -1774,10 +2146,6 @@ impl DynamicRangeWorker<'_> {
                         &mut throttle_cost,
                         data.len() as u64,
                     );
-                    if last_report.elapsed() >= Duration::from_millis(200) {
-                        report(written);
-                        last_report = Instant::now();
-                    }
                     Ok(data.len())
                 })
                 .map_err(anyhow::Error::from)?;
@@ -1859,13 +2227,6 @@ impl DynamicRangeWorker<'_> {
                 )
             )));
         }
-        file.sync_all().map_err(|error| {
-            AttemptFailure::Other(anyhow!(error).context(crate::i18n::ui(
-                "Aralık diske yazılamadı",
-                "The range could not be written to disk",
-            )))
-        })?;
-        report(written);
         Ok(())
     }
 }
@@ -1947,6 +2308,7 @@ fn prepare_dynamic_state(
         connections,
         checksum,
         completed: Vec::new(),
+        synced: None,
     })
 }
 
@@ -2097,6 +2459,7 @@ fn migrate_v2_state(
         connections,
         checksum,
         completed: normalize_completed(&completed, total)?,
+        synced: None,
     };
     write_state(&state_path(output), &state).map_err(AttemptFailure::Other)?;
     cleanup_legacy_segments(output);
@@ -2234,7 +2597,10 @@ fn download_ftp_resuming(
     let part = part_path(output);
     let state_path = state_path(output);
     let previous = read_state(&state_path);
-    let offset = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+    let part_bytes = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+    let offset = previous
+        .as_ref()
+        .map_or(part_bytes, |state| resume_point(state, part_bytes));
     let may_resume = offset > 0
         && previous
             .as_ref()
@@ -2255,6 +2621,9 @@ fn download_ftp_resuming(
             "The FTP partial file's identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning",
         )));
     }
+    if may_resume {
+        settle_part(&part, offset)?;
+    }
     if may_resume && remote.total == Some(offset) {
         return finalize_part(
             output,
@@ -2265,20 +2634,19 @@ fn download_ftp_resuming(
             request.checksum.as_deref(),
         );
     }
-    write_state(
-        &state_path,
-        &ResumeState {
-            version: STATE_VERSION,
-            url: hex::encode(Sha256::digest(remote.url.as_str().as_bytes())),
-            etag: None,
-            last_modified: remote.last_modified.clone(),
-            total: remote.total,
-            segmented: false,
-            connections: 1,
-            checksum: normalized_checksum(request.checksum.as_deref()),
-            completed: Vec::new(),
-        },
-    )?;
+    let record = ResumeState {
+        version: STATE_VERSION,
+        url: hex::encode(Sha256::digest(remote.url.as_str().as_bytes())),
+        etag: None,
+        last_modified: remote.last_modified.clone(),
+        total: remote.total,
+        segmented: false,
+        connections: 1,
+        checksum: normalized_checksum(request.checksum.as_deref()),
+        completed: Vec::new(),
+        synced: Some(offset),
+    };
+    write_state(&state_path, &record)?;
 
     let mut easy = network.ftp_easy(&remote.url, control)?;
     configure_easy(&mut easy, &remote.url)?;
@@ -2300,7 +2668,7 @@ fn download_ftp_resuming(
         file.set_len(0)?;
     }
     file.seek(SeekFrom::Start(offset))?;
-    let mut written = 0u64;
+    let mut sink = SequentialSink::new(file, &state_path, record, offset);
     let mut last = Instant::now();
     let mut last_bytes = offset;
     let mut throttle_started = Instant::now();
@@ -2314,11 +2682,10 @@ fn download_ftp_resuming(
             if control.stop_requested() {
                 return Ok(0);
             }
-            if let Err(error) = file.write_all(data) {
+            if let Err(error) = sink.write(data) {
                 *write_error.borrow_mut() = Some(error);
                 return Ok(0);
             }
-            written += data.len() as u64;
             throttle(
                 control,
                 1,
@@ -2328,7 +2695,7 @@ fn download_ftp_resuming(
             );
             let now = Instant::now();
             if now.duration_since(last) >= Duration::from_millis(200) {
-                let current = offset + written;
+                let current = offset + sink.written;
                 let elapsed = now.duration_since(last).as_secs_f64().max(0.001);
                 let speed = ((current - last_bytes) as f64 / elapsed) as u64;
                 progress(TransferProgress {
@@ -2348,7 +2715,7 @@ fn download_ftp_resuming(
         transfer.perform()
     };
     if control.stop_requested() {
-        file.sync_all().context(crate::i18n::ui(
+        sink.checkpoint().context(crate::i18n::ui(
             "Duraklatılan FTP dosyası diske yazılamadı",
             "The paused FTP file could not be written to disk",
         ))?;
@@ -2370,6 +2737,10 @@ fn download_ftp_resuming(
                 "The FTP server refused to resume; the next attempt restarts the download from the beginning",
             )));
         }
+        sink.checkpoint().context(crate::i18n::ui(
+            "Kısmi dosya diske yazılamadı",
+            "The partial file could not be written to disk",
+        ))?;
         return Err(governed_transport_error(
             &easy,
             error,
@@ -2379,8 +2750,11 @@ fn download_ftp_resuming(
             ),
         ));
     }
-    file.flush()?;
-    let bytes = offset + written;
+    sink.checkpoint().context(crate::i18n::ui(
+        "Kısmi dosya diske yazılamadı",
+        "The partial file could not be written to disk",
+    ))?;
+    let bytes = offset + sink.written;
     if let Some(total) = remote.total {
         if bytes != total {
             bail!(
@@ -3026,7 +3400,7 @@ fn range_refusal(headers: &ResponseHeaders) -> AttemptFailure {
     }
 }
 
-fn single_state(request: &AddRequest, remote: &RemoteInfo) -> ResumeState {
+fn single_state(request: &AddRequest, remote: &RemoteInfo, synced: u64) -> ResumeState {
     ResumeState {
         version: STATE_VERSION,
         url: source_url_digest(&remote.url),
@@ -3037,6 +3411,7 @@ fn single_state(request: &AddRequest, remote: &RemoteInfo) -> ResumeState {
         connections: 1,
         checksum: normalized_checksum(request.checksum.as_deref()),
         completed: Vec::new(),
+        synced: Some(synced),
     }
 }
 
@@ -3956,6 +4331,7 @@ mod tests {
             connections: 1,
             checksum: Some(checksum.clone()),
             completed: Vec::new(),
+            synced: None,
         };
         assert!(!state_matches(
             &state,
@@ -4199,6 +4575,7 @@ mod tests {
             checksum: None,
             completed: vec![ByteRange { start: 0, end: 1 }],
             last_modified: None,
+            synced: None,
         };
         write_state(&state_path(&output), &old_state).unwrap();
         let before = fs::read(state_path(&output)).unwrap();
@@ -4993,6 +5370,7 @@ mod tests {
             connections: 2,
             checksum: None,
             completed,
+            synced: None,
         }
     }
 
@@ -5369,6 +5747,38 @@ mod tests {
     }
 
     #[test]
+    fn an_ftp_part_longer_than_its_recorded_length_is_cut_back_on_resume() {
+        let payload = patterned(128);
+        let server = FtpFixture::start(
+            payload.clone(),
+            FtpBehavior {
+                modification_time: true,
+                resume: true,
+                cut_first_transfer: Some(31),
+            },
+        );
+        let directory = TestDirectory::new("ftp-longer-part");
+        let output = directory.0.join("payload.bin");
+        assert!(ftp_download(&server, &output).is_err());
+        assert_eq!(read_state(&state_path(&output)).unwrap().synced, Some(31));
+        let mut part = OpenOptions::new()
+            .append(true)
+            .open(part_path(&output))
+            .unwrap();
+        part.write_all(&[0xAA; 200]).unwrap();
+        drop(part);
+        assert_eq!(retained_bytes(&output), Some(31));
+
+        let result = ftp_download(&server, &output).unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(
+            server.commands().iter().any(|command| command == "REST 31"),
+            "{:#?}",
+            server.commands()
+        );
+    }
+
+    #[test]
     fn an_ftp_part_that_already_holds_every_byte_is_finalized_without_a_transfer() {
         let payload = patterned(128);
         let server = FtpFixture::start(
@@ -5403,6 +5813,7 @@ mod tests {
                 connections: 1,
                 checksum: None,
                 completed: Vec::new(),
+                synced: None,
             },
         )
         .unwrap();
