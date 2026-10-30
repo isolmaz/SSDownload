@@ -31,11 +31,11 @@ const IO_BUFFER: usize = 1024 * 1024;
 const STATE_VERSION: u8 = 3;
 
 /// When written data is made durable and the resume state is updated: after `interval`, or
-/// once `bytes` are waiting, whichever comes first. A crash or power loss costs at most that
+/// once `bytes` are waiting, whichever comes first. A crash or power loss costs about that
 /// much transfer. A cycle is a flush of the part file and an atomic write of the state (two
 /// more syncs), so it is spaced out in time; the byte limit bounds the data a cycle has to
-/// flush and the transfer a crash can cost on a fast link. Pausing, stopping, a failed lease
-/// or transfer and the end of the transfer always run a cycle.
+/// flush and the transfer a crash can cost on a fast link. Pausing, stopping, a failed transfer
+/// and the end of the transfer always run a cycle.
 #[derive(Debug, Clone, Copy)]
 struct Cadence {
     interval: Duration,
@@ -62,17 +62,207 @@ impl Cadence {
     }
 }
 
+/// When the next periodic cycle of a download is due. A periodic cycle that fails leaves the
+/// last good record in place and is tried again after an interval.
+struct Pace {
+    cadence: Cadence,
+    /// When the oldest byte that is in no cycle yet was written.
+    since: Instant,
+    failed: Option<Instant>,
+}
+
+impl Pace {
+    fn new() -> Self {
+        Self {
+            cadence: Cadence::current(),
+            since: Instant::now(),
+            failed: None,
+        }
+    }
+
+    fn restart(&mut self) {
+        self.since = Instant::now();
+    }
+
+    fn fail(&mut self) {
+        self.failed = Some(Instant::now());
+    }
+
+    /// `waiting` is the number of bytes written that are in no cycle yet.
+    fn due(&mut self, waiting: u64) -> bool {
+        if waiting == 0 {
+            self.restart();
+        }
+        let retrying = self
+            .failed
+            .is_some_and(|at| at.elapsed() < self.cadence.interval);
+        !retrying && self.cadence.due(self.since, waiting)
+    }
+}
+
+/// What the cycles of a download did and in which order ("counted", "flushed", "recorded" or
+/// "failed"), kept for tests.
+#[derive(Clone, Default)]
+struct Steps(
+    #[cfg(test)] Arc<std::sync::Mutex<Vec<&'static str>>>,
+    #[cfg(test)] Duration,
+);
+
+impl Steps {
+    #[cfg(test)]
+    fn current() -> Self {
+        Self(
+            TEST_STEPS.with(Clone::clone),
+            TEST_PAUSE.with(std::cell::Cell::get),
+        )
+    }
+
+    #[cfg(not(test))]
+    fn current() -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    fn note(&self, step: &'static str) {
+        self.0.lock().unwrap().push(step);
+    }
+
+    #[cfg(not(test))]
+    fn note(&self, _step: &'static str) {}
+
+    /// Holds a cycle between its flush and its record, so that a test can end the transfer
+    /// while a cycle is still running.
+    #[cfg(test)]
+    fn pause(&self) {
+        thread::sleep(self.1);
+    }
+
+    #[cfg(not(test))]
+    fn pause(&self) {}
+}
+
 #[cfg(test)]
 thread_local! {
     /// Replaces the cadence of the downloads that the current test thread starts.
     static TEST_CADENCE: std::cell::Cell<Option<Cadence>> = const { std::cell::Cell::new(None) };
-    /// Completed flush-and-record cycles of the downloads that the current test thread ran.
-    static TEST_CYCLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The steps of the cycles of the downloads that the current test thread ran.
+    static TEST_STEPS: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::default();
+    /// How long the cycles of the downloads that the current test thread starts wait between
+    /// their flush and their record.
+    static TEST_PAUSE: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
-fn note_cycle() {
-    #[cfg(test)]
-    TEST_CYCLES.with(|cycles| cycles.set(cycles.get() + 1));
+/// The flush-and-record step of a checkpoint: flushes the part file, and only then writes the
+/// record. It runs on a helper thread through a handle of its own, so that neither the writers
+/// nor the loop that schedules them wait for the disk, and at most one runs at a time. The
+/// handle must be a separate open, not a duplicate of a writer's: a flush holds back the
+/// other I/O on its file object until it ends, and that is what a separate open avoids.
+/// `covers` is what the running cycle will have made durable and recorded.
+struct Cycle<T> {
+    flush: Arc<File>,
+    state_path: PathBuf,
+    /// Added to a failed flush; the error of a failed record write carries its own context.
+    flush_context: Option<&'static str>,
+    steps: Steps,
+    running: Option<(thread::JoinHandle<Result<()>>, T)>,
+}
+
+impl<T> Cycle<T> {
+    fn new(flush: File, state_path: &Path, flush_context: Option<&'static str>) -> Self {
+        Self {
+            flush: Arc::new(flush),
+            state_path: state_path.to_path_buf(),
+            flush_context,
+            steps: Steps::current(),
+            running: None,
+        }
+    }
+
+    fn busy(&self) -> bool {
+        self.running.is_some()
+    }
+
+    fn covers(&self) -> Option<&T> {
+        self.running.as_ref().map(|(_, covers)| covers)
+    }
+
+    fn start(&mut self, state: ResumeState, covers: T) {
+        debug_assert!(self.running.is_none(), "one cycle runs at a time");
+        let (flush, path, context, steps) = (
+            self.flush.clone(),
+            self.state_path.clone(),
+            self.flush_context,
+            self.steps.clone(),
+        );
+        let handle =
+            thread::spawn(move || flush_then_record(&flush, &path, &state, context, &steps));
+        self.running = Some((handle, covers));
+    }
+
+    /// The outcome of the running cycle, if it has ended.
+    fn poll(&mut self) -> Option<(T, Result<()>)> {
+        let ended = self
+            .running
+            .as_ref()
+            .is_some_and(|(handle, _)| handle.is_finished());
+        if ended {
+            self.wait()
+        } else {
+            None
+        }
+    }
+
+    /// The outcome of the running cycle, once it has ended.
+    fn wait(&mut self) -> Option<(T, Result<()>)> {
+        let (handle, covers) = self.running.take()?;
+        let result = handle
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        Some((covers, result))
+    }
+
+    /// Runs a cycle on this thread, for the checkpoints that must succeed.
+    fn run(&self, state: &ResumeState) -> Result<()> {
+        flush_then_record(
+            &self.flush,
+            &self.state_path,
+            state,
+            self.flush_context,
+            &self.steps,
+        )
+    }
+}
+
+impl<T> Drop for Cycle<T> {
+    /// No cycle outlives the transfer: a record written after the transfer ended could
+    /// describe a part file that is already gone.
+    fn drop(&mut self) {
+        if let Some((handle, _)) = self.running.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn flush_then_record(
+    flush: &File,
+    state_path: &Path,
+    state: &ResumeState,
+    flush_context: Option<&'static str>,
+    steps: &Steps,
+) -> Result<()> {
+    let result = flush
+        .sync_all()
+        .map_err(|error| match flush_context {
+            Some(context) => anyhow!(error).context(context),
+            None => anyhow!(error),
+        })
+        .and_then(|()| {
+            steps.note("flushed");
+            steps.pause();
+            write_state(state_path, state)
+        });
+    steps.note(if result.is_ok() { "recorded" } else { "failed" });
+    result
 }
 
 /// How the requests of an attempt are bound to bytes that an earlier attempt left on disk.
@@ -391,73 +581,121 @@ fn settle_part(part: &Path, length: u64) -> Result<()> {
     ))
 }
 
-/// The part file of a one-connection transfer together with its record. `checkpoint` flushes
-/// the file and only then records the length reached, so `synced` never claims a byte that
-/// was not written before the flush. One handle does all the writing and the flushing.
+/// The part file of a one-connection transfer together with its record. A cycle flushes the
+/// part file through a second handle and only then records the length reached, so `synced`
+/// never claims a byte that was not written before the flush (see `Checkpoints` for why a
+/// flush through another handle covers what this one wrote). Periodic cycles run beside the
+/// transfer and, when one fails, leave the last record in place; `checkpoint` is the one that
+/// has to succeed.
 struct SequentialSink {
     file: File,
-    state_path: PathBuf,
+    cycle: Cycle<u64>,
     state: ResumeState,
     /// Where this transfer began in the part file.
     start: u64,
     written: u64,
     /// The part of `written` that the record covers.
     recorded: u64,
-    /// When the first byte not yet recorded was written.
-    since: Instant,
-    cadence: Cadence,
+    pace: Pace,
 }
 
 impl SequentialSink {
-    fn new(file: File, state_path: &Path, state: ResumeState, start: u64) -> Self {
-        Self {
+    fn new(
+        file: File,
+        part: &Path,
+        state_path: &Path,
+        state: ResumeState,
+        start: u64,
+    ) -> Result<Self> {
+        let flush = OpenOptions::new().write(true).open(part).with_context(|| {
+            crate::i18n::ui_format!(
+                "Geçici dosya açılamadı: {0}",
+                "The temporary file could not be opened: {0}",
+                part.display()
+            )
+        })?;
+        Ok(Self {
             file,
-            state_path: state_path.to_path_buf(),
+            cycle: Cycle::new(flush, state_path, None),
             state,
             start,
             written: 0,
             recorded: 0,
-            since: Instant::now(),
-            cadence: Cadence::current(),
-        }
+            pace: Pace::new(),
+        })
+    }
+
+    /// Bytes written that no cycle covers yet.
+    fn waiting(&self) -> u64 {
+        self.written - self.cycle.covers().copied().unwrap_or(self.recorded)
     }
 
     fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
-        if self.written == self.recorded {
-            self.since = Instant::now();
+        self.settle();
+        if self.waiting() == 0 {
+            self.pace.restart();
         }
         self.file.write_all(data)?;
         self.written += data.len() as u64;
-        if self.cadence.due(self.since, self.written - self.recorded) {
-            self.checkpoint().map_err(std::io::Error::other)?;
+        if !self.cycle.busy() && self.pace.due(self.waiting()) {
+            self.begin();
         }
         Ok(())
     }
 
     /// Replaces the record's identity, for a transfer that has written nothing yet.
     fn adopt(&mut self, state: ResumeState) -> Result<()> {
-        write_state(&self.state_path, &state)?;
+        write_state(&self.cycle.state_path, &state)?;
         self.state = state;
         Ok(())
     }
 
+    fn record_of(&self, written: u64) -> ResumeState {
+        ResumeState {
+            synced: Some(self.start + written),
+            ..self.state.clone()
+        }
+    }
+
+    /// Starts a periodic cycle for everything written so far.
+    fn begin(&mut self) {
+        self.cycle.steps.note("counted");
+        self.pace.restart();
+        let record = self.record_of(self.written);
+        self.cycle.start(record, self.written);
+    }
+
+    /// Takes in the outcome of a periodic cycle that has ended. A failed one changes nothing:
+    /// the bytes stay waiting and the next cycle covers them.
+    fn settle(&mut self) {
+        if let Some(ended) = self.cycle.poll() {
+            self.absorb(ended);
+        }
+    }
+
+    fn absorb(&mut self, (written, result): (u64, Result<()>)) {
+        if result.is_ok() {
+            self.recorded = written;
+            self.state.synced = Some(self.start + written);
+        } else {
+            self.pace.fail();
+        }
+    }
+
+    /// Makes everything written so far durable and recorded, after any cycle in progress.
     fn checkpoint(&mut self) -> Result<()> {
+        if let Some(ended) = self.cycle.wait() {
+            self.absorb(ended);
+        }
         if self.written == self.recorded {
             return Ok(());
         }
-        self.file.sync_all()?;
-        let synced = self.start + self.written;
-        write_state(
-            &self.state_path,
-            &ResumeState {
-                synced: Some(synced),
-                ..self.state.clone()
-            },
-        )?;
-        self.state.synced = Some(synced);
-        self.recorded = self.written;
-        self.since = Instant::now();
-        note_cycle();
+        self.cycle.steps.note("counted");
+        let written = self.written;
+        self.cycle.run(&self.record_of(written))?;
+        self.recorded = written;
+        self.state.synced = Some(self.start + written);
+        self.pace.restart();
         Ok(())
     }
 }
@@ -1236,7 +1474,14 @@ fn http_to_file(
     }
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| AttemptFailure::Other(e.into()))?;
-    let mut sink = SequentialSink::new(file, state, single_state(request, remote, offset), offset);
+    let mut sink = SequentialSink::new(
+        file,
+        path,
+        state,
+        single_state(request, remote, offset),
+        offset,
+    )
+    .map_err(AttemptFailure::Other)?;
 
     let response = Rc::new(RefCell::new(ResponseHeaders::default()));
     let callback_response = response.clone();
@@ -1436,57 +1681,67 @@ enum RangeEvent {
     },
 }
 
-/// A range handed to a worker, of which the first `recorded` bytes are in the resume state.
+/// A range handed to a worker, of which the first `taken` bytes are accounted for: they are in
+/// the resume state, in the cycle that is running, or waiting for the next one.
 struct Lease {
     range: ByteRange,
-    recorded: u64,
+    taken: u64,
 }
 
 impl Lease {
-    /// The part of the range that the state does not record.
+    /// The part of the range that is not accounted for.
     fn rest(&self) -> Option<ByteRange> {
         let rest = ByteRange {
-            start: self.range.start + self.recorded,
+            start: self.range.start + self.taken,
             end: self.range.end,
         };
         (rest.len() > 0).then_some(rest)
     }
 }
 
+/// What a running cycle makes durable: the record it writes, and the ranges that record adds to
+/// the previous one.
+struct Snapshot {
+    completed: Vec<ByteRange>,
+    fresh: Vec<ByteRange>,
+}
+
 /// What the workers have written to the part file and what the resume state records of it.
 ///
-/// All workers write through `file`, positionally, and the scheduler flushes that same handle.
-/// `FlushFileBuffers` is documented to write "all the buffered information for a specified
-/// file", not that of one handle, and the cache it drains belongs to the file, so a flush
-/// through any handle should cover bytes written through the others; the documentation does
-/// not say so explicitly. Sharing one handle makes the guarantee independent of the answer: a
-/// flush through the handle that wrote a byte, started after that write returned, makes the
-/// byte durable.
+/// A worker publishes how many bytes of its lease it has written, after each write returns. A
+/// cycle starts by reading those counts, then flushes the part file, and only then records the
+/// ranges the counts describe; bytes written after the counts were read are not claimed. The
+/// state therefore lists only bytes that were written and then flushed.
 ///
-/// A worker publishes how many bytes of its lease it has written, after each write returns.
-/// A checkpoint reads those counts, flushes, and only then records the ranges the counts
-/// describe; bytes written after the counts were read are not claimed. The state therefore
-/// lists only bytes that were written and then flushed.
+/// The flush runs on a helper thread through a handle of its own (`Cycle`), because a flush
+/// holds back every other write on its handle until it returns: about 30 ms for 64 MiB on an
+/// SSD, and longer on slower disks. That relies on a flush through any handle writing back the
+/// dirty data of the whole file, whichever handle wrote it. Windows keeps one cache per file
+/// stream that all handles of the stream share (a file system allocates one
+/// `SECTION_OBJECT_POINTERS` per stream), and `FlushFileBuffers` is documented to write "all
+/// the buffered information for a specified file". The documentation does not state in so many
+/// words that this includes data written through other handles. On NTFS it does: a flush
+/// through a second handle takes as long as the data written through the first needs, and
+/// leaves nothing for a later flush through the first. It is not verified on network shares or
+/// other file systems.
 struct Checkpoints {
-    file: Arc<File>,
-    state_path: PathBuf,
+    cycle: Cycle<Snapshot>,
     /// The record's identity; `completed` is filled in at each write.
     state: ResumeState,
     total: u64,
     /// Recorded ranges, sorted and merged.
     completed: Vec<ByteRange>,
-    /// Ranges of finished leases that are written but not yet recorded.
+    /// Ranges that are written but in no cycle yet: finished leases and the written part of
+    /// leases that dropped.
     unrecorded: Vec<ByteRange>,
     leases: Vec<Option<Lease>>,
     written: Vec<Arc<AtomicU64>>,
-    /// When the oldest byte not yet recorded was written.
-    since: Instant,
-    cadence: Cadence,
+    pace: Pace,
 }
 
 impl Checkpoints {
     fn new(
-        file: Arc<File>,
+        flush: File,
         state_path: &Path,
         state: ResumeState,
         completed: Vec<ByteRange>,
@@ -1494,16 +1749,21 @@ impl Checkpoints {
         workers: usize,
     ) -> Self {
         Self {
-            file,
-            state_path: state_path.to_path_buf(),
+            cycle: Cycle::new(
+                flush,
+                state_path,
+                Some(crate::i18n::ui(
+                    "Aralık diske yazılamadı",
+                    "The range could not be written to disk",
+                )),
+            ),
             state,
             total,
             completed,
             unrecorded: Vec::new(),
             leases: (0..workers).map(|_| None).collect(),
             written: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
-            since: Instant::now(),
-            cadence: Cadence::current(),
+            pace: Pace::new(),
         }
     }
 
@@ -1515,14 +1775,15 @@ impl Checkpoints {
     fn assign(&mut self, worker: usize, range: ByteRange) {
         // The worker is idle, so nothing writes its counter while it is reset.
         self.written[worker].store(0, Ordering::Release);
-        self.leases[worker] = Some(Lease { range, recorded: 0 });
+        self.leases[worker] = Some(Lease { range, taken: 0 });
     }
 
     fn recorded_bytes(&self) -> u64 {
         self.completed.iter().map(|range| range.len()).sum()
     }
 
-    /// Bytes written and not recorded: finished leases and the unrecorded part of the others.
+    /// Bytes written that no cycle covers yet: finished and dropped leases, and the untaken
+    /// part of the others.
     fn waiting(&self) -> u64 {
         let finished = self.unrecorded.iter().map(|range| range.len()).sum::<u64>();
         let running = self
@@ -1531,26 +1792,26 @@ impl Checkpoints {
             .zip(&self.written)
             .filter_map(|(lease, written)| {
                 let lease = lease.as_ref()?;
-                Some(
-                    written
-                        .load(Ordering::Acquire)
-                        .saturating_sub(lease.recorded),
-                )
+                Some(written.load(Ordering::Acquire).saturating_sub(lease.taken))
             })
             .sum::<u64>();
         finished + running
     }
 
     fn downloaded(&self) -> u64 {
-        self.recorded_bytes() + self.waiting()
+        let in_cycle = self.cycle.covers().map_or(0, |snapshot| {
+            snapshot.fresh.iter().map(|range| range.len()).sum()
+        });
+        self.recorded_bytes() + in_cycle + self.waiting()
     }
 
+    /// Whether a periodic cycle should start now.
     fn due(&mut self) -> bool {
-        let waiting = self.waiting();
-        if waiting == 0 {
-            self.since = Instant::now();
+        if self.cycle.busy() {
+            return false;
         }
-        self.cadence.due(self.since, waiting)
+        let waiting = self.waiting();
+        self.pace.due(waiting)
     }
 
     /// The lease of `worker` ended with every byte written.
@@ -1560,64 +1821,108 @@ impl Checkpoints {
         }
     }
 
-    /// The lease of `worker` ended early. What it wrote is recorded first, so the range that
-    /// is returned for another try starts where the lease stopped.
-    fn abandon(&mut self, worker: usize) -> std::result::Result<Option<ByteRange>, AttemptFailure> {
-        let wrote = self.leases[worker]
-            .as_ref()
-            .is_some_and(|lease| self.written[worker].load(Ordering::Acquire) > lease.recorded);
-        if wrote {
-            self.checkpoint()?;
+    /// The lease of `worker` ended early. What it wrote waits for the next cycle, and the range
+    /// that is returned for another try starts where the lease stopped.
+    fn abandon(&mut self, worker: usize) -> Option<ByteRange> {
+        let lease = self.leases[worker].take()?;
+        let written = self.written[worker]
+            .load(Ordering::Acquire)
+            .max(lease.taken);
+        if written > lease.taken {
+            self.unrecorded.push(ByteRange {
+                start: lease.range.start + lease.taken,
+                end: lease.range.start + written,
+            });
         }
-        Ok(self.leases[worker].take().and_then(|lease| lease.rest()))
+        let rest = ByteRange {
+            start: lease.range.start + written,
+            end: lease.range.end,
+        };
+        (rest.len() > 0).then_some(rest)
     }
 
-    /// Flushes the part file, then records everything written before the flush began.
-    fn checkpoint(&mut self) -> std::result::Result<(), AttemptFailure> {
-        let mut reached = Vec::new();
+    /// Reads how much every lease has written and takes it, with the ranges that wait, into a
+    /// record for the next cycle. `None` when nothing is waiting.
+    fn snapshot(&mut self) -> std::result::Result<Option<(ResumeState, Snapshot)>, AttemptFailure> {
         let mut fresh = self.unrecorded.clone();
+        let mut counted = Vec::new();
         for (worker, lease) in self.leases.iter().enumerate() {
             let Some(lease) = lease else { continue };
             let written = self.written[worker].load(Ordering::Acquire);
-            if written > lease.recorded {
+            if written > lease.taken {
                 fresh.push(ByteRange {
-                    start: lease.range.start + lease.recorded,
+                    start: lease.range.start + lease.taken,
                     end: lease.range.start + written,
                 });
-                reached.push((worker, written));
+                counted.push((worker, written));
             }
         }
         if fresh.is_empty() {
-            self.since = Instant::now();
-            return Ok(());
+            self.pace.restart();
+            return Ok(None);
         }
-        self.file.sync_all().map_err(|error| {
-            AttemptFailure::Other(anyhow!(error).context(crate::i18n::ui(
-                "Aralık diske yazılamadı",
-                "The range could not be written to disk",
-            )))
-        })?;
+        self.cycle.steps.note("counted");
         let mut all = self.completed.clone();
-        all.extend(fresh);
+        all.extend(fresh.iter().copied());
         let completed = normalize_completed(&all, self.total)?;
-        write_state(
-            &self.state_path,
-            &ResumeState {
-                completed: completed.clone(),
-                ..self.state.clone()
-            },
-        )
-        .map_err(AttemptFailure::Other)?;
-        self.completed = completed;
         self.unrecorded.clear();
-        for (worker, written) in reached {
+        for (worker, written) in counted {
             if let Some(lease) = &mut self.leases[worker] {
-                lease.recorded = written;
+                lease.taken = written;
             }
         }
-        self.since = Instant::now();
-        note_cycle();
+        self.pace.restart();
+        let record = ResumeState {
+            completed: completed.clone(),
+            ..self.state.clone()
+        };
+        Ok(Some((record, Snapshot { completed, fresh })))
+    }
+
+    /// Starts a periodic cycle beside the transfer. It fails only when the ranges cannot be
+    /// merged into a record.
+    fn begin(&mut self) -> std::result::Result<(), AttemptFailure> {
+        if let Some((record, snapshot)) = self.snapshot()? {
+            self.cycle.start(record, snapshot);
+        }
         Ok(())
+    }
+
+    /// Takes in the outcome of a cycle. A failed one leaves the last record in place and its
+    /// ranges wait for the next cycle.
+    fn absorb(&mut self, (snapshot, result): (Snapshot, Result<()>)) -> Result<()> {
+        match result {
+            Ok(()) => {
+                self.completed = snapshot.completed;
+                Ok(())
+            }
+            Err(error) => {
+                self.unrecorded.extend(snapshot.fresh);
+                self.pace.fail();
+                Err(error)
+            }
+        }
+    }
+
+    /// Takes in a periodic cycle that has ended; its failure does not end the transfer.
+    fn poll(&mut self) {
+        if let Some(ended) = self.cycle.poll() {
+            let _ = self.absorb(ended);
+        }
+    }
+
+    /// Makes everything written so far durable and recorded, after any cycle in progress. No
+    /// worker may be writing.
+    fn checkpoint(&mut self) -> std::result::Result<(), AttemptFailure> {
+        if let Some(ended) = self.cycle.wait() {
+            let _ = self.absorb(ended);
+        }
+        let Some((record, snapshot)) = self.snapshot()? else {
+            return Ok(());
+        };
+        let result = self.cycle.run(&record);
+        self.absorb((snapshot, result))
+            .map_err(AttemptFailure::Other)
     }
 }
 
@@ -1681,19 +1986,26 @@ fn download_segmented(
     let lease_size = total
         .div_ceil(u64::from(count.max(1)))
         .clamp(MIN_SEGMENT_SIZE, MAX_SEGMENT_SIZE);
-    let file = OpenOptions::new()
-        .write(true)
-        .open(&part)
-        .with_context(|| {
-            crate::i18n::ui_format!(
-                "Geçici dosya açılamadı: {0}",
-                "The temporary file could not be opened: {0}",
-                part.display()
-            )
-        })
-        .map_err(AttemptFailure::Other)?;
+    // Every worker writes through its own handle and the checkpoints flush through one more.
+    let open_part = || {
+        OpenOptions::new()
+            .write(true)
+            .open(&part)
+            .with_context(|| {
+                crate::i18n::ui_format!(
+                    "Geçici dosya açılamadı: {0}",
+                    "The temporary file could not be opened: {0}",
+                    part.display()
+                )
+            })
+            .map_err(AttemptFailure::Other)
+    };
+    let flush_file = open_part()?;
+    let worker_files = (0..worker_count)
+        .map(|_| open_part())
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut ledger = Checkpoints::new(
-        Arc::new(file),
+        flush_file,
         &state_path,
         state,
         completed,
@@ -1709,13 +2021,12 @@ fn download_segmented(
     let busy = Arc::new(AtomicUsize::new(0));
     let mut senders = Vec::with_capacity(worker_count);
     let mut handles = Vec::with_capacity(worker_count);
-    for worker in 0..worker_count {
+    for (worker, file) in worker_files.into_iter().enumerate() {
         let (command_tx, command_rx) = mpsc::sync_channel::<RangeCommand>(1);
         senders.push(command_tx);
         let events = event_tx.clone();
         let request = request.clone();
         let remote = remote.clone();
-        let file = ledger.file.clone();
         let written = ledger.counter(worker);
         let control = control.clone();
         let abort = abort.clone();
@@ -1866,13 +2177,10 @@ fn download_segmented(
                                 )
                             )));
                         };
-                        match ledger.abandon(worker) {
-                            Ok(rest) => pending.extend(rest.map(|range| RangeWork {
-                                range,
-                                attempts: work.attempts + 1,
-                            })),
-                            Err(error) => break 'scheduler Err(error),
-                        }
+                        pending.extend(ledger.abandon(worker).map(|range| RangeWork {
+                            range,
+                            attempts: work.attempts + 1,
+                        }));
                         effective_workers = (effective_workers / 2).max(1);
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
@@ -1904,13 +2212,10 @@ fn download_segmented(
                                 )
                             )));
                         };
-                        match ledger.abandon(worker) {
-                            Ok(rest) => pending.extend(rest.map(|range| RangeWork {
-                                range,
-                                attempts: work.attempts + 1,
-                            })),
-                            Err(error) => break 'scheduler Err(error),
-                        }
+                        pending.extend(ledger.abandon(worker).map(|range| RangeWork {
+                            range,
+                            attempts: work.attempts + 1,
+                        }));
                         effective_workers = (effective_workers / 2).max(1);
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
@@ -1946,8 +2251,9 @@ fn download_segmented(
             }
         }
 
+        ledger.poll();
         if ledger.due() {
-            if let Err(error) = ledger.checkpoint() {
+            if let Err(error) = ledger.begin() {
                 break Err(error);
             }
         }
@@ -2057,7 +2363,7 @@ struct DynamicRangeWorker<'a> {
     network: NetworkGovernor,
     request: &'a AddRequest,
     remote: &'a RemoteInfo,
-    /// The part file's one write handle, shared by all workers (see `Checkpoints`).
+    /// This worker's own write handle on the part file.
     file: &'a File,
     /// Bytes of the current lease written so far, read by the scheduler's checkpoints.
     written: &'a AtomicU64,
@@ -2668,7 +2974,7 @@ fn download_ftp_resuming(
         file.set_len(0)?;
     }
     file.seek(SeekFrom::Start(offset))?;
-    let mut sink = SequentialSink::new(file, &state_path, record, offset);
+    let mut sink = SequentialSink::new(file, &part, &state_path, record, offset)?;
     let mut last = Instant::now();
     let mut last_bytes = offset;
     let mut throttle_started = Instant::now();
@@ -5084,6 +5390,179 @@ mod tests {
         stop.store(true, Ordering::Release);
         server.join().unwrap();
         assert_eq!(outcome.unwrap(), *payload);
+    }
+
+    /// How the server answers the lease that waits for the other lease to write.
+    #[derive(Clone, Copy, Debug)]
+    enum LateAnswer {
+        Rejected,
+        Ignored,
+        Changed,
+    }
+
+    /// One of two leases streams; the other is answered only after the first has written some
+    /// bytes, and then discards the ranges. Nothing records those bytes, because no cycle can
+    /// start, so the download has to fall back to one connection and finish in one attempt.
+    fn a_discarded_range_leaves_the_bytes_of_the_other_lease_unrecorded(late: LateAnswer) {
+        fn serve(stream: &mut TcpStream, payload: &[u8], streamed: &AtomicBool, late: LateAnswer) {
+            let request = read_request(stream);
+            let total = payload.len();
+            if request.starts_with("HEAD ") {
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nETag: \"discard-v1\"\r\nConnection: close\r\n\r\n").as_bytes(),
+                );
+                return;
+            }
+            let Some(range) = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                .map(|line| line.split_once(':').unwrap().1.trim().to_owned())
+            else {
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nETag: \"discard-v1\"\r\nConnection: close\r\n\r\n").as_bytes(),
+                );
+                let _ = stream.write_all(payload);
+                return;
+            };
+            let (start, end) = range
+                .strip_prefix("bytes=")
+                .and_then(|value| value.split_once('-'))
+                .unwrap();
+            let start: usize = start.parse().unwrap();
+            let end: usize = end.parse().unwrap();
+            let (status, etag, body) = if start > 0 {
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while !streamed.load(Ordering::Acquire) && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                match late {
+                    LateAnswer::Rejected => {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                        return;
+                    }
+                    LateAnswer::Ignored => {
+                        let _ = stream.write_all(
+                            format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nETag: \"discard-v1\"\r\nConnection: close\r\n\r\n").as_bytes(),
+                        );
+                        let _ = stream.write_all(payload);
+                        return;
+                    }
+                    LateAnswer::Changed => {
+                        ("206 Partial Content", "discard-v2", &payload[start..=end])
+                    }
+                }
+            } else {
+                ("206 Partial Content", "discard-v1", &payload[start..=end])
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nAccept-Ranges: bytes\r\nETag: \"{etag}\"\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            if stream.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            for chunk in body.chunks(32 * 1024) {
+                if stream.write_all(chunk).is_err() {
+                    return;
+                }
+                // The first lease streams slowly; the probe is one byte.
+                if end > 0 {
+                    thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload: Arc<Vec<u8>> = Arc::new(
+            (0..MIN_SEGMENT_SIZE * 3)
+                .map(|index| (index % 251) as u8)
+                .collect(),
+        );
+        let streamed = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let server = {
+            let (payload, streamed, stop) = (payload.clone(), streamed.clone(), stop.clone());
+            thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream.set_nonblocking(false).unwrap();
+                            let (payload, streamed) = (payload.clone(), streamed.clone());
+                            thread::spawn(move || serve(&mut stream, &payload, &streamed, late));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+
+        let directory = TestDirectory::new("discarded-range");
+        let output = directory.0.join("large.bin");
+        let (finished, outcome) = mpsc::channel();
+        {
+            let (output, streamed) = (output.clone(), streamed.clone());
+            thread::spawn(move || {
+                // No cycle can start, so only the end of the attempt could record the bytes.
+                TEST_CADENCE.with(|cadence| {
+                    cadence.set(Some(Cadence {
+                        interval: Duration::from_secs(3600),
+                        bytes: u64::MAX,
+                    }))
+                });
+                let control = TransferControl::default();
+                let result = download(
+                    &local_request(format!("http://{address}/large")),
+                    &output,
+                    &control,
+                    &NetworkGovernor::new(16),
+                    2,
+                    None,
+                    &mut |progress| {
+                        if progress.downloaded >= 256 * 1024 {
+                            streamed.store(true, Ordering::Release);
+                        }
+                    },
+                )
+                .map(|result| fs::read(result.path).unwrap())
+                .map_err(|error| format!("{error:#}"));
+                let _ = finished.send((result, control.restarted()));
+            });
+        }
+        let (outcome, restarted) = outcome
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the segmented scheduler hung after a range was discarded");
+        stop.store(true, Ordering::Release);
+        server.join().unwrap();
+        assert_eq!(
+            outcome.unwrap_or_else(|error| panic!("{late:?}: {error}")),
+            *payload,
+            "{late:?}"
+        );
+        // A recorded range would have kept the one-connection fallback from running and made the
+        // download start over from byte zero instead.
+        assert!(!restarted, "{late:?}: the download started over");
+    }
+
+    #[test]
+    fn a_rejected_range_does_not_record_what_the_other_lease_wrote() {
+        a_discarded_range_leaves_the_bytes_of_the_other_lease_unrecorded(LateAnswer::Rejected);
+    }
+
+    #[test]
+    fn an_ignored_range_does_not_record_what_the_other_lease_wrote() {
+        a_discarded_range_leaves_the_bytes_of_the_other_lease_unrecorded(LateAnswer::Ignored);
+    }
+
+    #[test]
+    fn a_changed_source_does_not_record_what_the_other_lease_wrote() {
+        a_discarded_range_leaves_the_bytes_of_the_other_lease_unrecorded(LateAnswer::Changed);
     }
 
     #[test]

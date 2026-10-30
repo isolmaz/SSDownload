@@ -141,8 +141,8 @@ fn an_interrupted_segmented_download_resumes_by_requesting_only_the_missing_rang
         "the interruption left {done:?} of {size} bytes"
     );
     assert!(part_path(&output).exists() && !output.exists());
-    // Only the recorded ranges are retained, not the preallocated part file or the bytes of
-    // the leases that were still running.
+    // Only the recorded ranges are retained, not the preallocated part file; a stop records
+    // what the running leases had written.
     let recorded = done.iter().map(|(start, end)| end - start).sum::<u64>();
     assert_eq!(retained_bytes(&output), Some(recorded));
     assert!(recorded < fs::metadata(part_path(&output)).unwrap().len());
@@ -1180,14 +1180,30 @@ fn an_existing_file_at_the_target_name_is_kept_and_the_download_gets_another_nam
 }
 
 /// Checkpoints the downloads that the current test thread starts after `interval` or once
-/// `bytes` are waiting. The cadence and the cycle count belong to the test thread, so tests do
-/// not affect each other.
+/// `bytes` are waiting. The cadence and the steps belong to the test thread, so tests do not
+/// affect each other.
 fn checkpoint_every(interval: Duration, bytes: u64) {
     TEST_CADENCE.with(|cadence| cadence.set(Some(Cadence { interval, bytes })));
 }
 
+fn steps() -> Vec<&'static str> {
+    TEST_STEPS.with(|steps| steps.lock().unwrap().clone())
+}
+
+/// Makes the cycles of the downloads that the current test thread starts wait between their
+/// flush and their record.
+fn pause_cycles_for(pause: Duration) {
+    TEST_PAUSE.with(|current| current.set(pause));
+}
+
+/// Cycles that flushed the part file and wrote a record.
 fn checkpoint_cycles() -> usize {
-    TEST_CYCLES.with(std::cell::Cell::get)
+    steps().iter().filter(|step| **step == "recorded").count()
+}
+
+/// Cycles that failed to flush or to write the record.
+fn failed_cycles() -> usize {
+    steps().iter().filter(|step| **step == "failed").count()
 }
 
 fn stop_after(control: &TransferControl, delay: Duration) -> thread::JoinHandle<()> {
@@ -1247,7 +1263,8 @@ fn a_lease_that_drops_resumes_from_where_it_stopped() {
         }),
         ..Config::default()
     });
-    // No cadence checkpoint can run, so only the drop itself records what the lease wrote.
+    // No cadence checkpoint can run: the written part of the dropped lease waits for the
+    // cycle at the end, and the drop itself does not flush.
     checkpoint_every(NEVER, u64::MAX);
     let directory = TempDir::new("lease-drop");
     let output = directory.0.join("payload.bin");
@@ -1261,6 +1278,7 @@ fn a_lease_that_drops_resumes_from_where_it_stopped() {
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_eq!(checkpoint_cycles(), 1, "{:?}", steps());
 
     server.wait_idle();
     let log = server.log();
@@ -1466,6 +1484,201 @@ fn stopping_a_segmented_download_at_any_point_leaves_a_record_of_true_bytes() {
 #[test]
 fn stopping_a_one_connection_download_at_any_point_leaves_a_record_of_true_bytes() {
     every_stop_leaves_a_record_of_true_bytes(1, 12 * MIB + 17, 32 * MIB, 18);
+}
+
+/// Opens `path` the way a scanner or a sync client can: other processes may read it but not
+/// replace or delete it. Retries while a record write has the file.
+fn hold_against_replacement(path: &Path) -> File {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    for _ in 0..100 {
+        if let Ok(file) = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+        {
+            return file;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("{} could not be held", path.display());
+}
+
+/// The record cannot be replaced for as long as the first periodic cycle takes to give up, then
+/// it can again; the download has to finish all the same.
+fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
+    let server = Server::start(Config {
+        size,
+        throttle: Some(2 * MIB),
+        ..Config::default()
+    });
+    checkpoint_every(Duration::from_secs(1), u64::MAX);
+    let directory = TempDir::new("failing-checkpoint");
+    let output = directory.0.join("payload.bin");
+    let state_file = state_path(&output);
+    let mut held = None;
+    let mut acquired = false;
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |progress| {
+            if !acquired && progress.downloaded > 0 {
+                held = Some(hold_against_replacement(&state_file));
+                acquired = true;
+            }
+            if failed_cycles() > 0 {
+                held = None;
+            }
+        },
+    );
+    drop(held);
+    let result = result.unwrap_or_else(|error| {
+        panic!(
+            "{connections} connection(s): {error:#}; steps {:?}",
+            steps()
+        )
+    });
+    assert!(failed_cycles() > 0, "no periodic cycle failed");
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert!(!part_path(&output).exists() && !state_path(&output).exists());
+}
+
+#[test]
+fn a_one_connection_download_survives_periodic_checkpoints_that_fail() {
+    survives_periodic_checkpoints_that_fail(1, 12 * MIB);
+}
+
+#[test]
+fn a_segmented_download_survives_periodic_checkpoints_that_fail() {
+    survives_periodic_checkpoints_that_fail(2, 24 * MIB);
+}
+
+fn flushes_before_it_records(connections: u8) {
+    let size = 12 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(4 * MIB),
+        ..Config::default()
+    });
+    checkpoint_every(Duration::from_millis(100), u64::MAX);
+    let directory = TempDir::new("cycle-order");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    // Every cycle reads the counts first, flushes second and records last, and none overlaps
+    // another: a periodic cycle and the one at the end.
+    let steps = steps();
+    assert!(
+        steps.len() >= 6 && steps.len().is_multiple_of(3),
+        "{steps:?}"
+    );
+    for cycle in steps.chunks(3) {
+        assert_eq!(cycle, ["counted", "flushed", "recorded"], "{steps:?}");
+    }
+}
+
+#[test]
+fn a_one_connection_download_flushes_before_it_records() {
+    flushes_before_it_records(1);
+}
+
+#[test]
+fn a_segmented_download_flushes_before_it_records() {
+    flushes_before_it_records(2);
+}
+
+fn the_end_waits_for_the_running_cycle(connections: u8) {
+    let size = 4 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(4 * MIB),
+        ..Config::default()
+    });
+    // The first periodic cycle starts early and then holds for two seconds, which is longer
+    // than the transfer: it is still running when the last bytes arrive.
+    checkpoint_every(Duration::from_millis(100), u64::MAX);
+    pause_cycles_for(Duration::from_secs(2));
+    let directory = TempDir::new("cycle-running");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    // The cycle at the end starts only after the running one has recorded; no second periodic
+    // cycle starts while one is running.
+    assert_eq!(
+        steps(),
+        ["counted", "flushed", "recorded", "counted", "flushed", "recorded"]
+    );
+}
+
+#[test]
+fn the_end_of_a_one_connection_download_waits_for_the_running_cycle() {
+    the_end_waits_for_the_running_cycle(1);
+}
+
+#[test]
+fn the_end_of_a_segmented_download_waits_for_the_running_cycle() {
+    the_end_waits_for_the_running_cycle(2);
+}
+
+#[test]
+fn the_time_trigger_fires_while_no_lease_finishes() {
+    let lease = 8 * MIB;
+    let size = 2 * lease;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(2 * MIB),
+        ..Config::default()
+    });
+    checkpoint_every(Duration::from_millis(50), u64::MAX);
+    let directory = TempDir::new("time-trigger");
+    let output = directory.0.join("payload.bin");
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let state_file = state_path(&output);
+    let mut seen = None;
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &control,
+        2,
+        2,
+        &mut |progress| {
+            // Both leases are 8 MiB, so neither can have finished before 6 MiB are written in
+            // all; only the clock can have started a cycle until then.
+            if seen.is_none() && (checkpoint_cycles() > 0 || progress.downloaded >= 6 * MIB) {
+                seen = Some((
+                    checkpoint_cycles(),
+                    read_state(&state_file).zip(fs::read(part_path(&output)).ok()),
+                ));
+                cancel.cancel();
+            }
+        },
+    );
+    assert!(result.is_err());
+    let (cycles, record) = seen.expect("the download was never observed");
+    assert!(cycles > 0, "no cycle started before a lease could finish");
+    let (record, part) = record.expect("the cycle left no record");
+    let claimed = assert_claims_are_exact(&record, &part, &pattern(1, size));
+    assert!(claimed > 0 && claimed < lease, "{claimed} bytes");
 }
 
 #[test]

@@ -14,7 +14,7 @@ Supported version: the latest [release](https://github.com/isolmaz/SSDownload/re
 
 **Secrets at rest.** Queue records, completion journals, site logins and the proxy password are sealed with Windows DPAPI for the current user. Cookies, headers and page markup are removed from a job once it completes. Logs and error reports strip credentials, query strings and fragments from addresses. The page markup a **Report problem** folder may hold (`sayfa.html`) is kept as is, so review it before sharing.
 
-**Transfers.** HTTPS never downgrades on a redirect, and site headers or credentials never cross to another origin (only `Accept`, `Accept-Language` and `User-Agent` do). A download resumes only when the source proves it is unchanged, and only from bytes its resume record lists as flushed to disk. Files are published atomically, never replace an existing file and are never run automatically; downloaded files carry the Windows "downloaded from the internet" mark.
+**Transfers.** HTTPS never downgrades on a redirect, and site headers or credentials never cross to another origin (only `Accept`, `Accept-Language` and `User-Agent` do). A download resumes only when the source proves it is unchanged, and only from bytes its resume record lists as flushed to disk (a record that an earlier version wrote for a one-connection download resumes from the length of the part file). Files are published atomically, never replace an existing file and are never run automatically; downloaded files carry the Windows "downloaded from the internet" mark.
 
 **Processes.** Helper programs are started with argument arrays, never through a shell, inside Windows job objects owned by the app, and they run only while a job needs them.
 
