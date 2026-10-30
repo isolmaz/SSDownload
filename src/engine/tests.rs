@@ -2366,7 +2366,18 @@ mod retry_budget {
         engine.pause(&id).unwrap();
         wait_until("the pause", || job_state(&engine, &id) == JobState::Paused);
 
-        let ticket = engine.begin_source_refresh(&id).unwrap();
+        // Paused is reported before the download thread has stopped, which refuses the
+        // refresh without changing anything.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let ticket = loop {
+            match engine.begin_source_refresh(&id) {
+                Ok(ticket) => break ticket,
+                Err(error) => {
+                    assert!(Instant::now() < deadline, "{error:#}");
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+        };
         let mut request = (*ticket.request).clone();
         request.url = new.url("/payload.bin");
         engine

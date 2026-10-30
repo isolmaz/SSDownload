@@ -3568,7 +3568,7 @@ impl Actor {
                 // kept bytes starts the count at one: the failure that the retries follow. With
                 // a limit of 0 nothing is retried, whatever the attempt kept.
                 if retryable {
-                    job.attempts = if failure.progressed && self.settings.retry_limit > 0 {
+                    job.attempts = if failure.progressed {
                         1
                     } else {
                         job.attempts.saturating_add(1)
