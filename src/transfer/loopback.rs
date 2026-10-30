@@ -888,10 +888,13 @@ fn a_matching_last_modified_does_not_prove_a_file_whose_etag_changed() {
 
 #[test]
 fn a_weak_etag_that_changed_is_not_hidden_by_a_matching_last_modified() {
+    // `If-Range` carries the date, which still matches, so the server honours it; the answer
+    // has no validator, and HEAD's changed weak ETag is the only sign of the new file.
     swapped_file_restarts(
         |config| {
             config.etag = EtagKind::Weak;
             config.last_modified_fixed = true;
+            config.partial_without_validators = true;
         },
         false,
     );
@@ -935,8 +938,9 @@ fn a_supplied_digest_does_not_vouch_against_a_conflicting_strong_etag() {
     );
 }
 
-/// The server ignores `If-Range` and its resume answers carry no validators, so only this
-/// attempt's HEAD could vouch for the old bytes, and it describes version 2.
+/// Interrupts a download of version 1, swaps the file for version 2 of the same size, and
+/// resumes with the server configured by `tweak` (and, with `digest_of_version_2`, a SHA-256
+/// of version 2 supplied): the result has to be version 2 only, without a digest failure.
 fn swapped_file_restarts_over(
     connections: u8,
     size: u64,
