@@ -4,7 +4,7 @@
 use super::*;
 use crate::test_http::{
     file_sha256, pattern, pattern_sha256, Config, CutBody, EtagKind, Logged, RangeSupport,
-    RetryAfter, Scripted, Server, TempDir,
+    RetryAfter, Scripted, Sequence, Server, TempDir,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -61,6 +61,24 @@ fn ranged_gets(log: &[Logged], total: u64) -> Vec<(u64, u64)> {
         .collect()
 }
 
+/// The half-open ranges that the ranged data GETs delivered. A request delivers only up to the
+/// start of a later one that begins inside it: a lease that was split for an idle worker, or
+/// one that dropped and was asked for again from where it stopped.
+fn delivered(log: &[Logged], total: u64) -> Vec<(u64, u64)> {
+    let requested = ranged_gets(log, total);
+    requested
+        .iter()
+        .map(|&(start, end)| {
+            let cut = requested
+                .iter()
+                .map(|&(other, _)| other)
+                .filter(|&other| other > start && other < end)
+                .min();
+            (start, cut.unwrap_or(end))
+        })
+        .collect()
+}
+
 /// Asserts that the ranges cover `0..total` once each, with no gap and no overlap.
 fn assert_tiles(mut ranges: Vec<(u64, u64)>, total: u64) {
     ranges.sort_unstable();
@@ -70,6 +88,155 @@ fn assert_tiles(mut ranges: Vec<(u64, u64)>, total: u64) {
         next = *end;
     }
     assert_eq!(next, total, "ranges {ranges:?}");
+}
+
+/// The offset and length of every write that the segmented workers of the downloads that the
+/// current test thread ran made.
+fn writes() -> Vec<(u64, u64)> {
+    TEST_WRITES.with(|writes| writes.lock().unwrap().clone())
+}
+
+fn forget_writes() {
+    TEST_WRITES.with(|writes| writes.lock().unwrap().clear());
+}
+
+/// Asserts that no byte was written twice. The bytes of a file cannot show it: every write of a
+/// byte carries the same value.
+fn assert_no_byte_written_twice(writes: &[(u64, u64)]) {
+    let mut writes = writes.to_vec();
+    writes.sort_unstable();
+    let mut next = 0;
+    for (offset, length) in writes {
+        assert!(offset >= next, "bytes {offset}..{next} were written twice");
+        next = offset + length;
+    }
+}
+
+/// Asserts that `writes` and the `recorded` ranges that an earlier attempt kept cover `0..total`
+/// once each: every byte that no record held was written, and none twice.
+fn assert_written_once(writes: &[(u64, u64)], recorded: &[(u64, u64)], total: u64) {
+    let mut tiles = writes
+        .iter()
+        .map(|&(offset, length)| (offset, offset + length))
+        .chain(recorded.iter().copied())
+        .collect::<Vec<_>>();
+    tiles.sort_unstable();
+    let mut next = 0;
+    for (start, end) in tiles {
+        assert!(
+            start >= next,
+            "bytes {start}..{next} were written or recorded twice"
+        );
+        assert!(start <= next, "bytes {next}..{start} were never written");
+        next = end;
+    }
+    assert_eq!(next, total, "bytes {next}..{total} were never written");
+}
+
+/// A range that a worker took from the back of another range.
+#[derive(Debug)]
+struct Steal {
+    /// The range that was requested first and still has the same end.
+    victim: (u64, u64),
+    thief: (u64, u64),
+    /// Whether the request for `victim` is logged before the one for `thief`.
+    victim_first: bool,
+}
+
+/// Every pair of ranged data GETs of which one asks for a part that ends where the other ends
+/// and starts strictly inside it.
+fn steals(log: &[Logged], total: u64) -> Vec<Steal> {
+    let ranges = ranged_gets(log, total);
+    let mut steals = Vec::new();
+    for (thief_index, &thief) in ranges.iter().enumerate() {
+        for (victim_index, &victim) in ranges.iter().enumerate() {
+            if victim.0 < thief.0 && thief.0 < victim.1 && thief.1 == victim.1 {
+                steals.push(Steal {
+                    victim,
+                    thief,
+                    victim_first: victim_index < thief_index,
+                });
+            }
+        }
+    }
+    steals
+}
+
+/// Whether a progress phase says that a range is tried again.
+fn is_retry_notice(phase: &str) -> bool {
+    phase.contains("retrying") || phase.contains("yeniden")
+}
+
+/// Asserts that the file at `path` holds exactly `expected`.
+fn assert_file_is(path: &Path, expected: &[u8], label: &str) {
+    assert!(
+        fs::read(path).unwrap() == expected,
+        "{label}: the file is not the source"
+    );
+}
+
+/// What a download left behind on a server whose first connection that starts above byte 0
+/// stops after some bytes until another request takes part of its range.
+struct Stalled {
+    /// The file the download produced.
+    file: Vec<u8>,
+    log: Vec<Logged>,
+    writes: Vec<(u64, u64)>,
+    phases: Vec<String>,
+}
+
+/// Downloads `size` bytes over `connections` connections.
+fn download_with_a_stall(size: u64, connections: u8, after: u64, throttle: Option<u64>) -> Stalled {
+    let server = Server::start(Config {
+        size,
+        throttle,
+        stall: Some((0, after)),
+        ..Config::default()
+    });
+    forget_writes();
+    let directory = TempDir::new("stall");
+    let output = directory.0.join("payload.bin");
+    let mut phases = Vec::new();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |progress| phases.push(progress.phase),
+    )
+    .unwrap_or_else(|error| panic!("{error:#}"));
+    assert_eq!(result.bytes, size);
+    let file = fs::read(&result.path).unwrap();
+    assert!(!part_path(&output).exists() && !state_path(&output).exists());
+    server.wait_idle();
+    Stalled {
+        file,
+        log: server.log(),
+        writes: writes(),
+        phases,
+    }
+}
+
+impl Stalled {
+    /// The file is the source, every byte was written once, the requests tile the file, each of
+    /// them carried the validator of the record and was answered with a partial body, and no
+    /// range was tried again.
+    fn assert_exact(&self, expected: &[u8]) {
+        let size = expected.len() as u64;
+        assert!(self.file == expected, "the file is not the source");
+        assert_written_once(&self.writes, &[], size);
+        assert_tiles(delivered(&self.log, size), size);
+        for entry in data_gets(&self.log) {
+            assert_eq!(entry.if_range.as_deref(), Some("\"v1\""), "{entry:?}");
+            assert_eq!(entry.status, 206, "{entry:?}");
+        }
+        assert!(
+            self.phases.iter().all(|phase| !is_retry_notice(phase)),
+            "{:?}",
+            self.phases
+        );
+    }
 }
 
 #[test]
@@ -96,7 +263,7 @@ fn segmented_download_over_several_connections_has_exactly_the_source_bytes() {
     assert!(!part_path(&output).exists() && !state_path(&output).exists());
 
     let log = server.log();
-    assert_tiles(ranged_gets(&log, size), size);
+    assert_tiles(delivered(&log, size), size);
     let mut connections = data_gets(&log)
         .filter(|entry| entry.range.is_some())
         .map(|entry| entry.connection)
@@ -163,7 +330,7 @@ fn an_interrupted_segmented_download_resumes_by_requesting_only_the_missing_rang
 
     let log = server.log();
     let resumed = &log[first_attempt..];
-    let mut requested = ranged_gets(resumed, size);
+    let mut requested = delivered(resumed, size);
     assert!(!requested.is_empty());
     for entry in resumed.iter().filter(|entry| entry.method == "GET") {
         assert_eq!(entry.if_range.as_deref(), Some("\"v1\""), "{entry:?}");
@@ -296,7 +463,7 @@ fn a_server_that_serves_ranges_without_advertising_them_is_downloaded_over_sever
     server.wait_idle();
     let log = server.log();
     let ranged = ranged_gets(&log, size);
-    assert_tiles(ranged.clone(), size);
+    assert_tiles(delivered(&log, size), size);
     let connections = data_gets(&log)
         .map(|entry| entry.connection)
         .collect::<std::collections::BTreeSet<_>>();
@@ -382,7 +549,7 @@ fn a_head_with_the_wrong_length_does_not_decide_the_size() {
         assert!(!part_path(&output).exists() && !state_path(&output).exists());
         if segmented {
             server.wait_idle();
-            assert_tiles(ranged_gets(&server.log(), size), size);
+            assert_tiles(delivered(&server.log(), size), size);
         }
     }
 }
@@ -413,7 +580,7 @@ fn a_server_that_refuses_head_is_downloaded_over_ranges() {
     let log = server.log();
     assert_eq!(log[0].method, "HEAD");
     assert_eq!(log[0].status, 405);
-    assert_tiles(ranged_gets(&log, size), size);
+    assert_tiles(delivered(&log, size), size);
 }
 
 #[test]
@@ -543,7 +710,7 @@ fn a_fresh_probe_carries_no_if_range_so_a_head_with_other_validators_still_segme
         .find(|entry| entry.range.as_deref() == Some("bytes=0-0"))
         .unwrap();
     assert_eq!((probe.if_range.as_deref(), probe.status), (None, 206));
-    assert_tiles(ranged_gets(&log, size), size);
+    assert_tiles(delivered(&log, size), size);
     // The ranges are bound to the validator of the GET that answered the probe, not HEAD's.
     for entry in data_gets(&log) {
         assert_eq!(entry.if_range.as_deref(), Some("\"v1\""), "{entry:?}");
@@ -579,7 +746,7 @@ fn a_head_without_length_or_validators_does_not_prevent_the_range_probe() {
 
     server.wait_idle();
     let log = server.log();
-    assert_tiles(ranged_gets(&log, size), size);
+    assert_tiles(delivered(&log, size), size);
     let connections = data_gets(&log)
         .map(|entry| entry.connection)
         .collect::<std::collections::BTreeSet<_>>();
@@ -771,7 +938,7 @@ fn an_interrupted_segmented_download_resumes_when_the_head_disagrees_with_the_ge
     server.wait_idle();
     let log = server.log();
     let resumed = &log[first_attempt..];
-    let mut requested = ranged_gets(resumed, size);
+    let mut requested = delivered(resumed, size);
     assert!(!requested.is_empty());
     for entry in resumed.iter().filter(|entry| entry.method == "GET") {
         assert_eq!(entry.if_range.as_deref(), Some("\"v1\""), "{entry:?}");
@@ -1490,7 +1657,7 @@ fn every_stop_leaves_a_record_of_true_bytes(connections: u8, size: u64, rate: u6
         let log = server.log();
         let resumed = &log[first_attempt..];
         if connections > 1 {
-            let mut requested = ranged_gets(resumed, size);
+            let mut requested = delivered(resumed, size);
             requested.extend(recorded);
             assert_tiles(requested, size);
         } else if claimed > 0 && claimed < size {
@@ -1932,7 +2099,7 @@ fn a_segmented_record_of_the_previous_release_resumes_with_only_the_missing_rang
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     server.wait_idle();
-    let mut requested = ranged_gets(&server.log(), size);
+    let mut requested = delivered(&server.log(), size);
     requested.push((0, done));
     assert_tiles(requested, size);
 }
@@ -1952,6 +2119,374 @@ fn a_record_keeps_the_format_of_the_previous_release_except_for_the_synced_lengt
     };
     let text = String::from_utf8(serde_json::to_vec(&single).unwrap()).unwrap();
     assert!(text.ends_with(r#""completed":[],"synced":7}"#), "{text}");
+}
+
+#[test]
+fn a_worker_with_nothing_left_takes_the_back_of_the_lease_that_has_stalled() {
+    let size = 12 * MIB + 4_097;
+    // Two leases of about 6 MiB. The connection of the second one stops after 1 MiB until
+    // another request takes part of its range, and the throttle keeps the first lease running
+    // until the second one has been requested.
+    let run = download_with_a_stall(size, 2, MIB, Some(24 * MIB));
+    run.assert_exact(&pattern(1, size));
+
+    let lease = size.div_ceil(2);
+    let found = steals(&run.log, size);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let steal = &found[0];
+    assert!(steal.victim_first, "{steal:?}");
+    assert_eq!(steal.victim, (lease, size));
+    assert_eq!(steal.thief.1, size);
+    // The lease keeps the front half of what was to come, of which 1 MiB at most had arrived.
+    let length = size - lease;
+    let kept = steal.thief.0 - lease;
+    assert!(
+        kept >= length.div_ceil(2) && kept <= (length + MIB).div_ceil(2),
+        "{steal:?} keeps {kept} of {length} bytes"
+    );
+    assert_eq!(ranged_gets(&run.log, size).len(), 3, "{:?}", run.log);
+}
+
+#[test]
+fn the_worker_of_a_cut_lease_writes_up_to_the_cut_and_ends_it_as_complete() {
+    let size = 12 * MIB + 4_097;
+    let run = download_with_a_stall(size, 2, MIB, Some(24 * MIB));
+    run.assert_exact(&pattern(1, size));
+    let lease = size.div_ceil(2);
+    let found = steals(&run.log, size);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let cut = found[0].thief.0;
+
+    // The worker wrote every byte of its lease up to the cut, and its last write ends there.
+    let own = run
+        .writes
+        .iter()
+        .copied()
+        .filter(|&(offset, _)| (lease..cut).contains(&offset))
+        .collect::<Vec<_>>();
+    assert!(
+        own.iter().all(|&(offset, length)| offset + length <= cut),
+        "a write crosses the cut {cut}: {own:?}"
+    );
+    assert_eq!(
+        own.iter().map(|&(_, length)| length).sum::<u64>(),
+        cut - lease
+    );
+    // It ended without an error: the download returned, the progress carries no notice of a
+    // retry and nothing was asked for again. A lease that ends at its cut is a completed lease,
+    // not a failed attempt.
+    assert_eq!(ranged_gets(&run.log, size).len(), 3, "{:?}", run.log);
+}
+
+#[test]
+fn a_lease_with_exactly_two_minimum_pieces_to_come_is_cut_into_two() {
+    // Two leases of 4 MiB. The second stalls before its first byte, so it has 4 MiB to come:
+    // the least that is cut, into two pieces of `MIN_SEGMENT_SIZE`.
+    let size = 8 * MIB;
+    let run = download_with_a_stall(size, 2, 0, Some(24 * MIB));
+    run.assert_exact(&pattern(1, size));
+    let found = steals(&run.log, size);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].victim, (4 * MIB, 8 * MIB));
+    assert_eq!(found[0].thief, (6 * MIB, 8 * MIB));
+}
+
+#[test]
+fn a_lease_with_less_to_come_than_two_minimum_pieces_is_left_to_its_worker() {
+    // Two leases of 4 MiB less one byte. The second is slow, so the worker of the first is idle
+    // for a second, while the second has one byte less to come than the least that is cut.
+    let size = 8 * MIB - 2;
+    let lease = size / 2;
+    let server = Server::start(Config {
+        size,
+        slow_connection: Some((0, 4 * MIB)),
+        ..Config::default()
+    });
+    forget_writes();
+    let directory = TempDir::new("below-threshold");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_file_is(&result.path, &pattern(1, size), "below the threshold");
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let mut ranges = ranged_gets(&server.log(), size);
+    ranges.sort_unstable();
+    assert_eq!(ranges, [(0, lease), (lease, size)]);
+}
+
+#[test]
+fn leases_cut_at_varied_moments_are_written_exactly_once() {
+    let mut random = Sequence::new(0x5851_F42D_4C95_7F2D);
+    let source = pattern(1, 4 * 8 * MIB + 4_096);
+    let mut cuts = std::collections::BTreeSet::new();
+    for run in 0..24u64 {
+        let connections = 2 + (run % 3) as u8;
+        // Leases of 8 MiB, one of which stalls after at most 3 MiB: it keeps at least 5 MiB to
+        // come, so that it is cut however many bytes arrived before it stalled.
+        let size = u64::from(connections) * 8 * MIB + random.below(4_096);
+        let after = random.below(3 * MIB);
+        let throttle = [None, Some(64 * MIB), Some(160 * MIB)][random.below(3) as usize];
+        // Every other run checkpoints so often that cycles run while the leases are cut.
+        if run % 2 == 0 {
+            checkpoint_every(Duration::from_millis(5), 256 * 1024);
+        } else {
+            checkpoint_every(NEVER, u64::MAX);
+        }
+        let stalled = download_with_a_stall(size, connections, after, throttle);
+        stalled.assert_exact(&source[..size as usize]);
+        let found = steals(&stalled.log, size);
+        assert!(
+            !found.is_empty(),
+            "no lease was cut: {:?}",
+            ranged_gets(&stalled.log, size)
+        );
+        cuts.extend(found.iter().map(|steal| steal.thief.0 - steal.victim.0));
+    }
+    assert!(cuts.len() >= 12, "{} different cuts: {cuts:?}", cuts.len());
+}
+
+/// The ranges the record of `output` holds.
+fn recorded_ranges(output: &Path) -> Vec<(u64, u64)> {
+    read_state(&state_path(output))
+        .filter(|state| state.segmented)
+        .map(|state| {
+            state
+                .completed
+                .iter()
+                .map(|range| (range.start, range.end))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Resumes the download of `output` from `recorded` and checks that it asks for and writes
+/// exactly the bytes that no record holds.
+fn resume_exactly(
+    server: &Server,
+    output: &Path,
+    recorded: &[(u64, u64)],
+    expected: &[u8],
+    label: &str,
+) {
+    let size = expected.len() as u64;
+    server.wait_idle();
+    let first_attempt = server.log().len();
+    forget_writes();
+    let result = fetch(
+        &request_for(server),
+        output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+    assert_file_is(&result.path, expected, label);
+    assert!(!part_path(output).exists() && !state_path(output).exists());
+    server.wait_idle();
+    let mut requested = delivered(&server.log()[first_attempt..], size);
+    requested.extend_from_slice(recorded);
+    assert_tiles(requested, size);
+    assert_written_once(&writes(), recorded, size);
+}
+
+/// Downloads `size` bytes over two connections from `server` and stops the download once
+/// `wait` returns. `wait` runs on another thread as soon as a lease has been cut, and gets the
+/// offset of the cut and whether the download has ended. Returns the outcome of the download and
+/// what `wait` returned, which is nothing when the download ended before the cut.
+fn download_stopped_after_a_cut<T: Send>(
+    server: &Server,
+    output: &Path,
+    size: u64,
+    wait: impl FnOnce(u64, &AtomicBool) -> T + Send,
+) -> (Result<TransferResult>, Option<T>) {
+    let control = TransferControl::default();
+    let finished = AtomicBool::new(false);
+    forget_writes();
+    thread::scope(|scope| {
+        let watcher = scope.spawn(|| {
+            let cut = loop {
+                if let Some(steal) = steals(&server.log(), size).first() {
+                    break steal.thief.0;
+                }
+                if finished.load(Ordering::Acquire) {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(1));
+            };
+            let seen = wait(cut, &finished);
+            control.cancel();
+            Some(seen)
+        });
+        let first = fetch(&request_for(server), output, &control, 2, 2, &mut |_| {});
+        finished.store(true, Ordering::Release);
+        (first, watcher.join().unwrap())
+    })
+}
+
+/// Checks what a download that was stopped after a cut left behind, or its file if it finished
+/// first, and that resuming it asks for and writes exactly the bytes that are missing.
+fn assert_stop_is_exact(
+    server: &Server,
+    output: &Path,
+    first: Result<TransferResult>,
+    expected: &[u8],
+    label: &str,
+) {
+    let size = expected.len() as u64;
+    server.wait_idle();
+    assert!(
+        !steals(&server.log(), size).is_empty(),
+        "{label}: no lease was cut"
+    );
+    assert_no_byte_written_twice(&writes());
+    match first {
+        Ok(result) => {
+            assert_file_is(&result.path, expected, label);
+            assert_written_once(&writes(), &[], size);
+        }
+        Err(_) => {
+            let claimed = claimed_bytes(output, expected);
+            assert!(claimed > 0, "{label}: nothing was recorded");
+            assert_eq!(retained_bytes(output), Some(claimed), "{label}");
+            let recorded = recorded_ranges(output);
+            resume_exactly(server, output, &recorded, expected, label);
+        }
+    }
+}
+
+#[test]
+fn a_download_stopped_right_after_a_cut_records_true_bytes_and_resumes_exactly() {
+    let size = 16 * MIB + 4_097;
+    let expected = pattern(1, size);
+    // No cycle runs but the one that the stop starts.
+    checkpoint_every(NEVER, u64::MAX);
+    for delay in [0u64, 1, 2, 4, 8, 16, 32, 48] {
+        let label = format!("stopped {delay} ms after the request for the back of a lease");
+        // Two leases of 8 MiB; the second stalls after 1 MiB until the back of it is requested,
+        // and the throttle gives the stop the time of the two transfers that follow.
+        let server = Server::start(Config {
+            size,
+            throttle: Some(64 * MIB),
+            stall: Some((0, MIB)),
+            ..Config::default()
+        });
+        let directory = TempDir::new("stop-after-cut");
+        let output = directory.0.join("payload.bin");
+        let (first, _) = download_stopped_after_a_cut(&server, &output, size, |_, _| {
+            thread::sleep(Duration::from_millis(delay))
+        });
+        assert_stop_is_exact(&server, &output, first, &expected, &label);
+    }
+}
+
+#[test]
+fn a_record_written_while_a_lease_is_cut_claims_only_flushed_bytes_and_resumes_exactly() {
+    let size = 16 * MIB + 4_097;
+    let expected = pattern(1, size);
+    // The lease that is cut goes on at 1 MiB/s, so the download lasts until the scheduler has
+    // started a cycle that records what the other connection fetched.
+    let server = Server::start(Config {
+        size,
+        throttle: Some(64 * MIB),
+        slow_connection: Some((0, MIB)),
+        stall: Some((0, MIB / 4)),
+        ..Config::default()
+    });
+    checkpoint_every(Duration::from_millis(20), 64 * 1024);
+    let directory = TempDir::new("record-after-cut");
+    let output = directory.0.join("payload.bin");
+    let (first, image) = download_stopped_after_a_cut(&server, &output, size, |cut, finished| {
+        // The first record that holds bytes of the range that was cut off, read as a crash
+        // would find it: the record, then the part file.
+        loop {
+            if let Some(state) = read_state(&state_path(&output)) {
+                if state.completed.iter().any(|range| range.end > cut) {
+                    return fs::read(part_path(&output)).ok().map(|part| (state, part));
+                }
+            }
+            if finished.load(Ordering::Acquire) {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let (state, part) = image
+        .flatten()
+        .expect("no record held bytes of the back of the cut lease");
+    assert_claims_are_exact(&state, &part, &expected);
+    assert_stop_is_exact(&server, &output, first, &expected, "the stop");
+
+    let copy = TempDir::new("crash-image");
+    let image_output = copy.0.join("payload.bin");
+    fs::write(part_path(&image_output), &part).unwrap();
+    write_state(&state_path(&image_output), &state).unwrap();
+    let recorded = recorded_ranges(&image_output);
+    resume_exactly(&server, &image_output, &recorded, &expected, "the image");
+}
+
+#[test]
+fn a_source_that_changes_before_the_back_of_a_lease_is_requested_is_never_mixed_into_the_file() {
+    let size = 12 * MIB + 4_097;
+    for ignore_if_range in [false, true] {
+        let label = format!("the server ignores If-Range: {ignore_if_range}");
+        // The HEAD (request 0), the probe (1) and the two leases (2 and 3) see version 1. The
+        // request for the back of the stalled lease is the fifth and sees version 2.
+        let server = Server::start(Config {
+            size,
+            throttle: Some(24 * MIB),
+            stall: Some((0, MIB)),
+            switch_version_after: Some(4),
+            ignore_if_range,
+            ..Config::default()
+        });
+        checkpoint_every(NEVER, u64::MAX);
+        let directory = TempDir::new("changed-at-cut");
+        let output = directory.0.join("payload.bin");
+        let result = fetch(
+            &request_for(&server),
+            &output,
+            &TransferControl::default(),
+            2,
+            2,
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+        assert_file_is(&result.path, &pattern(2, size), &label);
+        assert!(!part_path(&output).exists() && !state_path(&output).exists());
+
+        server.wait_idle();
+        let log = server.log();
+        let found = steals(&log, size);
+        assert_eq!(found.len(), 1, "{label}: {found:?}");
+        let thief = log
+            .iter()
+            .position(|entry| {
+                entry.range == Some(format!("bytes={}-{}", found[0].thief.0, size - 1))
+            })
+            .unwrap();
+        assert_eq!(thief, 4, "{label}: {log:?}");
+        // The request for the back of the lease carries the validator of the record, and the
+        // answer of another version is not taken.
+        assert_eq!(log[thief].if_range.as_deref(), Some("\"v1\""), "{label}");
+        assert_eq!(
+            log[thief].status,
+            if ignore_if_range { 206 } else { 200 },
+            "{label}"
+        );
+        // The bytes of version 1 are discarded and the file comes whole from one request.
+        let last = log.last().unwrap();
+        assert_eq!((last.method.as_str(), last.range.as_deref()), ("GET", None));
+    }
 }
 
 const BENCH_SIZE: u64 = 128 * MIB;

@@ -29,6 +29,9 @@ const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 const IO_BUFFER: usize = 1024 * 1024;
 const STATE_VERSION: u8 = 3;
+// A lease is shorter than `MAX_SEGMENT_SIZE + MIN_SEGMENT_SIZE`, and an `Allowance` counts the
+// bytes of a lease in 32 bits.
+const _: () = assert!(MAX_SEGMENT_SIZE + MIN_SEGMENT_SIZE <= u32::MAX as u64);
 
 /// When written data is made durable and the resume state is updated: after `interval`, or
 /// once `bytes` are waiting, whichever comes first. A crash or power loss costs about that
@@ -141,12 +144,39 @@ impl Steps {
     fn pause(&self) {}
 }
 
+/// Where the workers of a download wrote, as the offset and length of each write, kept for
+/// tests.
+#[derive(Clone, Default)]
+struct Writes(#[cfg(test)] Arc<std::sync::Mutex<Vec<(u64, u64)>>>);
+
+impl Writes {
+    #[cfg(test)]
+    fn current() -> Self {
+        Self(TEST_WRITES.with(Clone::clone))
+    }
+
+    #[cfg(not(test))]
+    fn current() -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    fn note(&self, offset: u64, length: u64) {
+        self.0.lock().unwrap().push((offset, length));
+    }
+
+    #[cfg(not(test))]
+    fn note(&self, _offset: u64, _length: u64) {}
+}
+
 #[cfg(test)]
 thread_local! {
     /// Replaces the cadence of the downloads that the current test thread starts.
     static TEST_CADENCE: std::cell::Cell<Option<Cadence>> = const { std::cell::Cell::new(None) };
     /// The steps of the cycles of the downloads that the current test thread ran.
     static TEST_STEPS: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::default();
+    /// The writes of the workers of the downloads that the current test thread ran.
+    static TEST_WRITES: Arc<std::sync::Mutex<Vec<(u64, u64)>>> = Arc::default();
     /// How long the cycles of the downloads that the current test thread starts wait between
     /// their flush and their record.
     static TEST_PAUSE: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
@@ -1752,8 +1782,109 @@ enum RangeEvent {
     },
 }
 
+/// What an `Allowance` holds at one moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Standing {
+    /// Bytes the worker has claimed from the front of the lease.
+    claimed: u64,
+    /// The size of the lease, which a cut shortens.
+    size: u64,
+}
+
+impl Standing {
+    fn pack(self) -> u64 {
+        (self.claimed << 32) | self.size
+    }
+
+    fn unpack(word: u64) -> Self {
+        Self {
+            claimed: word >> 32,
+            size: word & u64::from(u32::MAX),
+        }
+    }
+
+    /// Bytes of the lease that the worker has not claimed.
+    fn to_come(self) -> u64 {
+        self.size - self.claimed
+    }
+
+    /// The size to cut the lease to so that its back half goes to another worker. `None` when
+    /// that half would be smaller than `MIN_SEGMENT_SIZE`, the smallest piece the scheduler
+    /// cuts from a range that no worker has taken (`range_can_split`): a request for less is
+    /// not worth its round trip, and the worker that keeps the front keeps at least as much.
+    fn cut_size(self) -> Option<u64> {
+        let back = self.to_come() / 2;
+        (back >= MIN_SEGMENT_SIZE).then(|| self.size - back)
+    }
+}
+
+/// The part of a lease that its worker may still write, in one word so that the worker
+/// claiming bytes and the scheduler cutting the back off the lease are ordered by a single
+/// compare-and-swap: a byte belongs to the worker or to the range cut off, never to both,
+/// whichever comes first. A worker claims a chunk before it writes it, so the chunk in flight
+/// counts as claimed, and it never writes beyond the size at the moment it claims. The high
+/// half of the word is the bytes claimed, the low half the size; both count from the start of
+/// the lease.
+struct Allowance(AtomicU64);
+
+impl Allowance {
+    fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    /// Starts a lease of `size` bytes for the worker, which is idle.
+    fn open(&self, size: u64) {
+        let size = u32::try_from(size).expect("a lease is shorter than 4 GiB");
+        let standing = Standing {
+            claimed: 0,
+            size: u64::from(size),
+        };
+        self.0.store(standing.pack(), Ordering::Release);
+    }
+
+    fn view(&self) -> Standing {
+        Standing::unpack(self.0.load(Ordering::Acquire))
+    }
+
+    /// Claims up to `wanted` bytes from the front of what is left and returns how many.
+    fn take(&self, wanted: u64) -> u64 {
+        let mut word = self.0.load(Ordering::Acquire);
+        loop {
+            let seen = Standing::unpack(word);
+            let granted = wanted.min(seen.to_come());
+            if granted == 0 {
+                return 0;
+            }
+            let next = Standing {
+                claimed: seen.claimed + granted,
+                ..seen
+            };
+            match self.0.compare_exchange_weak(
+                word,
+                next.pack(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return granted,
+                Err(current) => word = current,
+            }
+        }
+    }
+
+    /// Cuts the lease to `size` if it still stands as `seen`. `false` when the worker has
+    /// claimed more, or the lease was cut, since `seen` was read.
+    fn cut(&self, seen: Standing, size: u64) -> bool {
+        debug_assert!(seen.claimed <= size && size < seen.size);
+        let cut = Standing { size, ..seen };
+        self.0
+            .compare_exchange(seen.pack(), cut.pack(), Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
 /// A range handed to a worker, of which the first `taken` bytes are accounted for: they are in
-/// the resume state, in the cycle that is running, or waiting for the next one.
+/// the resume state, in the cycle that is running, or waiting for the next one. `range` ends
+/// where the worker's allowance does, so a lease that was cut covers only the part it keeps.
 struct Lease {
     range: ByteRange,
     taken: u64,
@@ -1797,6 +1928,10 @@ struct Snapshot {
 /// everything and the flushes of the worker handles that follow hold their workers back for
 /// well under a millisecond. Where a flush covers only the data of its own handle, each worker
 /// waits for the flush of its own data and the record stays correct.
+///
+/// A running lease can be cut (`split`). Its range then ends where its worker's allowance does,
+/// so the record never lists a byte of the lease beyond the cut, and the range cut off is a new
+/// lease for an idle worker, with nothing recorded.
 struct Checkpoints {
     cycle: Cycle<Snapshot>,
     /// The record's identity; `completed` is filled in at each write.
@@ -1809,6 +1944,7 @@ struct Checkpoints {
     unrecorded: Vec<ByteRange>,
     leases: Vec<Option<Lease>>,
     written: Vec<Arc<AtomicU64>>,
+    allowances: Vec<Arc<Allowance>>,
     pace: Pace,
 }
 
@@ -1838,6 +1974,7 @@ impl Checkpoints {
             unrecorded: Vec::new(),
             leases: (0..workers).map(|_| None).collect(),
             written: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
+            allowances: (0..workers).map(|_| Arc::new(Allowance::new())).collect(),
             pace: Pace::new(),
         }
     }
@@ -1847,10 +1984,46 @@ impl Checkpoints {
         self.written[worker].clone()
     }
 
+    /// The allowance that bounds what `worker` writes of its lease.
+    fn allowance(&self, worker: usize) -> Arc<Allowance> {
+        self.allowances[worker].clone()
+    }
+
     fn assign(&mut self, worker: usize, range: ByteRange) {
-        // The worker is idle, so nothing writes its counter while it is reset.
+        // The worker is idle, so nothing writes its counter or claims from its allowance while
+        // they are reset.
         self.written[worker].store(0, Ordering::Release);
+        self.allowances[worker].open(range.len());
         self.leases[worker] = Some(Lease { range, taken: 0 });
+    }
+
+    /// Cuts the back half off the running lease that has the most bytes still to come, for a
+    /// worker with nothing to do, and returns the range cut off; `None` when no lease has at
+    /// least twice `MIN_SEGMENT_SIZE` to come. The lease keeps the front: its worker writes no
+    /// byte beyond the cut, however many are already in flight, and the cut is never before the
+    /// last byte it has claimed.
+    fn split(&mut self) -> Option<ByteRange> {
+        loop {
+            let (worker, seen) = self
+                .leases
+                .iter()
+                .enumerate()
+                .filter(|(_, lease)| lease.is_some())
+                .map(|(worker, _)| (worker, self.allowances[worker].view()))
+                .max_by_key(|(_, seen)| seen.to_come())?;
+            let size = seen.cut_size()?;
+            if !self.allowances[worker].cut(seen, size) {
+                // The worker claimed more in the meantime; look again.
+                continue;
+            }
+            let range = &mut self.leases[worker].as_mut()?.range;
+            let back = ByteRange {
+                start: range.start + size,
+                end: range.end,
+            };
+            range.end = back.start;
+            return Some(back);
+        }
     }
 
     fn recorded_bytes(&self) -> u64 {
@@ -2098,6 +2271,7 @@ fn download_segmented(
     let busy = Arc::new(AtomicUsize::new(0));
     let mut senders = Vec::with_capacity(worker_count);
     let mut handles = Vec::with_capacity(worker_count);
+    let writes = Writes::current();
     for (worker, file) in worker_files.into_iter().enumerate() {
         let (command_tx, command_rx) = mpsc::sync_channel::<RangeCommand>(1);
         senders.push(command_tx);
@@ -2105,9 +2279,11 @@ fn download_segmented(
         let request = request.clone();
         let remote = remote.clone();
         let written = ledger.counter(worker);
+        let allowance = ledger.allowance(worker);
         let control = control.clone();
         let abort = abort.clone();
         let busy = busy.clone();
+        let writes = writes.clone();
         let network = NetworkGovernor::clone(network);
         handles.push(thread::spawn(move || {
             let mut downloader = DynamicRangeWorker {
@@ -2117,9 +2293,11 @@ fn download_segmented(
                 remote: &remote,
                 file: &file,
                 written: &written,
+                allowance: &allowance,
                 control: &control,
                 abort: &abort,
                 busy: &busy,
+                writes: &writes,
             };
             loop {
                 let command = match command_rx.recv_timeout(RANGE_WORKER_IDLE_TIMEOUT) {
@@ -2167,26 +2345,37 @@ fn download_segmented(
         }
 
         let now = Instant::now();
-        while active < effective_workers && !idle.is_empty() && !pending.is_empty() {
+        while active < effective_workers && !idle.is_empty() {
             if now < retry_not_before {
                 break;
             }
-            let needs_split = pending
-                .iter()
-                .map(|work| work.range.len())
-                .max()
-                .is_some_and(|length| range_can_split(length, lease_size));
-            if needs_split
-                && last_split
-                    .map(|last| last.elapsed() < MIN_SPLIT_INTERVAL)
-                    .unwrap_or(false)
-            {
-                break;
-            }
-            let work = take_largest_range(&mut pending, lease_size);
-            if needs_split {
+            let split_recently = last_split
+                .map(|last| last.elapsed() < MIN_SPLIT_INTERVAL)
+                .unwrap_or(false);
+            let work = if pending.is_empty() {
+                // No range is left to hand out, so the idle worker takes the back of the running
+                // lease with the most bytes still to come.
+                if split_recently {
+                    break;
+                }
+                let Some(range) = ledger.split() else { break };
                 last_split = Some(Instant::now());
-            }
+                RangeWork { range, attempts: 0 }
+            } else {
+                let needs_split = pending
+                    .iter()
+                    .map(|work| work.range.len())
+                    .max()
+                    .is_some_and(|length| range_can_split(length, lease_size));
+                if needs_split && split_recently {
+                    break;
+                }
+                let work = take_largest_range(&mut pending, lease_size);
+                if needs_split {
+                    last_split = Some(Instant::now());
+                }
+                work
+            };
             let worker = idle.pop().expect("idle worker disappeared");
             ledger.assign(worker, work.range);
             busy.fetch_add(1, Ordering::AcqRel);
@@ -2211,7 +2400,11 @@ fn download_segmented(
             .map(|last| MIN_SPLIT_INTERVAL.saturating_sub(now.duration_since(last)))
             .unwrap_or(Duration::ZERO);
         let retry_wait = retry_not_before.saturating_duration_since(now);
-        let can_dispatch = active < effective_workers && !idle.is_empty() && !pending.is_empty();
+        // With no range left to hand out, the next cut of a running lease is what an idle worker
+        // waits for, and only the split interval can hold it back.
+        let can_dispatch = active < effective_workers
+            && !idle.is_empty()
+            && (!pending.is_empty() || !split_wait.is_zero());
         let wait = if can_dispatch {
             // A live worker must not turn the split interval into a 200 ms
             // dispatch delay; wake as soon as the next eligible lease may start.
@@ -2445,9 +2638,12 @@ struct DynamicRangeWorker<'a> {
     file: &'a File,
     /// Bytes of the current lease written so far, read by the scheduler's checkpoints.
     written: &'a AtomicU64,
+    /// How much of the current lease this worker may write; the scheduler can cut it short.
+    allowance: &'a Allowance,
     control: &'a TransferControl,
     abort: &'a AtomicBool,
     busy: &'a AtomicUsize,
+    writes: &'a Writes,
 }
 
 impl DynamicRangeWorker<'_> {
@@ -2467,6 +2663,7 @@ impl DynamicRangeWorker<'_> {
         let request = self.request;
         let remote = self.remote;
         let (file, counter) = (self.file, self.written);
+        let (allowance, writes) = (self.allowance, self.writes);
         let control = self.control;
         let busy = self.busy;
         // Do not reset a governed handle: libcurl reset clears its socket callbacks.
@@ -2517,20 +2714,29 @@ impl DynamicRangeWorker<'_> {
                     if data.len() as u64 > remaining {
                         return Ok(0);
                     }
-                    if let Err(error) = write_all_at(file, data, range.start + written) {
-                        *write_error.borrow_mut() = Some(error);
-                        return Ok(0);
+                    // The bytes are claimed before they are written: a cut of the lease then
+                    // leaves them to this worker, and what lies beyond the cut is not written.
+                    let allowed = allowance.take(data.len() as u64) as usize;
+                    if allowed > 0 {
+                        if let Err(error) =
+                            write_all_at(file, &data[..allowed], range.start + written)
+                        {
+                            *write_error.borrow_mut() = Some(error);
+                            return Ok(0);
+                        }
+                        writes.note(range.start + written, allowed as u64);
+                        written += allowed as u64;
+                        counter.store(written, Ordering::Release);
+                        throttle(
+                            control,
+                            busy.load(Ordering::Acquire) as u64,
+                            &mut throttle_started,
+                            &mut throttle_cost,
+                            allowed as u64,
+                        );
                     }
-                    written += data.len() as u64;
-                    counter.store(written, Ordering::Release);
-                    throttle(
-                        control,
-                        busy.load(Ordering::Acquire) as u64,
-                        &mut throttle_started,
-                        &mut throttle_cost,
-                        data.len() as u64,
-                    );
-                    Ok(data.len())
+                    // Data beyond a cut stops the transfer, and that completes the lease.
+                    Ok(if allowed < data.len() { 0 } else { allowed })
                 })
                 .map_err(anyhow::Error::from)?;
             transfer
@@ -2588,26 +2794,32 @@ impl DynamicRangeWorker<'_> {
         if !response_allows_body(&headers, expected) {
             return Err(range_refusal(&headers));
         }
+        // The scheduler may have cut the lease short of the range that was requested.
+        let size = allowance.view().size;
         if let Err(error) = perform_result {
-            return Err(AttemptFailure::RetryableTransport(
-                governed_transport_error(
-                    easy,
-                    error,
-                    crate::i18n::ui(
-                        "Ağ aktarımı tamamlanamadı",
-                        "The network transfer did not complete",
+            // The write callback ends the transfer when data arrives beyond a cut, which completes
+            // the lease once every byte up to the cut is written.
+            if size == range.len() || written != size {
+                return Err(AttemptFailure::RetryableTransport(
+                    governed_transport_error(
+                        easy,
+                        error,
+                        crate::i18n::ui(
+                            "Ağ aktarımı tamamlanamadı",
+                            "The network transfer did not complete",
+                        ),
                     ),
-                ),
-            ));
+                ));
+            }
         }
-        if written != range.len() {
+        if written != size {
             return Err(AttemptFailure::Other(anyhow!(
                 "{}",
                 crate::i18n::ui_format!(
                     "Byte aralığı eksik kaldı: {0}/{1}",
                     "Byte range incomplete: {0}/{1}",
                     written,
-                    range.len()
+                    size
                 )
             )));
         }
@@ -4347,6 +4559,7 @@ pub(crate) fn migrate_legacy_parts(original: &Path, scratch: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_http::Sequence;
     use std::{
         io::{BufRead, BufReader, Read, Write},
         net::{SocketAddr, TcpListener, TcpStream},
@@ -6569,6 +6782,297 @@ mod tests {
             "{:#?}",
             server.commands()
         );
+    }
+
+    const MIB: u64 = 1024 * 1024;
+
+    #[test]
+    fn a_lease_is_cut_only_while_its_back_half_is_worth_a_request() {
+        let standing = |to_come: u64| Standing {
+            claimed: 5,
+            size: 5 + to_come,
+        };
+        assert_eq!(standing(0).cut_size(), None);
+        assert_eq!(standing(2 * MIN_SEGMENT_SIZE - 1).cut_size(), None);
+        // The back half is exactly the smallest piece that is cut from a range no worker has
+        // taken: the worker that keeps the front keeps as much.
+        assert_eq!(
+            standing(2 * MIN_SEGMENT_SIZE).cut_size(),
+            Some(5 + MIN_SEGMENT_SIZE)
+        );
+        // An odd byte stays with the worker that keeps the front.
+        assert_eq!(
+            standing(2 * MIN_SEGMENT_SIZE + 1).cut_size(),
+            Some(5 + MIN_SEGMENT_SIZE + 1)
+        );
+    }
+
+    #[test]
+    fn a_worker_claims_nothing_beyond_the_size_its_lease_was_cut_to() {
+        let allowance = Allowance::new();
+        allowance.open(10 * MIB);
+        assert_eq!(allowance.take(3 * MIB), 3 * MIB);
+        let seen = allowance.view();
+        assert!(allowance.cut(seen, 7 * MIB));
+        assert_eq!(
+            allowance.view(),
+            Standing {
+                claimed: 3 * MIB,
+                size: 7 * MIB
+            }
+        );
+        // A chunk that crosses the cut is granted only up to it, and nothing after that.
+        assert_eq!(allowance.take(100 * MIB), 4 * MIB);
+        assert_eq!(allowance.take(1), 0);
+    }
+
+    #[test]
+    fn a_cut_made_on_a_view_that_is_out_of_date_is_refused() {
+        let allowance = Allowance::new();
+        allowance.open(10 * MIB);
+        let seen = allowance.view();
+        // The worker claims a chunk after the scheduler looked and before it cuts.
+        assert_eq!(allowance.take(6 * MIB), 6 * MIB);
+        assert!(!allowance.cut(seen, 5 * MIB));
+        assert_eq!(
+            allowance.view(),
+            Standing {
+                claimed: 6 * MIB,
+                size: 10 * MIB
+            }
+        );
+        // A view taken afterwards is cut beyond the claim.
+        let seen = allowance.view();
+        let size = seen.cut_size().unwrap();
+        assert!(allowance.cut(seen, size));
+        assert!(size >= 6 * MIB);
+    }
+
+    #[test]
+    fn a_cut_lease_cannot_be_cut_twice_from_one_view() {
+        let allowance = Allowance::new();
+        allowance.open(12 * MIB);
+        let seen = allowance.view();
+        assert!(allowance.cut(seen, 9 * MIB));
+        assert!(!allowance.cut(seen, 8 * MIB));
+        assert_eq!(allowance.view().size, 9 * MIB);
+    }
+
+    #[test]
+    fn the_claims_of_a_worker_and_the_range_cut_off_make_the_lease_exactly_once() {
+        let mut random = Sequence::new(0x2545_F491_4F6C_DD1D);
+        let mut cuts = 0;
+        for _ in 0..300 {
+            let size = 2 * MIN_SEGMENT_SIZE + random.below(6 * MIN_SEGMENT_SIZE);
+            let allowance = Allowance::new();
+            allowance.open(size);
+            let mut claims = Vec::new();
+            let mut position = 0;
+            let mut claim = |allowance: &Allowance, position: &mut u64, wanted: u64| {
+                let granted = allowance.take(wanted);
+                claims.push((*position, granted));
+                *position += granted;
+                granted
+            };
+            // The scheduler looks after the worker has claimed an arbitrary number of chunks.
+            let before_the_look = random.below(size / 2);
+            while position < before_the_look {
+                claim(&allowance, &mut position, 1 + random.below(65_536));
+            }
+            let seen = allowance.view();
+            let Some(point) = seen.cut_size() else {
+                continue;
+            };
+            cuts += 1;
+            assert!(
+                point >= position,
+                "the cut {point} is before the claim {position}"
+            );
+            assert!(allowance.cut(seen, point));
+            while claim(&allowance, &mut position, 1 + random.below(65_536)) > 0 {}
+            // The worker's claims end exactly at the cut; the range cut off starts there.
+            let mut tiles = claims
+                .into_iter()
+                .filter(|&(_, length)| length > 0)
+                .collect::<Vec<_>>();
+            tiles.push((point, size - point));
+            let mut next = 0;
+            for (start, length) in tiles {
+                assert_eq!(start, next);
+                next = start + length;
+            }
+            assert_eq!(next, size);
+        }
+        assert!(cuts > 100, "only {cuts} of 300 leases could be cut");
+    }
+
+    #[test]
+    fn a_cut_that_races_with_the_claims_of_a_worker_never_gives_a_byte_to_both() {
+        let mut random = Sequence::new(0x9E37_79B9_7F4A_7C15);
+        let mut cuts = 0;
+        for _ in 0..400 {
+            let size = 8 * MIB;
+            let allowance = Arc::new(Allowance::new());
+            allowance.open(size);
+            let chunks = Arc::new(AtomicU64::new(0));
+            let worker = {
+                let (allowance, chunks) = (allowance.clone(), chunks.clone());
+                let mut random = Sequence::new(random.next_u64());
+                thread::spawn(move || {
+                    let mut claimed = 0;
+                    loop {
+                        let granted = allowance.take(1 + random.below(2_048));
+                        if granted == 0 {
+                            return claimed;
+                        }
+                        claimed += granted;
+                        chunks.fetch_add(1, Ordering::AcqRel);
+                    }
+                })
+            };
+            // The scheduler cuts once the worker has claimed an arbitrary number of chunks,
+            // while the worker goes on claiming on its own thread.
+            let after = random.below(2_000);
+            while chunks.load(Ordering::Acquire) < after {
+                std::hint::spin_loop();
+            }
+            let cut = loop {
+                let seen = allowance.view();
+                let Some(point) = seen.cut_size() else {
+                    break None;
+                };
+                if allowance.cut(seen, point) {
+                    break Some(point);
+                }
+            };
+            let claimed = worker.join().unwrap();
+            match cut {
+                Some(point) => {
+                    cuts += 1;
+                    assert_eq!(claimed, point, "the worker and the cut disagree");
+                }
+                None => assert_eq!(claimed, size),
+            }
+        }
+        assert!(cuts > 100, "only {cuts} of 400 races ended in a cut");
+    }
+
+    /// A ledger of `workers` writers over one part file.
+    fn ledger_over(directory: &TestDirectory, workers: usize, total: u64) -> Checkpoints {
+        let part = directory.0.join("payload.bin.ssdownload.part");
+        let open = || {
+            OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&part)
+                .unwrap()
+        };
+        Checkpoints::new(
+            open(),
+            (0..workers).map(|_| Arc::new(open())).collect(),
+            &directory.0.join("payload.bin.ssdownload.state"),
+            ResumeState::default(),
+            Vec::new(),
+            total,
+        )
+    }
+
+    fn range(start: u64, end: u64) -> ByteRange {
+        ByteRange { start, end }
+    }
+
+    #[test]
+    fn the_lease_with_the_most_bytes_to_come_is_cut_and_its_back_half_is_returned() {
+        let directory = TestDirectory::new("split-largest");
+        let mut ledger = ledger_over(&directory, 3, 24 * MIB);
+        for worker in 0..3u64 {
+            ledger.assign(
+                worker as usize,
+                range(worker * 8 * MIB, (worker + 1) * 8 * MIB),
+            );
+        }
+        assert_eq!(ledger.allowance(0).take(3 * MIB), 3 * MIB);
+        assert_eq!(ledger.allowance(1).take(6 * MIB), 6 * MIB);
+
+        // Worker 2 has the most to come, all 8 MiB: it keeps the front half.
+        assert_eq!(ledger.split(), Some(range(20 * MIB, 24 * MIB)));
+        assert_eq!(
+            ledger.leases[2].as_ref().unwrap().range,
+            range(16 * MIB, 20 * MIB)
+        );
+        assert_eq!(ledger.allowance(2).view().size, 4 * MIB);
+        // Now worker 0 has the most to come, 5 MiB; the odd half goes to the worker that
+        // keeps the front.
+        assert_eq!(ledger.split(), Some(range(5 * MIB + MIB / 2, 8 * MIB)));
+        // Worker 2 has 4 MiB to come, and its back half is 2 MiB.
+        assert_eq!(ledger.split(), Some(range(18 * MIB, 20 * MIB)));
+        // No lease has 4 MiB to come any more.
+        assert_eq!(ledger.split(), None);
+    }
+
+    #[test]
+    fn a_cut_lease_is_recorded_and_asked_for_again_only_up_to_its_cut() {
+        let directory = TestDirectory::new("split-record");
+        let whole = range(0, 8 * MIB);
+        // With 1 MiB claimed, 7 MiB are to come and the back 3.5 MiB are cut off.
+        let cut_at = 4 * MIB + MIB / 2;
+        let back = range(cut_at, 8 * MIB);
+
+        let mut ledger = ledger_over(&directory, 2, 8 * MIB);
+        ledger.assign(0, whole);
+        assert_eq!(ledger.allowance(0).take(MIB), MIB);
+        ledger.counter(0).store(MIB, Ordering::Release);
+        assert_eq!(ledger.split(), Some(back));
+        // The range cut off is a lease of its own with nothing recorded, and a record lists
+        // each lease from its start up to what it wrote, never beyond the cut.
+        ledger.assign(1, back);
+        ledger.counter(1).store(MIB, Ordering::Release);
+        assert_eq!(ledger.allowance(1).take(MIB), MIB);
+        ledger.allowance(0).take(MIB);
+        ledger.counter(0).store(2 * MIB, Ordering::Release);
+        let (record, _) = ledger.snapshot().unwrap().unwrap();
+        assert_eq!(
+            record.completed,
+            [range(0, 2 * MIB), range(cut_at, cut_at + MIB)]
+        );
+        // The cut lease fails: only the part before the cut is asked for again.
+        assert_eq!(ledger.abandon(0), Some(range(2 * MIB, cut_at)));
+
+        // A cut lease that completes puts its front part, and no more, among the ranges that
+        // wait for the next cycle.
+        let mut ledger = ledger_over(&directory, 1, 8 * MIB);
+        ledger.assign(0, whole);
+        assert_eq!(ledger.split(), Some(range(4 * MIB, 8 * MIB)));
+        assert_eq!(ledger.allowance(0).take(8 * MIB), 4 * MIB);
+        ledger.counter(0).store(4 * MIB, Ordering::Release);
+        ledger.finish(0);
+        assert_eq!(ledger.unrecorded, [range(0, 4 * MIB)]);
+    }
+
+    #[test]
+    fn a_chunk_in_flight_counts_as_claimed_when_a_lease_is_cut() {
+        let directory = TestDirectory::new("split-in-flight");
+        let whole = range(0, 8 * MIB);
+        let mut ledger = ledger_over(&directory, 1, 8 * MIB);
+        ledger.assign(0, whole);
+        // A 5 MiB chunk is claimed and not yet written, so the published count is still 0; only
+        // 3 MiB of the lease are left to come, too few to cut.
+        assert_eq!(ledger.allowance(0).take(5 * MIB), 5 * MIB);
+        assert_eq!(ledger.counter(0).load(Ordering::Acquire), 0);
+        assert_eq!(ledger.split(), None);
+
+        // With a 3 MiB chunk in flight 5 MiB are left, and the cut lies beyond the chunk.
+        let mut ledger = ledger_over(&directory, 1, 8 * MIB);
+        ledger.assign(0, whole);
+        assert_eq!(ledger.allowance(0).take(3 * MIB), 3 * MIB);
+        assert_eq!(ledger.counter(0).load(Ordering::Acquire), 0);
+        let back = ledger.split().expect("5 MiB are left to come");
+        assert!(
+            back.start >= 3 * MIB,
+            "{back:?} overlaps the chunk in flight"
+        );
+        assert_eq!(back.end, 8 * MIB);
     }
 }
 
