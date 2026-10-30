@@ -36,6 +36,12 @@ The HLS end-to-end tests download from a local server through the media tools th
 cargo test --lib hls_tests -- --ignored
 ```
 
+The download benchmarks (`bench_*` in `src/transfer/loopback.rs`) fetch a 128 MiB file from the throttled loopback test server in `src/test_http.rs` and check its SHA-256 each time. They take several minutes, run only on request and print seconds and MiB/s per scenario; run them one at a time:
+
+```powershell
+cargo test --lib bench_ -- --ignored --nocapture --test-threads=1
+```
+
 ## Code layout
 
 ```text
@@ -48,6 +54,7 @@ src/gui/native/      The Win32 interface
 src/i18n.rs          Interface languages; src/i18n_catalog.rs is generated from i18n/<code>.json
 src/bridge.rs        Native messaging and the local named pipe
 src/update.rs        Signed update feed
+src/test_http.rs     Configurable loopback HTTP server for tests (test builds only)
 browser/chromium/    The Chrome/Edge extension (Manifest V3), loadable as is
 browser/tests/       Extension tests (node:test, no dependencies)
 packaging/           NSIS installer and browser registration scripts

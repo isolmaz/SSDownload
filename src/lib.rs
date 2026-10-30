@@ -19,6 +19,8 @@ pub(crate) mod proxy;
 mod recovery;
 pub mod secure;
 pub mod store;
+#[cfg(test)]
+mod test_http;
 pub mod tools;
 pub mod transfer;
 pub mod update;
