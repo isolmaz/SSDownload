@@ -64,6 +64,8 @@ const MAX_PAGE_HTML: usize = 256 * 1024;
 /// mirror what the extension itself enforces before it sends anything.
 const MAX_BROWSER_COOKIES: usize = 500;
 const MAX_BROWSER_FILENAME: usize = 1024;
+/// Most request ids one `add_status` question may carry.
+const MAX_ADD_STATUS_IDS: usize = 100;
 const PIPE_WORKERS: u32 = 8;
 const PIPE_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(15);
@@ -1161,6 +1163,12 @@ fn validate_browser_action(action: &mut Action) -> Result<()> {
         Action::ShowWindow => {}
         Action::InspectStatus { request_id }
             if !request_id.is_empty() && request_id.len() <= 128 => {}
+        Action::AddStatus { request_ids }
+            if !request_ids.is_empty()
+                && request_ids.len() <= MAX_ADD_STATUS_IDS
+                && request_ids
+                    .iter()
+                    .all(|request_id| !request_id.is_empty() && request_id.len() <= 128) => {}
         _ => crate::bail_code!(
             crate::error_codes::BRG_004,
             "{}",
@@ -1398,11 +1406,15 @@ fn record_browser_action_failure(
 }
 
 /// Whether a browser action may start the desktop when nothing answers. The extension's
-/// background probes (capabilities at every page load, session-log batches) are passive: a
-/// desktop the user quit must stay closed, and those probes report "not running" instead.
-/// Only an explicit user action (picker, add, show window, transfer) starts it.
+/// background probes (capabilities at every page load, session-log batches, the state of a
+/// download it handed over) are passive: a desktop the user quit must stay closed, and those
+/// probes report "not running" instead. Only an explicit user action (picker, add, show window,
+/// transfer) starts it.
 fn starts_desktop(action: &Action) -> bool {
-    !matches!(action, Action::Capabilities | Action::Log { .. })
+    !matches!(
+        action,
+        Action::Capabilities | Action::Log { .. } | Action::AddStatus { .. }
+    )
 }
 
 /// Runs the browser Native Messaging stdio loop. Multiple framed messages are supported.
@@ -2010,6 +2022,53 @@ mod tests {
         assert!(starts_desktop(&Action::InspectStatus {
             request_id: "inspect-1".into()
         }));
+        assert!(!starts_desktop(&Action::AddStatus {
+            request_ids: vec!["add-1".into()]
+        }));
+    }
+
+    /// The wire message is the one the extension's `sendNative({type:"add_status",request_ids})`
+    /// writes; the bridge lets exactly that through, a bounded batch of identifiers of the
+    /// length the engine accepts for an add.
+    #[test]
+    fn the_extension_may_ask_for_the_status_of_its_own_adds_with_a_bounded_batch_of_request_ids() {
+        let wire = |ids: &[String]| {
+            let body = serde_json::json!({
+                "version": 2,
+                "action": {"type": "add_status", "request_ids": ids},
+            })
+            .to_string();
+            serde_json::from_str::<WireRequest>(&body).expect("wire message")
+        };
+        let permitted = |ids: &[String]| {
+            let mut action = wire(ids).action.expect("action");
+            assert!(matches!(action, Action::AddStatus { .. }));
+            validate_browser_action(&mut action).is_ok()
+        };
+        let one = |id: &str| vec![id.to_owned()];
+        assert!(permitted(&one("0b5e6e0e-1f43-4c19-a6a6-6a9d6b1b4f55")));
+        assert!(permitted(&one(&"x".repeat(128))));
+        assert!(!permitted(&one("")));
+        assert!(!permitted(&one(&"x".repeat(129))));
+        assert!(!permitted(&[]), "a batch asks about something");
+
+        let ids =
+            |count: usize| -> Vec<String> { (0..count).map(|n| format!("add-{n}")).collect() };
+        assert!(permitted(&ids(100)));
+        assert!(!permitted(&ids(101)));
+        let mut one_bad = ids(5);
+        one_bad[3] = String::new();
+        assert!(!permitted(&one_bad), "every id is validated");
+        one_bad[3] = "x".repeat(129);
+        assert!(!permitted(&one_bad), "every id is validated");
+
+        assert!(
+            serde_json::from_str::<WireRequest>(
+                r#"{"version":2,"action":{"type":"add_status","request_id":"add-1"}}"#
+            )
+            .is_err(),
+            "the batch is the only shape"
+        );
     }
 
     #[test]
@@ -2450,6 +2509,87 @@ mod tests {
             logged_events(&paths).is_empty(),
             "an uneventful host writes no session banner"
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The whole path of an `add_status` question: the host loop validates it, the running
+    /// desktop's pipe answers it, and the reply holds the job's state and nothing about its
+    /// address, name or request.
+    #[test]
+    fn the_host_answers_an_add_status_with_the_allowed_fields_only() {
+        let root = std::env::temp_dir().join(format!(
+            "ssdownload-bridge-add-status-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let app = App::open(paths.clone()).unwrap();
+        start(app.clone()).unwrap();
+        app.dispatch_result(Action::Add {
+            request: AddRequest {
+                url: "https://files.example/SECRET-ADDRESS/report.zip?token=SECRET".into(),
+                kind: crate::model::DownloadKind::File,
+                filename: Some("SECRET-NAME.zip".into()),
+                directory: Some(root.join("SECRET-FOLDER")),
+                referer: Some("https://site.example/SECRET-PAGE".into()),
+                request_id: Some("extension-add-1".into()),
+                // The job waits for its time and performs no network I/O.
+                start_at: Some(chrono::Utc::now().timestamp() + 3_600),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let ask = |request_ids: &[&str]| {
+            let (result, mut replies) = run_host(
+                &paths,
+                &[],
+                &[WireRequest {
+                    version: PROTOCOL_VERSION,
+                    action: Some(Action::AddStatus {
+                        request_ids: request_ids.iter().map(|id| (*id).to_owned()).collect(),
+                    }),
+                }],
+            );
+            result.expect("the host keeps serving");
+            assert_eq!(replies.len(), 1);
+            replies.remove(0)
+        };
+
+        let known = ask(&["extension-add-1"]);
+        assert!(known.ok, "{}", known.message);
+        assert!(known.snapshot.is_none(), "no job list travels with it");
+        assert_eq!(
+            serde_json::to_value(&known.result).unwrap(),
+            serde_json::json!({"add_status": [
+                {"request_id": "extension-add-1", "found": true, "state": "scheduled", "received": false}
+            ]})
+        );
+        assert!(
+            !serde_json::to_string(&known).unwrap().contains("SECRET"),
+            "{known:?}"
+        );
+
+        let batch = ask(&["another-add", "extension-add-1"]);
+        assert!(batch.ok);
+        assert!(batch.snapshot.is_none());
+        assert_eq!(
+            serde_json::to_value(&batch.result).unwrap(),
+            serde_json::json!({"add_status": [
+                {"request_id": "another-add", "found": false, "received": false},
+                {"request_id": "extension-add-1", "found": true, "state": "scheduled", "received": false}
+            ]}),
+            "one entry per id, in the order asked"
+        );
+        assert!(
+            !serde_json::to_string(&batch).unwrap().contains("SECRET"),
+            "{batch:?}"
+        );
+
+        for invalid in [ask(&[""]), ask(&[])] {
+            assert!(!invalid.ok);
+            assert!(invalid.result.is_none());
+        }
+
+        app.shutdown();
         std::fs::remove_dir_all(root).ok();
     }
 }

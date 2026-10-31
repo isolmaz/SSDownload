@@ -955,7 +955,7 @@ function validateCapabilities(response) {
     .filter(job=>job && typeof job.id==="string" && job.id)
     .map(job=>({id:job.id.slice(0,128),title:String(job.title||"").slice(0,180),pageUrl:safeUrl(job.page_url||"")?.href||null}))
     .slice(0,32);
-  return {status:"ready",protocol:2,capabilityVersion:3,siteEntries:value.site_entries===true,browserTakeover:value.browser_takeover===true,
+  return {status:"ready",protocol:2,capabilityVersion:3,siteEntries:value.site_entries===true,browserTakeover:value.browser_takeover===true,addStatus:value.add_status===true,
     usageModes:{video:modes.video,file:modes.file,audio:modes.audio},
     sourceRefreshJobs,onboardingVersion:Number(value.onboarding_version)||0,settingsRevision:Number(value.settings_revision)||0,
     completedJobs:Number.isInteger(value.completed_jobs)?value.completed_jobs:null,checkedAt:Date.now(),error:null};
@@ -1452,6 +1452,7 @@ if (api.alarms?.create) {
     try { api.alarms.create(COMPLETION_ALARM, { periodInMinutes: 1 }); } catch (_) {}
   });
   api.alarms.onAlarm?.addListener(async alarm => {
+    if (alarm?.name === TAKEOVER_ALARM) { runTakeoverCheck().catch(() => {}); return; }
     if (alarm?.name !== COMPLETION_ALARM) return;
     // The alarm wakes a fresh worker: the handoff time it is judged by comes from the session.
     await sessionReady;
@@ -1861,11 +1862,15 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ------------------------------------------------------- browser download takeover
 // Off unless the desktop enables "Take over browser downloads" (capability
-// browser_takeover). An ordinary http(s) file download is paused, handed to the desktop
-// as a file job and erased from Chrome only after the desktop accepted it; a refusal or
-// an unreachable desktop resumes it in Chrome. Incognito, blob/data and extension-made
-// downloads always stay in the browser. Cookies leave the browser on this path only for a
-// site whose session consent the user recorded (`takeoverCookies`); without consent none does.
+// browser_takeover). An ordinary http(s) file download is paused and handed to the desktop
+// as a file job; a refusal or an unreachable desktop resumes it in Chrome. A desktop that
+// answers `add_status` (capability add_status) keeps Chrome's paused copy until the job has
+// received file bytes: only then is the copy erased, and a job that failed before that hands
+// the download back to Chrome (`checkTakeovers`, one question for all waiting copies). An older
+// desktop erases the copy as soon as it accepted the job. Incognito, blob/data and
+// extension-made downloads always stay in the browser. Cookies leave the browser on this path
+// only for a site whose session consent the user recorded (`takeoverCookies`); without consent
+// none does.
 const TAKEOVER_EXTENSIONS = new Set(["7z","aac","apk","avi","bin","bz2","cab","deb","dmg","doc","docx","epub","exe","flac","gz","img","iso","jar","m4a","mkv","mov","mp3","mp4","msi","msix","ogg","pdf","pkg","ppt","pptx","rar","rpm","tar","tgz","torrent","wav","webm","xls","xlsx","xz","zip","zst"]);
 function takeoverExtension(item) {
   const name = String(item?.filename || "").split(/[\\/]/).pop() || pathFilename(item?.finalUrl || item?.url || "") || "";
@@ -1955,9 +1960,162 @@ async function takeOverDownload(item) {
   }
   if (accepted) {
     noteHandoff();
-    try { await invoke(api.downloads, "cancel", item.id); await invoke(api.downloads, "erase", { id: item.id }); } catch (_) {}
+    if (state.addStatus === true) await holdBrowserCopy(item.id, request.request_id, urlHost(address));
+    else await discardBrowserCopy(item.id);
   } else {
     try { await invoke(api.downloads, "resume", item.id); } catch (_) {}
   }
 }
+async function discardBrowserCopy(downloadId) {
+  try { await invoke(api.downloads, "cancel", downloadId); await invoke(api.downloads, "erase", { id: downloadId }); } catch (_) {}
+}
+
+// The paused browser copies that wait for the desktop's job to receive the file, as
+// { downloadId, requestId, host } in storage.local, oldest first and at most TAKEOVER_LIMIT, the
+// most request ids one `add_status` question may carry: a worker restart finds them again, and
+// the one that falls off the end stays paused in the browser. A copy waits as long as its job
+// does (queued, scheduled, held, paused). A browser that quits normally cancels its paused
+// downloads, so only a crash leaves a copy to find again after a browser restart.
+const TAKEOVER_LIMIT = 100;
+const TAKEOVER_ALARM = "ssdownload-takeover-poll";
+const TAKEOVER_POLL_FIRST = 2000;
+const TAKEOVER_POLL_MAX = 30000;
+let takeoverQueue = Promise.resolve();
+let takeoverTimer = null;
+let takeoverDelay = TAKEOVER_POLL_MAX;
+let takeoverRunning = null;
+function validTakeover(entry) {
+  return Number.isInteger(entry?.downloadId) && typeof entry.requestId === "string" && entry.requestId.length > 0 && entry.requestId.length <= 128;
+}
+// Reads, changes and writes the list in turn: two takeovers or a poll never overwrite each other.
+// `change` returns the list unchanged to leave the stored one alone.
+function updateTakeovers(change) {
+  const run = takeoverQueue.then(async () => {
+    const saved = await invoke(api.storage.local, "get", { takeovers: [] });
+    const list = (Array.isArray(saved.takeovers) ? saved.takeovers : []).filter(validTakeover);
+    const next = change(list);
+    if (next !== list) await invoke(api.storage.local, "set", { takeovers: next });
+    return next;
+  });
+  takeoverQueue = run.catch(() => {});
+  return run;
+}
+function releaseTakeover(downloadId) {
+  return updateTakeovers(list => list.some(entry => entry.downloadId === downloadId) ? list.filter(entry => entry.downloadId !== downloadId) : list);
+}
+// Keeps the paused browser copy of a download the desktop accepted until its job has the file.
+async function holdBrowserCopy(downloadId, requestId, host) {
+  try {
+    await updateTakeovers(list => [...list.filter(entry => entry.downloadId !== downloadId), { downloadId, requestId, host }].slice(-TAKEOVER_LIMIT));
+  } catch (_) {
+    // Nothing would remember the paused copy, so it follows the older desktops' way.
+    await discardBrowserCopy(downloadId);
+    return;
+  }
+  wakeTakeovers();
+}
+// Whether the browser's copy is still the paused one this extension left: a copy that is gone,
+// finished, cancelled or resumed by the user is theirs now. A paused copy whose connection the
+// server closed meanwhile is interrupted but resumable, and still ours.
+async function browserCopyHeld(downloadId) {
+  try {
+    const [item] = await invoke(api.downloads, "search", { id: downloadId });
+    return !!item && ((item.state === "in_progress" && item.paused === true) || (item.state === "interrupted" && item.canResume === true));
+  } catch (_) { return true; }
+}
+// What the desktop's answer for one copy means for the browser's copy: "wait" for an answer
+// that is missing or unreadable and for a job that has not received a byte yet; "forget" for a
+// job the user removed, which they may have cancelled on purpose; "erase" once the job has the
+// file; "resume" for a job that ended, or waits for a new address, without a byte.
+function takeoverVerdict(status) {
+  if (typeof status?.found !== "boolean") return "wait";
+  if (!status.found || status.state === "cancelled") return "forget";
+  if (status.received === true || status.state === "completed") return "erase";
+  if (status.state === "failed" || status.state === "awaiting_source") return "resume";
+  return "wait";
+}
+async function noticeTakeoverReturned() {
+  try {
+    const [tab] = await invoke(api.tabs, "query", { active: true, lastFocusedWindow: true });
+    notifyTab(tab?.id, t("takeoverReturned"));
+  } catch (_) {}
+}
+// The browser's copy is erased or resumed before its entry is dropped, so a worker that stops in
+// between finds the entry again and decides the same way.
+async function settleTakeover(entry, status) {
+  const verdict = takeoverVerdict(status);
+  if (verdict === "wait") return;
+  if (verdict === "erase") await discardBrowserCopy(entry.downloadId);
+  if (verdict === "resume") {
+    try {
+      await invoke(api.downloads, "resume", entry.downloadId);
+      logEvent("ext.takeover.returned", { level: "warn", outcome: "failed", code: status.error_code, host: entry.host, detail: `state=${status.state}` });
+      await noticeTakeoverReturned();
+    } catch (_) {}
+  }
+  await releaseTakeover(entry.downloadId);
+}
+// One pass over the waiting copies: a copy that is not the paused one any more is dropped, and
+// the desktop is asked about all the others in one question. Resolves to how many still wait and
+// whether the desktop could not be asked.
+async function checkTakeovers() {
+  const held = [];
+  for (const entry of await updateTakeovers(list => list)) {
+    try {
+      if (await browserCopyHeld(entry.downloadId)) held.push(entry);
+      else await releaseTakeover(entry.downloadId);
+    } catch (_) {}
+  }
+  let answers = null;
+  if (held.length) {
+    try {
+      const response = await sendNative({ type: "add_status", request_ids: held.map(entry => entry.requestId) });
+      if (response.ok === true && Array.isArray(response.result?.add_status)) answers = response.result.add_status;
+    } catch (_) {}
+    for (const entry of held) {
+      try { await settleTakeover(entry, answers?.find(answer => answer?.request_id === entry.requestId)); } catch (_) {}
+    }
+  }
+  return { waiting: (await updateTakeovers(list => list)).length, unreachable: held.length > 0 && answers === null };
+}
+function scheduleTakeoverCheck() {
+  if (takeoverTimer !== null) clearTimeout(takeoverTimer);
+  takeoverTimer = setTimeout(() => { takeoverTimer = null; runTakeoverCheck().catch(() => {}); }, takeoverDelay);
+}
+// The alarm outlives the worker and wakes it every 30 seconds while a copy waits; the timer
+// answers sooner while the worker is alive, with a delay that starts at 2 seconds for a copy
+// that was just handed over and doubles up to the alarm's period. A worker that starts without
+// a new copy, and a desktop that cannot be reached, keep to the alarm's period.
+function ensureTakeoverAlarm() {
+  if (!api.alarms?.create) return;
+  invoke(api.alarms, "get", TAKEOVER_ALARM).catch(() => null).then(existing => {
+    if (existing) return;
+    try { api.alarms.create(TAKEOVER_ALARM, { periodInMinutes: TAKEOVER_POLL_MAX / 60000 }); } catch (_) {}
+  });
+}
+function wakeTakeovers() {
+  takeoverDelay = TAKEOVER_POLL_FIRST;
+  scheduleTakeoverCheck();
+  ensureTakeoverAlarm();
+}
+function runTakeoverCheck() {
+  if (takeoverRunning) return takeoverRunning;
+  takeoverRunning = (async () => {
+    await sessionReady;
+    let waiting = 1;
+    let unreachable = false;
+    try { ({ waiting, unreachable } = await checkTakeovers()); } catch (_) {}
+    if (waiting > 0) {
+      takeoverDelay = unreachable ? TAKEOVER_POLL_MAX : Math.min(takeoverDelay * 2, TAKEOVER_POLL_MAX);
+      scheduleTakeoverCheck();
+      ensureTakeoverAlarm();
+    } else if (api.alarms?.clear) {
+      invoke(api.alarms, "clear", TAKEOVER_ALARM).catch(() => {});
+    }
+  })().finally(() => { takeoverRunning = null; });
+  return takeoverRunning;
+}
 if (api.downloads?.onCreated) api.downloads.onCreated.addListener(item => { takeOverDownload(item).catch(() => {}); });
+// A worker that starts with copies still waiting (after an idle suspension or a browser restart)
+// asks about them once; a pass that the alarm started at the same time is the same pass.
+sessionReady.then(() => updateTakeovers(list => list)).then(list => { if (list.length) return runTakeoverCheck(); }).catch(() => {});

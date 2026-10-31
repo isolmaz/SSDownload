@@ -504,6 +504,7 @@ impl App {
                             .collect(),
                         site_entries: snapshot.settings.site_entries,
                         browser_takeover: snapshot.settings.browser_takeover,
+                        add_status: true,
                         completed_jobs: snapshot
                             .jobs
                             .iter()
@@ -511,6 +512,16 @@ impl App {
                             .count() as u64,
                         language: crate::i18n::code_of(&snapshot.settings.ui_language).to_owned(),
                     });
+                    return Ok(result);
+                }
+                Action::AddStatus { request_ids } => {
+                    let jobs = self.inner.engine.snapshot().jobs;
+                    result.add_status = Some(
+                        request_ids
+                            .iter()
+                            .map(|request_id| AddJobStatus::of(&jobs, request_id))
+                            .collect(),
+                    );
                     return Ok(result);
                 }
                 Action::BeginSourceRefresh { id } => {
@@ -624,6 +635,7 @@ impl App {
             // Result-producing actions are handled by `dispatch_result`.
             Action::Log { .. } | Action::Diagnose { .. } => {}
             Action::Capabilities
+            | Action::AddStatus { .. }
             | Action::BeginSourceRefresh { .. }
             | Action::CompleteSourceRefresh { .. }
             | Action::CreateQueue { .. }
@@ -2197,6 +2209,104 @@ mod tests {
         assert_eq!(first.job_ids.len(), 1);
         assert_eq!(first.job_ids, repeated.job_ids);
 
+        app.shutdown();
+        cleanup(root);
+    }
+
+    #[test]
+    fn capabilities_announce_add_status_and_keep_the_versions_the_released_extension_accepts() {
+        let (app, root) = isolated_app();
+        let capabilities = app
+            .dispatch_result(Action::Capabilities)
+            .unwrap()
+            .capabilities
+            .unwrap();
+        assert!(capabilities.add_status);
+        assert_eq!(
+            serde_json::to_value(&capabilities).unwrap()["add_status"],
+            true
+        );
+        // The released extension accepts exactly this pair; an additive field needs no new one.
+        assert_eq!(
+            (capabilities.protocol, capabilities.capability_version),
+            (2, 3)
+        );
+        app.shutdown();
+        cleanup(root);
+    }
+
+    #[test]
+    fn add_status_reports_the_job_of_the_request_id_and_nothing_of_its_request() {
+        let (app, root) = isolated_app();
+        for id in ["takeover-1", "takeover-3"] {
+            app.dispatch_result(Action::Add {
+                request: AddRequest {
+                    url: format!("https://example.invalid/SECRET-ADDRESS/{id}.bin"),
+                    request_id: Some(id.into()),
+                    start_at: Some(chrono::Utc::now().timestamp() + 3_600),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        }
+        let ask = |ids: &[&str]| {
+            app.dispatch_result(Action::AddStatus {
+                request_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+            })
+            .unwrap()
+        };
+        let status = |id: &str| ask(&[id]);
+        let scheduled = |id: &str| AddJobStatus {
+            request_id: id.into(),
+            found: true,
+            state: Some(JobState::Scheduled),
+            received: false,
+            error_code: None,
+        };
+        let known = status("takeover-1");
+        assert_eq!(known.add_status, Some(vec![scheduled("takeover-1")]));
+        assert!(known.job_ids.is_empty() && known.request_id.is_none());
+        assert!(!status("takeover-2").add_status.unwrap()[0].found);
+
+        let batch = ask(&[
+            "takeover-3",
+            "takeover-3",
+            "takeover-2",
+            "takeover-1",
+            "takeover-3",
+        ]);
+        assert_eq!(
+            batch.add_status,
+            Some(vec![
+                scheduled("takeover-3"),
+                scheduled("takeover-3"),
+                AddJobStatus::of(&[], "takeover-2"),
+                scheduled("takeover-1"),
+                scheduled("takeover-3"),
+            ]),
+            "one entry per id, in the order asked"
+        );
+
+        app.dispatch_result(Action::Remove {
+            id: app
+                .snapshot()
+                .jobs
+                .iter()
+                .find(|job| job.request.request_id.as_deref() == Some("takeover-1"))
+                .unwrap()
+                .id
+                .clone(),
+            delete_file: true,
+        })
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while status("takeover-1").add_status.unwrap()[0].found {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the removed job is still reported"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         app.shutdown();
         cleanup(root);
     }

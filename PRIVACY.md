@@ -29,8 +29,9 @@ The installer also registers the extension with Chrome and Edge (`HKCU\Software\
 - When you start a download, it sends the download or page address, the request headers the browser used (Referer, Origin, Accept, Accept-Language, User-Agent) and, for a video handover, the page markup (used only for a local error report).
 - No `Cookie` or `Authorization` header is copied from network observation. A site's cookies are read **only after you allow it for that site** (**Allow session cookies for this site**) and the permission can be withdrawn at any time.
 - Taking over browser downloads is off by default; incognito downloads always stay in the browser. Allowing session cookies for a site covers the downloads from that site, taken-over browser downloads included, until you remove it. A download the extension takes over carries no cookie unless the page it came from (its referrer) is a site you allowed; a download without a referrer carries none. For an allowed site it sends the ordinary (never partitioned) cookies of the browser's regular profile that apply to the download address and, when it has the same origin, to the address it was redirected from, and the download stays in the browser when that cookie store or the cookies cannot be verified. Known limit: a download started from an allowed site's frame embedded in another page counts as that site, because its referrer is the frame's address.
+- To keep the browser's copy of a taken-over download until the app's job has received file bytes, the extension asks the app about all the downloads that still wait in one question, by the random IDs it made up for them (at most 100). For each ID the app answers whether the download exists, its state, whether file bytes have arrived and an error code if it failed; it sends no address, name or path back.
 - To offer a player's subtitles, the extension notes the address of a subtitle file (WebVTT or SRT) the page's player has already loaded; it does not fetch or keep the file's text.
-- The extension contains no remote code and stores only its on/off state, the interface language the app reported (one of its seven languages), the sites where you hid the button, where you dragged the button on the player, the sites where you allowed session cookies and short-lived per-tab discovery state.
+- The extension contains no remote code and stores only its on/off state, the interface language the app reported (one of its seven languages), the sites where you hid the button, where you dragged the button on the player, the sites where you allowed session cookies, for each taken-over download that still waits for the app (at most 100) the browser's download number, that random ID and the site's host name, and short-lived per-tab discovery state.
 
 ### Extension permissions
 
@@ -38,11 +39,11 @@ The installer also registers the extension with Chrome and Edge (`HKCU\Software\
 |---|---|
 | `nativeMessaging` | The only connection to the SSDownload desktop app (`com.ssdownload.desktop`); every download runs there. |
 | `contextMenus` | The right-click entries for links and media. |
-| `downloads` | Optional takeover of ordinary browser downloads (off by default). A download is removed from the browser list only after the app accepts it. |
+| `downloads` | Optional takeover of ordinary browser downloads (off by default). The download is paused in the browser and removed from the browser list when the first file bytes have arrived in the app or its job completed; a handover that fails resumes it in the browser. |
 | `tabs`, `webNavigation` | Identify the tab, frame and document a video belongs to, so the picker opens for the player you used. |
 | `webRequest` | Notice media manifests (HLS/DASH) the page loads. Nothing is blocked or modified. |
-| `storage` | The on/off state, the app's interface language, hidden-button sites, the button's position on the player, sites allowed to share session cookies and short-lived discovery state. |
-| `alarms` | Resume an interrupted browser transfer and refresh the completed-downloads badge for a while after a handover. |
+| `storage` | The on/off state, the app's interface language, hidden-button sites, the button's position on the player, sites allowed to share session cookies, for each taken-over download that still waits for the app (at most 100) the browser's download number, the random ID the extension made up for it and the site's host name, and short-lived discovery state. |
+| `alarms` | Resume an interrupted browser transfer, refresh the completed-downloads badge for a while after a handover and ask the app whether a taken-over download has arrived. |
 | `cookies` (optional) | Requested only when you allow session cookies for one site. |
 | Access to `http://*/*` and `https://*/*` | Media discovery must run on the page you choose. Page data goes nowhere except the local app. |
 

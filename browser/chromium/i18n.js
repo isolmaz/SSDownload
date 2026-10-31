@@ -161,6 +161,7 @@
     partitionScopeUntransferable: "The session scope of this Chrome partition cannot be handed over safely.",
     takeoverStoreUnverifiable: "The browser's cookie store could not be verified as exactly one for this download, so it stays in the browser.",
     takeoverSessionWrongStore: "The site session permission was not granted for the browser's regular cookie store, so the download stays in the browser.",
+    takeoverReturned: "SSDownload could not receive this file, so the browser continues the download.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "The source tab and document for the transfer were not found. Open the page to download in this tab and try again.",
@@ -425,6 +426,7 @@
     partitionScopeUntransferable: "Bu Chrome bölümünün oturum kapsamı güvenle aktarılamıyor.",
     takeoverStoreUnverifiable: "Bu indirme için tarayıcının çerez deposu tek olarak doğrulanamadı; indirme tarayıcıda kalıyor.",
     takeoverSessionWrongStore: "Site oturum izni tarayıcının normal çerez deposu için verilmiş değil; indirme tarayıcıda kalıyor.",
+    takeoverReturned: "SSDownload bu dosyayı alamadı; indirmeyi tarayıcı sürdürüyor.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "Aktarım için kaynak sekmesi ve belgesi bulunamadı. İndirilecek sayfayı bu sekmede açıp yeniden deneyin.",
@@ -689,6 +691,7 @@
     partitionScopeUntransferable: "لا يمكن تسليم نطاق الجلسة لقسم Chrome هذا بأمان.",
     takeoverStoreUnverifiable: "تعذّر التحقق من أن مخزن ملفات تعريف الارتباط في المتصفح واحد فقط لهذا التنزيل، لذلك يبقى التنزيل في المتصفح.",
     takeoverSessionWrongStore: "لم يُمنح إذن جلسة الموقع لمخزن ملفات تعريف الارتباط العادي في المتصفح، لذلك يبقى التنزيل في المتصفح.",
+    takeoverReturned: "تعذّر على SSDownload استلام هذا الملف، لذلك يتابع المتصفح التنزيل.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "تعذّر العثور على علامة تبويب المصدر ومستنده للنقل. افتح الصفحة المراد تنزيلها في هذه العلامة وأعد المحاولة.",
@@ -953,6 +956,7 @@
     partitionScopeUntransferable: "El ámbito de sesión de esta partición de Chrome no se puede traspasar de forma segura.",
     takeoverStoreUnverifiable: "No se ha podido verificar que el almacén de cookies del navegador sea exactamente uno para esta descarga, así que se queda en el navegador.",
     takeoverSessionWrongStore: "El permiso de sesión del sitio no se concedió para el almacén de cookies normal del navegador, así que la descarga se queda en el navegador.",
+    takeoverReturned: "SSDownload no pudo recibir este archivo, así que el navegador continúa la descarga.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "No se han encontrado la pestaña de origen ni el documento de la transferencia. Abrir en esta pestaña la página que se quiere descargar y volver a intentarlo.",
@@ -1217,6 +1221,7 @@
     partitionScopeUntransferable: "O escopo de sessão desta partição do Chrome não pode ser transferido com segurança.",
     takeoverStoreUnverifiable: "Não foi possível verificar que o armazenamento de cookies do navegador seja único para este download, então ele permanece no navegador.",
     takeoverSessionWrongStore: "A permissão de sessão do site não foi concedida para o armazenamento de cookies normal do navegador, então o download permanece no navegador.",
+    takeoverReturned: "O SSDownload não conseguiu receber este arquivo, então o navegador continua o download.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "A guia de origem e o documento da transferência não foram encontrados. Abra a página a baixar nesta guia e tente novamente.",
@@ -1481,6 +1486,7 @@
     partitionScopeUntransferable: "La portée de session de cette partition Chrome ne peut pas être transmise en toute sécurité.",
     takeoverStoreUnverifiable: "Le magasin de cookies du navigateur n'a pas pu être vérifié comme unique pour ce téléchargement ; il reste donc dans le navigateur.",
     takeoverSessionWrongStore: "L'autorisation de session du site n'a pas été accordée pour le magasin de cookies normal du navigateur ; le téléchargement reste donc dans le navigateur.",
+    takeoverReturned: "SSDownload n'a pas pu recevoir ce fichier ; le navigateur poursuit donc le téléchargement.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "L'onglet et le document source du transfert sont introuvables. Ouvrez la page à télécharger dans cet onglet et réessayez.",
@@ -1745,6 +1751,7 @@
     partitionScopeUntransferable: "Der Sitzungsbereich dieser Chrome-Partition kann nicht sicher übergeben werden.",
     takeoverStoreUnverifiable: "Der Cookie-Speicher des Browsers konnte für diesen Download nicht eindeutig als einzelner Speicher bestätigt werden, daher bleibt er im Browser.",
     takeoverSessionWrongStore: "Die Berechtigung für die Website-Sitzung wurde nicht für den normalen Cookie-Speicher des Browsers erteilt, daher bleibt der Download im Browser.",
+    takeoverReturned: "SSDownload konnte diese Datei nicht empfangen, daher setzt der Browser den Download fort.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "Der Quell-Tab und das Dokument für die Übertragung wurden nicht gefunden. Öffnen Sie die herunterzuladende Seite in diesem Tab und versuchen Sie es erneut.",
