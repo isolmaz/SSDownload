@@ -176,54 +176,89 @@
     return allowed.slice().sort((a,b)=>height(b)-height(a) || Number(b.attributes.BANDWIDTH||0)-Number(a.attributes.BANDWIDTH||0))[0];
   }
 
-  // CODECS naming audio codecs alone marks a variant that carries no video; without CODECS, or with a codec
-  // missing here, a variant may carry video.
-  const AUDIO_CODEC = /^(?:mp4a|ac-3|ec-3|ac-4|opus|flac|alac|mhm1|mha1|mp3|vorbis|dts[celh])/i;
-  const hlsAudioOnly = variant => {
-    const codecs = (variant.attributes.CODECS||"").split(",").map(item=>item.trim()).filter(Boolean);
-    return codecs.length > 0 && codecs.every(codec=>AUDIO_CODEC.test(codec));
-  };
-  // yt-dlp names an audio rendition "<GROUP-ID>-<NAME>", behind the extractor's own prefix where it has one, with
-  // whitespace and , / + [ ] ( ) turned into "_".
-  const hlsAudioId = rendition => `${rendition.attributes["GROUP-ID"]}-${rendition.attributes.NAME}`.replace(/[\s,/+\[\]()]/g,"_");
+  // CODECS naming audio codecs alone marks a variant that carries no video, and CODECS naming none a variant that
+  // carries no audio; without CODECS, a variant may carry both.
+  const AUDIO_CODEC = /^(?:mp4a|ac-3|ec-3|ec\+3|ac-4|opus|flac|alac|mhm[12]|mha[12]|mp3|vorbis|dts[celhx]|ipcm|fpcm)/i;
+  const hlsCodecs = variant => (variant.attributes.CODECS||"").split(",").map(item=>item.trim()).filter(Boolean);
+  const hlsAudioOnly = variant => hlsCodecs(variant).length > 0 && hlsCodecs(variant).every(codec=>AUDIO_CODEC.test(codec));
+  const hlsVideoOnly = variant => hlsCodecs(variant).length > 0 && !hlsCodecs(variant).some(codec=>AUDIO_CODEC.test(codec));
   const namedBy = (id, own) => String(id)===own || String(id).endsWith(`-${own}`);
 
-  // The one rendition of an audio group that a selection names. Of several ids that end the same way, the longest
-  // is the more exact; a group other than the selection's own never answers for it.
-  function matchHlsAudio(group, selection) {
-    const matches = group.filter(item=>(!selection.id || namedBy(selection.id,hlsAudioId(item))) && (!selection.language || item.attributes.LANGUAGE===selection.language));
-    const longest = selection.id ? Math.max(...matches.map(item=>hlsAudioId(item).length)) : 0;
-    const exact = selection.id ? matches.filter(item=>hlsAudioId(item).length===longest) : matches;
-    return exact.length===1 ? exact[0] : null;
+  // The ids yt-dlp gives the formats of a master playlist, without the prefix an extractor may put before them. A
+  // rendition is "<GROUP-ID>-<NAME>". A variant is its NAME, else the NAME of the first rendition of its VIDEO group, else
+  // the id of that group, else its bandwidth in whole kbit/s (AVERAGE-BANDWIDTH before BANDWIDTH, truncated). Whitespace
+  // and , / + [ ] ( ) become "_", and formats left with the same id are numbered from 0 ("64-0", "64-1"). A rendition
+  // without URI is no format of yt-dlp's; it keeps the id it would have had.
+  function hlsFormatIds(media, variants) {
+    const groups = new Map(), formats = [];
+    for (const item of media) {
+      const {TYPE, NAME, "GROUP-ID": group} = item.attributes;
+      if (!TYPE || !NAME || !group) continue;
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(item);
+      if (item.uri && (TYPE==="AUDIO" || TYPE==="VIDEO")) formats.push([item, `${group}-${NAME}`]);
+    }
+    for (const variant of variants) {
+      const {NAME, VIDEO} = variant.attributes;
+      const kbit = Math.trunc(Number(variant.attributes["AVERAGE-BANDWIDTH"] || variant.attributes.BANDWIDTH) / 1000);
+      formats.push([variant, NAME || (VIDEO ? groups.get(VIDEO)?.[0].attributes.NAME || VIDEO : "") || (kbit > 0 ? String(kbit) : "")]);
+    }
+    const clean = id => id.replace(/[\s,/+\[\]()]/g,"_");
+    const spelled = formats.filter(([, id])=>id).map(([item, id])=>[item, clean(id)]);
+    const total = new Map(), seen = new Map();
+    for (const [, id] of spelled) total.set(id, (total.get(id)||0)+1);
+    const ids = new Map(spelled.map(([item, id])=>{ const count = seen.get(id)||0; seen.set(id, count+1); return [item, total.get(id)>1 ? `${id}-${count}` : id]; }));
+    for (const item of media) {
+      const {TYPE, NAME, "GROUP-ID": group} = item.attributes;
+      if (TYPE==="AUDIO" && !item.uri && NAME && group) ids.set(item, clean(`${group}-${NAME}`));
+    }
+    return ids;
   }
 
   // An audio-only request takes its audio from the first of these that fits the selection (all of them without one):
   // the renditions of an audio group, the group with the most channels first and then the one of the best variant
   // (yt-dlp sorts by channel count ahead of codec and bitrate, but lists none for the renditions of an HLS playlist, so
-  // the playlist's CHANNELS decides here); a variant that carries audio only; any other variant, whose stream holds the
-  // video as well. The application keeps the audio track of the stream and drops the rest, so the last still gives an
-  // audio file, at the cost of the video bytes, as yt-dlp's bestaudio/best does.
+  // the playlist's CHANNELS decides here); a variant that carries audio only; a rendition without URI, whose audio is in
+  // the stream of the best variant that uses its group, as the desktop takes it; any other variant that may carry audio.
+  // The application keeps the audio track of a stream that holds video and drops the rest, so the last two still give an
+  // audio file, at the cost of the video bytes, as yt-dlp's bestaudio/best does. An id names a track only as yt-dlp
+  // spells it (hlsFormatIds), and a selection that names none, or more than one, fails before anything is fetched.
   function selectHlsAudio(variants, media, selections) {
     const bandwidth = item => Number(item.attributes.BANDWIDTH || 0);
     const ranked = variants.slice().sort((a,b)=>bandwidth(b)-bandwidth(a));
+    const ids = hlsFormatIds(media, variants);
     const audio = media.filter(item=>item.attributes.TYPE==="AUDIO");
     const groups = new Set(audio.map(item=>item.attributes["GROUP-ID"]));
+    const used = Array.from(new Set(ranked.map(item=>item.attributes.AUDIO).filter(item=>groups.has(item))));
+    const alone = ranked.filter(item=>!groups.has(item.attributes.AUDIO) && !hlsVideoOnly(item));
+    // An extractor's own prefix is unknown, so an id may end with the ids of several formats (the groups "a-hi" and "hi",
+    // both with "English"): the longest is the exact one, whatever the format, and it has to be a track to take.
+    const tracks = [...audio.filter(item=>used.includes(item.attributes["GROUP-ID"])), ...alone].filter(item=>ids.has(item));
+    const trackNamed = id => {
+      const found = Array.from(ids.keys()).filter(item=>namedBy(id,ids.get(item)));
+      const longest = Math.max(...found.map(item=>ids.get(item).length));
+      const exact = found.filter(item=>ids.get(item).length===longest);
+      return exact.length===1 && tracks.includes(exact[0]) ? exact[0] : null;
+    };
+    const named = selections.map(selection=>selection.id ? trackNamed(selection.id) : undefined);
+    const pick = (group, selection, track) => {
+      if (selection.id) return group.includes(track) && (!selection.language || track.attributes.LANGUAGE===selection.language) ? track : null;
+      const matches = group.filter(item=>!selection.language || item.attributes.LANGUAGE===selection.language);
+      return matches.length===1 ? matches[0] : null;
+    };
     const options = [];
-    for (const id of new Set(ranked.map(item=>item.attributes.AUDIO).filter(item=>groups.has(item)))) {
+    for (const id of used) {
       const group = audio.filter(item=>item.attributes["GROUP-ID"]===id);
-      const chosen = selections.length ? selections.map(selection=>matchHlsAudio(group,selection)) : [group.find(item=>item.attributes.DEFAULT==="YES")||group[0]];
+      const chosen = selections.length ? selections.map((selection,index)=>pick(group,selection,named[index])) : [group.find(item=>item.attributes.DEFAULT==="YES")||group[0]];
       if (chosen.some(item=>!item)) continue;
       const users = ranked.filter(item=>item.attributes.AUDIO===id);
-      const option = {tier:0,channels:Number.parseInt(chosen[0].attributes.CHANNELS,10)||0,bandwidth:bandwidth(users[0])};
-      if (chosen.every(item=>item.uri)) options.push({...option,variant:users[0],renditions:chosen,own:null});
-      // A rendition without URI is the audio of every variant that uses the group: the cheapest one holds it as well.
-      else if (chosen.length===1) options.push({...option,variant:users.at(-1),renditions:[],own:{id:selections[0]?.id||hlsAudioId(chosen[0]),language:selections[0]?.language||chosen[0].attributes.LANGUAGE||null}});
+      const option = {tier:0,channels:Number.parseInt(chosen[0].attributes.CHANNELS,10)||0,bandwidth:bandwidth(users[0]),variant:users[0]};
+      if (chosen.every(item=>item.uri)) options.push({...option,renditions:chosen,own:null});
+      else if (chosen.length===1) options.push({...option,tier:2,renditions:[],own:{id:selections[0]?.id||ids.get(chosen[0]),language:selections[0]?.language||chosen[0].attributes.LANGUAGE||null}});
     }
-    for (const variant of ranked) {
-      if (groups.has(variant.attributes.AUDIO)) continue;
-      const ids = hlsId(variant,variants.indexOf(variant));
-      if (selections.length && !(selections.length===1 && selections[0].id && ids.some(value=>namedBy(selections[0].id,value)))) continue;
-      options.push({tier:hlsAudioOnly(variant)?1:2,channels:0,bandwidth:bandwidth(variant),variant,renditions:[],own:{id:selections[0]?.id||ids[0],language:selections[0]?.language||null}});
+    for (const variant of alone) {
+      if (selections.length && !(selections.length===1 && named[0]===variant)) continue;
+      options.push({tier:hlsAudioOnly(variant)?1:3,channels:0,bandwidth:bandwidth(variant),variant,renditions:[],own:{id:selections[0]?.id||hlsId(variant,variants.indexOf(variant))[0],language:selections[0]?.language||null}});
     }
     options.sort((a,b)=>a.tier-b.tier||b.channels-a.channels||b.bandwidth-a.bandwidth);
     if (!options.length) throw new Error(selections.length ? t("hlsRenditionAmbiguous", roleName("audio")) : t("hlsAudioGroupMissing"));

@@ -212,6 +212,65 @@ const withAudioVariants = {
     ...variantLine('BANDWIDTH=128000,CODECS="mp4a.40.2"', "a128")),
   ...segmentsOf("v720", "v4k", "vbare", "a64", "a128")
 };
+// Variants without an audio group, with the ids yt-dlp gives them: "63" (AVERAGE-BANDWIDTH 63600, truncated), "64-0" and
+// "64-1" (the same id twice), "127" (BANDWIDTH 127900, truncated), "Low__360p_" (NAME), "Angle_One" (the NAME of the first
+// rendition of its VIDEO group), "nogroup" (a VIDEO group that is not in the playlist) and "2400".
+const withNamedVariants = {
+  [MASTER]: hlsMaster(
+    ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"', "v720"),
+    ...variantLine('BANDWIDTH=64000,CODECS="mp4a.40.2"', "alc"),
+    ...variantLine('BANDWIDTH=64000,CODECS="mp4a.40.5"', "ahe"),
+    ...variantLine('BANDWIDTH=127900,CODECS="mp4a.40.2"', "a127"),
+    ...variantLine('BANDWIDTH=999999,AVERAGE-BANDWIDTH=63600,CODECS="mp4a.40.2"', "a63"),
+    ...variantLine('BANDWIDTH=500000,NAME="Low (360p)",CODECS="avc1.4d401e,mp4a.40.2"', "low"),
+    `#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="vg",NAME="Angle One",URI="${HOST}vg1.m3u8"`,
+    ...variantLine('BANDWIDTH=700000,VIDEO="vg",CODECS="avc1.4d401e,mp4a.40.2"', "angle"),
+    ...variantLine('BANDWIDTH=800000,VIDEO="nogroup",CODECS="avc1.4d401e,mp4a.40.2"', "nogroup")),
+  ...segmentsOf("v720", "alc", "ahe", "a127", "a63", "low", "angle", "nogroup")
+};
+// Two renditions whose names are the same once spelled the yt-dlp way ("x-a_b-0" and "x-a_b-1") in the group of the best
+// variant, and a lower variant without a group that could be taken for either.
+const withTwinRenditions = {
+  [MASTER]: hlsMaster(
+    audioLine('GROUP-ID="x",NAME="a b",LANGUAGE="en",DEFAULT=YES', "audio-first"),
+    audioLine('GROUP-ID="x",NAME="a_b",LANGUAGE="de"', "audio-second"),
+    ...variantLine('BANDWIDTH=4000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",AUDIO="x"', "v1080"),
+    ...variantLine('BANDWIDTH=1500000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"', "v720")),
+  ...segmentsOf("v1080", "v720", "audio-first", "audio-second")
+};
+// Groups whose ids end alike: "hls-a-hi-English" ends with the id of both.
+const withHyphenGroups = {
+  [MASTER]: hlsMaster(
+    audioLine('GROUP-ID="a-hi",NAME="English",LANGUAGE="en",CHANNELS="2",DEFAULT=YES', "audio-a-hi"),
+    audioLine('GROUP-ID="hi",NAME="English",LANGUAGE="en",CHANNELS="6",DEFAULT=YES', "audio-hi"),
+    ...variantLine('BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2",AUDIO="a-hi"', "va"),
+    ...variantLine('BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,ec-3",AUDIO="hi"', "vh")),
+  ...segmentsOf("va", "vh", "audio-a-hi", "audio-hi")
+};
+// The main audio is in the variants themselves, and a variant carries audio only.
+const withMainAndAudioVariant = {
+  [MASTER]: hlsMaster(
+    audioLine('GROUP-ID="aud",NAME="Main",LANGUAGE="en",DEFAULT=YES'),
+    ...variantLine('BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aud"', "v360"),
+    ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2",AUDIO="aud"', "v720"),
+    ...variantLine('BANDWIDTH=128000,CODECS="mp4a.40.2"', "a128")),
+  ...segmentsOf("v360", "v720", "a128")
+};
+// A variant that carries video only, on a higher tier than the combined one.
+const withVideoOnlyVariant = {
+  [MASTER]: hlsMaster(
+    ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f"', "v720"),
+    ...variantLine('BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2"', "v360")),
+  ...segmentsOf("v720", "v360")
+};
+// A refused selection transfers and writes nothing.
+async function assertRefused(request, files) {
+  const h = await hlsRun({ kind: "audio", ...request }, files);
+  const label = JSON.stringify(request);
+  assert.deepEqual(requested(h), ["master.m3u8"], `${label}: nothing but the master is fetched`);
+  assert.equal(wrote(h), false, label);
+  assert.match(h.commands.at(-1).error, /audio rendition does not match exactly one/, label);
+}
 
 test("an audio-only HLS request transfers the audio renditions of the best variant and no video", async () => {
   for (const limits of [{}, { max_height: 360 }]) {
@@ -253,11 +312,11 @@ test("an audio-only HLS request ranks the audio groups by channels before the vi
   }
 });
 
-test("an audio-only HLS request takes a rendition without URI from the variant that holds it and a named track from its own playlist", async () => {
+test("an audio-only HLS request takes a rendition without URI from the best variant that holds it and a named track from its own playlist", async () => {
   for (const request of [{ kind: "audio" }, { kind: "audio", expected_audio: true }, { kind: "audio", audio_format_id: "hls-aud-Main", audio_language: "en" }]) {
     const h = await hlsRun(request, withMainInVariants);
     assert.deepEqual(opened(h), [["audio", request.audio_format_id || "aud-Main"]], JSON.stringify(request));
-    assert.deepEqual(requested(h), ["master.m3u8", "v360.m3u8", "v360-0.bin"], `${JSON.stringify(request)}: the cheapest variant that uses the group`);
+    assert.deepEqual(requested(h), ["master.m3u8", "v720.m3u8", "v720-0.bin"], `${JSON.stringify(request)}: the best variant that uses the group`);
     assert.equal(h.names().at(-1), "finish");
   }
   const commentary = await hlsRun({ kind: "audio", expected_audio: true, audio_format_id: "hls-aud-Commentary", audio_language: "en" }, withMainInVariants);
@@ -280,6 +339,14 @@ test("an audio-only HLS request prefers a variant that declares audio codecs onl
   assert.deepEqual(requested(h), ["master.m3u8", "a128.m3u8", "a128-0.bin"], "no variant that may carry video is fetched");
 });
 
+test("an audio-only HLS request knows the audio codecs of the other families of codec strings", async () => {
+  for (const codec of ["mp4a.40.34", "ac-4.02.01.01", "ec+3", "mha1.0x0D", "mha2.0x0D", "mhm1.0x0D", "mhm2.0x0D", "dtsx", "dtse", "ipcm", "fpcm", "Opus", "fLaC"]) {
+    const files = { [MASTER]: hlsMaster(...variantLine('BANDWIDTH=2400000,CODECS="avc1.4d401f,mp4a.40.2"', "v720"), ...variantLine(`BANDWIDTH=64000,CODECS="${codec}"`, "alone")), ...segmentsOf("v720", "alone") };
+    const h = await hlsRun({ kind: "audio", expected_audio: true }, files);
+    assert.deepEqual(requested(h), ["master.m3u8", "alone.m3u8", "alone-0.bin"], codec);
+  }
+});
+
 test("an audio-only HLS request takes the audio-only variant its id names", async () => {
   for (const id of ["hls-64", "64"]) {
     const h = await hlsRun({ kind: "audio", audio_format_id: id, expected_audio: true }, withAudioVariants);
@@ -288,7 +355,58 @@ test("an audio-only HLS request takes the audio-only variant its id names", asyn
   }
 });
 
-test("a video HLS request still transfers the chosen variant with its audio rendition, or the combined variant alone", async () => {
+test("an audio-only HLS request takes a variant without an audio group by the id yt-dlp gives it, and by no other", async () => {
+  const ids = [["64-0", "alc"], ["hls-64-1", "ahe"], ["hls-63", "a63"], ["127", "a127"], ["hls-Low__360p_", "low"], ["Angle_One", "angle"], ["hls-nogroup", "nogroup"], ["2400", "v720"]];
+  for (const [id, name] of ids) {
+    const h = await hlsRun({ kind: "audio", audio_format_id: id }, withNamedVariants);
+    assert.deepEqual(opened(h), [["audio", id]], id);
+    assert.deepEqual(requested(h), ["master.m3u8", `${name}.m3u8`, `${name}-0.bin`], id);
+  }
+  // Two variants share "64", so neither is "64"; 0 and 1 are positions; 128 is 127.9 rounded; 999 is a BANDWIDTH that an
+  // AVERAGE-BANDWIDTH overrides; a name or an address is no id.
+  for (const id of ["64", "hls-64", "0", "1", "hls-128", "hls-999", "hls-64000", "hls-Low (360p)", "hls-Low", "hls-vg", "hls-vg-Angle_One", "alc.m3u8", `${HOST}alc.m3u8`]) {
+    await assertRefused({ audio_format_id: id }, withNamedVariants);
+  }
+});
+
+test("an audio-only HLS request keeps apart renditions that yt-dlp numbers because their names read alike", async () => {
+  const first = await hlsRun({ kind: "audio", audio_format_id: "hls-x-a_b-0", audio_language: "en" }, withTwinRenditions);
+  assert.deepEqual(opened(first), [["audio", "hls-x-a_b-0"]]);
+  assert.deepEqual(requested(first), ["master.m3u8", "audio-first.m3u8", "audio-first-0.bin"], "not the variant below it");
+  const second = await hlsRun({ kind: "audio", audio_format_id: "x-a_b-1", audio_language: "de" }, withTwinRenditions);
+  assert.deepEqual(requested(second), ["master.m3u8", "audio-second.m3u8", "audio-second-0.bin"]);
+  for (const request of [{ audio_format_id: "x-a_b-0", audio_language: "de" }, { audio_format_id: "hls-x-a_b" }, { audio_format_id: "hls-x-a b-0", audio_language: "en" }]) {
+    await assertRefused(request, withTwinRenditions);
+  }
+});
+
+test("an audio-only HLS request names a rendition by its whole id when the id of another group ends alike", async () => {
+  for (const [id, group] of [["hls-a-hi-English", "a-hi"], ["a-hi-English", "a-hi"], ["hls-hi-English", "hi"], ["hi-English", "hi"]]) {
+    const h = await hlsRun({ kind: "audio", audio_format_id: id, audio_language: "en" }, withHyphenGroups);
+    assert.deepEqual(opened(h), [["audio", id]], id);
+    assert.deepEqual(requested(h), ["master.m3u8", `audio-${group}.m3u8`, `audio-${group}-0.bin`], id);
+  }
+});
+
+test("an audio-only HLS request prefers a variant that carries audio only to taking the audio out of a combined one", async () => {
+  const h = await hlsRun({ kind: "audio", expected_audio: true }, withMainAndAudioVariant);
+  assert.deepEqual(opened(h), [["audio", `${HOST}a128.m3u8`]]);
+  assert.deepEqual(requested(h), ["master.m3u8", "a128.m3u8", "a128-0.bin"], "no video is fetched");
+  const named = await hlsRun({ kind: "audio", audio_format_id: "hls-aud-Main", audio_language: "en" }, withMainAndAudioVariant);
+  assert.deepEqual(requested(named), ["master.m3u8", "v720.m3u8", "v720-0.bin"], "a rendition that is named is the one taken");
+});
+
+test("an audio-only HLS request leaves out a variant that carries video only", async () => {
+  const h = await hlsRun({ kind: "audio", expected_audio: true }, withVideoOnlyVariant);
+  assert.deepEqual(opened(h), [["audio", `${HOST}v360.m3u8`]]);
+  assert.deepEqual(requested(h), ["master.m3u8", "v360.m3u8", "v360-0.bin"]);
+  await assertRefused({ audio_format_id: "2400" }, withVideoOnlyVariant);
+  const only = await hlsRun({ kind: "audio", expected_audio: true }, { [MASTER]: hlsMaster(...variantLine('BANDWIDTH=2400000,CODECS="avc1.4d401f"', "v720")), ...segmentsOf("v720") });
+  assert.deepEqual(requested(only), ["master.m3u8"]);
+  assert.match(only.commands.at(-1).error, /audio group was not found/);
+});
+
+test("a video HLS request transfers the chosen variant with its audio rendition, or the combined variant alone", async () => {
   const separate = await hlsRun({ kind: "video" }, withSeparateAudio);
   assert.deepEqual(opened(separate), [["video", `${HOST}v720.m3u8`], ["audio", "hi-English"]]);
   assert.deepEqual(requested(separate), ["master.m3u8", "v720.m3u8", "audio-hi.m3u8", "v720-0.bin", "audio-hi-0.bin"]);

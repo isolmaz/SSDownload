@@ -637,7 +637,8 @@ fn captions_with_empty_and_simultaneous_cues_mux_into_mp4() {
 
 /// The browser transfer writes the segments of an HLS variant one after the other. A variant that
 /// holds the video and the audio together, sent as an `audio` stream for an audio-only request,
-/// gives an output with the audio alone that passes the verification, for both segment kinds.
+/// gives an output with the audio alone that passes the verification, for both segment kinds; sent
+/// as a `video` or `file` stream the same request is refused.
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
 fn the_audio_of_a_combined_stream_is_muxed_and_verified_as_an_audio_only_output() {
@@ -698,18 +699,26 @@ fn the_audio_of_a_combined_stream_is_muxed_and_verified_as_an_audio_only_output(
             expected_audio: Some(true),
             ..AddRequest::default()
         };
-        let streams = [crate::browser_transfer::StreamFile {
-            path: combined,
-            role: "audio".into(),
+        let stream = |role: &str| crate::browser_transfer::StreamFile {
+            path: combined.clone(),
+            role: role.into(),
             format_id: Some("hls-300".into()),
             language: None,
-        }];
+        };
+        let streams = [stream("audio")];
         let output = root.join("audio.mkv");
         let control = TransferControl::default();
         mux_browser_streams(&paths, &request, &streams, &output, &control)
             .unwrap_or_else(|error| panic!("{label}: {error:#}"));
         verify_external_result(&paths, &request, &output, &streams, Some(4.0), true)
             .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+        for role in ["video", "file"] {
+            let refused = root.join(format!("{role}.mkv"));
+            assert!(
+                mux_browser_streams(&paths, &request, &[stream(role)], &refused, &control).is_err(),
+                "{label}: the same stream sent as {role} is refused"
+            );
+        }
 
         let probe = std::process::Command::new(&tools.ffprobe)
             .args(["-v", "error", "-show_entries", "stream=codec_type"])
