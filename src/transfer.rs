@@ -1782,6 +1782,13 @@ enum RangeEvent {
     },
 }
 
+/// The rate at which `bytes` arrived in `elapsed`; `None` while no byte has arrived or no time
+/// has passed, when there is nothing to compare.
+fn bytes_per_second(bytes: u64, elapsed: Duration) -> Option<u64> {
+    let seconds = elapsed.as_secs_f64();
+    (bytes > 0 && seconds > 0.0).then(|| (bytes as f64 / seconds) as u64)
+}
+
 /// What an `Allowance` holds at one moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Standing {
@@ -1808,12 +1815,18 @@ impl Standing {
         self.size - self.claimed
     }
 
+    /// The bytes at the back of the lease that a cut hands to another worker: half of those not
+    /// claimed.
+    fn back(self) -> u64 {
+        self.to_come() / 2
+    }
+
     /// The size to cut the lease to so that its back half goes to another worker. `None` when
     /// that half would be smaller than `MIN_SEGMENT_SIZE`, the smallest piece the scheduler
     /// cuts from a range that no worker has taken (`range_can_split`): a request for less is
     /// not worth its round trip, and the worker that keeps the front keeps at least as much.
     fn cut_size(self) -> Option<u64> {
-        let back = self.to_come() / 2;
+        let back = self.back();
         (back >= MIN_SEGMENT_SIZE).then(|| self.size - back)
     }
 }
@@ -1888,6 +1901,10 @@ impl Allowance {
 struct Lease {
     range: ByteRange,
     taken: u64,
+    /// When the range was handed to the worker, from which its rate is measured.
+    started: Instant,
+    /// How many times this range has failed before, which the range cut off from it inherits.
+    attempts: u8,
 }
 
 impl Lease {
@@ -1945,6 +1962,9 @@ struct Checkpoints {
     leases: Vec<Option<Lease>>,
     written: Vec<Arc<AtomicU64>>,
     allowances: Vec<Arc<Allowance>>,
+    /// Bytes per second at which each worker fetched the last range it finished; `None` before
+    /// the first.
+    rates: Vec<Option<u64>>,
     pace: Pace,
 }
 
@@ -1975,6 +1995,7 @@ impl Checkpoints {
             leases: (0..workers).map(|_| None).collect(),
             written: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
             allowances: (0..workers).map(|_| Arc::new(Allowance::new())).collect(),
+            rates: vec![None; workers],
             pace: Pace::new(),
         }
     }
@@ -1989,40 +2010,64 @@ impl Checkpoints {
         self.allowances[worker].clone()
     }
 
-    fn assign(&mut self, worker: usize, range: ByteRange) {
+    fn assign(&mut self, worker: usize, work: RangeWork, now: Instant) {
         // The worker is idle, so nothing writes its counter or claims from its allowance while
         // they are reset.
         self.written[worker].store(0, Ordering::Release);
-        self.allowances[worker].open(range.len());
-        self.leases[worker] = Some(Lease { range, taken: 0 });
+        self.allowances[worker].open(work.range.len());
+        self.leases[worker] = Some(Lease {
+            range: work.range,
+            taken: 0,
+            started: now,
+            attempts: work.attempts,
+        });
     }
 
-    /// Cuts the back half off the running lease that has the most bytes still to come, for a
-    /// worker with nothing to do, and returns the range cut off; `None` when no lease has at
-    /// least twice `MIN_SEGMENT_SIZE` to come. The lease keeps the front: its worker writes no
-    /// byte beyond the cut, however many are already in flight, and the cut is never before the
-    /// last byte it has claimed.
-    fn split(&mut self) -> Option<ByteRange> {
+    /// Cuts the back half off a running lease for the `idle` worker that fetched its last range
+    /// fastest, and returns that worker with the range cut off. A lease is cut only when it has
+    /// delivered bytes, so that its rate is known, and the idle worker is expected to fetch the
+    /// back half before the lease's own worker would reach the end of its range: the half
+    /// arrives at the idle worker's rate and the whole remainder at the lease's. Of the leases
+    /// that qualify, the one with the most bytes still to come is cut; none is when none has at
+    /// least twice `MIN_SEGMENT_SIZE` to come, or no idle worker has finished a range yet. The
+    /// lease keeps the front: its worker writes no byte beyond the cut, however many are already
+    /// in flight, and the cut is never before the last byte it has claimed.
+    fn split(&mut self, idle: &[usize], now: Instant) -> Option<(usize, RangeWork)> {
+        let (thief, thief_rate) = idle
+            .iter()
+            .filter_map(|&worker| Some((worker, self.rates[worker]?)))
+            .max_by_key(|&(_, rate)| rate)?;
         loop {
-            let (worker, seen) = self
+            let (worker, seen, size) = self
                 .leases
                 .iter()
                 .enumerate()
-                .filter(|(_, lease)| lease.is_some())
-                .map(|(worker, _)| (worker, self.allowances[worker].view()))
-                .max_by_key(|(_, seen)| seen.to_come())?;
-            let size = seen.cut_size()?;
+                .filter_map(|(worker, lease)| {
+                    let lease = lease.as_ref()?;
+                    let seen = self.allowances[worker].view();
+                    let size = seen.cut_size()?;
+                    let elapsed = now.saturating_duration_since(lease.started);
+                    let rate = bytes_per_second(seen.claimed, elapsed)?;
+                    let sooner = u128::from(seen.back()) * u128::from(rate)
+                        < u128::from(seen.to_come()) * u128::from(thief_rate);
+                    sooner.then_some((worker, seen, size))
+                })
+                .max_by_key(|&(_, seen, _)| seen.to_come())?;
             if !self.allowances[worker].cut(seen, size) {
                 // The worker claimed more in the meantime; look again.
                 continue;
             }
-            let range = &mut self.leases[worker].as_mut()?.range;
+            let lease = self.leases[worker].as_mut()?;
             let back = ByteRange {
-                start: range.start + size,
-                end: range.end,
+                start: lease.range.start + size,
+                end: lease.range.end,
             };
-            range.end = back.start;
-            return Some(back);
+            lease.range.end = back.start;
+            let work = RangeWork {
+                range: back,
+                attempts: lease.attempts,
+            };
+            return Some((thief, work));
         }
     }
 
@@ -2063,8 +2108,15 @@ impl Checkpoints {
     }
 
     /// The lease of `worker` ended with every byte written.
-    fn finish(&mut self, worker: usize) {
-        if let Some(rest) = self.leases[worker].take().and_then(|lease| lease.rest()) {
+    fn finish(&mut self, worker: usize, now: Instant) {
+        let Some(lease) = self.leases[worker].take() else {
+            return;
+        };
+        let elapsed = now.saturating_duration_since(lease.started);
+        if let Some(rate) = bytes_per_second(lease.range.len(), elapsed) {
+            self.rates[worker] = Some(rate);
+        }
+        if let Some(rest) = lease.rest() {
             self.unrecorded.push(rest);
         }
     }
@@ -2352,15 +2404,18 @@ fn download_segmented(
             let split_recently = last_split
                 .map(|last| last.elapsed() < MIN_SPLIT_INTERVAL)
                 .unwrap_or(false);
-            let work = if pending.is_empty() {
-                // No range is left to hand out, so the idle worker takes the back of the running
-                // lease with the most bytes still to come.
+            let (worker, work) = if pending.is_empty() {
+                // No range is left to hand out, so the fastest idle worker takes the back of a
+                // running lease that it is expected to finish sooner than that lease's worker.
                 if split_recently {
                     break;
                 }
-                let Some(range) = ledger.split() else { break };
+                let Some((worker, work)) = ledger.split(&idle, now) else {
+                    break;
+                };
                 last_split = Some(Instant::now());
-                RangeWork { range, attempts: 0 }
+                idle.retain(|&candidate| candidate != worker);
+                (worker, work)
             } else {
                 let needs_split = pending
                     .iter()
@@ -2374,10 +2429,9 @@ fn download_segmented(
                 if needs_split {
                     last_split = Some(Instant::now());
                 }
-                work
+                (idle.pop().expect("idle worker disappeared"), work)
             };
-            let worker = idle.pop().expect("idle worker disappeared");
-            ledger.assign(worker, work.range);
+            ledger.assign(worker, work, now);
             busy.fetch_add(1, Ordering::AcqRel);
             if senders[worker].send(RangeCommand::Download(work)).is_err() {
                 break 'scheduler Err(AttemptFailure::Other(anyhow!(
@@ -2423,7 +2477,7 @@ fn download_segmented(
                 idle.push(worker);
                 match result {
                     Ok(()) => {
-                        ledger.finish(worker);
+                        ledger.finish(worker, Instant::now());
                         successful_since_failure += 1;
                         if effective_workers < worker_count
                             && successful_since_failure >= effective_workers.max(1) * 2
@@ -6982,51 +7036,94 @@ mod tests {
         ByteRange { start, end }
     }
 
+    fn work(start: u64, end: u64) -> RangeWork {
+        RangeWork {
+            range: range(start, end),
+            attempts: 0,
+        }
+    }
+
+    /// What `Checkpoints::split` hands out, as values that compare: the worker, the range and
+    /// its attempts.
+    fn stolen(
+        ledger: &mut Checkpoints,
+        idle: &[usize],
+        now: Instant,
+    ) -> Option<(usize, ByteRange, u8)> {
+        ledger
+            .split(idle, now)
+            .map(|(worker, work)| (worker, work.range, work.attempts))
+    }
+
+    /// A ledger of four workers, of which worker 0 has held `[0, 8 MiB)` since `start` and
+    /// claimed 2 MiB of it: a second later it fetches 2 MiB/s, with 6 MiB to come. The others
+    /// are idle.
+    fn ledger_with_a_lease(directory: &TestDirectory, start: Instant) -> Checkpoints {
+        let mut ledger = ledger_over(directory, 4, 8 * MIB);
+        ledger.assign(0, work(0, 8 * MIB), start);
+        assert_eq!(ledger.allowance(0).take(2 * MIB), 2 * MIB);
+        ledger
+    }
+
     #[test]
     fn the_lease_with_the_most_bytes_to_come_is_cut_and_its_back_half_is_returned() {
         let directory = TestDirectory::new("split-largest");
-        let mut ledger = ledger_over(&directory, 3, 24 * MIB);
-        for worker in 0..3u64 {
-            ledger.assign(
-                worker as usize,
-                range(worker * 8 * MIB, (worker + 1) * 8 * MIB),
-            );
-        }
+        let mut ledger = ledger_over(&directory, 4, 25 * MIB);
+        let start = Instant::now();
+        let now = start + Duration::from_secs(2);
+        ledger.assign(0, work(0, 8 * MIB), start);
+        ledger.assign(1, work(8 * MIB, 16 * MIB), start);
+        ledger.assign(2, work(16 * MIB, 25 * MIB), start);
         assert_eq!(ledger.allowance(0).take(3 * MIB), 3 * MIB);
         assert_eq!(ledger.allowance(1).take(6 * MIB), 6 * MIB);
+        assert_eq!(ledger.allowance(2).take(MIB), MIB);
+        // Worker 3 fetched its last range at 4 MiB/s, faster than any of the leases runs.
+        ledger.rates[3] = Some(4 * MIB);
 
-        // Worker 2 has the most to come, all 8 MiB: it keeps the front half.
-        assert_eq!(ledger.split(), Some(range(20 * MIB, 24 * MIB)));
+        // Worker 2 has the most to come, 8 MiB: it keeps the front half.
+        assert_eq!(
+            stolen(&mut ledger, &[3], now),
+            Some((3, range(21 * MIB, 25 * MIB), 0))
+        );
         assert_eq!(
             ledger.leases[2].as_ref().unwrap().range,
-            range(16 * MIB, 20 * MIB)
+            range(16 * MIB, 21 * MIB)
         );
-        assert_eq!(ledger.allowance(2).view().size, 4 * MIB);
+        assert_eq!(ledger.allowance(2).view().size, 5 * MIB);
         // Now worker 0 has the most to come, 5 MiB; the odd half goes to the worker that
         // keeps the front.
-        assert_eq!(ledger.split(), Some(range(5 * MIB + MIB / 2, 8 * MIB)));
+        assert_eq!(
+            stolen(&mut ledger, &[3], now),
+            Some((3, range(5 * MIB + MIB / 2, 8 * MIB), 0))
+        );
         // Worker 2 has 4 MiB to come, and its back half is 2 MiB.
-        assert_eq!(ledger.split(), Some(range(18 * MIB, 20 * MIB)));
+        assert_eq!(
+            stolen(&mut ledger, &[3], now),
+            Some((3, range(19 * MIB, 21 * MIB), 0))
+        );
         // No lease has 4 MiB to come any more.
-        assert_eq!(ledger.split(), None);
+        assert_eq!(stolen(&mut ledger, &[3], now), None);
     }
 
     #[test]
     fn a_cut_lease_is_recorded_and_asked_for_again_only_up_to_its_cut() {
         let directory = TestDirectory::new("split-record");
-        let whole = range(0, 8 * MIB);
+        let start = Instant::now();
+        let now = start + Duration::from_secs(1);
+        let whole = work(0, 8 * MIB);
         // With 1 MiB claimed, 7 MiB are to come and the back 3.5 MiB are cut off.
         let cut_at = 4 * MIB + MIB / 2;
         let back = range(cut_at, 8 * MIB);
 
         let mut ledger = ledger_over(&directory, 2, 8 * MIB);
-        ledger.assign(0, whole);
+        ledger.rates[1] = Some(MIB);
+        ledger.assign(0, whole, start);
         assert_eq!(ledger.allowance(0).take(MIB), MIB);
         ledger.counter(0).store(MIB, Ordering::Release);
-        assert_eq!(ledger.split(), Some(back));
+        assert_eq!(stolen(&mut ledger, &[1], now), Some((1, back, 0)));
         // The range cut off is a lease of its own with nothing recorded, and a record lists
         // each lease from its start up to what it wrote, never beyond the cut.
-        ledger.assign(1, back);
+        ledger.assign(1, work(cut_at, 8 * MIB), now);
         ledger.counter(1).store(MIB, Ordering::Release);
         assert_eq!(ledger.allowance(1).take(MIB), MIB);
         ledger.allowance(0).take(MIB);
@@ -7041,38 +7138,171 @@ mod tests {
 
         // A cut lease that completes puts its front part, and no more, among the ranges that
         // wait for the next cycle.
-        let mut ledger = ledger_over(&directory, 1, 8 * MIB);
-        ledger.assign(0, whole);
-        assert_eq!(ledger.split(), Some(range(4 * MIB, 8 * MIB)));
-        assert_eq!(ledger.allowance(0).take(8 * MIB), 4 * MIB);
-        ledger.counter(0).store(4 * MIB, Ordering::Release);
-        ledger.finish(0);
-        assert_eq!(ledger.unrecorded, [range(0, 4 * MIB)]);
+        let mut ledger = ledger_over(&directory, 2, 8 * MIB);
+        ledger.rates[1] = Some(MIB);
+        ledger.assign(0, whole, start);
+        assert_eq!(ledger.allowance(0).take(MIB), MIB);
+        assert_eq!(stolen(&mut ledger, &[1], now), Some((1, back, 0)));
+        assert_eq!(ledger.allowance(0).take(8 * MIB), cut_at - MIB);
+        ledger.counter(0).store(cut_at, Ordering::Release);
+        ledger.finish(0, now);
+        assert_eq!(ledger.unrecorded, [range(0, cut_at)]);
     }
 
     #[test]
     fn a_chunk_in_flight_counts_as_claimed_when_a_lease_is_cut() {
         let directory = TestDirectory::new("split-in-flight");
-        let whole = range(0, 8 * MIB);
-        let mut ledger = ledger_over(&directory, 1, 8 * MIB);
-        ledger.assign(0, whole);
+        let start = Instant::now();
+        let now = start + Duration::from_secs(1);
+        let mut ledger = ledger_over(&directory, 2, 8 * MIB);
+        ledger.rates[1] = Some(8 * MIB);
+        ledger.assign(0, work(0, 8 * MIB), start);
         // A 5 MiB chunk is claimed and not yet written, so the published count is still 0; only
         // 3 MiB of the lease are left to come, too few to cut.
         assert_eq!(ledger.allowance(0).take(5 * MIB), 5 * MIB);
         assert_eq!(ledger.counter(0).load(Ordering::Acquire), 0);
-        assert_eq!(ledger.split(), None);
+        assert_eq!(stolen(&mut ledger, &[1], now), None);
 
         // With a 3 MiB chunk in flight 5 MiB are left, and the cut lies beyond the chunk.
-        let mut ledger = ledger_over(&directory, 1, 8 * MIB);
-        ledger.assign(0, whole);
+        let mut ledger = ledger_over(&directory, 2, 8 * MIB);
+        ledger.rates[1] = Some(8 * MIB);
+        ledger.assign(0, work(0, 8 * MIB), start);
         assert_eq!(ledger.allowance(0).take(3 * MIB), 3 * MIB);
         assert_eq!(ledger.counter(0).load(Ordering::Acquire), 0);
-        let back = ledger.split().expect("5 MiB are left to come");
+        let (_, back, _) = stolen(&mut ledger, &[1], now).expect("5 MiB are left to come");
         assert!(
             back.start >= 3 * MIB,
             "{back:?} overlaps the chunk in flight"
         );
         assert_eq!(back.end, 8 * MIB);
+    }
+
+    #[test]
+    fn a_lease_is_cut_only_for_a_worker_that_fetches_the_back_half_sooner_than_the_lease_ends() {
+        let directory = TestDirectory::new("split-rate");
+        let start = Instant::now();
+        let now = start + Duration::from_secs(1);
+        // The lease fetches 2 MiB/s with 6 MiB to come, so the back half is 3 MiB. A worker at
+        // half that rate needs as long for the half as the lease needs for all of it: no gain.
+        let cases = [
+            (None, false),
+            (Some(0), false),
+            (Some(MIB), false),
+            (Some(MIB + 1), true),
+            (Some(8 * MIB), true),
+        ];
+        for (rate, cuts) in cases {
+            let mut ledger = ledger_with_a_lease(&directory, start);
+            ledger.rates[1] = rate;
+            assert_eq!(
+                stolen(&mut ledger, &[1], now).is_some(),
+                cuts,
+                "an idle worker at {rate:?} bytes per second"
+            );
+            if !cuts {
+                assert_eq!(ledger.allowance(0).view().size, 8 * MIB);
+                assert_eq!(ledger.leases[0].as_ref().unwrap().range, range(0, 8 * MIB));
+            }
+        }
+    }
+
+    #[test]
+    fn a_lease_whose_rate_is_not_known_is_not_cut() {
+        let directory = TestDirectory::new("split-unknown-rate");
+        let start = Instant::now();
+        let mut ledger = ledger_over(&directory, 2, 8 * MIB);
+        ledger.rates[1] = Some(8 * MIB);
+        ledger.assign(0, work(0, 8 * MIB), start);
+        // Nothing has arrived, however long it has been.
+        let minute = start + Duration::from_secs(60);
+        assert_eq!(stolen(&mut ledger, &[1], minute), None);
+        // Bytes have arrived and no time has passed.
+        assert_eq!(ledger.allowance(0).take(MIB), MIB);
+        assert_eq!(stolen(&mut ledger, &[1], start), None);
+        assert!(stolen(&mut ledger, &[1], start + Duration::from_secs(1)).is_some());
+    }
+
+    #[test]
+    fn the_idle_worker_that_fetched_its_last_range_fastest_takes_the_back_half() {
+        let directory = TestDirectory::new("split-fastest");
+        let start = Instant::now();
+        let now = start + Duration::from_secs(1);
+        // Only worker 2 is fast enough for the lease at 2 MiB/s; worker 3 has not finished a
+        // range.
+        for idle in [[1, 2, 3], [3, 2, 1], [2, 3, 1]] {
+            let mut ledger = ledger_with_a_lease(&directory, start);
+            ledger.rates[1] = Some(MIB / 2);
+            ledger.rates[2] = Some(4 * MIB);
+            assert_eq!(
+                stolen(&mut ledger, &idle, now),
+                Some((2, range(5 * MIB, 8 * MIB), 0)),
+                "idle workers {idle:?}"
+            );
+        }
+        let mut ledger = ledger_with_a_lease(&directory, start);
+        assert_eq!(stolen(&mut ledger, &[1, 2, 3], now), None);
+    }
+
+    #[test]
+    fn a_lease_that_the_idle_worker_would_not_finish_sooner_is_passed_over_for_one_it_would() {
+        let directory = TestDirectory::new("split-passed-over");
+        let start = Instant::now();
+        let now = start + Duration::from_millis(250);
+        let mut ledger = ledger_over(&directory, 3, 15 * MIB);
+        // Worker 0 fetches 8 MiB/s with 7 MiB to come, more than worker 1 has. The idle worker
+        // fetches 3 MiB/s, which is less than half of that, and more than half of the 4 MiB/s of
+        // worker 1.
+        ledger.assign(0, work(0, 9 * MIB), start);
+        ledger.assign(1, work(9 * MIB, 15 * MIB), start);
+        assert_eq!(ledger.allowance(0).take(2 * MIB), 2 * MIB);
+        assert_eq!(ledger.allowance(1).take(MIB), MIB);
+        ledger.rates[2] = Some(3 * MIB);
+        assert_eq!(
+            stolen(&mut ledger, &[2], now),
+            Some((2, range(12 * MIB + MIB / 2, 15 * MIB), 0))
+        );
+        assert_eq!(ledger.allowance(0).view().size, 9 * MIB);
+    }
+
+    #[test]
+    fn the_range_cut_off_a_lease_keeps_the_attempts_of_the_lease() {
+        let directory = TestDirectory::new("split-attempts");
+        let start = Instant::now();
+        let mut ledger = ledger_over(&directory, 2, 8 * MIB);
+        ledger.rates[1] = Some(8 * MIB);
+        let retried = RangeWork {
+            range: range(0, 8 * MIB),
+            attempts: 2,
+        };
+        ledger.assign(0, retried, start);
+        assert_eq!(ledger.allowance(0).take(2 * MIB), 2 * MIB);
+        assert_eq!(
+            stolen(&mut ledger, &[1], start + Duration::from_secs(1)),
+            Some((1, range(5 * MIB, 8 * MIB), 2))
+        );
+    }
+
+    #[test]
+    fn a_finished_lease_sets_the_rate_of_its_worker_from_the_part_it_kept() {
+        let directory = TestDirectory::new("split-finish-rate");
+        let start = Instant::now();
+        let mut ledger = ledger_over(&directory, 2, 16 * MIB);
+        assert_eq!(ledger.rates[0], None);
+        ledger.assign(0, work(0, 8 * MIB), start);
+        ledger.finish(0, start + Duration::from_secs(2));
+        assert_eq!(ledger.rates[0], Some(4 * MIB));
+
+        // A lease that was cut kept 5 MiB of its 8 and fetched them in 5 s.
+        ledger.rates[1] = Some(4 * MIB);
+        ledger.assign(0, work(8 * MIB, 16 * MIB), start);
+        assert_eq!(ledger.allowance(0).take(2 * MIB), 2 * MIB);
+        assert_eq!(
+            stolen(&mut ledger, &[1], start + Duration::from_secs(1)),
+            Some((1, range(13 * MIB, 16 * MIB), 0))
+        );
+        assert_eq!(ledger.allowance(0).take(8 * MIB), 3 * MIB);
+        ledger.finish(0, start + Duration::from_secs(5));
+        assert_eq!(ledger.rates[0], Some(MIB));
     }
 }
 

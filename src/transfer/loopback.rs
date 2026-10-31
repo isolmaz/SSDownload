@@ -2201,15 +2201,105 @@ fn the_worker_of_a_cut_lease_writes_up_to_the_cut_and_ends_it_as_complete() {
 
 #[test]
 fn a_lease_with_exactly_two_minimum_pieces_to_come_is_cut_into_two() {
-    // Two leases of 4 MiB. The second stalls before its first byte, so it has 4 MiB to come:
-    // the least that is cut, into two pieces of `MIN_SEGMENT_SIZE`.
-    let size = 8 * MIB;
-    let run = download_with_a_stall(size, 2, 0, Some(24 * MIB));
+    // Two leases of 4 MiB and 1 KiB. The second stalls after its first KiB, which is all that
+    // tells its rate, so it has 4 MiB to come: the least that is cut, into two pieces of
+    // `MIN_SEGMENT_SIZE`.
+    let size = 8 * MIB + 2_048;
+    let lease = size / 2;
+    let run = download_with_a_stall(size, 2, 1_024, Some(24 * MIB));
     run.assert_exact(&pattern(1, size));
     let found = steals(&run.log, size);
     assert_eq!(found.len(), 1, "{found:?}");
-    assert_eq!(found[0].victim, (4 * MIB, 8 * MIB));
-    assert_eq!(found[0].thief, (6 * MIB, 8 * MIB));
+    assert_eq!(found[0].victim, (lease, size));
+    assert_eq!(found[0].thief, (lease + 1_024 + 2 * MIB, size));
+}
+
+#[test]
+fn a_worker_that_has_finished_takes_the_back_of_a_lease_that_is_slow() {
+    // Two leases of 8 MiB. The second comes over a connection at 4 MiB/s, the first ends after
+    // an eighth of a second at 64 MiB/s: its worker fetches the back half of what is left of the
+    // second far sooner than that lease would end.
+    let size = 16 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(64 * MIB),
+        slow_connection: Some((0, 4 * MIB)),
+        ..Config::default()
+    });
+    forget_writes();
+    let directory = TempDir::new("slow-lease");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_file_is(&result.path, &pattern(1, size), "a slow lease");
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    assert_tiles(delivered(&log, size), size);
+    let found = steals(&log, size);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].victim, (8 * MIB, size));
+    assert_eq!(ranged_gets(&log, size).len(), 3, "{log:?}");
+}
+
+#[test]
+fn a_slow_connection_with_nothing_left_does_not_take_the_back_of_a_fast_lease() {
+    // The record leaves the first 8 MiB and the last 64 KiB. The 64 KiB come over a connection
+    // at 0.25 MiB/s and end after a quarter of a second, when the lease of the first 8 MiB, at
+    // 8 MiB/s, has 6 MiB to come. The slow connection would need 12 s for the back half of
+    // them, the lease needs 0.75 s for all.
+    let size = 16 * MIB;
+    let tail = size - 64 * 1024;
+    let source = pattern(1, size);
+    let server = Server::start(Config {
+        size,
+        throttle: Some(8 * MIB),
+        slow_connection: Some((0, MIB / 4)),
+        ..Config::default()
+    });
+    let directory = TempDir::new("slow-thief");
+    let output = directory.0.join("payload.bin");
+    let part = File::create(part_path(&output)).unwrap();
+    part.set_len(size).unwrap();
+    write_all_at(&part, &source[(8 * MIB) as usize..tail as usize], 8 * MIB).unwrap();
+    drop(part);
+    fs::write(
+        state_path(&output),
+        previous_release_state(
+            &server,
+            size,
+            true,
+            &format!(r#"[{{"start":{},"end":{tail}}}]"#, 8 * MIB),
+        ),
+    )
+    .unwrap();
+
+    forget_writes();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_file_is(&result.path, &source, "a slow thief");
+    assert_written_once(&writes(), &[(8 * MIB, tail)], size);
+
+    server.wait_idle();
+    let log = server.log();
+    let mut ranges = ranged_gets(&log, size);
+    ranges.sort_unstable();
+    assert_eq!(ranges, [(0, 8 * MIB), (tail, size)], "{log:?}");
 }
 
 #[test]
@@ -2251,10 +2341,11 @@ fn leases_cut_at_varied_moments_are_written_exactly_once() {
     let mut cuts = std::collections::BTreeSet::new();
     for run in 0..24u64 {
         let connections = 2 + (run % 3) as u8;
-        // Leases of 8 MiB, one of which stalls after at most 3 MiB: it keeps at least 5 MiB to
-        // come, so that it is cut however many bytes arrived before it stalled.
+        // Leases of 8 MiB, one of which stalls after at least one byte, which tells its rate, and
+        // at most 3 MiB: it keeps at least 5 MiB to come, so that it is cut however many bytes
+        // arrived before it stalled.
         let size = u64::from(connections) * 8 * MIB + random.below(4_096);
-        let after = random.below(3 * MIB);
+        let after = 1 + random.below(3 * MIB);
         let throttle = [None, Some(64 * MIB), Some(160 * MIB)][random.below(3) as usize];
         // Every other run checkpoints so often that cycles run while the leases are cut.
         if run % 2 == 0 {
