@@ -2475,6 +2475,8 @@ mod retry_budget {
         let error = job.error.as_deref().unwrap();
         assert!(error.starts_with("SSD-NET-004 "), "{error}");
         assert_eq!(job.attempts, 0);
+        let entry = crate::error_codes::definition(crate::error_codes::NET_004).unwrap();
+        assert!(!entry.retryable, "the registry must say what the job did");
         assert!(!job.path.exists());
         assert_eq!(attempts_made(&source), 1);
         assert!(page.log().iter().all(|entry| entry.method == "HEAD"));

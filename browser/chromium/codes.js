@@ -34,7 +34,7 @@ const ERROR_CODES = {
   "SSD-NET-001": { area: "network", stage: "source", severity: "error", action: "retry", retryable: true },
   "SSD-NET-002": { area: "network", stage: "source", severity: "error", action: "retry", retryable: true },
   "SSD-NET-003": { area: "network", stage: "source", severity: "error", action: "retry", retryable: true },
-  "SSD-NET-004": { area: "network", stage: "source", severity: "error", action: "settings", retryable: true },
+  "SSD-NET-004": { area: "network", stage: "source", severity: "error", action: "settings", retryable: false },
   "SSD-NET-005": { area: "network", stage: "source", severity: "error", action: "refresh", retryable: false },
   "SSD-NET-006": { area: "network", stage: "source", severity: "warn", action: "retry", retryable: true },
   "SSD-NET-007": { area: "network", stage: "source", severity: "error", action: "retry", retryable: true },
