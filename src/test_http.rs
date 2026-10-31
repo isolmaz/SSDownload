@@ -115,6 +115,10 @@ pub struct Config {
     /// bytes. It goes on once a request for a range that starts inside the body arrives, the
     /// client closes the connection, or `STALL_LIMIT` has passed.
     pub stall: Option<(usize, u64)>,
+    /// A stalled body, once a request takes part of its range, goes on only up to the start of
+    /// that part and then stays silent until the client closes the connection or `STALL_LIMIT`
+    /// has passed.
+    pub hold_at_takeover: bool,
     pub max_connections: Option<usize>,
     pub over_limit: OverLimit,
     pub cut_body: Option<CutBody>,
@@ -153,6 +157,7 @@ impl Default for Config {
             throttle: None,
             slow_connection: None,
             stall: None,
+            hold_at_takeover: false,
             max_connections: None,
             over_limit: OverLimit::Unavailable(None),
             cut_body: None,
@@ -197,6 +202,8 @@ struct Shared {
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
     ranged_connections: AtomicUsize,
+    /// Silent bodies that ended because the client closed the connection.
+    abandoned: AtomicUsize,
     /// Index of the first request that gets the second body version.
     switch_from: AtomicUsize,
     open: AtomicUsize,
@@ -227,6 +234,7 @@ impl Server {
             scripted: AtomicUsize::new(0),
             target_requests: AtomicUsize::new(0),
             ranged_connections: AtomicUsize::new(0),
+            abandoned: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
             body_bytes: AtomicU64::new(0),
             stop: AtomicBool::new(false),
@@ -262,6 +270,12 @@ impl Server {
     /// Body bytes written to sockets so far, whether or not the client read them.
     pub fn body_bytes_sent(&self) -> u64 {
         self.shared.body_bytes.load(Ordering::Acquire)
+    }
+
+    /// How many bodies that `hold_at_takeover` left silent ended because the client closed the
+    /// connection rather than because `STALL_LIMIT` passed.
+    pub fn abandoned_holds(&self) -> usize {
+        self.shared.abandoned.load(Ordering::Acquire)
     }
 
     /// Blocks until every connection has closed and no request has arrived for a moment, so
@@ -512,19 +526,29 @@ fn ranged_place(shared: &Shared, request: &Request) -> Option<usize> {
     above_zero.then(|| shared.ranged_connections.fetch_add(1, Ordering::AcqRel))
 }
 
+/// Whether the client has closed a non-blocking connection.
+fn closed_by_client(stream: &TcpStream) -> bool {
+    match stream.peek(&mut [0]) {
+        Ok(0) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::WouldBlock,
+        Ok(_) => false,
+    }
+}
+
 /// Holds a response, whose body is `start..end` and whose request is logged at `position`, until
 /// another request has been logged for a range that starts inside the body, or `STALL_LIMIT` has
-/// passed. `false` when the client closed the connection meanwhile.
+/// passed. Returns where the part taken starts, or `end` after the limit; `None` when the client
+/// closed the connection meanwhile.
 fn wait_for_takeover(
     shared: &Shared,
     stream: &TcpStream,
     position: usize,
     start: u64,
     end: u64,
-) -> bool {
+) -> Option<u64> {
     let deadline = Instant::now() + STALL_LIMIT;
     let _ = stream.set_nonblocking(true);
-    let open = loop {
+    let taken = loop {
         let taken = shared
             .log
             .lock()
@@ -533,18 +557,36 @@ fn wait_for_takeover(
             .enumerate()
             .filter(|(index, _)| *index != position)
             .filter_map(|(_, entry)| entry.range.as_deref().and_then(range_start))
-            .any(|from| from > start && from < end);
-        if taken || Instant::now() >= deadline {
-            break true;
+            .filter(|&from| from > start && from < end)
+            .min();
+        if taken.is_some() {
+            break taken;
         }
-        match stream.peek(&mut [0]) {
-            Ok(0) => break false,
-            Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => break false,
-            _ => thread::sleep(Duration::from_millis(2)),
+        if Instant::now() >= deadline {
+            break Some(end);
         }
+        if closed_by_client(stream) {
+            break None;
+        }
+        thread::sleep(Duration::from_millis(2));
     };
     let _ = stream.set_nonblocking(false);
-    open
+    taken
+}
+
+/// Keeps a response silent until the client closes the connection, which is counted, or
+/// `STALL_LIMIT` has passed.
+fn hold(shared: &Shared, stream: &TcpStream) {
+    let deadline = Instant::now() + STALL_LIMIT;
+    let _ = stream.set_nonblocking(true);
+    while Instant::now() < deadline {
+        if closed_by_client(stream) {
+            shared.abandoned.fetch_add(1, Ordering::AcqRel);
+            break;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    let _ = stream.set_nonblocking(false);
 }
 
 struct Reply {
@@ -881,15 +923,24 @@ fn answer(
     let delivered = match stall {
         Some(after) => {
             write_body(stream, body, reply.version, start, after, rate)
-                && wait_for_takeover(shared, stream, position, start, start + length)
-                && write_body(
-                    stream,
-                    body,
-                    reply.version,
-                    start + after,
-                    sent - after,
-                    rate,
-                )
+                && match wait_for_takeover(shared, stream, position, start, start + length) {
+                    None => false,
+                    Some(taken) if config.hold_at_takeover => {
+                        let until = taken.saturating_sub(start + after);
+                        if write_body(stream, body, reply.version, start + after, until, rate) {
+                            hold(shared, stream);
+                        }
+                        false
+                    }
+                    Some(_) => write_body(
+                        stream,
+                        body,
+                        reply.version,
+                        start + after,
+                        sent - after,
+                        rate,
+                    ),
+                }
         }
         None => write_body(stream, body, reply.version, start, sent, rate),
     };
@@ -1397,6 +1448,34 @@ mod tests {
         let began = Instant::now();
         server.wait_idle();
         assert!(began.elapsed() < STALL_LIMIT / 2);
+    }
+
+    #[test]
+    fn a_held_body_stops_where_the_part_taken_starts_and_ends_when_the_client_closes() {
+        let server = Server::start(Config {
+            stall: Some((0, 10)),
+            hold_at_takeover: true,
+            ..config(1000)
+        });
+        let body = pattern(1, 1000);
+        let mut held = connect(&server);
+        start_ranged_get(&mut held, "100-399");
+        let mut first = [0; 10];
+        held.read_exact(&mut first).unwrap();
+        assert!(is_silent(&mut held));
+
+        request(&mut connect(&server), "GET", "/", &["Range: bytes=300-399"]);
+        let mut rest = vec![0; 190];
+        held.read_exact(&mut rest).unwrap();
+        assert_eq!(rest, body[110..300]);
+        assert!(is_silent(&mut held));
+        assert_eq!(server.abandoned_holds(), 0);
+
+        drop(held);
+        let began = Instant::now();
+        server.wait_idle();
+        assert!(began.elapsed() < STALL_LIMIT / 2);
+        assert_eq!(server.abandoned_holds(), 1);
     }
 
     #[test]

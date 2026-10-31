@@ -2795,7 +2795,11 @@ impl DynamicRangeWorker<'_> {
                 .map_err(anyhow::Error::from)?;
             transfer
                 .progress_function(|_, _, _, _| {
-                    !control.stop_requested() && !abort.load(Ordering::Acquire)
+                    // A lease that was cut and has everything up to the cut needs nothing more,
+                    // however long the server stays silent.
+                    let seen = allowance.view();
+                    let spent = seen.size < range.len() && seen.to_come() == 0;
+                    !control.stop_requested() && !abort.load(Ordering::Acquire) && !spent
                 })
                 .map_err(anyhow::Error::from)?;
             transfer.perform()
@@ -2851,8 +2855,9 @@ impl DynamicRangeWorker<'_> {
         // The scheduler may have cut the lease short of the range that was requested.
         let size = allowance.view().size;
         if let Err(error) = perform_result {
-            // The write callback ends the transfer when data arrives beyond a cut, which completes
-            // the lease once every byte up to the cut is written.
+            // The write callback ends the transfer when data arrives beyond a cut, and the
+            // progress callback when none is left before it; either completes the lease once
+            // every byte up to the cut is written.
             if size == range.len() || written != size {
                 return Err(AttemptFailure::RetryableTransport(
                     governed_transport_error(

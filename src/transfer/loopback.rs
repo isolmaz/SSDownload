@@ -2200,6 +2200,40 @@ fn the_worker_of_a_cut_lease_writes_up_to_the_cut_and_ends_it_as_complete() {
 }
 
 #[test]
+fn a_cut_lease_that_has_everything_up_to_its_cut_closes_its_connection_although_the_server_is_silent(
+) {
+    let size = 12 * MIB + 4_097;
+    // After the cut the stalled lease receives the bytes up to it, and the server sends nothing
+    // more on that connection.
+    let server = Server::start(Config {
+        size,
+        throttle: Some(24 * MIB),
+        stall: Some((0, MIB)),
+        hold_at_takeover: true,
+        ..Config::default()
+    });
+    forget_writes();
+    let directory = TempDir::new("silent-after-cut");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_file_is(&result.path, &pattern(1, size), "silent after the cut");
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    assert_eq!(steals(&log, size).len(), 1, "{log:?}");
+    assert_eq!(server.abandoned_holds(), 1, "{log:?}");
+}
+
+#[test]
 fn a_lease_with_exactly_two_minimum_pieces_to_come_is_cut_into_two() {
     // Two leases of 4 MiB and 1 KiB. The second stalls after its first KiB, which is all that
     // tells its rate, so it has 4 MiB to come: the least that is cut, into two pieces of
