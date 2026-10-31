@@ -62,8 +62,9 @@ fn ranged_gets(log: &[Logged], total: u64) -> Vec<(u64, u64)> {
 }
 
 /// The half-open ranges that the ranged data GETs delivered. A request delivers only up to the
-/// start of a later one that begins inside it: a lease that was split for an idle worker, or
-/// one that dropped and was asked for again from where it stopped.
+/// start of another one that begins inside it, whichever was sent first: a lease that was cut
+/// for an idle worker, or one that dropped and was asked for again from where it stopped. The
+/// request log alone cannot show a byte delivered twice; `assert_written_once` does.
 fn delivered(log: &[Logged], total: u64) -> Vec<(u64, u64)> {
     let requested = ranged_gets(log, total);
     requested
@@ -249,6 +250,7 @@ fn segmented_download_over_several_connections_has_exactly_the_source_bytes() {
     });
     let directory = TempDir::new("segmented");
     let output = directory.0.join("payload.bin");
+    forget_writes();
     let result = fetch(
         &request_for(&server),
         &output,
@@ -261,6 +263,7 @@ fn segmented_download_over_several_connections_has_exactly_the_source_bytes() {
     assert_eq!(result.bytes, size);
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     assert!(!part_path(&output).exists() && !state_path(&output).exists());
+    assert_written_once(&writes(), &[], size);
 
     let log = server.log();
     assert_tiles(delivered(&log, size), size);
@@ -317,6 +320,7 @@ fn an_interrupted_segmented_download_resumes_by_requesting_only_the_missing_rang
     server.wait_idle();
     let first_attempt = server.log().len();
 
+    forget_writes();
     let result = fetch(
         &request,
         &output,
@@ -327,6 +331,7 @@ fn an_interrupted_segmented_download_resumes_by_requesting_only_the_missing_rang
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &done, size);
 
     let log = server.log();
     let resumed = &log[first_attempt..];
@@ -449,6 +454,7 @@ fn a_server_that_serves_ranges_without_advertising_them_is_downloaded_over_sever
     });
     let directory = TempDir::new("unadvertised-ranges");
     let output = directory.0.join("payload.bin");
+    forget_writes();
     let result = fetch(
         &request_for(&server),
         &output,
@@ -459,6 +465,7 @@ fn a_server_that_serves_ranges_without_advertising_them_is_downloaded_over_sever
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
 
     server.wait_idle();
     let log = server.log();
@@ -535,6 +542,7 @@ fn a_head_with_the_wrong_length_does_not_decide_the_size() {
         });
         let directory = TempDir::new("head-length");
         let output = directory.0.join("payload.bin");
+        forget_writes();
         let result = fetch(
             &request_for(&server),
             &output,
@@ -548,6 +556,7 @@ fn a_head_with_the_wrong_length_does_not_decide_the_size() {
         assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
         assert!(!part_path(&output).exists() && !state_path(&output).exists());
         if segmented {
+            assert_written_once(&writes(), &[], size);
             server.wait_idle();
             assert_tiles(delivered(&server.log(), size), size);
         }
@@ -565,6 +574,7 @@ fn a_server_that_refuses_head_is_downloaded_over_ranges() {
     });
     let directory = TempDir::new("head-refused");
     let output = directory.0.join("payload.bin");
+    forget_writes();
     let result = fetch(
         &request_for(&server),
         &output,
@@ -575,6 +585,7 @@ fn a_server_that_refuses_head_is_downloaded_over_ranges() {
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
 
     server.wait_idle();
     let log = server.log();
@@ -692,6 +703,7 @@ fn a_fresh_probe_carries_no_if_range_so_a_head_with_other_validators_still_segme
     });
     let directory = TempDir::new("head-validators");
     let output = directory.0.join("payload.bin");
+    forget_writes();
     let result = fetch(
         &request_for(&server),
         &output,
@@ -702,6 +714,7 @@ fn a_fresh_probe_carries_no_if_range_so_a_head_with_other_validators_still_segme
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
 
     server.wait_idle();
     let log = server.log();
@@ -733,6 +746,7 @@ fn a_head_without_length_or_validators_does_not_prevent_the_range_probe() {
     });
     let directory = TempDir::new("bare-head");
     let output = directory.0.join("payload.bin");
+    forget_writes();
     let result = fetch(
         &request_for(&server),
         &output,
@@ -743,6 +757,7 @@ fn a_head_without_length_or_validators_does_not_prevent_the_range_probe() {
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
 
     server.wait_idle();
     let log = server.log();
@@ -925,6 +940,7 @@ fn an_interrupted_segmented_download_resumes_when_the_head_disagrees_with_the_ge
     server.wait_idle();
     let first_attempt = server.log().len();
 
+    forget_writes();
     let result = fetch(
         &request,
         &output,
@@ -935,6 +951,7 @@ fn an_interrupted_segmented_download_resumes_when_the_head_disagrees_with_the_ge
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &done, size);
     server.wait_idle();
     let log = server.log();
     let resumed = &log[first_attempt..];
@@ -1638,6 +1655,7 @@ fn every_stop_leaves_a_record_of_true_bytes(connections: u8, size: u64, rate: u6
             .unwrap_or_default();
 
         let first_attempt = server.log().len();
+        forget_writes();
         let result = fetch(
             &request,
             &output,
@@ -1657,6 +1675,7 @@ fn every_stop_leaves_a_record_of_true_bytes(connections: u8, size: u64, rate: u6
         let log = server.log();
         let resumed = &log[first_attempt..];
         if connections > 1 {
+            assert_written_once(&writes(), &recorded, size);
             let mut requested = delivered(resumed, size);
             requested.extend(recorded);
             assert_tiles(requested, size);
@@ -2088,6 +2107,7 @@ fn a_segmented_record_of_the_previous_release_resumes_with_only_the_missing_rang
     .unwrap();
     assert_eq!(retained_bytes(&output), Some(done));
 
+    forget_writes();
     let result = fetch(
         &request_for(&server),
         &output,
@@ -2098,6 +2118,7 @@ fn a_segmented_record_of_the_previous_release_resumes_with_only_the_missing_rang
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[(0, done)], size);
     server.wait_idle();
     let mut requested = delivered(&server.log(), size);
     requested.push((0, done));
@@ -2486,6 +2507,147 @@ fn a_source_that_changes_before_the_back_of_a_lease_is_requested_is_never_mixed_
         // The bytes of version 1 are discarded and the file comes whole from one request.
         let last = log.last().unwrap();
         assert_eq!((last.method.as_str(), last.range.as_deref()), ("GET", None));
+    }
+}
+
+/// What a download left behind on a server whose second lease stalls after 1 MiB until the back
+/// of it is requested, and whose first `responses` responses that start at or after `cut_from`
+/// drop after `after` bytes. The download has to finish with the exact file all the same.
+struct Dropped {
+    log: Vec<Logged>,
+    phases: Vec<String>,
+}
+
+fn download_with_a_stall_and_drops(
+    size: u64,
+    after: u64,
+    responses: usize,
+    cut_from: u64,
+) -> Dropped {
+    let server = Server::start(Config {
+        size,
+        throttle: Some(24 * MIB),
+        stall: Some((0, MIB)),
+        cut_body: Some(CutBody {
+            after_bytes: after,
+            responses,
+        }),
+        cut_from,
+        ..Config::default()
+    });
+    checkpoint_every(NEVER, u64::MAX);
+    forget_writes();
+    let directory = TempDir::new("steal-and-drop");
+    let output = directory.0.join("payload.bin");
+    let mut phases = Vec::new();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |progress| phases.push(progress.phase),
+    )
+    .unwrap_or_else(|error| panic!("{error:#}"));
+    assert_file_is(&result.path, &pattern(1, size), "steal and drop");
+    assert!(!part_path(&output).exists() && !state_path(&output).exists());
+    assert_written_once(&writes(), &[], size);
+    server.wait_idle();
+    let log = server.log();
+    assert_tiles(delivered(&log, size), size);
+    for entry in data_gets(&log) {
+        assert_eq!(entry.if_range.as_deref(), Some("\"v1\""), "{entry:?}");
+    }
+    Dropped { log, phases }
+}
+
+/// Where the back of the lease that starts at `lease` was first requested: the lowest start
+/// above `lease` among the requests that end at the end of the file.
+fn cut_of(log: &[Logged], size: u64, lease: u64) -> u64 {
+    ranged_gets(log, size)
+        .into_iter()
+        .filter(|&(from, to)| to == size && from > lease)
+        .map(|(from, _)| from)
+        .min()
+        .expect("no lease was cut")
+}
+
+#[test]
+fn a_victim_that_drops_before_its_cut_is_asked_for_again_only_up_to_the_cut() {
+    let size = 12 * MIB + 4_097;
+    let lease = size.div_ceil(2);
+    // The response of the stalled lease drops after 2 MiB, before its cut at about 3.5 MiB.
+    let run = download_with_a_stall_and_drops(size, 2 * MIB, 1, lease);
+    let cut = cut_of(&run.log, size, lease);
+    let ranges = ranged_gets(&run.log, size);
+    assert!(ranges.contains(&(lease + 2 * MIB, cut)), "{ranges:?}");
+    assert!(
+        run.phases.iter().any(|phase| is_retry_notice(phase)),
+        "{:?}",
+        run.phases
+    );
+}
+
+#[test]
+fn a_thief_that_drops_is_asked_for_again_from_where_it_stopped() {
+    let size = 12 * MIB + 4_097;
+    let lease = size.div_ceil(2);
+    // The first response that starts above the stalled lease is the one for its back; it drops
+    // after 1 MiB.
+    let run = download_with_a_stall_and_drops(size, MIB, 1, lease + 1);
+    let cut = cut_of(&run.log, size, lease);
+    let ranges = ranged_gets(&run.log, size);
+    assert!(ranges.contains(&(cut + MIB, size)), "{ranges:?}");
+    assert!(
+        run.phases.iter().any(|phase| is_retry_notice(phase)),
+        "{:?}",
+        run.phases
+    );
+}
+
+#[test]
+fn a_victim_and_a_thief_that_both_drop_are_each_asked_for_again_from_where_they_stopped() {
+    let size = 12 * MIB + 4_097;
+    let lease = size.div_ceil(2);
+    let run = download_with_a_stall_and_drops(size, MIB + MIB / 2, 2, lease);
+    let cut = cut_of(&run.log, size, lease);
+    let ranges = ranged_gets(&run.log, size);
+    assert!(
+        ranges.contains(&(lease + MIB + MIB / 2, cut)),
+        "the victim: {ranges:?}"
+    );
+    assert!(
+        ranges.contains(&(cut + MIB + MIB / 2, size)),
+        "the thief: {ranges:?}"
+    );
+}
+
+#[test]
+fn a_download_stopped_after_a_cut_whose_victim_dropped_records_true_bytes_and_resumes_exactly() {
+    let size = 12 * MIB + 4_097;
+    let lease = size.div_ceil(2);
+    let expected = pattern(1, size);
+    checkpoint_every(NEVER, u64::MAX);
+    // The stops fall before the drop, between the drop and the retry, and after the retry.
+    for delay in [0u64, 20, 60, 150, 600, 1300] {
+        let label = format!("stopped {delay} ms after the request for the back of a lease");
+        let server = Server::start(Config {
+            size,
+            throttle: Some(24 * MIB),
+            stall: Some((0, MIB)),
+            cut_body: Some(CutBody {
+                after_bytes: 2 * MIB,
+                responses: 1,
+            }),
+            cut_from: lease,
+            ..Config::default()
+        });
+        let directory = TempDir::new("stop-after-drop");
+        let output = directory.0.join("payload.bin");
+        let (first, _) = download_stopped_after_a_cut(&server, &output, size, |_, _| {
+            thread::sleep(Duration::from_millis(delay))
+        });
+        assert_stop_is_exact(&server, &output, first, &expected, &label);
     }
 }
 
