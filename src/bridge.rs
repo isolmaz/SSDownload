@@ -1,7 +1,7 @@
 use crate::{
     app::App,
     i18n::ui,
-    model::{Action, AppSnapshot, BridgeResponse, Hold, Settings},
+    model::{Action, AppSnapshot, BridgeResponse, CommandResult, Hold, Settings},
     paths::AppPaths,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -658,7 +658,7 @@ fn process_pipe_client(app: &App, pipe: windows_sys::Win32::Foundation::HANDLE) 
                     );
                 match app.dispatch_result(action) {
                     Ok(result) => BridgeResponse {
-                        result: Some(result),
+                        result: Some(public_result(result)),
                         ok: true,
                         message: ui("İstek kabul edildi", "Request accepted").into(),
                         snapshot: include_snapshot.then(|| {
@@ -976,6 +976,17 @@ fn public_snapshot(mut snapshot: AppSnapshot) -> AppSnapshot {
         job.request.page_html = None;
     }
     snapshot
+}
+
+/// A pipe client gets the ticket of a source refresh with the stored page, frame and track
+/// selection a new address is submitted under, never the job's cookies, request headers, page
+/// markup or destination folder. The window receives the whole ticket in process, from
+/// `App::dispatch_result`.
+fn public_result(mut result: CommandResult) -> CommandResult {
+    if let Some(ticket) = &mut result.source_refresh {
+        *ticket.request = crate::browser_transfer::relay_request(&ticket.request);
+    }
+    result
 }
 
 fn browser_response(mut response: BridgeResponse, include_media: bool) -> BridgeResponse {
@@ -1760,6 +1771,7 @@ mod tests {
     use super::*;
     use crate::model::{
         Action, AddRequest, BridgeResponse, ExternalSubtitle, InspectRequest, ScopedCookie,
+        SourceIdentity,
     };
 
     #[test]
@@ -2588,6 +2600,126 @@ mod tests {
             assert!(!invalid.ok);
             assert!(invalid.result.is_none());
         }
+
+        app.shutdown();
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The whole path of a `begin_source_refresh` question: the host loop validates it, the
+    /// running desktop's pipe answers it, and the ticket holds the job's selection without its
+    /// cookies, request headers, page markup or destination folder.
+    #[test]
+    fn the_host_hands_out_a_source_refresh_ticket_without_the_jobs_secrets() {
+        let root = std::env::temp_dir().join(format!(
+            "ssdownload-bridge-source-refresh-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let app = App::open(paths.clone()).unwrap();
+        start(app.clone()).unwrap();
+        let id = app
+            .dispatch_result(Action::Add {
+                request: AddRequest {
+                    url: "https://files.example/report.zip".into(),
+                    kind: crate::model::DownloadKind::File,
+                    filename: Some("report.zip".into()),
+                    directory: Some(root.join("SECRET-FOLDER")),
+                    headers: [
+                        ("User-Agent", "agent"),
+                        ("Cookie", "SECRET-COOKIE"),
+                        ("authorization", "Bearer SECRET-TOKEN"),
+                        ("X-Api-Key", "SECRET-KEY"),
+                    ]
+                    .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                    .into(),
+                    session_cookies: vec![ScopedCookie {
+                        name: "sid".into(),
+                        value: "SECRET-SESSION".into(),
+                        domain: "files.example".into(),
+                        ..Default::default()
+                    }],
+                    referer: Some("https://site.example/".into()),
+                    page_url: Some("https://site.example/watch".into()),
+                    page_html: Some("<html>SECRET-PAGE</html>".into()),
+                    source_identity: Some(SourceIdentity {
+                        video_id: "v1".into(),
+                        frame_id: 3,
+                        document_id: Some("doc".into()),
+                        page_url: "https://site.example/watch".into(),
+                    }),
+                    external_subtitles: vec![ExternalSubtitle {
+                        url: "https://files.example/en.vtt".into(),
+                        language: "en".into(),
+                        label: "English".into(),
+                        kind: "subtitles".into(),
+                        is_default: true,
+                        headers: [("Origin".to_owned(), "https://site.example".to_owned())].into(),
+                        referer: Some("https://site.example/".into()),
+                    }],
+                    request_id: Some("request-1".into()),
+                    connections: Some(4),
+                    // The job waits for its time and performs no network I/O.
+                    start_at: Some(chrono::Utc::now().timestamp() + 3_600),
+                    ..Default::default()
+                },
+            })
+            .unwrap()
+            .job_ids
+            .remove(0);
+        let stored = app
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|job| job.id == id)
+            .unwrap()
+            .request
+            .clone();
+        assert!(
+            stored.headers.len() == 4
+                && stored.session_cookies.len() == 1
+                && stored.page_html.is_some()
+                && stored.directory.is_some(),
+            "the stored job holds what the ticket must not carry: {stored:?}"
+        );
+
+        let (result, mut replies) = run_host(
+            &paths,
+            &[],
+            &[WireRequest {
+                version: PROTOCOL_VERSION,
+                action: Some(Action::BeginSourceRefresh { id: id.clone() }),
+            }],
+        );
+        result.expect("the host keeps serving");
+        assert_eq!(replies.len(), 1);
+        let reply = replies.remove(0);
+        assert!(reply.ok, "{}", reply.message);
+        let wire = serde_json::to_string(&reply).unwrap();
+        assert!(!wire.contains("SECRET"), "{wire}");
+        let ticket = reply
+            .result
+            .and_then(|result| result.source_refresh)
+            .expect("the reply holds a ticket");
+        assert_eq!(ticket.job_id, id);
+        assert_eq!(ticket.page_url, "https://site.example/watch");
+        let mut expected = serde_json::to_value(&stored).unwrap();
+        let fields = expected.as_object_mut().unwrap();
+        fields.insert("headers".into(), serde_json::json!({}));
+        fields.insert("session_cookies".into(), serde_json::json!([]));
+        fields.insert("directory".into(), serde_json::Value::Null);
+        fields.remove("page_html");
+        assert_eq!(serde_json::to_value(&*ticket.request).unwrap(), expected);
+
+        // The window asks the application directly and gets the stored request whole.
+        let in_process = app
+            .dispatch_result(Action::BeginSourceRefresh { id })
+            .unwrap()
+            .source_refresh
+            .expect("the window gets a ticket");
+        assert_eq!(
+            serde_json::to_value(&*in_process.request).unwrap(),
+            serde_json::to_value(&stored).unwrap()
+        );
 
         app.shutdown();
         std::fs::remove_dir_all(root).ok();

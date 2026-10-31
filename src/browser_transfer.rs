@@ -295,11 +295,11 @@ fn digest_file(path: &Path) -> Result<String> {
     }
     Ok(hex::encode(hash.finalize()))
 }
-/// The job's request as the extension receives it with a transfer grant. The relay reads the
-/// address, the page and frame identity, the quality and track selection and the subtitle
-/// access; the cookies, the request headers, the page markup and the destination folder stay
-/// in the app.
-fn relay_request(request: &AddRequest) -> AddRequest {
+/// The job's request as the extension receives it, with a transfer grant or a source-refresh
+/// ticket. The relay reads the address, the page and frame identity, the quality and track
+/// selection and the subtitle access; the cookies, the request headers, the page markup and
+/// the destination folder stay in the app.
+pub(crate) fn relay_request(request: &AddRequest) -> AddRequest {
     let mut request = request.clone();
     request.session_cookies.clear();
     request.headers.clear();
