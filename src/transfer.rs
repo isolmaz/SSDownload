@@ -4264,7 +4264,7 @@ fn build_headers(
 /// Credentials and site-specific request metadata must never follow a redirect
 /// to another origin.  The short allow-list contains only browser-neutral
 /// negotiation headers.
-fn header_is_safe_across_origin(name: &str, same_origin: bool) -> bool {
+pub(crate) fn header_is_safe_across_origin(name: &str, same_origin: bool) -> bool {
     same_origin || matches!(name, "accept" | "accept-language" | "user-agent")
 }
 
@@ -4964,7 +4964,7 @@ fn remove_if_exists(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
-fn redirected_url(current: &Url, location: Option<&str>) -> Result<Url> {
+pub(crate) fn redirected_url(current: &Url, location: Option<&str>) -> Result<Url> {
     let location = location.ok_or_else(|| {
         anyhow!(
             "{}",
@@ -5962,6 +5962,34 @@ mod tests {
             Some("a%FF.bin".into())
         );
         assert_eq!(name("https://example.test/folder/"), None);
+    }
+
+    #[test]
+    fn a_redirect_never_leads_from_https_to_plain_http() {
+        let secure = Url::parse("https://cdn.example/a/0.ts").unwrap();
+        let plain = Url::parse("http://cdn.example/a/0.ts").unwrap();
+        let followed = |current: &Url, location: &str| {
+            redirected_url(current, Some(location)).map(|next| next.to_string())
+        };
+        assert!(followed(&secure, "http://mirror.example/0.ts").is_err());
+        assert!(followed(&secure, "ftp://mirror.example/0.ts").is_err());
+        assert!(redirected_url(&secure, None).is_err());
+        assert_eq!(
+            followed(&secure, "//mirror.example/0.ts").unwrap(),
+            "https://mirror.example/0.ts"
+        );
+        assert_eq!(
+            followed(&secure, "/b/0.ts").unwrap(),
+            "https://cdn.example/b/0.ts"
+        );
+        assert_eq!(
+            followed(&plain, "https://mirror.example/0.ts").unwrap(),
+            "https://mirror.example/0.ts"
+        );
+        assert_eq!(
+            followed(&plain, "http://mirror.example/0.ts").unwrap(),
+            "http://mirror.example/0.ts"
+        );
     }
 
     #[test]

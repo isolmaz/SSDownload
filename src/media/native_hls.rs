@@ -676,13 +676,14 @@ impl WorkerContext<'_> {
             let host = self.shared.hosts[stream_index][task.index];
             let segment = segment_path(&join.joined, task.index);
             let mut url = stream.segments[task.index].clone();
-            let mut fetched = self.fetch(&url, stream, &segment);
+            let mut fetched = self.fetch(&url, stream, &segment, true);
             for _ in 0..MAX_REDIRECTS {
                 let Ok(Fetched::Redirect(next)) = &fetched else {
                     break;
                 };
                 url = next.clone();
-                fetched = self.fetch(&url, stream, &segment);
+                let same_origin = url.origin() == stream.segments[task.index].origin();
+                fetched = self.fetch(&url, stream, &segment, same_origin);
             }
             match fetched {
                 Ok(Fetched::Done) => {
@@ -737,8 +738,16 @@ impl WorkerContext<'_> {
         }
     }
 
-    /// One request for a segment into `<segment>.tmp`, renamed to `segment` once whole.
-    fn fetch(&self, url: &Url, stream: &NativeStream, segment: &Path) -> Result<Fetched> {
+    /// One request for a segment into `<segment>.tmp`, renamed to `segment` once whole. Off the
+    /// segment's own origin, which a redirect can lead to, the request carries only the headers
+    /// that are safe across origins and no cookies, as a file transfer's does.
+    fn fetch(
+        &self,
+        url: &Url,
+        stream: &NativeStream,
+        segment: &Path,
+        same_origin: bool,
+    ) -> Result<Fetched> {
         let partial = partial_path(segment);
         let mut file = match File::create(&partial) {
             Ok(file) => file,
@@ -750,12 +759,17 @@ impl WorkerContext<'_> {
         easy.progress(true)?;
         let mut headers = List::new();
         for (name, value) in &stream.headers {
-            headers.append(&format!("{name}: {value}"))?;
+            if crate::transfer::header_is_safe_across_origin(
+                &name.trim().to_ascii_lowercase(),
+                same_origin,
+            ) {
+                headers.append(&format!("{name}: {value}"))?;
+            }
         }
         let cookie = self
             .cookies
             .iter()
-            .filter(|cookie| scoped_cookie_applies(cookie, url))
+            .filter(|cookie| same_origin && scoped_cookie_applies(cookie, url))
             .map(|cookie| format!("{}={}", cookie.name, cookie.value))
             .collect::<Vec<_>>()
             .join("; ");
@@ -838,12 +852,8 @@ impl WorkerContext<'_> {
             });
         }
         if matches!(status, 301 | 302 | 303 | 307 | 308) {
-            if let Some(next) = header("location")
-                .and_then(|location| url.join(&location).ok())
-                .filter(|next| matches!(next.scheme(), "http" | "https"))
-            {
-                return Ok(Fetched::Redirect(next));
-            }
+            return crate::transfer::redirected_url(url, header("location").as_deref())
+                .map(Fetched::Redirect);
         }
         Ok(Fetched::Retry {
             status: Some(status),
@@ -1277,5 +1287,179 @@ mod tests {
         assert_eq!(fs::read_to_string(index_path(&joined)).unwrap(), "4 16");
         assert!(!segment_path(&joined, 3).exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// One worker fetches every segment of `streams` into `workspace`, as the workers of a
+    /// download do before the merge; it is stopped after ten seconds. Returns the joins and the
+    /// download's failure.
+    fn work_alone(
+        streams: &[NativeStream],
+        cookies: &[ScopedCookie],
+        workspace: &Path,
+    ) -> (Vec<Join>, Option<anyhow::Error>) {
+        let joins = streams
+            .iter()
+            .map(|stream| Join::resume(workspace, stream).unwrap())
+            .collect::<Vec<_>>();
+        let shared = Shared::new(streams, &joins, 1);
+        let (control, network, received) = (
+            TransferControl::default(),
+            NetworkGovernor::new(8),
+            AtomicU64::new(0),
+        );
+        let context = WorkerContext {
+            streams,
+            joins: &joins,
+            shared: &shared,
+            cookies,
+            control: &control,
+            network: &network,
+            received: &received,
+            workers: 1,
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                context.work();
+                let _ = sender.send(());
+            });
+            let _ = receiver.recv_timeout(Duration::from_secs(10));
+            control.cancel();
+        });
+        let failure = shared.take_failure();
+        (joins, failure)
+    }
+
+    #[test]
+    fn a_segment_redirect_the_transfer_rules_refuse_fails_the_download_at_once() {
+        use crate::test_http::{Config, Document, Server, TempDir};
+        let source = Server::start(Config {
+            size: 2000,
+            documents: vec![Document {
+                path: "/a/0.ts".into(),
+                status: 302,
+                headers: vec!["Location: ftp://mirror.example/0.ts".into()],
+                body: Vec::new(),
+                unframed: false,
+            }],
+            ..Config::default()
+        });
+        let streams = [NativeStream {
+            segments: vec![Url::parse(&source.url("/a/0.ts")).unwrap()],
+            ..one_host_stream(0)
+        }];
+        let workspace = TempDir::new("native-refused-redirect");
+
+        let (_, failure) = work_alone(&streams, &[], &workspace.0);
+
+        let error = failure.expect("the refused redirect was retried");
+        assert!(
+            format!("{error:#}").contains(crate::i18n::ui(
+                "Güvenli olmayan yönlendirme reddedildi",
+                "Unsafe redirect rejected"
+            )),
+            "{error:#}"
+        );
+        assert_eq!(source.log().len(), 1);
+    }
+
+    #[test]
+    fn a_redirected_segment_gets_site_headers_and_cookies_only_on_its_own_origin() {
+        use crate::test_http::{pattern, Config, Document, Server, TempDir};
+        let logged = [
+            "referer",
+            "origin",
+            "x-site-token",
+            "cookie",
+            "accept",
+            "user-agent",
+        ]
+        .map(String::from)
+        .to_vec();
+        let elsewhere = Server::start(Config {
+            size: 2000,
+            logged_headers: logged.clone(),
+            ..Config::default()
+        });
+        let moved = |path: &str, location: String| Document {
+            path: path.into(),
+            status: 302,
+            headers: vec![format!("Location: {location}")],
+            body: Vec::new(),
+            unframed: false,
+        };
+        // A port is part of the origin, so the other server is another origin on the same host.
+        let source = Server::start(Config {
+            size: 2000,
+            documents: vec![
+                moved("/a/0.ts", elsewhere.url("/b/0.ts")),
+                moved("/a/1.ts", "/b/1.ts".into()),
+            ],
+            logged_headers: logged,
+            ..Config::default()
+        });
+        let streams = [NativeStream {
+            headers: [
+                ("Referer", "https://site.example/watch"),
+                ("Origin", "https://site.example"),
+                ("X-Site-Token", "token"),
+                ("Accept", "video/mp2t"),
+                ("User-Agent", "Player/1.0"),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .to_vec(),
+            segments: ["/a/0.ts", "/a/1.ts"]
+                .map(|path| Url::parse(&source.url(path)).unwrap())
+                .to_vec(),
+            ..one_host_stream(0)
+        }];
+        // A cookie of the host applies to each of its ports.
+        let cookies = [ScopedCookie {
+            name: "sid".into(),
+            value: "session".into(),
+            domain: "127.0.0.1".into(),
+            path: "/".into(),
+            host_only: true,
+            ..ScopedCookie::default()
+        }];
+        let workspace = TempDir::new("native-redirect");
+
+        let (joins, failure) = work_alone(&streams, &cookies, &workspace.0);
+
+        if let Some(error) = failure {
+            panic!("{error:#}");
+        }
+        assert_eq!(
+            fs::read(&joins[0].joined).unwrap(),
+            pattern(1, 2000).repeat(2)
+        );
+        let site = [
+            ("referer", "https://site.example/watch"),
+            ("origin", "https://site.example"),
+            ("x-site-token", "token"),
+            ("cookie", "sid=session"),
+        ];
+        let neutral = [("accept", "video/mp2t"), ("user-agent", "Player/1.0")];
+        let source_log = source.log();
+        assert_eq!(
+            source_log
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/a/0.ts", "/a/1.ts", "/b/1.ts"]
+        );
+        for entry in &source_log {
+            for (name, value) in site.iter().chain(&neutral) {
+                assert_eq!(entry.header(name), Some(*value), "{} {name}", entry.path);
+            }
+        }
+        let elsewhere_log = elsewhere.log();
+        assert_eq!(elsewhere_log.len(), 1);
+        for (name, _) in site {
+            assert_eq!(elsewhere_log[0].header(name), None, "{name}");
+        }
+        for (name, value) in neutral {
+            assert_eq!(elsewhere_log[0].header(name), Some(value), "{name}");
+        }
     }
 }
