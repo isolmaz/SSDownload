@@ -490,6 +490,19 @@
     await control(run,"finish");
   }
 
+  // A web page is never the file a relay job asked for. A video or audio job has no use for one;
+  // for any other job the application's own rule applies (SSD-NET-004): the page that a redirect
+  // led to is where a site sends a request without its session, so it is refused unless the
+  // server sent it as an attachment or the file's name, the job's or else the one the application
+  // takes from the last segment of the address, is a page's.
+  function webPageInsteadOfFile(run, response, type) {
+    if (!/^\s*(?:text\/html|application\/xhtml\+xml)\s*(?:;|$)/.test(type)) return false;
+    if (run.request.kind === "video" || run.request.kind === "audio") return true;
+    const attachment = /^\s*attachment\s*(?:;|$)/i.test(response.headers.get("content-disposition") || "");
+    const name = run.request.filename || new URL(run.request.url).pathname.split("/").pop();
+    return response.redirected === true && !attachment && !/\.(?:html?|xhtml)$/i.test(name);
+  }
+
   async function runTransfer(run) {
     try {
       const existing=(run.streams||[]).find(item=>item.stream_id===1);
@@ -504,6 +517,10 @@
         if(run.request.audio_tracks?.length||run.request.external_subtitles?.length||run.request.subtitle_tracks?.length) {
           try { await rootResponse.body.cancel(); } finally { await rootFetch.release(); }
           throw new Error(t("relayDirectWithTracks"));
+        }
+        if(webPageInsteadOfFile(run,rootResponse,type)) {
+          try { await rootResponse.body.cancel(); } finally { await rootFetch.release(); }
+          throw new Error(t("relayPageNotFile"));
         }
         run.kind="direct";await directTransfer(run,rootFetch,existing);return;
       }

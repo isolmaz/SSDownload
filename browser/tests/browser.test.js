@@ -9,7 +9,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
-const { i18nApi, loadI18n } = require("./i18n-harness");
+const { i18nApi, loadI18n, tabsQuery } = require("./i18n-harness");
 
 const extensionDir = path.resolve(__dirname, "..", "chromium");
 const source = (name) => fs.readFileSync(path.join(extensionDir, name), "utf8");
@@ -83,7 +83,7 @@ function backgroundHarness({ native = async request => request?.action?.type==="
         if (message?.channel !== "ssdownload-background" || message.command !== "page-html") return undefined;
         return typeof pageHtml === "function" ? pageHtml(message) : pageHtml === undefined ? undefined : { html: pageHtml };
       },
-      async query() { return [{ id: 7, url: "https://site.example/watch", active: true }]; },
+      query: tabsQuery([{ id: 7, url: "https://site.example/watch", active: true, incognito: false }]),
       async get(id) { return { id, url: "https://site.example/watch", cookieStoreId: "0" }; },
       async create(value) { tabCreates.push(value); return { id: 99, ...value }; }
     },
@@ -851,6 +851,118 @@ test("a refused takeover resumes the browser download", async () => {
   h.events.download.listeners.at(-1)(takeoverItem());
   await h.waitFor(() => h.downloadCalls.some(call => call.method === "resume"));
   assert.deepEqual(h.downloadCalls.map(call => call.method), ["pause", "resume"]);
+});
+
+// A takeover whose referrer site may have recorded session consent. The browser doubles count
+// every cookie-API call, so a test can tell "never touched" from "touched and found nothing".
+const plain = value => JSON.parse(JSON.stringify(value));
+const cookieFor = (name, extra = {}) => ({ name, value: `${name}-value`, domain: "files.example", path: "/", storeId: "0",
+  secure: true, hostOnly: true, httpOnly: true, ...extra });
+function consentedTakeoverHarness({ scopes = [{ site: "https://site.example", storeId: "0" }], granted = true, stores, tabs, cookies = [], getAll } = {}) {
+  const h = backgroundHarness({ native: takeoverNative(), local: { sessionScopes: scopes } });
+  h.storage.granted = granted;
+  const calls = { getAll: [], stores: 0 };
+  const browser = h.context.browser;
+  browser.cookies.getAllCookieStores = stores === null ? undefined : async () => {
+    calls.stores += 1;
+    return stores ?? [{ id: "0", tabIds: [7] }, { id: "1", tabIds: [9] }];
+  };
+  browser.tabs.query = tabsQuery(tabs ?? [{ id: 7, incognito: false }, { id: 9, incognito: true }]);
+  browser.cookies.getAll = async details => {
+    calls.getAll.push({ ...details });
+    return getAll ? getAll(details) : cookies;
+  };
+  return { h, calls };
+}
+const addRequestOf = h => h.nativeRequests.find(request => request?.action?.type === "add")?.action.request;
+
+test("a takeover from a consented site hands over that site's unpartitioned cookies from the verified store", async () => {
+  const { h, calls } = consentedTakeoverHarness({ cookies: [
+    cookieFor("sid"),
+    cookieFor("pk", { partitionKey: { topLevelSite: "https://site.example" } }),
+    cookieFor("other-store", { storeId: "1" }),
+    cookieFor("elsewhere", { path: "/private" }),
+  ] });
+  h.events.download.listeners.at(-1)(takeoverItem());
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "erase"));
+  const request = addRequestOf(h);
+  assert.deepEqual(plain(request.session_cookies), [{ name: "sid", value: "sid-value", domain: "files.example", path: "/", secure: true,
+    http_only: true, host_only: true, expires: null, store_id: "0", partition_key: null }]);
+  assert.deepEqual(plain(request.headers), {}, "no request header of the browser's own download is observed or sent");
+  assert.deepEqual([...new Set(calls.getAll.map(call => call.url))].sort(),
+    ["https://files.example/dl/clip.mkv", "https://files.example/get?id=7"], "the first and the final address of the chain share an origin");
+  assert.ok(calls.getAll.every(call => call.storeId === "0" && !("partitionKey" in call)), "only the verified store, only unpartitioned cookies");
+  assert.deepEqual(h.downloadCalls.map(call => call.method), ["pause", "cancel", "erase"]);
+});
+
+test("a takeover reads the first address of a redirect chain only when it shares the final address' origin", async () => {
+  // The app attaches cookies only to requests on the origin of the address it is given.
+  const { h, calls } = consentedTakeoverHarness({ cookies: [cookieFor("sid")] });
+  h.events.download.listeners.at(-1)(takeoverItem({ url: "https://redirector.example/get?id=7" }));
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "erase"));
+  assert.deepEqual(calls.getAll.map(call => call.url), ["https://files.example/dl/clip.mkv"]);
+  assert.deepEqual(plain(addRequestOf(h).session_cookies.map(cookie => cookie.name)), ["sid"]);
+});
+
+for (const [label, options] of [
+  ["no scope at all", { scopes: [] }],
+  ["a scope for another site only", { scopes: [{ site: "https://other.example", storeId: "0" }] }],
+  ["a scope without the cookies permission", { granted: false }],
+]) test(`a takeover without session consent (${label}) never touches the cookie API`, async () => {
+  const { h, calls } = consentedTakeoverHarness({ ...options, cookies: [cookieFor("sid")] });
+  h.events.download.listeners.at(-1)(takeoverItem());
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "erase"));
+  assert.equal(addRequestOf(h).session_cookies, undefined);
+  assert.deepEqual(calls.getAll, []);
+  assert.equal(calls.stores, 0, "no cookie store is resolved for a site without consent");
+});
+
+for (const [label, options, expected = {}] of [
+  ["several regular stores", { stores: [{ id: "0", tabIds: [7] }, { id: "2", tabIds: [8] }], tabs: [{ id: 7, incognito: false }, { id: 8, incognito: false }] }, { code: "SSD-EXT-001" }],
+  ["no regular tab open", { tabs: [{ id: 9, incognito: true }] }, { code: "SSD-EXT-001" }],
+  ["no store list", { stores: null }, { code: "SSD-EXT-001" }],
+  ["consent recorded for another store", { scopes: [{ site: "https://site.example", storeId: "1" }] }, { code: "SSD-EXT-001" }],
+  ["more cookies than the app takes", { cookies: Array.from({ length: 501 }, (_, index) => cookieFor(`c${index}`)) }, { code: "SSD-EXT-001", reads: true }],
+  ["a failing cookie read", { getAll: () => { throw new Error("cookie store unavailable"); } }, { reads: true }],
+]) test(`a takeover from a consented site whose cookies cannot be verified (${label}) stays in the browser`, async () => {
+  const { h, calls } = consentedTakeoverHarness({ cookies: [cookieFor("sid")], ...options });
+  h.events.download.listeners.at(-1)(takeoverItem());
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "resume"));
+  assert.deepEqual(h.downloadCalls.map(call => call.method), ["pause", "resume"]);
+  assert.equal(addRequestOf(h), undefined, "nothing is handed to the desktop, not even without cookies");
+  if (!expected.reads) assert.deepEqual(calls.getAll, [], "an unverified store is never read");
+  await vm.runInContext("SSDownloadEvents.flush()", h.context);
+  const refused = h.logs.flat().find(event => event.event === "ext.takeover.refused");
+  assert.equal(refused?.outcome, "failed");
+  assert.equal(refused.code, expected.code);
+});
+
+test("the cookie store of a takeover is the one that holds the regular tabs, whatever its id", async () => {
+  const { h, calls } = consentedTakeoverHarness({
+    scopes: [{ site: "https://site.example", storeId: "profile-main" }],
+    stores: [{ id: "profile-incognito", tabIds: [9] }, { id: "profile-main", tabIds: [7] }],
+    cookies: [cookieFor("sid", { storeId: "profile-main" }), cookieFor("private", { storeId: "profile-incognito" })] });
+  h.events.download.listeners.at(-1)(takeoverItem());
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "erase"));
+  assert.deepEqual(plain(addRequestOf(h).session_cookies.map(cookie => [cookie.name, cookie.store_id])), [["sid", "profile-main"]]);
+  assert.ok(calls.getAll.length > 0 && calls.getAll.every(call => call.storeId === "profile-main"), "the incognito tab's store is never read");
+});
+
+test("only the referrer's site can supply the consent of a takeover", async () => {
+  const scopes = [{ site: "https://files.example", storeId: "0" }];
+  // The page's site has no consent, whatever the download's own host recorded.
+  const other = consentedTakeoverHarness({ scopes, cookies: [cookieFor("sid")] });
+  other.h.events.download.listeners.at(-1)(takeoverItem());
+  await other.h.waitFor(() => other.h.downloadCalls.some(call => call.method === "erase"));
+  assert.equal(addRequestOf(other.h).session_cookies, undefined);
+  assert.deepEqual(other.calls.getAll, []);
+  // A page can suppress its referrer; the download address' site then supplies nothing.
+  const bare = consentedTakeoverHarness({ scopes, cookies: [cookieFor("sid")] });
+  bare.h.events.download.listeners.at(-1)(takeoverItem({ referrer: "" }));
+  await bare.h.waitFor(() => bare.h.downloadCalls.some(call => call.method === "erase"));
+  assert.equal(addRequestOf(bare.h).session_cookies, undefined);
+  assert.deepEqual(bare.calls.getAll, []);
+  assert.equal(bare.calls.stores, 0);
 });
 
 test("a download that wakes a cold worker honours the stored OFF switch", async () => {

@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
-const { i18nApi, loadI18n } = require("./i18n-harness");
+const { i18nApi, loadI18n, tabsQuery } = require("./i18n-harness");
 
 const extensionDir = path.resolve(__dirname, "..", "chromium");
 const source = name => fs.readFileSync(path.join(extensionDir, name), "utf8");
@@ -31,7 +31,7 @@ function backgroundHarness({session={},local={},native=async request=>request.ac
     webRequest:{onBeforeSendHeaders:events.before,onBeforeRedirect:events.redirect,onHeadersReceived:events.headers},
     permissions,
     cookies:cookies||{async getAllCookieStores(){return [{id:"chrome-main",tabIds:[7]},{id:"chrome-other",tabIds:[8]}];},async getPartitionKey(){return {partitionKey:{topLevelSite:"https://site.example"}};},async getAll(){return [];}},
-    tabs:{onRemoved:events.removed,onUpdated:events.updated,onActivated:events.activated,async sendMessage(){},async query(){return [{id:7,url:"https://site.example/watch",active:true}];},async get(id){return {id,url:"https://site.example/watch",cookieStoreId:"chrome-main"};}},
+    tabs:{onRemoved:events.removed,onUpdated:events.updated,onActivated:events.activated,async sendMessage(){},query:tabsQuery([{id:7,url:"https://site.example/watch",active:true,incognito:false}]),async get(id){return {id,url:"https://site.example/watch",cookieStoreId:"chrome-main"};}},
     runtime:{id:"fixture",lastError:null,onInstalled:events.installed,onStartup:events.startup,onMessage:events.message,
       async sendNativeMessage(_host,request){nativeRequests.push(request);return native(request);},getURL(value){return `moz-extension://fixture/${value}`;}},
     action:{async setBadgeText(){},async setBadgeBackgroundColor(){},async setTitle(){}},
