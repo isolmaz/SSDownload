@@ -3366,10 +3366,7 @@ impl Actor {
                             job.state = state;
                             job.speed = 0;
                             job.eta = None;
-                            job.phase = match self.hold.notice() {
-                                Some(notice) if state == JobState::Queued => notice.into(),
-                                _ => state.label().into(),
-                            };
+                            job.phase = state.label().into();
                             job.updated_at = local.timestamp();
                             if let Err(error) = self.store.save_job(job) {
                                 self.persistence_error = Some(queue_save_stopped(&error));
@@ -4139,12 +4136,7 @@ impl Actor {
             return;
         }
         let mut changed = Vec::new();
-        let hold_notice = self.hold.notice();
         for id in stop {
-            let live = self
-                .active
-                .get(&id)
-                .is_some_and(|active| active.control.is_live());
             if let Some(active) = self.active.get_mut(&id) {
                 active.control.pause();
                 active.desired = DesiredStop::Resume;
@@ -4154,11 +4146,10 @@ impl Actor {
                 job.state = state;
                 job.speed = 0;
                 job.eta = None;
-                job.phase = match hold_notice {
-                    _ if state == JobState::Scheduled => state.label().into(),
-                    Some(notice) if !live => notice.into(),
-                    _ => crate::i18n::ui("Sınır nedeniyle sırada", "Queued because of a limit")
-                        .into(),
+                job.phase = if state == JobState::Scheduled {
+                    state.label().into()
+                } else {
+                    crate::i18n::ui("Sınır nedeniyle sırada", "Queued because of a limit").into()
                 };
                 job.updated_at = now;
                 changed.push(job.clone());
@@ -4380,6 +4371,16 @@ impl Actor {
         );
         value.revision = self.revision;
         value.hold = self.hold;
+        if let Some(notice) = self.hold.notice() {
+            let waiting = Arc::make_mut(&mut value.jobs).iter_mut().filter(|job| {
+                job.state == JobState::Queued
+                    && !job.force_start
+                    && !self.active.contains_key(&job.id)
+            });
+            for job in waiting {
+                job.phase = notice.into();
+            }
+        }
         let mut warnings = Vec::new();
         if let Some(warning) = &self.persistence_error {
             warnings.push(warning.clone());

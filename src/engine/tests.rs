@@ -2798,6 +2798,77 @@ mod holds {
     }
 
     #[test]
+    fn a_row_that_cannot_start_when_a_hold_lifts_shows_the_ordinary_queue_text_also_after_a_reopen()
+    {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![
+                ("/a.bin".into(), vec![1; 4096], true),
+                ("/b.bin".into(), vec![2; 4096], true),
+            ]);
+            let sensors = FakeSensors::default();
+            let engine = open(&root, &sensors);
+            let a = add(&engine, &server, "/a.bin", &root.join("out"));
+            let b = add(&engine, &server, "/b.bin", &root.join("out"));
+            wait_until("both downloads to start", || {
+                job_state(&engine, &a).is_active() && job_state(&engine, &b).is_active()
+            });
+
+            switch(&sensors, battery_saver, true);
+            wait_for_hold(&engine, true);
+            let held_text = engine.snapshot().hold.notice().unwrap();
+            wait_until("both rows to name the hold", || {
+                [&a, &b]
+                    .iter()
+                    .all(|id| job(&engine, id).phase == held_text)
+            });
+            thread::sleep(SETTLE);
+
+            let mut settings = engine.snapshot().settings;
+            settings.max_active = 1;
+            engine.update_settings(settings).unwrap();
+            switch(&sensors, battery_saver, false);
+            wait_until("one download to start", || {
+                [&a, &b].iter().any(|id| job_state(&engine, id).is_active())
+            });
+            thread::sleep(SETTLE);
+            let waiting = [&a, &b]
+                .into_iter()
+                .filter(|id| !job_state(&engine, id).is_active())
+                .collect::<Vec<_>>();
+            assert_eq!(waiting.len(), 1);
+            assert_eq!(job(&engine, waiting[0]).phase, JobState::Queued.label());
+            engine.shutdown();
+
+            let paths = AppPaths::new(root.clone()).unwrap();
+            let stored = Store::open(&paths.database).unwrap().load_jobs().unwrap();
+            assert_eq!(stored.len(), 2);
+            assert!(stored.iter().all(|job| job.phase != held_text));
+
+            let engine = open(&root, &sensors);
+            wait_until("one download to start after the reopen", || {
+                [&a, &b].iter().any(|id| job_state(&engine, id).is_active())
+            });
+            thread::sleep(SETTLE);
+            let waiting = [&a, &b]
+                .into_iter()
+                .filter(|id| !job_state(&engine, id).is_active())
+                .collect::<Vec<_>>();
+            assert_eq!(waiting.len(), 1);
+            assert_eq!(job(&engine, waiting[0]).phase, JobState::Queued.label());
+
+            server.release();
+            wait_until("both downloads to finish", || {
+                [&a, &b]
+                    .iter()
+                    .all(|id| job_state(&engine, id) == JobState::Completed)
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn a_job_the_user_paused_stays_paused_through_a_hold_and_its_release() {
         let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
         let server = FileServer::start(vec![
@@ -2820,6 +2891,7 @@ mod holds {
             job_state(&engine, &running) == JobState::Queued
         });
         assert_eq!(job_state(&engine, &paused), JobState::Paused);
+        assert_eq!(job(&engine, &paused).phase, JobState::Paused.label());
 
         switch(&sensors, false, false);
         wait_until("the running job to run again", || {
