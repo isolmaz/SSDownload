@@ -1421,21 +1421,308 @@ fn every_ffmpeg_input_carries_its_own_protocol_whitelist() {
 fn the_processing_state_comes_from_the_tool_stage_not_the_phase_text() {
     let mut seen = Vec::new();
     let mut completed = HashSet::new();
-    let (mut last_path, mut seen_bytes) = (None, 0);
+    let mut last_path = None;
+    let mut gauge = DownloadGauge::new();
     for line in [
-        format!("{PROGRESS_PREFIX}downloading	100	1000	50	9"),
-        format!("{PROGRESS_PREFIX}finished	1000	1000	0	0"),
+        format!("{PROGRESS_PREFIX}downloading	100	1000"),
+        format!("{PROGRESS_PREFIX}finished	1000	1000"),
         format!("{POSTPROCESS_PREFIX}started"),
     ] {
         process::handle_machine_line(
             &line,
+            Instant::now(),
             &mut |value| seen.push(value.processing),
             &mut completed,
             &mut last_path,
-            &mut seen_bytes,
+            &mut gauge,
         );
     }
     assert_eq!(seen, [false, true, true]);
+}
+
+/// Plays a tool's progress lines into the monitor's gauge on a clock the test moves, waking the
+/// monitor every 100 ms between the lines as its loop does.
+struct Replay {
+    origin: Instant,
+    now: Duration,
+    gauge: DownloadGauge,
+    completed: HashSet<PathBuf>,
+    last_path: Option<PathBuf>,
+    events: Vec<(Duration, TransferProgress)>,
+}
+
+fn ms(value: u64) -> Duration {
+    Duration::from_millis(value)
+}
+
+impl Replay {
+    fn new() -> Self {
+        let gauge = DownloadGauge::new();
+        Self {
+            origin: Instant::now(),
+            now: Duration::ZERO,
+            gauge,
+            completed: HashSet::new(),
+            last_path: None,
+            events: Vec::new(),
+        }
+    }
+
+    fn wait_until(&mut self, to: Duration) {
+        while self.now + ms(100) <= to {
+            self.now += ms(100);
+            if let Some(update) = self.gauge.repeat(self.origin + self.now) {
+                self.events.push((self.now, update));
+            }
+        }
+    }
+
+    fn line(&mut self, at: Duration, fields: &str) {
+        self.wait_until(at);
+        self.now = self.now.max(at);
+        let events = &mut self.events;
+        process::handle_machine_line(
+            &format!("{PROGRESS_PREFIX}{fields}"),
+            self.origin + at,
+            &mut |update| events.push((at, update)),
+            &mut self.completed,
+            &mut self.last_path,
+            &mut self.gauge,
+        );
+    }
+
+    /// One line a 100 ms for `seconds` at `rate` bytes a second, counting on from `start`.
+    fn flow(&mut self, from: Duration, seconds: u64, rate: u64, start: u64, total: u64) {
+        for step in 1..=seconds * 10 {
+            self.line(
+                from + ms(step * 100),
+                &format!("downloading\t{}\t{total}", start + step * rate / 10),
+            );
+        }
+    }
+}
+
+/// The lines are what yt-dlp 2026.10.26 printed (their offset in ms from the first line) for 300
+/// HLS fragments over 4 connections, from the start, the middle and the end of the run. The
+/// counts of its download threads reach the line out of order (36863840, then 36860768). Its
+/// own speed on the last line was 10323959.
+#[test]
+fn the_speed_follows_the_bytes_of_recorded_progress_lines_whatever_their_order() {
+    let recorded = [
+        (0, "downloading\t1024\t37200000.0"),
+        (1, "downloading\t3072\t37507200.0"),
+        (2, "downloading\t7168\t38121600.0"),
+        (1767, "downloading\t18235168\t37206227.027027026"),
+        (1768, "downloading\t18243360\t37214529.72972973"),
+        (3578, "downloading\t36828000\t37325252.52525253"),
+        (3582, "downloading\t36829024\t37200000.0"),
+        (3583, "downloading\t36831072\t37201030.872483216"),
+        (3585, "downloading\t36835168\t37203092.61744966"),
+        (3586, "downloading\t36843360\t37207216.10738255"),
+        (3589, "downloading\t36844384\t37215463.087248325"),
+        (3590, "downloading\t36861792\t37232987.91946309"),
+        (3591, "downloading\t36863840\t37234018.79194631"),
+        (3592, "downloading\t36860768\t37216493.95973154"),
+        (3593, "downloading\t36869984\t37238142.281879194"),
+        (3594, "downloading\t36902752\t37242265.77181208"),
+        (3596, "downloading\t36910944\t37275253.691275164"),
+        (3597, "downloading\t36970432\t37283500.67114094"),
+        (3597, "downloading\t36986816\t37343387.91946309"),
+        (3599, "downloading\t36865888\t37236080.536912754"),
+        (3600, "downloading\t37019584\t37359881.87919463"),
+        (3600, "downloading\t37023680\t37392869.798657715"),
+        (3603, "downloading\t37031872\t37396993.2885906"),
+        (3605, "downloading\t37091360\t37405240.26845638"),
+        (3605, "downloading\t37107744\t37339826.08695652"),
+        (3607, "downloading\t37091360\t37465127.51677852"),
+        (3607, "downloading\t37140512\t37356264.88294314"),
+        (3608, "downloading\t37200000\t37389142.47491639"),
+        (3610, "downloading\t37200000\t37448829.431438126"),
+        (3612, "downloading\t37200000\t37324000.0"),
+    ];
+    let mut replay = Replay::new();
+    for (at, fields) in recorded {
+        replay.line(ms(at), fields);
+    }
+    let last = &replay.events.last().unwrap().1;
+    assert_eq!(last.downloaded, 37_200_000);
+    assert!(
+        last.speed.abs_diff(10_323_959) < 10_323_959 / 20,
+        "{}",
+        last.speed
+    );
+    assert_eq!(last.eta, Some(0));
+}
+
+/// A source that answers 429 after a few seconds of service makes yt-dlp wait out its retries:
+/// 100 segments of 124000 bytes arrive within 1.5 s, then nothing for 17 s. The tool's own speed
+/// and time left read 0 and unknown at the first line of every burst.
+#[test]
+fn a_source_that_sends_in_bursts_keeps_a_speed_and_a_time_left_between_them() {
+    const BURST: u64 = 12_400_000;
+    let mut replay = Replay::new();
+    for burst in 0..8 {
+        let start = ms(burst * 18_500);
+        for step in 1..=15 {
+            replay.line(
+                start + ms(step * 100),
+                &format!(
+                    "downloading\t{}\t154318396",
+                    burst * BURST + step * BURST / 15
+                ),
+            );
+        }
+    }
+    replay.wait_until(ms(8 * 18_500));
+
+    let average = BURST as f64 / 18.5;
+    let later: Vec<_> = replay
+        .events
+        .iter()
+        .filter(|(at, _)| *at >= ms(40_000))
+        .collect();
+    assert!(later.len() > 100, "{}", later.len());
+    for (at, update) in later {
+        let speed = update.speed as f64;
+        assert!(
+            speed > 0.75 * average && speed < 1.4 * average,
+            "{at:?}: {update:?}"
+        );
+        assert!(update.eta.is_some(), "{at:?}: {update:?}");
+    }
+}
+
+#[test]
+fn a_download_that_stops_reads_a_falling_speed_that_ends_at_zero() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 10, 2_000_000, 0, 100_000_000);
+    replay.wait_until(ms(100_000));
+
+    let silent: Vec<_> = replay
+        .events
+        .iter()
+        .filter(|(at, _)| *at > ms(10_000))
+        .collect();
+    assert!(silent.len() >= 85, "{}", silent.len());
+    assert!(
+        silent
+            .windows(2)
+            .all(|pair| pair[1].1.speed <= pair[0].1.speed),
+        "the speed rose while no byte arrived"
+    );
+    let at = |seconds: u64| {
+        silent
+            .iter()
+            .find(|(at, _)| *at >= ms(10_000 + seconds * 1000))
+            .unwrap()
+            .1
+            .clone()
+    };
+    assert!(at(2).speed > 1_000_000 && at(2).eta.is_some());
+    assert!(at(30).speed > 0);
+    let end = &silent.last().unwrap().1;
+    assert_eq!((end.speed, end.eta), (0, None));
+}
+
+#[test]
+fn a_steady_download_follows_a_change_of_its_rate_within_seconds() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 30, 1_000_000, 0, 100_000_000);
+    replay.flow(ms(30_000), 10, 250_000, 30_000_000, 100_000_000);
+
+    let (_, update) = replay
+        .events
+        .iter()
+        .find(|(at, _)| *at >= ms(38_000))
+        .unwrap();
+    assert!(update.speed.abs_diff(250_000) < 25_000, "{}", update.speed);
+}
+
+#[test]
+fn the_next_stream_of_a_download_is_measured_from_its_own_start() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 5, 1_000_000, 0, 5_000_000);
+    replay.line(ms(5_000), "finished\t5000000\t5000000");
+    replay.flow(ms(5_000), 3, 1_000_000, 0, 3_000_000);
+
+    let (_, update) = replay.events.last().unwrap();
+    assert!(!update.processing);
+    assert!(
+        update.speed.abs_diff(1_000_000) < 100_000,
+        "{}",
+        update.speed
+    );
+}
+
+/// Runs a PowerShell script as the tool and returns when each progress update reached the
+/// monitor's callback.
+fn updates_from_script(script: &str) -> Vec<(Instant, TransferProgress)> {
+    let args = vec![
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-Command".into(),
+        script.to_owned(),
+    ];
+    let mut running =
+        RunningDownload::spawn_with_proxy(Path::new("powershell.exe"), &args, b"", None).unwrap();
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| updates.push((Instant::now(), update)),
+        &mut HashSet::new(),
+        &mut None,
+        None,
+    )
+    .unwrap();
+    assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
+    updates
+}
+
+/// Five lines 300 ms apart, then 3 s of silence before the tool exits.
+const SLOW_THEN_SILENT: &str = "$p = \"SSDOWNLOAD_PROGRESS`tdownloading`t\"; \
+    foreach ($i in 1..5) { [Console]::Out.WriteLine(\"$p$($i * 500000)`t10000000\"); \
+    [Console]::Out.Flush(); Start-Sleep -Milliseconds 300 }; Start-Sleep -Seconds 3";
+
+#[test]
+fn lines_a_tool_writes_slowly_reach_the_callback_as_they_are_written() {
+    let updates = updates_from_script(SLOW_THEN_SILENT);
+
+    let arrival = |downloaded| {
+        updates
+            .iter()
+            .find(|(_, update)| update.downloaded == downloaded)
+            .unwrap()
+            .0
+    };
+    let spread = arrival(2_500_000).duration_since(arrival(500_000));
+    assert!(spread >= Duration::from_millis(1000), "{spread:?}");
+}
+
+#[test]
+fn a_silent_tool_does_not_freeze_the_progress() {
+    let updates = updates_from_script(SLOW_THEN_SILENT);
+
+    let last_line = updates
+        .iter()
+        .position(|(_, update)| update.downloaded == 2_500_000)
+        .unwrap();
+    let repeats: Vec<_> = updates[last_line + 1..].iter().collect();
+    assert!(repeats.len() >= 2, "{}", repeats.len());
+    let silence = repeats
+        .last()
+        .unwrap()
+        .0
+        .duration_since(updates[last_line].0);
+    assert!(silence >= Duration::from_millis(1800), "{silence:?}");
+    for (_, update) in &repeats {
+        assert_eq!(update.downloaded, 2_500_000);
+        assert!(update.speed > 0 && update.eta.is_some(), "{update:?}");
+    }
+    assert!(repeats
+        .windows(2)
+        .all(|pair| pair[1].1.speed <= pair[0].1.speed));
 }
 
 #[test]

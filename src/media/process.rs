@@ -458,6 +458,143 @@ fn part_file_bytes(directory: &Path) -> u64 {
         .fold(0u64, u64::saturating_add)
 }
 
+/// Speed and time left of a yt-dlp download, measured from the byte counts the tool reports.
+/// The tool's own figures cover the last 3 s and read 0 and unknown after any 3 s without a
+/// byte, which is what a source that answers 429 and makes the tool wait out its retries
+/// does to every fragment download.
+pub(super) struct DownloadGauge {
+    /// When the total grew after at least 250 ms without an entry, and the total then, oldest
+    /// first.
+    steps: VecDeque<(Instant, u64)>,
+    /// The highest total reported and when it was reached.
+    newest: u64,
+    newest_at: Instant,
+    /// The last report of a running download, repeated while the tool is silent.
+    latest: Option<TransferProgress>,
+    reported_at: Instant,
+}
+
+impl DownloadGauge {
+    const STEP: Duration = Duration::from_millis(250);
+    /// The speed averages over four times the longest silence of the last minute, so that a
+    /// source that sends in bursts seconds apart still reads a speed between the bursts.
+    const MIN_WINDOW: Duration = Duration::from_secs(5);
+    const MAX_WINDOW: Duration = Duration::from_secs(60);
+    /// A shorter measurement is too noisy to be a speed.
+    const MIN_SPAN: Duration = Duration::from_secs(1);
+    const REPORT_INTERVAL: Duration = Duration::from_secs(1);
+
+    pub(super) fn new() -> Self {
+        Self {
+            steps: VecDeque::new(),
+            newest: 0,
+            newest_at: Instant::now(),
+            latest: None,
+            reported_at: Instant::now(),
+        }
+    }
+
+    /// The tool counts across its download threads, so a report can carry a total a few blocks
+    /// behind an earlier one; a lower count is ignored.
+    fn record(&mut self, bytes: u64, now: Instant) {
+        let first = self.steps.is_empty();
+        let grew = bytes > self.newest;
+        let due = self
+            .steps
+            .back()
+            .is_some_and(|(at, _)| now.duration_since(*at) >= Self::STEP);
+        if first || (grew && due) {
+            self.steps.push_back((now, bytes));
+        }
+        if first || grew {
+            self.newest = bytes.max(self.newest);
+            self.newest_at = now;
+        }
+        while self.steps.len() > 2 && now.duration_since(self.steps[1].0) >= Self::MAX_WINDOW {
+            self.steps.pop_front();
+        }
+    }
+
+    fn speed(&self, now: Instant) -> u64 {
+        let Some(&first) = self.steps.front() else {
+            return 0;
+        };
+        let silence = self
+            .steps
+            .iter()
+            .zip(self.steps.iter().skip(1))
+            .map(|(before, after)| after.0.duration_since(before.0))
+            .chain([now.duration_since(self.newest_at)])
+            .max()
+            .unwrap_or_default();
+        let edge = now.checked_sub((silence * 4).clamp(Self::MIN_WINDOW, Self::MAX_WINDOW));
+        if edge.is_some_and(|edge| self.newest_at <= edge) {
+            return 0;
+        }
+        let (since, base) = edge
+            .and_then(|edge| self.steps.iter().rev().find(|(at, _)| *at <= edge))
+            .copied()
+            .unwrap_or(first);
+        let span = now.duration_since(since);
+        if span < Self::MIN_SPAN {
+            return 0;
+        }
+        (self.newest.saturating_sub(base) as f64 / span.as_secs_f64()) as u64
+    }
+
+    fn report(
+        &mut self,
+        downloaded: u64,
+        total: Option<u64>,
+        processing: bool,
+        now: Instant,
+    ) -> TransferProgress {
+        self.record(downloaded, now);
+        let speed = self.speed(now);
+        let update = TransferProgress {
+            downloaded,
+            total,
+            speed,
+            eta: remaining_seconds(total, downloaded, speed),
+            phase: if processing {
+                crate::i18n::ui("Medya işleniyor", "Processing media")
+            } else {
+                crate::i18n::ui("Medya indiriliyor", "Downloading media")
+            }
+            .into(),
+            processing,
+        };
+        self.latest = (!processing).then(|| update.clone());
+        self.reported_at = now;
+        // A finished stream is followed by the next one, which counts from zero.
+        if processing {
+            self.steps.clear();
+            self.newest = 0;
+        }
+        update
+    }
+
+    /// The last report of a running download with the speed and time left of `now`, once a
+    /// second without any other report, so that a silent tool does not freeze the display.
+    pub(super) fn repeat(&mut self, now: Instant) -> Option<TransferProgress> {
+        if now.duration_since(self.reported_at) < Self::REPORT_INTERVAL {
+            return None;
+        }
+        let speed = self.speed(now);
+        let latest = self.latest.as_mut()?;
+        latest.speed = speed;
+        latest.eta = remaining_seconds(latest.total, latest.downloaded, speed);
+        self.reported_at = now;
+        Some(latest.clone())
+    }
+}
+
+fn remaining_seconds(total: Option<u64>, downloaded: u64, speed: u64) -> Option<u64> {
+    total
+        .filter(|total| *total >= downloaded)
+        .and_then(|total| (total - downloaded).checked_div(speed))
+}
+
 pub(super) enum MonitorOutcome {
     RestartForSpeed,
     Stalled,
@@ -477,7 +614,7 @@ pub(super) fn monitor_download(
     mut live: Option<&mut LiveRecordingGauge>,
 ) -> Result<MonitorOutcome> {
     let mut pending_limit: Option<(u64, Instant)> = None;
-    let mut seen_bytes = 0u64;
+    let mut gauge = DownloadGauge::new();
     let mut pings = vec![Arc::clone(&running.stderr_alive)];
     if let Some(proxy) = running._proxy.as_ref() {
         pings.push(proxy.outbound_ping());
@@ -494,14 +631,24 @@ pub(super) fn monitor_download(
             if live.is_some() && line.starts_with(PROGRESS_PREFIX) {
                 continue;
             }
-            handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
+            handle_machine_line(
+                &line,
+                Instant::now(),
+                progress,
+                completed_files,
+                last_path,
+                &mut gauge,
+            );
         }
         if active {
             activity.touch();
         }
-        if let Some(gauge) = live.as_deref_mut() {
+        if let Some(update) = gauge.repeat(Instant::now()) {
+            progress(update);
+        }
+        if let Some(recording) = live.as_deref_mut() {
             if let Some(update) =
-                gauge.sample(completed_file_bytes(completed_files), Instant::now())
+                recording.sample(completed_file_bytes(completed_files), Instant::now())
             {
                 if live_bytes != Some(update.downloaded) {
                     live_bytes = Some(update.downloaded);
@@ -548,13 +695,27 @@ pub(super) fn monitor_download(
         }
         if let Some(status) = running.child.try_wait()? {
             while let Ok(line) = running.lines.try_recv() {
-                handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
+                handle_machine_line(
+                    &line,
+                    Instant::now(),
+                    progress,
+                    completed_files,
+                    last_path,
+                    &mut gauge,
+                );
             }
             // The tool has exited: anything still alive is an orphan holding the output pipes.
             running.job.terminate();
             running.join_readers();
             while let Ok(line) = running.lines.try_recv() {
-                handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
+                handle_machine_line(
+                    &line,
+                    Instant::now(),
+                    progress,
+                    completed_files,
+                    last_path,
+                    &mut gauge,
+                );
             }
             if running.overflow.load(std::sync::atomic::Ordering::Acquire) {
                 bail!(crate::i18n::ui("Medya çıktı kuyruğu sınırı aşıldı; eksik playlist yayınlanmadı", "The media output queue limit was exceeded; the incomplete playlist was not published"))
@@ -564,7 +725,14 @@ pub(super) fn monitor_download(
         match running.lines.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
                 activity.observe(&line);
-                handle_machine_line(&line, progress, completed_files, last_path, &mut seen_bytes);
+                handle_machine_line(
+                    &line,
+                    Instant::now(),
+                    progress,
+                    completed_files,
+                    last_path,
+                    &mut gauge,
+                );
                 activity.touch();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -575,33 +743,27 @@ pub(super) fn monitor_download(
 
 pub(super) fn handle_machine_line(
     line: &str,
+    now: Instant,
     progress: &mut dyn FnMut(TransferProgress),
     completed_files: &mut HashSet<PathBuf>,
     last_path: &mut Option<PathBuf>,
-    seen_bytes: &mut u64,
+    gauge: &mut DownloadGauge,
 ) {
     if let Some(fields) = line.strip_prefix(PROGRESS_PREFIX) {
         let values: Vec<_> = fields.split('\t').collect();
-        if values.len() >= 5 {
+        if values.len() >= 3 {
             let base = completed_file_bytes(completed_files);
             let current = parse_number(values[1]).unwrap_or(0);
-            *seen_bytes = (*seen_bytes).max(base.saturating_add(current));
             let total = parse_number(values[2]).map(|v| base.saturating_add(v));
-            let status = values[0];
-            progress(TransferProgress {
-                downloaded: base.saturating_add(current),
+            progress(gauge.report(
+                base.saturating_add(current),
                 total,
-                speed: parse_number(values[3]).unwrap_or(0),
-                eta: parse_number(values[4]),
-                phase: if status == "finished" {
-                    crate::i18n::ui("Medya işleniyor", "Processing media").into()
-                } else {
-                    crate::i18n::ui("Medya indiriliyor", "Downloading media").into()
-                },
-                processing: status == "finished",
-            });
+                values[0] == "finished",
+                now,
+            ));
         }
     } else if line.starts_with(POSTPROCESS_PREFIX) {
+        gauge.latest = None;
         progress(TransferProgress {
             downloaded: completed_file_bytes(completed_files),
             total: None,
