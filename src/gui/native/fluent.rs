@@ -729,6 +729,10 @@ pub(super) unsafe extern "system" fn cue_proc(
             EndPaint(hwnd, &paint);
             return 0;
         }
+        WM_PRINTCLIENT if GetWindowTextLengthW(hwnd) == 0 && GetFocus() != hwnd => {
+            paint_cue(hwnd, wparam as HDC);
+            return 0;
+        }
         WM_SETFOCUS | WM_KILLFOCUS => {
             let result = call_previous(hwnd, msg, wparam, lparam);
             InvalidateRect(hwnd, null(), 1);

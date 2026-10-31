@@ -1894,9 +1894,14 @@ unsafe extern "system" fn main_proc(
             let page = geometry.page_bottom - (band_top + geometry.above_page);
             let page = page.clamp(geometry.min_page, geometry.max_page);
             ui.page_height = page * 96 / ui.dpi.max(96) as i32;
+            // The cards and every control move with the split, and a fast drag
+            // keeps input queued ahead of any paint. A control moved on screen
+            // takes its old pixels along and counts them as painted, so moves
+            // would pile up stale copies: the layout moves them without
+            // drawing, and the whole window reaches the screen at its new
+            // layout before the next move is read.
             layout_main(ui);
-            // The cards behind the list and the page moved with the split.
-            InvalidateRect(hwnd, null(), 1);
+            present_client(hwnd);
             SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
             0
         }
@@ -2607,6 +2612,50 @@ unsafe fn split_geometry(ui: &MainUi) -> SplitGeometry {
         gap,
         tabs,
     }
+}
+
+/// Prints the window and its controls into one bitmap and puts its client
+/// area on screen in a single blit, then drops the paints that are still
+/// pending. Painting the parent and then each control on screen lets a frame
+/// show a repaint half done.
+unsafe fn present_client(hwnd: HWND) {
+    let mut window: RECT = zeroed();
+    GetWindowRect(hwnd, &mut window);
+    let mut client: RECT = zeroed();
+    GetClientRect(hwnd, &mut client);
+    let mut origin = POINT { x: 0, y: 0 };
+    ClientToScreen(hwnd, &mut origin);
+    // Without DCX_CLIPCHILDREN the blit covers the controls as well.
+    let target = GetDCEx(hwnd, null_mut(), DCX_CACHE);
+    let memory = CreateCompatibleDC(target);
+    let bitmap = CreateCompatibleBitmap(
+        target,
+        window.right - window.left,
+        window.bottom - window.top,
+    );
+    let previous = SelectObject(memory, bitmap);
+    SendMessageW(
+        hwnd,
+        WM_PRINT,
+        memory as WPARAM,
+        (PRF_NONCLIENT | PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND) as LPARAM,
+    );
+    BitBlt(
+        target,
+        0,
+        0,
+        client.right,
+        client.bottom,
+        memory,
+        origin.x - window.left,
+        origin.y - window.top,
+        SRCCOPY,
+    );
+    SelectObject(memory, previous);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(hwnd, target);
+    RedrawWindow(hwnd, null(), null_mut(), RDW_VALIDATE | RDW_ALLCHILDREN);
 }
 
 /// The band between the list card and the tab strip that drags the split.
@@ -3372,13 +3421,16 @@ unsafe fn layout_main(ui: &MainUi) {
     let tabs_top = page_top - s(4) - geometry.tabs;
     let list_bottom = tabs_top - geometry.gap;
     let inset = s(LIST_INSET);
+    // A split drag repaints the whole window after each layout, so its moves
+    // leave the screen alone until then.
+    let repaint = ui.splitting.is_none() as i32;
     MoveWindow(
         ui.list,
         m + inset,
         geometry.list_top + inset,
         w - 2 * m - 2 * inset,
         list_bottom - geometry.list_top - 2 * inset,
-        1,
+        repaint,
     );
     fit_last_column(ui);
     // The first tab's label starts where the page text starts.
@@ -3386,7 +3438,14 @@ unsafe fn layout_main(ui: &MainUi) {
     let mut first: RECT = zeroed();
     SendMessageW(ui.tabs, TCM_GETITEMRECT, 0, &mut first as *mut _ as isize);
     let tabs_x = text_x - first.left - s(TAB_PAD);
-    MoveWindow(ui.tabs, tabs_x, tabs_top, w - m - tabs_x, geometry.tabs, 1);
+    MoveWindow(
+        ui.tabs,
+        tabs_x,
+        tabs_top,
+        w - m - tabs_x,
+        geometry.tabs,
+        repaint,
+    );
     // The page shows whole lines; what is left over below them stays card.
     let card = RECT {
         left: m,
@@ -3403,7 +3462,7 @@ unsafe fn layout_main(ui: &MainUi) {
         page_top + pad_y,
         w - 2 * m - 2 * pad_x,
         lines * line,
-        1,
+        repaint,
     );
     SendMessageW(ui.status, WM_SIZE, 0, 0);
     sync_details_scrollbar(ui);
