@@ -844,6 +844,10 @@ pub struct Capabilities {
     /// Whether the extension hands ordinary browser downloads over to the desktop.
     #[serde(default)]
     pub browser_takeover: bool,
+    /// The app answers `add_status`, so the extension can keep its own copy of a download until
+    /// the app has received the file. Absent from an app that predates the action.
+    #[serde(default)]
+    pub add_status: bool,
     /// Number of completed jobs in the queue; the extension badges an increase.
     #[serde(default)]
     pub completed_jobs: u64,
@@ -1201,6 +1205,173 @@ mod tests {
         });
         assert!(control.is_cancelled());
     }
+
+    mod add_status {
+        use super::super::{AddJobStatus, AddRequest, CommandResult, Job, JobState};
+
+        const ALL_STATES: [JobState; 10] = [
+            JobState::Queued,
+            JobState::Scheduled,
+            JobState::Connecting,
+            JobState::Downloading,
+            JobState::Processing,
+            JobState::Paused,
+            JobState::AwaitingSource,
+            JobState::Completed,
+            JobState::Failed,
+            JobState::Cancelled,
+        ];
+
+        fn job(request_id: &str, state: JobState, downloaded: u64, error: Option<&str>) -> Job {
+            Job {
+                id: format!("job-of-{request_id}"),
+                request: AddRequest {
+                    url: "https://files.example/SECRET-ADDRESS/report.zip?token=SECRET".into(),
+                    referer: Some("https://site.example/SECRET-PAGE".into()),
+                    request_id: Some(request_id.into()),
+                    ..Default::default()
+                },
+                name: "SECRET-NAME.zip".into(),
+                state,
+                path: std::path::PathBuf::from(r"C:\SECRET-FOLDER\SECRET-NAME.zip"),
+                downloaded,
+                total: Some(1_000),
+                speed: 0,
+                eta: None,
+                error: error.map(str::to_owned),
+                phase: "SECRET-PHASE".into(),
+                created_at: 0,
+                updated_at: 0,
+                attempts: 0,
+                work_dir: None,
+                remove_requested: None,
+                claim: None,
+                legacy_completed: false,
+                browser_transfer_authorized: false,
+                priority: 0,
+                force_start: false,
+                open_when_done: false,
+                live: false,
+                sequence: 0,
+            }
+        }
+
+        fn status(state: JobState, downloaded: u64, error: Option<&str>) -> AddJobStatus {
+            AddJobStatus::of(&[job("mine", state, downloaded, error)], "mine")
+        }
+
+        #[test]
+        fn a_request_id_that_no_job_carries_is_not_found() {
+            let jobs = [job("someone-else", JobState::Downloading, 10, None)];
+            let missing = AddJobStatus::of(&jobs, "mine");
+            assert_eq!(
+                missing,
+                AddJobStatus {
+                    found: false,
+                    state: None,
+                    received: false,
+                    error_code: None
+                }
+            );
+            assert_eq!(AddJobStatus::of(&[], "mine"), missing);
+            assert!(!AddJobStatus::of(&jobs, "Someone-Else").found);
+        }
+
+        #[test]
+        fn the_job_is_found_by_the_request_id_it_carries_among_others() {
+            let jobs = [
+                job("first", JobState::Queued, 0, None),
+                job("mine", JobState::Paused, 5, None),
+                job("last", JobState::Failed, 0, None),
+            ];
+            let found = AddJobStatus::of(&jobs, "mine");
+            assert!(found.found);
+            assert_eq!(found.state, Some(JobState::Paused));
+            assert!(found.received);
+        }
+
+        #[test]
+        fn bytes_are_received_once_some_arrived_or_the_job_completed() {
+            for state in ALL_STATES {
+                assert_eq!(
+                    status(state, 0, None).received,
+                    state == JobState::Completed,
+                    "{state:?} without a byte"
+                );
+                assert!(status(state, 1, None).received, "{state:?} with a byte");
+            }
+        }
+
+        #[test]
+        fn the_state_is_the_jobs_own() {
+            for state in ALL_STATES {
+                assert_eq!(status(state, 0, None).state, Some(state));
+            }
+        }
+
+        #[test]
+        fn only_a_job_that_ended_without_its_file_reports_the_code_of_its_failure() {
+            let coded = Some("SSD-NET-004 Kaynak dosya yerine bir sayfayla yanıt verdi");
+            assert_eq!(
+                status(JobState::Failed, 0, coded).error_code.as_deref(),
+                Some("SSD-NET-004")
+            );
+            assert_eq!(
+                status(JobState::AwaitingSource, 0, coded)
+                    .error_code
+                    .as_deref(),
+                Some("SSD-NET-004")
+            );
+            // A retrying job keeps its last error, and a finished one can carry a warning.
+            for state in [
+                JobState::Queued,
+                JobState::Connecting,
+                JobState::Downloading,
+                JobState::Paused,
+                JobState::Completed,
+                JobState::Cancelled,
+            ] {
+                assert_eq!(status(state, 0, coded).error_code, None, "{state:?}");
+            }
+            assert_eq!(status(JobState::Failed, 0, None).error_code, None);
+            assert_eq!(
+                status(JobState::Failed, 0, Some("Ağ aktarımı tamamlanamadı")).error_code,
+                None
+            );
+            assert_eq!(
+                status(JobState::Failed, 0, Some("SSD-XXX-999 unknown")).error_code,
+                None,
+                "only a code of the registry is reported"
+            );
+        }
+
+        #[test]
+        fn the_wire_form_carries_only_the_allowed_fields() {
+            let result = |status: AddJobStatus| {
+                serde_json::to_string(&CommandResult {
+                    add_status: Some(status),
+                    ..Default::default()
+                })
+                .unwrap()
+            };
+            assert_eq!(
+                result(status(
+                    JobState::Failed,
+                    0,
+                    Some("SSD-NET-004 SECRET-MESSAGE")
+                )),
+                r#"{"add_status":{"found":true,"state":"failed","received":false,"error_code":"SSD-NET-004"}}"#
+            );
+            assert_eq!(
+                result(status(JobState::AwaitingSource, 0, None)),
+                r#"{"add_status":{"found":true,"state":"awaiting_source","received":false}}"#
+            );
+            assert_eq!(
+                result(AddJobStatus::of(&[], "mine")),
+                r#"{"add_status":{"found":false,"received":false}}"#
+            );
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSnapshot {
@@ -1391,6 +1562,10 @@ pub enum Action {
     InspectStatus {
         request_id: String,
     },
+    /// What became of the job an `Add` with this request id created; see `AddJobStatus`.
+    AddStatus {
+        request_id: String,
+    },
     InstallTools {
         force_update: bool,
         #[serde(default)]
@@ -1460,6 +1635,52 @@ pub struct CommandResult {
     pub log: Option<LogReceipt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnose: Option<crate::diagnose::Summary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub add_status: Option<AddJobStatus>,
+}
+
+/// The only facts about a job that the browser extension may learn from its own request id: no
+/// address, name, path or request data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddJobStatus {
+    pub found: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<JobState>,
+    /// File bytes have arrived. `Job::downloaded` only counts bytes that a transfer wrote after
+    /// its page check let the response through, and a completed job has delivered its file.
+    pub received: bool,
+    /// The registry code of the failure that ended the job; only a failed job, or one that waits
+    /// for a new source address, carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+impl AddJobStatus {
+    pub fn of(jobs: &[Job], request_id: &str) -> Self {
+        let Some(job) = jobs
+            .iter()
+            .find(|job| job.request.request_id.as_deref() == Some(request_id))
+        else {
+            return Self {
+                found: false,
+                state: None,
+                received: false,
+                error_code: None,
+            };
+        };
+        let failed = matches!(job.state, JobState::Failed | JobState::AwaitingSource);
+        Self {
+            found: true,
+            state: Some(job.state),
+            received: job.downloaded > 0 || job.state == JobState::Completed,
+            error_code: job
+                .error
+                .as_deref()
+                .filter(|_| failed)
+                .and_then(crate::error_codes::from_text)
+                .map(|code| code.0.to_owned()),
+        }
+    }
 }
 
 /// Outcome of accepting relayed extension events.

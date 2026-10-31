@@ -1159,7 +1159,7 @@ fn validate_browser_action(action: &mut Action) -> Result<()> {
             request.request_id = None;
         }
         Action::ShowWindow => {}
-        Action::InspectStatus { request_id }
+        Action::InspectStatus { request_id } | Action::AddStatus { request_id }
             if !request_id.is_empty() && request_id.len() <= 128 => {}
         _ => crate::bail_code!(
             crate::error_codes::BRG_004,
@@ -1398,11 +1398,15 @@ fn record_browser_action_failure(
 }
 
 /// Whether a browser action may start the desktop when nothing answers. The extension's
-/// background probes (capabilities at every page load, session-log batches) are passive: a
-/// desktop the user quit must stay closed, and those probes report "not running" instead.
-/// Only an explicit user action (picker, add, show window, transfer) starts it.
+/// background probes (capabilities at every page load, session-log batches, the state of a
+/// download it handed over) are passive: a desktop the user quit must stay closed, and those
+/// probes report "not running" instead. Only an explicit user action (picker, add, show window,
+/// transfer) starts it.
 fn starts_desktop(action: &Action) -> bool {
-    !matches!(action, Action::Capabilities | Action::Log { .. })
+    !matches!(
+        action,
+        Action::Capabilities | Action::Log { .. } | Action::AddStatus { .. }
+    )
 }
 
 /// Runs the browser Native Messaging stdio loop. Multiple framed messages are supported.
@@ -2010,6 +2014,32 @@ mod tests {
         assert!(starts_desktop(&Action::InspectStatus {
             request_id: "inspect-1".into()
         }));
+        assert!(!starts_desktop(&Action::AddStatus {
+            request_id: "add-1".into()
+        }));
+    }
+
+    /// The wire message is the one the extension's `sendNative({type:"add_status",request_id})`
+    /// writes; the bridge lets exactly that through, with an identifier of the length the
+    /// engine accepts for an add.
+    #[test]
+    fn the_extension_may_ask_for_the_status_of_its_own_add_with_a_bounded_request_id() {
+        let wire = |id: &str| {
+            let body =
+                format!(r#"{{"version":2,"action":{{"type":"add_status","request_id":"{id}"}}}}"#);
+            serde_json::from_str::<WireRequest>(&body).expect("wire message")
+        };
+        let mut permitted = wire("0b5e6e0e-1f43-4c19-a6a6-6a9d6b1b4f55")
+            .action
+            .expect("action");
+        assert!(matches!(permitted, Action::AddStatus { .. }));
+        validate_browser_action(&mut permitted).expect("the extension may ask");
+        let mut longest = wire(&"x".repeat(128)).action.expect("action");
+        assert!(validate_browser_action(&mut longest).is_ok());
+        let mut empty = wire("").action.expect("action");
+        assert!(validate_browser_action(&mut empty).is_err());
+        let mut long = wire(&"x".repeat(129)).action.expect("action");
+        assert!(validate_browser_action(&mut long).is_err());
     }
 
     #[test]
@@ -2450,6 +2480,75 @@ mod tests {
             logged_events(&paths).is_empty(),
             "an uneventful host writes no session banner"
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The whole path of an `add_status` question: the host loop validates it, the running
+    /// desktop's pipe answers it, and the reply holds the job's state and nothing about its
+    /// address, name or request.
+    #[test]
+    fn the_host_answers_an_add_status_with_the_allowed_fields_only() {
+        let root = std::env::temp_dir().join(format!(
+            "ssdownload-bridge-add-status-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let app = App::open(paths.clone()).unwrap();
+        start(app.clone()).unwrap();
+        app.dispatch_result(Action::Add {
+            request: AddRequest {
+                url: "https://files.example/SECRET-ADDRESS/report.zip?token=SECRET".into(),
+                kind: crate::model::DownloadKind::File,
+                filename: Some("SECRET-NAME.zip".into()),
+                directory: Some(root.join("SECRET-FOLDER")),
+                referer: Some("https://site.example/SECRET-PAGE".into()),
+                request_id: Some("extension-add-1".into()),
+                // The job waits for its time and performs no network I/O.
+                start_at: Some(chrono::Utc::now().timestamp() + 3_600),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let ask = |request_id: &str| {
+            let (result, mut replies) = run_host(
+                &paths,
+                &[],
+                &[WireRequest {
+                    version: PROTOCOL_VERSION,
+                    action: Some(Action::AddStatus {
+                        request_id: request_id.into(),
+                    }),
+                }],
+            );
+            result.expect("the host keeps serving");
+            assert_eq!(replies.len(), 1);
+            replies.remove(0)
+        };
+
+        let known = ask("extension-add-1");
+        assert!(known.ok, "{}", known.message);
+        assert!(known.snapshot.is_none(), "no job list travels with it");
+        assert_eq!(
+            serde_json::to_value(&known.result).unwrap(),
+            serde_json::json!({"add_status": {"found": true, "state": "scheduled", "received": false}})
+        );
+        assert!(
+            !serde_json::to_string(&known).unwrap().contains("SECRET"),
+            "{known:?}"
+        );
+
+        let unknown = ask("another-add");
+        assert!(unknown.ok);
+        assert_eq!(
+            serde_json::to_value(&unknown.result).unwrap(),
+            serde_json::json!({"add_status": {"found": false, "received": false}})
+        );
+
+        let invalid = ask("");
+        assert!(!invalid.ok);
+        assert!(invalid.result.is_none());
+
+        app.shutdown();
         std::fs::remove_dir_all(root).ok();
     }
 }

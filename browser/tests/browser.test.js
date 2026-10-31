@@ -21,7 +21,21 @@ function event() {
 
 const nativeCapabilities={ok:true,result:{capabilities:{protocol:2,capability_version:3,site_entries:true,usage_modes:{video:true,file:true,audio:true},onboarding_version:1,settings_revision:1,source_refresh_jobs:[]}}};
 
-function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map(), browserLanguage = "tr" } = {}) {
+// The keys Chrome's downloads.search and downloads.erase accept in a DownloadQuery; it throws on any other.
+const DOWNLOAD_QUERY_KEYS = new Set(["query", "startedBefore", "startedAfter", "endedBefore", "endedAfter", "totalBytesGreater",
+  "totalBytesLess", "filenameRegex", "urlRegex", "finalUrlRegex", "limit", "orderBy", "id", "url", "finalUrl", "filename", "danger",
+  "mime", "startTime", "endTime", "state", "paused", "error", "exists"]);
+function checkedDownloadQuery(query) {
+  for (const key of Object.keys(query ?? {})) {
+    if (!DOWNLOAD_QUERY_KEYS.has(key)) throw new TypeError(`Error at parameter 'query': Unexpected property: '${key}'.`);
+  }
+  return query ?? {};
+}
+
+// `downloadItems` is the browser's download list, shared by the workers a test restarts. An item the
+// worker is told about through onCreated exists in the browser: the tests announce it by firing the
+// listener, so the worker's first pause registers it. After that the doubles refuse what Chrome refuses.
+function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map(), downloadItems = new Map(), browserLanguage = "tr" } = {}) {
   const events = {
     headers: event(), beforeHeaders: event(), removed: event(), updated: event(), installed: event(), startup: event(),
     menu: event(), message: event(), activated: event(), alarm: event(), download: event(), suspend: event()
@@ -31,7 +45,14 @@ function backgroundHarness({ native = async request => request?.action?.type==="
   const nativeRequests = [];
   const actionCalls = [];
   const alarmCreates = [];
+  const alarmClears = [];
+  const tabMessages = [];
   const downloadCalls = [];
+  const chromeItem = id => {
+    const item = downloadItems.get(id);
+    if (!item) throw new Error("Invalid downloadId");
+    return item;
+  };
   const menuEntries = [];
   const tabCreates = [];
   const timers = new Map();
@@ -56,14 +77,39 @@ function backgroundHarness({ native = async request => request?.action?.type==="
     alarms: {
       create(name, info) { alarmCreates.push({ name, info }); alarmStore.set(name, info); },
       async get(name) { return alarmStore.has(name) ? { name, ...alarmStore.get(name) } : undefined; },
+      async clear(name) { alarmClears.push(name); return alarmStore.delete(name); },
       onAlarm: events.alarm
     },
     downloads: {
       onCreated: events.download,
-      async pause(id) { downloadCalls.push({ method: "pause", id }); },
-      async resume(id) { downloadCalls.push({ method: "resume", id }); },
-      async cancel(id) { downloadCalls.push({ method: "cancel", id }); },
-      async erase(query) { downloadCalls.push({ method: "erase", id: query.id }); }
+      async pause(id) {
+        downloadCalls.push({ method: "pause", id });
+        if (!downloadItems.has(id)) downloadItems.set(id, { id, state: "in_progress", paused: false, canResume: false });
+        const item = chromeItem(id);
+        if (item.state !== "in_progress") throw new Error("Download must be in progress");
+        item.paused = true;
+        item.canResume = true;
+      },
+      async resume(id) {
+        downloadCalls.push({ method: "resume", id });
+        const item = chromeItem(id);
+        if (!item.paused && !(item.state === "interrupted" && item.canResume)) throw new Error("Download must be paused");
+        Object.assign(item, { state: "in_progress", paused: false });
+      },
+      async cancel(id) {
+        downloadCalls.push({ method: "cancel", id });
+        const item = chromeItem(id);
+        if (item.state === "in_progress") Object.assign(item, { state: "interrupted", paused: false, canResume: false, error: "USER_CANCELED" });
+      },
+      async erase(query) {
+        downloadCalls.push({ method: "erase", id: query.id });
+        checkedDownloadQuery(query);
+        return downloadItems.delete(query.id) ? [query.id] : [];
+      },
+      async search(query) {
+        checkedDownloadQuery(query);
+        return [...downloadItems.values()].filter(item => (query.id === undefined || item.id === query.id)).map(item => ({ ...item }));
+      }
     },
     webNavigation: navigation,
     permissions: {
@@ -79,8 +125,9 @@ function backgroundHarness({ native = async request => request?.action?.type==="
       onRemoved: events.removed, onUpdated: events.updated, onActivated: events.activated,
       // The worker asks the page for its own markup at the moment of a handoff; a tab that
       // cannot answer (a restarted worker, an about:blank frame) is the omitted field.
-      async sendMessage(_tabId, message) {
-        if (message?.channel !== "ssdownload-background" || message.command !== "page-html") return undefined;
+      async sendMessage(tabId, message) {
+        if (message?.channel !== "ssdownload-background") return undefined;
+        if (message.command !== "page-html") { tabMessages.push({ tabId, ...message }); return undefined; }
         return typeof pageHtml === "function" ? pageHtml(message) : pageHtml === undefined ? undefined : { html: pageHtml };
       },
       query: tabsQuery([{ id: 7, url: "https://site.example/watch", active: true, incognito: false }]),
@@ -176,7 +223,7 @@ function hlsChildren(text, base) { return hlsRelations(text,base).filter(item=>i
       await new Promise(resolve => setImmediate(resolve));
     }
   }
-  return { events, storage, content, menu, state, waitFor, context, logs, timers, runTimers, settle, actionCalls, menuEntries, nativeRequests, alarmCreates, downloadCalls, tabCreates, action: browser.action };
+  return { events, storage, content, menu, state, waitFor, context, logs, timers, runTimers, settle, actionCalls, menuEntries, nativeRequests, alarmCreates, alarmClears, alarmStore, tabMessages, downloadItems, downloadCalls, tabCreates, action: browser.action };
 }
 
 // The toolbar icon opens popup.html; its switch sends this message to the worker.
@@ -963,6 +1010,309 @@ test("only the referrer's site can supply the consent of a takeover", async () =
   assert.equal(addRequestOf(bare.h).session_cookies, undefined);
   assert.deepEqual(bare.calls.getAll, []);
   assert.equal(bare.calls.stores, 0);
+});
+
+// ---- the browser's copy of a taken-over download waits for the desktop's job
+//
+// A desktop that reports job status (capability add_status) is asked about each handed-over
+// download; `answer` is what it says to `add_status`. The browser doubles are strict: a paused
+// copy can only be resumed, cancelled and erased the way Chrome allows it.
+const TAKEOVER_ALARM = "ssdownload-takeover-poll";
+const statusReply = value => ({ ok: true, message: "Tamam", result: { add_status: value } });
+const jobStatus = (state, extra = {}) => statusReply({ found: true, state, received: false, ...extra });
+const jobNotFound = () => statusReply({ found: false, received: false });
+function statusNative({ capability = true, answer = () => jobStatus("queued"), accept, language } = {}) {
+  const base = takeoverNative({ accept });
+  return async request => {
+    if (request?.action?.type === "add_status") return answer(request.action.request_id);
+    const response = await base(request);
+    if (request?.action?.type === "capabilities") {
+      if (capability !== "absent") response.result.capabilities.add_status = capability;
+      if (language) response.result.capabilities.language = language;
+    }
+    return response;
+  };
+}
+const statusRequests = h => h.nativeRequests.filter(request => request?.action?.type === "add_status");
+const downloadMethods = h => h.downloadCalls.map(call => call.method);
+// The polling timers the worker holds: the first after 2 s, then doubling up to 30 s.
+const pendingPolls = h => [...h.timers.values()].map(timer => timer.delay).filter(delay => [2000, 4000, 8000, 16000, 30000].includes(delay)).sort((a, b) => a - b);
+async function handOver(h, extra = {}) {
+  h.events.download.listeners.at(-1)(takeoverItem(extra));
+  await h.waitFor(() => h.storage.local.takeovers?.some(entry => entry.downloadId === (extra.id ?? 41)));
+  await h.settle();
+}
+// Fires the pending polling timer and waits until the poll has been answered.
+async function poll(h) {
+  const [delay] = pendingPolls(h);
+  assert.ok(delay, "a polling timer is pending");
+  const asked = statusRequests(h).length;
+  h.runTimers(delay);
+  await h.waitFor(() => statusRequests(h).length > asked);
+  await h.settle();
+}
+const flushedEvents = async h => { await vm.runInContext("SSDownloadEvents.flush()", h.context); return h.logs.flat(); };
+
+for (const [label, capability] of [["absent", "absent"], ["false", false], ["a string", "true"], ["a number", 1]]) {
+  test(`a desktop whose capabilities carry no add_status (${label}) still gets its takeover erased at once`, async () => {
+    // The released 1.9.0 app reports no such field: nothing may be asked of it, stored or scheduled.
+    const h = backgroundHarness({ native: statusNative({ capability }) });
+    h.events.download.listeners.at(-1)(takeoverItem());
+    await h.waitFor(() => h.downloadCalls.some(call => call.method === "erase"));
+    await h.settle();
+    h.runTimers();
+    await h.settle();
+    assert.deepEqual(downloadMethods(h), ["pause", "cancel", "erase"]);
+    assert.equal(h.downloadItems.has(41), false);
+    assert.deepEqual(statusRequests(h), []);
+    assert.equal(h.storage.local.takeovers, undefined);
+    assert.equal(h.alarmCreates.filter(call => call.name === TAKEOVER_ALARM).length, 0);
+    assert.deepEqual(pendingPolls(h), []);
+  });
+}
+
+test("a desktop that reports job status keeps the browser copy paused after it accepted the job", async () => {
+  const h = backgroundHarness({ native: statusNative() });
+  await handOver(h);
+  const added = addRequestOf(h);
+  assert.match(added.request_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(downloadMethods(h), ["pause"], "the copy is neither cancelled nor erased");
+  assert.deepEqual(plain(h.downloadItems.get(41)), { id: 41, state: "in_progress", paused: true, canResume: true });
+  assert.deepEqual(plain(h.storage.local.takeovers), [{ downloadId: 41, requestId: added.request_id, host: "files.example" }]);
+  assert.deepEqual(plain(h.alarmCreates.filter(call => call.name === TAKEOVER_ALARM).map(call => call.info)), [{ periodInMinutes: 0.5 }]);
+  assert.deepEqual(pendingPolls(h), [2000]);
+  assert.deepEqual(statusRequests(h), [], "nothing is asked before the first poll");
+});
+
+test("a refused handover resumes the browser copy and tracks nothing", async () => {
+  const h = backgroundHarness({ native: statusNative({ accept: () => ({ ok: false, message: "SSD-EXT-001 reddedildi" }) }) });
+  h.events.download.listeners.at(-1)(takeoverItem());
+  await h.waitFor(() => h.downloadCalls.some(call => call.method === "resume"));
+  await h.settle();
+  assert.deepEqual(downloadMethods(h), ["pause", "resume"]);
+  assert.equal(h.storage.local.takeovers, undefined);
+  assert.deepEqual(pendingPolls(h), []);
+});
+
+for (const [label, reply] of [
+  ["bytes have arrived", jobStatus("downloading", { received: true })],
+  ["the job completed", jobStatus("completed", { received: true })],
+  ["the job completed an empty file", jobStatus("completed")],
+  ["the job failed after bytes arrived", jobStatus("failed", { received: true, error_code: "SSD-NET-001" })],
+]) {
+  test(`the browser copy is cancelled and erased once ${label}`, async () => {
+    const h = backgroundHarness({ native: statusNative({ answer: () => reply }) });
+    await handOver(h);
+    await poll(h);
+    assert.deepEqual(downloadMethods(h), ["pause", "cancel", "erase"]);
+    assert.equal(h.downloadItems.has(41), false);
+    assert.deepEqual(plain(h.storage.local.takeovers), []);
+    assert.deepEqual(plain(statusRequests(h)), [{ version: 2, action: { type: "add_status", request_id: addRequestOf(h).request_id } }]);
+    assert.deepEqual(pendingPolls(h), [], "nothing is left to poll");
+    assert.deepEqual(h.alarmClears, [TAKEOVER_ALARM]);
+  });
+}
+
+for (const state of ["queued", "scheduled", "connecting", "downloading", "processing", "paused"]) {
+  test(`a ${state} job without a byte keeps the browser copy paused`, async () => {
+    const h = backgroundHarness({ native: statusNative({ answer: () => jobStatus(state) }) });
+    await handOver(h);
+    await poll(h);
+    assert.deepEqual(downloadMethods(h), ["pause"]);
+    assert.equal(h.downloadItems.get(41).paused, true);
+    assert.equal(h.storage.local.takeovers.length, 1);
+  });
+}
+
+test("a waiting job is polled with a delay that doubles up to 30 seconds", async () => {
+  const h = backgroundHarness({ native: statusNative() });
+  await handOver(h);
+  const delays = [];
+  for (let round = 0; round < 7; round += 1) {
+    delays.push(pendingPolls(h));
+    await poll(h);
+  }
+  assert.deepEqual(delays, [[2000], [4000], [8000], [16000], [30000], [30000], [30000]]);
+  assert.deepEqual(downloadMethods(h), ["pause"], "a job that waits is never given up on");
+  assert.equal(h.storage.local.takeovers.length, 1);
+  assert.equal(h.alarmCreates.filter(call => call.name === TAKEOVER_ALARM).length, 1, "the alarm is created once, not restarted by each poll");
+});
+
+for (const [label, reply, code] of [
+  ["failed with a code", jobStatus("failed", { error_code: "SSD-NET-004" }), "SSD-NET-004"],
+  ["failed with another code", jobStatus("failed", { error_code: "SSD-STO-001" }), "SSD-STO-001"],
+  ["failed without a code", jobStatus("failed"), undefined],
+  ["is waiting for a new source address", jobStatus("awaiting_source", { error_code: "SSD-NET-004" }), "SSD-NET-004"],
+]) {
+  test(`a job that ${label} before its first byte hands the download back to the browser`, async () => {
+    const h = backgroundHarness({ native: statusNative({ answer: () => reply }) });
+    await handOver(h);
+    await poll(h);
+    assert.deepEqual(downloadMethods(h), ["pause", "resume"]);
+    assert.deepEqual(plain(h.downloadItems.get(41)), { id: 41, state: "in_progress", paused: false, canResume: true });
+    assert.deepEqual(plain(h.storage.local.takeovers), []);
+    const returned = (await flushedEvents(h)).find(event => event.event === "ext.takeover.returned");
+    assert.equal(returned?.level, "warn");
+    assert.equal(returned.outcome, "failed");
+    assert.equal(returned.code, code);
+    assert.equal(returned.host, "files.example");
+    assert.deepEqual(plain(h.tabMessages.filter(message => message.command === "status")), [{ tabId: 7, channel: "ssdownload-background",
+      command: "status", message: "SSDownload bu dosyayı alamadı; indirmeyi tarayıcı sürdürüyor.", error: false }]);
+  });
+}
+
+test("the notice that the browser continues follows the desktop's language", async () => {
+  const h = backgroundHarness({ native: statusNative({ answer: () => jobStatus("failed"), language: "de" }) });
+  await handOver(h);
+  await poll(h);
+  assert.deepEqual(h.tabMessages.filter(message => message.command === "status").map(message => message.message),
+    ["SSDownload konnte diese Datei nicht empfangen, daher setzt der Browser den Download fort."]);
+});
+
+for (const [label, reply] of [["is not found", jobNotFound()], ["was cancelled", jobStatus("cancelled")]]) {
+  test(`a job that ${label} in the app leaves the browser copy paused and stops tracking it`, async () => {
+    const h = backgroundHarness({ native: statusNative({ answer: () => reply }) });
+    await handOver(h);
+    await poll(h);
+    assert.deepEqual(downloadMethods(h), ["pause"], "the user may have cancelled on purpose: neither erased nor resumed");
+    assert.equal(h.downloadItems.get(41).paused, true);
+    assert.deepEqual(plain(h.storage.local.takeovers), []);
+    assert.deepEqual(pendingPolls(h), []);
+    assert.deepEqual(h.alarmClears, [TAKEOVER_ALARM]);
+    assert.deepEqual(h.tabMessages.filter(message => message.command === "status"), []);
+  });
+}
+
+for (const [label, answer] of [
+  ["a desktop that is not running", () => ({ ok: false, message: "SSD-BRG-005 SSDownload uygulamasına ulaşılamadı" })],
+  ["a failing native host", () => { throw new Error("Native host has exited."); }],
+  ["an answer without a status", () => ({ ok: true, message: "Tamam", result: {} })],
+  ["an answer whose status has no found flag", () => statusReply({ state: "failed", received: false })],
+]) {
+  test(`${label} keeps the browser copy paused and tracked for a later poll`, async () => {
+    let reachable = false;
+    const h = backgroundHarness({ native: statusNative({ answer: id => reachable ? jobStatus("downloading", { received: true }) : answer(id) }) });
+    await handOver(h);
+    await poll(h);
+    assert.deepEqual(downloadMethods(h), ["pause"]);
+    assert.equal(h.storage.local.takeovers.length, 1);
+    assert.deepEqual(pendingPolls(h), [4000]);
+    reachable = true;
+    await poll(h);
+    assert.deepEqual(downloadMethods(h), ["pause", "cancel", "erase"]);
+    assert.deepEqual(plain(h.storage.local.takeovers), []);
+  });
+}
+
+for (const [label, change] of [
+  ["erased from the list", items => items.delete(41)],
+  ["resumed by the user", items => { items.get(41).paused = false; }],
+  ["cancelled by the user", items => Object.assign(items.get(41), { state: "interrupted", canResume: false, error: "USER_CANCELED" })],
+  ["completed", items => Object.assign(items.get(41), { state: "complete", paused: false })],
+]) {
+  test(`a browser copy that was ${label} is not touched and no longer tracked`, async () => {
+    const h = backgroundHarness({ native: statusNative({ answer: () => jobStatus("failed") }) });
+    await handOver(h);
+    change(h.downloadItems);
+    h.runTimers(2000);
+    await h.waitFor(() => h.storage.local.takeovers.length === 0);
+    await h.settle();
+    assert.deepEqual(downloadMethods(h), ["pause"], "the extension does not act on a copy the user acted on");
+    assert.deepEqual(statusRequests(h), [], "the desktop is not asked about a copy that is not ours any more");
+    assert.deepEqual(pendingPolls(h), []);
+  });
+}
+
+test("a paused copy the server's timeout interrupted is still ours and follows the job", async () => {
+  const outcomes = [];
+  for (const [reply, expected] of [[jobStatus("failed"), ["pause", "resume"]], [jobStatus("downloading", { received: true }), ["pause", "cancel", "erase"]]]) {
+    const h = backgroundHarness({ native: statusNative({ answer: () => reply }) });
+    await handOver(h);
+    Object.assign(h.downloadItems.get(41), { state: "interrupted", paused: false, canResume: true, error: "NETWORK_TIMEOUT" });
+    await poll(h);
+    outcomes.push([downloadMethods(h), expected]);
+  }
+  for (const [actual, expected] of outcomes) assert.deepEqual(actual, expected);
+});
+
+test("a restarted worker finds the waiting copy again and finishes the handover", async () => {
+  let reply = jobStatus("queued");
+  const alarmStore = new Map();
+  const downloadItems = new Map();
+  const first = backgroundHarness({ native: statusNative({ answer: () => reply }), alarmStore, downloadItems });
+  await handOver(first);
+  await poll(first);
+  assert.deepEqual(downloadMethods(first), ["pause"]);
+
+  // The suspended worker is gone; its storage, the alarm and the browser's download list stay.
+  const second = backgroundHarness({ native: statusNative({ answer: () => reply }), alarmStore, downloadItems,
+    session: first.storage.session, local: first.storage.local });
+  await second.settle();
+  assert.deepEqual(pendingPolls(second), [2000], "the new worker takes the polling up on its own");
+  assert.equal(second.alarmCreates.filter(call => call.name === TAKEOVER_ALARM).length, 0, "the alarm that is still there is kept");
+  reply = jobStatus("downloading", { received: true });
+  await poll(second);
+  assert.deepEqual(downloadMethods(second), ["cancel", "erase"]);
+  assert.equal(downloadItems.has(41), false);
+  assert.deepEqual(plain(second.storage.local.takeovers), []);
+});
+
+test("after a browser restart the copy is found again, the cleared alarm is created again and an interrupted copy is resumed", async () => {
+  const downloadItems = new Map();
+  const first = backgroundHarness({ native: statusNative({ answer: () => jobStatus("queued") }), downloadItems });
+  await handOver(first);
+  // A restart interrupts every download; the paused copy can be resumed, the alarm is gone.
+  Object.assign(downloadItems.get(41), { state: "interrupted", paused: false, canResume: true, error: "USER_SHUTDOWN" });
+  const second = backgroundHarness({ native: statusNative({ answer: () => jobStatus("failed", { error_code: "SSD-NET-004" }) }), downloadItems,
+    session: {}, local: first.storage.local, alarmStore: new Map() });
+  await second.settle();
+  assert.deepEqual(plain(second.alarmCreates.filter(call => call.name === TAKEOVER_ALARM).map(call => call.info)), [{ periodInMinutes: 0.5 }]);
+  await poll(second);
+  assert.deepEqual(downloadMethods(second), ["resume"]);
+  assert.equal(downloadItems.get(41).state, "in_progress");
+});
+
+test("the alarm polls the desktop for a worker whose timer never ran", async () => {
+  const downloadItems = new Map();
+  const alarmStore = new Map();
+  const first = backgroundHarness({ native: statusNative({ answer: () => jobStatus("queued") }), downloadItems, alarmStore });
+  await handOver(first);
+  const second = backgroundHarness({ native: statusNative({ answer: () => jobStatus("failed", { error_code: "SSD-NET-004" }) }), downloadItems,
+    alarmStore, session: first.storage.session, local: first.storage.local });
+  await second.settle();
+  // An unrelated alarm asks nothing.
+  second.events.alarm.listeners.at(-1)({ name: "unrelated-alarm" });
+  await second.settle();
+  assert.deepEqual(statusRequests(second), []);
+  second.events.alarm.listeners.at(-1)({ name: TAKEOVER_ALARM });
+  await second.waitFor(() => downloadMethods(second).includes("resume"));
+  assert.equal(statusRequests(second).length, 1);
+  assert.deepEqual(plain(second.storage.local.takeovers), []);
+});
+
+test("two takeovers at once are both remembered", async () => {
+  const h = backgroundHarness({ native: statusNative() });
+  h.events.download.listeners.at(-1)(takeoverItem({ id: 41 }));
+  h.events.download.listeners.at(-1)(takeoverItem({ id: 42, finalUrl: "https://files.example/dl/other.mkv" }));
+  await h.waitFor(() => h.storage.local.takeovers?.length === 2);
+  assert.deepEqual(plain(h.storage.local.takeovers.map(entry => entry.downloadId)).sort(), [41, 42]);
+  assert.notEqual(h.storage.local.takeovers[0].requestId, h.storage.local.takeovers[1].requestId);
+});
+
+test("at most one hundred copies are remembered and the oldest falls off", async () => {
+  const h = backgroundHarness({ native: statusNative() });
+  for (let id = 1; id <= 101; id += 1) await vm.runInContext(`holdBrowserCopy(${id}, "request-${id}", "files.example")`, h.context);
+  const ids = plain(h.storage.local.takeovers).map(entry => entry.downloadId);
+  assert.equal(ids.length, 100);
+  assert.equal(ids[0], 2, "the oldest entry is dropped");
+  assert.equal(ids.at(-1), 101);
+});
+
+test("a download that is handed over again is remembered once", async () => {
+  const h = backgroundHarness({ native: statusNative() });
+  await vm.runInContext(`holdBrowserCopy(41, "first", "files.example")`, h.context);
+  await vm.runInContext(`holdBrowserCopy(41, "second", "files.example")`, h.context);
+  assert.deepEqual(plain(h.storage.local.takeovers), [{ downloadId: 41, requestId: "second", host: "files.example" }]);
 });
 
 test("a download that wakes a cold worker honours the stored OFF switch", async () => {

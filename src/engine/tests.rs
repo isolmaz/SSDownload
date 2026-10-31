@@ -2207,6 +2207,40 @@ fn resuming_a_running_job_leaves_it_running() {
 }
 
 #[test]
+fn a_running_job_has_received_no_bytes_until_the_server_sends_the_first_one() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-received-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/held.bin".into(), vec![3; 4096], true)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let status = || crate::model::AddJobStatus::of(&engine.snapshot().jobs, "extension-add");
+    let id = engine
+        .add(AddRequest {
+            request_id: Some("extension-add".into()),
+            ..file_request(server.url("/held.bin"), &root.join("out"))
+        })
+        .unwrap()
+        .remove(0);
+    wait_until("the server to be asked for the body", || {
+        !server.hits.lock().unwrap().is_empty()
+    });
+    // The answer's headers are in; the body is held back.
+    thread::sleep(Duration::from_millis(600));
+    let held = status();
+    assert!(held.found);
+    assert!(held.state.unwrap().is_active(), "{held:?}");
+    assert!(!held.received, "{held:?}");
+
+    server.release();
+    wait_until("the download to finish", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+    let done = status();
+    assert_eq!(done.state, Some(JobState::Completed));
+    assert!(done.received);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn pause_all_cancels_a_running_source_refresh_so_it_cannot_requeue_the_job() {
     let root = std::env::temp_dir().join(format!(
         "ssdownload-engine-refresh-pause-all-{}",
@@ -2444,6 +2478,119 @@ mod retry_budget {
         assert!(!job.path.exists());
         assert_eq!(attempts_made(&source), 1);
         assert!(page.log().iter().all(|entry| entry.method == "HEAD"));
+        engine.shutdown();
+    }
+
+    /// What the extension is told, sampled from the add until the job ends.
+    fn statuses_until_the_job_ends(
+        engine: &Engine,
+        request_id: &str,
+    ) -> Vec<crate::model::AddJobStatus> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut seen = Vec::new();
+        loop {
+            let status = crate::model::AddJobStatus::of(&engine.snapshot().jobs, request_id);
+            let ended = status.state.is_some_and(JobState::is_terminal);
+            seen.push(status);
+            if ended {
+                return seen;
+            }
+            assert!(Instant::now() < deadline, "the job did not end");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A job that the page check refuses reports no received bytes at any moment, however far
+    /// the transfer got before the page came: the probe sees the page, the single-connection
+    /// transfer is redirected to it after the probe saw a file, and every range of a
+    /// multi-connection transfer is answered with it. The pages that a transfer could read are
+    /// slow, so a page that were written would be counted in progress while the job still runs.
+    #[test]
+    fn a_job_refused_by_the_page_check_never_reports_received_bytes() {
+        const PAGE: u64 = 400_000;
+        let page = |throttle| {
+            Server::start(Config {
+                size: PAGE,
+                content_type: Some("text/html".into()),
+                throttle: Some(throttle),
+                ..Config::default()
+            })
+        };
+        let ranged_page = Server::start(Config {
+            size: 6 * MIB,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((2, "text/html".into())),
+            throttle: Some(MIB),
+            ..Config::default()
+        });
+        let probe_sees_page = page(100_000);
+        let get_sees_page = page(100_000);
+        let sources = [
+            (
+                "the probe sees the page",
+                Server::start(Config {
+                    redirect_to: Some(probe_sees_page.url("/signin")),
+                    ..Config::default()
+                }),
+                &probe_sees_page,
+            ),
+            (
+                "the transfer is redirected to the page",
+                Server::start(Config {
+                    size: PAGE,
+                    content_type: Some("application/octet-stream".into()),
+                    redirect_to: Some(get_sees_page.url("/signin")),
+                    head_not_redirected: true,
+                    ..Config::default()
+                }),
+                &get_sees_page,
+            ),
+            (
+                "every range is answered with the page",
+                Server::start(Config {
+                    redirect_to: Some(ranged_page.url("/signin")),
+                    ..Config::default()
+                }),
+                &ranged_page,
+            ),
+        ];
+        let root = TempDir::new("add-status-page");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        for (index, (label, source, page)) in sources.iter().enumerate() {
+            let request_id = format!("takeover-{index}");
+            engine
+                .add(AddRequest {
+                    request_id: Some(request_id.clone()),
+                    ..file_request(source.url("/report.pdf"), &root.0.join("out"))
+                })
+                .unwrap();
+            let seen = statuses_until_the_job_ends(&engine, &request_id);
+            assert!(
+                seen.iter().all(|status| status.found && !status.received),
+                "{label}: {seen:?}"
+            );
+            let last = seen.last().unwrap();
+            assert_eq!(last.state, Some(JobState::Failed), "{label}: {last:?}");
+            assert_eq!(last.error_code.as_deref(), Some("SSD-NET-004"), "{label}");
+            let job = engine
+                .snapshot()
+                .jobs
+                .iter()
+                .find(|job| job.request.request_id.as_deref() == Some(request_id.as_str()))
+                .unwrap()
+                .clone();
+            assert_eq!(job.downloaded, 0, "{label}");
+            assert!(!job.path.exists(), "{label}: the page was published");
+            if index > 0 {
+                page.wait_idle();
+                assert!(
+                    page.log().iter().any(|entry| entry.method == "GET"
+                        && entry.range.as_deref() != Some("bytes=0-0")),
+                    "{label}: the transfer should have reached the page: {:?}",
+                    page.log()
+                );
+            }
+        }
         engine.shutdown();
     }
 
