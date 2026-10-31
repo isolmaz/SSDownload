@@ -1,6 +1,17 @@
 use super::*;
 use std::fs;
 
+static LIVE_JOBS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Stands in for the media analysis, which marks a live source on the job's control.
+fn mark_as_live_recording(id: &str) {
+    LIVE_JOBS.lock().unwrap().insert(id.to_owned());
+}
+
+pub(super) fn pretends_live(id: &str) -> bool {
+    LIVE_JOBS.lock().unwrap().contains(id)
+}
+
 #[test]
 fn daily_window_handles_overnight_boundaries() {
     assert_eq!(parse_minute("23:30"), Some(1410));
@@ -2756,5 +2767,445 @@ mod retry_budget {
         assert!(!attempt_progressed(&mut high, "job", &live));
         // Other jobs have their own mark.
         assert!(attempt_progressed(&mut high, "other", &ended(0, 5)));
+    }
+}
+
+mod holds {
+    use super::*;
+
+    const POLL: Duration = Duration::from_millis(20);
+    /// Several scheduler passes (one every 150 ms).
+    const SETTLE: Duration = Duration::from_millis(600);
+
+    fn open(root: &Path, sensors: &FakeSensors) -> Engine {
+        let engine = Engine::open_with(
+            AppPaths::new(root.to_path_buf()).unwrap(),
+            Box::new(sensors.clone()),
+            POLL,
+        )
+        .unwrap();
+        let mut settings = engine.snapshot().settings;
+        settings.pause_on_metered = true;
+        settings.pause_on_battery_saver = true;
+        engine.update_settings(settings).unwrap();
+        engine
+    }
+
+    fn sensor(sensors: &FakeSensors, battery_saver: bool) -> &AtomicBool {
+        if battery_saver {
+            &sensors.battery_saver
+        } else {
+            &sensors.metered
+        }
+    }
+
+    fn switch(sensors: &FakeSensors, battery_saver: bool, on: bool) {
+        sensor(sensors, battery_saver).store(on, Ordering::Release);
+    }
+
+    fn wait_for_hold(engine: &Engine, active: bool) {
+        wait_until("the hold to change", || {
+            engine.snapshot().hold.is_active() == active
+        });
+    }
+
+    fn add(engine: &Engine, server: &FileServer, path: &str, directory: &Path) -> String {
+        engine
+            .add(file_request(server.url(path), directory))
+            .unwrap()
+            .remove(0)
+    }
+
+    fn requests(server: &FileServer, path: &str) -> usize {
+        server
+            .hits
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|hit| *hit == path)
+            .count()
+    }
+
+    fn job(engine: &Engine, id: &str) -> Job {
+        engine
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|job| job.id == id)
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn a_running_job_goes_back_to_the_queue_when_a_hold_starts_and_runs_again_when_it_lifts() {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![("/held.bin".into(), vec![5; 4096], true)]);
+            let sensors = FakeSensors::default();
+            let engine = open(&root, &sensors);
+            let id = add(&engine, &server, "/held.bin", &root.join("out"));
+            wait_until("the download to start", || {
+                job_state(&engine, &id).is_active()
+            });
+
+            switch(&sensors, battery_saver, true);
+            wait_until("the hold to send the job back to the queue", || {
+                job_state(&engine, &id) == JobState::Queued
+            });
+            let hold = engine.snapshot().hold;
+            assert_eq!(
+                (hold.metered, hold.battery_saver),
+                (!battery_saver, battery_saver)
+            );
+            let started = requests(&server, "/held.bin");
+            thread::sleep(SETTLE);
+            assert_eq!(job_state(&engine, &id), JobState::Queued);
+            assert_eq!(requests(&server, "/held.bin"), started);
+            assert_eq!(
+                job(&engine, &id).phase,
+                engine.snapshot().hold.notice().unwrap()
+            );
+
+            switch(&sensors, battery_saver, false);
+            wait_until("the job to run again", || {
+                job_state(&engine, &id).is_active()
+            });
+            assert!(!engine.snapshot().hold.is_active());
+            server.release();
+            wait_until("the download to finish", || {
+                job_state(&engine, &id) == JobState::Completed
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_row_that_cannot_start_when_a_hold_lifts_shows_the_ordinary_queue_text_also_after_a_reopen()
+    {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![
+                ("/a.bin".into(), vec![1; 4096], true),
+                ("/b.bin".into(), vec![2; 4096], true),
+            ]);
+            let sensors = FakeSensors::default();
+            let engine = open(&root, &sensors);
+            let a = add(&engine, &server, "/a.bin", &root.join("out"));
+            let b = add(&engine, &server, "/b.bin", &root.join("out"));
+            wait_until("both downloads to start", || {
+                job_state(&engine, &a).is_active() && job_state(&engine, &b).is_active()
+            });
+
+            switch(&sensors, battery_saver, true);
+            wait_for_hold(&engine, true);
+            let held_text = engine.snapshot().hold.notice().unwrap();
+            wait_until("both rows to name the hold", || {
+                [&a, &b]
+                    .iter()
+                    .all(|id| job(&engine, id).phase == held_text)
+            });
+            thread::sleep(SETTLE);
+
+            let mut settings = engine.snapshot().settings;
+            settings.max_active = 1;
+            engine.update_settings(settings).unwrap();
+            switch(&sensors, battery_saver, false);
+            wait_until("one download to start", || {
+                [&a, &b].iter().any(|id| job_state(&engine, id).is_active())
+            });
+            thread::sleep(SETTLE);
+            let waiting = [&a, &b]
+                .into_iter()
+                .filter(|id| !job_state(&engine, id).is_active())
+                .collect::<Vec<_>>();
+            assert_eq!(waiting.len(), 1);
+            assert_eq!(job(&engine, waiting[0]).phase, JobState::Queued.label());
+            engine.shutdown();
+
+            let paths = AppPaths::new(root.clone()).unwrap();
+            let stored = Store::open(&paths.database).unwrap().load_jobs().unwrap();
+            assert_eq!(stored.len(), 2);
+            assert!(stored.iter().all(|job| job.phase != held_text));
+
+            let engine = open(&root, &sensors);
+            wait_until("one download to start after the reopen", || {
+                [&a, &b].iter().any(|id| job_state(&engine, id).is_active())
+            });
+            thread::sleep(SETTLE);
+            let waiting = [&a, &b]
+                .into_iter()
+                .filter(|id| !job_state(&engine, id).is_active())
+                .collect::<Vec<_>>();
+            assert_eq!(waiting.len(), 1);
+            assert_eq!(job(&engine, waiting[0]).phase, JobState::Queued.label());
+
+            server.release();
+            wait_until("both downloads to finish", || {
+                [&a, &b]
+                    .iter()
+                    .all(|id| job_state(&engine, id) == JobState::Completed)
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_job_the_user_paused_stays_paused_through_a_hold_and_its_release() {
+        let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+        let server = FileServer::start(vec![
+            ("/paused.bin".into(), vec![1; 4096], true),
+            ("/running.bin".into(), vec![2; 4096], true),
+        ]);
+        let sensors = FakeSensors::default();
+        let engine = open(&root, &sensors);
+        let paused = add(&engine, &server, "/paused.bin", &root.join("out"));
+        let running = add(&engine, &server, "/running.bin", &root.join("out"));
+        wait_until("both downloads to start", || {
+            job_state(&engine, &paused).is_active() && job_state(&engine, &running).is_active()
+        });
+        engine.pause(&paused).unwrap();
+        thread::sleep(SETTLE);
+        let paused_requests = requests(&server, "/paused.bin");
+
+        switch(&sensors, false, true);
+        wait_until("the hold to send the running job back", || {
+            job_state(&engine, &running) == JobState::Queued
+        });
+        assert_eq!(job_state(&engine, &paused), JobState::Paused);
+        assert_eq!(job(&engine, &paused).phase, JobState::Paused.label());
+
+        switch(&sensors, false, false);
+        wait_until("the running job to run again", || {
+            job_state(&engine, &running).is_active()
+        });
+        server.release();
+        wait_until("the running job to finish", || {
+            job_state(&engine, &running) == JobState::Completed
+        });
+        thread::sleep(SETTLE);
+        assert_eq!(job_state(&engine, &paused), JobState::Paused);
+        assert_eq!(requests(&server, "/paused.bin"), paused_requests);
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nothing_starts_during_a_hold_and_the_queue_runs_when_it_lifts() {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![
+                ("/a.bin".into(), vec![1; 4096], true),
+                ("/b.bin".into(), vec![2; 4096], true),
+            ]);
+            let sensors = FakeSensors::default();
+            switch(&sensors, battery_saver, true);
+            let engine = open(&root, &sensors);
+            wait_for_hold(&engine, true);
+            let a = add(&engine, &server, "/a.bin", &root.join("out"));
+            let b = add(&engine, &server, "/b.bin", &root.join("out"));
+
+            thread::sleep(SETTLE);
+            assert!(server.hits.lock().unwrap().is_empty());
+            assert_eq!(job_state(&engine, &a), JobState::Queued);
+            assert_eq!(job_state(&engine, &b), JobState::Queued);
+
+            switch(&sensors, battery_saver, false);
+            wait_until("both downloads to start", || {
+                job_state(&engine, &a).is_active() && job_state(&engine, &b).is_active()
+            });
+            server.release();
+            wait_until("both downloads to finish", || {
+                job_state(&engine, &a) == JobState::Completed
+                    && job_state(&engine, &b) == JobState::Completed
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn start_now_runs_a_job_through_a_hold_and_the_hold_does_not_stop_it() {
+        let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+        let server = FileServer::start(vec![
+            ("/now.bin".into(), vec![1; 4096], true),
+            ("/later.bin".into(), vec![2; 4096], true),
+        ]);
+        let sensors = FakeSensors::default();
+        switch(&sensors, true, true);
+        let engine = open(&root, &sensors);
+        wait_for_hold(&engine, true);
+        let now = add(&engine, &server, "/now.bin", &root.join("out"));
+        let later = add(&engine, &server, "/later.bin", &root.join("out"));
+
+        engine.start_now(&now).unwrap();
+        wait_until("the forced download to start", || {
+            job_state(&engine, &now).is_active()
+        });
+        thread::sleep(SETTLE);
+        assert!(job_state(&engine, &now).is_active());
+        assert_eq!(job_state(&engine, &later), JobState::Queued);
+        assert_eq!(requests(&server, "/later.bin"), 0);
+
+        server.release();
+        wait_until("the forced download to finish", || {
+            job_state(&engine, &now) == JobState::Completed
+        });
+        thread::sleep(SETTLE);
+        assert_eq!(job_state(&engine, &later), JobState::Queued);
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_running_live_recording_keeps_running_through_a_hold_and_a_live_job_not_yet_started_waits()
+    {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![
+                ("/live.bin".into(), vec![6; 4096], true),
+                ("/other.bin".into(), vec![7; 4096], true),
+            ]);
+            let sensors = FakeSensors::default();
+            switch(&sensors, battery_saver, true);
+            let engine = open(&root, &sensors);
+            wait_for_hold(&engine, true);
+            let live = add(&engine, &server, "/live.bin", &root.join("out"));
+            mark_as_live_recording(&live);
+            let other = add(&engine, &server, "/other.bin", &root.join("out"));
+
+            thread::sleep(SETTLE);
+            assert!(server.hits.lock().unwrap().is_empty());
+            assert_eq!(job_state(&engine, &live), JobState::Queued);
+
+            switch(&sensors, battery_saver, false);
+            wait_until("both downloads to start", || {
+                job_state(&engine, &live).is_active() && job_state(&engine, &other).is_active()
+            });
+            switch(&sensors, battery_saver, true);
+            wait_until("the hold to send the other job back", || {
+                job_state(&engine, &other) == JobState::Queued
+            });
+            let started = requests(&server, "/live.bin");
+            thread::sleep(SETTLE);
+            assert!(job_state(&engine, &live).is_active());
+            assert_eq!(requests(&server, "/live.bin"), started);
+            assert_eq!(job_state(&engine, &other), JobState::Queued);
+
+            server.release();
+            wait_until("the live recording to finish", || {
+                job_state(&engine, &live) == JobState::Completed
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_hold_applies_at_startup_before_any_queued_job_starts() {
+        let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+        let server = FileServer::start(vec![("/waiting.bin".into(), vec![3; 4096], true)]);
+        let sensors = FakeSensors::default();
+        switch(&sensors, false, true);
+        let engine = open(&root, &sensors);
+        wait_for_hold(&engine, true);
+        let id = add(&engine, &server, "/waiting.bin", &root.join("out"));
+        engine.shutdown();
+
+        let restarted = FakeSensors::default();
+        switch(&restarted, false, true);
+        let engine = Engine::open_with(
+            AppPaths::new(root.clone()).unwrap(),
+            Box::new(restarted.clone()),
+            POLL,
+        )
+        .unwrap();
+        wait_for_hold(&engine, true);
+        thread::sleep(SETTLE);
+        assert!(server.hits.lock().unwrap().is_empty());
+        assert_eq!(job_state(&engine, &id), JobState::Queued);
+
+        switch(&restarted, false, false);
+        wait_until("the queued job to start", || {
+            job_state(&engine, &id).is_active()
+        });
+        server.release();
+        wait_until("the download to finish", || {
+            job_state(&engine, &id) == JobState::Completed
+        });
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_hold_does_not_use_up_the_retry_budget() {
+        let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+        let server = FileServer::start(vec![("/held.bin".into(), vec![4; 4096], true)]);
+        let sensors = FakeSensors::default();
+        let engine = open(&root, &sensors);
+        let mut settings = engine.snapshot().settings;
+        settings.retry_limit = 0;
+        engine.update_settings(settings).unwrap();
+        let id = add(&engine, &server, "/held.bin", &root.join("out"));
+        wait_until("the download to start", || {
+            job_state(&engine, &id).is_active()
+        });
+
+        for _ in 0..2 {
+            switch(&sensors, false, true);
+            wait_until("the hold to send the job back to the queue", || {
+                job_state(&engine, &id) == JobState::Queued
+            });
+            thread::sleep(SETTLE);
+            let held = job(&engine, &id);
+            assert_eq!((held.state, held.attempts), (JobState::Queued, 0));
+            assert_eq!(held.error, None);
+
+            switch(&sensors, false, false);
+            wait_until("the job to run again", || {
+                job_state(&engine, &id).is_active()
+            });
+        }
+        server.release();
+        wait_until("the download to finish", || {
+            job_state(&engine, &id).is_terminal()
+        });
+        let finished = job(&engine, &id);
+        assert_eq!(finished.state, JobState::Completed, "{:?}", finished.error);
+        assert_eq!(finished.attempts, 0);
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn both_guards_persist_and_a_profile_saved_without_the_battery_saver_one_loads_with_it_off() {
+        let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let engine = Engine::open(paths.clone()).unwrap();
+        let settings = engine.snapshot().settings;
+        assert!(!settings.pause_on_metered && !settings.pause_on_battery_saver);
+        engine.shutdown();
+
+        let engine = open(&root, &FakeSensors::default());
+        engine.shutdown();
+        let mut store = Store::open(&paths.database).unwrap();
+        let saved = store.load_settings().unwrap().unwrap();
+        assert!(saved.pause_on_metered && saved.pause_on_battery_saver);
+
+        let mut value = serde_json::to_value(saved).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("pause_on_battery_saver");
+        store
+            .save_settings(&serde_json::from_value(value).unwrap())
+            .unwrap();
+        drop(store);
+        let engine = Engine::open(paths).unwrap();
+        let settings = engine.snapshot().settings;
+        assert!(settings.pause_on_metered && !settings.pause_on_battery_saver);
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
     }
 }

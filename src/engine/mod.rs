@@ -33,9 +33,11 @@ use windows_sys::Win32::{
     },
 };
 
+mod hold;
 mod refresh;
 mod scheduling;
 mod sync;
+use hold::*;
 use refresh::*;
 use scheduling::*;
 pub(crate) use sync::verify_file_result;
@@ -362,15 +364,18 @@ struct Actor {
     last_recovery: Instant,
     /// Whether this thread currently asks Windows to stay awake.
     keeping_awake: bool,
-    /// Last metered-network probe and its answer.
-    metered: bool,
-    metered_checked: Instant,
+    hold: Hold,
+    hold_monitor: HoldMonitor,
     /// Last history pruning pass.
     history_checked: Instant,
 }
 
 impl Engine {
     pub fn open(paths: AppPaths) -> Result<Self> {
+        Self::open_with(paths, Box::new(WindowsSensors), HOLD_POLL)
+    }
+
+    fn open_with(paths: AppPaths, sensors: Box<dyn Sensors>, hold_poll: Duration) -> Result<Self> {
         let mut store = Store::open(&paths.database)?;
         let mut settings = store.load_settings()?.unwrap_or_else(Settings::first_run);
         let mut settings_migrated = false;
@@ -580,8 +585,8 @@ impl Engine {
                     dirty: false,
                     last_recovery: Instant::now(),
                     keeping_awake: false,
-                    metered: false,
-                    metered_checked: Instant::now() - Duration::from_secs(60),
+                    hold: Hold::default(),
+                    hold_monitor: HoldMonitor::new(sensors, hold_poll),
                     history_checked: Instant::now() - Duration::from_secs(7200),
                 }
                 .run();
@@ -1460,18 +1465,18 @@ impl Actor {
         self.transition(ids, false)
     }
 
-    /// Whether the network state lets work run: with `pause_on_metered`, a metered
-    /// connection (Windows connectivity hint) holds new and running downloads.
-    fn network_allows_work(&mut self) -> bool {
-        if !self.settings.pause_on_metered {
-            self.metered = false;
-            return true;
+    /// Takes the hold the sensors report now; a change reaches the event log and the snapshot.
+    fn refresh_hold(&mut self) {
+        let hold = self.hold_monitor.current(&self.settings);
+        if hold == self.hold {
+            return;
         }
-        if self.metered_checked.elapsed() >= Duration::from_secs(15) {
-            self.metered_checked = Instant::now();
-            self.metered = connection_is_metered();
-        }
-        !self.metered
+        self.hold = hold;
+        crate::logging::record(crate::logging::Event::info("engine.hold").detail(format!(
+            "metered={} battery_saver={}",
+            hold.metered, hold.battery_saver
+        )));
+        self.publish();
     }
 
     /// Removes completed jobs older than `history_days` from the list; files stay.
@@ -3801,8 +3806,9 @@ impl Actor {
             return;
         }
         self.prune_history();
+        self.refresh_hold();
         let schedule_open =
-            daily_schedule_open_at(&self.settings, &local) && self.network_allows_work();
+            daily_schedule_open_at(&self.settings, &local) && !self.hold.is_active();
         let mut state_changes = Vec::new();
         for job in self.jobs.values_mut() {
             if !self.active.contains_key(&job.id)
@@ -3984,6 +3990,10 @@ impl Actor {
         let generation = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1).max(1);
         let control = TransferControl::default();
+        #[cfg(test)]
+        if tests::pretends_live(id) {
+            control.mark_live();
+        }
         job.state = JobState::Connecting;
         job.phase = crate::i18n::ui("Bağlanıyor", "Connecting").into();
         crate::logging::record_job(
@@ -4071,7 +4081,6 @@ impl Actor {
 
     fn enforce_running_limits(&mut self, local: &DateTime<Local>) {
         let now = local.timestamp();
-        let network_open = !(self.settings.pause_on_metered && self.metered);
         let mut candidates = self
             .active
             .iter()
@@ -4112,7 +4121,12 @@ impl Actor {
                 .find(|queue| queue.id == queue_id)
                 .map(|queue| queue.concurrency.max(1) as usize)
                 .unwrap_or(1);
-            let allowed = network_open
+            // A stopped live recording cannot continue, so a hold lets a running one finish.
+            let live = self
+                .active
+                .get(&id)
+                .is_some_and(|active| active.control.is_live());
+            let allowed = (!self.hold.is_active() || live)
                 && daily_schedule_open_at(&self.settings, local)
                 && queue_accepts_work(&self.settings, queue_id, local)
                 && kept < self.settings.max_active.max(1) as usize
@@ -4364,6 +4378,17 @@ impl Actor {
             &self.completion_events,
         );
         value.revision = self.revision;
+        value.hold = self.hold;
+        if let Some(notice) = self.hold.notice() {
+            let waiting = Arc::make_mut(&mut value.jobs).iter_mut().filter(|job| {
+                job.state == JobState::Queued
+                    && !job.force_start
+                    && !self.active.contains_key(&job.id)
+            });
+            for job in waiting {
+                job.phase = notice.into();
+            }
+        }
         let mut warnings = Vec::new();
         if let Some(warning) = &self.persistence_error {
             warnings.push(warning.clone());
@@ -4647,6 +4672,7 @@ fn make_snapshot(
         settings: settings.clone(),
         completion_countdown,
         completion_events: completion_events.to_vec(),
+        hold: Hold::default(),
     }
 }
 
@@ -4972,21 +4998,6 @@ fn free_space(path: &Path) -> Option<u64> {
         )
     };
     (ok != 0).then_some(available)
-}
-
-/// Windows' connectivity hint: a fixed or variable cost means a metered connection.
-fn connection_is_metered() -> bool {
-    use windows_sys::Win32::NetworkManagement::IpHelper::GetNetworkConnectivityHint;
-    use windows_sys::Win32::Networking::WinSock::{
-        NetworkConnectivityCostHintFixed, NetworkConnectivityCostHintVariable,
-        NL_NETWORK_CONNECTIVITY_HINT,
-    };
-    let mut hint: NL_NETWORK_CONNECTIVITY_HINT = unsafe { std::mem::zeroed() };
-    if unsafe { GetNetworkConnectivityHint(&mut hint) } != 0 {
-        return false;
-    }
-    hint.ConnectivityCost == NetworkConnectivityCostHintFixed
-        || hint.ConnectivityCost == NetworkConnectivityCostHintVariable
 }
 
 #[cfg(test)]

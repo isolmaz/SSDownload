@@ -627,6 +627,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 f.completion_card,
                 f.takeover,
                 f.metered,
+                f.battery_saver,
                 f.hotkey,
             ]
             .iter()
@@ -634,7 +635,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             {
                 place(*control, behaviour, cx, cy + step * i as i32, cw, line);
             }
-            let choice_y = cy + step * 6;
+            let choice_y = cy + step * 7;
             place_static(
                 &labels,
                 22,

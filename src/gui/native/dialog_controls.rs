@@ -798,6 +798,16 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 S_METERED,
             );
             set_check(f.metered, f.value.pause_on_metered);
+            f.battery_saver = dialog_check(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui(
+                    "Windows pil tasarrufu açıkken indirmeleri beklet",
+                    "Hold downloads while Windows Battery saver is on",
+                ),
+                S_BATTERY_SAVER,
+            );
+            set_check(f.battery_saver, f.value.pause_on_battery_saver);
             f.hotkey = dialog_check(
                 dlg.hwnd,
                 dlg.font,

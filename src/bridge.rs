@@ -1,7 +1,7 @@
 use crate::{
     app::App,
     i18n::ui,
-    model::{Action, AppSnapshot, BridgeResponse, Settings},
+    model::{Action, AppSnapshot, BridgeResponse, Hold, Settings},
     paths::AppPaths,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -927,6 +927,7 @@ fn redact_snapshot(snapshot: AppSnapshot) -> AppSnapshot {
         settings: Settings::default(),
         completion_countdown: None,
         completion_events: Vec::new(),
+        hold: Hold::default(),
         media: snapshot.media,
         // A browser response never carries the handoff: it holds headers,
         // cookies and the exact selection the user has not confirmed yet.
