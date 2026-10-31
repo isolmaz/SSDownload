@@ -587,6 +587,10 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let palette = main_palette(hwnd);
     fill_colour(dc, &client, palette.card);
+    // SubtleFillColorSecondary and Tertiary on the card: hovered and pressed.
+    let dark = scheme_dark(hwnd);
+    let hot = header_state(hwnd, header_hot_prop());
+    let pressed = header_state(hwnd, header_pressed_prop());
     let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
     let previous = if font == 0 {
         null_mut()
@@ -620,8 +624,19 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
             index as usize,
             &mut item as *mut _ as isize,
         );
+        let state = if pressed == Some(index) {
+            Some(if dark { 0x0affffff } else { 0x06000000 })
+        } else if hot == Some(index) && pressed.is_none() {
+            Some(if dark { 0x0fffffff } else { 0x09000000 })
+        } else {
+            None
+        };
+        if let Some(fill) = state {
+            fill_colour(dc, &rect, over(fill, palette.card));
+        }
         let mut text = rect;
-        text.left += scale(8, dpi);
+        // The first column's title starts over the names, past their glyph slot.
+        text.left += scale(if index == 0 { 8 + 16 + 8 } else { 8 }, dpi);
         text.right -= scale(4, dpi);
         let chevron = if item.fmt & HDF_SORTUP != 0 {
             Some(0xe70eu16)
@@ -676,12 +691,86 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
     };
     fill_colour(dc, &edge, palette.stroke);
 }
+fn header_hot_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.HeaderHot"));
+    NAME.as_ptr()
+}
+fn header_pressed_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.HeaderPressed"));
+    NAME.as_ptr()
+}
+/// The header item a state property names; it stores the index plus one.
+unsafe fn header_state(hwnd: HWND, prop: *const u16) -> Option<i32> {
+    let value = GetPropW(hwnd, prop) as isize;
+    (value > 0).then(|| value as i32 - 1)
+}
+unsafe fn set_header_state(hwnd: HWND, prop: *const u16, index: Option<i32>) {
+    if header_state(hwnd, prop) == index {
+        return;
+    }
+    if let Some(index) = index {
+        SetPropW(hwnd, prop, (index as isize + 1) as HANDLE);
+    } else {
+        RemovePropW(hwnd, prop);
+    }
+    InvalidateRect(hwnd, null(), 0);
+}
+/// The item under a client point of the header, not counting its dividers.
+unsafe fn header_item_at(hwnd: HWND, lparam: LPARAM) -> Option<i32> {
+    let mut hit: HDHITTESTINFO = zeroed();
+    hit.pt = POINT {
+        x: loword(lparam as usize) as i16 as i32,
+        y: hiword(lparam as usize) as i16 as i32,
+    };
+    let index = SendMessageW(hwnd, HDM_HITTEST, 0, &mut hit as *mut _ as isize) as i32;
+    (index >= 0 && hit.flags & HHT_ONHEADER != 0).then_some(index)
+}
 pub(super) unsafe extern "system" fn header_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // The control draws a pressed or hot item itself as the pointer acts, so
+    // the states are taken after it ran and the invalidation repaints over it.
+    match msg {
+        WM_MOUSEMOVE => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            if header_state(hwnd, header_hot_prop()).is_none() {
+                let mut track = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                TrackMouseEvent(&mut track);
+            }
+            set_header_state(hwnd, header_hot_prop(), header_item_at(hwnd, lparam));
+            return result;
+        }
+        WM_MOUSELEAVE => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            set_header_state(hwnd, header_hot_prop(), None);
+            return result;
+        }
+        WM_LBUTTONDOWN => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            set_header_state(hwnd, header_pressed_prop(), header_item_at(hwnd, lparam));
+            return result;
+        }
+        WM_LBUTTONUP | WM_CAPTURECHANGED => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            set_header_state(hwnd, header_pressed_prop(), None);
+            return result;
+        }
+        WM_NCDESTROY => {
+            RemovePropW(hwnd, header_hot_prop());
+            RemovePropW(hwnd, header_pressed_prop());
+        }
+        _ => {}
+    }
     if msg == HDM_LAYOUT {
         // A 32 epx header, the height of a Fluent list header.
         let result = call_previous(hwnd, msg, wparam, lparam);
@@ -1452,15 +1541,17 @@ unsafe fn paint_job_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
             continue;
         }
         if index == selected && focus_shown {
-            round_rect(
+            focus_plate(
                 dc,
                 &inflate(rect, -scale(2, dpi), -scale(2, dpi)),
                 scale(CORNER, dpi),
+                dpi,
+                &palette,
                 palette.base,
-                Some(palette.focus_outer),
             );
         }
         let mut title = tab_title(hwnd, index);
+        let length = title.iter().position(|&c| c == 0).unwrap_or(title.len());
         SetTextColor(
             dc,
             if index == selected {
@@ -1469,17 +1560,23 @@ unsafe fn paint_job_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
                 palette.secondary
             },
         );
-        let mut text = rect;
-        text.bottom -= scale(4, dpi);
+        // The label starts TAB_PAD in, so the layout can line the first one
+        // up with the page text.
+        let mut text = RECT {
+            left: rect.left + scale(TAB_PAD, dpi),
+            bottom: rect.bottom - scale(4, dpi),
+            ..rect
+        };
+        let label_w = label_width(dc, &String::from_utf16_lossy(&title[..length]));
         DrawTextW(
             dc,
             title.as_mut_ptr(),
-            -1,
+            length as i32,
             &mut text,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
         if index == selected {
-            let centre = (rect.left + rect.right) / 2;
+            let centre = rect.left + scale(TAB_PAD, dpi) + label_w / 2;
             let pill = RECT {
                 left: centre - scale(8, dpi),
                 top: rect.bottom - scale(7, dpi),

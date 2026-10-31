@@ -119,7 +119,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
         }
         DialogKind::Add(f) => {
-            // Windows 11 dialog rhythm: a label 8 epx above each 32 epx field,
+            // Windows 11 dialog rhythm: a label 8 epx above every 32 epx field,
             // 12 epx between groups, 24 epx padding, the command bar below.
             let labels = child_statics(dlg.hwnd, dlg.error);
             let s = |value: i32| scale(value, dlg.dpi);
@@ -174,70 +174,48 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 frame(x, field_top(y), name_w, s(ADD_FIELD)),
                 dlg.dpi,
             );
-            // The combo's selection field plus its 3 epx frame is the field height.
-            let item_h = (s(ADD_FIELD) - 6) as isize;
-            if SendMessageW(f.kind, CB_GETITEMHEIGHT, usize::MAX, 0) != item_h {
-                SendMessageW(f.kind, CB_SETITEMHEIGHT, usize::MAX, item_h);
-            }
-            MoveWindow(
+            // The box reaches FOCUS_MARGIN past its face for the focus ring.
+            place_combo(
                 f.kind,
-                x + name_w + s(ADD_GROUP_GAP),
-                field_top(y),
-                kind_w,
-                s(240),
-                1,
+                inflate(
+                    frame(
+                        x + name_w + s(ADD_GROUP_GAP),
+                        field_top(y),
+                        kind_w,
+                        s(ADD_FIELD),
+                    ),
+                    ring,
+                    ring,
+                ),
+                dlg.dpi,
             );
             y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
 
-            // The labels column is as wide as its longest label, leaving the
-            // fields at least 200 epx.
-            let dc = GetDC(dlg.hwnd);
-            let previous = SelectObject(dc, dlg.font as HGDIOBJ);
-            let widest = labels
-                .iter()
-                .skip(4)
-                .take(3)
-                .map(|label| {
-                    let caption: Vec<u16> = text(*label).encode_utf16().collect();
-                    let mut size: SIZE = zeroed();
-                    GetTextExtentPoint32W(dc, caption.as_ptr(), caption.len() as i32, &mut size);
-                    size.cx
-                })
-                .max()
-                .unwrap_or(0);
-            SelectObject(dc, previous);
-            ReleaseDC(dlg.hwnd, dc);
-            let label_w = (widest + s(4)).min(cw - gap - s(200));
             for (label_index, control) in [(4, f.connections), (5, f.checksum), (6, f.schedule)] {
-                label(
-                    label_index,
-                    x,
-                    y + (s(ADD_FIELD) - s(ADD_LABEL)) / 2,
-                    label_w,
-                    f.advanced,
-                );
+                label(label_index, x, y, cw, f.advanced);
                 ShowWindow(control, if f.advanced { SW_SHOW } else { SW_HIDE });
-                place_in_frame(
-                    control,
-                    frame(x + label_w + gap, y, cw - label_w - gap, s(ADD_FIELD)),
-                    dlg.dpi,
-                );
+                place_in_frame(control, frame(x, field_top(y), cw, s(ADD_FIELD)), dlg.dpi);
                 if f.advanced {
-                    y += s(ADD_FIELD) + gap;
+                    y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
                 }
             }
+            sync_edit_scrollbar(f.urls);
             // The error line follows the last field shown.
-            let error_y = if f.advanced {
-                y
-            } else {
-                y - s(ADD_GROUP_GAP) + gap
-            };
-            move_id(dlg.hwnd, D_ERROR, x, error_y, cw, s(ADD_LABEL));
+            move_id(
+                dlg.hwnd,
+                D_ERROR,
+                x,
+                y - s(ADD_GROUP_GAP) + gap,
+                cw,
+                s(ADD_LABEL),
+            );
 
             let by = h - s(ADD_FOOTER) + s(ADD_PAD);
             let ok_w = add_button_width(dlg, D_ADD_OK, 120);
             let cancel_w = add_button_width(dlg, D_CANCEL, 96);
-            button(D_ADVANCED, x, by, add_button_width(dlg, D_ADVANCED, 120));
+            // Advanced options carries its chevron before the label.
+            let advanced_w = add_button_width(dlg, D_ADVANCED, 120) + s(16 + 8);
+            button(D_ADVANCED, x, by, advanced_w);
             button(D_CANCEL, x + cw - cancel_w, by, cancel_w);
             button(D_ADD_OK, x + cw - cancel_w - gap - ok_w, by, ok_w);
         }

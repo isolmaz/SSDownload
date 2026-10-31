@@ -65,6 +65,7 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 |---|---|
 | **File** (Dosya) | New download (Ctrl+N), Video download (Ctrl+Shift+N), Batch download, Import list, Export list, Exit |
 | **Downloads** (İndirme) | Pause / resume selected (Space), Remove selected (Delete), Pause all, Resume all, Clear completed, Retry failed, Mini panel, Open file (Enter), Open folder, Refresh source address, Finish live recording and keep it, Speed limit, Select all (Ctrl+A) |
+| **View** (Görünüm) | Columns (show or hide each column), Sort by (a column, ascending or descending, or the queue order), Larger details pane, Smaller details pane |
 | **Tools** (Araçlar) | Install media support, Browser setup, Settings; on the Advanced level also Queue manager, Folder rules, Site explorer, Sync manager, Site logins, Event log, Job log, Diagnostics |
 | **Help** (Yardım) | Check for updates, Keyboard shortcuts, Show the tour, About SSDownload |
 
@@ -72,11 +73,13 @@ The progress column shows a thin bar under the percentage that fills from the le
 
 The search box next to the filter keeps only the downloads whose name, address or location contains what you type; Ctrl+F moves to it and Esc clears it.
 
+The command buttons above the list carry access keys (Alt and the underlined letter). The pause button names what it does to the selection: **Resume** when every selected job that can be paused or resumed is paused, failed or cancelled, otherwise **Pause**, which pauses the running and waiting ones and leaves the stopped ones as they are; Space and **Pause / resume selected** do the same. In a narrow window the buttons show only their icons, and their tooltips give the name and the shortcut key.
+
 Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt+Home / Alt+End move the selection to the top or bottom, and **Ctrl+Shift+D adds the clipboard link from anywhere** (Settings → Behaviour). Double-clicking a completed row opens the file or its folder. Removing several jobs asks once: **Yes** also deletes the files, **No** keeps them.
 
 Under the list, the **Details**, **Job log** and **Error details** tabs show the selected download's details, its own log (the newest 400 lines) and the error it recorded. Drag the space between the list and the tabs to give either more room.
 
-Click a column header to sort the list by that column: once ascending, again descending, a third time back to the queue order. Sizes, speeds and remaining times sort by their values, states in the order a download goes through them. Sorting changes only what the list shows, never the queue order or priority: while a column is sorted, rows cannot be dragged, and Alt+Home / Alt+End and **Move to top / bottom** still move the jobs in the queue. Right-click the header to hide or show columns; **Name** always stays. The hidden columns, the sort and the height of the tabs are remembered. A failed download shows an error mark before its name and a paused one a pause mark.
+Click a column header to sort the list by that column: once ascending, again descending, a third time back to the queue order. Sizes, speeds and remaining times sort by their values, states in the order a download goes through them. Sorting changes only what the list shows, never the queue order or priority: while a column is sorted, rows cannot be dragged, and Alt+Home / Alt+End and **Move to top / bottom** still move the jobs in the queue. Right-click the header, or use **View → Columns**, to hide or show columns; **Name** and **State** always stay. **View → Sort by** sorts from the keyboard, and **View → Larger / Smaller details pane** moves the split. The last column fills the width the others leave, and a long location is shortened in the middle. The hidden columns, the sort and the height of the tabs are remembered. A failed download shows an error mark before its name and a paused one a pause mark.
 
 The right-click menu of a row groups its commands: opening, running (pause or resume, start now, refresh source), the address, the place in the queue, the logs and removal, with their shortcuts next to them.
 

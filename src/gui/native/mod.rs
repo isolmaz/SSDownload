@@ -343,8 +343,17 @@ pub const ID_JOB_LIST: i32 = 1020;
 pub const ID_DETAILS: i32 = 1021;
 pub const ID_STATUS: i32 = 1022;
 pub const ID_JOB_TABS: i32 = 1023;
-/// The header menu's items: one id per column, from here.
+/// The column menus' items: one id per column, from here.
 const ID_COLUMN_BASE: i32 = 1030;
+/// The View menu's sort items: one id per column, then the direction and the
+/// queue order.
+const ID_SORT_BASE: i32 = 1040;
+const ID_SORT_ASCENDING: i32 = 1046;
+const ID_SORT_DESCENDING: i32 = 1047;
+const ID_SORT_QUEUE: i32 = 1048;
+const ID_PAGE_LARGER: i32 = 1049;
+const ID_PAGE_SMALLER: i32 = 1050;
+const WM_FIT_COLUMNS: u32 = WM_APP + 42;
 pub const ID_PAUSE_ALL: i32 = 1101;
 pub const ID_RESUME_ALL: i32 = 1102;
 pub const ID_CLEAR_COMPLETED: i32 = 1103;
@@ -512,6 +521,10 @@ struct MainUi {
     search: HWND,
     /// The search box's frame, which the window paints around the edit.
     search_frame: std::cell::Cell<RECT>,
+    /// The tab page's card, which the window paints around the page text.
+    page_card: std::cell::Cell<RECT>,
+    /// True while the pointer is over the split, which then shows its grip.
+    split_hot: bool,
     filter: HWND,
     status: HWND,
     /// The tabs over the page: details, log and error of the selected download.
@@ -1172,6 +1185,13 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
                 right: 0,
                 bottom: 0,
             }),
+            page_card: std::cell::Cell::new(RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            }),
+            split_hot: false,
             filter: null_mut(),
             status: null_mut(),
             tabs: null_mut(),
@@ -1621,6 +1641,14 @@ unsafe extern "system" fn main_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        WM_INITMENUPOPUP => {
+            update_view_menu(ui);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_FIT_COLUMNS => {
+            fit_last_column(ui);
+            0
+        }
         WM_ENTERMENULOOP => {
             ui.menu_open = true;
             PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
@@ -1784,6 +1812,20 @@ unsafe extern "system" fn main_proc(
                 draw_main_button(ui, item);
                 return 1;
             }
+            if item.CtlType == ODT_COMBOBOX && item.CtlID == ID_FILTER as u32 {
+                draw_filter_item(ui, item);
+                return 1;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_MEASUREITEM => {
+            // Arrives while the filter box is created, before the window's DPI
+            // is recorded. The closed box's height is set by the layout.
+            let item = &mut *(lparam as *mut MEASUREITEMSTRUCT);
+            if item.CtlType == ODT_COMBOBOX && item.CtlID == ID_FILTER as u32 {
+                item.itemHeight = scale(FILTER_ITEM, GetDpiForWindow(hwnd).max(96)) as u32;
+                return 1;
+            }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_SHOW_WIZARD => {
@@ -1868,6 +1910,33 @@ unsafe extern "system" fn main_proc(
             SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
             0
         }
+        WM_MOUSEMOVE => {
+            let point = POINT {
+                x: loword(lparam as usize) as i16 as i32,
+                y: hiword(lparam as usize) as i16 as i32,
+            };
+            let band = split_band(ui);
+            let hot = PtInRect(&band, point) != 0;
+            if hot != ui.split_hot {
+                ui.split_hot = hot;
+                if hot {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    TrackMouseEvent(&mut track);
+                }
+                InvalidateRect(hwnd, &band, 1);
+            }
+            0
+        }
+        WM_MOUSELEAVE if ui.split_hot => {
+            ui.split_hot = false;
+            InvalidateRect(hwnd, &split_band(ui), 1);
+            0
+        }
         WM_LBUTTONUP if ui.dragging.is_some() => {
             let ids = ui.dragging.take().unwrap_or_default();
             ReleaseCapture();
@@ -1927,13 +1996,15 @@ unsafe extern "system" fn main_proc(
             if hdr.hwndFrom == ui.list && hdr.code == LVN_COLUMNCLICK {
                 let view = (*(lparam as *const NMLISTVIEW)).iSubItem;
                 if let Some(&column) = ui.columns.get(view as usize) {
-                    ui.sort = next_sort(ui.sort, column);
-                    show_sort_arrow(ui);
-                    save_list_view(ui);
-                    ui.row_cache.clear();
-                    update_rows(ui, true);
-                    update_details(ui);
+                    set_sort(ui, next_sort(ui.sort, column));
                 }
+                return 0;
+            }
+            // The last column fills the list once the user has sized a column.
+            if hdr.hwndFrom == list_header(ui)
+                && (hdr.code == HDN_ENDTRACKW || hdr.code == HDN_DIVIDERDBLCLICKW)
+            {
+                PostMessageW(hwnd, WM_FIT_COLUMNS, 0, 0);
                 return 0;
             }
             // A sorted view is not the queue order, so dropping rows there
@@ -2114,13 +2185,23 @@ unsafe extern "system" fn main_proc(
     }
 }
 
+/// The command buttons. Their access keys differ from each other and from the
+/// menu bar's in every language; the pause button's label follows the
+/// selection (`pause_button_label`).
 const MAIN_BUTTONS: [(i32, &str, &str); 5] = [
-    (ID_ADD, "Yeni indirme", "New download"),
-    (ID_SETTINGS, "Ayarlar", "Settings"),
-    (ID_PAUSE_RESUME, "Duraklat / Sürdür", "Pause / Resume"),
-    (ID_REMOVE, "Kaldır", "Remove"),
-    (ID_OPEN_FOLDER, "Klasör", "Folder"),
+    (ID_ADD, "Y&eni indirme", "&New download"),
+    (ID_SETTINGS, "&Ayarlar", "&Settings"),
+    (ID_PAUSE_RESUME, "Durakla&t", "&Pause"),
+    (ID_REMOVE, "&Kaldır", "Re&move"),
+    (ID_OPEN_FOLDER, "K&lasör", "F&older"),
 ];
+fn pause_button_label(resumes: bool) -> &'static str {
+    if resumes {
+        crate::i18n::ui("&Sürdür", "&Resume")
+    } else {
+        crate::i18n::ui("Durakla&t", "&Pause")
+    }
+}
 /// The tabs over the page, in order: details, the job's own log, its error.
 const JOB_TABS: [(&str, &str); 3] = [
     ("Ayrıntılar", "Details"),
@@ -2152,7 +2233,7 @@ const FILTER_VALUES: [Filter; 9] = [
 const MAIN_COLUMNS: [(&str, &str, i32); 6] = [
     ("Ad", "Name", 260),
     ("Durum", "State", 145),
-    ("İlerleme", "Progress", 170),
+    ("İlerleme", "Progress", 200),
     ("Hız", "Speed", 100),
     ("Kalan", "Remaining", 85),
     ("Konum", "Location", 280),
@@ -2167,16 +2248,23 @@ const COLUMN_KEYS: [&str; 6] = [
     "location",
 ];
 pub(super) const COL_NAME: usize = 0;
+const COL_STATE: usize = 1;
 pub(super) const COL_PROGRESS: usize = 2;
 pub(super) const COL_LOCATION: usize = 5;
 /// The tab page's height before the user moves the split, in epx.
 const DEFAULT_PAGE_HEIGHT: i32 = 148;
 
-/// The columns shown for a stored list of hidden ones; Name always shows.
+/// Name and State always show: the state is the only text that says a job
+/// failed or waits.
+fn column_fixed(column: usize) -> bool {
+    column == COL_NAME || column == COL_STATE
+}
+
+/// The columns shown for a stored list of hidden ones.
 fn visible_columns(hidden: &[String]) -> Vec<usize> {
     (0..MAIN_COLUMNS.len())
         .filter(|&column| {
-            column == COL_NAME || !hidden.iter().any(|key| key == COLUMN_KEYS[column])
+            column_fixed(column) || !hidden.iter().any(|key| key == COLUMN_KEYS[column])
         })
         .collect()
 }
@@ -2198,7 +2286,7 @@ fn next_sort(current: Option<(usize, bool)>, column: usize) -> Option<(usize, bo
 fn compare_jobs(a: &Job, b: &Job, column: usize) -> std::cmp::Ordering {
     match column {
         COL_NAME => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        1 => (a.state as u8).cmp(&(b.state as u8)),
+        COL_STATE => (a.state as u8).cmp(&(b.state as u8)),
         COL_PROGRESS => {
             // The bytes downloaded of the total, not the bar's fill: a failed
             // job's bar is full whatever it got.
@@ -2236,15 +2324,37 @@ unsafe fn list_header(ui: &MainUi) -> HWND {
 }
 
 /// Records the width of every shown column, so a column keeps it while hidden.
+/// The last column only fills the list, so it keeps the width it had before.
 unsafe fn remember_column_widths(ui: &mut MainUi) {
     let count = SendMessageW(list_header(ui), HDM_GETITEMCOUNT, 0, 0).max(0) as usize;
-    for (view, &column) in ui.columns.iter().enumerate().take(count) {
+    let last = ui.columns.len().saturating_sub(1);
+    for (view, &column) in ui.columns.iter().enumerate().take(count.min(last)) {
         let width = SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, view, 0) as i32;
         if width > 0 {
             ui.column_widths[column] = width;
         }
     }
 }
+
+/// Gives the last column the width the other columns leave in the list, so
+/// no empty band follows it and the list scrolls sideways only when the
+/// other columns alone are wider than the list.
+unsafe fn fit_last_column(ui: &MainUi) {
+    let Some(last) = ui.columns.len().checked_sub(1) else {
+        return;
+    };
+    let mut client: RECT = zeroed();
+    GetClientRect(ui.list, &mut client);
+    let others: i32 = (0..last)
+        .map(|view| SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, view, 0) as i32)
+        .sum();
+    let width = (client.right - others).max(scale(LAST_COLUMN_MIN, ui.dpi));
+    if SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, last, 0) as i32 != width {
+        SendMessageW(ui.list, LVM_SETCOLUMNWIDTH, last, width as isize);
+    }
+}
+/// The least the last column keeps when the others take the whole list.
+const LAST_COLUMN_MIN: i32 = 64;
 
 /// Puts `columns` into the list in order, each with its remembered width and
 /// its title. Name stays the list's first column; the others are removed and
@@ -2276,6 +2386,7 @@ unsafe fn set_main_columns(ui: &mut MainUi, columns: Vec<usize>) {
     }
     ui.row_cache.clear();
     show_sort_arrow(ui);
+    fit_last_column(ui);
 }
 
 /// Marks the sorted column's header with the sort direction.
@@ -2318,8 +2429,9 @@ unsafe fn save_list_view(ui: &MainUi) {
     }
 }
 
-/// The header's menu: a check for every column, Name always on.
-unsafe fn show_column_menu(ui: &mut MainUi, point: POINT) {
+/// A check for every column, Name and State always on: the header's menu and
+/// the View menu's Columns submenu.
+unsafe fn column_menu(ui: &MainUi) -> HMENU {
     let menu = CreatePopupMenu();
     for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
         let shown = ui.columns.contains(&index);
@@ -2327,11 +2439,16 @@ unsafe fn show_column_menu(ui: &mut MainUi, point: POINT) {
             menu,
             MF_STRING
                 | if shown { MF_CHECKED } else { 0 }
-                | if index == COL_NAME { MF_GRAYED } else { 0 },
+                | if column_fixed(index) { MF_GRAYED } else { 0 },
             ID_COLUMN_BASE as usize + index,
             wide(crate::i18n::ui(tr, en)).as_ptr(),
         );
     }
+    menu
+}
+
+unsafe fn show_column_menu(ui: &mut MainUi, point: POINT) {
+    let menu = column_menu(ui);
     let command = TrackPopupMenu(
         menu,
         TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
@@ -2342,8 +2459,14 @@ unsafe fn show_column_menu(ui: &mut MainUi, point: POINT) {
         null(),
     ) as i32;
     DestroyMenu(menu);
-    let column = (command - ID_COLUMN_BASE) as usize;
-    if command < ID_COLUMN_BASE || column == COL_NAME || column >= MAIN_COLUMNS.len() {
+    if command >= ID_COLUMN_BASE {
+        toggle_column(ui, (command - ID_COLUMN_BASE) as usize);
+    }
+}
+
+/// Shows or hides one column; Name and State stay.
+unsafe fn toggle_column(ui: &mut MainUi, column: usize) {
+    if column_fixed(column) || column >= MAIN_COLUMNS.len() {
         return;
     }
     let mut columns = ui.columns.clone();
@@ -2360,6 +2483,94 @@ unsafe fn show_column_menu(ui: &mut MainUi, point: POINT) {
     set_main_columns(ui, columns);
     save_list_view(ui);
     update_rows(ui, true);
+}
+
+unsafe fn set_sort(ui: &mut MainUi, sort: Option<(usize, bool)>) {
+    ui.sort = sort;
+    show_sort_arrow(ui);
+    save_list_view(ui);
+    ui.row_cache.clear();
+    update_rows(ui, true);
+    update_details(ui);
+}
+
+/// The View menu's sort commands: a shown column keeps the direction, a
+/// direction keeps the column (Name while the rows are in queue order).
+unsafe fn sort_command(ui: &mut MainUi, id: i32) {
+    let column = ui.sort.map_or(COL_NAME, |(column, _)| column);
+    let ascending = ui.sort.is_none_or(|(_, ascending)| ascending);
+    let sort = match id {
+        ID_SORT_QUEUE => None,
+        ID_SORT_ASCENDING => Some((column, true)),
+        ID_SORT_DESCENDING => Some((column, false)),
+        _ => {
+            let chosen = (id - ID_SORT_BASE) as usize;
+            if !ui.columns.contains(&chosen) {
+                return;
+            }
+            Some((chosen, ascending))
+        }
+    };
+    set_sort(ui, sort);
+}
+
+/// One step of the View menu's larger and smaller details pane.
+const PAGE_STEP: i32 = 40;
+
+/// The tab page height one step up or down, inside what the window allows.
+unsafe fn resize_page(ui: &mut MainUi, larger: bool) {
+    let geometry = split_geometry(ui);
+    let step = if larger { PAGE_STEP } else { -PAGE_STEP };
+    let page = (scale(ui.page_height + step, ui.dpi)).clamp(geometry.min_page, geometry.max_page);
+    ui.page_height = page * 96 / ui.dpi.max(96) as i32;
+    layout_main(ui);
+    InvalidateRect(ui.hwnd, null(), 1);
+    save_list_view(ui);
+}
+
+/// Checks and enables the View menu's items for the current columns, sort
+/// and split.
+unsafe fn update_view_menu(ui: &MainUi) {
+    let menu = GetMenu(ui.hwnd);
+    if menu.is_null() {
+        return;
+    }
+    let set = |id: i32, checked: bool, enabled: bool| {
+        CheckMenuItem(
+            menu,
+            id as u32,
+            MF_BYCOMMAND | if checked { MF_CHECKED } else { MF_UNCHECKED },
+        );
+        EnableMenuItem(
+            menu,
+            id as u32,
+            MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
+        );
+    };
+    for column in 0..MAIN_COLUMNS.len() {
+        let shown = ui.columns.contains(&column);
+        set(ID_COLUMN_BASE + column as i32, shown, !column_fixed(column));
+        set(
+            ID_SORT_BASE + column as i32,
+            ui.sort.is_some_and(|(sorted, _)| sorted == column),
+            shown,
+        );
+    }
+    set(
+        ID_SORT_ASCENDING,
+        ui.sort.is_some_and(|(_, ascending)| ascending),
+        true,
+    );
+    set(
+        ID_SORT_DESCENDING,
+        ui.sort.is_some_and(|(_, ascending)| !ascending),
+        true,
+    );
+    set(ID_SORT_QUEUE, ui.sort.is_none(), true);
+    let geometry = split_geometry(ui);
+    let page = scale(ui.page_height, ui.dpi).clamp(geometry.min_page, geometry.max_page);
+    set(ID_PAGE_LARGER, false, page < geometry.max_page);
+    set(ID_PAGE_SMALLER, false, page > geometry.min_page);
 }
 
 /// The vertical space around the split: where the tab page ends, how much it
@@ -2448,11 +2659,19 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     );
     let cue = wide(crate::i18n::ui("Ara", "Search"));
     SendMessageW(ui.search, EM_SETCUEBANNER, 0, cue.as_ptr() as LPARAM);
+    subclass(ui.search, cue_proc);
+    // The open list's entries carry glyphs, so the window draws them.
     ui.filter = control(
         ui.hwnd,
         "COMBOBOX",
         "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32 | WS_VSCROLL,
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | CBS_DROPDOWNLIST as u32
+            | CBS_OWNERDRAWFIXED as u32
+            | CBS_HASSTRINGS as u32
+            | WS_VSCROLL,
         0,
         ID_FILTER,
     );
@@ -2460,6 +2679,7 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
         combo_add(ui.filter, crate::i18n::ui(tr, en));
     }
     combo_select(ui.filter, 0);
+    subclass(ui.filter, combo_proc);
 
     ui.list = control(
         ui.hwnd,
@@ -2485,7 +2705,7 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
         "SysTabControl32",
         "",
         // The strip paints itself with the Settings dialog's painter.
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_OWNERDRAWFIXED | TCS_FIXEDWIDTH,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_OWNERDRAWFIXED,
         0,
         ID_JOB_TABS,
     );
@@ -2546,7 +2766,57 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     apply_dark_mode(ui.hwnd, ui.snapshot.settings.dark_mode);
     refresh_main_surfaces(ui);
     layout_main(ui);
+    name_main_controls(ui);
     refresh(ui, true);
+}
+
+/// Gives the controls without a label of their own a name for screen readers
+/// (the page text, the search box and the filter box), through
+/// IAccPropServices::SetHwndPropStr. The names stay with the windows.
+unsafe fn name_main_controls(ui: &MainUi) {
+    use windows_sys::core::GUID;
+    use windows_sys::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    const CLSID_ACC_PROP_SERVICES: GUID = GUID::from_u128(0xb5f8350b_0548_48b1_a6ee_88bd00b4a5e7);
+    const IID_IACC_PROP_SERVICES: GUID = GUID::from_u128(0x6e26e776_04f0_495d_80e4_3330352e3169);
+    const PROPID_ACC_NAME: GUID = GUID::from_u128(0x608d3df8_8128_4aa7_a428_f55e49267291);
+    const OBJID_CLIENT: i32 = -4;
+    type SetHwndPropStr =
+        unsafe extern "system" fn(*mut c_void, HWND, u32, u32, GUID, *const u16) -> i32;
+    let mut services: *mut c_void = null_mut();
+    if CoCreateInstance(
+        &CLSID_ACC_PROP_SERVICES,
+        null_mut(),
+        CLSCTX_INPROC_SERVER,
+        &IID_IACC_PROP_SERVICES,
+        &mut services,
+    ) < 0
+        || services.is_null()
+    {
+        return;
+    }
+    let vtable = *(services as *const *const usize);
+    let set: SetHwndPropStr = std::mem::transmute(*vtable.add(7));
+    let release: unsafe extern "system" fn(*mut c_void) -> u32 =
+        std::mem::transmute(*vtable.add(2));
+    for (control, name) in [
+        (ui.details, crate::i18n::ui("İş ayrıntıları", "Job details")),
+        (
+            ui.search,
+            crate::i18n::ui("İndirmelerde ara", "Search downloads"),
+        ),
+        (ui.filter, crate::i18n::ui("Filtre", "Filter")),
+    ] {
+        let name = wide(name);
+        set(
+            services,
+            control,
+            OBJID_CLIENT as u32,
+            0,
+            PROPID_ACC_NAME,
+            name.as_ptr(),
+        );
+    }
+    release(services);
 }
 
 /// Menu bar in the order standard Windows applications use. Mnemonics are
@@ -2670,6 +2940,61 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
         MF_POPUP,
         jobs as usize,
         wide(crate::i18n::ui("İ&ndirme", "&Downloads")).as_ptr(),
+    );
+    // Checks and enabled states are set when the menu opens.
+    let view = CreatePopupMenu();
+    let columns = CreatePopupMenu();
+    let sort = CreatePopupMenu();
+    for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+        let label = crate::i18n::ui(tr, en);
+        append(columns, ID_COLUMN_BASE + index as i32, label);
+        append(sort, ID_SORT_BASE + index as i32, label);
+    }
+    AppendMenuW(sort, MF_SEPARATOR, 0, null());
+    append(
+        sort,
+        ID_SORT_ASCENDING,
+        crate::i18n::ui("&Artan", "&Ascending"),
+    );
+    append(
+        sort,
+        ID_SORT_DESCENDING,
+        crate::i18n::ui("A&zalan", "&Descending"),
+    );
+    AppendMenuW(sort, MF_SEPARATOR, 0, null());
+    append(
+        sort,
+        ID_SORT_QUEUE,
+        crate::i18n::ui("&Kuyruk sırası", "&Queue order"),
+    );
+    AppendMenuW(
+        view,
+        MF_POPUP,
+        columns as usize,
+        wide(crate::i18n::ui("&Sütunlar", "&Columns")).as_ptr(),
+    );
+    AppendMenuW(
+        view,
+        MF_POPUP,
+        sort as usize,
+        wide(crate::i18n::ui("Sı&rala", "&Sort by")).as_ptr(),
+    );
+    AppendMenuW(view, MF_SEPARATOR, 0, null());
+    append(
+        view,
+        ID_PAGE_LARGER,
+        crate::i18n::ui("Ayrıntı bölmesini &büyüt", "&Larger details pane"),
+    );
+    append(
+        view,
+        ID_PAGE_SMALLER,
+        crate::i18n::ui("Ayrıntı bölmesini &küçült", "S&maller details pane"),
+    );
+    AppendMenuW(
+        bar,
+        MF_POPUP,
+        view as usize,
+        wide(crate::i18n::ui("&Görünüm", "&View")).as_ptr(),
     );
     let tools = CreatePopupMenu();
     if !mode.is_simple() {
@@ -2861,8 +3186,10 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
             );
         }
         ui.row_cache.clear();
+        name_main_controls(ui);
         // Arabic and the other languages use different faces.
         apply_main_metrics(ui);
+        update_details(ui);
         layout_main(ui);
         DrawMenuBar(ui.hwnd);
         InvalidateRect(ui.hwnd, null(), 1);
@@ -2989,21 +3316,22 @@ unsafe fn layout_main(ui: &MainUi) {
 
     let filter_w = s(160);
     let filter_x = w - m - filter_w;
-    // The closed combo box is its selection field plus a frame whose size the
-    // theme decides, so the field is sized until the box is the row's height.
-    // Moving or sizing the box measures the field from the font again, so the
-    // field comes after the move.
-    MoveWindow(ui.filter, filter_x, top, filter_w, s(240), 1);
-    for _ in 0..2 {
-        let mut combo: RECT = zeroed();
-        GetWindowRect(ui.filter, &mut combo);
-        let field = SendMessageW(ui.filter, CB_GETITEMHEIGHT, usize::MAX, 0);
-        let difference = (row - (combo.bottom - combo.top)) as isize;
-        if difference == 0 || field + difference < 1 {
-            break;
-        }
-        SendMessageW(ui.filter, CB_SETITEMHEIGHT, usize::MAX, field + difference);
-    }
+    // Like a button, the box reaches FOCUS_MARGIN past its face for the ring.
+    let ring = s(FOCUS_MARGIN);
+    place_combo(
+        ui.filter,
+        inflate(
+            RECT {
+                left: filter_x,
+                top,
+                right: filter_x + filter_w,
+                bottom: top + row,
+            },
+            ring,
+            ring,
+        ),
+        ui.dpi,
+    );
     // The search box gives way first: it shrinks to SEARCH_MIN before the
     // buttons lose their labels, and the tooltip then carries the command names.
     let room = filter_x - gap - m;
@@ -3024,8 +3352,6 @@ unsafe fn layout_main(ui: &MainUi) {
         }
     }
     SendMessageW(ui.tooltip, TTM_ACTIVATE, !labels as usize, 0);
-    // Each button reaches FOCUS_MARGIN past its face for the focus ring.
-    let ring = s(FOCUS_MARGIN);
     let mut x = m;
     for ((id, _, _), width) in MAIN_BUTTONS.iter().zip(button_widths(ui, labels)) {
         MoveWindow(
@@ -3054,13 +3380,29 @@ unsafe fn layout_main(ui: &MainUi) {
         list_bottom - geometry.list_top - 2 * inset,
         1,
     );
-    MoveWindow(ui.tabs, m, tabs_top, w - 2 * m, geometry.tabs, 1);
+    fit_last_column(ui);
+    // The first tab's label starts where the page text starts.
+    let text_x = m + pad_x + loword(SendMessageW(ui.details, EM_GETMARGINS, 0, 0) as usize) as i32;
+    let mut first: RECT = zeroed();
+    SendMessageW(ui.tabs, TCM_GETITEMRECT, 0, &mut first as *mut _ as isize);
+    let tabs_x = text_x - first.left - s(TAB_PAD);
+    MoveWindow(ui.tabs, tabs_x, tabs_top, w - m - tabs_x, geometry.tabs, 1);
+    // The page shows whole lines; what is left over below them stays card.
+    let card = RECT {
+        left: m,
+        top: page_top,
+        right: w - m,
+        bottom: page_top + page_h,
+    };
+    ui.page_card.set(card);
+    let line = line_height(ui.details, ui.details_font).max(1);
+    let lines = ((page_h - 2 * pad_y) / line).max(1);
     MoveWindow(
         ui.details,
         m + pad_x,
         page_top + pad_y,
         w - 2 * m - 2 * pad_x,
-        page_h - 2 * pad_y,
+        lines * line,
         1,
     );
     SendMessageW(ui.status, WM_SIZE, 0, 0);
@@ -3119,6 +3461,11 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         ID_PAUSE_RESUME => pause_resume_selected(ui),
         ID_REMOVE => remove_selected(ui),
         ID_SELECT_ALL => select_all_jobs(ui),
+        id if (ID_COLUMN_BASE..ID_COLUMN_BASE + MAIN_COLUMNS.len() as i32).contains(&id) => {
+            toggle_column(ui, (id - ID_COLUMN_BASE) as usize)
+        }
+        id if (ID_SORT_BASE..=ID_SORT_QUEUE).contains(&id) => sort_command(ui, id),
+        ID_PAGE_LARGER | ID_PAGE_SMALLER => resize_page(ui, id == ID_PAGE_LARGER),
         ID_OPEN_FOLDER => open_selected_folder(ui),
         ID_OPEN_FILE => open_selected_file(ui),
         ID_SOURCE_REFRESH => begin_source_refresh(ui),
@@ -4671,6 +5018,10 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
         }
     }
     SendMessageW(ui.list, WM_SETREDRAW, 1, 0);
+    if rebuild {
+        // A changed row count can bring or take away the vertical scroll bar.
+        fit_last_column(ui);
+    }
     if changed {
         InvalidateRect(ui.list, null(), 0);
     }
@@ -4824,6 +5175,15 @@ unsafe fn update_details(ui: &MainUi) {
             MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
         );
     }
+    // The pause button names what it will do to the selection. Its width
+    // fits either label, so the row does not move.
+    let resumes = pause_resumes(&jobs) == Some(true);
+    let button = GetDlgItem(ui.hwnd, ID_PAUSE_RESUME);
+    let label = pause_button_label(resumes);
+    if text(button) != label {
+        set_text(button, label);
+        InvalidateRect(button, null(), 0);
+    }
 
     if jobs.is_empty() {
         set_details(
@@ -4964,23 +5324,48 @@ unsafe fn select_all_jobs(ui: &mut MainUi) {
     update_details(ui);
 }
 
+fn resumable(state: JobState) -> bool {
+    matches!(
+        state,
+        JobState::Paused | JobState::Failed | JobState::Cancelled
+    )
+}
+
+/// The one verb the pause command applies to a selection: resume (true) when
+/// every job it can act on is paused, failed or cancelled, otherwise pause
+/// the ones that run or wait. None when it can act on none of them.
+fn pause_resumes(jobs: &[&Job]) -> Option<bool> {
+    let mut acting = jobs
+        .iter()
+        .filter(|job| can_pause_or_resume(job))
+        .peekable();
+    acting.peek()?;
+    Some(acting.all(|job| resumable(job.state)))
+}
+
 unsafe fn pause_resume_selected(ui: &MainUi) {
-    let ids = selected_ids(ui);
     let snapshot = ui.app.snapshot();
-    for id in ids {
-        let Some(job) = snapshot.jobs.iter().find(|job| job.id == id) else {
-            continue;
-        };
-        if !can_pause_or_resume(job) {
+    let ids = selected_ids(ui);
+    let jobs: Vec<&Job> = ids
+        .iter()
+        .filter_map(|id| snapshot.jobs.iter().find(|job| &job.id == id))
+        .collect();
+    let Some(resumes) = pause_resumes(&jobs) else {
+        return;
+    };
+    for job in jobs {
+        if !can_pause_or_resume(job) || resumable(job.state) != resumes {
             continue;
         }
-        match job.state {
-            JobState::Paused | JobState::Failed | JobState::Cancelled => {
-                dispatch(ui, Action::Resume { id })
-            }
-            JobState::Completed => {}
-            _ => dispatch(ui, Action::Pause { id }),
-        }
+        let id = job.id.clone();
+        dispatch(
+            ui,
+            if resumes {
+                Action::Resume { id }
+            } else {
+                Action::Pause { id }
+            },
+        );
     }
 }
 unsafe fn remove_selected(ui: &MainUi) {
@@ -5313,7 +5698,7 @@ const JOB_MENU_GLYPHS: [(i32, u16); 13] = [
     (ID_OPEN_FOLDER, 0xe838),
     (ID_START_NOW, 0xe945),
     (ID_FINISH_RECORDING, 0xe71a),
-    (ID_SOURCE_REFRESH, 0xe72c),
+    (ID_SOURCE_REFRESH, 0xe895),
     (ID_REDOWNLOAD, 0xe896),
     (ID_COPY_URL, 0xe8c8),
     (ID_RENAME, 0xe8ac),
@@ -5406,7 +5791,8 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
     };
     let menu = CreatePopupMenu();
     let mut error = None;
-    let mut resumes = false;
+    // Pause, play, or the refresh arrows of a retry.
+    let mut pause_glyph = 0xe769u16;
     // Groups: open, run, address and copy, queue place, diagnosis, removal.
     if count == 1 {
         let job = first;
@@ -5426,10 +5812,11 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
         }
         separate(menu);
         if can_pause_or_resume(job) {
-            resumes = matches!(
-                job.state,
-                JobState::Paused | JobState::Failed | JobState::Cancelled
-            );
+            pause_glyph = match job.state {
+                JobState::Paused => 0xe768,
+                JobState::Failed | JobState::Cancelled => 0xe72c,
+                _ => 0xe769,
+            };
             let label = match job.state {
                 JobState::Paused => crate::i18n::ui("Sürdür", "Resume"),
                 JobState::Failed | JobState::Cancelled => crate::i18n::ui("Yeniden dene", "Retry"),
@@ -5581,30 +5968,18 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
             );
         }
         separate(menu);
-        let pausable: Vec<&&Job> = jobs.iter().filter(|job| can_pause_or_resume(job)).collect();
-        if !pausable.is_empty() {
-            let resumable = pausable
+        if let Some(resumes) = pause_resumes(&jobs) {
+            let acted = jobs
                 .iter()
-                .filter(|job| {
-                    matches!(
-                        job.state,
-                        JobState::Paused | JobState::Failed | JobState::Cancelled
-                    )
-                })
+                .filter(|job| can_pause_or_resume(job) && resumable(job.state) == resumes)
                 .count();
-            resumes = resumable == pausable.len();
             let label = if resumes {
+                pause_glyph = 0xe768;
                 crate::i18n::ui("Sürdür", "Resume")
-            } else if resumable == 0 {
-                crate::i18n::ui("Duraklat", "Pause")
             } else {
-                crate::i18n::ui("Duraklat / Sürdür", "Pause / Resume")
+                crate::i18n::ui("Duraklat", "Pause")
             };
-            append(
-                menu,
-                ID_PAUSE_RESUME,
-                &format!("{label} ({})\tSpace", pausable.len()),
-            );
+            append(menu, ID_PAUSE_RESUME, &format!("{label} ({acted})\tSpace"));
         }
         append(
             menu,
@@ -5662,7 +6037,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
         DeleteMenu(menu, last as u32, MF_BYPOSITION);
     }
     let mut table = JOB_MENU_GLYPHS.to_vec();
-    table.push((ID_PAUSE_RESUME, if resumes { 0xe768 } else { 0xe769 }));
+    table.push((ID_PAUSE_RESUME, pause_glyph));
     let glyphs = set_menu_glyphs(menu, ui.hwnd, ui.dpi, &table);
     let command = TrackPopupMenu(
         menu,
@@ -8828,6 +9203,26 @@ mod tests {
     }
 
     #[test]
+    fn the_pause_command_resumes_only_a_selection_that_is_all_stopped() {
+        use super::pause_resumes;
+        use crate::model::JobState;
+        let running = sample_job("r", JobState::Downloading);
+        let queued = sample_job("q", JobState::Queued);
+        let paused = sample_job("p", JobState::Paused);
+        let failed = sample_job("f", JobState::Failed);
+        let done = sample_job("d", JobState::Completed);
+        assert_eq!(pause_resumes(&[&paused, &failed]), Some(true));
+        // A mixed selection pauses: the running and waiting jobs stop, the
+        // stopped ones stay as they are.
+        assert_eq!(pause_resumes(&[&paused, &running]), Some(false));
+        assert_eq!(pause_resumes(&[&queued]), Some(false));
+        // A finished job is neither paused nor resumed.
+        assert_eq!(pause_resumes(&[&done, &paused]), Some(true));
+        assert_eq!(pause_resumes(&[&done]), None);
+        assert_eq!(pause_resumes(&[]), None);
+    }
+
+    #[test]
     fn a_header_click_goes_ascending_descending_then_back_to_the_queue() {
         use super::next_sort;
         assert_eq!(next_sort(None, 3), Some((3, true)));
@@ -8837,10 +9232,15 @@ mod tests {
     }
 
     #[test]
-    fn stored_hidden_columns_never_hide_the_name() {
+    fn stored_hidden_columns_never_hide_the_name_or_the_state() {
         use super::visible_columns;
         assert_eq!(visible_columns(&[]), [0, 1, 2, 3, 4, 5]);
-        let hidden = ["name".to_string(), "speed".into(), "unknown".into()];
+        let hidden = [
+            "name".to_string(),
+            "state".into(),
+            "speed".into(),
+            "unknown".into(),
+        ];
         assert_eq!(visible_columns(&hidden), [0, 1, 2, 4, 5]);
     }
 

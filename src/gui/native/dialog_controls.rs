@@ -196,8 +196,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "URL bağlantıları (her satıra bir bağlantı):",
-                    "URL links (one link per line):",
+                    "URL bağlantıları (her satıra bir bağlantı)",
+                    "URL links (one link per line)",
                 ),
                 0,
             );
@@ -207,7 +207,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Hedef klasör:", "Target folder:"),
+                crate::i18n::ui("Hedef klasör", "Target folder"),
                 0,
             );
             f.dir = dialog_edit(dlg.hwnd, dlg.font, D_DIR, false, false);
@@ -226,8 +226,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Dosya adı (isteğe bağlı, tek URL için):",
-                    "File name (optional, for a single URL):",
+                    "Dosya adı (isteğe bağlı, tek URL için)",
+                    "File name (optional, for a single URL)",
                 ),
                 0,
             );
@@ -235,10 +235,11 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("İndirme türü:", "Download type:"),
+                crate::i18n::ui("İndirme türü", "Download type"),
                 0,
             );
             f.kind = dialog_combo(dlg.hwnd, dlg.font, D_KIND);
+            subclass(f.kind, combo_proc);
             let modes = dlg.app.snapshot().settings.usage_modes;
             f.kind_values.clear();
             if modes.allows(DownloadKind::Auto) {
@@ -265,8 +266,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Bağlantı sayısı (boş = tür ayarı):",
-                    "Connection count (empty = type default):",
+                    "Bağlantı sayısı (boş = tür ayarı)",
+                    "Connection count (empty = type default)",
                 ),
                 0,
             );
@@ -275,8 +276,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "SHA-256 (isteğe bağlı, 64 onaltılık karakter):",
-                    "SHA-256 (optional, 64 hexadecimal characters):",
+                    "SHA-256 (isteğe bağlı, 64 onaltılık karakter)",
+                    "SHA-256 (optional, 64 hexadecimal characters)",
                 ),
                 0,
             );
@@ -285,8 +286,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "En erken başlama (yerel saat, YYYY-AA-GG SS:DD):",
-                    "Earliest start (local time, YYYY-MM-DD HH:MM):",
+                    "En erken başlama (yerel saat, YYYY-AA-GG SS:DD)",
+                    "Earliest start (local time, YYYY-MM-DD HH:MM)",
                 ),
                 0,
             );
@@ -305,11 +306,12 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 let cue = wide(crate::i18n::ui(tr, en));
                 let edit = [f.filename, f.schedule][index];
                 SendMessageW(edit, EM_SETCUEBANNER, 0, cue.as_ptr() as LPARAM);
+                subclass(edit, cue_proc);
             }
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Devam / İndir", "Continue / Download"),
+                crate::i18n::ui("İndir", "Download"),
                 D_ADD_OK,
                 true,
             );
