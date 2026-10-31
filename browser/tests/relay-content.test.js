@@ -14,7 +14,7 @@ const { i18nApi, loadI18n } = require("./i18n-harness");
 const chromium = name => fs.readFileSync(path.join(__dirname, "..", "chromium", name), "utf8");
 const PAGE = "<html><body>Sign in</body></html>";
 
-function served({ status = 200, type, disposition, redirected = false, body = PAGE, headers = {} }) {
+function served({ status = 200, type, disposition, redirected = false, body = PAGE, headers = {}, url = "https://files.example/final" }) {
   let cancelled = false;
   const stream = new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode(body)); controller.close(); },
@@ -22,7 +22,7 @@ function served({ status = 200, type, disposition, redirected = false, body = PA
   });
   const response = new Response(stream, { status, headers: { "content-type": type, ...(disposition ? { "content-disposition": disposition } : {}), ...headers } });
   Object.defineProperty(response, "redirected", { value: redirected });
-  Object.defineProperty(response, "url", { value: "https://files.example/final" });
+  Object.defineProperty(response, "url", { value: url });
   return { response, wasCancelled: () => cancelled };
 }
 
@@ -33,10 +33,10 @@ function relayContentHarness({ request, answer, resume = null }) {
   const reply = message => {
     switch (message.command) {
       case "begin_request": return { request_granted: true };
-      case "open": return { streams: [resume || { stream_id: 1, offset: 0, next_sequence: 0, sealed: false }] };
+      case "open": return { streams: [resume || { stream_id: message.streamId, offset: 0, next_sequence: 0, sealed: false }] };
       case "chunk": {
         const length = Buffer.from(message.data, "base64").length;
-        return { streams: [{ stream_id: 1, offset: message.offset + length, next_sequence: message.sequence + 1 }] };
+        return { streams: [{ stream_id: message.streamId, offset: message.offset + length, next_sequence: message.sequence + 1 }] };
       }
       default: return { ok: true };
     }
@@ -46,7 +46,7 @@ function relayContentHarness({ request, answer, resume = null }) {
     runtime: { onMessage: { addListener(value) { listener = value; } }, async sendMessage(message) { commands.push(message); return reply(message); } }
   };
   const context = vm.createContext({ browser, URL, Headers, AbortController, setTimeout, clearTimeout, TextEncoder, TextDecoder, atob, btoa,
-    crypto: webcrypto, fetch: async (url, options) => { fetched.push({ url, range: options.headers.get("range") }); answered = answer(); return answered.response; } });
+    crypto: webcrypto, fetch: async (url, options) => { fetched.push({ url, range: options.headers.get("range") }); answered = answer(url); return answered.response; } });
   loadI18n(context);
   vm.runInContext(chromium("relay-sha256.js"), context, { filename: "relay-sha256.js" });
   vm.runInContext(chromium("relay-content.js"), context, { filename: "relay-content.js" });
@@ -58,7 +58,7 @@ function relayContentHarness({ request, answer, resume = null }) {
       const streams = resume ? [resume] : [];
       listener({ channel: "ssdownload-relay-internal", command: "start", jobId: "job-1", token: "t".repeat(64), runToken: "run-1",
         documentId: "doc", request: { url: "https://files.example/get", ...request }, streams }, {}, () => {});
-      for (let round = 0; round < 200 && !commands.some(command => command.command === "finish" || command.command === "failed"); round += 1) {
+      for (let round = 0; round < 2000 && !commands.some(command => command.command === "finish" || command.command === "failed"); round += 1) {
         await new Promise(resolve => setImmediate(resolve));
       }
     }
@@ -138,4 +138,91 @@ test("a redirected answer that is not a page is written as before", async () => 
   const h = relayContentHarness({ request: { kind: "file" }, answer: () => served({ type: "application/zip", redirected: true, body: "PK" }) });
   await h.run();
   assert.deepEqual(h.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"]);
+});
+
+// An HLS master playlist: what an audio-only request takes from it, and what a video request keeps.
+const HOST = "https://media.example/";
+const MASTER = `${HOST}master.m3u8`;
+const hlsPlaylist = (...segments) => ["#EXTM3U", "#EXT-X-TARGETDURATION:4", ...segments.flatMap(segment => ["#EXTINF:4.0,", segment]), "#EXT-X-ENDLIST"].join("\n");
+const hlsMaster = (...lines) => ["#EXTM3U", ...lines].join("\n");
+const variantLine = (attributes, name) => [`#EXT-X-STREAM-INF:${attributes}`, `${HOST}${name}.m3u8`];
+// Serves the playlists and segments of one site by address; any other address fails the run.
+const site = files => url => {
+  if (!(url in files)) throw new Error(`unexpected request for ${url}`);
+  return served({ type: url.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "application/octet-stream", body: files[url], url });
+};
+const segmentsOf = (...names) => Object.fromEntries(names.flatMap(name => [[`${HOST}${name}.m3u8`, hlsPlaylist(`${HOST}${name}-0.bin`)], [`${HOST}${name}-0.bin`, name]]));
+const opened = h => h.commands.filter(command => command.command === "open").map(command => [command.role, command.formatId]);
+const requested = h => h.fetched.map(item => item.url.slice(HOST.length));
+
+// Two audio groups, the lower variant listed first, each variant tied to its own group.
+const withSeparateAudio = {
+  [MASTER]: hlsMaster(
+    `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="lo",NAME="English",LANGUAGE="en",DEFAULT=YES,URI="${HOST}audio-lo.m3u8"`,
+    `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="hi",NAME="English",LANGUAGE="en",DEFAULT=YES,URI="${HOST}audio-hi.m3u8"`,
+    `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",URI="${HOST}subs-en.m3u8"`,
+    ...variantLine('BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="lo"', "v360"),
+    ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2",AUDIO="hi",SUBTITLES="subs"', "v720")),
+  ...segmentsOf("v360", "v720", "audio-lo", "audio-hi", "subs-en")
+};
+// The audio of every variant is part of its video stream.
+const withCombinedAudio = {
+  [MASTER]: hlsMaster(
+    ...variantLine('BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2"', "v360"),
+    ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"', "v720")),
+  ...segmentsOf("v360", "v720")
+};
+// Besides its combined variant, the playlist lists variants that carry no video.
+const withAudioVariants = {
+  [MASTER]: hlsMaster(
+    ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"', "v720"),
+    ...variantLine('BANDWIDTH=64000,CODECS="mp4a.40.5"', "a64"),
+    ...variantLine('BANDWIDTH=128000,CODECS="mp4a.40.2"', "a128")),
+  ...segmentsOf("v720", "a64", "a128")
+};
+
+test("an audio-only HLS request transfers the audio renditions of the best variant and no video", async () => {
+  for (const limits of [{}, { max_height: 360 }]) {
+    const h = relayContentHarness({ request: { url: MASTER, kind: "audio", ...limits }, answer: site(withSeparateAudio) });
+    await h.run();
+    const label = JSON.stringify(limits);
+    assert.deepEqual(opened(h), [["audio", "hi-English"]], label);
+    assert.deepEqual(requested(h), ["master.m3u8", "audio-hi.m3u8", "audio-hi-0.bin"], `${label}: no video playlist or segment is fetched`);
+    assert.equal(h.names().at(-1), "finish", label);
+  }
+});
+
+test("an audio-only HLS request keeps the subtitle rules of a video request", async () => {
+  const h = relayContentHarness({ request: { url: MASTER, kind: "audio", subtitle_languages: ["en"] }, answer: site(withSeparateAudio) });
+  await h.run();
+  assert.deepEqual(opened(h), [["audio", "hi-English"], ["subtitle", null]]);
+  assert.equal(h.names().at(-1), "finish");
+});
+
+test("an audio-only HLS request fails before any transfer when every variant combines audio with video", async () => {
+  const h = relayContentHarness({ request: { url: MASTER, kind: "audio" }, answer: site(withCombinedAudio) });
+  await h.run();
+  assert.deepEqual(requested(h), ["master.m3u8"], "not even a video playlist is fetched");
+  assert.equal(wrote(h), false);
+  assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"]);
+  assert.match(h.commands.at(-1).error, /audio-only download needs a separate HLS audio stream/);
+});
+
+test("an audio-only HLS request takes the best variant that carries no video when no rendition holds the audio", async () => {
+  const h = relayContentHarness({ request: { url: MASTER, kind: "audio" }, answer: site(withAudioVariants) });
+  await h.run();
+  assert.deepEqual(opened(h), [["file", `${HOST}a128.m3u8`]]);
+  assert.deepEqual(requested(h), ["master.m3u8", "a128.m3u8", "a128-0.bin"]);
+  assert.equal(h.names().at(-1), "finish");
+});
+
+test("a video HLS request still transfers the chosen variant with its audio rendition, or the combined variant alone", async () => {
+  const separate = relayContentHarness({ request: { url: MASTER, kind: "video" }, answer: site(withSeparateAudio) });
+  await separate.run();
+  assert.deepEqual(opened(separate), [["video", `${HOST}v720.m3u8`], ["audio", "hi-English"]]);
+  assert.deepEqual(requested(separate), ["master.m3u8", "v720.m3u8", "audio-hi.m3u8", "v720-0.bin", "audio-hi-0.bin"]);
+  const combined = relayContentHarness({ request: { url: MASTER, kind: "video", max_height: 360 }, answer: site(withCombinedAudio) });
+  await combined.run();
+  assert.deepEqual(opened(combined), [["file", `${HOST}v360.m3u8`]]);
+  assert.deepEqual(requested(combined), ["master.m3u8", "v360.m3u8", "v360-0.bin"]);
 });

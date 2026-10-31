@@ -176,6 +176,22 @@
     return allowed.slice().sort((a,b)=>height(b)-height(a) || Number(b.attributes.BANDWIDTH||0)-Number(a.attributes.BANDWIDTH||0))[0];
   }
 
+  // A variant declares video by its RESOLUTION or a video codec in CODECS.
+  const hlsCarriesVideo = variant => Boolean(variant.attributes.RESOLUTION)
+    || (variant.attributes.CODECS||"").split(",").some(codec=>/^(?:avc|hvc|hev|dvh|dva|vp0?[89]|av01|mp4v)/i.test(codec.trim()));
+  const hlsAudioGroup = (variant, audioRenditions) => audioRenditions.filter(item=>variant.attributes.AUDIO && item.attributes["GROUP-ID"]===variant.attributes.AUDIO);
+
+  // An audio-only request takes the audio of the best variant, by bandwidth, whose audio group has renditions
+  // of its own, or else of the best variant that declares no video. The application cannot take the audio out of
+  // a stream that carries video as well, so a playlist with neither is refused before anything is transferred.
+  function selectHlsAudioVariant(candidates, audioRenditions) {
+    const bandwidth = item => Number(item.attributes.BANDWIDTH || 0);
+    const ranked = candidates.slice().sort((a,b)=>bandwidth(b)-bandwidth(a));
+    const variant = ranked.find(item=>hlsAudioGroup(item,audioRenditions).length) || ranked.find(item=>!hlsCarriesVideo(item));
+    if (!variant) throw new Error(t("hlsAudioOnlyCombined"));
+    return variant;
+  }
+
   function selectHlsRenditions(candidates, selections, group, role) {
     const allowed = candidates.filter(item=>!group || item.attributes["GROUP-ID"]===group);
     if (!selections.length) {
@@ -241,17 +257,25 @@
       if(run.request.external_subtitles?.length) throw new Error(t("hlsExternalSubtitleMuxed"));
       return {kind:"hls",manifests:[root],streams:[{streamId:1,role:"file",formatId:null,language:null,...parseHlsMedia(root.text,root.url)}]};
     }
-    const variant=selectHlsVariant(variants,run.request);
-    const videoManifest=await fetchManifest(run,variant.uri);
+    const audioOnly=run.request.kind==="audio";
+    const audioRenditions=renditions.filter(item=>item.attributes.TYPE==="AUDIO");
+    const variant=audioOnly?selectHlsAudioVariant(variants,audioRenditions):selectHlsVariant(variants,run.request);
+    // The variant's own stream is left out when renditions carry the audio of an audio-only request: it holds the video.
+    const withVideo=!audioOnly||!hlsAudioGroup(variant,audioRenditions).length;
+    const videoManifest=withVideo?await fetchManifest(run,variant.uri):null;
     const audioSelections=run.request.audio_tracks?.length ? run.request.audio_tracks : run.request.audio_format_id || run.request.audio_language
       ? [{id:run.request.audio_format_id,language:run.request.audio_language}] : [];
-    const audio=selectHlsRenditions(renditions.filter(item=>item.attributes.TYPE==="AUDIO"),audioSelections,variant.attributes.AUDIO,"audio");
+    const audio=selectHlsRenditions(audioRenditions,audioSelections,variant.attributes.AUDIO,"audio");
     if ((run.request.expected_audio===true || audioSelections.length) && !audio.length && variant.attributes.AUDIO) throw new Error(t("hlsAudioGroupMissing"));
     const subtitleSelections=run.request.subtitle_tracks?.length?run.request.subtitle_tracks:(run.request.subtitle_languages||[]).map(language=>({language,automatic:run.request.subtitle_mode==="automatic"}));
     const subtitles=run.request.external_subtitles?.length||!subtitleSelections.length?[]:selectHlsRenditions(renditions.filter(item=>item.attributes.TYPE==="SUBTITLES"),subtitleSelections,variant.attributes.SUBTITLES,"subtitle");
-    const manifests=[root,videoManifest], streams=[{streamId:1,role:audio.length?"video":"file",formatId:run.request.video_format_id||hlsId(variant,variants.indexOf(variant))[0],language:null,...parseHlsMedia(videoManifest.text,videoManifest.url)}];
+    const manifests=[root], streams=[];
+    if(withVideo) {
+      manifests.push(videoManifest);
+      streams.push({streamId:1,role:audio.length?"video":"file",formatId:run.request.video_format_id||hlsId(variant,variants.indexOf(variant))[0],language:null,...parseHlsMedia(videoManifest.text,videoManifest.url)});
+    }
     if(!audio.length && (run.request.external_subtitles?.length || subtitles.length)) throw new Error(t("hlsSeparateSubtitleMuxedAudio"));
-    let streamId=2;
+    let streamId=streams.length+1;
     for(let index=0;index<audio.length;index++) {
       const manifest=await fetchManifest(run,audio[index].uri); manifests.push(manifest);
       const selected=audioSelections[index]||{};
