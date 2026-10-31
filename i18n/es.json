@@ -72,6 +72,7 @@
   "A raw file request cannot be turned into a multi-stream media job": "Una solicitud de archivo sin procesar no se puede convertir en una tarea multimedia de varios flujos",
   "A redirect to another site was not followed: {host}": "No se siguió una redirección a otro sitio: {host}",
   "A separate audio track can only be merged with a video format that has no audio": "Una pista de audio separada solo se puede combinar con un formato de vídeo que no tenga audio",
+  "A sign-in or web page came instead of the file; download it in the browser or allow session cookies for this site in the extension.": "Llegó una página de inicio de sesión o una página web en lugar del archivo; descárguelo en el navegador o permita en la extensión las cookies de sesión para este sitio.",
   "A single job exceeds the allowed message size": "Una sola tarea supera el tamaño de mensaje permitido",
   "A source refresh cannot change the selected video/audio/subtitle identity": "Una actualización del origen no puede cambiar la identidad del vídeo, del audio o del subtítulo seleccionados",
   "A source-refresh check for this job is already running.": "Ya hay una comprobación de actualización del origen en curso para esta tarea.",
