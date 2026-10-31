@@ -1272,14 +1272,15 @@ async function contextAdd(tabId, target, kind, pageUrl, label, frameId) {
   }
   if (session.session_cookies?.length) request.session_cookies = session.session_cookies;
   // The cookies sent are part of the identity: a link added again once the site's cookies are allowed, or have changed,
-  // is another request, not a repeat. Cookies that change on their own (a load balancer's stickiness cookie) must not
-  // make a second click seconds later one, so within DUPLICATE_ADD_WINDOW of an add the same link with cookies sent
-  // (or not sent) alike is that add, whatever their values. Only digests of the keys are kept.
+  // is another request, not a repeat. Some cookies change on their own (a load balancer's stickiness cookie), and two
+  // clicks a few seconds apart must stay one request. So for DUPLICATE_ADD_WINDOW after an add, the same link with
+  // cookies sent (or not sent) alike is that add, whatever the values. An add stamped in the future (the clock went
+  // back) is outside the window. Only digests of the keys are kept.
   const jar = (request.session_cookies || []).map(cookie => JSON.stringify([cookie.name, cookie.domain, cookie.path, cookie.partition_key, cookie.value])).sort();
   const key = await sha256([tabId, kind, target, request.filename, jar]);
   const plain = await sha256([tabId, kind, target, request.filename, jar.length > 0]);
   const now = Date.now();
-  let ticket = tickets.get(key) || Array.from(tickets.values()).find(entry => entry.plain === plain && now - entry.at < DUPLICATE_ADD_WINDOW);
+  let ticket = tickets.get(key) || Array.from(tickets.values()).find(entry => entry.plain === plain && entry.at <= now && now - entry.at < DUPLICATE_ADD_WINDOW);
   if (ticket && ticket.tabId === undefined) ticket.tabId = tabId;
   if (!ticket) {
     ticket = { id: crypto.randomUUID(), submitted: false, tabId, plain, at: now };
