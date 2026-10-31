@@ -88,7 +88,7 @@
     candidateFlagAmbiguous: "ambiguous",
     candidateListRefreshed: "The source list was refreshed. Open the menu again.",
     relayListRefreshed: "The source refresh list was refreshed. Open the menu again.",
-    sessionGranted: "Session cookies for {0} can be used for this download.",
+    sessionGranted: "Session cookies for {0} can be used for downloads from this site, including ones taken over from the browser, until you remove the permission.",
     sessionRevoked: "Site session permission for {0} was removed.",
 
     // ---- shared status and refusals (service worker)
@@ -352,7 +352,7 @@
     candidateFlagAmbiguous: "belirsiz",
     candidateListRefreshed: "Kaynak listesi yenilendi. Menüyü yeniden açın.",
     relayListRefreshed: "Kaynak yenileme listesi yenilendi. Menüyü yeniden açın.",
-    sessionGranted: "{0} için oturum çerezleri bu indirmede kullanılabilir.",
+    sessionGranted: "{0} için oturum çerezleri, tarayıcıdan devralınanlar dahil bu sitedeki indirmelerde, izni kaldırana kadar kullanılabilir.",
     sessionRevoked: "{0} için site oturum izni kaldırıldı.",
 
     // ---- shared status and refusals (service worker)
@@ -616,7 +616,7 @@
     candidateFlagAmbiguous: "غير واضح",
     candidateListRefreshed: "تم تحديث قائمة المصادر. افتح القائمة مرة أخرى.",
     relayListRefreshed: "تم تحديث قائمة تحديث المصدر. افتح القائمة مرة أخرى.",
-    sessionGranted: "يمكن استخدام ملفات تعريف ارتباط الجلسة الخاصة بـ {0} في هذا التنزيل.",
+    sessionGranted: "يمكن استخدام ملفات تعريف ارتباط الجلسة الخاصة بـ {0} في التنزيلات من هذا الموقع، بما فيها تنزيلات المتصفح التي يتم اعتراضها، إلى أن تزيل الإذن.",
     sessionRevoked: "تمت إزالة إذن جلسة الموقع لـ {0}.",
 
     // ---- shared status and refusals (service worker)
@@ -880,7 +880,7 @@
     candidateFlagAmbiguous: "ambiguo",
     candidateListRefreshed: "Se ha actualizado la lista de orígenes. Volver a abrir el menú.",
     relayListRefreshed: "Se ha actualizado la lista de orígenes de transferencia. Volver a abrir el menú.",
-    sessionGranted: "Las cookies de sesión de {0} se pueden usar en esta descarga.",
+    sessionGranted: "Las cookies de sesión de {0} se pueden usar en las descargas de este sitio, incluidas las capturadas del navegador, hasta que se quite el permiso.",
     sessionRevoked: "Se ha quitado el permiso de sesión del sitio {0}.",
 
     // ---- shared status and refusals (service worker)
@@ -1144,7 +1144,7 @@
     candidateFlagAmbiguous: "ambíguo",
     candidateListRefreshed: "A lista de fontes foi atualizada. Abra o menu novamente.",
     relayListRefreshed: "A lista de atualização de fontes foi atualizada. Abra o menu novamente.",
-    sessionGranted: "Os cookies de sessão de {0} podem ser usados neste download.",
+    sessionGranted: "Os cookies de sessão de {0} podem ser usados em downloads deste site, inclusive nos assumidos do navegador, até que você remova a permissão.",
     sessionRevoked: "A permissão de sessão do site {0} foi removida.",
 
     // ---- shared status and refusals (service worker)
@@ -1408,7 +1408,7 @@
     candidateFlagAmbiguous: "ambigu",
     candidateListRefreshed: "La liste des sources a été actualisée. Rouvrez le menu.",
     relayListRefreshed: "La liste d'actualisation des sources a été actualisée. Rouvrez le menu.",
-    sessionGranted: "Les cookies de session pour {0} peuvent être utilisés pour ce téléchargement.",
+    sessionGranted: "Les cookies de session pour {0} peuvent être utilisés pour les téléchargements depuis ce site, y compris ceux interceptés dans le navigateur, jusqu'à ce que vous retiriez l'autorisation.",
     sessionRevoked: "L'autorisation de session du site pour {0} a été supprimée.",
 
     // ---- shared status and refusals (service worker)
@@ -1672,7 +1672,7 @@
     candidateFlagAmbiguous: "mehrdeutig",
     candidateListRefreshed: "Die Quellenliste wurde aktualisiert. Öffnen Sie das Menü erneut.",
     relayListRefreshed: "Die Liste der Quellenaktualisierung wurde aktualisiert. Öffnen Sie das Menü erneut.",
-    sessionGranted: "Sitzungscookies für {0} können für diesen Download verwendet werden.",
+    sessionGranted: "Sitzungscookies für {0} können für Downloads von dieser Website verwendet werden, auch für aus dem Browser übernommene, bis Sie die Berechtigung entfernen.",
     sessionRevoked: "Die Berechtigung für die Website-Sitzung von {0} wurde entfernt.",
 
     // ---- shared status and refusals (service worker)

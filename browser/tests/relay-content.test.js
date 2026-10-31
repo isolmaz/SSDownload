@@ -79,6 +79,13 @@ test("a fresh run refuses a page that a redirect led a file job to and writes no
   assert.ok(h.cancelled(), "the page body is not read");
 });
 
+test("the job's own file name decides before the address does", async () => {
+  const h = relayContentHarness({ request: { kind: "file", filename: "data.zip", url: "https://files.example/saved.html" },
+    answer: () => served({ type: "text/html", redirected: true }) });
+  await h.run();
+  assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"]);
+});
+
 for (const kind of ["video", "audio"]) test(`a fresh run refuses any web page for a job of kind ${kind}, redirected or not`, async () => {
   for (const [type, redirected] of [["text/html", false], ["application/xhtml+xml; charset=utf-8", true]]) {
     const h = relayContentHarness({ request: { kind }, answer: () => served({ type, redirected }) });
@@ -115,6 +122,7 @@ test("a page is still saved when the application would save it", async () => {
   const cases = [
     ["an attachment", { kind: "file" }, { disposition: "attachment; filename=\"report.html\"", redirected: true }],
     ["a file named as a page", { kind: "file", filename: "saved.html" }, { redirected: true }],
+    ["a file the address names as a page", { kind: "file", url: "https://files.example/dir/saved.html?token=1" }, { redirected: true }],
     ["the page a file job points at directly", { kind: "file" }, { redirected: false }],
     ["an unspecified job kind", { kind: "auto" }, { redirected: false }],
   ];

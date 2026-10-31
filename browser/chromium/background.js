@@ -1880,42 +1880,49 @@ function takeoverCandidate(item) {
 }
 // A takeover candidate is never incognito and a DownloadItem names no tab, so its cookie store
 // cannot be read from a tab as `currentCookieStore` does. It is the one store that holds the
-// browser's regular (non-incognito) tabs: a store counts only when the store list names one of
+// browser's regular (non-incognito) tabs: tabs.query takes no `incognito` filter, so every tab is
+// listed and the tab's own flag decides, and a store counts only when the store list names one of
 // those tabs in it. Anything but exactly one such store (no regular tab open, several regular
 // stores as with containers, no store list) is unverifiable and throws.
+function consentError(message) {
+  const error = new Error(message);
+  error.code = "SSD-EXT-001";
+  return error;
+}
 async function regularCookieStore() {
-  if (typeof api.cookies?.getAllCookieStores !== "function" || !api.tabs?.query) throw new Error(t("takeoverStoreUnverifiable"));
-  const regular = new Set((await invoke(api.tabs, "query", { incognito: false })).map(tab => tab?.id).filter(Number.isInteger));
+  if (typeof api.cookies?.getAllCookieStores !== "function" || !api.tabs?.query) throw consentError(t("takeoverStoreUnverifiable"));
+  const regular = new Set((await invoke(api.tabs, "query", {})).filter(tab => tab?.incognito === false).map(tab => tab.id).filter(Number.isInteger));
   const stores = (await invoke(api.cookies, "getAllCookieStores")).filter(store => typeof store?.id === "string" && store.id
     && Array.isArray(store.tabIds) && store.tabIds.some(id => regular.has(id)));
-  if (stores.length !== 1) throw new Error(t("takeoverStoreUnverifiable"));
+  if (stores.length !== 1) throw consentError(t("takeoverStoreUnverifiable"));
   return stores[0].id;
 }
-// The cookies a takeover hands over, or null when the download's site has no recorded consent.
-// The site is the page's (the download's referrer) or else the download address', as on the
-// context-menu path, and the consent rules are sessionMetadata's: the permission and the site's
-// scope come first and a site without consent never touches the cookie API; a granted site whose
-// store or cookies cannot be verified throws, so the caller keeps the download in the browser
-// instead of exporting nothing. A top-level download has no embedding context, so only
-// unpartitioned cookies are read. Chrome reports the first and the final address of a redirect
-// chain, and those are the cookie targets.
+// The cookies a takeover hands over, or null when the download's page has no recorded consent.
+// The page is the download's referrer and only its site counts: a download without a referrer
+// carries no cookies, because the page that starts a download controls whether it has one and a
+// page without consent must not be able to make the app replay a request with another site's
+// cookies. The consent rules are sessionMetadata's: the permission and the site's scope come
+// first and a site without consent never touches the cookie API; a granted site whose store or
+// cookies cannot be verified throws, so the caller keeps the download in the browser instead of
+// exporting nothing. A top-level download has no embedding context, so only unpartitioned cookies
+// are read. The app attaches cookies only to requests on the origin of the address it is given,
+// so the first address of a redirect chain, which is all Chrome reports besides the final one, is
+// a cookie target only when it shares that origin.
 async function takeoverCookies(item, address) {
-  const site = siteOf(item.referrer) || siteOf(item.url);
+  const site = siteOf(item.referrer);
   const scopes = site ? await recordedConsent(site) : null;
   if (!scopes) return null;
   const storeId = await regularCookieStore();
-  if (!hasSessionConsent(scopes, site, storeId)) {
-    const error = new Error(t("takeoverSessionWrongStore"));
-    error.code = "SSD-EXT-001";
-    throw error;
-  }
+  if (!hasSessionConsent(scopes, site, storeId)) throw consentError(t("takeoverSessionWrongStore"));
+  const first = safeUrl(item.url);
+  const chain = first && first.origin === new URL(address).origin ? [{ url: first.href }] : [];
   const cookies = new Map();
-  for (const target of cookieTargets({ url: address, requestChain: [{ url: item.url }] })) {
+  for (const target of cookieTargets({ url: address, requestChain: chain })) {
     for (const cookie of await invoke(api.cookies, "getAll", { url: target, storeId })) {
       if (cookie?.storeId !== storeId || cookie.partitionKey || !cookieMatchesTarget(cookie, target)) continue;
       const value = scopedCookie(cookie, storeId, null);
       cookies.set(JSON.stringify([value.name, value.domain, value.path]), value);
-      if (cookies.size > 500) throw new Error(t("cookieLimit"));
+      if (cookies.size > 500) throw consentError(t("cookieLimit"));
     }
   }
   return [...cookies.values()];

@@ -23,6 +23,20 @@ function loadI18n(context) {
   vm.runInContext(read("i18n.js"), context, { filename: "i18n.js" });
 }
 
+// The `browser.tabs.query` double. Chrome checks queryInfo against the API schema and throws on any
+// other key (`incognito` is a property of a Tab, not a filter), so a double that accepts one hides
+// the mistake. A filter applies to the tabs that carry the property it names.
+const TAB_QUERY_KEYS = new Set(["active", "audible", "autoDiscardable", "currentWindow", "discarded", "frozen", "groupId",
+  "highlighted", "index", "lastFocusedWindow", "muted", "pinned", "status", "title", "url", "windowId", "windowType"]);
+function tabsQuery(tabs) {
+  return async queryInfo => {
+    for (const key of Object.keys(queryInfo ?? {})) {
+      if (!TAB_QUERY_KEYS.has(key)) throw new TypeError(`Error at parameter 'queryInfo': Unexpected property: '${key}'.`);
+    }
+    return tabs.filter(tab => Object.entries(queryInfo ?? {}).every(([key, value]) => tab[key] === undefined || tab[key] === value));
+  };
+}
+
 // Parses the real messages the extension ships, for the structural checks.
 function catalog() {
   const context = vm.createContext({});
@@ -30,4 +44,4 @@ function catalog() {
   return context.SSDownloadI18n;
 }
 
-module.exports = { extensionDir, i18nApi, loadI18n, catalog };
+module.exports = { extensionDir, i18nApi, loadI18n, catalog, tabsQuery };
