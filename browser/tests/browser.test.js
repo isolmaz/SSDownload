@@ -813,6 +813,9 @@ test("the switch clears discoveries and de-duplicates context submissions across
   assert.equal(restarted.storage.session.downloadTickets[0][1].submitted, true);
 });
 
+// The records of the right-click adds a minute older, as if the user came back after the double-click window.
+const ageTickets = h => vm.runInContext("for (const ticket of tickets.values()) ticket.at -= 60000", h.context);
+
 test("a link added again from the same tab once the site's cookies are allowed or changed is sent, a plain repeat is not", async () => {
   const h = backgroundHarness();
   const link = "https://files.example/one.pdf";
@@ -837,10 +840,42 @@ test("a link added again from the same tab once the site's cookies are allowed o
   await h.settle();
   assert.equal(adds().length, 2, "the same cookies again is a duplicate");
 
+  ageTickets(h);
   jar("second");
   await addLink();
   await h.waitFor(() => adds().length === 3);
   assert.deepEqual(plain(adds()[2].session_cookies.map(cookie => cookie.value)), ["second"], "a signed-in-again session is another request");
+});
+
+test("a second click within seconds is a repeat even when the site's cookies change between the clicks", async () => {
+  const h = backgroundHarness();
+  const link = "https://files.example/one.pdf";
+  const adds = () => h.nativeRequests.filter(request => request?.action?.type === "add").map(request => request.action.request);
+  const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: link } });
+  const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "lb", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
+  await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: link, kind: "file" }] });
+  await h.menu("ssdownload-session-grant");
+  jar("a");
+  await addLink();
+  await h.waitFor(() => adds().length === 1);
+  for (const value of ["b", "c"]) {
+    jar(value);
+    await addLink();
+    await h.settle();
+  }
+  assert.equal(adds().length, 1, "cookies that rotate on every response do not make a quick second click another download");
+  await h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/two.pdf" } });
+  await h.waitFor(() => adds().length === 2);
+  assert.equal(adds()[1].url, "https://files.example/two.pdf", "another link inside the window is its own request");
+
+  ageTickets(h);
+  jar("d");
+  await addLink();
+  await h.waitFor(() => adds().length === 3);
+  assert.deepEqual(plain(adds()[2].session_cookies.map(cookie => cookie.value)), ["d"], "after the window the cookies decide");
+  await addLink();
+  await h.settle();
+  assert.equal(adds().length, 3, "the same cookies again is still a repeat");
 });
 
 test("native host failures are converted into an actionable browser message", async () => {
