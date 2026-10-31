@@ -176,20 +176,58 @@
     return allowed.slice().sort((a,b)=>height(b)-height(a) || Number(b.attributes.BANDWIDTH||0)-Number(a.attributes.BANDWIDTH||0))[0];
   }
 
-  // A variant declares video by its RESOLUTION or a video codec in CODECS.
-  const hlsCarriesVideo = variant => Boolean(variant.attributes.RESOLUTION)
-    || (variant.attributes.CODECS||"").split(",").some(codec=>/^(?:avc|hvc|hev|dvh|dva|vp0?[89]|av01|mp4v)/i.test(codec.trim()));
-  const hlsAudioGroup = (variant, audioRenditions) => audioRenditions.filter(item=>variant.attributes.AUDIO && item.attributes["GROUP-ID"]===variant.attributes.AUDIO);
+  // CODECS naming audio codecs alone marks a variant that carries no video; without CODECS, or with a codec
+  // missing here, a variant may carry video.
+  const AUDIO_CODEC = /^(?:mp4a|ac-3|ec-3|ac-4|opus|flac|alac|mhm1|mha1|mp3|vorbis|dts[celh])/i;
+  const hlsAudioOnly = variant => {
+    const codecs = (variant.attributes.CODECS||"").split(",").map(item=>item.trim()).filter(Boolean);
+    return codecs.length > 0 && codecs.every(codec=>AUDIO_CODEC.test(codec));
+  };
+  // yt-dlp names an audio rendition "<GROUP-ID>-<NAME>", behind the extractor's own prefix where it has one, with
+  // whitespace and , / + [ ] ( ) turned into "_".
+  const hlsAudioId = rendition => `${rendition.attributes["GROUP-ID"]}-${rendition.attributes.NAME}`.replace(/[\s,/+\[\]()]/g,"_");
+  const namedBy = (id, own) => String(id)===own || String(id).endsWith(`-${own}`);
 
-  // An audio-only request takes the audio of the best variant, by bandwidth, whose audio group has renditions
-  // of its own, or else of the best variant that declares no video. The application cannot take the audio out of
-  // a stream that carries video as well, so a playlist with neither is refused before anything is transferred.
-  function selectHlsAudioVariant(candidates, audioRenditions) {
+  // The one rendition of an audio group that a selection names. Of several ids that end the same way, the longest
+  // is the more exact; a group other than the selection's own never answers for it.
+  function matchHlsAudio(group, selection) {
+    const matches = group.filter(item=>(!selection.id || namedBy(selection.id,hlsAudioId(item))) && (!selection.language || item.attributes.LANGUAGE===selection.language));
+    const longest = selection.id ? Math.max(...matches.map(item=>hlsAudioId(item).length)) : 0;
+    const exact = selection.id ? matches.filter(item=>hlsAudioId(item).length===longest) : matches;
+    return exact.length===1 ? exact[0] : null;
+  }
+
+  // An audio-only request takes its audio from the first of these that fits the selection (all of them without one):
+  // the renditions of an audio group, the group with the most channels first and then the one of the best variant
+  // (yt-dlp sorts by channel count ahead of codec and bitrate, but lists none for the renditions of an HLS playlist, so
+  // the playlist's CHANNELS decides here); a variant that carries audio only; any other variant, whose stream holds the
+  // video as well. The application keeps the audio track of the stream and drops the rest, so the last still gives an
+  // audio file, at the cost of the video bytes, as yt-dlp's bestaudio/best does.
+  function selectHlsAudio(variants, media, selections) {
     const bandwidth = item => Number(item.attributes.BANDWIDTH || 0);
-    const ranked = candidates.slice().sort((a,b)=>bandwidth(b)-bandwidth(a));
-    const variant = ranked.find(item=>hlsAudioGroup(item,audioRenditions).length) || ranked.find(item=>!hlsCarriesVideo(item));
-    if (!variant) throw new Error(t("hlsAudioOnlyCombined"));
-    return variant;
+    const ranked = variants.slice().sort((a,b)=>bandwidth(b)-bandwidth(a));
+    const audio = media.filter(item=>item.attributes.TYPE==="AUDIO");
+    const groups = new Set(audio.map(item=>item.attributes["GROUP-ID"]));
+    const options = [];
+    for (const id of new Set(ranked.map(item=>item.attributes.AUDIO).filter(item=>groups.has(item)))) {
+      const group = audio.filter(item=>item.attributes["GROUP-ID"]===id);
+      const chosen = selections.length ? selections.map(selection=>matchHlsAudio(group,selection)) : [group.find(item=>item.attributes.DEFAULT==="YES")||group[0]];
+      if (chosen.some(item=>!item)) continue;
+      const users = ranked.filter(item=>item.attributes.AUDIO===id);
+      const option = {tier:0,channels:Number.parseInt(chosen[0].attributes.CHANNELS,10)||0,bandwidth:bandwidth(users[0])};
+      if (chosen.every(item=>item.uri)) options.push({...option,variant:users[0],renditions:chosen,own:null});
+      // A rendition without URI is the audio of every variant that uses the group: the cheapest one holds it as well.
+      else if (chosen.length===1) options.push({...option,variant:users.at(-1),renditions:[],own:{id:selections[0]?.id||hlsAudioId(chosen[0]),language:selections[0]?.language||chosen[0].attributes.LANGUAGE||null}});
+    }
+    for (const variant of ranked) {
+      if (groups.has(variant.attributes.AUDIO)) continue;
+      const ids = hlsId(variant,variants.indexOf(variant));
+      if (selections.length && !(selections.length===1 && selections[0].id && ids.some(value=>namedBy(selections[0].id,value)))) continue;
+      options.push({tier:hlsAudioOnly(variant)?1:2,channels:0,bandwidth:bandwidth(variant),variant,renditions:[],own:{id:selections[0]?.id||ids[0],language:selections[0]?.language||null}});
+    }
+    options.sort((a,b)=>a.tier-b.tier||b.channels-a.channels||b.bandwidth-a.bandwidth);
+    if (!options.length) throw new Error(selections.length ? t("hlsRenditionAmbiguous", roleName("audio")) : t("hlsAudioGroupMissing"));
+    return options[0];
   }
 
   function selectHlsRenditions(candidates, selections, group, role) {
@@ -243,38 +281,36 @@
   async function hlsGraph(run, root) {
     const lines=root.text.split(/\r?\n/).map(line=>line.trim());
     if(!root.text.trimStart().startsWith("#EXTM3U")) throw new Error(t("hlsSignatureInvalid"));
-    const variants=[], renditions=[];
+    const variants=[], media=[];
     let pending=null;
     for(const line of lines) {
       if(line.startsWith("#EXT-X-STREAM-INF:")) pending=parseAttributes(line.slice(line.indexOf(":")+1));
       else if(pending && line && !line.startsWith("#")) { variants.push({uri:absolute(line,root.url),attributes:pending}); pending=null; }
       else if(line.startsWith("#EXT-X-MEDIA:")) {
         const attributes=parseAttributes(line.slice(line.indexOf(":")+1));
-        if(attributes.URI) renditions.push({uri:absolute(attributes.URI,root.url),attributes});
+        media.push({uri:attributes.URI?absolute(attributes.URI,root.url):null,attributes});
       }
     }
+    const renditions=media.filter(item=>item.uri);
     if(!variants.length) {
       if(run.request.external_subtitles?.length) throw new Error(t("hlsExternalSubtitleMuxed"));
       return {kind:"hls",manifests:[root],streams:[{streamId:1,role:"file",formatId:null,language:null,...parseHlsMedia(root.text,root.url)}]};
     }
-    const audioOnly=run.request.kind==="audio";
-    const audioRenditions=renditions.filter(item=>item.attributes.TYPE==="AUDIO");
-    const variant=audioOnly?selectHlsAudioVariant(variants,audioRenditions):selectHlsVariant(variants,run.request);
-    // The variant's own stream is left out when renditions carry the audio of an audio-only request: it holds the video.
-    const withVideo=!audioOnly||!hlsAudioGroup(variant,audioRenditions).length;
-    const videoManifest=withVideo?await fetchManifest(run,variant.uri):null;
     const audioSelections=run.request.audio_tracks?.length ? run.request.audio_tracks : run.request.audio_format_id || run.request.audio_language
       ? [{id:run.request.audio_format_id,language:run.request.audio_language}] : [];
-    const audio=selectHlsRenditions(audioRenditions,audioSelections,variant.attributes.AUDIO,"audio");
-    if ((run.request.expected_audio===true || audioSelections.length) && !audio.length && variant.attributes.AUDIO) throw new Error(t("hlsAudioGroupMissing"));
+    const chosen=run.request.kind==="audio"?selectHlsAudio(variants,media,audioSelections):null;
+    const variant=chosen?chosen.variant:selectHlsVariant(variants,run.request);
+    const videoManifest=!chosen||chosen.own?await fetchManifest(run,variant.uri):null;
+    const audio=chosen?chosen.renditions:selectHlsRenditions(renditions.filter(item=>item.attributes.TYPE==="AUDIO"),audioSelections,variant.attributes.AUDIO,"audio");
+    if (!chosen && (run.request.expected_audio===true || audioSelections.length) && !audio.length && variant.attributes.AUDIO) throw new Error(t("hlsAudioGroupMissing"));
     const subtitleSelections=run.request.subtitle_tracks?.length?run.request.subtitle_tracks:(run.request.subtitle_languages||[]).map(language=>({language,automatic:run.request.subtitle_mode==="automatic"}));
     const subtitles=run.request.external_subtitles?.length||!subtitleSelections.length?[]:selectHlsRenditions(renditions.filter(item=>item.attributes.TYPE==="SUBTITLES"),subtitleSelections,variant.attributes.SUBTITLES,"subtitle");
     const manifests=[root], streams=[];
-    if(withVideo) {
+    if(videoManifest) {
       manifests.push(videoManifest);
-      streams.push({streamId:1,role:audio.length?"video":"file",formatId:run.request.video_format_id||hlsId(variant,variants.indexOf(variant))[0],language:null,...parseHlsMedia(videoManifest.text,videoManifest.url)});
+      streams.push({streamId:1,role:chosen?"audio":audio.length?"video":"file",formatId:chosen?chosen.own.id:run.request.video_format_id||hlsId(variant,variants.indexOf(variant))[0],language:chosen?chosen.own.language:null,...parseHlsMedia(videoManifest.text,videoManifest.url)});
     }
-    if(!audio.length && (run.request.external_subtitles?.length || subtitles.length)) throw new Error(t("hlsSeparateSubtitleMuxedAudio"));
+    if(!chosen && !audio.length && (run.request.external_subtitles?.length || subtitles.length)) throw new Error(t("hlsSeparateSubtitleMuxedAudio"));
     let streamId=streams.length+1;
     for(let index=0;index<audio.length;index++) {
       const manifest=await fetchManifest(run,audio[index].uri); manifests.push(manifest);

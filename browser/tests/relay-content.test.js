@@ -146,6 +146,7 @@ const MASTER = `${HOST}master.m3u8`;
 const hlsPlaylist = (...segments) => ["#EXTM3U", "#EXT-X-TARGETDURATION:4", ...segments.flatMap(segment => ["#EXTINF:4.0,", segment]), "#EXT-X-ENDLIST"].join("\n");
 const hlsMaster = (...lines) => ["#EXTM3U", ...lines].join("\n");
 const variantLine = (attributes, name) => [`#EXT-X-STREAM-INF:${attributes}`, `${HOST}${name}.m3u8`];
+const audioLine = (attributes, name) => `#EXT-X-MEDIA:TYPE=AUDIO,${attributes}${name ? `,URI="${HOST}${name}.m3u8"` : ""}`;
 // Serves the playlists and segments of one site by address; any other address fails the run.
 const site = files => url => {
   if (!(url in files)) throw new Error(`unexpected request for ${url}`);
@@ -154,16 +155,39 @@ const site = files => url => {
 const segmentsOf = (...names) => Object.fromEntries(names.flatMap(name => [[`${HOST}${name}.m3u8`, hlsPlaylist(`${HOST}${name}-0.bin`)], [`${HOST}${name}-0.bin`, name]]));
 const opened = h => h.commands.filter(command => command.command === "open").map(command => [command.role, command.formatId]);
 const requested = h => h.fetched.map(item => item.url.slice(HOST.length));
+async function hlsRun(request, files) {
+  const h = relayContentHarness({ request: { url: MASTER, ...request }, answer: site(files) });
+  await h.run();
+  return h;
+}
 
-// Two audio groups, the lower variant listed first, each variant tied to its own group.
+// Two audio groups with the same rendition name, the lower variant listed first, each variant tied to its own group.
 const withSeparateAudio = {
   [MASTER]: hlsMaster(
-    `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="lo",NAME="English",LANGUAGE="en",DEFAULT=YES,URI="${HOST}audio-lo.m3u8"`,
-    `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="hi",NAME="English",LANGUAGE="en",DEFAULT=YES,URI="${HOST}audio-hi.m3u8"`,
+    audioLine('GROUP-ID="lo",NAME="English",LANGUAGE="en",DEFAULT=YES', "audio-lo"),
+    audioLine('GROUP-ID="hi",NAME="English",LANGUAGE="en",DEFAULT=YES', "audio-hi"),
     `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",URI="${HOST}subs-en.m3u8"`,
     ...variantLine('BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="lo"', "v360"),
     ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2",AUDIO="hi",SUBTITLES="subs"', "v720")),
   ...segmentsOf("v360", "v720", "audio-lo", "audio-hi", "subs-en")
+};
+// Stereo AAC on the best video tier, six-channel E-AC-3 on a lower one.
+const withChannels = {
+  [MASTER]: hlsMaster(
+    audioLine('GROUP-ID="aac",NAME="English",LANGUAGE="en",CHANNELS="2",DEFAULT=YES', "audio-aac"),
+    audioLine('GROUP-ID="ec3",NAME="English (surround)",LANGUAGE="en",CHANNELS="6",DEFAULT=YES', "audio-ec3"),
+    ...variantLine('BANDWIDTH=8000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",AUDIO="aac"', "v1080"),
+    ...variantLine('BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,ec-3",AUDIO="ec3"', "v720")),
+  ...segmentsOf("v1080", "v720", "audio-aac", "audio-ec3")
+};
+// The main audio is in the variants themselves (a rendition without URI); the commentary is a track of its own.
+const withMainInVariants = {
+  [MASTER]: hlsMaster(
+    audioLine('GROUP-ID="aud",NAME="Main",LANGUAGE="en",DEFAULT=YES'),
+    audioLine('GROUP-ID="aud",NAME="Commentary",LANGUAGE="en"', "audio-commentary"),
+    ...variantLine('BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aud"', "v360"),
+    ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2",AUDIO="aud"', "v720")),
+  ...segmentsOf("v360", "v720", "audio-commentary")
 };
 // The audio of every variant is part of its video stream.
 const withCombinedAudio = {
@@ -172,19 +196,26 @@ const withCombinedAudio = {
     ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"', "v720")),
   ...segmentsOf("v360", "v720")
 };
-// Besides its combined variant, the playlist lists variants that carry no video.
+// Nothing says what the variants carry.
+const withoutCodecs = {
+  [MASTER]: hlsMaster(...variantLine("BANDWIDTH=800000", "v360"), ...variantLine("BANDWIDTH=2400000", "v720")),
+  ...segmentsOf("v360", "v720")
+};
+// Besides its combined variant, the playlist lists two that carry audio only, one whose codec is not known here and one
+// that names no codecs.
 const withAudioVariants = {
   [MASTER]: hlsMaster(
     ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"', "v720"),
+    ...variantLine('BANDWIDTH=3000000,CODECS="dav1.10.01,mp4a.40.2"', "v4k"),
+    ...variantLine("BANDWIDTH=3500000", "vbare"),
     ...variantLine('BANDWIDTH=64000,CODECS="mp4a.40.5"', "a64"),
     ...variantLine('BANDWIDTH=128000,CODECS="mp4a.40.2"', "a128")),
-  ...segmentsOf("v720", "a64", "a128")
+  ...segmentsOf("v720", "v4k", "vbare", "a64", "a128")
 };
 
 test("an audio-only HLS request transfers the audio renditions of the best variant and no video", async () => {
   for (const limits of [{}, { max_height: 360 }]) {
-    const h = relayContentHarness({ request: { url: MASTER, kind: "audio", ...limits }, answer: site(withSeparateAudio) });
-    await h.run();
+    const h = await hlsRun({ kind: "audio", ...limits }, withSeparateAudio);
     const label = JSON.stringify(limits);
     assert.deepEqual(opened(h), [["audio", "hi-English"]], label);
     assert.deepEqual(requested(h), ["master.m3u8", "audio-hi.m3u8", "audio-hi-0.bin"], `${label}: no video playlist or segment is fetched`);
@@ -193,36 +224,75 @@ test("an audio-only HLS request transfers the audio renditions of the best varia
 });
 
 test("an audio-only HLS request keeps the subtitle rules of a video request", async () => {
-  const h = relayContentHarness({ request: { url: MASTER, kind: "audio", subtitle_languages: ["en"] }, answer: site(withSeparateAudio) });
-  await h.run();
+  const h = await hlsRun({ kind: "audio", subtitle_languages: ["en"] }, withSeparateAudio);
   assert.deepEqual(opened(h), [["audio", "hi-English"], ["subtitle", null]]);
   assert.equal(h.names().at(-1), "finish");
 });
 
-test("an audio-only HLS request fails before any transfer when every variant combines audio with video", async () => {
-  const h = relayContentHarness({ request: { url: MASTER, kind: "audio" }, answer: site(withCombinedAudio) });
-  await h.run();
-  assert.deepEqual(requested(h), ["master.m3u8"], "not even a video playlist is fetched");
+test("an audio-only HLS request takes the rendition its id names, never one of the same name in another group", async () => {
+  for (const [id, group] of [["hls-lo-English", "lo"], ["hls-hi-English", "hi"], ["lo-English", "lo"]]) {
+    const h = await hlsRun({ kind: "audio", audio_format_id: id, audio_language: "en" }, withSeparateAudio);
+    assert.deepEqual(opened(h), [["audio", id]], id);
+    assert.deepEqual(requested(h), ["master.m3u8", `audio-${group}.m3u8`, `audio-${group}-0.bin`], id);
+  }
+  const h = await hlsRun({ kind: "audio", audio_format_id: "hls-mid-English", audio_language: "en" }, withSeparateAudio);
+  assert.deepEqual(requested(h), ["master.m3u8"], "an id that names no rendition transfers nothing");
   assert.equal(wrote(h), false);
-  assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"]);
-  assert.match(h.commands.at(-1).error, /audio-only download needs a separate HLS audio stream/);
+  assert.match(h.commands.at(-1).error, /audio rendition does not match exactly one/);
 });
 
-test("an audio-only HLS request takes the best variant that carries no video when no rendition holds the audio", async () => {
-  const h = relayContentHarness({ request: { url: MASTER, kind: "audio" }, answer: site(withAudioVariants) });
-  await h.run();
-  assert.deepEqual(opened(h), [["file", `${HOST}a128.m3u8`]]);
-  assert.deepEqual(requested(h), ["master.m3u8", "a128.m3u8", "a128-0.bin"]);
-  assert.equal(h.names().at(-1), "finish");
+test("an audio-only HLS request ranks the audio groups by channels before the video tier of their variants", async () => {
+  const best = await hlsRun({ kind: "audio" }, withChannels);
+  assert.equal(opened(best).length, 1);
+  assert.deepEqual(requested(best), ["master.m3u8", "audio-ec3.m3u8", "audio-ec3-0.bin"]);
+  // The ids are the ones yt-dlp spells (the extractor's prefix is optional), whitespace and brackets turned into "_".
+  for (const [id, group] of [["aac-English", "aac"], ["hls-aac-English", "aac"], ["ec3-English__surround_", "ec3"], ["hls-ec3-English__surround_", "ec3"]]) {
+    const named = await hlsRun({ kind: "audio", audio_format_id: id }, withChannels);
+    assert.deepEqual(opened(named), [["audio", id]], id);
+    assert.deepEqual(requested(named), ["master.m3u8", `audio-${group}.m3u8`, `audio-${group}-0.bin`], id);
+  }
+});
+
+test("an audio-only HLS request takes a rendition without URI from the variant that holds it and a named track from its own playlist", async () => {
+  for (const request of [{ kind: "audio" }, { kind: "audio", expected_audio: true }, { kind: "audio", audio_format_id: "hls-aud-Main", audio_language: "en" }]) {
+    const h = await hlsRun(request, withMainInVariants);
+    assert.deepEqual(opened(h), [["audio", request.audio_format_id || "aud-Main"]], JSON.stringify(request));
+    assert.deepEqual(requested(h), ["master.m3u8", "v360.m3u8", "v360-0.bin"], `${JSON.stringify(request)}: the cheapest variant that uses the group`);
+    assert.equal(h.names().at(-1), "finish");
+  }
+  const commentary = await hlsRun({ kind: "audio", expected_audio: true, audio_format_id: "hls-aud-Commentary", audio_language: "en" }, withMainInVariants);
+  assert.deepEqual(opened(commentary), [["audio", "hls-aud-Commentary"]]);
+  assert.deepEqual(requested(commentary), ["master.m3u8", "audio-commentary.m3u8", "audio-commentary-0.bin"]);
+});
+
+test("an audio-only HLS request takes the audio out of the best combined variant, as an audio stream", async () => {
+  for (const [label, files, best] of [["declared codecs", withCombinedAudio, "v720"], ["no codecs at all", withoutCodecs, "v720"]]) {
+    const h = await hlsRun({ kind: "audio", expected_audio: true }, files);
+    assert.deepEqual(opened(h), [["audio", `${HOST}${best}.m3u8`]], label);
+    assert.deepEqual(requested(h), ["master.m3u8", `${best}.m3u8`, `${best}-0.bin`], label);
+    assert.equal(h.names().at(-1), "finish", label);
+  }
+});
+
+test("an audio-only HLS request prefers a variant that declares audio codecs only to any other, however high its bandwidth", async () => {
+  const h = await hlsRun({ kind: "audio", expected_audio: true }, withAudioVariants);
+  assert.deepEqual(opened(h), [["audio", `${HOST}a128.m3u8`]]);
+  assert.deepEqual(requested(h), ["master.m3u8", "a128.m3u8", "a128-0.bin"], "no variant that may carry video is fetched");
+});
+
+test("an audio-only HLS request takes the audio-only variant its id names", async () => {
+  for (const id of ["hls-64", "64"]) {
+    const h = await hlsRun({ kind: "audio", audio_format_id: id, expected_audio: true }, withAudioVariants);
+    assert.deepEqual(opened(h), [["audio", id]], id);
+    assert.deepEqual(requested(h), ["master.m3u8", "a64.m3u8", "a64-0.bin"], id);
+  }
 });
 
 test("a video HLS request still transfers the chosen variant with its audio rendition, or the combined variant alone", async () => {
-  const separate = relayContentHarness({ request: { url: MASTER, kind: "video" }, answer: site(withSeparateAudio) });
-  await separate.run();
+  const separate = await hlsRun({ kind: "video" }, withSeparateAudio);
   assert.deepEqual(opened(separate), [["video", `${HOST}v720.m3u8`], ["audio", "hi-English"]]);
   assert.deepEqual(requested(separate), ["master.m3u8", "v720.m3u8", "audio-hi.m3u8", "v720-0.bin", "audio-hi-0.bin"]);
-  const combined = relayContentHarness({ request: { url: MASTER, kind: "video", max_height: 360 }, answer: site(withCombinedAudio) });
-  await combined.run();
+  const combined = await hlsRun({ kind: "video", max_height: 360 }, withCombinedAudio);
   assert.deepEqual(opened(combined), [["file", `${HOST}v360.m3u8`]]);
   assert.deepEqual(requested(combined), ["master.m3u8", "v360.m3u8", "v360-0.bin"]);
 });
