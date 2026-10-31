@@ -2279,7 +2279,8 @@ fn a_job_waiting_for_a_new_source_is_neither_paused_nor_started_by_bulk_commands
 mod retry_budget {
     use super::*;
     use crate::test_http::{
-        file_sha256, pattern_sha256, Config, CutBody, Logged, Scripted, Server, TempDir,
+        file_sha256, pattern_sha256, Config, CutBody, Logged, Scripted, Server, Signing, TempDir,
+        Validity,
     };
 
     const MIB: u64 = 1024 * 1024;
@@ -2634,6 +2635,107 @@ mod retry_budget {
             })
             .unwrap_or_default();
         assert!(left.is_empty(), "partial files left behind: {left:?}");
+        engine.shutdown();
+    }
+
+    /// A source whose `/file` redirects to a signed address that lives `milliseconds` for the
+    /// first request and, for later ones, as `later` says; expired addresses answer 403.
+    fn signed_source(size: u64, milliseconds: u64, later: Validity) -> Server {
+        Server::start(Config {
+            size,
+            throttle: Some(16 * MIB),
+            signing: Some(Signing {
+                from: "/file".into(),
+                origin: String::new(),
+                validity: vec![
+                    Validity {
+                        lifetime: Duration::from_millis(milliseconds),
+                        requests: usize::MAX,
+                    },
+                    later,
+                ],
+            }),
+            expiry: Some(403),
+            ..Config::default()
+        })
+    }
+
+    fn asks_for_the_source(server: &Server) -> usize {
+        server
+            .log()
+            .iter()
+            .filter(|entry| entry.path == "/file")
+            .count()
+    }
+
+    #[test]
+    fn a_redirect_target_that_expires_midway_is_followed_again_and_costs_no_retry() {
+        // Five ranges for four connections: the fifth is requested after the first address
+        // has expired. With a limit of 0 nothing is retried, so the download only finishes if
+        // asking the source again is not an attempt.
+        let size = 36 * MIB;
+        let server = signed_source(
+            size,
+            250,
+            Validity {
+                lifetime: Duration::from_millis(250),
+                requests: usize::MAX,
+            },
+        );
+        let root = TempDir::new("retry-expiry-followed");
+        let engine = engine_with_retry_limit(&root.0, 0);
+        let id = engine
+            .add(file_request(server.url("/file"), &root.0.join("out")))
+            .unwrap()
+            .remove(0);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(file_sha256(&job.path), pattern_sha256(1, size));
+        assert_eq!(job.attempts, 0);
+        assert_eq!(asks_for_the_source(&server), 2);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_fresh_target_that_is_refused_too_sends_the_job_to_a_new_source_without_retrying_it() {
+        let size = 36 * MIB;
+        let server = signed_source(
+            size,
+            250,
+            Validity {
+                lifetime: Duration::ZERO,
+                requests: usize::MAX,
+            },
+        );
+        let root = TempDir::new("retry-expiry-refused");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        let id = engine
+            .add(AddRequest {
+                page_url: Some("https://page.example.test/watch".into()),
+                ..file_request(server.url("/file"), &root.0.join("out"))
+            })
+            .unwrap()
+            .remove(0);
+
+        wait_until("the job to wait for a new source", || {
+            job_state(&engine, &id) == JobState::AwaitingSource
+        });
+        server.wait_idle();
+        let job = engine
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|job| job.id == id)
+            .unwrap()
+            .clone();
+        assert_eq!(job.attempts, 0);
+        assert_eq!(asks_for_the_source(&server), 2);
+        let kept = fs::read_dir(job.work_dir.as_ref().unwrap())
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().contains(".ssdownload."));
+        assert!(kept, "the part file was not kept");
         engine.shutdown();
     }
 

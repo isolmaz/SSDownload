@@ -4,7 +4,7 @@
 use super::*;
 use crate::test_http::{
     file_sha256, pattern, pattern_sha256, Config, CutBody, EtagKind, Logged, RangeSupport,
-    Redirect, RetryAfter, Scripted, Sequence, Server, TempDir,
+    Redirect, RetryAfter, Scripted, Sequence, Server, Signing, TempDir, Validity,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -3487,6 +3487,781 @@ fn a_resumed_download_whose_range_probe_meets_a_page_keeps_its_part_file() {
     assert_eq!(gets.len(), 1, "{log:?}");
     assert_eq!(gets[0].range.as_deref(), Some("bytes=0-0"), "{log:?}");
     assert_eq!(gets[0].if_range.as_deref(), Some("\"v1\""), "{log:?}");
+}
+
+/// Signed addresses that live `milliseconds`, however often they are asked for.
+fn lasting(milliseconds: u64) -> Validity {
+    Validity {
+        lifetime: Duration::from_millis(milliseconds),
+        requests: usize::MAX,
+    }
+}
+
+/// A source whose `/file` redirects to a new signed address on every request, and which answers
+/// `status` for an address that has expired. It serves `size` bytes at `rate` per connection.
+fn signed_source(size: u64, rate: u64, status: u16, validity: Vec<Validity>) -> Server {
+    Server::start(Config {
+        size,
+        throttle: Some(rate),
+        signing: Some(Signing {
+            from: "/file".into(),
+            origin: String::new(),
+            validity,
+        }),
+        expiry: Some(status),
+        ..Config::default()
+    })
+}
+
+/// The number of the signed address that `entry` asked for.
+fn address_of(entry: &Logged) -> Option<u64> {
+    number_of(&entry.path)
+}
+
+fn number_of(path: &str) -> Option<u64> {
+    path.split_once('?')?
+        .1
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("n=")?.parse().ok())
+}
+
+fn requests_for_the_source(log: &[Logged]) -> usize {
+    log.iter().filter(|entry| entry.path == "/file").count()
+}
+
+/// What a signed address was asked for, as (method, range, status).
+fn asked_of(log: &[Logged], address: u64) -> Vec<(&str, Option<&str>, u16)> {
+    log.iter()
+        .filter(|entry| address_of(entry) == Some(address))
+        .map(|entry| (entry.method.as_str(), entry.range.as_deref(), entry.status))
+        .collect()
+}
+
+/// Asserts that the ranges of `log` that were answered with data tile `0..size`.
+fn assert_served_tiles(log: &[Logged], size: u64) {
+    let served = log
+        .iter()
+        .filter(|entry| entry.status == 206)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_tiles(delivered(&served, size), size);
+}
+
+const SIGNED_SIZE: u64 = 20 * MIB + 123;
+const SIGNED_RATE: u64 = 8 * MIB;
+
+#[test]
+fn a_segmented_download_follows_the_source_again_when_its_redirect_target_expires() {
+    let expected = pattern(1, SIGNED_SIZE);
+    for status in [401, 403, 410] {
+        let server = signed_source(SIGNED_SIZE, SIGNED_RATE, status, vec![lasting(400)]);
+        let directory = TempDir::new("signed-segmented");
+        let output = directory.0.join("payload.bin");
+        forget_writes();
+        let result = fetch(
+            &file_request(server.url("/file")),
+            &output,
+            &TransferControl::default(),
+            2,
+            2,
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| panic!("{status}: {error:#}"));
+        assert_file_is(&result.path, &expected, &status.to_string());
+        assert_written_once(&writes(), &[], SIGNED_SIZE);
+        assert!(!part_path(&output).exists() && !state_path(&output).exists());
+        server.wait_idle();
+        let log = server.log();
+        // The probe asks for the source, and the expiry makes the download ask once more.
+        assert_eq!(requests_for_the_source(&log), 2, "{status}: {log:?}");
+        let refused = log.iter().filter(|entry| entry.status == status);
+        assert!(refused.clone().count() > 0, "{status}: nothing expired");
+        assert!(
+            refused.clone().all(|entry| address_of(entry) == Some(0)),
+            "{status}: {log:?}"
+        );
+        assert!(
+            data_gets(&log).any(|entry| entry.status == 206 && address_of(entry) == Some(1)),
+            "{status}: the second address served no data: {log:?}"
+        );
+        // Every request that continues the bytes on disk carries the validator, the one that
+        // checks the second address included.
+        for entry in log
+            .iter()
+            .filter(|entry| entry.method == "GET" && address_of(entry) == Some(1))
+        {
+            assert_eq!(
+                entry.if_range.as_deref(),
+                Some("\"v1\""),
+                "{status}: {entry:?}"
+            );
+        }
+        assert_served_tiles(&log, SIGNED_SIZE);
+    }
+}
+
+#[test]
+fn a_segmented_download_follows_the_source_again_at_each_expiry_that_follows_progress() {
+    let size = 40 * MIB + 7;
+    let server = signed_source(size, SIGNED_RATE, 403, vec![lasting(300)]);
+    let directory = TempDir::new("signed-repeated");
+    let output = directory.0.join("payload.bin");
+    forget_writes();
+    let result = fetch(
+        &file_request(server.url("/file")),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap_or_else(|error| panic!("{error:#}"));
+    assert_file_is(&result.path, &pattern(1, size), "repeated");
+    assert_written_once(&writes(), &[], size);
+    server.wait_idle();
+    let log = server.log();
+    // Two leases are requested at the first expiry and one at the second: the second address
+    // delivered bytes before it expired, which allows a third.
+    assert_eq!(requests_for_the_source(&log), 3, "{log:?}");
+    assert_served_tiles(&log, size);
+}
+
+#[test]
+fn a_one_connection_download_follows_the_source_again_when_a_retry_meets_an_expired_target() {
+    let size = 4 * MIB;
+    for status in [401, 403, 410] {
+        let server = Server::start(Config {
+            size,
+            signing: Some(Signing {
+                from: "/file".into(),
+                origin: String::new(),
+                validity: vec![lasting(300)],
+            }),
+            expiry: Some(status),
+            // The first body is cut before its first byte, so the download waits a second and
+            // asks the same address again.
+            cut_body: Some(CutBody {
+                after_bytes: 0,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let directory = TempDir::new("signed-single");
+        let output = directory.0.join("payload.bin");
+        let result = fetch(
+            &file_request(server.url("/file")),
+            &output,
+            &TransferControl::default(),
+            1,
+            1,
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| panic!("{status}: {error:#}"));
+        assert_file_is(&result.path, &pattern(1, size), &status.to_string());
+        server.wait_idle();
+        let log = server.log();
+        assert_eq!(requests_for_the_source(&log), 2, "{status}: {log:?}");
+        assert!(
+            log.iter()
+                .filter(|entry| entry.status == status)
+                .all(|entry| address_of(entry) == Some(0)),
+            "{status}: {log:?}"
+        );
+        assert_eq!(
+            data_gets(&log)
+                .filter(|entry| entry.status == 200)
+                .map(address_of)
+                .collect::<Vec<_>>(),
+            [Some(0), Some(1)],
+            "{status}: {log:?}"
+        );
+    }
+}
+
+#[test]
+fn a_download_resumed_after_its_redirect_target_expired_asks_the_source_again() {
+    // The first attempt is stopped while its leases run, and the address it used has expired when
+    // the second one starts. Each attempt has as many ranges as connections, so none outlives an
+    // address.
+    let size = 12 * MIB + 123;
+    let expected = pattern(1, size);
+    for connections in [1u8, 2] {
+        let server = signed_source(size, SIGNED_RATE, 403, vec![lasting(300)]);
+        let directory = TempDir::new("signed-resume");
+        let output = directory.0.join("payload.bin");
+        let control = TransferControl::default();
+        let stopper = stop_after(&control, Duration::from_millis(500));
+        let first = fetch(
+            &file_request(server.url("/file")),
+            &output,
+            &control,
+            connections,
+            connections,
+            &mut |_| {},
+        );
+        stopper.join().unwrap();
+        assert!(first.is_err(), "{connections}: the first attempt finished");
+        assert!(
+            retained_bytes(&output).is_some_and(|kept| kept > 0),
+            "{connections}: nothing was kept"
+        );
+        let recorded = recorded_ranges(&output);
+        server.wait_idle();
+        let first_attempt = server.log().len();
+
+        forget_writes();
+        let result = fetch(
+            &file_request(server.url("/file")),
+            &output,
+            &TransferControl::default(),
+            connections,
+            connections,
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| panic!("{connections}: {error:#}"));
+        assert_file_is(&result.path, &expected, &connections.to_string());
+        if connections > 1 {
+            assert_written_once(&writes(), &recorded, size);
+        }
+        server.wait_idle();
+        let log = server.log();
+        let resumed = &log[first_attempt..];
+        assert!(
+            resumed.iter().all(|entry| entry.status != 403),
+            "{connections}: {resumed:?}"
+        );
+        for entry in data_gets(resumed) {
+            assert_eq!(entry.status, 206, "{connections}: {entry:?}");
+            assert_eq!(entry.if_range.as_deref(), Some("\"v1\""), "{entry:?}");
+            assert_ne!(address_of(entry), Some(0), "{connections}: {entry:?}");
+        }
+    }
+}
+
+/// Downloads `SIGNED_SIZE` bytes over two connections from a signed source that hands out
+/// `validity`, expects the download to fail with `status` and the work done before the expiry
+/// to stay recorded, and returns the source.
+fn signed_download_that_fails_with(
+    status: u16,
+    validity: Vec<Validity>,
+    tweak: impl Fn(&mut Config),
+) -> (Server, TempDir) {
+    let mut config = Config {
+        size: SIGNED_SIZE,
+        throttle: Some(SIGNED_RATE),
+        signing: Some(Signing {
+            from: "/file".into(),
+            origin: String::new(),
+            validity,
+        }),
+        expiry: Some(status),
+        ..Config::default()
+    };
+    tweak(&mut config);
+    let server = Server::start(config);
+    let directory = TempDir::new("signed-fails");
+    let output = directory.0.join("payload.bin");
+    let error = fetch(
+        &file_request(server.url("/file")),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(http_status(&error), Some(u32::from(status)), "{error:#}");
+    assert!(!output.exists());
+    let expected = pattern(1, SIGNED_SIZE);
+    let claimed = claimed_bytes(&output, &expected);
+    assert!(claimed >= 8 * MIB, "only {claimed} bytes were kept");
+    assert_eq!(retained_bytes(&output), Some(claimed));
+    server.wait_idle();
+    (server, directory)
+}
+
+/// Whether the requests for `address` are only the ones that check it: a HEAD and the one-byte
+/// range, never data.
+fn only_checked(log: &[Logged], address: u64) -> bool {
+    asked_of(log, address)
+        .iter()
+        .all(|(method, range, _)| *method == "HEAD" || *range == Some("bytes=0-0"))
+}
+
+#[test]
+fn a_fresh_target_with_another_identity_is_not_adopted_and_the_retained_work_stays() {
+    // The tag changes with each HEAD, so the source's answer after the expiry names another
+    // file than the one whose bytes are on disk.
+    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+        config.etag_rotation_heads = Some(1);
+    });
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    assert!(
+        !asked_of(&log, 1).is_empty() && only_checked(&log, 1),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_fresh_target_that_answers_again_with_the_status_is_not_asked_for_data() {
+    let (server, _directory) = signed_download_that_fails_with(
+        410,
+        vec![
+            lasting(400),
+            Validity {
+                lifetime: Duration::ZERO,
+                requests: usize::MAX,
+            },
+        ],
+        |_| {},
+    );
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    assert!(
+        asked_of(&log, 1)
+            .iter()
+            .all(|(_, _, status)| *status == 410),
+        "{log:?}"
+    );
+    assert!(only_checked(&log, 1), "{log:?}");
+}
+
+#[test]
+fn a_fresh_target_that_delivers_nothing_is_followed_only_once() {
+    // The second address answers the two requests that check it and refuses everything after
+    // them, so its data requests are refused without a byte having come from it.
+    let (server, _directory) = signed_download_that_fails_with(
+        403,
+        vec![
+            lasting(400),
+            Validity {
+                lifetime: Duration::from_secs(3600),
+                requests: 2,
+            },
+        ],
+        |_| {},
+    );
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    let asked = asked_of(&log, 1);
+    assert!(asked.len() >= 3, "{log:?}");
+    assert!(
+        asked[2..]
+            .iter()
+            .all(|(_, range, status)| *range != Some("bytes=0-0") && *status == 403),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_fresh_target_that_is_a_web_page_is_not_adopted_and_the_retained_work_stays() {
+    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+        config.signed_pages_from = Some(1);
+    });
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    assert!(
+        !asked_of(&log, 1).is_empty() && only_checked(&log, 1),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_one_connection_download_follows_the_source_only_once_when_the_fresh_target_delivers_nothing() {
+    // The second address answers the requests that check it and refuses the one for data.
+    let size = 4 * MIB;
+    let server = Server::start(Config {
+        size,
+        signing: Some(Signing {
+            from: "/file".into(),
+            origin: String::new(),
+            validity: vec![
+                lasting(300),
+                Validity {
+                    lifetime: Duration::from_secs(3600),
+                    requests: 2,
+                },
+            ],
+        }),
+        expiry: Some(403),
+        cut_body: Some(CutBody {
+            after_bytes: 0,
+            responses: 1,
+        }),
+        ..Config::default()
+    });
+    let directory = TempDir::new("signed-single-once");
+    let output = directory.0.join("payload.bin");
+    let error = fetch(
+        &file_request(server.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(http_status(&error), Some(403), "{error:#}");
+    server.wait_idle();
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    assert_eq!(
+        asked_of(&log, 1)
+            .iter()
+            .map(|(method, _, status)| (*method, *status))
+            .collect::<Vec<_>>(),
+        [("HEAD", 200), ("GET", 206), ("GET", 403)],
+        "{log:?}"
+    );
+}
+
+#[test]
+fn an_address_with_no_redirect_that_expires_is_not_followed_again() {
+    let server = Server::start(Config {
+        size: SIGNED_SIZE,
+        throttle: Some(SIGNED_RATE),
+        expiry: Some(403),
+        ..Config::default()
+    });
+    let deadline = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        + 400;
+    let directory = TempDir::new("signed-direct");
+    let output = directory.0.join("payload.bin");
+    let error = fetch(
+        &file_request(server.url(&format!("/direct?exp={deadline}&n=0&max=999999"))),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(http_status(&error), Some(403), "{error:#}");
+    server.wait_idle();
+    let log = server.log();
+    // Only the probe asks for metadata; nothing asks the address again after the refusal.
+    assert_eq!(
+        log.iter().filter(|entry| entry.method == "HEAD").count(),
+        1,
+        "{log:?}"
+    );
+    assert!(log.iter().any(|entry| entry.status == 403), "{log:?}");
+}
+
+#[test]
+fn the_requests_that_follow_an_expiry_keep_the_headers_of_the_origin_they_go_to() {
+    let watched = [
+        "authorization",
+        "cookie",
+        "referer",
+        "x-site-token",
+        "accept",
+    ];
+    let target = Server::start(Config {
+        size: SIGNED_SIZE,
+        throttle: Some(SIGNED_RATE),
+        expiry: Some(403),
+        logged_headers: watched.map(String::from).to_vec(),
+        ..Config::default()
+    });
+    let source = Server::start(Config {
+        signing: Some(Signing {
+            from: "/file".into(),
+            origin: target.url(""),
+            validity: vec![lasting(400)],
+        }),
+        logged_headers: watched.map(String::from).to_vec(),
+        ..Config::default()
+    });
+    let mut request = file_request(source.url("/file"));
+    request
+        .headers
+        .insert("Authorization".into(), "Bearer secret".into());
+    request
+        .headers
+        .insert("Cookie".into(), "sid=private".into());
+    request
+        .headers
+        .insert("X-Site-Token".into(), "do-not-forward".into());
+    request.headers.insert("Accept".into(), "*/*".into());
+    request.referer = Some(source.url("/page"));
+    let directory = TempDir::new("signed-headers");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap_or_else(|error| panic!("{error:#}"));
+    assert_file_is(&result.path, &pattern(1, SIGNED_SIZE), "headers");
+    target.wait_idle();
+    source.wait_idle();
+    let target_log = target.log();
+    assert!(
+        target_log.iter().any(|entry| entry.status == 403),
+        "the address never expired: {target_log:?}"
+    );
+    for entry in &target_log {
+        for name in ["authorization", "cookie", "referer", "x-site-token"] {
+            assert_eq!(entry.header(name), None, "{name}: {entry:?}");
+        }
+        assert_eq!(entry.header("accept"), Some("*/*"), "{entry:?}");
+    }
+    // The probe and the request after the expiry each ask the source with a HEAD.
+    let source_log = source.log();
+    assert_eq!(source_log.len(), 2, "{source_log:?}");
+    for entry in &source_log {
+        assert_eq!(entry.header("authorization"), Some("Bearer secret"));
+        assert_eq!(entry.header("cookie"), Some("sid=private"));
+        assert_eq!(entry.header("x-site-token"), Some("do-not-forward"));
+    }
+}
+
+#[test]
+fn a_fresh_target_is_not_accepted_when_it_is_less_secure_than_the_one_that_expired() {
+    let server = signed_source(SIGNED_SIZE, SIGNED_RATE, 403, vec![lasting(60_000)]);
+    let request = file_request(server.url("/file"));
+    let control = TransferControl::default();
+    let network = NetworkGovernor::new(2);
+    let original = Url::parse(&request.url).unwrap();
+    let record = probe_http(&request, original.clone(), &control, &network).unwrap();
+    let before = server.log().len();
+
+    let secure = Url::parse("https://files.example/signed").unwrap();
+    assert!(refollow(&request, &original, &secure, &record, &control, &network).is_none());
+    assert!(
+        server.log()[before..]
+            .iter()
+            .all(|entry| entry.method == "HEAD"),
+        "the insecure target was asked for data"
+    );
+
+    let plain = Url::parse("http://files.example/signed").unwrap();
+    let fresh = refollow(&request, &original, &plain, &record, &control, &network).unwrap();
+    assert_eq!(number_of(fresh.as_str()), Some(2));
+}
+
+/// Signed addresses that answer as expired from their fifth request on: the probe's two, the
+/// first two ranges, and then no more. The addresses after the first never expire.
+fn expiring_after(requests: usize) -> Vec<Validity> {
+    let hour = Duration::from_secs(3600);
+    vec![
+        Validity {
+            lifetime: hour,
+            requests,
+        },
+        Validity {
+            lifetime: hour,
+            requests: usize::MAX,
+        },
+    ]
+}
+
+#[test]
+fn a_fresh_target_whose_ranged_answer_carries_no_validators_is_not_adopted() {
+    // The answers to ranged requests with If-Range have neither ETag nor Last-Modified, so the
+    // fresh target proves nothing about the file whose bytes are on disk.
+    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+        config.partial_without_validators = true;
+    });
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    assert!(
+        !asked_of(&log, 1).is_empty() && only_checked(&log, 1),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_fresh_target_whose_one_byte_answer_has_no_body_is_checked_all_the_same() {
+    // The check sends no body byte, so nothing but the headers can prove the identity.
+    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+        config.partial_without_validators = true;
+        config.bodiless_probe = true;
+    });
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    assert!(
+        !asked_of(&log, 1).is_empty() && only_checked(&log, 1),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_fresh_target_on_another_host_gets_a_new_handle_and_not_the_site_login_of_the_old_host() {
+    let size = 40 * MIB + 123;
+    let target = |size| Config {
+        size,
+        throttle: Some(SIGNED_RATE),
+        expiry: Some(403),
+        ..Config::default()
+    };
+    // The second lease of the old host outlasts the renewal, so its worker meets the fresh host
+    // with the handle it has from the old one.
+    let old = Server::start(Config {
+        slow_connection: Some((0, SIGNED_RATE * 3 / 8)),
+        ..target(size)
+    });
+    let fresh = Server::start(target(size));
+    // The first address is on `localhost`, the ones after it on `127.0.0.1`: two hosts.
+    let source = Server::start(Config {
+        signing: Some(Signing {
+            from: "/file".into(),
+            origin: old.url("").replace("127.0.0.1", "localhost"),
+            validity: expiring_after(4),
+        }),
+        signed_origin_from: Some((1, fresh.url(""))),
+        ..Config::default()
+    });
+    // The logins are process-wide and other tests reset them, so they are installed again
+    // until the download ends.
+    let login = crate::model::SiteLogin {
+        host: "localhost".into(),
+        username: "user".into(),
+        password: String::new(),
+        allow_http: true,
+    };
+    let installed = AtomicBool::new(false);
+    let finished = AtomicBool::new(false);
+    let directory = TempDir::new("signed-other-host");
+    let output = directory.0.join("payload.bin");
+    let result = thread::scope(|scope| {
+        scope.spawn(|| {
+            while !finished.load(Ordering::Acquire) {
+                crate::proxy::configure_site_logins(std::slice::from_ref(&login));
+                installed.store(true, Ordering::Release);
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+        while !installed.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let result = fetch(
+            &file_request(source.url("/file")),
+            &output,
+            &TransferControl::default(),
+            2,
+            2,
+            &mut |_| {},
+        );
+        finished.store(true, Ordering::Release);
+        result
+    });
+    crate::proxy::configure_site_logins(&[]);
+    let result = result.unwrap_or_else(|error| {
+        panic!(
+            "{error:#}: {:?} {:?} {:?}",
+            old.log(),
+            fresh.log(),
+            source.log()
+        )
+    });
+    assert_file_is(&result.path, &pattern(1, size), "other host");
+    old.wait_idle();
+    fresh.wait_idle();
+    let (old_log, fresh_log) = (old.log(), fresh.log());
+    assert!(
+        old_log.iter().any(|entry| entry
+            .header("authorization")
+            .is_some_and(|value| value.starts_with("Basic "))),
+        "the login never reached its own host: {old_log:?}"
+    );
+    assert!(
+        fresh_log.iter().any(|entry| entry.status == 206),
+        "the fresh host served no data: {fresh_log:?}"
+    );
+    for entry in &fresh_log {
+        assert_eq!(entry.header("authorization"), None, "{entry:?}");
+    }
+}
+
+#[test]
+fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gave_up() {
+    // The original address is on a slow host of its own and the signed addresses are on the
+    // host that another job also downloads from, under a limit of two connections per host. The
+    // refused worker frees its slot and the other job takes it; the download must not wait for
+    // that job to end.
+    let size = 40 * MIB + 123;
+    let target = Server::start(Config {
+        size,
+        throttle: Some(5 * MIB),
+        // The second lease runs long after the first one ends and its worker holds a slot.
+        slow_connection: Some((0, 2 * MIB)),
+        expiry: Some(403),
+        ..Config::default()
+    });
+    let source = Server::start(Config {
+        connection_delay: Some(Duration::from_millis(500)),
+        signing: Some(Signing {
+            from: "/file".into(),
+            origin: target.url(""),
+            validity: expiring_after(4),
+        }),
+        ..Config::default()
+    });
+    let rival = Server::start(Config {
+        size: 64 * MIB,
+        throttle: Some(2 * MIB),
+        ..Config::default()
+    });
+    let network = NetworkGovernor::new(2);
+    let directory = TempDir::new("signed-rival");
+    let output = directory.0.join("payload.bin");
+    let rival_output = directory.0.join("rival.bin");
+    let rival_control = TransferControl::default();
+    let (done_tx, done_rx) = mpsc::channel();
+    let (first_tx, first_rx) = mpsc::channel();
+    let (rival_tx, rival_rx) = mpsc::channel();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let result = download(
+                &file_request(source.url("/file").replace("127.0.0.1", "localhost")),
+                &output,
+                &TransferControl::default(),
+                &network,
+                2,
+                None,
+                &mut |progress| {
+                    if progress.downloaded > 0 {
+                        let _ = first_tx.send(());
+                    }
+                },
+            );
+            done_tx.send(result).unwrap();
+        });
+        // The other job starts as soon as the download reports its first bytes, while it holds
+        // both slots, so it has to wait for one.
+        first_rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the download reported no bytes");
+        scope.spawn(|| {
+            let result = download(
+                &file_request(rival.url("/rival.bin")),
+                &rival_output,
+                &rival_control,
+                &network,
+                1,
+                None,
+                &mut |_| {},
+            );
+            rival_tx.send(result.is_ok()).unwrap();
+        });
+        let outcome = done_rx.recv_timeout(Duration::from_secs(25));
+        let rival_ended = rival_rx.try_recv().is_ok();
+        rival_control.cancel();
+        let result = outcome
+            .expect("the download never ended")
+            .unwrap_or_else(|error| panic!("{error:#}"));
+        assert_file_is(&result.path, &pattern(1, size), "rival");
+        assert!(!rival_ended, "the download waited for the other job to end");
+    });
 }
 
 const BENCH_SIZE: u64 = 128 * MIB;
