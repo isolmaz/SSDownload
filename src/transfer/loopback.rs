@@ -2429,6 +2429,56 @@ fn a_short_wait_for_the_first_byte_still_lets_an_idle_worker_take_the_back_of_a_
 }
 
 #[test]
+fn a_worker_that_has_closed_its_socket_waits_for_a_new_connection_before_it_takes_a_range() {
+    // Five leases of 8 MiB over 2 connections at 8 MiB/s. Every ranged response starts 0.3 s
+    // after its request, and the first request on a connection another 0.6 s later. The two
+    // workers open their connections for the first two leases and reuse them for the next two.
+    // The worker that finishes first takes the last lease, and the other is idle for more than
+    // 0.2 s before that lease flows, so it has closed its socket. Its request for the back half
+    // would open a connection and wait 0.9 s for the first byte, longer than the 0.45 s that the
+    // half of at most 7.2 MiB would save the lease; on the connection it had left open it would
+    // have waited 0.3 s.
+    let size = 40 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(8 * MIB),
+        first_byte_delay: Some(Duration::from_millis(300)),
+        connection_delay: Some(Duration::from_millis(600)),
+        ..Config::default()
+    });
+    forget_writes();
+    let directory = TempDir::new("closed-socket");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_file_is(&result.path, &pattern(1, size), "a closed socket");
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    let mut ranges = ranged_gets(&log, size);
+    ranges.sort_unstable();
+    assert_eq!(
+        ranges,
+        [
+            (0, 8 * MIB),
+            (8 * MIB, 16 * MIB),
+            (16 * MIB, 24 * MIB),
+            (24 * MIB, 32 * MIB),
+            (32 * MIB, size)
+        ],
+        "{log:?}"
+    );
+}
+
+#[test]
 fn a_lease_with_less_to_come_than_two_minimum_pieces_is_left_to_its_worker() {
     // Two leases of 4 MiB less one byte. The second is slow, so the worker of the first is idle
     // for a second, while the second has one byte less to come than the least that is cut.

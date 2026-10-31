@@ -1838,12 +1838,15 @@ impl Standing {
 /// counts as claimed, and it never writes beyond the size at the moment it claims. The high
 /// half of the word is the bytes claimed, the low half the size; both count from the start of
 /// the lease. Beside the word it holds how long the first byte of the lease took to come, from
-/// which the scheduler tells how fast the lease runs once its bytes flow.
+/// which the scheduler tells how fast the lease runs once its bytes flow, and whether the
+/// request for the lease opened a connection.
 struct Allowance {
     word: AtomicU64,
     /// How long the worker waited for the first byte of the lease, in nanoseconds plus one; 0
     /// until that byte comes.
     first_byte: AtomicU64,
+    /// Whether the request for the lease opened a connection instead of reusing one.
+    connected: AtomicBool,
 }
 
 impl Allowance {
@@ -1851,6 +1854,7 @@ impl Allowance {
         Self {
             word: AtomicU64::new(0),
             first_byte: AtomicU64::new(0),
+            connected: AtomicBool::new(false),
         }
     }
 
@@ -1862,6 +1866,7 @@ impl Allowance {
             size: u64::from(size),
         };
         self.first_byte.store(0, Ordering::Release);
+        self.connected.store(false, Ordering::Release);
         self.word.store(standing.pack(), Ordering::Release);
     }
 
@@ -1883,6 +1888,15 @@ impl Allowance {
             0 => None,
             stored => Some(Duration::from_nanos(stored - 1)),
         }
+    }
+
+    /// Notes that the request for the lease opened a connection.
+    fn note_connection(&self) {
+        self.connected.store(true, Ordering::Release);
+    }
+
+    fn opened_connection(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
 
     /// Claims up to `wanted` bytes from the front of what is left and returns how many.
@@ -2027,6 +2041,11 @@ struct Checkpoints {
     /// How each worker received the last range of at least `MIN_SEGMENT_SIZE` it finished;
     /// `None` before the first.
     deliveries: Vec<Option<Delivery>>,
+    /// When each worker finished its last range; `None` before the first.
+    idle_since: Vec<Option<Instant>>,
+    /// How long the first byte took to come for the latest range that opened a connection;
+    /// `None` before the first.
+    connection_wait: Option<Duration>,
     pace: Pace,
 }
 
@@ -2058,6 +2077,8 @@ impl Checkpoints {
             written: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
             allowances: (0..workers).map(|_| Arc::new(Allowance::new())).collect(),
             deliveries: vec![None; workers],
+            idle_since: vec![None; workers],
+            connection_wait: None,
             pace: Pace::new(),
         }
     }
@@ -2091,17 +2112,28 @@ impl Checkpoints {
     /// is expected to have the back half before the lease's own worker would reach the end of
     /// its range: the idle worker waits for its first byte as long as it did for its last range
     /// and then fetches the half at the rate of that range, while the lease's worker fetches the
-    /// whole remainder at the rate the lease has had since its first byte. Of the leases that
-    /// qualify, the one with the most bytes still to come is cut; none is when none has at least
-    /// twice `MIN_SEGMENT_SIZE` to come, or no idle worker has finished a range of that size
-    /// yet, and `idle` is left as it is. The lease keeps the front: its worker writes no byte
-    /// beyond the cut, however many are already in flight, and the cut is never before the last
-    /// byte it has claimed.
+    /// whole remainder at the rate the lease has had since its first byte. An idle worker that
+    /// finished its last range `RANGE_WORKER_IDLE_TIMEOUT` ago or earlier has closed its socket
+    /// and has to open a connection for the half, so it waits at least as long as the latest
+    /// range that opened one. Of the leases that qualify, the one with the most bytes still to
+    /// come is cut; none is when none has at least twice `MIN_SEGMENT_SIZE` to come, or no idle
+    /// worker has finished a range of that size yet, and `idle` is left as it is. The lease
+    /// keeps the front: its worker writes no byte beyond the cut, however many are already in
+    /// flight, and the cut is never before the last byte it has claimed.
     fn split(&mut self, idle: &mut Vec<usize>, now: Instant) -> Option<(usize, RangeWork)> {
         let (thief, delivery) = idle
             .iter()
             .filter_map(|&worker| Some((worker, self.deliveries[worker]?)))
             .max_by_key(|&(_, delivery)| delivery.rate)?;
+        let closed = self.idle_since[thief]
+            .is_some_and(|since| now.saturating_duration_since(since) >= RANGE_WORKER_IDLE_TIMEOUT);
+        let delivery = match self.connection_wait {
+            Some(setup) if closed => Delivery {
+                wait: delivery.wait.max(setup),
+                ..delivery
+            },
+            _ => delivery,
+        };
         loop {
             let (worker, seen, size) = self
                 .leases
@@ -2178,7 +2210,11 @@ impl Checkpoints {
         let Some(lease) = self.leases[worker].take() else {
             return;
         };
+        self.idle_since[worker] = Some(now);
         if let Some(wait) = self.allowances[worker].first_byte_wait() {
+            if self.allowances[worker].opened_connection() {
+                self.connection_wait = Some(wait);
+            }
             let length = lease.range.len();
             if length >= MIN_SEGMENT_SIZE {
                 if let Some(rate) = bytes_per_second(length, lease.flowing(wait, now)) {
@@ -2877,6 +2913,9 @@ impl DynamicRangeWorker<'_> {
                 .map_err(anyhow::Error::from)?;
             transfer.perform()
         };
+        if easy.num_connects().is_ok_and(|connects| connects > 0) {
+            allowance.note_connection();
+        }
 
         let headers = response.borrow().clone();
         if control.stop_requested() || abort.load(Ordering::Acquire) {
@@ -7552,6 +7591,129 @@ mod tests {
         ledger.allowance(0).note_first_byte(Duration::ZERO);
         ledger.finish(0, start + Duration::from_millis(1));
         assert_eq!(ledger.deliveries[0], Some(before));
+    }
+
+    #[test]
+    fn a_finished_lease_notes_when_its_worker_went_idle_and_how_long_a_new_connection_waited() {
+        let directory = TestDirectory::new("split-finish-connection");
+        let start = Instant::now();
+        let mut ledger = ledger_over(&directory, 2, 16 * MIB);
+        assert_eq!((ledger.idle_since[0], ledger.connection_wait), (None, None));
+
+        // A lease that reused a connection leaves what a new connection waited as it was, and
+        // a lease with no first byte is not a wait at all, but both leave their worker idle.
+        ledger.assign(0, work(0, 8 * MIB), start);
+        ledger
+            .allowance(0)
+            .note_first_byte(Duration::from_millis(300));
+        ledger.finish(0, start + Duration::from_secs(2));
+        assert_eq!(ledger.idle_since[0], Some(start + Duration::from_secs(2)));
+        assert_eq!(ledger.connection_wait, None);
+        ledger.assign(1, work(8 * MIB, 16 * MIB), start);
+        ledger.allowance(1).note_connection();
+        ledger.finish(1, start + Duration::from_secs(3));
+        assert_eq!(ledger.idle_since[1], Some(start + Duration::from_secs(3)));
+        assert_eq!(ledger.connection_wait, None);
+
+        // A lease that opened a connection sets it, however short, and the latest sets it again.
+        ledger.assign(1, work(8 * MIB, 8 * MIB + 64 * 1024), start);
+        ledger
+            .allowance(1)
+            .note_first_byte(Duration::from_millis(700));
+        ledger.allowance(1).note_connection();
+        ledger.finish(1, start + Duration::from_secs(4));
+        assert_eq!(ledger.connection_wait, Some(Duration::from_millis(700)));
+        ledger.assign(0, work(0, 8 * MIB), start);
+        ledger
+            .allowance(0)
+            .note_first_byte(Duration::from_millis(500));
+        ledger.allowance(0).note_connection();
+        ledger.finish(0, start + Duration::from_secs(5));
+        assert_eq!(ledger.connection_wait, Some(Duration::from_millis(500)));
+
+        // Whether a lease opened a connection is noted for that lease alone.
+        ledger.assign(0, work(0, 8 * MIB), start);
+        ledger
+            .allowance(0)
+            .note_first_byte(Duration::from_millis(900));
+        ledger.finish(0, start + Duration::from_secs(6));
+        assert_eq!(ledger.connection_wait, Some(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn an_idle_worker_that_has_closed_its_socket_waits_as_long_as_a_new_connection_did() {
+        let directory = TestDirectory::new("split-closed-socket");
+        let start = Instant::now();
+        let now = start + Duration::from_secs(1);
+        // As in the test of the wait for a first byte: the lease needs 3 s for the 6 MiB to
+        // come, and the idle worker at 6 MiB/s has the back half sooner only if it waits less
+        // than 2.5 s for its first byte, to the nanosecond.
+        let setup = Some(Duration::from_millis(2_500));
+        let cases = [
+            (Duration::ZERO, true),
+            (RANGE_WORKER_IDLE_TIMEOUT - Duration::from_nanos(1), true),
+            (RANGE_WORKER_IDLE_TIMEOUT, false),
+            (RANGE_WORKER_IDLE_TIMEOUT + Duration::from_nanos(1), false),
+            (Duration::from_secs(1), false),
+        ];
+        for (idle, cuts) in cases {
+            let mut ledger = ledger_with_a_lease(&directory, start);
+            ledger.deliveries[1] = without_wait(6 * MIB);
+            ledger.idle_since[1] = Some(now - idle);
+            ledger.connection_wait = setup;
+            assert_eq!(
+                stolen(&mut ledger, &[1], now).is_some(),
+                cuts,
+                "an idle worker that finished its last range {idle:?} ago"
+            );
+        }
+
+        // Its wait is the longer of the two, not the sum, and the setup to the nanosecond.
+        let cases = [
+            (None, Duration::from_millis(2_400), true),
+            (None, Duration::from_millis(2_500), false),
+            (
+                Some(Duration::from_secs(1)),
+                Duration::from_millis(2_400),
+                true,
+            ),
+            (
+                Some(Duration::from_secs(1)),
+                Duration::from_millis(2_500),
+                false,
+            ),
+            (Some(Duration::from_millis(2_400)), Duration::ZERO, true),
+            (
+                Some(Duration::from_nanos(2_499_999_999)),
+                Duration::ZERO,
+                true,
+            ),
+            (Some(Duration::from_millis(2_500)), Duration::ZERO, false),
+            (Some(Duration::MAX), Duration::ZERO, false),
+        ];
+        for (setup, wait, cuts) in cases {
+            let mut ledger = ledger_with_a_lease(&directory, start);
+            ledger.deliveries[1] = Some(Delivery {
+                wait,
+                rate: 6 * MIB,
+            });
+            ledger.idle_since[1] = Some(start);
+            ledger.connection_wait = setup;
+            assert_eq!(
+                stolen(&mut ledger, &[1], now).is_some(),
+                cuts,
+                "a closed socket after a wait of {wait:?} and a setup of {setup:?}"
+            );
+        }
+
+        // A worker that finished after `now`, or never, has not closed its socket.
+        for since in [Some(now + Duration::from_secs(1)), None] {
+            let mut ledger = ledger_with_a_lease(&directory, start);
+            ledger.deliveries[1] = without_wait(6 * MIB);
+            ledger.idle_since[1] = since;
+            ledger.connection_wait = setup;
+            assert!(stolen(&mut ledger, &[1], now).is_some(), "{since:?}");
+        }
     }
 }
 

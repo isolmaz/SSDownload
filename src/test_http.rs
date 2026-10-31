@@ -122,6 +122,10 @@ pub struct Config {
     /// A `GET` with a `Range` header, the probe among them, is answered only after this long,
     /// so that the first byte of every ranged response is late.
     pub first_byte_delay: Option<Duration>,
+    /// The first request on every connection, whatever it asks for, is answered only after this
+    /// long, as if the connection took that long to set up; later requests on it are not held
+    /// back.
+    pub connection_delay: Option<Duration>,
     /// The first this many bytes of a body without a stall are sent at once, and `throttle` and
     /// `slow_connection` pace only what follows.
     pub burst: u64,
@@ -165,6 +169,7 @@ impl Default for Config {
             stall: None,
             hold_at_takeover: false,
             first_byte_delay: None,
+            connection_delay: None,
             burst: 0,
             max_connections: None,
             over_limit: OverLimit::Unavailable(None),
@@ -874,6 +879,7 @@ fn answer(
         (cut_index < cut.responses)
             .then(|| (cut.after_bytes + cut_index as u64 * config.cut_growth).min(length))
     });
+    let first_on_connection = place.is_none();
     let mut log = shared.log.lock().unwrap();
     let place = *place.get_or_insert_with(|| {
         (!over_limit)
@@ -900,6 +906,9 @@ fn answer(
     });
     drop(log);
 
+    if let Some(delay) = config.connection_delay.filter(|_| first_on_connection) {
+        thread::sleep(delay);
+    }
     if let Some(delay) = config.first_byte_delay {
         if request.method == "GET" && request.header("range").is_some() {
             thread::sleep(delay);
@@ -1510,6 +1519,29 @@ mod tests {
             (answer.status, answer.body),
             (206, pattern(1, 1000)[10..20].to_vec())
         );
+    }
+
+    #[test]
+    fn only_the_first_request_on_a_connection_waits_for_the_connection_delay() {
+        let delay = Duration::from_millis(400);
+        let server = Server::start(Config {
+            connection_delay: Some(delay),
+            ..config(1000)
+        });
+        let mut connection = connect(&server);
+        let began = Instant::now();
+        assert_eq!(request(&mut connection, "HEAD", "/", &[]).status, 200);
+        assert!(began.elapsed() >= delay);
+
+        let began = Instant::now();
+        let ranged = request(&mut connection, "GET", "/", &["Range: bytes=10-19"]);
+        assert_eq!(ranged.body, pattern(1, 1000)[10..20]);
+        assert!(began.elapsed() < delay);
+
+        let began = Instant::now();
+        let fresh = request(&mut connect(&server), "GET", "/", &["Range: bytes=10-19"]);
+        assert_eq!(fresh.body, pattern(1, 1000)[10..20]);
+        assert!(began.elapsed() >= delay);
     }
 
     #[test]
