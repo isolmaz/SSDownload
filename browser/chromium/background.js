@@ -1265,7 +1265,10 @@ async function contextAdd(tabId, target, kind, pageUrl, label, frameId) {
     if (pageHtml) request.page_html = pageHtml;
   }
   if (session.session_cookies?.length) request.session_cookies = session.session_cookies;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([tabId, kind, target, request.filename])));
+  // The cookies sent are part of the identity: a link added again once the site's cookies are allowed, or have changed,
+  // is another request, not a repeat. Only the digest of the key is kept.
+  const jar = (request.session_cookies || []).map(cookie => JSON.stringify([cookie.name, cookie.domain, cookie.path, cookie.partition_key, cookie.value])).sort();
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([tabId, kind, target, request.filename, jar])));
   const key = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
   let ticket = tickets.get(key);
   if (ticket && ticket.tabId === undefined) ticket.tabId = tabId;

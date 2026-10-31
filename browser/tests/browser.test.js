@@ -813,6 +813,36 @@ test("the switch clears discoveries and de-duplicates context submissions across
   assert.equal(restarted.storage.session.downloadTickets[0][1].submitted, true);
 });
 
+test("a link added again from the same tab once the site's cookies are allowed or changed is sent, a plain repeat is not", async () => {
+  const h = backgroundHarness();
+  const link = "https://files.example/one.pdf";
+  const adds = () => h.nativeRequests.filter(request => request?.action?.type === "add").map(request => request.action.request);
+  const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: link } });
+  const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "sid", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
+  await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: link, kind: "file" }] });
+  await addLink();
+  await h.waitFor(() => adds().length === 1);
+  assert.equal(adds()[0].session_cookies, undefined, "no consent yet, so no cookies");
+  await addLink();
+  await h.settle();
+  assert.equal(adds().length, 1, "a double add without any change is a duplicate");
+
+  await h.menu("ssdownload-session-grant");
+  jar("first");
+  await addLink();
+  await h.waitFor(() => adds().length === 2);
+  assert.deepEqual(plain(adds()[1].session_cookies.map(cookie => [cookie.name, cookie.value])), [["sid", "first"]]);
+  assert.notEqual(adds()[1].request_id, adds()[0].request_id, "the app receives it as a new request");
+  await addLink();
+  await h.settle();
+  assert.equal(adds().length, 2, "the same cookies again is a duplicate");
+
+  jar("second");
+  await addLink();
+  await h.waitFor(() => adds().length === 3);
+  assert.deepEqual(plain(adds()[2].session_cookies.map(cookie => cookie.value)), ["second"], "a signed-in-again session is another request");
+});
+
 test("native host failures are converted into an actionable browser message", async () => {
   const h = backgroundHarness({ native: async () => { throw new Error("Native messaging host not found"); } });
   await h.menu("ssdownload-app");
