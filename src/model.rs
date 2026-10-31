@@ -772,7 +772,8 @@ impl Settings {
 }
 
 /// The guards that hold the queue right now: a guard counts only while its setting is on and
-/// Windows reports its condition. While any holds, no download starts and running ones wait.
+/// Windows reports its condition. While any holds, no download starts and running ones wait,
+/// except a live recording, which cannot continue once it is stopped.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hold {
     pub metered: bool,
@@ -782,6 +783,25 @@ pub struct Hold {
 impl Hold {
     pub fn is_active(self) -> bool {
         self.metered || self.battery_saver
+    }
+
+    /// Why downloads are waiting, for the status line and the phase of a held job.
+    pub fn notice(self) -> Option<&'static str> {
+        match (self.metered, self.battery_saver) {
+            (false, false) => None,
+            (true, false) => Some(crate::i18n::ui(
+                "Ölçülü bağlantı: indirmeler bekletiliyor",
+                "Metered connection: downloads are on hold",
+            )),
+            (false, true) => Some(crate::i18n::ui(
+                "Pil tasarrufu açık: indirmeler bekletiliyor",
+                "Battery saver is on: downloads are on hold",
+            )),
+            (true, true) => Some(crate::i18n::ui(
+                "Ölçülü bağlantı ve pil tasarrufu: indirmeler bekletiliyor",
+                "Metered connection and Battery saver: downloads are on hold",
+            )),
+        }
     }
 }
 
@@ -1048,6 +1068,26 @@ mod tests {
     use super::TransferControl;
     use super::UiMode;
     use std::thread;
+
+    #[test]
+    fn each_hold_has_its_own_reason_and_none_without_a_hold() {
+        let notice = |metered, battery_saver| {
+            super::Hold {
+                metered,
+                battery_saver,
+            }
+            .notice()
+        };
+        assert_eq!(notice(false, false), None);
+        let reasons = [notice(true, false), notice(false, true), notice(true, true)];
+        for (index, reason) in reasons.iter().enumerate() {
+            assert!(reason.is_some_and(|text| !text.is_empty()));
+            assert!(
+                !reasons[index + 1..].contains(reason),
+                "two holds share one text"
+            );
+        }
+    }
 
     #[test]
     fn default_settings_use_eight_connections_per_file_and_per_host() {

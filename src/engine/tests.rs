@@ -1,6 +1,17 @@
 use super::*;
 use std::fs;
 
+static LIVE_JOBS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Stands in for the media analysis, which marks a live source on the job's control.
+fn mark_as_live_recording(id: &str) {
+    LIVE_JOBS.lock().unwrap().insert(id.to_owned());
+}
+
+pub(super) fn pretends_live(id: &str) -> bool {
+    LIVE_JOBS.lock().unwrap().contains(id)
+}
+
 #[test]
 fn daily_window_handles_overnight_boundaries() {
     assert_eq!(parse_minute("23:30"), Some(1410));
@@ -2767,6 +2778,10 @@ mod holds {
             thread::sleep(SETTLE);
             assert_eq!(job_state(&engine, &id), JobState::Queued);
             assert_eq!(requests(&server, "/held.bin"), started);
+            assert_eq!(
+                job(&engine, &id).phase,
+                engine.snapshot().hold.notice().unwrap()
+            );
 
             switch(&sensors, battery_saver, false);
             wait_until("the job to run again", || {
@@ -2889,6 +2904,50 @@ mod holds {
     }
 
     #[test]
+    fn a_running_live_recording_keeps_running_through_a_hold_and_a_live_job_not_yet_started_waits()
+    {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![
+                ("/live.bin".into(), vec![6; 4096], true),
+                ("/other.bin".into(), vec![7; 4096], true),
+            ]);
+            let sensors = FakeSensors::default();
+            switch(&sensors, battery_saver, true);
+            let engine = open(&root, &sensors);
+            wait_for_hold(&engine, true);
+            let live = add(&engine, &server, "/live.bin", &root.join("out"));
+            mark_as_live_recording(&live);
+            let other = add(&engine, &server, "/other.bin", &root.join("out"));
+
+            thread::sleep(SETTLE);
+            assert!(server.hits.lock().unwrap().is_empty());
+            assert_eq!(job_state(&engine, &live), JobState::Queued);
+
+            switch(&sensors, battery_saver, false);
+            wait_until("both downloads to start", || {
+                job_state(&engine, &live).is_active() && job_state(&engine, &other).is_active()
+            });
+            switch(&sensors, battery_saver, true);
+            wait_until("the hold to send the other job back", || {
+                job_state(&engine, &other) == JobState::Queued
+            });
+            let started = requests(&server, "/live.bin");
+            thread::sleep(SETTLE);
+            assert!(job_state(&engine, &live).is_active());
+            assert_eq!(requests(&server, "/live.bin"), started);
+            assert_eq!(job_state(&engine, &other), JobState::Queued);
+
+            server.release();
+            wait_until("the live recording to finish", || {
+                job_state(&engine, &live) == JobState::Completed
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn the_hold_applies_at_startup_before_any_queued_job_starts() {
         let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
         let server = FileServer::start(vec![("/waiting.bin".into(), vec![3; 4096], true)]);
@@ -2965,7 +3024,7 @@ mod holds {
     }
 
     #[test]
-    fn the_guards_are_saved_and_a_profile_from_before_them_loads_with_both_off() {
+    fn both_guards_persist_and_a_profile_saved_without_the_battery_saver_one_loads_with_it_off() {
         let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
         let paths = AppPaths::new(root.clone()).unwrap();
         let engine = Engine::open(paths.clone()).unwrap();

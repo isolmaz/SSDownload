@@ -3366,7 +3366,10 @@ impl Actor {
                             job.state = state;
                             job.speed = 0;
                             job.eta = None;
-                            job.phase = state.label().into();
+                            job.phase = match self.hold.notice() {
+                                Some(notice) if state == JobState::Queued => notice.into(),
+                                _ => state.label().into(),
+                            };
                             job.updated_at = local.timestamp();
                             if let Err(error) = self.store.save_job(job) {
                                 self.persistence_error = Some(queue_save_stopped(&error));
@@ -3982,6 +3985,10 @@ impl Actor {
         let generation = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1).max(1);
         let control = TransferControl::default();
+        #[cfg(test)]
+        if tests::pretends_live(id) {
+            control.mark_live();
+        }
         job.state = JobState::Connecting;
         job.phase = crate::i18n::ui("Bağlanıyor", "Connecting").into();
         crate::logging::record_job(
@@ -4109,7 +4116,12 @@ impl Actor {
                 .find(|queue| queue.id == queue_id)
                 .map(|queue| queue.concurrency.max(1) as usize)
                 .unwrap_or(1);
-            let allowed = !self.hold.is_active()
+            // A stopped live recording cannot continue, so a hold lets a running one finish.
+            let live = self
+                .active
+                .get(&id)
+                .is_some_and(|active| active.control.is_live());
+            let allowed = (!self.hold.is_active() || live)
                 && daily_schedule_open_at(&self.settings, local)
                 && queue_accepts_work(&self.settings, queue_id, local)
                 && kept < self.settings.max_active.max(1) as usize
@@ -4127,7 +4139,12 @@ impl Actor {
             return;
         }
         let mut changed = Vec::new();
+        let hold_notice = self.hold.notice();
         for id in stop {
+            let live = self
+                .active
+                .get(&id)
+                .is_some_and(|active| active.control.is_live());
             if let Some(active) = self.active.get_mut(&id) {
                 active.control.pause();
                 active.desired = DesiredStop::Resume;
@@ -4137,10 +4154,11 @@ impl Actor {
                 job.state = state;
                 job.speed = 0;
                 job.eta = None;
-                job.phase = if state == JobState::Scheduled {
-                    state.label().into()
-                } else {
-                    crate::i18n::ui("Sınır nedeniyle sırada", "Queued because of a limit").into()
+                job.phase = match hold_notice {
+                    _ if state == JobState::Scheduled => state.label().into(),
+                    Some(notice) if !live => notice.into(),
+                    _ => crate::i18n::ui("Sınır nedeniyle sırada", "Queued because of a limit")
+                        .into(),
                 };
                 job.updated_at = now;
                 changed.push(job.clone());
