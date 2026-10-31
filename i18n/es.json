@@ -211,7 +211,7 @@
   "Create a diagnostic package": "Crear un paquete de diagnóstico",
   "Create a diagnostic package and report this error": "Crear un paquete de diagnóstico e informar de este error",
   "Credentials in HTTP addresses are not supported; use the authorization header": "No se admiten credenciales en direcciones HTTP; hay que usar el encabezado de autorización",
-  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Nueva descarga\nCtrl+Shift+N  Descargar vídeo\nCtrl+V  Añadir URL desde el portapapeles\nCtrl+A  Seleccionar todo\nDelete  Quitar lo seleccionado\nF5  Actualizar\nEnter  Abrir archivo\nSpace  Pausar / reanudar\nAlt+Home / Alt+End  Mover al principio / al final\nCtrl+Shift+D  Añadir el enlace del portapapeles desde cualquier lugar",
+  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Nueva descarga\nCtrl+Shift+N  Descargar vídeo\nCtrl+V  Añadir URL desde el portapapeles\nCtrl+F  Buscar\nCtrl+A  Seleccionar todo\nDelete  Quitar lo seleccionado\nF5  Actualizar\nEnter  Abrir archivo\nSpace  Pausar / reanudar\nAlt+Home / Alt+End  Mover al principio / al final\nCtrl+Shift+D  Añadir el enlace del portapapeles desde cualquier lugar",
   "Custom...": "Personalizado...",
   "DRM-protected content is not supported.": "El contenido protegido por DRM no es compatible.",
   "Dark window title and control theme": "Tema oscuro para la barra de título y los controles",
@@ -1697,5 +1697,6 @@
   "No error was recorded for this download.": "No se registró ningún error para esta descarga.",
   "Select a single download.": "Seleccione una sola descarga.",
   "Name from the server": "Nombre del servidor",
-  "Right away when empty": "De inmediato si está vacío"
+  "Right away when empty": "De inmediato si está vacío",
+  "Search": "Buscar"
 }

@@ -211,7 +211,7 @@
   "Create a diagnostic package": "Créer une archive de diagnostic",
   "Create a diagnostic package and report this error": "Créez une archive de diagnostic et signalez cette erreur",
   "Credentials in HTTP addresses are not supported; use the authorization header": "Les identifiants dans les adresses HTTP ne sont pas pris en charge ; utilisez l'en-tête d'autorisation",
-  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Nouveau téléchargement\nCtrl+Shift+N  Télécharger une vidéo\nCtrl+V  Ajouter des URL depuis le presse-papiers\nCtrl+A  Tout sélectionner\nDelete  Supprimer la sélection\nF5  Actualiser\nEnter  Ouvrir le fichier\nSpace  Mettre en pause / reprendre\nAlt+Home / Alt+End  Déplacer en haut / en bas\nCtrl+Shift+D  Ajouter le lien du presse-papiers depuis n'importe où",
+  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Nouveau téléchargement\nCtrl+Shift+N  Télécharger une vidéo\nCtrl+V  Ajouter des URL depuis le presse-papiers\nCtrl+F  Rechercher\nCtrl+A  Tout sélectionner\nDelete  Supprimer la sélection\nF5  Actualiser\nEnter  Ouvrir le fichier\nSpace  Mettre en pause / reprendre\nAlt+Home / Alt+End  Déplacer en haut / en bas\nCtrl+Shift+D  Ajouter le lien du presse-papiers depuis n'importe où",
   "Custom...": "Personnalisé...",
   "DRM-protected content is not supported.": "Les contenus protégés par DRM ne sont pas pris en charge.",
   "Dark window title and control theme": "Thème sombre de la barre de titre et des commandes",
@@ -1697,5 +1697,6 @@
   "No error was recorded for this download.": "Aucune erreur n'a été enregistrée pour ce téléchargement.",
   "Select a single download.": "Sélectionnez un seul téléchargement.",
   "Name from the server": "Nom fourni par le serveur",
-  "Right away when empty": "Immédiatement si vide"
+  "Right away when empty": "Immédiatement si vide",
+  "Search": "Rechercher"
 }

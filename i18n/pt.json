@@ -211,7 +211,7 @@
   "Create a diagnostic package": "Criar um pacote de diagnóstico",
   "Create a diagnostic package and report this error": "Crie um pacote de diagnóstico e informe este erro",
   "Credentials in HTTP addresses are not supported; use the authorization header": "Credenciais em endereços HTTP não são suportadas; use o cabeçalho de autorização",
-  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Novo download\nCtrl+Shift+N  Download de vídeo\nCtrl+V  Adicionar URLs da área de transferência\nCtrl+A  Selecionar tudo\nDelete  Remover selecionados\nF5  Atualizar\nEnter  Abrir arquivo\nSpace  Pausar / retomar\nAlt+Home / Alt+End  Mover para o início / para o fim\nCtrl+Shift+D  Adicionar o link da área de transferência de qualquer lugar",
+  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Novo download\nCtrl+Shift+N  Download de vídeo\nCtrl+V  Adicionar URLs da área de transferência\nCtrl+F  Pesquisar\nCtrl+A  Selecionar tudo\nDelete  Remover selecionados\nF5  Atualizar\nEnter  Abrir arquivo\nSpace  Pausar / retomar\nAlt+Home / Alt+End  Mover para o início / para o fim\nCtrl+Shift+D  Adicionar o link da área de transferência de qualquer lugar",
   "Custom...": "Personalizado...",
   "DRM-protected content is not supported.": "Conteúdo protegido por DRM não é suportado.",
   "Dark window title and control theme": "Tema escuro da janela e dos controles",
@@ -1697,5 +1697,6 @@
   "No error was recorded for this download.": "Nenhum erro foi registrado para este download.",
   "Select a single download.": "Selecione um único download.",
   "Name from the server": "Nome do servidor",
-  "Right away when empty": "Imediatamente se vazio"
+  "Right away when empty": "Imediatamente se vazio",
+  "Search": "Pesquisar"
 }

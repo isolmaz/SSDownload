@@ -211,7 +211,7 @@
   "Create a diagnostic package": "إنشاء حزمة تشخيص",
   "Create a diagnostic package and report this error": "أنشئ حزمة تشخيص وأبلغ عن هذا الخطأ",
   "Credentials in HTTP addresses are not supported; use the authorization header": "بيانات الاعتماد في عناوين HTTP غير مدعومة؛ استخدم ترويسة Authorization",
-  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  تنزيل جديد\nCtrl+Shift+N  تنزيل فيديو\nCtrl+V  إضافة عناوين URL من الحافظة\nCtrl+A  تحديد الكل\nDelete  إزالة المحدد\nF5  تحديث\nEnter  فتح الملف\nمسافة  إيقاف مؤقت / استئناف\nAlt+Home / Alt+End  نقل إلى الأعلى / الأسفل\nCtrl+Shift+D  إضافة رابط الحافظة من أي مكان",
+  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  تنزيل جديد\nCtrl+Shift+N  تنزيل فيديو\nCtrl+V  إضافة عناوين URL من الحافظة\nCtrl+F  بحث\nCtrl+A  تحديد الكل\nDelete  إزالة المحدد\nF5  تحديث\nEnter  فتح الملف\nمسافة  إيقاف مؤقت / استئناف\nAlt+Home / Alt+End  نقل إلى الأعلى / الأسفل\nCtrl+Shift+D  إضافة رابط الحافظة من أي مكان",
   "Custom...": "مخصّص...",
   "DRM-protected content is not supported.": "المحتوى المحمي بتقنية DRM غير مدعوم.",
   "Dark window title and control theme": "المظهر الداكن لعنوان النافذة وعناصر التحكم",
@@ -1697,5 +1697,6 @@
   "No error was recorded for this download.": "لم يُسجَّل أي خطأ لهذا التنزيل.",
   "Select a single download.": "اختر تنزيلاً واحداً.",
   "Name from the server": "الاسم من الخادم",
-  "Right away when empty": "فورًا إذا تُرك فارغًا"
+  "Right away when empty": "فورًا إذا تُرك فارغًا",
+  "Search": "بحث"
 }

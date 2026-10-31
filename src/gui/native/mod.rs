@@ -337,6 +337,7 @@ const ID_QUEUE_BASE: i32 = 1500;
 const WM_SHOW_TOUR: u32 = WM_APP + 37;
 const HOTKEY_ADD: i32 = 1;
 const NIN_BALLOONUSERCLICK_: u32 = 0x0405;
+pub const ID_SEARCH: i32 = 1010;
 pub const ID_FILTER: i32 = 1011;
 pub const ID_JOB_LIST: i32 = 1020;
 pub const ID_DETAILS: i32 = 1021;
@@ -508,6 +509,9 @@ struct MainUi {
     list: HWND,
     /// The tab page: the text of the selected tab.
     details: HWND,
+    search: HWND,
+    /// The search box's frame, which the window paints around the edit.
+    search_frame: std::cell::Cell<RECT>,
     filter: HWND,
     status: HWND,
     /// The tabs over the page: details, log and error of the selected download.
@@ -1161,6 +1165,13 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             icon: null_mut(),
             list: null_mut(),
             details: null_mut(),
+            search: null_mut(),
+            search_frame: std::cell::Cell::new(RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            }),
             filter: null_mut(),
             status: null_mut(),
             tabs: null_mut(),
@@ -1333,6 +1344,11 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
                 fVirt: FVIRTKEY | FCONTROL,
                 key: b'V' as u16,
                 cmd: 1403,
+            },
+            ACCEL {
+                fVirt: FVIRTKEY | FCONTROL,
+                key: b'F' as u16,
+                cmd: 1404,
             },
             ACCEL {
                 fVirt: FVIRTKEY | FCONTROL,
@@ -2409,7 +2425,7 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     };
     SendMessageW(ui.hwnd, WM_SETICON, ICON_BIG as usize, ui.icon as isize);
     SendMessageW(ui.hwnd, WM_SETICON, ICON_SMALL as usize, ui.icon as isize);
-    // Creation order is the Tab order: buttons, filter, list, tabs, page.
+    // Creation order is the Tab order: buttons, search, filter, list, tabs, page.
     for (id, tr, en) in MAIN_BUTTONS {
         let button = control(
             ui.hwnd,
@@ -2422,6 +2438,16 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
         subclass(button, button_proc);
     }
     create_button_tooltip(ui);
+    ui.search = control(
+        ui.hwnd,
+        "EDIT",
+        "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+        0,
+        ID_SEARCH,
+    );
+    let cue = wide(crate::i18n::ui("Ara", "Search"));
+    SendMessageW(ui.search, EM_SETCUEBANNER, 0, cue.as_ptr() as LPARAM);
     ui.filter = control(
         ui.hwnd,
         "COMBOBOX",
@@ -2947,7 +2973,7 @@ unsafe fn update_main_dpi(ui: &mut MainUi) {
     DrawMenuBar(ui.hwnd);
 }
 
-/// The command row on top (buttons left, filter right), the list card, the
+/// The command row on top (buttons left, search and filter right), the list card, the
 /// split, the tabs, the tab page card and the status line, on a 4 epx grid:
 /// 16 epx window margins and space around the command row, 8 epx between
 /// controls and at the split.
@@ -2963,28 +2989,35 @@ unsafe fn layout_main(ui: &MainUi) {
 
     let filter_w = s(160);
     let filter_x = w - m - filter_w;
-    // A theme change re-measures the combo box from its font, so its selection
-    // field is brought back to the button row's height here.
-    let field_h = (row - s(6)) as isize;
-    if SendMessageW(ui.filter, CB_GETITEMHEIGHT, usize::MAX, 0) != field_h {
-        SendMessageW(ui.filter, CB_SETITEMHEIGHT, usize::MAX, field_h);
+    // The closed combo box is its selection field plus a frame whose size the
+    // theme decides, so the field is sized until the box is the row's height.
+    // Moving or sizing the box measures the field from the font again, so the
+    // field comes after the move.
+    MoveWindow(ui.filter, filter_x, top, filter_w, s(240), 1);
+    for _ in 0..2 {
+        let mut combo: RECT = zeroed();
+        GetWindowRect(ui.filter, &mut combo);
+        let field = SendMessageW(ui.filter, CB_GETITEMHEIGHT, usize::MAX, 0);
+        let difference = (row - (combo.bottom - combo.top)) as isize;
+        if difference == 0 || field + difference < 1 {
+            break;
+        }
+        SendMessageW(ui.filter, CB_SETITEMHEIGHT, usize::MAX, field + difference);
     }
-    let mut combo: RECT = zeroed();
-    GetWindowRect(ui.filter, &mut combo);
-    let combo_h = (combo.bottom - combo.top).max(1);
-    MoveWindow(
-        ui.filter,
-        filter_x,
-        top + (row - combo_h) / 2,
-        filter_w,
-        s(240),
-        1,
-    );
-    // The labels go when the buttons would reach the filter; the tooltip then
-    // carries the command names.
+    // The search box gives way first: it shrinks to SEARCH_MIN before the
+    // buttons lose their labels, and the tooltip then carries the command names.
     let room = filter_x - gap - m;
-    let fits = |widths: [i32; 5]| widths.iter().sum::<i32>() + gap * 4 <= room;
-    let labels = fits(button_widths(ui, true));
+    let row_width = |labels: bool| button_widths(ui, labels).iter().sum::<i32>() + gap * 4;
+    let labels = row_width(true) + gap + s(SEARCH_MIN) <= room;
+    let search_w = (room - row_width(labels) - gap).clamp(s(SEARCH_MIN), s(SEARCH_MAX));
+    let frame = RECT {
+        left: filter_x - gap - search_w,
+        top,
+        right: filter_x - gap,
+        bottom: top + row,
+    };
+    ui.search_frame.set(frame);
+    place_search(ui.search, frame, ui.dpi);
     if ui.labels_hidden.replace(!labels) == labels {
         for button in MAIN_BUTTONS {
             InvalidateRect(GetDlgItem(ui.hwnd, button.0), null(), 0);
@@ -3318,6 +3351,17 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         ID_BROWSER_SETUP => dispatch(ui, Action::BrowserSetup),
         ID_DIAGNOSTICS => dispatch(ui, Action::ExportDiagnostics),
         ID_EXIT => exit_app(ui),
+        ID_SEARCH if notify_code as u32 == EN_CHANGE => refresh(ui, true),
+        ID_SEARCH if notify_code as u32 == EN_SETFOCUS || notify_code as u32 == EN_KILLFOCUS => {
+            // The frame's bottom line shows the focus.
+            InvalidateRect(ui.hwnd, &ui.search_frame.get(), 1);
+        }
+        // Escape in the search box clears it; the dialog manager turns the key
+        // into IDCANCEL.
+        IDCANCEL if GetFocus() == ui.search => {
+            set_text(ui.search, "");
+            refresh(ui, true);
+        }
         ID_FILTER if notify_code as u32 == CBN_SELCHANGE => {
             ui.filter_value = FILTER_VALUES
                 .get(combo_index(ui.filter).max(0) as usize)
@@ -3329,8 +3373,8 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
             message(
                 ui.hwnd,
                 crate::i18n::ui(
-                    "Ctrl+N  Yeni indirme\nCtrl+Shift+N  Video indir\nCtrl+V  Panodaki URL'leri ekle\nCtrl+A  Tümünü seç\nDelete  Seçilenleri kaldır\nF5  Yenile\nEnter  Dosyayı aç\nBoşluk  Duraklat / sürdür\nAlt+Home / Alt+End  En üste / en alta taşı\nCtrl+Shift+D  Panodaki bağlantıyı her yerden ekle",
-                    "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere",
+                    "Ctrl+N  Yeni indirme\nCtrl+Shift+N  Video indir\nCtrl+V  Panodaki URL'leri ekle\nCtrl+F  Arama\nCtrl+A  Tümünü seç\nDelete  Seçilenleri kaldır\nF5  Yenile\nEnter  Dosyayı aç\nBoşluk  Duraklat / sürdür\nAlt+Home / Alt+End  En üste / en alta taşı\nCtrl+Shift+D  Panodaki bağlantıyı her yerden ekle",
+                    "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere",
                 ),
                 crate::i18n::ui("Klavye kısayolları", "Keyboard shortcuts"),
                 MB_OK | MB_ICONINFORMATION,
@@ -3338,6 +3382,9 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         }
         1402 => show_about(ui),
         ID_SHOW_TOUR => show_tour(ui, true),
+        1403 if GetFocus() == ui.search => {
+            SendMessageW(ui.search, WM_PASTE, 0, 0);
+        }
         1403 => {
             let urls = clipboard_urls();
             if urls.is_empty() {
@@ -3353,6 +3400,10 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
             } else {
                 show_add_dialog(ui.hwnd, ui.app.clone(), urls.join("\r\n"), false);
             }
+        }
+        1404 => {
+            SetFocus(ui.search);
+            SendMessageW(ui.search, EM_SETSEL, 0, -1);
         }
         1405 => refresh(ui, true),
         ID_TRAY_SHOW => show_main(ui),
@@ -4493,11 +4544,18 @@ fn matches_filter(job: &Job, filter: Filter) -> bool {
     }
 }
 unsafe fn update_rows(ui: &mut MainUi, force: bool) {
+    let query = search_key(text(ui.search).trim());
     let mut jobs: Vec<&Job> = ui
         .snapshot
         .jobs
         .iter()
-        .filter(|j| matches_filter(j, ui.filter_value))
+        .filter(|j| {
+            matches_filter(j, ui.filter_value)
+                && (query.is_empty()
+                    || search_key(&j.name).contains(&query)
+                    || search_key(&j.request.url).contains(&query)
+                    || search_key(&j.path.to_string_lossy()).contains(&query))
+        })
         .collect();
     // A stable sort: rows that compare equal keep their queue order.
     if let Some((column, ascending)) = ui.sort {
@@ -4592,7 +4650,7 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
                 SendMessageW(ui.list, LVM_SETITEMSTATE, pos, &item as *const _ as isize);
             }
         }
-        // A new filter starts at the top; only a change made by the
+        // A new search or filter starts at the top; only a change made by the
         // engine keeps the user's place.
         if !force && top_row > 0 && !ui.visible_ids.is_empty() {
             let mut first = RECT {
@@ -4630,6 +4688,15 @@ unsafe fn set_list_cell(list: HWND, row: i32, col: i32, value: &str) {
     );
 }
 
+fn search_key(value: &str) -> String {
+    // Dotted and dotless i fold together: a file name written "IMG_01" or
+    // "Image" must still match a query typed with the plain letter, and a
+    // Turkish "ışık" must still match "IŞIK".
+    value
+        .replace(['İ', 'I'], "i")
+        .to_lowercase()
+        .replace('ı', "i")
+}
 fn source_refresh_available(job: &Job) -> bool {
     let has_page = job
         .request
@@ -4878,7 +4945,7 @@ unsafe fn set_details(ui: &MainUi, value: &str) {
 /// never hijacks a selection there.
 unsafe fn select_all_jobs(ui: &mut MainUi) {
     let focus = GetFocus();
-    if focus == ui.details {
+    if focus == ui.search || focus == ui.details {
         SendMessageW(focus, EM_SETSEL, 0, -1);
         return;
     }
@@ -8775,6 +8842,19 @@ mod tests {
         assert_eq!(visible_columns(&[]), [0, 1, 2, 3, 4, 5]);
         let hidden = ["name".to_string(), "speed".into(), "unknown".into()];
         assert_eq!(visible_columns(&hidden), [0, 1, 2, 4, 5]);
+    }
+
+    #[test]
+    fn search_folds_dotted_and_dotless_i_together() {
+        let key = super::search_key;
+        // A capital I of an English file name is found by the plain letter.
+        assert!(key("IMG_0001.JPG").contains(&key("img")));
+        assert!(key("Installer.exe").contains(&key("install")));
+        // Turkish capitals and lower-case forms still find each other.
+        assert!(key("IŞIK.txt").contains(&key("ışık")));
+        assert!(key("İstanbul.pdf").contains(&key("istanbul")));
+        assert!(key("istanbul.pdf").contains(&key("İSTANBUL")));
+        assert!(!key("Notes.txt").contains(&key("video")));
     }
 
     #[test]

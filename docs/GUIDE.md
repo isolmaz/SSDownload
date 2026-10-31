@@ -70,7 +70,9 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 
 The progress column shows a thin bar under the percentage that fills from the left as a job advances: in the Windows accent colour while it runs, grey while it waits, yellow while it is paused, green when it completed and red when it failed or was cancelled (those two fill the whole bar). While a downloaded job is processed (merging, conversion, checks), that work has no size to fill: its bar in the list, the status view and the mini panel shows a moving block instead of a full bar, and while only processing jobs run, the taskbar button shows a moving bar and the tray tooltip no percentage.
 
-Other shortcuts: Ctrl+V adds clipboard links, F5 refreshes, Alt+Home / Alt+End move the selection to the top or bottom, and **Ctrl+Shift+D adds the clipboard link from anywhere** (Settings → Behaviour). Double-clicking a completed row opens the file or its folder. Removing several jobs asks once: **Yes** also deletes the files, **No** keeps them.
+The search box next to the filter keeps only the downloads whose name, address or location contains what you type; Ctrl+F moves to it and Esc clears it.
+
+Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt+Home / Alt+End move the selection to the top or bottom, and **Ctrl+Shift+D adds the clipboard link from anywhere** (Settings → Behaviour). Double-clicking a completed row opens the file or its folder. Removing several jobs asks once: **Yes** also deletes the files, **No** keeps them.
 
 Under the list, the **Details**, **Job log** and **Error details** tabs show the selected download's details, its own log (the newest 400 lines) and the error it recorded. Drag the space between the list and the tabs to give either more room.
 

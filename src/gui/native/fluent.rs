@@ -533,17 +533,98 @@ pub(super) unsafe fn paint_main_surfaces(ui: &MainUi, dc: HDC) {
     ] {
         round_rect(dc, &card, radius, palette.card, Some(palette.stroke));
     }
+    let frame = ui.search_frame.get();
+    if frame.right > frame.left {
+        paint_input_frame(dc, &frame, ui.dpi, &palette, GetFocus() == ui.search);
+        if !ui.icon_font.is_null() {
+            // The query glyph at the frame's right end, as in a WinUI AutoSuggestBox.
+            let mut glyph = RECT {
+                left: frame.right - scale(SEARCH_GLYPH, ui.dpi),
+                ..frame
+            };
+            let previous = SelectObject(dc, ui.icon_font as HGDIOBJ);
+            SetBkMode(dc, TRANSPARENT as i32);
+            SetTextColor(dc, palette.secondary);
+            DrawTextW(
+                dc,
+                &0xe721u16,
+                1,
+                &mut glyph,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+            SelectObject(dc, previous);
+        }
+    }
 }
 
-/// Text and background of the tab page text.
+/// The search box: 140 to 240 epx wide, the right end kept for the query glyph.
+pub(super) const SEARCH_MIN: i32 = 140;
+pub(super) const SEARCH_MAX: i32 = 240;
+const SEARCH_GLYPH: i32 = 32;
+
+/// Puts the search edit inside its frame, centred on the frame's height and
+/// clear of the glyph.
+pub(super) unsafe fn place_search(edit: HWND, frame: RECT, dpi: u32) {
+    let font = SendMessageW(edit, WM_GETFONT, 0, 0) as HFONT;
+    let height = line_height(edit, font).max(1);
+    let left = frame.left + scale(INPUT_PAD_LEFT, dpi);
+    MoveWindow(
+        edit,
+        left,
+        (frame.top + frame.bottom - height) / 2,
+        frame.right - scale(SEARCH_GLYPH, dpi) - left,
+        height,
+        1,
+    );
+}
+
+/// A WinUI text box frame: control fill, stroke, and a stronger bottom line
+/// (TextControlElevationBorder) that turns accent and 2 epx with the focus.
+pub(super) unsafe fn paint_input_frame(
+    dc: HDC,
+    frame: &RECT,
+    dpi: u32,
+    palette: &MainPalette,
+    focused: bool,
+) {
+    round_rect(
+        dc,
+        frame,
+        scale(CORNER, dpi),
+        palette.control,
+        Some(palette.control_stroke),
+    );
+    let line = if focused { scale(2, dpi) } else { 1 };
+    let inset = scale(CORNER, dpi) / 2;
+    fill_colour(
+        dc,
+        &RECT {
+            left: frame.left + inset,
+            top: frame.bottom - line,
+            right: frame.right - inset,
+            bottom: frame.bottom,
+        },
+        if focused {
+            palette.accent
+        } else {
+            palette.strong_stroke
+        },
+    );
+}
+
+/// Text and background of the tab page text and of the search box.
 pub(super) unsafe fn main_control_colour(ui: &MainUi, dc: HDC, control: HWND) -> Option<LRESULT> {
-    if control != ui.details {
-        return None;
-    }
     let palette = main_palette(ui.hwnd);
+    let fill = if control == ui.details {
+        palette.card
+    } else if control == ui.search {
+        palette.control
+    } else {
+        return None;
+    };
     SetTextColor(dc, palette.text);
-    SetBkColor(dc, palette.card);
-    SetDCBrushColor(dc, palette.card);
+    SetBkColor(dc, fill);
+    SetDCBrushColor(dc, fill);
     Some(GetStockObject(DC_BRUSH) as LRESULT)
 }
 
@@ -1170,32 +1251,7 @@ unsafe fn paint_add_surfaces(dlg: &DialogUi, f: &AddFields, dc: HDC, palette: &M
             continue;
         }
         let frame = input_frame(dlg.hwnd, edit, dlg.dpi);
-        round_rect(
-            dc,
-            &frame,
-            scale(CORNER, dlg.dpi),
-            palette.control,
-            Some(palette.control_stroke),
-        );
-        // TextControlElevationBorder: a stronger bottom line, accent and
-        // 2 epx while the field has the focus.
-        let focused = focus == edit;
-        let line = if focused { scale(2, dlg.dpi) } else { 1 };
-        let inset = scale(CORNER, dlg.dpi) / 2;
-        fill_colour(
-            dc,
-            &RECT {
-                left: frame.left + inset,
-                top: frame.bottom - line,
-                right: frame.right - inset,
-                bottom: frame.bottom,
-            },
-            if focused {
-                palette.accent
-            } else {
-                palette.strong_stroke
-            },
-        );
+        paint_input_frame(dc, &frame, dlg.dpi, palette, focus == edit);
     }
 }
 
@@ -1239,6 +1295,9 @@ pub(super) unsafe fn refresh_main_surfaces(ui: &mut MainUi) {
     };
     SendMessageW(ui.list, LVM_SETTEXTBKCOLOR, 0, text_background);
     SendMessageW(ui.list, LVM_SETTEXTCOLOR, 0, palette.text as isize);
+    // The theme change re-measured the filter box from its font; the layout
+    // brings it back to the command row's height.
+    layout_main(ui);
     RedrawWindow(
         ui.hwnd,
         null(),
@@ -1258,7 +1317,7 @@ pub(super) unsafe fn apply_main_metrics(ui: &mut MainUi) {
     for button in MAIN_BUTTONS {
         apply_font(GetDlgItem(ui.hwnd, button.0), font);
     }
-    for h in [ui.filter, ui.list, ui.tabs] {
+    for h in [ui.search, ui.filter, ui.list, ui.tabs] {
         apply_font(h, font);
     }
     apply_font(ui.details, details);
