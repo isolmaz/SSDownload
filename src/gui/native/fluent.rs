@@ -322,10 +322,15 @@ pub(super) const CAPTION_PX: i32 = 12;
 /// font would draw boxes, so without either the commands show text only.
 const ICON_FACES: [&str; 2] = ["Segoe Fluent Icons", "Segoe MDL2 Assets"];
 pub(super) unsafe fn icon_font(dpi: u32) -> HFONT {
+    icon_font_px(dpi, 16)
+}
+/// Glyphs are smoothed in grey: ClearType gives their thin strokes coloured
+/// fringes.
+pub(super) unsafe fn icon_font_px(dpi: u32, px: i32) -> HFONT {
     face_font(
-        -scale(16, dpi),
+        -scale(px, dpi),
         FW_NORMAL as i32,
-        CLEARTYPE_QUALITY,
+        ANTIALIASED_QUALITY,
         &ICON_FACES,
     )
     .unwrap_or(null_mut())
@@ -488,9 +493,19 @@ pub(super) const PAGE_PAD_X: i32 = 16;
 pub(super) const PAGE_PAD_Y: i32 = 12;
 /// ControlCornerRadius: buttons, cards and row backplates.
 pub(super) const CORNER: i32 = 4;
-/// The command row: top margin and the 32 epx height of a standard button.
-pub(super) const ROW_TOP: i32 = 8;
+/// The command row: the space above it, the 32 epx height of a standard
+/// button and the space between it and the list.
+pub(super) const ROW_TOP: i32 = 16;
 pub(super) const ROW_HEIGHT: i32 = 32;
+pub(super) const ROW_BELOW: i32 = 16;
+/// The split between the list card and the tab strip, which also drags it.
+pub(super) const SPLIT_GAP: i32 = 8;
+pub(super) const TABS_HEIGHT: i32 = 40;
+/// The least the tab page and the list keep when the split moves or the
+/// window shrinks: the list keeps its header and three rows, and the page
+/// gives way first.
+pub(super) const MIN_PAGE_HEIGHT: i32 = 64;
+pub(super) const MIN_LIST_HEIGHT: i32 = 136;
 /// Room the focus ring takes outside a button, on every side.
 pub(super) const FOCUS_MARGIN: i32 = 3;
 /// A button's horizontal padding and the gap between its icon and its label.
@@ -653,22 +668,73 @@ pub(super) unsafe fn button_widths(ui: &MainUi, labels: bool) -> [i32; 5] {
     widths
 }
 
-/// Draws one command button into its DRAWITEMSTRUCT: the WinUI standard
-/// button, or the accent button for the primary command, in its rest, hover,
-/// pressed, disabled and keyboard-focus states, with the icon and the label.
+/// A button's state for painting.
+#[derive(Clone, Copy)]
+pub(super) struct ButtonState {
+    /// The accent button: the window's or the dialog's primary action.
+    pub(super) primary: bool,
+    pub(super) disabled: bool,
+    pub(super) pressed: bool,
+    pub(super) hot: bool,
+    pub(super) focused: bool,
+}
+
+/// Draws one command button into its DRAWITEMSTRUCT with its icon, and the
+/// label unless the row hides labels.
 pub(super) unsafe fn draw_main_button(ui: &MainUi, item: &DRAWITEMSTRUCT) {
     let id = item.CtlID as i32;
     let Some(index) = MAIN_BUTTONS.iter().position(|(button, _, _)| *button == id) else {
         return;
     };
-    let palette = main_palette(ui.hwnd);
-    let contrast = high_contrast();
     let state = item.itemState;
     let disabled = state & ODS_DISABLED != 0;
-    let pressed = !disabled && state & ODS_SELECTED != 0;
-    let hot = !disabled && !GetPropW(item.hwndItem, hot_prop()).is_null();
-    let focused = state & ODS_FOCUS != 0 && state & ODS_NOFOCUSRECT == 0;
-    let primary = id == PRIMARY && !contrast;
+    let look = ButtonState {
+        primary: id == PRIMARY,
+        disabled,
+        pressed: !disabled && state & ODS_SELECTED != 0,
+        hot: !disabled && !GetPropW(item.hwndItem, hot_prop()).is_null(),
+        focused: state & ODS_FOCUS != 0 && state & ODS_NOFOCUSRECT == 0,
+    };
+    let label: Vec<u16> = super::text(item.hwndItem).encode_utf16().collect();
+    let icon = (!ui.icon_font.is_null()).then_some((ui.icon_font, COMMAND_GLYPHS[index]));
+    let show_label = icon.is_none() || id == PRIMARY || !ui.labels_hidden.get();
+    paint_button(
+        item.hDC,
+        item.rcItem,
+        ui.dpi,
+        &main_palette(ui.hwnd),
+        ui.font,
+        if show_label { &label } else { &[] },
+        icon,
+        look,
+    );
+}
+
+/// Paints a WinUI button into `rect` of `dc`: the standard button, or the
+/// accent button for a primary action, in its rest, hover, pressed, disabled
+/// and keyboard-focus states, with an optional icon before the label. The
+/// rectangle reaches FOCUS_MARGIN past the face on every side for the focus
+/// ring and is filled with the base colour around the face.
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn paint_button(
+    dc: HDC,
+    rect: RECT,
+    dpi: u32,
+    palette: &MainPalette,
+    font: HFONT,
+    label: &[u16],
+    icon: Option<(HFONT, u16)>,
+    look: ButtonState,
+) {
+    let contrast = high_contrast();
+    let ButtonState {
+        disabled,
+        pressed,
+        hot,
+        focused,
+        ..
+    } = look;
+    let primary = look.primary && !contrast;
     let (fill, text) = match (primary, disabled, pressed, hot) {
         (_, true, _, _) if primary => (over(0x37000000, palette.base), palette.on_accent),
         (_, true, _, _) => (palette.control_disabled, palette.disabled),
@@ -693,8 +759,8 @@ pub(super) unsafe fn draw_main_button(ui: &MainUi, item: &DRAWITEMSTRUCT) {
     } else {
         (palette.control_stroke, palette.control_stroke_bottom)
     };
-    let width = (item.rcItem.right - item.rcItem.left).max(1);
-    let height = (item.rcItem.bottom - item.rcItem.top).max(1);
+    let width = (rect.right - rect.left).max(1);
+    let height = (rect.bottom - rect.top).max(1);
     let surface = ButtonSurface {
         background: palette.base,
         fill,
@@ -704,17 +770,17 @@ pub(super) unsafe fn draw_main_button(ui: &MainUi, item: &DRAWITEMSTRUCT) {
         radius: if contrast {
             0.0
         } else {
-            scale(CORNER, ui.dpi) as f32
+            scale(CORNER, dpi) as f32
         },
         focus: focused.then_some((palette.focus_outer, palette.focus_inner)),
     };
     let pixels = paint_button_surface(
         width as usize,
         height as usize,
-        scale(FOCUS_MARGIN, ui.dpi) as f32,
+        scale(FOCUS_MARGIN, dpi) as f32,
         &surface,
     );
-    let memory = CreateCompatibleDC(item.hDC);
+    let memory = CreateCompatibleDC(dc);
     let mut info: BITMAPINFO = zeroed();
     info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
     info.bmiHeader.biWidth = width;
@@ -741,32 +807,26 @@ pub(super) unsafe fn draw_main_button(ui: &MainUi, item: &DRAWITEMSTRUCT) {
     let previous_bitmap = SelectObject(memory, bitmap as HGDIOBJ);
     SetBkMode(memory, TRANSPARENT as i32);
     SetTextColor(memory, text);
-    let label: Vec<u16> = super::text(item.hwndItem).encode_utf16().collect();
-    let previous_font = SelectObject(memory, ui.font as HGDIOBJ);
-    let icon = if ui.icon_font.is_null() {
-        0
-    } else {
-        scale(16, ui.dpi)
-    };
-    let show_label = icon == 0 || id == PRIMARY || !ui.labels_hidden.get();
+    let previous_font = SelectObject(memory, font as HGDIOBJ);
+    let icon_w = if icon.is_some() { scale(16, dpi) } else { 0 };
     let mut text_size: SIZE = zeroed();
-    if show_label {
+    if !label.is_empty() {
         GetTextExtentPoint32W(memory, label.as_ptr(), label.len() as i32, &mut text_size);
     }
-    let gap = if icon != 0 && show_label {
-        scale(BUTTON_GAP, ui.dpi)
+    let gap = if icon.is_some() && !label.is_empty() {
+        scale(BUTTON_GAP, dpi)
     } else {
         0
     };
-    let content = icon + gap + text_size.cx;
+    let content = icon_w + gap + text_size.cx;
     let mut x = (width - content) / 2;
-    if icon != 0 {
-        SelectObject(memory, ui.icon_font as HGDIOBJ);
-        let mut glyph = [COMMAND_GLYPHS[index]];
+    if let Some((icon_font, code)) = icon {
+        SelectObject(memory, icon_font as HGDIOBJ);
+        let mut glyph = [code];
         let mut area = RECT {
             left: x,
             top: 0,
-            right: x + icon,
+            right: x + icon_w,
             bottom: height,
         };
         DrawTextW(
@@ -776,11 +836,11 @@ pub(super) unsafe fn draw_main_button(ui: &MainUi, item: &DRAWITEMSTRUCT) {
             &mut area,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
         );
-        SelectObject(memory, ui.font as HGDIOBJ);
-        x += icon + gap;
+        SelectObject(memory, font as HGDIOBJ);
+        x += icon_w + gap;
     }
-    if show_label {
-        let mut text_wide = label.clone();
+    if !label.is_empty() {
+        let mut text_wide = label.to_vec();
         let mut area = RECT {
             left: x,
             top: 0,
@@ -796,20 +856,347 @@ pub(super) unsafe fn draw_main_button(ui: &MainUi, item: &DRAWITEMSTRUCT) {
         );
     }
     BitBlt(
-        item.hDC,
-        item.rcItem.left,
-        item.rcItem.top,
-        width,
-        height,
-        memory,
-        0,
-        0,
-        SRCCOPY,
+        dc, rect.left, rect.top, width, height, memory, 0, 0, SRCCOPY,
     );
     SelectObject(memory, previous_font);
     SelectObject(memory, previous_bitmap);
     DeleteObject(bitmap as HGDIOBJ);
     DeleteDC(memory);
+}
+
+/// Gives each item of `menu` whose command has a glyph in `glyphs` a 16 epx
+/// icon font glyph as its bitmap, in the menu's text colour. Menus draw a
+/// 32-bit premultiplied ARGB bitmap with its alpha, so the glyph is drawn
+/// white on black with greyscale smoothing and its brightness becomes the
+/// alpha. Returns the bitmaps, which the caller deletes once the menu closed.
+pub(super) unsafe fn set_menu_glyphs(
+    menu: HMENU,
+    hwnd: HWND,
+    dpi: u32,
+    glyphs: &[(i32, u16)],
+) -> Vec<HBITMAP> {
+    let size = scale(16, dpi);
+    let font = icon_font(dpi);
+    if font.is_null() {
+        return Vec::new();
+    }
+    let colour = if high_contrast() {
+        GetSysColor(COLOR_MENUTEXT)
+    } else {
+        main_palette(hwnd).text
+    };
+    let (red, green, blue) = (colour & 0xff, (colour >> 8) & 0xff, (colour >> 16) & 0xff);
+    let memory = CreateCompatibleDC(null_mut());
+    let mut bitmaps = Vec::new();
+    for index in 0..GetMenuItemCount(menu).max(0) {
+        let id = GetMenuItemID(menu, index) as i32;
+        let Some(&(_, code)) = glyphs.iter().find(|(command, _)| *command == id) else {
+            continue;
+        };
+        let mut info: BITMAPINFO = zeroed();
+        info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = size;
+        info.bmiHeader.biHeight = -size;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        let mut bits: *mut c_void = null_mut();
+        let bitmap = CreateDIBSection(memory, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if bitmap.is_null() || bits.is_null() {
+            continue;
+        }
+        let previous_bitmap = SelectObject(memory, bitmap as HGDIOBJ);
+        let previous_font = SelectObject(memory, font as HGDIOBJ);
+        let mut area = RECT {
+            left: 0,
+            top: 0,
+            right: size,
+            bottom: size,
+        };
+        fill_colour(memory, &area, 0);
+        SetBkMode(memory, TRANSPARENT as i32);
+        SetTextColor(memory, 0xffffff);
+        DrawTextW(
+            memory,
+            &code,
+            1,
+            &mut area,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        GdiFlush();
+        SelectObject(memory, previous_font);
+        SelectObject(memory, previous_bitmap);
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (size * size) as usize);
+        for pixel in pixels.iter_mut() {
+            let alpha = (*pixel >> 8) & 0xff;
+            let premultiply = |channel: u32| channel * alpha / 255;
+            *pixel =
+                alpha << 24 | premultiply(red) << 16 | premultiply(green) << 8 | premultiply(blue);
+        }
+        let item = MENUITEMINFOW {
+            cbSize: size_of::<MENUITEMINFOW>() as u32,
+            fMask: MIIM_BITMAP,
+            hbmpItem: bitmap,
+            ..zeroed()
+        };
+        SetMenuItemInfoW(menu, index as u32, 1, &item);
+        bitmaps.push(bitmap);
+    }
+    DeleteDC(memory);
+    DeleteObject(font as HGDIOBJ);
+    bitmaps
+}
+
+/// The New download dialog, in epx: the content card's padding, a label above
+/// each field, the 32 epx fields and the command bar below the card.
+pub(super) const ADD_PAD: i32 = 24;
+pub(super) const ADD_TOP: i32 = 20;
+pub(super) const ADD_LABEL: i32 = 20;
+pub(super) const ADD_LABEL_GAP: i32 = 8;
+pub(super) const ADD_URLS: i32 = 64;
+pub(super) const ADD_FIELD: i32 = 32;
+pub(super) const ADD_GROUP_GAP: i32 = 12;
+pub(super) const ADD_FOOTER: i32 = 80;
+/// The dialog's content height without and with the advanced rows.
+pub(super) const ADD_HEIGHT: i32 = 376;
+pub(super) const ADD_ADVANCED_HEIGHT: i32 = 500;
+/// Space between an input frame and the text field inside it: left, right
+/// (a multiline field keeps its scroll bar inside the frame), and top for a
+/// multiline field; a single line is centred.
+const INPUT_PAD_LEFT: i32 = 11;
+const INPUT_PAD_RIGHT: i32 = 8;
+const INPUT_PAD_TOP: i32 = 6;
+
+/// Takes the sunken border off an edit control: its frame is painted by the
+/// dialog around it.
+pub(super) unsafe fn flatten_edit(edit: HWND) {
+    let style = GetWindowLongPtrW(edit, GWL_STYLE) & !(WS_BORDER as isize);
+    SetWindowLongPtrW(edit, GWL_STYLE, style);
+    let extended = GetWindowLongPtrW(edit, GWL_EXSTYLE) & !(WS_EX_CLIENTEDGE as isize);
+    SetWindowLongPtrW(edit, GWL_EXSTYLE, extended);
+    SetWindowPos(
+        edit,
+        null_mut(),
+        0,
+        0,
+        0,
+        0,
+        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+fn is_multiline(edit: HWND) -> bool {
+    unsafe { GetWindowLongPtrW(edit, GWL_STYLE) as u32 & ES_MULTILINE as u32 != 0 }
+}
+
+/// Puts an edit control inside the input frame `frame`: a single line is
+/// centred on the frame's height.
+pub(super) unsafe fn place_in_frame(edit: HWND, frame: RECT, dpi: u32) {
+    let left = frame.left + scale(INPUT_PAD_LEFT, dpi);
+    if is_multiline(edit) {
+        let top = frame.top + scale(INPUT_PAD_TOP, dpi);
+        MoveWindow(
+            edit,
+            left,
+            top,
+            frame.right - scale(1, dpi) - left,
+            frame.bottom - scale(INPUT_PAD_TOP, dpi) - top,
+            1,
+        );
+    } else {
+        let font = SendMessageW(edit, WM_GETFONT, 0, 0) as HFONT;
+        let height = line_height(edit, font).max(1);
+        MoveWindow(
+            edit,
+            left,
+            (frame.top + frame.bottom - height) / 2,
+            frame.right - scale(INPUT_PAD_RIGHT, dpi) - left,
+            height,
+            1,
+        );
+    }
+}
+
+/// The input frame around an edit control placed by `place_in_frame`.
+unsafe fn input_frame(parent: HWND, edit: HWND, dpi: u32) -> RECT {
+    let inner = child_rect(parent, edit);
+    let left = inner.left - scale(INPUT_PAD_LEFT, dpi);
+    if is_multiline(edit) {
+        RECT {
+            left,
+            top: inner.top - scale(INPUT_PAD_TOP, dpi),
+            right: inner.right + scale(1, dpi),
+            bottom: inner.bottom + scale(INPUT_PAD_TOP, dpi),
+        }
+    } else {
+        let middle = (inner.top + inner.bottom) / 2;
+        let half = scale(ADD_FIELD, dpi) / 2;
+        RECT {
+            left,
+            top: middle - half,
+            right: inner.right + scale(INPUT_PAD_RIGHT, dpi),
+            bottom: middle + half,
+        }
+    }
+}
+
+fn add_inputs(f: &AddFields) -> [HWND; 6] {
+    [
+        f.urls,
+        f.dir,
+        f.filename,
+        f.connections,
+        f.checksum,
+        f.schedule,
+    ]
+}
+
+/// The New download dialog's Windows 11 surfaces and controls: the content
+/// card, the command bar with its top stroke, flat input frames with an accent
+/// line under the focused field, WinUI buttons with the primary action as the
+/// accent button, and the label and field colours. Every other dialog keeps
+/// its own painting.
+pub(super) unsafe fn add_dialog_message(
+    dlg: &DialogUi,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    let DialogKind::Add(f) = &dlg.kind else {
+        return None;
+    };
+    let palette = main_palette(dlg.hwnd);
+    match msg {
+        WM_ERASEBKGND => {
+            paint_add_surfaces(dlg, f, wparam as HDC, &palette);
+            Some(1)
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
+            let dc = wparam as HDC;
+            let (text, fill) = if msg == WM_CTLCOLOREDIT {
+                (palette.text, palette.control)
+            } else if lparam as HWND == dlg.error {
+                (palette.critical, palette.card)
+            } else {
+                (palette.text, palette.card)
+            };
+            SetTextColor(dc, text);
+            SetBkColor(dc, fill);
+            SetDCBrushColor(dc, fill);
+            Some(GetStockObject(DC_BRUSH) as LRESULT)
+        }
+        WM_COMMAND => {
+            let code = hiword(wparam) as u32;
+            let control = lparam as HWND;
+            if (code == EN_SETFOCUS || code == EN_KILLFOCUS) && add_inputs(f).contains(&control) {
+                let frame = input_frame(dlg.hwnd, control, dlg.dpi);
+                InvalidateRect(dlg.hwnd, &frame, 1);
+            }
+            None
+        }
+        WM_NOTIFY => {
+            let draw = &*(lparam as *const NMCUSTOMDRAW);
+            let id = draw.hdr.idFrom as i32;
+            if draw.hdr.code != NM_CUSTOMDRAW
+                || ![D_ADD_OK, D_ADVANCED, D_CANCEL, D_BROWSE].contains(&id)
+            {
+                return None;
+            }
+            if draw.dwDrawStage != CDDS_PREPAINT {
+                return Some(CDRF_DODEFAULT as LRESULT);
+            }
+            let button = draw.hdr.hwndFrom;
+            let state = draw.uItemState;
+            let disabled = state & CDIS_DISABLED != 0;
+            let look = ButtonState {
+                primary: id == D_ADD_OK,
+                disabled,
+                pressed: !disabled && state & CDIS_SELECTED != 0,
+                hot: !disabled && state & CDIS_HOT != 0,
+                focused: state & CDIS_FOCUS != 0
+                    && SendMessageW(button, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0,
+            };
+            let label: Vec<u16> = super::text(button).encode_utf16().collect();
+            // Browse sits on the content card; the others on the command bar.
+            let surface = if id == D_BROWSE {
+                MainPalette {
+                    base: palette.card,
+                    ..palette
+                }
+            } else {
+                palette
+            };
+            paint_button(
+                draw.hdc, draw.rc, dlg.dpi, &surface, dlg.font, &label, None, look,
+            );
+            Some(CDRF_SKIPDEFAULT as LRESULT)
+        }
+        _ => None,
+    }
+}
+
+unsafe fn paint_add_surfaces(dlg: &DialogUi, f: &AddFields, dc: HDC, palette: &MainPalette) {
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let footer_top = client.bottom - scale(ADD_FOOTER, dlg.dpi);
+    fill_colour(
+        dc,
+        &RECT {
+            bottom: footer_top,
+            ..client
+        },
+        palette.card,
+    );
+    fill_colour(
+        dc,
+        &RECT {
+            top: footer_top,
+            ..client
+        },
+        palette.base,
+    );
+    fill_colour(
+        dc,
+        &RECT {
+            top: footer_top,
+            bottom: footer_top + 1,
+            ..client
+        },
+        palette.stroke,
+    );
+    let focus = GetFocus();
+    for edit in add_inputs(f) {
+        if edit.is_null() || IsWindowVisible(edit) == 0 {
+            continue;
+        }
+        let frame = input_frame(dlg.hwnd, edit, dlg.dpi);
+        round_rect(
+            dc,
+            &frame,
+            scale(CORNER, dlg.dpi),
+            palette.control,
+            Some(palette.control_stroke),
+        );
+        // TextControlElevationBorder: a stronger bottom line, accent and
+        // 2 epx while the field has the focus.
+        let focused = focus == edit;
+        let line = if focused { scale(2, dlg.dpi) } else { 1 };
+        let inset = scale(CORNER, dlg.dpi) / 2;
+        fill_colour(
+            dc,
+            &RECT {
+                left: frame.left + inset,
+                top: frame.bottom - line,
+                right: frame.right - inset,
+                bottom: frame.bottom,
+            },
+            if focused {
+                palette.accent
+            } else {
+                palette.strong_stroke
+            },
+        );
+    }
 }
 
 /// Re-applies everything that follows the scheme or the accent: the caption
@@ -987,14 +1374,15 @@ pub(super) unsafe fn list_custom_draw(ui: &MainUi, lparam: LPARAM) -> LRESULT {
         paint_row_cells(ui, draw.nmcd.hdc, draw.nmcd.dwItemSpec);
         return CDRF_SKIPDEFAULT as LRESULT;
     }
+    let progress = ui.columns.get(draw.iSubItem as usize) == Some(&COL_PROGRESS);
     if stage == CDDS_ITEMPREPAINT | CDDS_SUBITEM {
-        return if draw.iSubItem == 2 {
+        return if progress {
             CDRF_NOTIFYPOSTPAINT as LRESULT
         } else {
             CDRF_DODEFAULT as LRESULT
         };
     }
-    if stage == CDDS_ITEMPOSTPAINT | CDDS_SUBITEM && draw.iSubItem == 2 {
+    if stage == CDDS_ITEMPOSTPAINT | CDDS_SUBITEM && progress {
         paint_row_progress(ui, draw.nmcd.hdc, draw.nmcd.dwItemSpec, draw.nmcd.rc);
     }
     CDRF_DODEFAULT as LRESULT
@@ -1038,18 +1426,36 @@ unsafe fn paint_list_tail(ui: &MainUi, dc: HDC) {
 
 /// Every cell's text, 8 epx in from the column edge like the header's titles
 /// and with an ellipsis when it does not fit, and the progress bar in the
-/// progress cell.
+/// progress cell. The location and the dash of an empty value are secondary
+/// text, except on a selected row, whose accent tint is too dark for it in
+/// light mode. The name has a 16 epx glyph slot in front of it: an error mark for a
+/// failed job and a pause mark for a paused one.
 unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
-    let header = SendMessageW(ui.list, LVM_GETHEADER, 0, 0) as HWND;
-    let columns = SendMessageW(header, HDM_GETITEMCOUNT, 0, 0).max(0) as i32;
+    let palette = main_palette(ui.hwnd);
     let pad = scale(8, ui.dpi);
+    let slot = scale(16, ui.dpi);
+    let state = ui
+        .visible_ids
+        .get(row)
+        .and_then(|id| ui.snapshot.jobs.iter().find(|job| &job.id == id))
+        .map(|job| job.state);
+    let glyph = match state {
+        Some(JobState::Failed) => Some((0xe783u16, palette.critical)),
+        Some(JobState::Paused) => Some((0xe769, palette.secondary)),
+        _ => None,
+    };
+    let secondary = if SendMessageW(ui.list, LVM_GETITEMSTATE, row, LVIS_SELECTED as isize) != 0 {
+        palette.text
+    } else {
+        palette.secondary
+    };
     SetBkMode(dc, TRANSPARENT as i32);
-    SetTextColor(dc, main_palette(ui.hwnd).text);
     let mut buffer = [0u16; 512];
-    for column in 0..columns {
+    for (view, &column) in ui.columns.iter().enumerate() {
+        let view = view as i32;
         let mut cell = RECT {
             left: LVIR_BOUNDS as i32,
-            top: column,
+            top: view,
             ..zeroed()
         };
         if SendMessageW(
@@ -1062,11 +1468,11 @@ unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
             continue;
         }
         // The first column's bounds are the whole row.
-        if column == 0 {
+        if view == 0 {
             cell.right = cell.left + SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, 0, 0) as i32;
         }
         let mut item: LVITEMW = zeroed();
-        item.iSubItem = column;
+        item.iSubItem = view;
         item.pszText = buffer.as_mut_ptr();
         item.cchTextMax = buffer.len() as i32;
         let length =
@@ -1076,6 +1482,34 @@ unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
             right: cell.right - scale(6, ui.dpi),
             ..cell
         };
+        if column == COL_NAME {
+            if let (Some((code, colour)), false) = (glyph, ui.icon_font.is_null()) {
+                let mut mark = RECT {
+                    right: text.left + slot,
+                    ..text
+                };
+                let previous = SelectObject(dc, ui.icon_font as HGDIOBJ);
+                SetTextColor(dc, colour);
+                DrawTextW(
+                    dc,
+                    &code,
+                    1,
+                    &mut mark,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                );
+                SelectObject(dc, previous);
+            }
+            text.left += slot + pad;
+        }
+        let empty = length == 1 && buffer[0] == '—' as u16;
+        SetTextColor(
+            dc,
+            if column == COL_LOCATION || empty {
+                secondary
+            } else {
+                palette.text
+            },
+        );
         DrawTextW(
             dc,
             item.pszText,
@@ -1083,7 +1517,7 @@ unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
             &mut text,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
-        if column == 2 {
+        if column == COL_PROGRESS {
             paint_row_progress(ui, dc, row, cell);
         }
     }
@@ -1282,12 +1716,30 @@ mod tests {
                 assert!(contrast(palette.text, surface) >= 7.0, "dark={dark}");
             }
             // Secondary text: header and unselected tabs on the card and the
-            // base, the status line on the base, a pressed button's label.
-            for surface in [palette.base, palette.card, palette.control_pressed] {
+            // base, the status line on the base, a pressed button's label,
+            // and the location and empty values on an unselected row; a
+            // selected row shows them as primary text.
+            for surface in [
+                palette.base,
+                palette.card,
+                palette.control_pressed,
+                palette.stripe,
+                palette.row_hover,
+            ] {
                 assert!(
                     contrast(palette.secondary, surface) >= 4.5,
                     "dark={dark} surface={surface:06x}"
                 );
+            }
+            // The failed and paused marks before a name are graphics: 3:1.
+            for surface in [
+                palette.card,
+                palette.stripe,
+                palette.row_hover,
+                palette.row_selected,
+                palette.row_selected_hover,
+            ] {
+                assert!(contrast(palette.critical, surface) >= 3.0, "dark={dark}");
             }
             for fill in [palette.accent, palette.accent_hover] {
                 assert!(contrast(palette.on_accent, fill) >= 4.5, "dark={dark}");

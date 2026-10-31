@@ -1695,5 +1695,7 @@
   "No capacity for the network connection became free in time": "لم تتوفر سعة للاتصال بالشبكة في الوقت المناسب",
   "Details": "التفاصيل",
   "No error was recorded for this download.": "لم يُسجَّل أي خطأ لهذا التنزيل.",
-  "Select a single download.": "اختر تنزيلاً واحداً."
+  "Select a single download.": "اختر تنزيلاً واحداً.",
+  "Name from the server": "الاسم من الخادم",
+  "Right away when empty": "فورًا إذا تُرك فارغًا"
 }

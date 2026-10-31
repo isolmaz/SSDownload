@@ -633,6 +633,12 @@ pub struct Settings {
     pub window_placement: Option<[i32; 5]>,
     /// Last top-left position of the media picker.
     pub picker_position: Option<[i32; 2]>,
+    /// Height of the main window's tab page in 96-dpi pixels; None keeps the default.
+    pub details_height: Option<i32>,
+    /// Main list columns the user hid, by key: state, progress, speed, remaining, location.
+    pub hidden_columns: Vec<String>,
+    /// Main list sort: column key and ascending; None keeps the queue order.
+    pub list_sort: Option<(String, bool)>,
 }
 
 /// Remembered media selection for one host. With `auto`, a handoff from this host
@@ -738,6 +744,9 @@ impl Default for Settings {
             site_media_defaults: Vec::new(),
             window_placement: None,
             picker_position: None,
+            details_height: None,
+            hidden_columns: Vec::new(),
+            list_sort: None,
         }
     }
 }

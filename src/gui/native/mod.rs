@@ -342,6 +342,8 @@ pub const ID_JOB_LIST: i32 = 1020;
 pub const ID_DETAILS: i32 = 1021;
 pub const ID_STATUS: i32 = 1022;
 pub const ID_JOB_TABS: i32 = 1023;
+/// The header menu's items: one id per column, from here.
+const ID_COLUMN_BASE: i32 = 1030;
 pub const ID_PAUSE_ALL: i32 = 1101;
 pub const ID_RESUME_ALL: i32 = 1102;
 pub const ID_CLEAR_COMPLETED: i32 = 1103;
@@ -574,6 +576,18 @@ struct MainUi {
     hotkey_failed: bool,
     /// Rows being dragged to a new place in the queue order.
     dragging: Option<Vec<String>>,
+    /// The list's columns in display order, as indexes into `MAIN_COLUMNS`.
+    /// Name is always first.
+    columns: Vec<usize>,
+    /// Every column's width in pixels, hidden ones included.
+    column_widths: [i32; 6],
+    /// The view's sort: column index into `MAIN_COLUMNS` and ascending.
+    sort: Option<(usize, bool)>,
+    /// The tab page's height in 96-dpi pixels; the layout keeps it in range.
+    page_height: i32,
+    /// While the split between list and tabs is dragged: the pointer's offset
+    /// from the split's top edge.
+    splitting: Option<i32>,
     /// Filter entry counts last written into the filter box.
     filter_counts: Vec<usize>,
 }
@@ -1197,6 +1211,23 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             hotkey_failed: false,
             dragging: None,
             filter_counts: Vec::new(),
+            columns: visible_columns(&snapshot.settings.hidden_columns),
+            column_widths: [0; 6],
+            sort: snapshot
+                .settings
+                .list_sort
+                .as_ref()
+                .and_then(|(key, ascending)| {
+                    COLUMN_KEYS
+                        .iter()
+                        .position(|candidate| candidate == key)
+                        .map(|column| (column, *ascending))
+                }),
+            page_height: snapshot
+                .settings
+                .details_height
+                .unwrap_or(DEFAULT_PAGE_HEIGHT),
+            splitting: None,
         });
         let raw = Box::into_raw(state);
         let hwnd = CreateWindowExW(
@@ -1676,7 +1707,7 @@ unsafe extern "system" fn main_proc(
             // This arrives before WM_CREATE, so the DPI has to come from the
             // window, not from state that is filled in later.
             let dpi = GetDpiForWindow(hwnd).max(96);
-            let (x, y) = clamp_min_track(hwnd, dpi, 760, 560);
+            let (x, y) = clamp_min_track(hwnd, dpi, 760, 440);
             info.ptMinTrackSize.x = x;
             info.ptMinTrackSize.y = y;
             0
@@ -1774,6 +1805,49 @@ unsafe extern "system" fn main_proc(
             show_tour(ui, false);
             0
         }
+        WM_SETCURSOR if wparam as HWND == hwnd && loword(lparam as usize) as u32 == HTCLIENT => {
+            let mut point: POINT = zeroed();
+            GetCursorPos(&mut point);
+            ScreenToClient(hwnd, &mut point);
+            if PtInRect(&split_band(ui), point) != 0 {
+                SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
+                return 1;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_LBUTTONDOWN => {
+            let point = POINT {
+                x: loword(lparam as usize) as i16 as i32,
+                y: hiword(lparam as usize) as i16 as i32,
+            };
+            let band = split_band(ui);
+            if PtInRect(&band, point) != 0 {
+                ui.splitting = Some(point.y - band.top);
+                SetCapture(hwnd);
+                SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_MOUSEMOVE if ui.splitting.is_some() => {
+            let y = hiword(lparam as usize) as i16 as i32;
+            let band_top = y - ui.splitting.unwrap_or(0);
+            let geometry = split_geometry(ui);
+            let page = geometry.page_bottom - (band_top + geometry.above_page);
+            let page = page.clamp(geometry.min_page, geometry.max_page);
+            ui.page_height = page * 96 / ui.dpi.max(96) as i32;
+            layout_main(ui);
+            // The cards behind the list and the page moved with the split.
+            InvalidateRect(hwnd, null(), 1);
+            SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
+            0
+        }
+        WM_LBUTTONUP if ui.splitting.is_some() => {
+            ui.splitting = None;
+            ReleaseCapture();
+            save_list_view(ui);
+            0
+        }
         WM_MOUSEMOVE if ui.dragging.is_some() => {
             SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
             0
@@ -1798,6 +1872,9 @@ unsafe extern "system" fn main_proc(
         }
         WM_CAPTURECHANGED => {
             ui.dragging = None;
+            if ui.splitting.take().is_some() {
+                save_list_view(ui);
+            }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_EXIT_AFTER_DIALOGS => {
@@ -1831,7 +1908,21 @@ unsafe extern "system" fn main_proc(
                 update_details(ui);
                 return 0;
             }
-            if hdr.hwndFrom == ui.list && hdr.code == LVN_BEGINDRAG {
+            if hdr.hwndFrom == ui.list && hdr.code == LVN_COLUMNCLICK {
+                let view = (*(lparam as *const NMLISTVIEW)).iSubItem;
+                if let Some(&column) = ui.columns.get(view as usize) {
+                    ui.sort = next_sort(ui.sort, column);
+                    show_sort_arrow(ui);
+                    save_list_view(ui);
+                    ui.row_cache.clear();
+                    update_rows(ui, true);
+                    update_details(ui);
+                }
+                return 0;
+            }
+            // A sorted view is not the queue order, so dropping rows there
+            // could not say where in the queue they belong.
+            if hdr.hwndFrom == ui.list && hdr.code == LVN_BEGINDRAG && ui.sort.is_none() {
                 let ids = selected_ids(ui);
                 if !ids.is_empty() {
                     ui.dragging = Some(ids);
@@ -1923,8 +2014,18 @@ unsafe extern "system" fn main_proc(
             handle_tray(ui, loword(lparam as usize) as u32);
             0
         }
-        WM_CONTEXTMENU if wparam as HWND == ui.list => {
-            show_job_menu(ui, lparam);
+        WM_CONTEXTMENU if wparam as HWND == ui.list || wparam as HWND == list_header(ui) => {
+            let point = POINT {
+                x: loword(lparam as usize) as i16 as i32,
+                y: hiword(lparam as usize) as i16 as i32,
+            };
+            let mut header: RECT = zeroed();
+            GetWindowRect(list_header(ui), &mut header);
+            if lparam != -1 && PtInRect(&header, point) != 0 {
+                show_column_menu(ui, point);
+            } else {
+                show_job_menu(ui, lparam);
+            }
             0
         }
         WM_QUERYENDSESSION => 1,
@@ -2040,6 +2141,261 @@ const MAIN_COLUMNS: [(&str, &str, i32); 6] = [
     ("Kalan", "Remaining", 85),
     ("Konum", "Location", 280),
 ];
+/// The names the settings store columns by, in `MAIN_COLUMNS` order.
+const COLUMN_KEYS: [&str; 6] = [
+    "name",
+    "state",
+    "progress",
+    "speed",
+    "remaining",
+    "location",
+];
+pub(super) const COL_NAME: usize = 0;
+pub(super) const COL_PROGRESS: usize = 2;
+pub(super) const COL_LOCATION: usize = 5;
+/// The tab page's height before the user moves the split, in epx.
+const DEFAULT_PAGE_HEIGHT: i32 = 148;
+
+/// The columns shown for a stored list of hidden ones; Name always shows.
+fn visible_columns(hidden: &[String]) -> Vec<usize> {
+    (0..MAIN_COLUMNS.len())
+        .filter(|&column| {
+            column == COL_NAME || !hidden.iter().any(|key| key == COLUMN_KEYS[column])
+        })
+        .collect()
+}
+
+/// The sort a click on `column`'s header gives: ascending, then descending,
+/// then the queue order again. Another column starts ascending.
+fn next_sort(current: Option<(usize, bool)>, column: usize) -> Option<(usize, bool)> {
+    match current {
+        Some((sorted, true)) if sorted == column => Some((column, false)),
+        Some((sorted, false)) if sorted == column => None,
+        _ => Some((column, true)),
+    }
+}
+
+/// Orders two jobs by a column's value, not its text: names and locations
+/// without case, the state in its lifecycle order, progress by the share
+/// done and then the bytes, speed in bytes per second, and the time left
+/// with unknown times last.
+fn compare_jobs(a: &Job, b: &Job, column: usize) -> std::cmp::Ordering {
+    match column {
+        COL_NAME => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        1 => (a.state as u8).cmp(&(b.state as u8)),
+        COL_PROGRESS => {
+            // The bytes downloaded of the total, not the bar's fill: a failed
+            // job's bar is full whatever it got.
+            let share = |job: &Job| match job.total {
+                Some(total) if total > 0 => job.downloaded as f64 / total as f64,
+                _ if job.state == JobState::Completed => 1.0,
+                _ => 0.0,
+            };
+            share(a)
+                .total_cmp(&share(b))
+                .then(a.downloaded.cmp(&b.downloaded))
+        }
+        3 => a.speed.cmp(&b.speed),
+        4 => a.eta.unwrap_or(u64::MAX).cmp(&b.eta.unwrap_or(u64::MAX)),
+        _ => a
+            .path
+            .to_string_lossy()
+            .to_lowercase()
+            .cmp(&b.path.to_string_lossy().to_lowercase()),
+    }
+}
+
+/// One column's title in the current language.
+fn column_label(column: usize) -> &'static str {
+    for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+        if index == column {
+            return crate::i18n::ui(tr, en);
+        }
+    }
+    ""
+}
+
+unsafe fn list_header(ui: &MainUi) -> HWND {
+    SendMessageW(ui.list, LVM_GETHEADER, 0, 0) as HWND
+}
+
+/// Records the width of every shown column, so a column keeps it while hidden.
+unsafe fn remember_column_widths(ui: &mut MainUi) {
+    let count = SendMessageW(list_header(ui), HDM_GETITEMCOUNT, 0, 0).max(0) as usize;
+    for (view, &column) in ui.columns.iter().enumerate().take(count) {
+        let width = SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, view, 0) as i32;
+        if width > 0 {
+            ui.column_widths[column] = width;
+        }
+    }
+}
+
+/// Puts `columns` into the list in order, each with its remembered width and
+/// its title. Name stays the list's first column; the others are removed and
+/// inserted again, which also empties their cells, so every row is written
+/// again on the next update.
+unsafe fn set_main_columns(ui: &mut MainUi, columns: Vec<usize>) {
+    remember_column_widths(ui);
+    let count = SendMessageW(list_header(ui), HDM_GETITEMCOUNT, 0, 0).max(0);
+    for _ in 1..count {
+        SendMessageW(ui.list, LVM_DELETECOLUMN, 1, 0);
+    }
+    ui.columns = columns;
+    for (view, &column) in ui.columns.iter().enumerate() {
+        let mut label = wide(column_label(column));
+        let item = LVCOLUMNW {
+            mask: LVCF_TEXT | LVCF_WIDTH | LVCF_FMT,
+            fmt: LVCFMT_LEFT,
+            cx: ui.column_widths[column],
+            pszText: label.as_mut_ptr(),
+            cchTextMax: label.len() as i32,
+            ..zeroed()
+        };
+        let message = if view == 0 && count > 0 {
+            LVM_SETCOLUMNW
+        } else {
+            LVM_INSERTCOLUMNW
+        };
+        SendMessageW(ui.list, message, view, &item as *const _ as isize);
+    }
+    ui.row_cache.clear();
+    show_sort_arrow(ui);
+}
+
+/// Marks the sorted column's header with the sort direction.
+unsafe fn show_sort_arrow(ui: &MainUi) {
+    let header = list_header(ui);
+    for (view, &column) in ui.columns.iter().enumerate() {
+        let mut item: HDITEMW = zeroed();
+        item.mask = HDI_FORMAT;
+        SendMessageW(header, HDM_GETITEMW, view, &mut item as *mut _ as isize);
+        item.fmt &= !(HDF_SORTUP | HDF_SORTDOWN);
+        match ui.sort {
+            Some((sorted, true)) if sorted == column => item.fmt |= HDF_SORTUP,
+            Some((sorted, false)) if sorted == column => item.fmt |= HDF_SORTDOWN,
+            _ => {}
+        }
+        SendMessageW(header, HDM_SETITEMW, view, &item as *const _ as isize);
+    }
+}
+
+/// Stores the hidden columns, the sort and the tab page height with the
+/// window placement.
+unsafe fn save_list_view(ui: &MainUi) {
+    let mut settings = ui.app.snapshot().settings;
+    let hidden: Vec<String> = (0..MAIN_COLUMNS.len())
+        .filter(|column| !ui.columns.contains(column))
+        .map(|column| COLUMN_KEYS[column].to_string())
+        .collect();
+    let sort = ui
+        .sort
+        .map(|(column, ascending)| (COLUMN_KEYS[column].to_string(), ascending));
+    let height = Some(ui.page_height);
+    if settings.hidden_columns != hidden
+        || settings.list_sort != sort
+        || settings.details_height != height
+    {
+        settings.hidden_columns = hidden;
+        settings.list_sort = sort;
+        settings.details_height = height;
+        let _ = ui.app.update_settings_quiet(settings);
+    }
+}
+
+/// The header's menu: a check for every column, Name always on.
+unsafe fn show_column_menu(ui: &mut MainUi, point: POINT) {
+    let menu = CreatePopupMenu();
+    for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+        let shown = ui.columns.contains(&index);
+        AppendMenuW(
+            menu,
+            MF_STRING
+                | if shown { MF_CHECKED } else { 0 }
+                | if index == COL_NAME { MF_GRAYED } else { 0 },
+            ID_COLUMN_BASE as usize + index,
+            wide(crate::i18n::ui(tr, en)).as_ptr(),
+        );
+    }
+    let command = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+        point.x,
+        point.y,
+        0,
+        ui.hwnd,
+        null(),
+    ) as i32;
+    DestroyMenu(menu);
+    let column = (command - ID_COLUMN_BASE) as usize;
+    if command < ID_COLUMN_BASE || column == COL_NAME || column >= MAIN_COLUMNS.len() {
+        return;
+    }
+    let mut columns = ui.columns.clone();
+    if let Some(position) = columns.iter().position(|&shown| shown == column) {
+        columns.remove(position);
+        // A hidden column cannot show which way the rows run.
+        if ui.sort.is_some_and(|(sorted, _)| sorted == column) {
+            ui.sort = None;
+        }
+    } else {
+        columns.push(column);
+        columns.sort_unstable();
+    }
+    set_main_columns(ui, columns);
+    save_list_view(ui);
+    update_rows(ui, true);
+}
+
+/// The vertical space around the split: where the tab page ends, how much it
+/// may take, and what lies between the split and the page.
+struct SplitGeometry {
+    list_top: i32,
+    page_bottom: i32,
+    min_page: i32,
+    max_page: i32,
+    /// From the split's top edge to the page: the gap and the tab strip.
+    above_page: i32,
+    gap: i32,
+    tabs: i32,
+}
+
+unsafe fn split_geometry(ui: &MainUi) -> SplitGeometry {
+    let mut rect: RECT = zeroed();
+    GetClientRect(ui.hwnd, &mut rect);
+    let s = |value: i32| scale(value, ui.dpi);
+    let mut status: RECT = zeroed();
+    GetWindowRect(ui.status, &mut status);
+    let list_top = s(ROW_TOP) + s(ROW_HEIGHT) + s(ROW_BELOW);
+    let page_bottom = rect.bottom - (status.bottom - status.top) - s(8);
+    let (gap, tabs) = (s(SPLIT_GAP), s(TABS_HEIGHT));
+    let above_page = gap + tabs + s(4);
+    let min_page = s(MIN_PAGE_HEIGHT);
+    let max_page = (page_bottom - above_page - s(MIN_LIST_HEIGHT) - list_top).max(min_page);
+    SplitGeometry {
+        list_top,
+        page_bottom,
+        min_page,
+        max_page,
+        above_page,
+        gap,
+        tabs,
+    }
+}
+
+/// The band between the list card and the tab strip that drags the split.
+unsafe fn split_band(ui: &MainUi) -> RECT {
+    let geometry = split_geometry(ui);
+    let page = scale(ui.page_height, ui.dpi).clamp(geometry.min_page, geometry.max_page);
+    let top = geometry.page_bottom - page - geometry.above_page;
+    let mut client: RECT = zeroed();
+    GetClientRect(ui.hwnd, &mut client);
+    RECT {
+        left: 0,
+        top,
+        right: client.right,
+        bottom: top + geometry.gap,
+    }
+}
 
 unsafe fn create_main_controls(ui: &mut MainUi) {
     ui.dpi = GetDpiForWindow(ui.hwnd).max(96);
@@ -2093,28 +2449,11 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
         0,
         (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP) as isize,
     );
-    for (index, (tr, en, width)) in MAIN_COLUMNS.iter().enumerate() {
-        let mut name_w = wide(crate::i18n::ui(tr, en));
-        let column = LVCOLUMNW {
-            mask: LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
-            fmt: LVCFMT_LEFT,
-            cx: scale(*width, ui.dpi),
-            pszText: name_w.as_mut_ptr(),
-            cchTextMax: name_w.len() as i32,
-            iSubItem: index as i32,
-            iImage: 0,
-            iOrder: index as i32,
-            cxMin: 0,
-            cxDefault: 0,
-            cxIdeal: 0,
-        };
-        SendMessageW(
-            ui.list,
-            LVM_INSERTCOLUMNW,
-            index,
-            &column as *const _ as isize,
-        );
+    for (index, (_, _, width)) in MAIN_COLUMNS.iter().enumerate() {
+        ui.column_widths[index] = scale(*width, ui.dpi);
     }
+    let columns = ui.columns.clone();
+    set_main_columns(ui, columns);
     ui.tabs = control(
         ui.hwnd,
         "SysTabControl32",
@@ -2482,15 +2821,8 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
         // the label update write them back.
         ui.filter_counts.clear();
         update_filter_labels(ui);
-        for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
-            let mut label = wide(crate::i18n::ui(tr, en));
-            let column = LVCOLUMNW {
-                mask: LVCF_TEXT,
-                pszText: label.as_mut_ptr(),
-                ..zeroed()
-            };
-            SendMessageW(ui.list, LVM_SETCOLUMNW, index, &column as *const _ as isize);
-        }
+        let columns = ui.columns.clone();
+        set_main_columns(ui, columns);
         set_text(ui.list, crate::i18n::ui("İndirme işleri", "Downloads"));
         if (owned_layout(0) != 0) != crate::i18n::right_to_left() {
             ui.app.message(
@@ -2598,13 +2930,16 @@ unsafe fn clamp_min_track(hwnd: HWND, dpi: u32, design_w: i32, design_h: i32) ->
 unsafe fn update_main_dpi(ui: &mut MainUi) {
     let old_dpi = ui.dpi;
     ui.dpi = GetDpiForWindow(ui.hwnd).max(96);
-    for col in 0..6 {
-        let width = SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, col, 0);
+    remember_column_widths(ui);
+    for width in ui.column_widths.iter_mut() {
+        *width = *width * ui.dpi as i32 / old_dpi.max(96) as i32;
+    }
+    for (view, &column) in ui.columns.iter().enumerate() {
         SendMessageW(
             ui.list,
             LVM_SETCOLUMNWIDTH,
-            col,
-            width * ui.dpi as isize / old_dpi.max(96) as isize,
+            view,
+            ui.column_widths[column] as isize,
         );
     }
     apply_main_metrics(ui);
@@ -2613,17 +2948,16 @@ unsafe fn update_main_dpi(ui: &mut MainUi) {
 }
 
 /// The command row on top (buttons left, filter right), the list card, the
-/// tabs, the tab page card and the status line, on a 4 epx grid: 16 epx
-/// window margins, 8 epx between controls and 12 epx between content areas.
+/// split, the tabs, the tab page card and the status line, on a 4 epx grid:
+/// 16 epx window margins and space around the command row, 8 epx between
+/// controls and at the split.
 unsafe fn layout_main(ui: &MainUi) {
     let mut rect: RECT = zeroed();
     GetClientRect(ui.hwnd, &mut rect);
     let s = |value: i32| scale(value, ui.dpi);
     let w = rect.right.max(s(640));
-    let h = rect.bottom;
     let m = s(16);
     let gap = s(8);
-    let section = s(12);
     let top = s(ROW_TOP);
     let row = s(ROW_HEIGHT);
 
@@ -2672,30 +3006,22 @@ unsafe fn layout_main(ui: &MainUi) {
         x += width + gap;
     }
 
-    let mut status: RECT = zeroed();
-    GetWindowRect(ui.status, &mut status);
-    let status_h = status.bottom - status.top;
+    let geometry = split_geometry(ui);
     let (pad_x, pad_y) = (s(PAGE_PAD_X), s(PAGE_PAD_Y));
-    // Tall enough for the eleven lines a single job can show, while that
-    // leaves the list most of the window.
-    let page_h = (11 * line_height(ui.details, ui.details_font) + 2 * pad_y)
-        .min(h * 2 / 5)
-        .max(s(132));
-    let page_top = h - status_h - s(4) - page_h;
-    let tabs_h = s(40);
-    let tabs_top = page_top - s(4) - tabs_h;
-    let list_top = top + row + section;
-    let list_bottom = (tabs_top - s(4)).max(list_top + s(100));
+    let page_h = s(ui.page_height).clamp(geometry.min_page, geometry.max_page);
+    let page_top = geometry.page_bottom - page_h;
+    let tabs_top = page_top - s(4) - geometry.tabs;
+    let list_bottom = tabs_top - geometry.gap;
     let inset = s(LIST_INSET);
     MoveWindow(
         ui.list,
         m + inset,
-        list_top + inset,
+        geometry.list_top + inset,
         w - 2 * m - 2 * inset,
-        list_bottom - list_top - 2 * inset,
+        list_bottom - geometry.list_top - 2 * inset,
         1,
     );
-    MoveWindow(ui.tabs, m, tabs_top, w - 2 * m, tabs_h, 1);
+    MoveWindow(ui.tabs, m, tabs_top, w - 2 * m, geometry.tabs, 1);
     MoveWindow(
         ui.details,
         m + pad_x,
@@ -4167,12 +4493,23 @@ fn matches_filter(job: &Job, filter: Filter) -> bool {
     }
 }
 unsafe fn update_rows(ui: &mut MainUi, force: bool) {
-    let jobs: Vec<&Job> = ui
+    let mut jobs: Vec<&Job> = ui
         .snapshot
         .jobs
         .iter()
         .filter(|j| matches_filter(j, ui.filter_value))
         .collect();
+    // A stable sort: rows that compare equal keep their queue order.
+    if let Some((column, ascending)) = ui.sort {
+        jobs.sort_by(|a, b| {
+            let order = compare_jobs(a, b, column);
+            if ascending {
+                order
+            } else {
+                order.reverse()
+            }
+        });
+    }
     let ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
     let prior = selected_ids(ui);
     let rebuild = force || ids != ui.visible_ids;
@@ -4223,9 +4560,10 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
             job.path.to_string_lossy().into_owned(),
         ];
         let old = ui.row_cache.get(&job.id);
-        for (col, value) in cells.iter().enumerate() {
-            if old.and_then(|values| values.get(col)) != Some(value) {
-                set_list_cell(ui.list, index as i32, col as i32, value);
+        for (view, &column) in ui.columns.iter().enumerate() {
+            let value = &cells[column];
+            if old.and_then(|values| values.get(column)) != Some(value) {
+                set_list_cell(ui.list, index as i32, view as i32, value);
                 changed = true;
             }
         }
@@ -4900,6 +5238,34 @@ unsafe fn show_selected_job_log(ui: &MainUi) {
     }
 }
 
+/// Glyphs of the job menu's commands (Segoe Fluent Icons): OpenFile,
+/// FolderOpen, LightningBolt, Stop, Refresh, Copy, Download, Rename, Up,
+/// Down, Document, Error, Delete. Pause and resume take Pause or Play.
+const JOB_MENU_GLYPHS: [(i32, u16); 13] = [
+    (ID_OPEN_FILE, 0xe8e5),
+    (ID_OPEN_FOLDER, 0xe838),
+    (ID_START_NOW, 0xe945),
+    (ID_FINISH_RECORDING, 0xe71a),
+    (ID_SOURCE_REFRESH, 0xe72c),
+    (ID_REDOWNLOAD, 0xe896),
+    (ID_COPY_URL, 0xe8c8),
+    (ID_RENAME, 0xe8ac),
+    (ID_MOVE_TOP, 0xe74a),
+    (ID_MOVE_BOTTOM, 0xe74b),
+    (ID_JOB_LOG, 0xe8a5),
+    (ID_JOB_ERROR, 0xe783),
+    (ID_REMOVE, 0xe74d),
+];
+
+/// Starts a new group in a menu: a separator after the last item, unless the
+/// menu is empty or already ends with one.
+unsafe fn separate(menu: HMENU) {
+    let last = GetMenuItemCount(menu) - 1;
+    if last >= 0 && GetMenuState(menu, last as u32, MF_BYPOSITION) & MF_SEPARATOR == 0 {
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    }
+}
+
 unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
     let mut point = POINT {
         x: loword(position as usize) as i16 as i32,
@@ -4973,10 +5339,16 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
     };
     let menu = CreatePopupMenu();
     let mut error = None;
+    let mut resumes = false;
+    // Groups: open, run, address and copy, queue place, diagnosis, removal.
     if count == 1 {
         let job = first;
         if job.state == JobState::Completed && job.remove_requested.is_none() {
-            append(menu, ID_OPEN_FILE, crate::i18n::ui("Aç", "Open"));
+            append(
+                menu,
+                ID_OPEN_FILE,
+                &format!("{}\tEnter", crate::i18n::ui("Aç", "Open")),
+            );
         }
         if job.remove_requested.is_none() {
             append(
@@ -4985,28 +5357,34 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                 crate::i18n::ui("Klasörde göster", "Show in folder"),
             );
         }
-        if source_refresh_available(job) {
-            append(
-                menu,
-                ID_SOURCE_REFRESH,
-                crate::i18n::ui("Kaynak adresini yenile...", "Refresh source address..."),
-            );
-        }
+        separate(menu);
         if can_pause_or_resume(job) {
+            resumes = matches!(
+                job.state,
+                JobState::Paused | JobState::Failed | JobState::Cancelled
+            );
+            let label = match job.state {
+                JobState::Paused => crate::i18n::ui("Sürdür", "Resume"),
+                JobState::Failed | JobState::Cancelled => crate::i18n::ui("Yeniden dene", "Retry"),
+                JobState::AwaitingSource => crate::i18n::ui(
+                    "Yenilemeyi iptal et ve duraklat",
+                    "Cancel refresh and pause",
+                ),
+                _ => crate::i18n::ui("Duraklat", "Pause"),
+            };
+            append(menu, ID_PAUSE_RESUME, &format!("{label}\tSpace"));
+        }
+        if !job.state.is_terminal()
+            && job.remove_requested.is_none()
+            && matches!(
+                job.state,
+                JobState::Queued | JobState::Scheduled | JobState::Paused
+            )
+        {
             append(
                 menu,
-                ID_PAUSE_RESUME,
-                match job.state {
-                    JobState::Paused => crate::i18n::ui("Sürdür", "Resume"),
-                    JobState::Failed | JobState::Cancelled => {
-                        crate::i18n::ui("Yeniden dene", "Retry")
-                    }
-                    JobState::AwaitingSource => crate::i18n::ui(
-                        "Yenilemeyi iptal et ve duraklat",
-                        "Cancel refresh and pause",
-                    ),
-                    _ => crate::i18n::ui("Duraklat", "Pause"),
-                },
+                ID_START_NOW,
+                crate::i18n::ui("Hemen başlat", "Start now"),
             );
         }
         if recording_live(job) {
@@ -5019,7 +5397,22 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                 ),
             );
         }
-        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        if source_refresh_available(job) {
+            append(
+                menu,
+                ID_SOURCE_REFRESH,
+                crate::i18n::ui("Kaynak adresini yenile...", "Refresh source address..."),
+            );
+        }
+        if !job.state.is_terminal() && job.remove_requested.is_none() {
+            AppendMenuW(
+                menu,
+                MF_STRING | if job.open_when_done { MF_CHECKED } else { 0 },
+                ID_OPEN_WHEN_DONE as usize,
+                wide(crate::i18n::ui("Tamamlanınca aç", "Open when done")).as_ptr(),
+            );
+        }
+        separate(menu);
         append(
             menu,
             ID_COPY_URL,
@@ -5040,24 +5433,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                 crate::i18n::ui("Yeniden adlandır...", "Rename..."),
             );
         }
-        if !job.state.is_terminal() && job.remove_requested.is_none() {
-            AppendMenuW(
-                menu,
-                MF_STRING | if job.open_when_done { MF_CHECKED } else { 0 },
-                ID_OPEN_WHEN_DONE as usize,
-                wide(crate::i18n::ui("Tamamlanınca aç", "Open when done")).as_ptr(),
-            );
-            if matches!(
-                job.state,
-                JobState::Queued | JobState::Scheduled | JobState::Paused
-            ) {
-                append(
-                    menu,
-                    ID_START_NOW,
-                    crate::i18n::ui("Hemen başlat", "Start now"),
-                );
-            }
-        }
+        separate(menu);
         append(
             menu,
             ID_MOVE_TOP,
@@ -5087,10 +5463,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                 wide(crate::i18n::ui("Kuyruğa taşı", "Move to queue")).as_ptr(),
             );
         }
-        AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        if job.remove_requested.is_none() {
-            append(menu, ID_REMOVE, crate::i18n::ui("Kaldır...", "Remove..."));
-        }
+        separate(menu);
         if !ui.ui_mode.is_simple() {
             append(
                 menu,
@@ -5106,6 +5479,14 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                 crate::i18n::ui("Hata ayrıntısı", "Error details"),
             );
         }
+        separate(menu);
+        if job.remove_requested.is_none() {
+            append(
+                menu,
+                ID_REMOVE,
+                &format!("{}\tDelete", crate::i18n::ui("Kaldır...", "Remove...")),
+            );
+        }
     } else {
         let openable = jobs
             .iter()
@@ -5115,7 +5496,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
             append(
                 menu,
                 ID_OPEN_FILE,
-                &format!("{} ({openable})", crate::i18n::ui("Aç", "Open")),
+                &format!("{} ({openable})\tEnter", crate::i18n::ui("Aç", "Open")),
             );
         }
         let foldered = jobs
@@ -5132,6 +5513,37 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                 ),
             );
         }
+        separate(menu);
+        let pausable: Vec<&&Job> = jobs.iter().filter(|job| can_pause_or_resume(job)).collect();
+        if !pausable.is_empty() {
+            let resumable = pausable
+                .iter()
+                .filter(|job| {
+                    matches!(
+                        job.state,
+                        JobState::Paused | JobState::Failed | JobState::Cancelled
+                    )
+                })
+                .count();
+            resumes = resumable == pausable.len();
+            let label = if resumes {
+                crate::i18n::ui("Sürdür", "Resume")
+            } else if resumable == 0 {
+                crate::i18n::ui("Duraklat", "Pause")
+            } else {
+                crate::i18n::ui("Duraklat / Sürdür", "Pause / Resume")
+            };
+            append(
+                menu,
+                ID_PAUSE_RESUME,
+                &format!("{label} ({})\tSpace", pausable.len()),
+            );
+        }
+        append(
+            menu,
+            ID_START_NOW,
+            &format!("{} ({count})", crate::i18n::ui("Hemen başlat", "Start now")),
+        );
         let renewable = jobs
             .iter()
             .filter(|job| source_refresh_available(job))
@@ -5146,38 +5558,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                 ),
             );
         }
-        let pausable: Vec<&&Job> = jobs.iter().filter(|job| can_pause_or_resume(job)).collect();
-        if !pausable.is_empty() {
-            let resumable = pausable
-                .iter()
-                .filter(|job| {
-                    matches!(
-                        job.state,
-                        JobState::Paused | JobState::Failed | JobState::Cancelled
-                    )
-                })
-                .count();
-            let label = if resumable == pausable.len() {
-                format!(
-                    "{} ({})",
-                    crate::i18n::ui("Sürdür", "Resume"),
-                    pausable.len()
-                )
-            } else if resumable == 0 {
-                format!(
-                    "{} ({})",
-                    crate::i18n::ui("Duraklat", "Pause"),
-                    pausable.len()
-                )
-            } else {
-                format!(
-                    "{} ({})",
-                    crate::i18n::ui("Duraklat / Sürdür", "Pause / Resume"),
-                    pausable.len()
-                )
-            };
-            append(menu, ID_PAUSE_RESUME, &label);
-        }
+        separate(menu);
         append(
             menu,
             ID_COPY_URL,
@@ -5186,11 +5567,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
                 crate::i18n::ui("Adresleri kopyala", "Copy addresses")
             ),
         );
-        append(
-            menu,
-            ID_START_NOW,
-            &format!("{} ({count})", crate::i18n::ui("Hemen başlat", "Start now")),
-        );
+        separate(menu);
         append(
             menu,
             ID_MOVE_TOP,
@@ -5201,14 +5578,25 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
             ID_MOVE_BOTTOM,
             crate::i18n::ui("En alta taşı\tAlt+End", "Move to bottom\tAlt+End"),
         );
+        separate(menu);
         if foldered > 0 {
             append(
                 menu,
                 ID_REMOVE,
-                &format!("{} ({foldered})", crate::i18n::ui("Kaldır...", "Remove...")),
+                &format!(
+                    "{} ({foldered})\tDelete",
+                    crate::i18n::ui("Kaldır...", "Remove...")
+                ),
             );
         }
     }
+    let last = GetMenuItemCount(menu) - 1;
+    if last >= 0 && GetMenuState(menu, last as u32, MF_BYPOSITION) & MF_SEPARATOR != 0 {
+        DeleteMenu(menu, last as u32, MF_BYPOSITION);
+    }
+    let mut table = JOB_MENU_GLYPHS.to_vec();
+    table.push((ID_PAUSE_RESUME, if resumes { 0xe768 } else { 0xe769 }));
+    let glyphs = set_menu_glyphs(menu, ui.hwnd, ui.dpi, &table);
     let command = TrackPopupMenu(
         menu,
         TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
@@ -5219,6 +5607,9 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
         null(),
     ) as i32;
     DestroyMenu(menu);
+    for bitmap in glyphs {
+        DeleteObject(bitmap as HGDIOBJ);
+    }
     PostMessageW(ui.hwnd, WM_NULL, 0, 0);
     if command == ID_JOB_ERROR {
         if let Some(error) = error {
@@ -6592,9 +6983,9 @@ fn settings_logical_height(simple: bool) -> i32 {
 /// shipped with was a 385 window. A mode's window is its own height plus this,
 /// so neither mode opens with rows it does not have.
 const SETTINGS_FRAME: i32 = 39;
-/// The simple add dialog's window: its 292 logical content height plus the
+/// The simple add dialog's window: its logical content height plus the
 /// shared frame, with a few pixels so DPI rounding never shows a scroll bar.
-const ADD_DIALOG_HEIGHT: i32 = 292 + SETTINGS_FRAME + 3;
+const ADD_DIALOG_HEIGHT: i32 = ADD_HEIGHT + SETTINGS_FRAME + 3;
 
 unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
     let simple = UiMode::parse(&value.ui_mode).is_simple();
@@ -7086,6 +7477,9 @@ unsafe extern "system" fn dialog_proc(
     (*raw).callbacks += 1;
     let _callback = DialogCallback(raw);
     let dlg = &mut *raw;
+    if let Some(value) = add_dialog_message(dlg, msg, wparam, lparam) {
+        return value;
+    }
     if let Some(value) = paint_theme(hwnd, msg, wparam, lparam) {
         return value;
     }
@@ -7401,9 +7795,32 @@ unsafe fn create_error(dlg: &mut DialogUi) {
     dlg.error = dialog_label(dlg.hwnd, dlg.font, "", D_ERROR);
 }
 
+/// The New download dialog uses the Windows 11 Body style; the others keep
+/// the classic dialog font.
+unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
+    if matches!(dlg.kind, DialogKind::Add(_)) {
+        ramp_font(dlg.dpi, BODY_PX, false)
+    } else {
+        make_font(dlg.dpi, 9, FW_NORMAL as i32)
+    }
+}
+
+/// A New download dialog button's face width: its label with 16 epx on each
+/// side, at least `least` epx.
+unsafe fn add_button_width(dlg: &DialogUi, id: i32, least: i32) -> i32 {
+    let label: Vec<u16> = text(GetDlgItem(dlg.hwnd, id)).encode_utf16().collect();
+    let dc = GetDC(dlg.hwnd);
+    let previous = SelectObject(dc, dlg.font as HGDIOBJ);
+    let mut size: SIZE = zeroed();
+    GetTextExtentPoint32W(dc, label.as_ptr(), label.len() as i32, &mut size);
+    SelectObject(dc, previous);
+    ReleaseDC(dlg.hwnd, dc);
+    (size.cx + scale(32, dlg.dpi)).max(scale(least, dlg.dpi))
+}
+
 unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     dlg.dpi = GetDpiForWindow(dlg.hwnd).max(96);
-    dlg.font = make_font(dlg.dpi, 9, FW_NORMAL as i32);
+    dlg.font = dialog_font(dlg);
     create_error(dlg);
     create_kind_controls(dlg);
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
@@ -7831,7 +8248,7 @@ unsafe fn window_class(hwnd: HWND) -> String {
 }
 unsafe fn dialog_dpi(dlg: &mut DialogUi) {
     dlg.dpi = GetDpiForWindow(dlg.hwnd).max(96);
-    let f = make_font(dlg.dpi, 9, FW_NORMAL as i32);
+    let f = dialog_font(dlg);
     let mut child = GetWindow(dlg.hwnd, GW_CHILD);
     while !child.is_null() {
         apply_font(child, f);
@@ -8275,6 +8692,89 @@ mod tests {
             super::state_label(&job(JobState::Paused, "MP4")),
             JobState::Paused.label()
         );
+    }
+
+    fn sample_job(name: &str, state: crate::model::JobState) -> crate::model::Job {
+        crate::model::Job {
+            id: name.into(),
+            request: crate::model::AddRequest::default(),
+            name: name.into(),
+            state,
+            path: name.into(),
+            downloaded: 0,
+            total: None,
+            speed: 0,
+            eta: None,
+            error: None,
+            phase: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            attempts: 0,
+            work_dir: None,
+            remove_requested: None,
+            claim: None,
+            legacy_completed: false,
+            browser_transfer_authorized: false,
+            priority: 0,
+            force_start: false,
+            open_when_done: false,
+            live: false,
+            sequence: 0,
+        }
+    }
+
+    #[test]
+    fn jobs_sort_by_their_values_and_not_by_the_text_shown() {
+        use super::compare_jobs;
+        use crate::model::JobState;
+        use std::cmp::Ordering::{Greater, Less};
+        // Shown as "9.0 KB" and "10.0 MB": text order would put the larger first.
+        let mut small = sample_job("a", JobState::Downloading);
+        small.speed = 9 * 1024;
+        let mut large = sample_job("b", JobState::Downloading);
+        large.speed = 10 * 1024 * 1024;
+        assert_eq!(compare_jobs(&small, &large, 3), Less);
+        small.eta = Some(9 * 60);
+        large.eta = Some(70 * 60);
+        assert_eq!(compare_jobs(&small, &large, 4), Less);
+        // An unknown time left goes after every known one.
+        large.eta = None;
+        assert_eq!(compare_jobs(&large, &small, 4), Greater);
+        // The share done decides progress, then the bytes.
+        small.downloaded = 900;
+        small.total = Some(1000);
+        large.downloaded = 5000;
+        large.total = Some(100_000);
+        assert_eq!(compare_jobs(&small, &large, 2), Greater);
+        // A failed job counts what it downloaded, though its bar is full.
+        let failed_empty = sample_job("e", JobState::Failed);
+        assert_eq!(compare_jobs(&failed_empty, &large, 2), Less);
+        // States follow the lifecycle, not the alphabet of their labels.
+        let queued = sample_job("q", JobState::Queued);
+        let failed = sample_job("f", JobState::Failed);
+        assert_eq!(compare_jobs(&queued, &failed, 1), Less);
+        // Names and locations ignore case.
+        let upper = sample_job("Zebra", JobState::Queued);
+        let lower = sample_job("apple", JobState::Queued);
+        assert_eq!(compare_jobs(&upper, &lower, 0), Greater);
+        assert_eq!(compare_jobs(&upper, &lower, 5), Greater);
+    }
+
+    #[test]
+    fn a_header_click_goes_ascending_descending_then_back_to_the_queue() {
+        use super::next_sort;
+        assert_eq!(next_sort(None, 3), Some((3, true)));
+        assert_eq!(next_sort(Some((3, true)), 3), Some((3, false)));
+        assert_eq!(next_sort(Some((3, false)), 3), None);
+        assert_eq!(next_sort(Some((3, false)), 1), Some((1, true)));
+    }
+
+    #[test]
+    fn stored_hidden_columns_never_hide_the_name() {
+        use super::visible_columns;
+        assert_eq!(visible_columns(&[]), [0, 1, 2, 3, 4, 5]);
+        let hidden = ["name".to_string(), "speed".into(), "unknown".into()];
+        assert_eq!(visible_columns(&hidden), [0, 1, 2, 4, 5]);
     }
 
     #[test]

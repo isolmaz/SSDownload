@@ -291,6 +291,21 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.schedule = dialog_edit(dlg.hwnd, dlg.font, D_SCHEDULE, false, false);
+            for edit in [
+                f.urls,
+                f.dir,
+                f.filename,
+                f.connections,
+                f.checksum,
+                f.schedule,
+            ] {
+                flatten_edit(edit);
+            }
+            for (index, (tr, en)) in ADD_CUES.iter().enumerate() {
+                let cue = wide(crate::i18n::ui(tr, en));
+                let edit = [f.filename, f.schedule][index];
+                SendMessageW(edit, EM_SETCUEBANNER, 0, cue.as_ptr() as LPARAM);
+            }
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1992,3 +2007,10 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
         }
     }
 }
+
+/// What an empty file name and an empty start time mean, shown inside the
+/// empty fields of the New download dialog.
+const ADD_CUES: [(&str, &str); 2] = [
+    ("Sunucudan gelen ad", "Name from the server"),
+    ("Boş bırakılırsa hemen", "Right away when empty"),
+];

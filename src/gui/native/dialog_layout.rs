@@ -11,9 +11,9 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Wizard(_) => 372,
         DialogKind::Add(f) => {
             if f.advanced {
-                372
+                ADD_ADVANCED_HEIGHT
             } else {
-                292
+                ADD_HEIGHT
             }
         }
         DialogKind::Settings(f) => {
@@ -119,86 +119,127 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
         }
         DialogKind::Add(f) => {
+            // Windows 11 dialog rhythm: a label 8 epx above each 32 epx field,
+            // 12 epx between groups, 24 epx padding, the command bar below.
             let labels = child_statics(dlg.hwnd, dlg.error);
-            let line = scale(22, dlg.dpi);
-            let step = scale(26, dlg.dpi);
-            let cw = w - 2 * m;
-            let field = |index: usize, y: i32, show: bool| {
+            let s = |value: i32| scale(value, dlg.dpi);
+            let x = s(ADD_PAD);
+            let cw = w - 2 * x;
+            let label = |index: usize, lx: i32, ly: i32, lw: i32, show: bool| {
                 if let Some(label) = labels.get(index) {
                     ShowWindow(*label, if show { SW_SHOW } else { SW_HIDE });
-                    MoveWindow(*label, m, y, cw, scale(18, dlg.dpi), 1);
+                    MoveWindow(*label, lx, ly, lw, s(ADD_LABEL), 1);
                 }
             };
-            field(0, m, true);
-            MoveWindow(f.urls, m, m + scale(20, dlg.dpi), cw, scale(56, dlg.dpi), 1);
-            field(1, m + scale(80, dlg.dpi), true);
-            MoveWindow(
+            let frame = |left: i32, top: i32, width: i32, height: i32| RECT {
+                left,
+                top,
+                right: left + width,
+                bottom: top + height,
+            };
+            let ring = s(FOCUS_MARGIN);
+            let button = |id: i32, bx: i32, by: i32, bw: i32| {
+                move_id(
+                    dlg.hwnd,
+                    id,
+                    bx - ring,
+                    by - ring,
+                    bw + 2 * ring,
+                    s(ADD_FIELD) + 2 * ring,
+                );
+            };
+            let field_top = |label_top: i32| label_top + s(ADD_LABEL + ADD_LABEL_GAP);
+
+            let mut y = s(ADD_TOP);
+            label(0, x, y, cw, true);
+            place_in_frame(f.urls, frame(x, field_top(y), cw, s(ADD_URLS)), dlg.dpi);
+            y = field_top(y) + s(ADD_URLS + ADD_GROUP_GAP);
+
+            let browse_w = add_button_width(dlg, D_BROWSE, 96);
+            label(1, x, y, cw, true);
+            place_in_frame(
                 f.dir,
-                m,
-                m + scale(100, dlg.dpi),
-                cw - scale(96, dlg.dpi),
-                line,
-                1,
+                frame(x, field_top(y), cw - browse_w - gap, s(ADD_FIELD)),
+                dlg.dpi,
             );
-            move_id(
-                dlg.hwnd,
-                D_BROWSE,
-                w - m - scale(88, dlg.dpi),
-                m + scale(100, dlg.dpi),
-                scale(88, dlg.dpi),
-                line,
+            button(D_BROWSE, x + cw - browse_w, field_top(y), browse_w);
+            y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
+
+            let kind_w = s(200);
+            let name_w = cw - kind_w - s(ADD_GROUP_GAP);
+            label(2, x, y, name_w, true);
+            label(3, x + name_w + s(ADD_GROUP_GAP), y, kind_w, true);
+            place_in_frame(
+                f.filename,
+                frame(x, field_top(y), name_w, s(ADD_FIELD)),
+                dlg.dpi,
             );
-            field(2, m + scale(126, dlg.dpi), true);
-            MoveWindow(f.filename, m, m + scale(146, dlg.dpi), cw, line, 1);
-            field(3, m + scale(172, dlg.dpi), true);
-            // A closed combo box only needs one row; the list it drops belongs
-            // to the item count, not to the control.
+            // The combo's selection field plus its 3 epx frame is the field height.
+            let item_h = (s(ADD_FIELD) - 6) as isize;
+            if SendMessageW(f.kind, CB_GETITEMHEIGHT, usize::MAX, 0) != item_h {
+                SendMessageW(f.kind, CB_SETITEMHEIGHT, usize::MAX, item_h);
+            }
             MoveWindow(
                 f.kind,
-                m,
-                m + scale(192, dlg.dpi),
-                scale(260, dlg.dpi),
-                line,
+                x + name_w + s(ADD_GROUP_GAP),
+                field_top(y),
+                kind_w,
+                s(240),
                 1,
             );
-            let label_w = scale(276, dlg.dpi);
-            for (index, (label_index, control)) in
-                [(4, f.connections), (5, f.checksum), (6, f.schedule)]
-                    .iter()
-                    .enumerate()
-            {
-                let y = m + scale(222, dlg.dpi) + step * index as i32;
-                if let Some(label) = labels.get(*label_index) {
-                    ShowWindow(*label, if f.advanced { SW_SHOW } else { SW_HIDE });
-                    MoveWindow(
-                        *label,
-                        m,
-                        y + scale(2, dlg.dpi),
-                        label_w,
-                        scale(18, dlg.dpi),
-                        1,
-                    );
+            y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
+
+            // The labels column is as wide as its longest label, leaving the
+            // fields at least 200 epx.
+            let dc = GetDC(dlg.hwnd);
+            let previous = SelectObject(dc, dlg.font as HGDIOBJ);
+            let widest = labels
+                .iter()
+                .skip(4)
+                .take(3)
+                .map(|label| {
+                    let caption: Vec<u16> = text(*label).encode_utf16().collect();
+                    let mut size: SIZE = zeroed();
+                    GetTextExtentPoint32W(dc, caption.as_ptr(), caption.len() as i32, &mut size);
+                    size.cx
+                })
+                .max()
+                .unwrap_or(0);
+            SelectObject(dc, previous);
+            ReleaseDC(dlg.hwnd, dc);
+            let label_w = (widest + s(4)).min(cw - gap - s(200));
+            for (label_index, control) in [(4, f.connections), (5, f.checksum), (6, f.schedule)] {
+                label(
+                    label_index,
+                    x,
+                    y + (s(ADD_FIELD) - s(ADD_LABEL)) / 2,
+                    label_w,
+                    f.advanced,
+                );
+                ShowWindow(control, if f.advanced { SW_SHOW } else { SW_HIDE });
+                place_in_frame(
+                    control,
+                    frame(x + label_w + gap, y, cw - label_w - gap, s(ADD_FIELD)),
+                    dlg.dpi,
+                );
+                if f.advanced {
+                    y += s(ADD_FIELD) + gap;
                 }
-                ShowWindow(*control, if f.advanced { SW_SHOW } else { SW_HIDE });
-                MoveWindow(*control, m + label_w + gap, y, cw - label_w - gap, line, 1);
             }
-            move_id(dlg.hwnd, D_ADVANCED, m, by, scale(185, dlg.dpi), row);
-            move_id(
-                dlg.hwnd,
-                D_ADD_OK,
-                w - m - scale(150, dlg.dpi),
-                by,
-                scale(150, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                D_CANCEL,
-                w - m - scale(250, dlg.dpi),
-                by,
-                scale(92, dlg.dpi),
-                row,
-            );
+            // The error line follows the last field shown.
+            let error_y = if f.advanced {
+                y
+            } else {
+                y - s(ADD_GROUP_GAP) + gap
+            };
+            move_id(dlg.hwnd, D_ERROR, x, error_y, cw, s(ADD_LABEL));
+
+            let by = h - s(ADD_FOOTER) + s(ADD_PAD);
+            let ok_w = add_button_width(dlg, D_ADD_OK, 120);
+            let cancel_w = add_button_width(dlg, D_CANCEL, 96);
+            button(D_ADVANCED, x, by, add_button_width(dlg, D_ADVANCED, 120));
+            button(D_CANCEL, x + cw - cancel_w, by, cancel_w);
+            button(D_ADD_OK, x + cw - cancel_w - gap - ok_w, by, ok_w);
         }
         DialogKind::Settings(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);

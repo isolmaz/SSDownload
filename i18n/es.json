@@ -1695,5 +1695,7 @@
   "No capacity for the network connection became free in time": "No quedó capacidad libre para la conexión de red a tiempo",
   "Details": "Detalles",
   "No error was recorded for this download.": "No se registró ningún error para esta descarga.",
-  "Select a single download.": "Seleccione una sola descarga."
+  "Select a single download.": "Seleccione una sola descarga.",
+  "Name from the server": "Nombre del servidor",
+  "Right away when empty": "De inmediato si está vacío"
 }

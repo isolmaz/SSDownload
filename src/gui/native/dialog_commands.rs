@@ -623,7 +623,11 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                 resize_dialog(
                     dlg.hwnd,
                     dlg.dpi,
-                    if f.advanced { 420 } else { ADD_DIALOG_HEIGHT },
+                    if f.advanced {
+                        ADD_ADVANCED_HEIGHT + SETTINGS_FRAME + 3
+                    } else {
+                        ADD_DIALOG_HEIGHT
+                    },
                 );
                 layout_dialog(dlg);
             }

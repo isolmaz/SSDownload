@@ -595,6 +595,9 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
     };
     SetBkMode(dc, TRANSPARENT as i32);
     SetTextColor(dc, palette.secondary);
+    // The sort direction is a 12 epx chevron at the sorted column's right end.
+    let chevrons = icon_font_px(dpi, 12);
+    let chevron_w = scale(20, dpi);
     for index in 0..SendMessageW(hwnd, HDM_GETITEMCOUNT, 0, 0) as i32 {
         let mut rect: RECT = zeroed();
         if SendMessageW(
@@ -608,7 +611,7 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
         }
         let mut title = [0u16; 128];
         let mut item: HDITEMW = zeroed();
-        item.mask = HDI_TEXT;
+        item.mask = HDI_TEXT | HDI_FORMAT;
         item.pszText = title.as_mut_ptr();
         item.cchTextMax = title.len() as i32;
         SendMessageW(
@@ -620,6 +623,29 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
         let mut text = rect;
         text.left += scale(8, dpi);
         text.right -= scale(4, dpi);
+        let chevron = if item.fmt & HDF_SORTUP != 0 {
+            Some(0xe70eu16)
+        } else if item.fmt & HDF_SORTDOWN != 0 {
+            Some(0xe70d)
+        } else {
+            None
+        };
+        if let (Some(code), false) = (chevron, chevrons.is_null()) {
+            let mut mark = RECT {
+                left: text.right - chevron_w,
+                ..text
+            };
+            text.right = mark.left;
+            let font = SelectObject(dc, chevrons as HGDIOBJ);
+            DrawTextW(
+                dc,
+                &code,
+                1,
+                &mut mark,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+            SelectObject(dc, font);
+        }
         DrawTextW(
             dc,
             title.as_mut_ptr(),
@@ -637,6 +663,9 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
     }
     if !previous.is_null() {
         SelectObject(dc, previous);
+    }
+    if !chevrons.is_null() {
+        DeleteObject(chevrons as HGDIOBJ);
     }
     // The header's bottom edge is what separates it from the rows.
     let edge = RECT {
