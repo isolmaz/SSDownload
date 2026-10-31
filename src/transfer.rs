@@ -5093,8 +5093,8 @@ fn page_instead_of_file() -> anyhow::Error {
     crate::error_codes::coded(
         crate::error_codes::NET_004,
         crate::i18n::ui(
-            "Kaynak dosya yerine bir oturum açma veya web sayfasıyla yanıt verdi. Dosyayı tarayıcıda indirin ya da eklentinin sağ tık menüsünden Bu site için oturum çerezlerine izin ver seçeneğini kullanın.",
-            "The source answered with a sign-in or web page instead of the file. Download it in the browser, or choose Allow session cookies for this site in the extension's context menu.",
+            "Kaynak dosya yerine bir oturum açma veya web sayfasıyla yanıt verdi. Dosyayı tarayıcıda indirin ya da eklentinin sağ tık menüsünden Bu site için oturum çerezlerine izin ver seçeneğini kullanıp bağlantıyı yeniden ekleyin.",
+            "The source answered with a sign-in or web page instead of the file. Download it in the browser, or choose Allow session cookies for this site in the extension's context menu and add the link again.",
         ),
     )
 }
@@ -5873,6 +5873,10 @@ mod tests {
             Some(crate::error_codes::NET_004)
         );
         assert!(format!("{error:#}").starts_with("SSD-NET-004 "));
+        assert!(
+            format!("{error:#}").contains("bağlantıyı yeniden ekleyin"),
+            "{error:#}"
+        );
         assert!(retry_after(&error).is_none() && http_status(&error).is_none());
         assert!(!preserves_partial(&error));
     }
