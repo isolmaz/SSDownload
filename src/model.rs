@@ -171,7 +171,8 @@ pub struct AddRequest {
     /// extension. It can carry session-bound markup, so it stays inside the
     /// profile: the job record seals it like the rest of the job, no
     /// browser-facing response carries it (`public_snapshot`, the request copy of a
-    /// browser transfer) and neither the log nor the events dialog shows it.
+    /// browser transfer, the ticket of a source refresh) and neither the log nor the
+    /// events dialog shows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_html: Option<String>,
     pub source_identity: Option<SourceIdentity>,
