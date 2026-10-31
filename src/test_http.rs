@@ -119,6 +119,9 @@ pub struct Config {
     /// that part and then stays silent until the client closes the connection or `STALL_LIMIT`
     /// has passed.
     pub hold_at_takeover: bool,
+    /// A `GET` with a `Range` header, the probe among them, is answered only after this long,
+    /// so that the first byte of every ranged response is late.
+    pub first_byte_delay: Option<Duration>,
     pub max_connections: Option<usize>,
     pub over_limit: OverLimit,
     pub cut_body: Option<CutBody>,
@@ -158,6 +161,7 @@ impl Default for Config {
             slow_connection: None,
             stall: None,
             hold_at_takeover: false,
+            first_byte_delay: None,
             max_connections: None,
             over_limit: OverLimit::Unavailable(None),
             cut_body: None,
@@ -892,6 +896,11 @@ fn answer(
     });
     drop(log);
 
+    if let Some(delay) = config.first_byte_delay {
+        if request.method == "GET" && request.header("range").is_some() {
+            thread::sleep(delay);
+        }
+    }
     let mut head = format!("HTTP/1.1 {} {}\r\n", reply.status, reason(reply.status));
     for header in &reply.headers {
         head.push_str(header);
@@ -1476,6 +1485,22 @@ mod tests {
         server.wait_idle();
         assert!(began.elapsed() < STALL_LIMIT / 2);
         assert_eq!(server.abandoned_holds(), 1);
+    }
+
+    #[test]
+    fn a_ranged_get_is_answered_only_after_the_first_byte_delay() {
+        let delay = Duration::from_millis(300);
+        let server = Server::start(Config {
+            first_byte_delay: Some(delay),
+            ..config(1000)
+        });
+        let began = Instant::now();
+        let answer = request(&mut connect(&server), "GET", "/", &["Range: bytes=10-19"]);
+        assert!(began.elapsed() >= delay);
+        assert_eq!(
+            (answer.status, answer.body),
+            (206, pattern(1, 1000)[10..20].to_vec())
+        );
     }
 
     #[test]

@@ -2337,6 +2337,46 @@ fn a_slow_connection_with_nothing_left_does_not_take_the_back_of_a_fast_lease() 
 }
 
 #[test]
+fn a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows() {
+    // Three leases of 8 MiB over 2 connections at 8 MiB/s, and every ranged response, the probe
+    // among them, starts a second after its request. The worker that finishes first takes the
+    // last lease and the other has nothing to take. Once the last lease flows, a request for its
+    // back half would wait a second for its first byte, longer than the half a second that the
+    // half of at most 8 MiB would save the lease.
+    let size = 24 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(8 * MIB),
+        first_byte_delay: Some(Duration::from_secs(1)),
+        ..Config::default()
+    });
+    forget_writes();
+    let directory = TempDir::new("late-first-byte");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_file_is(&result.path, &pattern(1, size), "a late first byte");
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    let mut ranges = ranged_gets(&log, size);
+    ranges.sort_unstable();
+    assert_eq!(
+        ranges,
+        [(0, 8 * MIB), (8 * MIB, 16 * MIB), (16 * MIB, size)],
+        "{log:?}"
+    );
+}
+
+#[test]
 fn a_lease_with_less_to_come_than_two_minimum_pieces_is_left_to_its_worker() {
     // Two leases of 4 MiB less one byte. The second is slow, so the worker of the first is idle
     // for a second, while the second has one byte less to come than the least that is cut.
