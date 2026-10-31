@@ -4217,6 +4217,7 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
     let rival_output = directory.0.join("rival.bin");
     let rival_control = TransferControl::default();
     let (done_tx, done_rx) = mpsc::channel();
+    let (first_tx, first_rx) = mpsc::channel();
     let (rival_tx, rival_rx) = mpsc::channel();
     thread::scope(|scope| {
         scope.spawn(|| {
@@ -4227,19 +4228,19 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
                 &network,
                 2,
                 None,
-                &mut |_| {},
+                &mut |progress| {
+                    if progress.downloaded > 0 {
+                        let _ = first_tx.send(());
+                    }
+                },
             );
             done_tx.send(result).unwrap();
         });
-        // The other job starts once the download holds both slots, so it has to wait for one.
-        let started = Instant::now();
-        while data_gets(&target.log()).next().is_none() {
-            assert!(
-                started.elapsed() < Duration::from_secs(20),
-                "no data request"
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
+        // The other job starts as soon as the download reports its first bytes, while it holds
+        // both slots, so it has to wait for one.
+        first_rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the download reported no bytes");
         scope.spawn(|| {
             let result = download(
                 &file_request(rival.url("/rival.bin")),
@@ -4252,7 +4253,7 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
             );
             rival_tx.send(result.is_ok()).unwrap();
         });
-        let outcome = done_rx.recv_timeout(Duration::from_secs(60));
+        let outcome = done_rx.recv_timeout(Duration::from_secs(25));
         let rival_ended = rival_rx.try_recv().is_ok();
         rival_control.cancel();
         let result = outcome

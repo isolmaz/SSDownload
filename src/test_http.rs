@@ -169,7 +169,7 @@ pub struct Config {
     pub signed_pages_from: Option<usize>,
     /// The signed addresses issued from this ordinal on name this origin instead of the signing one.
     pub signed_origin_from: Option<(usize, String)>,
-    /// A GET for ytes=0-0 is answered 206 with its Content-Range and no body.
+    /// A `GET` for `bytes=0-0` is answered 206 with its `Content-Range` and no body.
     pub bodiless_probe: bool,
     /// Every `GET`, and every `HEAD` unless `head_not_redirected` is set, is answered 302 to this
     /// address, which can name another server.
