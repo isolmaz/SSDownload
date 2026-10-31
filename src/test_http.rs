@@ -4,6 +4,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
@@ -88,6 +89,26 @@ pub struct Document {
     pub unframed: bool,
 }
 
+/// What one signed address allows: it answers normally for `lifetime` after it was issued and
+/// for `requests` requests, then as expired (see `Config::expiry`).
+#[derive(Clone, Copy, Debug)]
+pub struct Validity {
+    pub lifetime: Duration,
+    pub requests: usize,
+}
+
+/// A request for `from` is answered 302 to a new signed address, as a download link that leads to a
+/// time-limited storage address is. The k-th address issued (from 0) has the k-th `validity`; the
+/// last entry applies to every later one. The address names its own deadline, so any server that
+/// has `expiry` set can tell when it has passed.
+#[derive(Clone, Debug)]
+pub struct Signing {
+    pub from: String,
+    /// Scheme and authority of the server that serves the addresses; empty for this server.
+    pub origin: String,
+    pub validity: Vec<Validity>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub size: u64,
@@ -158,6 +179,15 @@ pub struct Config {
     pub etag_rotation_heads: Option<usize>,
     pub scripted: Vec<Scripted>,
     pub redirect: Option<Redirect>,
+    pub signing: Option<Signing>,
+    /// A request for a signed address that has expired is answered with this status and no body.
+    pub expiry: Option<u16>,
+    /// The signed addresses issued from this ordinal on answer as a web page (text/html).
+    pub signed_pages_from: Option<usize>,
+    /// The signed addresses issued from this ordinal on name this origin instead of the signing one.
+    pub signed_origin_from: Option<(usize, String)>,
+    /// A `GET` for `bytes=0-0` is answered 206 with its `Content-Range` and no body.
+    pub bodiless_probe: bool,
     /// Every `GET`, and every `HEAD` unless `head_not_redirected` is set, is answered 302 to this
     /// address, which can name another server.
     pub redirect_to: Option<String>,
@@ -218,6 +248,11 @@ impl Default for Config {
             etag_rotation_heads: None,
             scripted: Vec::new(),
             redirect: None,
+            signing: None,
+            expiry: None,
+            signed_pages_from: None,
+            signed_origin_from: None,
+            bodiless_probe: false,
             redirect_to: None,
             head_not_redirected: false,
             content_type: None,
@@ -264,6 +299,10 @@ struct Shared {
     head_requests: AtomicUsize,
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
+    /// Signed addresses issued so far.
+    signed: AtomicUsize,
+    /// Requests seen per signed address, by the number in the address.
+    signed_uses: Mutex<HashMap<u64, usize>>,
     ranged_connections: AtomicUsize,
     /// Silent bodies that ended because the client closed the connection.
     abandoned: AtomicUsize,
@@ -297,6 +336,8 @@ impl Server {
             head_requests: AtomicUsize::new(0),
             scripted: AtomicUsize::new(0),
             target_requests: AtomicUsize::new(0),
+            signed: AtomicUsize::new(0),
+            signed_uses: Mutex::new(HashMap::new()),
             ranged_connections: AtomicUsize::new(0),
             abandoned: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
@@ -713,8 +754,10 @@ fn reason(status: u16) -> &'static str {
         200 => "OK",
         206 => "Partial Content",
         302 => "Found",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        410 => "Gone",
         405 => "Method Not Allowed",
         416 => "Range Not Satisfiable",
         429 => "Too Many Requests",
@@ -776,6 +819,36 @@ fn wanted(spec: &str, size: u64) -> Wanted {
     }
 }
 
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+}
+
+/// Whether `path` is a signed address (it names a deadline) whose deadline has passed or that has
+/// been asked for more often than it allows. A request counts even when it is refused.
+fn signed_address_expired(shared: &Shared, path: &str) -> bool {
+    let Some((_, query)) = path.split_once('?') else {
+        return false;
+    };
+    let parameter = |name: &str| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+            .and_then(|value| value.parse::<u128>().ok())
+    };
+    let (Some(deadline), Some(number), Some(allowed)) =
+        (parameter("exp"), parameter("n"), parameter("max"))
+    else {
+        return false;
+    };
+    let mut uses = shared.signed_uses.lock().unwrap();
+    let used = uses.entry(number as u64).or_insert(0);
+    *used += 1;
+    unix_millis() >= deadline || *used as u128 > allowed
+}
+
 fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> Reply {
     let config = &shared.config;
     if over_limit {
@@ -793,6 +866,31 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             reply.headers.push(retry_after_header(retry_after));
         }
         return reply;
+    }
+    if let Some(signing) = &config.signing {
+        if request.path == signing.from {
+            let ordinal = shared.signed.fetch_add(1, Ordering::AcqRel);
+            let validity = signing.validity[ordinal.min(signing.validity.len() - 1)];
+            let deadline = unix_millis() + validity.lifetime.as_millis();
+            let page = config.signed_pages_from.is_some_and(|from| ordinal >= from);
+            let mut reply = Reply::empty(302);
+            reply.headers.push(format!(
+                "Location: {}/signed?exp={deadline}&n={ordinal}&max={}{}",
+                config
+                    .signed_origin_from
+                    .as_ref()
+                    .filter(|(from, _)| ordinal >= *from)
+                    .map_or(signing.origin.as_str(), |(_, origin)| origin.as_str()),
+                validity.requests,
+                if page { "&page=1" } else { "" }
+            ));
+            return reply;
+        }
+    }
+    if let Some(status) = config.expiry {
+        if signed_address_expired(shared, &request.path) {
+            return Reply::empty(status);
+        }
     }
     if let Some(document) = config
         .documents
@@ -892,12 +990,17 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
     if let Some(date) = last_modified {
         identity.push(format!("Last-Modified: {date}"));
     }
-    let content_type = config
-        .content_type_from
-        .as_ref()
-        .filter(|(from, _)| index >= *from)
-        .map(|(_, value)| value)
-        .or(config.content_type.as_ref());
+    let page = "text/html".to_owned();
+    let content_type = if request.path.contains("&page=1") {
+        Some(&page)
+    } else {
+        config
+            .content_type_from
+            .as_ref()
+            .filter(|(from, _)| index >= *from)
+            .map(|(_, value)| value)
+            .or(config.content_type.as_ref())
+    };
     if let Some(value) = content_type {
         identity.push(format!("Content-Type: {value}"));
     }
@@ -973,10 +1076,11 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
                         headers.retain(|header| !header.starts_with("ETag:"));
                     }
                     headers.push(format!("Content-Range: bytes {start}-{end}/{size}"));
+                    let bodiless = config.bodiless_probe && (start, end) == (0, 0);
                     Reply {
                         headers,
-                        length: end - start + 1,
-                        body: Some((start, end - start + 1)),
+                        length: if bodiless { 0 } else { end - start + 1 },
+                        body: (!bodiless).then_some((start, end - start + 1)),
                         version,
                         ..Reply::empty(206)
                     }
@@ -1929,5 +2033,65 @@ Host: test
             request(&mut connection, "GET", "/new", &[]).body,
             pattern(1, 10)
         );
+    }
+
+    #[test]
+    fn a_signing_path_issues_a_new_address_per_request_and_each_address_expires_on_its_own() {
+        let server = Server::start(Config {
+            signing: Some(Signing {
+                from: "/file".into(),
+                origin: String::new(),
+                validity: vec![
+                    Validity {
+                        lifetime: Duration::from_millis(200),
+                        requests: 2,
+                    },
+                    Validity {
+                        lifetime: Duration::ZERO,
+                        requests: usize::MAX,
+                    },
+                ],
+            }),
+            expiry: Some(410),
+            ..config(10)
+        });
+        let mut connection = connect(&server);
+        let address = |connection: &mut BufReader<TcpStream>| {
+            let answer = request(connection, "GET", "/file", &[]);
+            assert_eq!(answer.status, 302);
+            answer.header("Location").unwrap().to_owned()
+        };
+        let first = address(&mut connection);
+        assert!(
+            first.starts_with("/signed?exp=") && first.contains("&n=0&"),
+            "{first}"
+        );
+        // The address allows two requests, and refuses the third whatever its deadline says.
+        assert_eq!(request(&mut connection, "HEAD", &first, &[]).status, 200);
+        assert_eq!(request(&mut connection, "GET", &first, &[]).status, 200);
+        assert_eq!(request(&mut connection, "GET", &first, &[]).status, 410);
+
+        let second = address(&mut connection);
+        assert!(second.contains("&n=1&"), "{second}");
+        assert_eq!(request(&mut connection, "GET", &second, &[]).status, 410);
+        assert_eq!(request(&mut connection, "GET", "/plain", &[]).status, 200);
+
+        let timed = Server::start(Config {
+            signing: Some(Signing {
+                from: "/file".into(),
+                origin: String::new(),
+                validity: vec![Validity {
+                    lifetime: Duration::from_millis(150),
+                    requests: usize::MAX,
+                }],
+            }),
+            expiry: Some(401),
+            ..config(10)
+        });
+        let mut connection = connect(&timed);
+        let address = address(&mut connection);
+        assert_eq!(request(&mut connection, "GET", &address, &[]).status, 200);
+        thread::sleep(Duration::from_millis(250));
+        assert_eq!(request(&mut connection, "GET", &address, &[]).status, 401);
     }
 }
