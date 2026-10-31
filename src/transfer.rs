@@ -2024,15 +2024,16 @@ impl Checkpoints {
     }
 
     /// Cuts the back half off a running lease for the `idle` worker that fetched its last range
-    /// fastest, and returns that worker with the range cut off. A lease is cut only when it has
-    /// delivered bytes, so that its rate is known, and the idle worker is expected to fetch the
-    /// back half before the lease's own worker would reach the end of its range: the half
-    /// arrives at the idle worker's rate and the whole remainder at the lease's. Of the leases
-    /// that qualify, the one with the most bytes still to come is cut; none is when none has at
-    /// least twice `MIN_SEGMENT_SIZE` to come, or no idle worker has finished a range yet. The
-    /// lease keeps the front: its worker writes no byte beyond the cut, however many are already
-    /// in flight, and the cut is never before the last byte it has claimed.
-    fn split(&mut self, idle: &[usize], now: Instant) -> Option<(usize, RangeWork)> {
+    /// fastest, takes that worker out of `idle` and returns it with the range cut off. A lease
+    /// is cut only when it has delivered bytes, so that its rate is known, and the idle worker
+    /// is expected to fetch the back half before the lease's own worker would reach the end of
+    /// its range: the half arrives at the idle worker's rate and the whole remainder at the
+    /// lease's. Of the leases that qualify, the one with the most bytes still to come is cut;
+    /// none is when none has at least twice `MIN_SEGMENT_SIZE` to come, or no idle worker has
+    /// finished a range yet, and `idle` is left as it is. The lease keeps the front: its worker
+    /// writes no byte beyond the cut, however many are already in flight, and the cut is never
+    /// before the last byte it has claimed.
+    fn split(&mut self, idle: &mut Vec<usize>, now: Instant) -> Option<(usize, RangeWork)> {
         let (thief, thief_rate) = idle
             .iter()
             .filter_map(|&worker| Some((worker, self.rates[worker]?)))
@@ -2067,6 +2068,7 @@ impl Checkpoints {
                 range: back,
                 attempts: lease.attempts,
             };
+            idle.retain(|&candidate| candidate != thief);
             return Some((thief, work));
         }
     }
@@ -2410,12 +2412,11 @@ fn download_segmented(
                 if split_recently {
                     break;
                 }
-                let Some((worker, work)) = ledger.split(&idle, now) else {
+                let Some(taken) = ledger.split(&mut idle, now) else {
                     break;
                 };
                 last_split = Some(Instant::now());
-                idle.retain(|&candidate| candidate != worker);
-                (worker, work)
+                taken
             } else {
                 let needs_split = pending
                     .iter()
@@ -7056,7 +7057,7 @@ mod tests {
         now: Instant,
     ) -> Option<(usize, ByteRange, u8)> {
         ledger
-            .split(idle, now)
+            .split(&mut idle.to_vec(), now)
             .map(|(worker, work)| (worker, work.range, work.attempts))
     }
 
@@ -7233,19 +7234,24 @@ mod tests {
         let start = Instant::now();
         let now = start + Duration::from_secs(1);
         // Only worker 2 is fast enough for the lease at 2 MiB/s; worker 3 has not finished a
-        // range.
-        for idle in [[1, 2, 3], [3, 2, 1], [2, 3, 1]] {
+        // range. The worker that takes the half is no longer idle, and the others still are.
+        for order in [[1, 2, 3], [3, 2, 1], [2, 3, 1]] {
             let mut ledger = ledger_with_a_lease(&directory, start);
             ledger.rates[1] = Some(MIB / 2);
             ledger.rates[2] = Some(4 * MIB);
-            assert_eq!(
-                stolen(&mut ledger, &idle, now),
-                Some((2, range(5 * MIB, 8 * MIB), 0)),
-                "idle workers {idle:?}"
-            );
+            let mut idle = order.to_vec();
+            let (worker, work) = ledger
+                .split(&mut idle, now)
+                .expect("worker 2 is fast enough");
+            assert_eq!((worker, work.range), (2, range(5 * MIB, 8 * MIB)));
+            let mut others = order.to_vec();
+            others.retain(|&other| other != 2);
+            assert_eq!(idle, others, "idle workers {order:?}");
         }
         let mut ledger = ledger_with_a_lease(&directory, start);
-        assert_eq!(stolen(&mut ledger, &[1, 2, 3], now), None);
+        let mut idle = vec![1, 2, 3];
+        assert!(ledger.split(&mut idle, now).is_none());
+        assert_eq!(idle, [1, 2, 3]);
     }
 
     #[test]
