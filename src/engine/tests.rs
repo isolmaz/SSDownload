@@ -2279,7 +2279,8 @@ fn a_job_waiting_for_a_new_source_is_neither_paused_nor_started_by_bulk_commands
 mod retry_budget {
     use super::*;
     use crate::test_http::{
-        file_sha256, pattern_sha256, Config, CutBody, Logged, Scripted, Server, TempDir,
+        file_sha256, pattern_sha256, repr_digest_header, Config, CutBody, Logged, Scripted, Server,
+        TempDir,
     };
 
     const MIB: u64 = 1024 * 1024;
@@ -2634,6 +2635,64 @@ mod retry_budget {
             })
             .unwrap_or_default();
         assert!(left.is_empty(), "partial files left behind: {left:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_digest_the_source_publishes_that_never_matches_ends_after_two_downloads_whatever_the_limit(
+    ) {
+        let size = MIB;
+        let server = Server::start(Config {
+            size,
+            extra_headers: vec![repr_digest_header(2, size)],
+            cut_body: Some(CutBody {
+                after_bytes: 150 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-published-digest");
+        let engine = engine_with_retry_limit(&root.0, 20);
+        // A page address would let a failure that looks like an expired link ask the page for a
+        // new source; a digest that does not match is not one.
+        let id = engine
+            .add(AddRequest {
+                page_url: Some("https://example.test/watch/digest".into()),
+                ..file_request(server.url("/payload.bin"), &root.0.join("out"))
+            })
+            .unwrap()
+            .remove(0);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        assert!(
+            job.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SSD-TRF-003"),
+            "{:?}",
+            job.error
+        );
+        // The first attempt is cut after keeping bytes and the second finishes the file, finds
+        // the digest wrong and fetches the file once more within itself: three probes in all,
+        // although the limit of twenty would allow many more. The file is read in full twice.
+        let log = server.log();
+        assert_eq!(attempts_made(&server), 3, "{log:?}");
+        let gets = log.iter().filter(|entry| entry.method == "GET").count();
+        assert_eq!(gets, 3, "{log:?}");
+        assert!(server.body_bytes_sent() >= 2 * size);
+        assert!(server.body_bytes_sent() < 3 * size);
+        assert!(!job.path.exists());
+        let left = fs::read_dir(job.work_dir.as_ref().unwrap())
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.contains(".ssdownload."))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(left.is_empty(), "files left behind: {left:?}");
         engine.shutdown();
     }
 

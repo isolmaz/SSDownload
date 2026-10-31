@@ -835,6 +835,7 @@ static AR: &[(&str, &str)] = &[
     ("The deterministic synchronization version target carries different content; files were kept", "هدف إصدار المزامنة الحتمي يحمل محتوى مختلفًا؛ تم الاحتفاظ بالملفات"),
     ("The diagnostics package could not be completed", "تعذّر إكمال حزمة التشخيص"),
     ("The dialog window class could not be registered", "تعذّر تسجيل فئة نافذة الحوار"),
+    ("The digest did not match; downloading the file again", "لم يتطابق الملخّص؛ جارٍ تنزيل الملف من جديد"),
     ("The download database was created by a newer SSDownload; install the current version.", "أُنشئت قاعدة بيانات التنزيلات بواسطة إصدار أحدث من SSDownload؛ ثبّت الإصدار الحالي."),
     ("The download directory could not be created", "تعذّر إنشاء مجلد التنزيل"),
     ("The download engine could not be started", "تعذّر تشغيل محرك التنزيل"),
@@ -2261,6 +2262,7 @@ static ES: &[(&str, &str)] = &[
     ("The deterministic synchronization version target carries different content; files were kept", "El destino de la versión de sincronización determinista tiene un contenido distinto; se conservaron los archivos"),
     ("The diagnostics package could not be completed", "No se pudo completar el paquete de diagnóstico"),
     ("The dialog window class could not be registered", "No se pudo registrar la clase de la ventana de diálogo"),
+    ("The digest did not match; downloading the file again", "El resumen no coincide; se vuelve a descargar el archivo"),
     ("The download database was created by a newer SSDownload; install the current version.", "La base de datos de descargas la creó una versión más reciente de SSDownload; es necesario instalar la versión actual."),
     ("The download directory could not be created", "No se pudo crear la carpeta de descargas"),
     ("The download engine could not be started", "No se pudo iniciar el motor de descargas"),
@@ -3687,6 +3689,7 @@ static PT: &[(&str, &str)] = &[
     ("The deterministic synchronization version target carries different content; files were kept", "O destino de versão determinística da sincronização contém conteúdo diferente; os arquivos foram mantidos"),
     ("The diagnostics package could not be completed", "Não foi possível concluir o pacote de diagnóstico"),
     ("The dialog window class could not be registered", "Não foi possível registrar a classe da janela de diálogo"),
+    ("The digest did not match; downloading the file again", "O resumo não corresponde; o arquivo está sendo baixado novamente"),
     ("The download database was created by a newer SSDownload; install the current version.", "O banco de dados de downloads foi criado por um SSDownload mais recente; instale a versão atual."),
     ("The download directory could not be created", "Não foi possível criar a pasta de download"),
     ("The download engine could not be started", "Não foi possível iniciar o mecanismo de download"),
@@ -5113,6 +5116,7 @@ static FR: &[(&str, &str)] = &[
     ("The deterministic synchronization version target carries different content; files were kept", "La cible de version de synchronisation déterministe contient un autre contenu ; les fichiers ont été conservés"),
     ("The diagnostics package could not be completed", "L'archive de diagnostic n'a pas pu être finalisée"),
     ("The dialog window class could not be registered", "La classe de la fenêtre de dialogue n'a pas pu être enregistrée"),
+    ("The digest did not match; downloading the file again", "Le condensat ne correspond pas ; le fichier est téléchargé de nouveau"),
     ("The download database was created by a newer SSDownload; install the current version.", "La base de données des téléchargements a été créée par une version plus récente de SSDownload ; installez la version actuelle."),
     ("The download directory could not be created", "Le dossier de téléchargement n'a pas pu être créé"),
     ("The download engine could not be started", "Le moteur de téléchargement n'a pas pu démarrer"),
@@ -6539,6 +6543,7 @@ static DE: &[(&str, &str)] = &[
     ("The deterministic synchronization version target carries different content; files were kept", "Das deterministische Synchronisierungsziel der Version enthält anderen Inhalt; Dateien wurden behalten"),
     ("The diagnostics package could not be completed", "Das Diagnosepaket konnte nicht abgeschlossen werden"),
     ("The dialog window class could not be registered", "Die Fensterklasse für Dialoge konnte nicht registriert werden"),
+    ("The digest did not match; downloading the file again", "Die Prüfsumme stimmt nicht überein; die Datei wird erneut heruntergeladen"),
     ("The download database was created by a newer SSDownload; install the current version.", "Die Download-Datenbank wurde von einer neueren SSDownload-Version erstellt; installieren Sie die aktuelle Version."),
     ("The download directory could not be created", "Der Download-Ordner konnte nicht erstellt werden"),
     ("The download engine could not be started", "Die Download-Engine konnte nicht gestartet werden"),
@@ -7555,6 +7560,9 @@ macro_rules! __ui_template_ar {
     ("The file could not be read: {0}") => {
         "تعذّرت قراءة الملف: {0}"
     };
+    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
+        "لا يتطابق الملف مع ملخّص SHA-256 الذي ينشره مصدره ({0})؛ تم حذف الملف الجزئي، وستُنزَّل الملف من جديد عند إعادة المحاولة"
+    };
     ("The file path contains a redirection: {0}") => {
         "يحتوي مسار الملف على إعادة توجيه: {0}"
     };
@@ -8363,6 +8371,9 @@ macro_rules! __ui_template_es {
     };
     ("The file could not be read: {0}") => {
         "No se pudo leer el archivo: {0}"
+    };
+    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
+        "El archivo no coincide con el resumen SHA-256 que publica su origen ({0}); se eliminó el archivo parcial y el reintento vuelve a descargarlo desde el principio"
     };
     ("The file path contains a redirection: {0}") => {
         "La ruta del archivo contiene una redirección: {0}"
@@ -9173,6 +9184,9 @@ macro_rules! __ui_template_pt {
     ("The file could not be read: {0}") => {
         "Não foi possível ler o arquivo: {0}"
     };
+    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
+        "O arquivo não corresponde ao resumo SHA-256 que a fonte publica ({0}); o arquivo parcial foi excluído e uma nova tentativa o baixa novamente"
+    };
     ("The file path contains a redirection: {0}") => {
         "O caminho do arquivo contém um redirecionamento: {0}"
     };
@@ -9982,6 +9996,9 @@ macro_rules! __ui_template_fr {
     ("The file could not be read: {0}") => {
         "Le fichier n'a pas pu être lu : {0}"
     };
+    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
+        "Le fichier ne correspond pas au condensat SHA-256 publié par sa source ({0}) ; le fichier partiel a été supprimé et la nouvelle tentative le téléchargera à nouveau"
+    };
     ("The file path contains a redirection: {0}") => {
         "Le chemin du fichier contient une redirection : {0}"
     };
@@ -10790,6 +10807,9 @@ macro_rules! __ui_template_de {
     };
     ("The file could not be read: {0}") => {
         "Die Datei konnte nicht gelesen werden: {0}"
+    };
+    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
+        "Die Datei stimmt nicht mit der SHA-256-Prüfsumme überein, die ihre Quelle veröffentlicht ({0}); die unvollständige Datei wurde gelöscht und wird beim nächsten Versuch erneut heruntergeladen"
     };
     ("The file path contains a redirection: {0}") => {
         "Der Dateipfad enthält eine Umleitung: {0}"

@@ -180,6 +180,8 @@ thread_local! {
     /// How long the cycles of the downloads that the current test thread starts wait between
     /// their flush and their record.
     static TEST_PAUSE: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+    /// The sources of the digests that verified the files the current test thread finished.
+    static TEST_VERIFIED: RefCell<Vec<digest::Source>> = const { RefCell::new(Vec::new()) };
 }
 
 /// What a cycle does with the record once the part file is durable.
@@ -393,6 +395,8 @@ pub(crate) struct RemoteInfo {
     /// A redirect led to `url`, so a web page answering there is a sign-in or interstitial page
     /// and not the file. `download` clears it for a requested name that is a page's.
     refuse_page: bool,
+    /// The SHA-256 (hex) that the answer to the probe published in `Repr-Digest`.
+    repr_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -410,6 +414,8 @@ struct ResponseHeaders {
     headers_complete: bool,
     http1: bool,
     chunked: bool,
+    /// The values of every `Repr-Digest` line, joined.
+    repr_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -617,6 +623,24 @@ fn ranges_ignored(error: &anyhow::Error) -> bool {
             .is_some_and(|partial| partial.ranges_ignored)
     })
 }
+
+/// A file of this many bytes did not match the digest its source publishes, the bytes were
+/// discarded and the one re-download of the job is now used up: `download` fetches the file
+/// again from the beginning. It is the only error of a first pass that asks for another pass, and
+/// a pass whose record says the re-download is used up ends with `SSD-TRF-003` instead.
+#[derive(Debug)]
+struct DigestRetry(u64);
+
+impl std::fmt::Display for DigestRetry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(crate::i18n::ui(
+            "Özet eşleşmedi; dosya baştan indiriliyor",
+            "The digest did not match; downloading the file again",
+        ))
+    }
+}
+
+impl std::error::Error for DigestRetry {}
 
 /// The HTTP status carried anywhere in the error chain.
 pub(crate) fn http_status(error: &anyhow::Error) -> Option<u32> {
@@ -1030,25 +1054,75 @@ pub(crate) fn download(
     if url.scheme() == "ftp" {
         download_ftp(request, output, url, control, network, progress)
     } else {
-        let mut remote = prepared
-            .map(Ok)
-            .unwrap_or_else(|| probe_http(request, url, control, network))?;
-        if is_html_name(output) {
-            remote.refuse_page = false;
-        }
-        if remote.refuse_page && is_web_page(remote.content_type.as_deref(), remote.attachment) {
-            return Err(page_instead_of_file());
-        }
-        download_http(
+        let again = url.clone();
+        match download_http_from(
             request,
+            url,
             output,
-            remote,
             control,
             network,
-            connections.clamp(1, 16),
+            connections,
+            prepared,
             progress,
-        )
+        ) {
+            Err(error) => match error.downcast_ref::<DigestRetry>().map(|retry| retry.0) {
+                Some(bytes) => {
+                    control.mark_restarted();
+                    progress(TransferProgress {
+                        processing: false,
+                        downloaded: 0,
+                        total: Some(bytes),
+                        speed: 0,
+                        eta: None,
+                        phase: error.to_string(),
+                    });
+                    download_http_from(
+                        request,
+                        again,
+                        output,
+                        control,
+                        network,
+                        connections,
+                        None,
+                        progress,
+                    )
+                }
+                None => Err(error),
+            },
+            done => done,
+        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn download_http_from(
+    request: &AddRequest,
+    url: Url,
+    output: &Path,
+    control: &TransferControl,
+    network: &NetworkGovernor,
+    connections: u8,
+    prepared: Option<RemoteInfo>,
+    progress: &mut dyn FnMut(TransferProgress),
+) -> Result<TransferResult> {
+    let mut remote = prepared
+        .map(Ok)
+        .unwrap_or_else(|| probe_http(request, url, control, network))?;
+    if is_html_name(output) {
+        remote.refuse_page = false;
+    }
+    if remote.refuse_page && is_web_page(remote.content_type.as_deref(), remote.attachment) {
+        return Err(page_instead_of_file());
+    }
+    download_http(
+        request,
+        output,
+        remote,
+        control,
+        network,
+        connections.clamp(1, 16),
+        progress,
+    )
 }
 
 /// Resumes retained work only when the server proves the file is unchanged. When it cannot
@@ -1214,6 +1288,11 @@ fn download_http_resuming(
                     remote.total = headers.content_range.and_then(|range| range.total);
                     remote.etag = headers.etag;
                     remote.last_modified = headers.last_modified;
+                    remote.repr_digest = headers
+                        .repr_digest
+                        .as_deref()
+                        .and_then(digest::repr_sha256)
+                        .or(remote.repr_digest.take());
                     segment_count = segment_count_for(&remote);
                     stable = has_resume_identity(&remote, request.checksum.as_deref());
                 }
@@ -1367,13 +1446,16 @@ fn download_http_single(
         settle_part(&part, offset)?;
     }
     if remote.total == Some(offset) && offset > 0 && resumable {
-        return finalize_part(
+        return finalize_http(
+            request,
+            remote,
+            None,
+            network,
             &final_name(output, request, remote, None),
             &part,
             &state_path,
             offset,
             control,
-            request.checksum.as_deref(),
         );
     }
     if restart_empty_dynamic {
@@ -1456,13 +1538,16 @@ fn download_http_single(
                         );
                     }
                 }
-                return finalize_part(
+                return finalize_http(
+                    request,
+                    remote,
+                    Some(&headers),
+                    network,
                     &final_name(output, request, remote, Some(&headers)),
                     &part,
                     &state_path,
                     bytes,
                     control,
-                    request.checksum.as_deref(),
                 );
             }
             Err(
@@ -2398,13 +2483,16 @@ fn download_segmented(
     crate::output::require_space(output, total.saturating_sub(baseline))
         .map_err(AttemptFailure::Other)?;
     if baseline == total {
-        return finalize_part(
+        return finalize_http(
+            request,
+            remote,
+            None,
+            network,
             &final_name(output, request, remote, None),
             &part,
             &state_path,
             total,
             control,
-            request.checksum.as_deref(),
         )
         .map_err(AttemptFailure::Other);
     }
@@ -2797,13 +2885,16 @@ fn download_segmented(
         phase: crate::i18n::ui("Tamamlanıyor", "Completing").into(),
     });
     cleanup_legacy_segments(output);
-    finalize_part(
+    finalize_http(
+        request,
+        remote,
+        None,
+        network,
         &final_name(output, request, remote, None),
         &part,
         &state_path,
         total,
         control,
-        request.checksum.as_deref(),
     )
     .map_err(AttemptFailure::Other)
 }
@@ -3669,6 +3760,7 @@ fn probe_http(
             attachment: headers.attachment,
             filename: headers.filename,
             refuse_page: redirects > 0,
+            repr_digest: headers.repr_digest.as_deref().and_then(digest::repr_sha256),
         });
     }
 }
@@ -3716,6 +3808,7 @@ fn probe_ftp(
         attachment: false,
         filename: None,
         refuse_page: false,
+        repr_digest: None,
     })
 }
 
@@ -3978,6 +4071,12 @@ fn parse_header_line(headers: &mut ResponseHeaders, bytes: &[u8]) {
             headers.chunked = value.to_ascii_lowercase().contains("chunked");
         }
         "content-range" => headers.content_range = parse_content_range(value),
+        "repr-digest" => {
+            headers.repr_digest = Some(match headers.repr_digest.take() {
+                Some(earlier) => format!("{earlier}, {value}"),
+                None => value.into(),
+            })
+        }
         "retry-after" => headers.retry_after = parse_retry_after(value),
         _ => {}
     }
@@ -4393,6 +4492,102 @@ fn finalize_part(
             remove_if_exists(state);
         }
     })?;
+    publish_part(output, part, state, bytes, control)
+}
+
+/// Finishes an HTTP download. A SHA-256 the user gave decides alone and nothing else is
+/// requested. Without one, the digest that the source publishes does: the `Repr-Digest` of the
+/// response that delivered the bytes or, failing that, a file next to the address the download
+/// was given. With no digest the file is published as it is, without reading it again.
+#[allow(clippy::too_many_arguments)]
+fn finalize_http(
+    request: &AddRequest,
+    remote: &RemoteInfo,
+    response: Option<&ResponseHeaders>,
+    network: &NetworkGovernor,
+    output: &Path,
+    part: &Path,
+    state: &Path,
+    bytes: u64,
+    control: &TransferControl,
+) -> Result<TransferResult> {
+    if request
+        .checksum
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return finalize_part(
+            output,
+            part,
+            state,
+            bytes,
+            control,
+            request.checksum.as_deref(),
+        );
+    }
+    let header = response
+        .and_then(|headers| headers.repr_digest.as_deref())
+        .and_then(digest::repr_sha256)
+        .or_else(|| remote.repr_digest.clone());
+    let Some(published) = digest::published(request, header, bytes, control, network) else {
+        return finalize_part(output, part, state, bytes, control, None);
+    };
+    match verify_checksum(part, Some(&published.sha256), control) {
+        Ok(()) => {
+            note_verified(published.source);
+            crate::logging::record(
+                crate::logging::Event::info("transfer.digest_verified")
+                    .outcome(crate::logging::Outcome::Ok)
+                    .detail(format!("source={}", published.source.label())),
+            );
+            publish_part(output, part, state, bytes, control)
+        }
+        Err(error) if crate::error_codes::code_of(&error) == Some(crate::error_codes::TRF_003) => {
+            Err(digest_mismatch(published.source, part, state, bytes))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Discards bytes that do not match the digest their source publishes. The first mismatch of a
+/// job grants one fetch from the beginning; the grant is recorded durably before the bytes are
+/// discarded, so no restart can grant another. A mismatch with the grant used up ends the job
+/// with `SSD-TRF-003` and clears the record, so that retrying the failed job starts anew.
+fn digest_mismatch(source: digest::Source, part: &Path, state: &Path, bytes: u64) -> anyhow::Error {
+    let record = digest::retry_record(state);
+    let granted = digest::grant_retry(&record);
+    remove_if_exists(part);
+    remove_if_exists(state);
+    crate::logging::record(
+        crate::logging::Event::warn("transfer.digest_mismatch")
+            .outcome(if granted {
+                crate::logging::Outcome::Retry
+            } else {
+                crate::logging::Outcome::Failed
+            })
+            .detail(format!("source={}", source.label())),
+    );
+    if granted {
+        return anyhow!(DigestRetry(bytes));
+    }
+    remove_if_exists(&record);
+    crate::error_codes::coded(
+        crate::error_codes::TRF_003,
+        crate::i18n::ui_format!(
+            "Dosya, kaynağın yayımladığı SHA-256 özetiyle ({0}) eşleşmedi; kısmi dosya silindi, yeniden denemede dosya baştan indirilir",
+            "The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again",
+            source.label()
+        ),
+    )
+}
+
+fn publish_part(
+    output: &Path,
+    part: &Path,
+    state: &Path,
+    bytes: u64,
+    control: &TransferControl,
+) -> Result<TransferResult> {
     if control.stop_requested() {
         bail!(
             "{}",
@@ -4402,11 +4597,20 @@ fn finalize_part(
     OpenOptions::new().write(true).open(part)?.sync_all()?;
     let actual = crate::output::publish(part, output)?;
     remove_if_exists(state);
+    remove_if_exists(&digest::retry_record(state));
     Ok(TransferResult {
         path: actual,
         bytes,
     })
 }
+
+#[cfg(test)]
+fn note_verified(source: digest::Source) {
+    TEST_VERIFIED.with(|verified| verified.borrow_mut().push(source));
+}
+
+#[cfg(not(test))]
+fn note_verified(_source: digest::Source) {}
 
 fn verify_checksum(path: &Path, checksum: Option<&str>, control: &TransferControl) -> Result<()> {
     let Some(value) = checksum.map(str::trim).filter(|v| !v.is_empty()) else {
@@ -4882,6 +5086,7 @@ mod tests {
             attachment: false,
             filename: None,
             refuse_page: false,
+            repr_digest: None,
         }
     }
 
@@ -7910,5 +8115,6 @@ mod tests {
     }
 }
 
+mod digest;
 #[cfg(test)]
 mod loopback;

@@ -1,6 +1,7 @@
 //! A configurable HTTP/1.1 loopback server for tests. It speaks keep-alive, serves a
 //! deterministic patterned body for any path, and records every request.
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
@@ -75,6 +76,18 @@ pub struct Redirect {
     pub target_requests_before_403: usize,
 }
 
+/// A fixed answer for one path, served instead of the patterned body to any method.
+#[derive(Clone, Debug)]
+pub struct Document {
+    pub path: String,
+    pub status: u16,
+    /// Header lines, such as `Location: /elsewhere`.
+    pub headers: Vec<String>,
+    pub body: Vec<u8>,
+    /// Sent without `Content-Length`; the closing connection ends the body.
+    pub unframed: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub size: u64,
@@ -96,6 +109,10 @@ pub struct Config {
     /// Requests from this index on (counting every request, from 0) get the second body
     /// version and its validators.
     pub switch_version_after: Option<usize>,
+    /// Requests from the n-th `HEAD` (counting from 0) on get the second body version and its
+    /// validators. Every pass of a download opens with a `HEAD`, so this separates passes
+    /// whatever else is requested in between.
+    pub switch_version_at_head: Option<usize>,
     /// A `Range` request is answered 206 whatever its `If-Range` says.
     pub ignore_if_range: bool,
     /// A 206 answer to a request with `If-Range` carries no `ETag` and no `Last-Modified`.
@@ -152,6 +169,9 @@ pub struct Config {
     pub content_type_from: Option<(usize, String)>,
     /// `Content-Disposition` of every such answer.
     pub content_disposition: Option<String>,
+    /// Header lines added to every `HEAD` and `GET` answer that carries the file's headers.
+    pub extra_headers: Vec<String>,
+    pub documents: Vec<Document>,
     /// Request headers copied into the log, matched case-insensitively.
     pub logged_headers: Vec<String>,
 }
@@ -171,6 +191,7 @@ impl Default for Config {
             vary_etag: false,
             last_modified: true,
             switch_version_after: None,
+            switch_version_at_head: None,
             ignore_if_range: false,
             partial_without_validators: false,
             partial_without_etag: false,
@@ -195,6 +216,8 @@ impl Default for Config {
             content_type: None,
             content_type_from: None,
             content_disposition: None,
+            extra_headers: Vec::new(),
+            documents: Vec::new(),
             logged_headers: vec!["authorization".into(), "cookie".into(), "referer".into()],
         }
     }
@@ -228,6 +251,7 @@ struct Shared {
     requests: AtomicUsize,
     cuts: AtomicUsize,
     heads: AtomicUsize,
+    head_requests: AtomicUsize,
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
     ranged_connections: AtomicUsize,
@@ -260,6 +284,7 @@ impl Server {
             requests: AtomicUsize::new(0),
             cuts: AtomicUsize::new(0),
             heads: AtomicUsize::new(0),
+            head_requests: AtomicUsize::new(0),
             scripted: AtomicUsize::new(0),
             target_requests: AtomicUsize::new(0),
             ranged_connections: AtomicUsize::new(0),
@@ -286,7 +311,23 @@ impl Server {
         format!("http://{}{path}", self.address)
     }
 
+    /// Every request except the lookups of digest files, which `lookups` lists: a download of a
+    /// file of at least 1 MiB ends with them, and they are no part of its own traffic.
     pub fn log(&self) -> Vec<Logged> {
+        let mut log = self.requests();
+        log.retain(|entry| !is_lookup(&entry.path));
+        log
+    }
+
+    /// The requests for `.sha256` and `SHA256SUMS` files.
+    pub fn lookups(&self) -> Vec<Logged> {
+        let mut log = self.requests();
+        log.retain(|entry| is_lookup(&entry.path));
+        log
+    }
+
+    /// Every request, in the order the server answered them.
+    pub fn requests(&self) -> Vec<Logged> {
         self.shared.log.lock().unwrap().clone()
     }
 
@@ -339,6 +380,10 @@ impl Drop for Server {
     }
 }
 
+fn is_lookup(path: &str) -> bool {
+    path.ends_with(".sha256") || path.ends_with("/SHA256SUMS")
+}
+
 /// The byte at `offset` of body `version` (1 or 2). Every offset differs between versions.
 fn pattern_byte(version: u8, offset: u64) -> u8 {
     ((offset ^ (offset >> 17))
@@ -370,6 +415,13 @@ pub fn pattern_sha256(version: u8, size: u64) -> String {
         offset += length as u64;
     }
     hex::encode(hasher.finalize())
+}
+
+/// A `Repr-Digest` header line (RFC 9530) that states the SHA-256 of `size` bytes of body
+/// `version`.
+pub fn repr_digest_header(version: u8, size: u64) -> String {
+    let digest = hex::decode(pattern_sha256(version, size)).unwrap();
+    format!("Repr-Digest: sha-256=:{}:", STANDARD.encode(digest))
 }
 
 pub fn file_sha256(path: &Path) -> String {
@@ -627,6 +679,8 @@ struct Reply {
     version: u8,
     close: bool,
     omit_length: bool,
+    /// A fixed body sent after the head, to any method but `HEAD`.
+    document: Option<Vec<u8>>,
 }
 
 impl Reply {
@@ -639,6 +693,7 @@ impl Reply {
             version: 1,
             close: false,
             omit_length: false,
+            document: None,
         }
     }
 }
@@ -649,6 +704,7 @@ fn reason(status: u16) -> &'static str {
         206 => "Partial Content",
         302 => "Found",
         403 => "Forbidden",
+        404 => "Not Found",
         405 => "Method Not Allowed",
         416 => "Range Not Satisfiable",
         429 => "Too Many Requests",
@@ -728,6 +784,20 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
         }
         return reply;
     }
+    if let Some(document) = config
+        .documents
+        .iter()
+        .find(|document| document.path == request.path)
+    {
+        return Reply {
+            headers: document.headers.clone(),
+            length: document.body.len() as u64,
+            document: Some(document.body.clone()),
+            close: document.unframed,
+            omit_length: document.unframed,
+            ..Reply::empty(document.status)
+        };
+    }
     if let Some(target) = &config.redirect_to {
         if request.method != "HEAD" || !config.head_not_redirected {
             let mut reply = Reply::empty(302);
@@ -756,7 +826,16 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
         }
     }
 
-    let version = if index >= shared.switch_from.load(Ordering::Acquire) {
+    let heads_seen = if request.method == "HEAD" {
+        shared.head_requests.fetch_add(1, Ordering::AcqRel) + 1
+    } else {
+        shared.head_requests.load(Ordering::Acquire)
+    };
+    let version = if index >= shared.switch_from.load(Ordering::Acquire)
+        || config
+            .switch_version_at_head
+            .is_some_and(|first| heads_seen > first)
+    {
         2
     } else {
         1
@@ -810,6 +889,7 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
     if let Some(value) = &config.content_disposition {
         identity.push(format!("Content-Disposition: {value}"));
     }
+    identity.extend(config.extra_headers.iter().cloned());
 
     let size = config.size;
     match request.method.as_str() {
@@ -963,6 +1043,12 @@ fn answer(
     head.push_str("\r\n");
     if stream.write_all(head.as_bytes()).is_err() {
         return false;
+    }
+    if let Some(document) = &reply.document {
+        if request.method != "HEAD" && stream.write_all(document).is_err() {
+            return false;
+        }
+        return !reply.close;
     }
     let Some((start, length)) = reply.body else {
         return !reply.close;
