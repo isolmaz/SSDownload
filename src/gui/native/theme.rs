@@ -1168,7 +1168,23 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
     let Some(strip) = menu_strip(ui) else {
         return;
     };
-    fill_menu_bar(dc, &strip);
+    // The strip is composed off screen and copied in one step, so the screen
+    // never shows the bar filled but without its captions.
+    let memory = CreateCompatibleDC(dc);
+    let bitmap = CreateCompatibleBitmap(dc, strip.bar.right, strip.bar.bottom);
+    if memory.is_null() || bitmap.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as HGDIOBJ);
+        }
+        if !memory.is_null() {
+            DeleteDC(memory);
+        }
+        return;
+    }
+    // A mirrored window context needs a mirrored source, or the copy flips it.
+    SetLayout(memory, GetLayout(dc));
+    let previous = SelectObject(memory, bitmap as HGDIOBJ);
+    fill_menu_bar(memory, &strip);
     for index in 0..count {
         let mut rect: RECT = zeroed();
         if GetMenuItemRect(ui.hwnd, menu, index as u32, &mut rect) == 0 {
@@ -1183,7 +1199,7 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
             bottom: rect.bottom - strip.window.top,
         };
         draw_menu_item(
-            dc,
+            memory,
             ui,
             menu,
             index as usize,
@@ -1192,6 +1208,20 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
             strip.bottom,
         );
     }
+    BitBlt(
+        dc,
+        strip.bar.left,
+        strip.bar.top,
+        strip.bar.right - strip.bar.left,
+        strip.bar.bottom - strip.bar.top,
+        memory,
+        strip.bar.left,
+        strip.bar.top,
+        SRCCOPY,
+    );
+    SelectObject(memory, previous);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(memory);
 }
 
 /// Splits a menu caption into its text and the character index of the letter its

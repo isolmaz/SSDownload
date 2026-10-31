@@ -1602,10 +1602,11 @@ unsafe extern "system" fn main_proc(
                 } else {
                     -1
                 };
-                // Over the bar the shell has just painted its own light box, so
+                // Over an item the shell has just painted its own light box, so
                 // the strip lands on top of it even when the item did not
-                // change; elsewhere only a cleared highlight needs a repaint.
-                if over_bar || hot != ui.menu_hot {
+                // change. The empty part of the bar gets no box, so there, as
+                // everywhere else, only a changed highlight needs a repaint.
+                if (over_bar && hot >= 0) || hot != ui.menu_hot {
                     ui.menu_hot = hot;
                     paint_menu_strip(ui);
                 }
