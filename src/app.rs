@@ -514,11 +514,14 @@ impl App {
                     });
                     return Ok(result);
                 }
-                Action::AddStatus { request_id } => {
-                    result.add_status = Some(AddJobStatus::of(
-                        &self.inner.engine.snapshot().jobs,
-                        request_id,
-                    ));
+                Action::AddStatus { request_ids } => {
+                    let jobs = self.inner.engine.snapshot().jobs;
+                    result.add_status = Some(
+                        request_ids
+                            .iter()
+                            .map(|request_id| AddJobStatus::of(&jobs, request_id))
+                            .collect(),
+                    );
                     return Ok(result);
                 }
                 Action::BeginSourceRefresh { id } => {
@@ -2235,41 +2238,69 @@ mod tests {
     #[test]
     fn add_status_reports_the_job_of_the_request_id_and_nothing_of_its_request() {
         let (app, root) = isolated_app();
-        app.dispatch_result(Action::Add {
-            request: AddRequest {
-                url: "https://example.invalid/SECRET-ADDRESS/file.bin".into(),
-                request_id: Some("takeover-1".into()),
-                start_at: Some(chrono::Utc::now().timestamp() + 3_600),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-        let status = |id: &str| {
+        for id in ["takeover-1", "takeover-3"] {
+            app.dispatch_result(Action::Add {
+                request: AddRequest {
+                    url: format!("https://example.invalid/SECRET-ADDRESS/{id}.bin"),
+                    request_id: Some(id.into()),
+                    start_at: Some(chrono::Utc::now().timestamp() + 3_600),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        }
+        let ask = |ids: &[&str]| {
             app.dispatch_result(Action::AddStatus {
-                request_id: id.into(),
+                request_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
             })
             .unwrap()
         };
+        let status = |id: &str| ask(&[id]);
+        let scheduled = |id: &str| AddJobStatus {
+            request_id: id.into(),
+            found: true,
+            state: Some(JobState::Scheduled),
+            received: false,
+            error_code: None,
+        };
         let known = status("takeover-1");
-        assert_eq!(
-            known.add_status,
-            Some(AddJobStatus {
-                found: true,
-                state: Some(JobState::Scheduled),
-                received: false,
-                error_code: None
-            })
-        );
+        assert_eq!(known.add_status, Some(vec![scheduled("takeover-1")]));
         assert!(known.job_ids.is_empty() && known.request_id.is_none());
-        assert!(!status("takeover-2").add_status.unwrap().found);
+        assert!(!status("takeover-2").add_status.unwrap()[0].found);
+
+        let batch = ask(&[
+            "takeover-3",
+            "takeover-3",
+            "takeover-2",
+            "takeover-1",
+            "takeover-3",
+        ]);
+        assert_eq!(
+            batch.add_status,
+            Some(vec![
+                scheduled("takeover-3"),
+                scheduled("takeover-3"),
+                AddJobStatus::of(&[], "takeover-2"),
+                scheduled("takeover-1"),
+                scheduled("takeover-3"),
+            ]),
+            "one entry per id, in the order asked"
+        );
 
         app.dispatch_result(Action::Remove {
-            id: app.snapshot().jobs[0].id.clone(),
+            id: app
+                .snapshot()
+                .jobs
+                .iter()
+                .find(|job| job.request.request_id.as_deref() == Some("takeover-1"))
+                .unwrap()
+                .id
+                .clone(),
             delete_file: true,
         })
         .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while status("takeover-1").add_status.unwrap().found {
+        while status("takeover-1").add_status.unwrap()[0].found {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the removed job is still reported"

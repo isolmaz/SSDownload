@@ -1267,6 +1267,7 @@ mod tests {
             assert_eq!(
                 missing,
                 AddJobStatus {
+                    request_id: "mine".into(),
                     found: false,
                     state: None,
                     received: false,
@@ -1275,6 +1276,12 @@ mod tests {
             );
             assert_eq!(AddJobStatus::of(&[], "mine"), missing);
             assert!(!AddJobStatus::of(&jobs, "Someone-Else").found);
+        }
+
+        #[test]
+        fn the_status_carries_the_id_it_was_asked_about() {
+            assert_eq!(status(JobState::Queued, 0, None).request_id, "mine");
+            assert_eq!(AddJobStatus::of(&[], "unknown-id").request_id, "unknown-id");
         }
 
         #[test]
@@ -1347,28 +1354,30 @@ mod tests {
 
         #[test]
         fn the_wire_form_carries_only_the_allowed_fields() {
-            let result = |status: AddJobStatus| {
+            let result = |statuses: Vec<AddJobStatus>| {
                 serde_json::to_string(&CommandResult {
-                    add_status: Some(status),
+                    add_status: Some(statuses),
                     ..Default::default()
                 })
                 .unwrap()
             };
             assert_eq!(
-                result(status(
+                result(vec![status(
                     JobState::Failed,
                     0,
                     Some("SSD-NET-004 SECRET-MESSAGE")
-                )),
-                r#"{"add_status":{"found":true,"state":"failed","received":false,"error_code":"SSD-NET-004"}}"#
+                )]),
+                r#"{"add_status":[{"request_id":"mine","found":true,"state":"failed","received":false,"error_code":"SSD-NET-004"}]}"#
             );
             assert_eq!(
-                result(status(JobState::AwaitingSource, 0, None)),
-                r#"{"add_status":{"found":true,"state":"awaiting_source","received":false}}"#
-            );
-            assert_eq!(
-                result(AddJobStatus::of(&[], "mine")),
-                r#"{"add_status":{"found":false,"received":false}}"#
+                result(vec![
+                    status(JobState::AwaitingSource, 0, None),
+                    AddJobStatus::of(&[], "mine")
+                ]),
+                concat!(
+                    r#"{"add_status":[{"request_id":"mine","found":true,"state":"awaiting_source","received":false},"#,
+                    r#"{"request_id":"mine","found":false,"received":false}]}"#
+                )
             );
         }
     }
@@ -1562,9 +1571,10 @@ pub enum Action {
     InspectStatus {
         request_id: String,
     },
-    /// What became of the job an `Add` with this request id created; see `AddJobStatus`.
+    /// What became of the jobs the `Add`s with these request ids created, one `AddJobStatus` per
+    /// id in the order asked.
     AddStatus {
-        request_id: String,
+        request_ids: Vec<String>,
     },
     InstallTools {
         force_update: bool,
@@ -1636,13 +1646,14 @@ pub struct CommandResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnose: Option<crate::diagnose::Summary>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub add_status: Option<AddJobStatus>,
+    pub add_status: Option<Vec<AddJobStatus>>,
 }
 
 /// The only facts about a job that the browser extension may learn from its own request id: no
-/// address, name, path or request data.
+/// address, name, path or request data. `request_id` is the id the extension asked about.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddJobStatus {
+    pub request_id: String,
     pub found: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<JobState>,
@@ -1662,6 +1673,7 @@ impl AddJobStatus {
             .find(|job| job.request.request_id.as_deref() == Some(request_id))
         else {
             return Self {
+                request_id: request_id.to_owned(),
                 found: false,
                 state: None,
                 received: false,
@@ -1670,6 +1682,7 @@ impl AddJobStatus {
         };
         let failed = matches!(job.state, JobState::Failed | JobState::AwaitingSource);
         Self {
+            request_id: request_id.to_owned(),
             found: true,
             state: Some(job.state),
             received: job.downloaded > 0 || job.state == JobState::Completed,
