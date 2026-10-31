@@ -451,6 +451,55 @@ fn source_refresh_save_failure_rolls_back_staged_direct_state() {
 }
 
 #[test]
+fn a_failed_file_job_is_logged_at_the_file_stage_and_not_at_a_media_stage() {
+    let job_of = |request: AddRequest| Job {
+        id: "job".into(),
+        request,
+        name: "report.pdf".into(),
+        state: JobState::Failed,
+        path: PathBuf::from("report.pdf"),
+        downloaded: 0,
+        total: None,
+        speed: 0,
+        eta: None,
+        error: None,
+        phase: JobState::Failed.label().into(),
+        created_at: 0,
+        updated_at: 0,
+        attempts: 0,
+        work_dir: None,
+        remove_requested: None,
+        claim: None,
+        legacy_completed: false,
+        browser_transfer_authorized: false,
+        priority: 0,
+        force_start: false,
+        open_when_done: false,
+        live: false,
+        sequence: 0,
+    };
+    let request = |kind| AddRequest {
+        url: "https://files.example.test/a".into(),
+        kind,
+        ..Default::default()
+    };
+    let detail = |request: AddRequest| {
+        let message = crate::error_codes::coded_default(crate::error_codes::NET_004).to_string();
+        let event = failure_event(&job_of(request), &message);
+        assert_eq!(event.code, Some("SSD-NET-004"));
+        event.detail.unwrap()
+    };
+    assert!(detail(request(DownloadKind::File)).starts_with("aşama=dosya "));
+    assert!(detail(request(DownloadKind::Video)).starts_with("aşama=medya kaynağı "));
+    // A file job that asks for a media selection runs in the media pipeline.
+    let selected = AddRequest {
+        format_id: Some("18".into()),
+        ..request(DownloadKind::File)
+    };
+    assert!(detail(selected).starts_with("aşama=medya kaynağı "));
+}
+
+#[test]
 fn completion_requires_every_remaining_job_to_succeed() {
     let make_job = |id: &str, state| Job {
         id: id.into(),
