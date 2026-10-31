@@ -218,6 +218,7 @@ impl App {
             settings: engine.settings,
             completion_countdown: engine.completion_countdown,
             completion_events: engine.completion_events,
+            hold: engine.hold,
             media: ui.media.clone(),
             media_launch: ui.media_launch.clone(),
             inspecting: ui.inspecting,

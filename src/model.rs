@@ -622,6 +622,8 @@ pub struct Settings {
     pub global_hotkey: bool,
     /// No new work and running downloads wait while Windows reports a metered network.
     pub pause_on_metered: bool,
+    /// No new work and running downloads wait while Windows Battery saver is on.
+    pub pause_on_battery_saver: bool,
     /// The short first-run tour was shown.
     pub tour_seen: bool,
     /// Remembered media choices per site.
@@ -730,6 +732,7 @@ impl Default for Settings {
             completion_card: true,
             global_hotkey: true,
             pause_on_metered: false,
+            pause_on_battery_saver: false,
             tour_seen: false,
             site_media_defaults: Vec::new(),
             window_placement: None,
@@ -768,6 +771,20 @@ impl Settings {
     }
 }
 
+/// The guards that hold the queue right now: a guard counts only while its setting is on and
+/// Windows reports its condition. While any holds, no download starts and running ones wait.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    pub metered: bool,
+    pub battery_saver: bool,
+}
+
+impl Hold {
+    pub fn is_active(self) -> bool {
+        self.metered || self.battery_saver
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSnapshot {
     pub revision: u64,
@@ -778,6 +795,8 @@ pub struct EngineSnapshot {
     pub completion_countdown: Option<CompletionCountdown>,
     #[serde(default)]
     pub completion_events: Vec<CompletionEvent>,
+    #[serde(default)]
+    pub hold: Hold,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1161,6 +1180,8 @@ pub struct AppSnapshot {
     pub completion_countdown: Option<CompletionCountdown>,
     #[serde(default)]
     pub completion_events: Vec<CompletionEvent>,
+    #[serde(default)]
+    pub hold: Hold,
     pub media: Option<MediaInfo>,
     /// Current browser handoff: present while its picker session lives.
     #[serde(default, skip_serializing_if = "Option::is_none")]

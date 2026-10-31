@@ -3,7 +3,7 @@ use crate::{
     logging::Level,
     model::{
         Action, AddRequest, AppSnapshot, AudioSelection, CompletionAction, DownloadKind,
-        ExternalSubtitle, FolderRule, InspectRequest, Job, JobState, MediaFormat, MediaInfo,
+        ExternalSubtitle, FolderRule, Hold, InspectRequest, Job, JobState, MediaFormat, MediaInfo,
         MediaLaunch, QueuePolicy, Settings, SiteCrawlRequest, SiteCrawlResult, SubtitleSelection,
         SubtitleTrack, SyncPolicy, ToolProgress, UiMode, UsageModes, ONBOARDING_VERSION,
     },
@@ -4037,7 +4037,7 @@ unsafe fn update_status(ui: &MainUi) {
     set_text(
         ui.status,
         &format!(
-            "{} {} · {} {} · {} {} · {} {} · {}{}",
+            "{} {} · {} {} · {} {} · {} {} · {}{}{}",
             ui.snapshot.jobs.len(),
             if ui.snapshot.jobs.len() == 1 {
                 crate::i18n::ui("iş", "job")
@@ -4059,7 +4059,10 @@ unsafe fn update_status(ui: &MainUi) {
                 format!(" · {selection} {}", crate::i18n::ui("seçili", "selected"))
             } else {
                 String::new()
-            }
+            },
+            hold_notice(ui.snapshot.hold)
+                .map(|notice| format!(" · {notice}"))
+                .unwrap_or_default()
         ),
     );
     if let Some(warning) = &ui.snapshot.warning {
@@ -4067,6 +4070,25 @@ unsafe fn update_status(ui: &MainUi) {
             ui.status,
             &display_text(ui.snapshot.settings.debug_mode, warning),
         );
+    }
+}
+
+/// Why downloads are waiting, for the status line while a guard holds the queue.
+fn hold_notice(hold: Hold) -> Option<&'static str> {
+    match (hold.metered, hold.battery_saver) {
+        (false, false) => None,
+        (true, false) => Some(crate::i18n::ui(
+            "Ölçülü bağlantı: indirmeler bekletiliyor",
+            "Metered connection: downloads are on hold",
+        )),
+        (false, true) => Some(crate::i18n::ui(
+            "Pil tasarrufu açık: indirmeler bekletiliyor",
+            "Battery saver is on: downloads are on hold",
+        )),
+        (true, true) => Some(crate::i18n::ui(
+            "Ölçülü bağlantı ve pil tasarrufu: indirmeler bekletiliyor",
+            "Metered connection and Battery saver: downloads are on hold",
+        )),
     }
 }
 
@@ -5596,6 +5618,7 @@ const S_METERED: i32 = 2137;
 const S_HOTKEY: i32 = 2138;
 const S_DOUBLE_CLICK: i32 = 2139;
 const S_HISTORY: i32 = 2140;
+const S_BATTERY_SAVER: i32 = 2141;
 const SP_EDIT: i32 = 2701;
 const RN_EDIT: i32 = 2703;
 const RN_OK: i32 = 2704;
@@ -5719,6 +5742,7 @@ struct SettingsFields {
     takeover: HWND,
     completion_card: HWND,
     metered: HWND,
+    battery_saver: HWND,
     hotkey: HWND,
     double_click: HWND,
     history: HWND,
@@ -6557,6 +6581,7 @@ unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
             takeover: null_mut(),
             completion_card: null_mut(),
             metered: null_mut(),
+            battery_saver: null_mut(),
             hotkey: null_mut(),
             double_click: null_mut(),
             history: null_mut(),
@@ -8127,6 +8152,26 @@ mod tests {
             super::state_label(&job(JobState::Paused, "MP4")),
             JobState::Paused.label()
         );
+    }
+
+    #[test]
+    fn the_status_line_gives_each_hold_its_own_reason_and_none_without_a_hold() {
+        use crate::model::Hold;
+        let notice = |metered, battery_saver| {
+            super::hold_notice(Hold {
+                metered,
+                battery_saver,
+            })
+        };
+        assert_eq!(notice(false, false), None);
+        let reasons = [notice(true, false), notice(false, true), notice(true, true)];
+        for (index, reason) in reasons.iter().enumerate() {
+            assert!(reason.is_some_and(|text| !text.is_empty()));
+            assert!(
+                !reasons[index + 1..].contains(reason),
+                "two holds share one status text"
+            );
+        }
     }
 
     #[test]
