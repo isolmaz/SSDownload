@@ -380,6 +380,7 @@ impl Engine {
             settings.queues.push(queue);
             settings_migrated = true;
         }
+        settings_migrated |= settings.adopt_current_defaults();
         if settings_migrated {
             store.save_settings(&settings)?;
         }
@@ -1685,6 +1686,7 @@ impl Actor {
         settings.onboarding_version = settings
             .onboarding_version
             .max(self.settings.onboarding_version);
+        settings.defaults_version = self.settings.defaults_version;
         // Quota consumption and synchronization validators are engine-owned runtime
         // state. A settings dialog may have been open while they advanced; copying
         // that stale snapshot back must not grant bytes or forget remote identity.
