@@ -3020,6 +3020,7 @@ impl Actor {
             TransferResult {
                 path: canonical_path,
                 bytes,
+                warning: None,
             },
         )?;
         self.remove_browser_transfer(id);
@@ -3539,7 +3540,7 @@ impl Actor {
                 job.state = JobState::Completed;
                 job.phase = crate::i18n::ui("Tamamlandı", "Completed").into();
                 job.request.forget_session();
-                job.error = install::mark_download(&job.path, &job.request.url)
+                let mark_warning = install::mark_download(&job.path, &job.request.url)
                     .err()
                     .map(|error| {
                         crate::i18n::ui_format!(
@@ -3548,6 +3549,10 @@ impl Actor {
                             error = error
                         )
                     });
+                job.error = [result.warning, mark_warning.clone()]
+                    .into_iter()
+                    .flatten()
+                    .reduce(|first, second| format!("{first}; {second}"));
                 self.retry_at.remove(id);
                 let elapsed = now.saturating_sub(job.created_at).max(0) as u64 * 1000;
                 crate::logging::record_job(
@@ -3563,7 +3568,7 @@ impl Actor {
                             job.attempts.saturating_add(1)
                         )),
                 );
-                if let Some(warning) = &job.error {
+                if let Some(warning) = &mark_warning {
                     crate::logging::record_job(
                         id,
                         crate::logging::Event::warn("job.mark_failed")

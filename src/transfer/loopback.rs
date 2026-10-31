@@ -3537,6 +3537,24 @@ fn corrupted_once(size: u64, documents: Vec<Document>) -> Server {
     })
 }
 
+/// A server whose file is body version 1 for its first pass and body version 2 from its second
+/// `HEAD` on, and whose digests state body version 3: no pass meets them, and the passes differ
+/// from each other. The digest is a `Repr-Digest` header when `header` is set, else the digests
+/// are in `documents`.
+fn corrupted_differently(size: u64, header: bool, documents: Vec<Document>) -> Server {
+    Server::start(Config {
+        size,
+        extra_headers: if header {
+            vec![repr_digest_header(3, size)]
+        } else {
+            Vec::new()
+        },
+        switch_version_at_head: Some(1),
+        documents,
+        ..Config::default()
+    })
+}
+
 fn forget_verified() {
     TEST_VERIFIED.with(|verified| verified.borrow_mut().clear());
 }
@@ -3743,11 +3761,7 @@ fn a_repr_digest_mismatch_over_several_connections_is_followed_by_one_download_f
 }
 
 fn mismatch_twice(connections: u8, size: u64) {
-    let server = Server::start(Config {
-        size,
-        extra_headers: vec![repr_digest_header(2, size)],
-        ..Config::default()
-    });
+    let server = corrupted_differently(size, true, Vec::new());
     forget_verified();
     let (result, directory) = fetch_payload(&server, connections);
     let error = assert_refused(result, &directory);
@@ -3757,7 +3771,9 @@ fn mismatch_twice(connections: u8, size: u64) {
     assert!(server.body_bytes_sent() < 3 * size);
     assert_eq!(verified_by(), []);
 
-    // The used re-download is not carried over to a retry of the failed job: it starts anew.
+    // The used re-download is not carried over to a retry of the failed job: it starts anew, and
+    // gets a re-download of its own. The server now serves body version 2 throughout, so the
+    // two passes agree and the file stays.
     let output = directory.0.join("payload.bin");
     let again = fetch(
         &request_for(&server),
@@ -3767,28 +3783,77 @@ fn mismatch_twice(connections: u8, size: u64) {
         connections,
         &mut |_| {},
     );
-    assert_refused(again, &directory);
+    assert_kept_with_a_warning(again, &directory, "Repr-Digest", 2, size);
     assert_eq!(heads(&server), 4);
 }
 
 #[test]
-fn a_digest_that_does_not_match_twice_fails_with_trf_003_and_publishes_nothing() {
+fn two_downloads_that_differ_and_miss_the_digest_fail_with_trf_003_and_publish_nothing() {
     mismatch_twice(1, 3 * MIB + 5);
 }
 
 #[test]
-fn a_digest_that_does_not_match_twice_over_several_connections_fails_with_trf_003() {
+fn two_downloads_over_several_connections_that_differ_and_miss_the_digest_fail_with_trf_003() {
     mismatch_twice(4, 9 * MIB + 5);
+}
+
+/// A server that always serves body version 1 and publishes the digest of body version 2: a stale
+/// digest, as when the publisher replaced the file and not its checksum.
+fn stale_digest(size: u64, header: bool, documents: Vec<Document>) -> Server {
+    Server::start(Config {
+        size,
+        extra_headers: if header {
+            vec![repr_digest_header(2, size)]
+        } else {
+            Vec::new()
+        },
+        documents,
+        ..Config::default()
+    })
+}
+
+/// The file of a download whose two passes gave the same bytes of body `version`, not the
+/// digest's: published, with a note on the job that names `source`.
+fn assert_kept_with_a_warning(
+    result: Result<TransferResult>,
+    directory: &TempDir,
+    source: &str,
+    version: u8,
+    size: u64,
+) {
+    let result = result.unwrap_or_else(|error| panic!("{error:#}"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(version, size));
+    assert_eq!(left_in(directory), ["payload.bin"]);
+    let warning = result.warning.expect("the job gets a note");
+    assert!(warning.contains(source), "{warning}");
+    assert_eq!(verified_by(), []);
+}
+
+fn stale_repr_digest(connections: u8, size: u64) {
+    let server = stale_digest(size, true, Vec::new());
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, connections);
+    assert_kept_with_a_warning(result, &directory, "Repr-Digest", 1, size);
+    // The file was fetched twice, and the second copy is the one that stays.
+    assert_eq!(heads(&server), 2);
+    assert!(server.body_bytes_sent() >= 2 * size);
+    assert!(server.body_bytes_sent() < 3 * size);
+}
+
+#[test]
+fn a_stale_repr_digest_that_two_identical_downloads_do_not_meet_keeps_the_file_with_a_warning() {
+    stale_repr_digest(1, 3 * MIB + 5);
+}
+
+#[test]
+fn a_stale_repr_digest_over_several_connections_keeps_the_file_with_a_warning() {
+    stale_repr_digest(4, 9 * MIB + 5);
 }
 
 #[test]
 fn a_restart_between_the_first_mismatch_and_the_second_download_allows_no_third() {
     let size = 3 * MIB + 5;
-    let server = Server::start(Config {
-        size,
-        extra_headers: vec![repr_digest_header(2, size)],
-        ..Config::default()
-    });
+    let server = corrupted_differently(size, true, Vec::new());
     let directory = TempDir::new("digest-restart");
     let output = directory.0.join("payload.bin");
     let request = request_for(&server);
@@ -3807,9 +3872,13 @@ fn a_restart_between_the_first_mismatch_and_the_second_download_allows_no_third(
     assert_eq!(heads(&server), 1);
     assert!(!part_path(&output).exists() && !state_path(&output).exists());
     let record = digest::retry_record(&state_path(&output));
-    assert!(record.exists(), "the used re-download is not recorded");
+    assert_eq!(
+        digest::first_download(&record),
+        Some(pattern_sha256(1, size)),
+        "the first download is not recorded"
+    );
 
-    // The next start downloads once more, finds the same mismatch and stops there.
+    // The next start downloads once more, finds other bytes that miss the digest and stops there.
     let error = fetch(
         &request,
         &output,
@@ -3823,6 +3892,38 @@ fn a_restart_between_the_first_mismatch_and_the_second_download_allows_no_third(
     assert_eq!(heads(&server), 2);
     assert_eq!(server.body_bytes_sent(), 2 * size);
     assert_eq!(left_in(&directory), Vec::<String>::new());
+}
+
+#[test]
+fn a_restart_between_the_first_mismatch_and_a_second_download_of_the_same_bytes_keeps_the_file() {
+    let size = 3 * MIB + 5;
+    let server = stale_digest(size, true, Vec::new());
+    let directory = TempDir::new("digest-restart-same");
+    let output = directory.0.join("payload.bin");
+    let request = request_for(&server);
+
+    let control = TransferControl::default();
+    let closing = control.clone();
+    let notice = DigestRetry(0).to_string();
+    fetch(&request, &output, &control, 1, 1, &mut |progress| {
+        if progress.phase == notice {
+            closing.pause();
+        }
+    })
+    .unwrap_err();
+
+    forget_verified();
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    );
+    assert_kept_with_a_warning(result, &directory, "Repr-Digest", 1, size);
+    assert_eq!(heads(&server), 2);
+    assert_eq!(server.body_bytes_sent(), 2 * size);
 }
 
 #[test]
@@ -3853,11 +3954,32 @@ fn a_sha256_file_next_to_the_address_verifies_the_file() {
 }
 
 #[test]
-fn a_sha256_file_that_does_not_match_fails_the_download_after_one_more_attempt() {
+fn a_stale_sha256_file_that_two_identical_downloads_do_not_meet_keeps_the_file_with_a_warning() {
     let size = 2 * MIB + 11;
-    let wrong = pattern_sha256(2, size);
-    let server = serving(
+    let stale = pattern_sha256(2, size);
+    let server = stale_digest(
         size,
+        false,
+        vec![
+            text_document("/payload.bin.sha256", &format!("{stale}  payload.bin\n")),
+            missing("/SHA256SUMS"),
+        ],
+    );
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_kept_with_a_warning(result, &directory, ".sha256", 1, size);
+    assert_eq!(heads(&server), 2);
+    // Each of the two downloads asked once.
+    assert_eq!(lookup_paths(&server), ["/payload.bin.sha256"; 2]);
+}
+
+#[test]
+fn a_sha256_file_that_two_different_downloads_do_not_meet_fails_the_download() {
+    let size = 2 * MIB + 11;
+    let wrong = pattern_sha256(3, size);
+    let server = corrupted_differently(
+        size,
+        false,
         vec![
             text_document("/payload.bin.sha256", &format!("{wrong}  payload.bin\n")),
             missing("/SHA256SUMS"),
@@ -3869,7 +3991,6 @@ fn a_sha256_file_that_does_not_match_fails_the_download_after_one_more_attempt()
     assert!(format!("{error:#}").contains(".sha256"), "{error:#}");
     assert_eq!(heads(&server), 2);
     assert_eq!(verified_by(), []);
-    // Each of the two downloads asked once.
     assert_eq!(lookup_paths(&server), ["/payload.bin.sha256"; 2]);
 }
 
@@ -3917,15 +4038,25 @@ fn sha256sums_verifies_the_file_by_the_line_that_names_it() {
         ["/payload.bin.sha256", "/SHA256SUMS"]
     );
 
-    let wrong = pattern_sha256(2, size);
-    let sums = format!("{other}  payload.bin.old\n{wrong}  payload.bin\n");
-    let server = serving(
-        size,
+    let documents = |version| {
+        let line = format!("{}  payload.bin", pattern_sha256(version, size));
         vec![
             missing("/payload.bin.sha256"),
-            text_document("/SHA256SUMS", &sums),
-        ],
-    );
+            text_document(
+                "/SHA256SUMS",
+                &format!("{other}  payload.bin.old\n{line}\n"),
+            ),
+        ]
+    };
+    // A stale line, with both downloads alike: the file stays, with a note.
+    let server = stale_digest(size, false, documents(2));
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_kept_with_a_warning(result, &directory, "SHA256SUMS", 1, size);
+    assert_eq!(heads(&server), 2);
+
+    // A line that neither download meets, with downloads that differ: the job fails.
+    let server = corrupted_differently(size, false, documents(3));
     let (result, directory) = fetch_payload(&server, 1);
     let error = assert_refused(result, &directory);
     assert!(format!("{error:#}").contains("SHA256SUMS"), "{error:#}");
@@ -4437,6 +4568,167 @@ fn the_digest_files_of_an_address_with_an_encoded_name_and_a_query_are_found() {
         lookup_paths(&server),
         ["/dir/my%20file.bin.sha256", "/dir/SHA256SUMS"]
     );
+}
+
+/// Runs `run` with the whole digest lookup limited to `limit`.
+fn with_lookup_limit<T>(limit: Duration, run: impl FnOnce() -> T) -> T {
+    digest::TEST_LOOKUP_LIMIT.with(|cell| cell.set(Some(limit)));
+    let result = run();
+    digest::TEST_LOOKUP_LIMIT.with(|cell| cell.set(None));
+    result
+}
+
+/// A server for `payload.bin` that publishes the right `.sha256` and answers digest files only
+/// after `delay`.
+fn slow_lookups(size: u64, delay: Duration) -> Server {
+    let right = pattern_sha256(1, size);
+    Server::start(Config {
+        size,
+        lookup_delay: Some(delay),
+        documents: vec![
+            text_document("/payload.bin.sha256", &format!("{right}\n")),
+            missing("/SHA256SUMS"),
+        ],
+        ..Config::default()
+    })
+}
+
+#[test]
+fn a_repr_digest_that_only_the_head_answer_carries_survives_the_range_probe() {
+    let size = 9 * MIB + 5;
+    let server = Server::start(Config {
+        size,
+        head_extra_headers: vec![repr_digest_header(1, size)],
+        ..Config::default()
+    });
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 4);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), [digest::Source::ReprDigest]);
+    // The one-byte probe of the ranges was answered without the digest.
+    assert!(server
+        .log()
+        .iter()
+        .any(|entry| entry.range.as_deref() == Some("bytes=0-0")));
+}
+
+#[test]
+fn a_digest_file_is_read_only_from_a_200_answer() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    for status in [201, 202, 203, 206, 403, 404, 410, 500, 503] {
+        let answer = |path: &str, body: String| Document {
+            status,
+            ..text_document(path, &body)
+        };
+        let server = serving(
+            size,
+            vec![
+                answer("/payload.bin.sha256", format!("{right}\n")),
+                answer("/SHA256SUMS", format!("{right}  payload.bin\n")),
+            ],
+        );
+        forget_verified();
+        let (result, directory) = fetch_payload(&server, 1);
+        assert_published(result, &directory, 1, size);
+        assert_eq!(verified_by(), [], "status {status}");
+        assert_eq!(lookup_paths(&server).len(), 2, "status {status}");
+    }
+}
+
+#[test]
+fn a_digest_lookup_that_outlasts_its_limit_is_dropped_and_the_file_published_unverified() {
+    let size = 2 * MIB + 11;
+    let server = slow_lookups(size, Duration::from_secs(5));
+    forget_verified();
+    let started = Instant::now();
+    let (result, directory) =
+        with_lookup_limit(Duration::from_secs(1), || fetch_payload(&server, 1));
+    let waited = started.elapsed();
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), []);
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+}
+
+#[test]
+fn a_stop_during_a_digest_lookup_ends_the_download_at_once_and_publishes_nothing() {
+    let size = 2 * MIB + 11;
+    let server = slow_lookups(size, Duration::from_secs(5));
+    let directory = TempDir::new("digest-stop-lookup");
+    let output = directory.0.join("payload.bin");
+    let request = request_for(&server);
+    let control = TransferControl::default();
+    forget_verified();
+    let started = Instant::now();
+    let error = thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..2000 {
+                if !server.lookups().is_empty() {
+                    control.pause();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        fetch(&request, &output, &control, 1, 1, &mut |_| {}).unwrap_err()
+    });
+    let waited = started.elapsed();
+    assert!(!is_trf_003(&error), "{error:#}");
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+    assert!(!output.exists());
+    assert!(part_path(&output).exists());
+    assert_eq!(verified_by(), []);
+}
+
+#[test]
+fn a_download_whose_host_has_no_free_connection_for_a_lookup_is_published_unverified() {
+    let size = 4 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let server = serving(
+        size,
+        vec![
+            text_document("/payload.bin.sha256", &format!("{right}\n")),
+            missing("/SHA256SUMS"),
+        ],
+    );
+    let directory = TempDir::new("digest-no-slot");
+    let output = directory.0.join("payload.bin");
+    let governor = NetworkGovernor::new(2);
+    // Other downloads take every connection of the host the moment this one has its bytes, and
+    // keep them for longer than the test lets anything wait.
+    let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let releasing = held.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(12));
+        releasing.lock().unwrap().clear();
+    });
+    let completing = crate::i18n::ui("Tamamlanıyor", "Completing");
+    forget_verified();
+    let started = Instant::now();
+    let result = with_lookup_limit(Duration::from_secs(1), || {
+        download(
+            &request_for(&server),
+            &output,
+            &TransferControl::default(),
+            &governor,
+            2,
+            None,
+            &mut |progress| {
+                if progress.phase == completing {
+                    let mut held = held.lock().unwrap();
+                    while let Some(lease) = governor.try_acquire_host("127.0.0.1".into()) {
+                        held.push(lease);
+                    }
+                }
+            },
+        )
+    });
+    let waited = started.elapsed();
+    assert!(!held.lock().unwrap().is_empty(), "no slot was taken");
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), []);
+    assert_eq!(server.lookups().len(), 0);
+    assert!(waited < Duration::from_secs(6), "{waited:?}");
 }
 
 const BENCH_SIZE: u64 = 128 * MIB;

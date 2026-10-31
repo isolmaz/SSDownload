@@ -214,14 +214,20 @@ impl NetworkGovernor {
     /// worker, never the actor, and checks cancellation while other independent
     /// handles make progress and release capacity.
     fn acquire_host(&self, host: String, control: &TransferControl) -> Result<ConnectionLease> {
-        self.acquire(LeaseScope::Host(host), control)
+        self.acquire(LeaseScope::Host(host), control, None)
     }
 
     fn acquire_wildcard(&self, control: &TransferControl) -> Result<ConnectionLease> {
-        self.acquire(LeaseScope::Wildcard, control)
+        self.acquire(LeaseScope::Wildcard, control, None)
     }
 
-    fn acquire(&self, scope: LeaseScope, control: &TransferControl) -> Result<ConnectionLease> {
+    /// Waits for capacity until `deadline`, when there is one.
+    fn acquire(
+        &self,
+        scope: LeaseScope,
+        control: &TransferControl,
+        deadline: Option<Instant>,
+    ) -> Result<ConnectionLease> {
         loop {
             if control.stop_requested() {
                 bail!(
@@ -240,6 +246,15 @@ impl NetworkGovernor {
                     scope: Some(scope),
                     units: 1,
                 });
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                bail!(
+                    "{}",
+                    crate::i18n::ui(
+                        "Ağ bağlantısı için zamanında kapasite açılmadı",
+                        "No capacity for the network connection became free in time"
+                    )
+                );
             }
             let (next, _) = self
                 .inner
@@ -302,11 +317,30 @@ impl NetworkGovernor {
         url: &Url,
         control: &TransferControl,
     ) -> Result<GovernedEasy> {
+        self.easy_for_url_by(url, control, None)
+    }
+
+    /// Like `easy_for_url`, but fails once `deadline` has passed while the host has no free slot.
+    pub(crate) fn easy_for_url_before(
+        &self,
+        url: &Url,
+        control: &TransferControl,
+        deadline: Instant,
+    ) -> Result<GovernedEasy> {
+        self.easy_for_url_by(url, control, Some(deadline))
+    }
+
+    fn easy_for_url_by(
+        &self,
+        url: &Url,
+        control: &TransferControl,
+        deadline: Option<Instant>,
+    ) -> Result<GovernedEasy> {
         let host = canonical_host(url)?;
         // Acquire before libcurl starts its connect/Happy-Eyeballs timers.
         // Waiting inside the first open-socket callback can make a later
         // alternate-address attempt see the first socket's sole host permit.
-        let first_socket = self.acquire_host(host.clone(), control)?;
+        let first_socket = self.acquire(LeaseScope::Host(host.clone()), control, deadline)?;
         let mut easy = GovernedEasy::new(
             self.clone(),
             CurlScope::Host(host.clone()),
@@ -2204,6 +2238,69 @@ mod tests {
         let (_, status) = open_tunnel(&proxy, &target);
         assert!(status.starts_with("HTTP/1.1 503"), "{status}");
         assert!(started.elapsed() >= super::TUNNEL_WAIT);
+    }
+
+    /// Whether `easy_for_url_before` gets a handle. It is asked from another thread, so that a
+    /// wait that never ends fails the test instead of hanging it.
+    fn gets_a_handle(
+        governor: &NetworkGovernor,
+        url: &url::Url,
+        control: &TransferControl,
+        deadline: Instant,
+    ) -> bool {
+        let (answer, receiver) = std::sync::mpsc::channel();
+        let (governor, url, control) = (governor.clone(), url.clone(), control.clone());
+        thread::spawn(move || {
+            let _ = answer.send(
+                governor
+                    .easy_for_url_before(&url, &control, deadline)
+                    .is_ok(),
+            );
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the wait for a slot never ended")
+    }
+
+    #[test]
+    fn an_easy_handle_waits_for_a_free_slot_only_until_its_deadline() {
+        let governor = NetworkGovernor::new(1);
+        let url = url::Url::parse("http://127.0.0.1:9/file").unwrap();
+        let control = TransferControl::default();
+        let held = governor.try_acquire_host("127.0.0.1".into()).unwrap();
+
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(300);
+        assert!(!gets_a_handle(&governor, &url, &control, deadline));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(300), "{waited:?}");
+        assert!(waited < Duration::from_secs(3), "{waited:?}");
+
+        // A slot that comes free before the deadline is taken.
+        let releasing = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            drop(held);
+        });
+        let deadline = Instant::now() + Duration::from_secs(8);
+        assert!(gets_a_handle(&governor, &url, &control, deadline));
+        releasing.join().unwrap();
+    }
+
+    #[test]
+    fn a_stop_ends_the_wait_for_a_slot_before_its_deadline() {
+        let governor = NetworkGovernor::new(1);
+        let url = url::Url::parse("http://127.0.0.1:9/file").unwrap();
+        let control = TransferControl::default();
+        let _held = governor.try_acquire_host("127.0.0.1".into()).unwrap();
+        let stopping = control.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            stopping.pause();
+        });
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(8);
+        assert!(!gets_a_handle(&governor, &url, &control, deadline));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

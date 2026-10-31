@@ -441,6 +441,7 @@ static AR: &[(&str, &str)] = &[
     ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "لم يُعثر على ملف ZIP لـ FFmpeg (Windows x64، ترخيص LGPL) في أحدث إصدار من BtbN"),
     ("No active completion countdown.", "لا يوجد عد تنازلي نشط لإجراء الاكتمال."),
     ("No active downloads.", "لا توجد تنزيلات نشطة."),
+    ("No capacity for the network connection became free in time", "لم تتوفر سعة للاتصال بالشبكة في الوقت المناسب"),
     ("No countdown is active", "لا يوجد عد تنازلي نشط"),
     ("No download is attached to this window.", "لا يوجد تنزيل مرتبط بهذه النافذة."),
     ("No downloadable media format found", "لم يُعثر على تنسيق وسائط قابل للتنزيل"),
@@ -1868,6 +1869,7 @@ static ES: &[(&str, &str)] = &[
     ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "No se encontró el archivo ZIP de FFmpeg LGPL para Windows x64 en la última versión de BtbN"),
     ("No active completion countdown.", "No hay ninguna cuenta atrás de finalización activa."),
     ("No active downloads.", "No hay descargas activas."),
+    ("No capacity for the network connection became free in time", "No quedó capacidad libre para la conexión de red a tiempo"),
     ("No countdown is active", "No hay ninguna cuenta atrás activa"),
     ("No download is attached to this window.", "No hay ninguna descarga asociada a esta ventana."),
     ("No downloadable media format found", "No se encontró ningún formato multimedia descargable"),
@@ -3295,6 +3297,7 @@ static PT: &[(&str, &str)] = &[
     ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Nenhum arquivo ZIP do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN"),
     ("No active completion countdown.", "Nenhuma contagem regressiva de conclusão ativa."),
     ("No active downloads.", "Nenhum download ativo."),
+    ("No capacity for the network connection became free in time", "Não ficou disponível capacidade para a conexão de rede a tempo"),
     ("No countdown is active", "Nenhuma contagem regressiva está ativa"),
     ("No download is attached to this window.", "Nenhum download está vinculado a esta janela."),
     ("No downloadable media format found", "Nenhum formato de mídia disponível para download foi encontrado"),
@@ -4722,6 +4725,7 @@ static FR: &[(&str, &str)] = &[
     ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Aucun fichier ZIP FFmpeg LGPL Windows x64 n'a été trouvé dans la dernière version de BtbN"),
     ("No active completion countdown.", "Aucun compte à rebours de fin n'est actif."),
     ("No active downloads.", "Aucun téléchargement en cours."),
+    ("No capacity for the network connection became free in time", "Aucune capacité n'a été libérée à temps pour la connexion réseau"),
     ("No countdown is active", "Aucun compte à rebours n'est actif"),
     ("No download is attached to this window.", "Aucun téléchargement n'est associé à cette fenêtre."),
     ("No downloadable media format found", "Aucun format média téléchargeable trouvé"),
@@ -6149,6 +6153,7 @@ static DE: &[(&str, &str)] = &[
     ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Im neuesten BtbN-Release wurde keine Windows-x64-LGPL-FFmpeg-ZIP-Datei gefunden"),
     ("No active completion countdown.", "Kein aktiver Countdown bis zum Abschluss."),
     ("No active downloads.", "Keine aktiven Downloads."),
+    ("No capacity for the network connection became free in time", "Für die Netzwerkverbindung wurde nicht rechtzeitig Kapazität frei"),
     ("No countdown is active", "Kein Countdown ist aktiv"),
     ("No download is attached to this window.", "An dieses Fenster ist kein Download angehängt."),
     ("No downloadable media format found", "Kein herunterladbares Medienformat gefunden"),
@@ -7560,11 +7565,14 @@ macro_rules! __ui_template_ar {
     ("The file could not be read: {0}") => {
         "تعذّرت قراءة الملف: {0}"
     };
-    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
-        "لا يتطابق الملف مع ملخّص SHA-256 الذي ينشره مصدره ({0})؛ تم حذف الملف الجزئي، وستُنزَّل الملف من جديد عند إعادة المحاولة"
+    ("The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again") => {
+        "لا يتطابق الملف مع ملخّص SHA-256 الذي ينشره مصدره ({0})، وأعطى تنزيلان بيانات مختلفة؛ تم حذف الملف الجزئي، وسيُنزَّل الملف من جديد عند إعادة المحاولة"
     };
     ("The file path contains a redirection: {0}") => {
         "يحتوي مسار الملف على إعادة توجيه: {0}"
+    };
+    ("The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes") => {
+        "تم حفظ الملف، لكنه لا يتطابق مع ملخّص SHA-256 الذي ينشره مصدره ({0})؛ أعطى تنزيلان البيانات نفسها"
     };
     ("The file/folder could not be opened (Windows code {code}).") => {
         "تعذّر فتح الملف/المجلد (رمز Windows: {code})."
@@ -8372,11 +8380,14 @@ macro_rules! __ui_template_es {
     ("The file could not be read: {0}") => {
         "No se pudo leer el archivo: {0}"
     };
-    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
-        "El archivo no coincide con el resumen SHA-256 que publica su origen ({0}); se eliminó el archivo parcial y el reintento vuelve a descargarlo desde el principio"
+    ("The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again") => {
+        "El archivo no coincide con el resumen SHA-256 que publica su origen ({0}) y dos descargas dieron bytes distintos; se eliminó el archivo parcial y el reintento vuelve a descargarlo desde el principio"
     };
     ("The file path contains a redirection: {0}") => {
         "La ruta del archivo contiene una redirección: {0}"
+    };
+    ("The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes") => {
+        "El archivo se guardó, pero no coincide con el resumen SHA-256 que publica su origen ({0}); dos descargas dieron los mismos bytes"
     };
     ("The file/folder could not be opened (Windows code {code}).") => {
         "No se pudo abrir el archivo o la carpeta (código de Windows {code})."
@@ -9184,11 +9195,14 @@ macro_rules! __ui_template_pt {
     ("The file could not be read: {0}") => {
         "Não foi possível ler o arquivo: {0}"
     };
-    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
-        "O arquivo não corresponde ao resumo SHA-256 que a fonte publica ({0}); o arquivo parcial foi excluído e uma nova tentativa o baixa novamente"
+    ("The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again") => {
+        "O arquivo não corresponde ao resumo SHA-256 que a fonte publica ({0}) e dois downloads deram bytes diferentes; o arquivo parcial foi excluído e uma nova tentativa o baixa novamente"
     };
     ("The file path contains a redirection: {0}") => {
         "O caminho do arquivo contém um redirecionamento: {0}"
+    };
+    ("The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes") => {
+        "O arquivo foi salvo, mas não corresponde ao resumo SHA-256 que a fonte publica ({0}); dois downloads deram os mesmos bytes"
     };
     ("The file/folder could not be opened (Windows code {code}).") => {
         "Não foi possível abrir o arquivo/pasta (código do Windows {code})."
@@ -9996,11 +10010,14 @@ macro_rules! __ui_template_fr {
     ("The file could not be read: {0}") => {
         "Le fichier n'a pas pu être lu : {0}"
     };
-    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
-        "Le fichier ne correspond pas au condensat SHA-256 publié par sa source ({0}) ; le fichier partiel a été supprimé et la nouvelle tentative le téléchargera à nouveau"
+    ("The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again") => {
+        "Le fichier ne correspond pas au condensat SHA-256 publié par sa source ({0}) et deux téléchargements ont donné des octets différents ; le fichier partiel a été supprimé et la nouvelle tentative le téléchargera à nouveau"
     };
     ("The file path contains a redirection: {0}") => {
         "Le chemin du fichier contient une redirection : {0}"
+    };
+    ("The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes") => {
+        "Le fichier a été enregistré, mais ne correspond pas au condensat SHA-256 publié par sa source ({0}) ; deux téléchargements ont donné les mêmes octets"
     };
     ("The file/folder could not be opened (Windows code {code}).") => {
         "Le fichier ou le dossier n'a pas pu être ouvert (code Windows {code})."
@@ -10808,11 +10825,14 @@ macro_rules! __ui_template_de {
     ("The file could not be read: {0}") => {
         "Die Datei konnte nicht gelesen werden: {0}"
     };
-    ("The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again") => {
-        "Die Datei stimmt nicht mit der SHA-256-Prüfsumme überein, die ihre Quelle veröffentlicht ({0}); die unvollständige Datei wurde gelöscht und wird beim nächsten Versuch erneut heruntergeladen"
+    ("The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again") => {
+        "Die Datei stimmt nicht mit der SHA-256-Prüfsumme überein, die ihre Quelle veröffentlicht ({0}), und zwei Downloads lieferten unterschiedliche Bytes; die unvollständige Datei wurde gelöscht und wird beim nächsten Versuch erneut heruntergeladen"
     };
     ("The file path contains a redirection: {0}") => {
         "Der Dateipfad enthält eine Umleitung: {0}"
+    };
+    ("The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes") => {
+        "Die Datei wurde gespeichert, stimmt aber nicht mit der SHA-256-Prüfsumme überein, die ihre Quelle veröffentlicht ({0}); zwei Downloads lieferten dieselben Bytes"
     };
     ("The file/folder could not be opened (Windows code {code}).") => {
         "Die Datei bzw. der Ordner konnte nicht geöffnet werden (Windows-Code {code})."

@@ -626,8 +626,9 @@ fn ranges_ignored(error: &anyhow::Error) -> bool {
 
 /// A file of this many bytes did not match the digest its source publishes, the bytes were
 /// discarded and the one re-download of the job is now used up: `download` fetches the file
-/// again from the beginning. It is the only error of a first pass that asks for another pass, and
-/// a pass whose record says the re-download is used up ends with `SSD-TRF-003` instead.
+/// again from the beginning. It is the only error of a first pass that asks for another pass; a
+/// pass whose record says the re-download is used up publishes the file when its bytes are the
+/// first pass's and ends with `SSD-TRF-003` otherwise.
 #[derive(Debug)]
 struct DigestRetry(u64);
 
@@ -4498,7 +4499,9 @@ fn finalize_part(
 /// Finishes an HTTP download. A SHA-256 the user gave decides alone and nothing else is
 /// requested. Without one, the digest that the source publishes does: the `Repr-Digest` of the
 /// response that delivered the bytes or, failing that, a file next to the address the download
-/// was given. With no digest the file is published as it is, without reading it again.
+/// was given. With no digest the file is published as it is, without reading it again. A file
+/// that does not match the digest is downloaded once more; if that gives the same bytes the file
+/// is published with a warning, and if it gives other bytes the job fails.
 #[allow(clippy::too_many_arguments)]
 fn finalize_http(
     request: &AddRequest,
@@ -4532,30 +4535,60 @@ fn finalize_http(
     let Some(published) = digest::published(request, header, bytes, control, network) else {
         return finalize_part(output, part, state, bytes, control, None);
     };
-    match verify_checksum(part, Some(&published.sha256), control) {
-        Ok(()) => {
-            note_verified(published.source);
-            crate::logging::record(
-                crate::logging::Event::info("transfer.digest_verified")
-                    .outcome(crate::logging::Outcome::Ok)
-                    .detail(format!("source={}", published.source.label())),
-            );
-            publish_part(output, part, state, bytes, control)
-        }
-        Err(error) if crate::error_codes::code_of(&error) == Some(crate::error_codes::TRF_003) => {
-            Err(digest_mismatch(published.source, part, state, bytes))
-        }
-        Err(error) => Err(error),
+    let actual = sha256_of(part, control)?;
+    if actual.eq_ignore_ascii_case(&published.sha256) {
+        note_verified(published.source);
+        crate::logging::record(
+            crate::logging::Event::info("transfer.digest_verified")
+                .outcome(crate::logging::Outcome::Ok)
+                .detail(format!("source={}", published.source.label())),
+        );
+        return publish_part(output, part, state, bytes, control);
     }
+    // A second download that gives the very bytes of the first rules out damage in transit, a
+    // truncated body and a fault in assembling the segments: what is left is a digest that is
+    // stale or describes another file, or a copy damaged on the server itself, which the
+    // client cannot tell apart. The file is kept, as it would be with no digest at all.
+    let record = digest::retry_record(state);
+    if digest::first_download(&record).as_deref() == Some(actual.as_str()) {
+        crate::logging::record(
+            crate::logging::Event::warn("transfer.digest_mismatch_consistent")
+                .outcome(crate::logging::Outcome::Partial)
+                .detail(format!("source={}", published.source.label())),
+        );
+        let mut result = publish_part(output, part, state, bytes, control)?;
+        result.warning = Some(crate::i18n::ui_format!(
+            "Dosya kaydedildi, ancak kaynağın yayımladığı SHA-256 özetiyle ({0}) eşleşmiyor; iki indirme aynı baytları verdi",
+            "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes",
+            published.source.label()
+        ));
+        return Ok(result);
+    }
+    Err(digest_mismatch(
+        published.source,
+        part,
+        state,
+        bytes,
+        &actual,
+    ))
 }
 
-/// Discards bytes that do not match the digest their source publishes. The first mismatch of a
-/// job grants one fetch from the beginning; the grant is recorded durably before the bytes are
-/// discarded, so no restart can grant another. A mismatch with the grant used up ends the job
-/// with `SSD-TRF-003` and clears the record, so that retrying the failed job starts anew.
-fn digest_mismatch(source: digest::Source, part: &Path, state: &Path, bytes: u64) -> anyhow::Error {
+/// Discards bytes with the SHA-256 `actual` that do not match the digest their source publishes.
+/// The first mismatch of a job grants one fetch from the beginning; the grant, with the SHA-256
+/// of these bytes, is recorded durably before they are discarded, so no restart can grant
+/// another. A mismatch with the grant used up, whose bytes differ from the first download's,
+/// ends the job with `SSD-TRF-003` and clears the record, so that retrying the failed job starts
+/// anew.
+fn digest_mismatch(
+    source: digest::Source,
+    part: &Path,
+    state: &Path,
+    bytes: u64,
+    actual: &str,
+) -> anyhow::Error {
     let record = digest::retry_record(state);
-    let granted = digest::grant_retry(&record);
+    let used = record.exists();
+    let granted = digest::grant_retry(&record, actual);
     remove_if_exists(part);
     remove_if_exists(state);
     crate::logging::record(
@@ -4571,14 +4604,20 @@ fn digest_mismatch(source: digest::Source, part: &Path, state: &Path, bytes: u64
         return anyhow!(DigestRetry(bytes));
     }
     remove_if_exists(&record);
-    crate::error_codes::coded(
-        crate::error_codes::TRF_003,
+    let message = if used {
         crate::i18n::ui_format!(
-            "Dosya, kaynağın yayımladığı SHA-256 özetiyle ({0}) eşleşmedi; kısmi dosya silindi, yeniden denemede dosya baştan indirilir",
-            "The file does not match the SHA-256 digest its source publishes ({0}); the partial file was deleted and a retry downloads it again",
+            "Dosya, kaynağın yayımladığı SHA-256 özetiyle ({0}) eşleşmedi ve iki indirme farklı bayt verdi; kısmi dosya silindi, yeniden denemede dosya baştan indirilir",
+            "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again",
             source.label()
-        ),
-    )
+        )
+    } else {
+        crate::i18n::ui(
+            "SHA-256 doğrulaması başarısız oldu; kısmi dosya silindi, yeniden denemede dosya baştan indirilir",
+            "SHA-256 verification failed; the partial file was deleted and a retry downloads it again",
+        )
+        .to_owned()
+    };
+    crate::error_codes::coded(crate::error_codes::TRF_003, message)
 }
 
 fn publish_part(
@@ -4601,6 +4640,7 @@ fn publish_part(
     Ok(TransferResult {
         path: actual,
         bytes,
+        warning: None,
     })
 }
 
@@ -4626,6 +4666,22 @@ fn verify_checksum(path: &Path, checksum: Option<&str>, control: &TransferContro
             )
         );
     }
+    let actual = sha256_of(path, control)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        crate::bail_code!(
+            crate::error_codes::TRF_003,
+            "{}",
+            crate::i18n::ui(
+                "SHA-256 doğrulaması başarısız oldu; kısmi dosya silindi, yeniden denemede dosya baştan indirilir",
+                "SHA-256 verification failed; the partial file was deleted and a retry downloads it again",
+            )
+        );
+    }
+    Ok(())
+}
+
+/// The SHA-256 of the file at `path` as lower-case hex; a stop request ends the reading.
+fn sha256_of(path: &Path, control: &TransferControl) -> Result<String> {
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = vec![0u8; IO_BUFFER];
@@ -4642,18 +4698,7 @@ fn verify_checksum(path: &Path, checksum: Option<&str>, control: &TransferContro
         }
         digest.update(&buffer[..read]);
     }
-    let actual = hex::encode(digest.finalize());
-    if !actual.eq_ignore_ascii_case(expected) {
-        crate::bail_code!(
-            crate::error_codes::TRF_003,
-            "{}",
-            crate::i18n::ui(
-                "SHA-256 doğrulaması başarısız oldu; kısmi dosya silindi, yeniden denemede dosya baştan indirilir",
-                "SHA-256 verification failed; the partial file was deleted and a retry downloads it again",
-            )
-        );
-    }
-    Ok(())
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn part_path(output: &Path) -> PathBuf {

@@ -171,7 +171,14 @@ pub struct Config {
     pub content_disposition: Option<String>,
     /// Header lines added to every `HEAD` and `GET` answer that carries the file's headers.
     pub extra_headers: Vec<String>,
+    /// Header lines added to the `HEAD` answer only.
+    pub head_extra_headers: Vec<String>,
+    /// The n-th `HEAD` (from 0) is answered with this status and no body when its entry is
+    /// `Some`; the others are served as usual.
+    pub head_statuses: Vec<Option<u16>>,
     pub documents: Vec<Document>,
+    /// A request for a digest file (see `Server::lookups`) is answered only after this long.
+    pub lookup_delay: Option<Duration>,
     /// Request headers copied into the log, matched case-insensitively.
     pub logged_headers: Vec<String>,
 }
@@ -217,7 +224,10 @@ impl Default for Config {
             content_type_from: None,
             content_disposition: None,
             extra_headers: Vec::new(),
+            head_extra_headers: Vec::new(),
+            head_statuses: Vec::new(),
             documents: Vec::new(),
+            lookup_delay: None,
             logged_headers: vec!["authorization".into(), "cookie".into(), "referer".into()],
         }
     }
@@ -831,6 +841,11 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
     } else {
         shared.head_requests.load(Ordering::Acquire)
     };
+    if request.method == "HEAD" {
+        if let Some(Some(status)) = config.head_statuses.get(heads_seen - 1) {
+            return Reply::empty(*status);
+        }
+    }
     let version = if index >= shared.switch_from.load(Ordering::Acquire)
         || config
             .switch_version_at_head
@@ -902,8 +917,8 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             omit_length: true,
             ..Reply::empty(200)
         },
-        "HEAD" => Reply {
-            headers: match &config.head_etag {
+        "HEAD" => {
+            let mut headers = match &config.head_etag {
                 Some(head_etag) => identity
                     .into_iter()
                     .map(|header| {
@@ -915,11 +930,15 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
                     })
                     .collect(),
                 None => identity,
-            },
-            length: config.head_content_length.unwrap_or(size),
-            version,
-            ..Reply::empty(200)
-        },
+            };
+            headers.extend(config.head_extra_headers.iter().cloned());
+            Reply {
+                headers,
+                length: config.head_content_length.unwrap_or(size),
+                version,
+                ..Reply::empty(200)
+            }
+        }
         "GET" => {
             let if_range_holds = config.ignore_if_range
                 || request.header("if-range").is_none_or(|validator| {
@@ -1028,6 +1047,9 @@ fn answer(
         if request.method == "GET" && request.header("range").is_some() {
             thread::sleep(delay);
         }
+    }
+    if let Some(delay) = config.lookup_delay.filter(|_| is_lookup(&request.path)) {
+        thread::sleep(delay);
     }
     let mut head = format!("HTTP/1.1 {} {}\r\n", reply.status, reason(reply.status));
     for header in &reply.headers {

@@ -16,7 +16,7 @@ use std::{
     cell::RefCell,
     path::{Path, PathBuf},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use url::Url;
 
@@ -27,7 +27,24 @@ pub(super) const MIN_LOOKUP_BYTES: u64 = 1024 * 1024;
 const BODY_LIMIT: usize = 64 * 1024;
 /// Requests, redirects included, that a lookup may send for one download.
 const REQUEST_LIMIT: u8 = 2;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a whole lookup may take, from waiting for a free connection of the host to the last
+/// byte of the last file. The download is complete by then, so a lookup that takes longer is
+/// dropped and the file is published unverified.
+const LOOKUP_LIMIT: Duration = Duration::from_secs(15);
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_LOOKUP_LIMIT: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn lookup_limit() -> Duration {
+    #[cfg(test)]
+    if let Some(limit) = TEST_LOOKUP_LIMIT.with(std::cell::Cell::get) {
+        return limit;
+    }
+    LOOKUP_LIMIT
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
@@ -52,15 +69,21 @@ pub(super) struct Published {
 }
 
 /// The record, beside a download's resume record, that its one re-download after a digest
-/// mismatch is used up.
+/// mismatch is used up. It holds the SHA-256 of the download that did not match.
 pub(super) fn retry_record(state: &Path) -> PathBuf {
     super::append_suffix(state, ".digest-retry")
 }
 
-/// Records that the re-download is used, durably. `false` when it was used already or the record
-/// cannot be written: no re-download is then granted.
-pub(super) fn grant_retry(record: &Path) -> bool {
-    !record.exists() && crate::recovery::atomic_write(record, b"1").is_ok()
+/// Records, durably, that a download with the SHA-256 `first` did not match and that the
+/// re-download is used. `false` when it was used already or the record cannot be written: no
+/// re-download is then granted.
+pub(super) fn grant_retry(record: &Path, first: &str) -> bool {
+    !record.exists() && crate::recovery::atomic_write(record, first.as_bytes()).is_ok()
+}
+
+/// The SHA-256 of the download that used the re-download up, when the record holds one.
+pub(super) fn first_download(record: &Path) -> Option<String> {
+    hex_digest(std::fs::read_to_string(record).ok()?.trim())
 }
 
 /// The `sha-256` member of a `Repr-Digest` field value, as lower-case hex. A repeated or
@@ -150,12 +173,13 @@ fn sidecar_addresses(original: &Url) -> Option<(String, Url, Url)> {
 }
 
 /// The body of a small `200` answer from the origin the download was given, following
-/// redirects only within it. Every request counts against `budget`.
+/// redirects only within it. Every request counts against `budget`, and none outlasts `deadline`.
 fn fetch(
     request: &AddRequest,
     first: Url,
     original_origin: &(String, String, u16),
     budget: &mut u8,
+    deadline: Instant,
     control: &TransferControl,
     network: &NetworkGovernor,
 ) -> Option<Vec<u8>> {
@@ -165,11 +189,27 @@ fn fetch(
             return None;
         }
         *budget -= 1;
-        let mut easy = network.easy_for_url(&current, control).ok()?;
+        let mut easy = match network.easy_for_url_before(&current, control, deadline) {
+            Ok(easy) => easy,
+            Err(error) => {
+                if !control.stop_requested() {
+                    crate::logging::record(
+                        crate::logging::Event::warn("transfer.digest_lookup_skipped")
+                            .outcome(crate::logging::Outcome::Skipped)
+                            .detail(format!("{error:#}")),
+                    );
+                }
+                return None;
+            }
+        };
         configure_easy(&mut easy, &current).ok()?;
         easy.follow_location(false).ok()?;
         easy.progress(true).ok()?;
-        easy.timeout(REQUEST_TIMEOUT).ok()?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        easy.timeout(left).ok()?;
         easy.http_headers(build_headers(request, &current, original_origin, None).ok()?)
             .ok()?;
         let response = Rc::new(RefCell::new(ResponseHeaders::default()));
@@ -199,9 +239,7 @@ fn fetch(
                         *write_overflow.borrow_mut() = true;
                         return Ok(0);
                     }
-                    if headers.status == 200 {
-                        body.extend_from_slice(data);
-                    }
+                    body.extend_from_slice(data);
                     Ok(data.len())
                 })
                 .ok()?;
@@ -231,7 +269,8 @@ fn fetch(
 /// `Repr-Digest` of the response that delivered them, or else the one named by a `.sha256` file
 /// and then by a `SHA256SUMS` file in the directory of the address the download was given, which
 /// may differ from the address that served the bytes. Both are read from that address's origin
-/// only, with the headers of the download, in at most `REQUEST_LIMIT` requests.
+/// only, with the headers of the download, in at most `REQUEST_LIMIT` requests and `LOOKUP_LIMIT`
+/// of time in all.
 pub(super) fn published(
     request: &AddRequest,
     header: Option<String>,
@@ -254,12 +293,14 @@ pub(super) fn published(
     let (name, file, sums) = sidecar_addresses(&original)?;
     let original_origin = origin(&original);
     let mut budget = REQUEST_LIMIT;
+    let deadline = Instant::now() + lookup_limit();
     let mut read = |url: Url| {
         fetch(
             request,
             url,
             &original_origin,
             &mut budget,
+            deadline,
             control,
             network,
         )
@@ -390,5 +431,20 @@ mod tests {
         // An address without a file name has no neighbours to ask.
         assert!(sidecar_addresses(&url("https://example.test/dir/")).is_none());
         assert!(sidecar_addresses(&url("https://example.test")).is_none());
+    }
+
+    #[test]
+    fn the_retry_record_holds_the_first_download_and_is_granted_once() {
+        let directory = crate::test_http::TempDir::new("digest-record");
+        let record = retry_record(&directory.0.join("payload.bin.ssdownload.state"));
+        assert_eq!(first_download(&record), None);
+        assert!(grant_retry(&record, DIGEST));
+        assert_eq!(first_download(&record).as_deref(), Some(DIGEST));
+        // A second grant changes nothing.
+        assert!(!grant_retry(&record, &"0".repeat(64)));
+        assert_eq!(first_download(&record).as_deref(), Some(DIGEST));
+        // A record without a digest names no download.
+        std::fs::write(&record, "1").unwrap();
+        assert_eq!(first_download(&record), None);
     }
 }
