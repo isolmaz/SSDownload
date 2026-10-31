@@ -453,8 +453,8 @@ struct Schedule {
     paces: HashMap<(usize, usize), Pace>,
     /// Requests in flight per host across all streams, never above `per_host`.
     busy: Vec<usize>,
-    /// Workers that keep a connection to each host between its segments, never above
-    /// `per_host`: their connections hold places of the host's connection bound.
+    /// Workers that may keep a connection to each host between its segments, never above
+    /// `per_host`; while open, such a connection holds a place of the host's connection bound.
     holders: Vec<usize>,
     per_host: usize,
     remaining: usize,
@@ -808,8 +808,10 @@ impl WorkerContext<'_> {
     }
 
     /// `fetch` over the kept connection when it is to the same origin. The connection is kept
-    /// for the next segment after a whole answer. After a redirect it closes before the target
-    /// gets a connection of its own, so a worker never waits for one while it holds another.
+    /// for the next segment after a whole answer, unless another requester (another download,
+    /// or a worker of this one) waits for a slot of the host: then it closes, so the slot passes
+    /// on after every segment. After a redirect it closes before the target gets a connection
+    /// of its own, so a worker never waits for one while it holds another.
     fn fetch_kept(
         &self,
         kept: &mut Option<Kept>,
@@ -830,7 +832,8 @@ impl WorkerContext<'_> {
                     status: Some(_),
                     ..
                 })
-        ) {
+        ) && !self.network.host_has_waiters(&host_key(url))
+        {
             *kept = Some(Kept { origin, easy });
         }
         fetched
@@ -1499,6 +1502,135 @@ mod tests {
                 pattern(1, 2000).repeat(24)
             );
         });
+    }
+
+    /// A stream of `segments` segments of 2000 bytes under `/<name>/` on `server`.
+    fn stream_on(server: &crate::test_http::Server, name: &str, segments: usize) -> NativeStream {
+        NativeStream {
+            segments: (0..segments)
+                .map(|index| Url::parse(&server.url(&format!("/{name}/{index}.ts"))).unwrap())
+                .collect(),
+            ..one_host_stream(0)
+        }
+    }
+
+    /// Waits until `server` has logged `requests` requests.
+    fn wait_for_requests(server: &crate::test_http::Server, requests: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while server.log().len() < requests {
+            assert!(Instant::now() < deadline, "the download did not start");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_connection_waiting_for_the_host_gets_a_place_while_a_download_goes_on() {
+        use crate::test_http::{pattern, Config, Server, TempDir};
+        // A segment takes about 0.1 s, so the download lasts about three seconds.
+        let server = Server::start(Config {
+            size: 2000,
+            throttle: Some(20_000),
+            ..Config::default()
+        });
+        let workspace = TempDir::new("native-waiter");
+        let streams = [stream_on(&server, "a", 90)];
+        let request = AddRequest {
+            connections: Some(3),
+            ..AddRequest::default()
+        };
+        let network = NetworkGovernor::new(4);
+        // The download's three connections and this place fill the host's four.
+        let _elsewhere = network.try_acquire_host("127.0.0.1".into()).unwrap();
+        let control = TransferControl::default();
+
+        thread::scope(|scope| {
+            let download = scope.spawn(|| {
+                fetch_segments(
+                    &streams,
+                    &workspace.0,
+                    &request,
+                    &control,
+                    &network,
+                    &mut |_| {},
+                )
+            });
+            wait_for_requests(&server, 3);
+            let connection = network.easy_for_url_before(
+                &Url::parse(&server.url("/other")).unwrap(),
+                &TransferControl::default(),
+                Instant::now() + Duration::from_secs(2),
+            );
+            assert!(connection.is_ok(), "no place within 2 s");
+            drop(connection);
+            let joins = download.join().unwrap().unwrap();
+            assert_eq!(
+                fs::read(&joins[0].joined).unwrap(),
+                pattern(1, 2000).repeat(90)
+            );
+        });
+    }
+
+    #[test]
+    fn a_second_download_from_the_host_finishes_while_the_first_goes_on() {
+        use crate::test_http::{Config, Server, TempDir};
+        // A segment takes about 0.1 s, so the first download lasts about three seconds.
+        let server = Server::start(Config {
+            size: 2000,
+            throttle: Some(20_000),
+            ..Config::default()
+        });
+        let (first_workspace, second_workspace) =
+            (TempDir::new("native-first"), TempDir::new("native-second"));
+        let (first, second) = ([stream_on(&server, "a", 90)], [stream_on(&server, "b", 6)]);
+        let request = AddRequest {
+            connections: Some(3),
+            ..AddRequest::default()
+        };
+        let network = NetworkGovernor::new(4);
+        // The first download's three connections and this place fill the host's four.
+        let _elsewhere = network.try_acquire_host("127.0.0.1".into()).unwrap();
+        let control = TransferControl::default();
+
+        thread::scope(|scope| {
+            let first_download = scope.spawn(|| {
+                fetch_segments(
+                    &first,
+                    &first_workspace.0,
+                    &request,
+                    &control,
+                    &network,
+                    &mut |_| {},
+                )
+            });
+            wait_for_requests(&server, 3);
+            let second_download = scope.spawn(|| {
+                fetch_segments(
+                    &second,
+                    &second_workspace.0,
+                    &request,
+                    &control,
+                    &network,
+                    &mut |_| {},
+                )
+            });
+            second_download.join().unwrap().unwrap();
+            first_download.join().unwrap().unwrap();
+        });
+        let paths = server
+            .log()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        let last = |prefix: &str| {
+            paths
+                .iter()
+                .rposition(|path| path.starts_with(prefix))
+                .unwrap()
+        };
+        assert!(
+            last("/b/") < last("/a/"),
+            "the second download ended after the first"
+        );
     }
 
     #[test]

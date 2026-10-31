@@ -69,6 +69,34 @@ struct GovernorState {
     active: usize,
     hosts: HashMap<String, usize>,
     wildcards: usize,
+    /// Requesters waiting for a slot of each host, and for a wildcard slot, which waits on
+    /// every host.
+    waiting: HashMap<String, usize>,
+    waiting_wildcards: usize,
+}
+
+/// Counts a requester as waiting for its scope until it is dropped.
+struct Waiter<'a> {
+    governor: &'a NetworkGovernor,
+    /// `None` for a wildcard.
+    host: Option<String>,
+}
+
+impl Drop for Waiter<'_> {
+    fn drop(&mut self) {
+        let mut state = self.governor.lock_state();
+        match self.host.take() {
+            Some(host) => {
+                if let Some(count) = state.waiting.get_mut(&host) {
+                    *count -= 1;
+                    if *count == 0 {
+                        state.waiting.remove(&host);
+                    }
+                }
+            }
+            None => state.waiting_wildcards -= 1,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -108,6 +136,8 @@ impl NetworkGovernor {
                     active: 0,
                     hosts: HashMap::new(),
                     wildcards: 0,
+                    waiting: HashMap::new(),
+                    waiting_wildcards: 0,
                 }),
                 available: Condvar::new(),
             }),
@@ -143,6 +173,31 @@ impl NetworkGovernor {
         self.try_acquire(LeaseScope::Host(host), 1)
     }
 
+    /// Whether a requester waits for a slot of `host`: a connection kept open between
+    /// requests to it should then give its slot up.
+    pub(crate) fn host_has_waiters(&self, host: &str) -> bool {
+        let state = self.lock_state();
+        state.waiting_wildcards > 0 || state.waiting.contains_key(host)
+    }
+
+    /// Counts a requester of `scope` as waiting, while the caller holds the state lock.
+    fn waiter(&self, state: &mut GovernorState, scope: &LeaseScope) -> Waiter<'_> {
+        let host = match scope {
+            LeaseScope::Host(host) => {
+                *state.waiting.entry(host.clone()).or_insert(0) += 1;
+                Some(host.clone())
+            }
+            LeaseScope::Wildcard => {
+                state.waiting_wildcards += 1;
+                None
+            }
+        };
+        Waiter {
+            governor: self,
+            host,
+        }
+    }
+
     /// Admission for one proxy tunnel: wait briefly for a finished fragment to release its slot
     /// before answering the client with a retryable 503. The wait is bounded, so a child that
     /// holds every slot of a host still gets its refusal instead of deadlocking the proxy.
@@ -153,6 +208,7 @@ impl NetworkGovernor {
         headroom: usize,
     ) -> Option<ConnectionLease> {
         let deadline = Instant::now() + timeout;
+        let mut waiter = None;
         loop {
             if let Some(lease) = self.try_acquire_host_with_headroom(host.clone(), headroom) {
                 return Some(lease);
@@ -160,7 +216,8 @@ impl NetworkGovernor {
             if Instant::now() >= deadline {
                 return None;
             }
-            let state = self.lock_state();
+            let mut state = self.lock_state();
+            waiter.get_or_insert_with(|| self.waiter(&mut state, &LeaseScope::Host(host.clone())));
             let (next, _) = self
                 .inner
                 .available
@@ -228,6 +285,7 @@ impl NetworkGovernor {
         control: &TransferControl,
         deadline: Option<Instant>,
     ) -> Result<ConnectionLease> {
+        let mut waiter = None;
         loop {
             if control.stop_requested() {
                 bail!(
@@ -256,6 +314,7 @@ impl NetworkGovernor {
                     )
                 );
             }
+            waiter.get_or_insert_with(|| self.waiter(&mut state, &scope));
             let (next, _) = self
                 .inner
                 .available
@@ -274,6 +333,7 @@ impl NetworkGovernor {
         host: String,
         control: &TransferControl,
     ) -> Result<ConnectionLease> {
+        let mut waiter = None;
         loop {
             if control.stop_requested() {
                 bail!(
@@ -303,6 +363,7 @@ impl NetworkGovernor {
                     units: 2,
                 });
             }
+            waiter.get_or_insert_with(|| self.waiter(&mut state, &scope));
             let (next, _) = self
                 .inner
                 .available
@@ -2441,6 +2502,33 @@ mod tests {
         assert!(limited
             .acquire_host_for_tunnel("example.test".into(), Duration::from_millis(500), 0)
             .is_some());
+    }
+
+    #[test]
+    fn a_requester_counts_as_waiting_for_its_host_until_it_has_a_slot_or_gives_up() {
+        let governor = NetworkGovernor::new(1);
+        let held = governor
+            .try_acquire_host("example.test".into())
+            .expect("first slot");
+        let control = TransferControl::default();
+        thread::scope(|scope| {
+            let tunnel = scope.spawn(|| {
+                governor.acquire_host_for_tunnel("example.test".into(), Duration::from_secs(5), 0)
+            });
+            assert!(eventually(|| governor.host_has_waiters("example.test")));
+            assert!(!governor.host_has_waiters("other.test"));
+            drop(held);
+            let lease = tunnel.join().unwrap().expect("the freed slot");
+            assert!(!governor.host_has_waiters("example.test"));
+
+            // A wildcard waits on every host, a requester that gives up stops waiting.
+            let wildcard = scope.spawn(|| governor.acquire_wildcard(&control));
+            assert!(eventually(|| governor.host_has_waiters("other.test")));
+            control.cancel();
+            assert!(wildcard.join().unwrap().is_err());
+            assert!(!governor.host_has_waiters("other.test"));
+            drop(lease);
+        });
     }
 
     #[test]
