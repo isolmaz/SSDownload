@@ -1,7 +1,8 @@
 //! App-native download of a pinned, finished HLS source with separate video and audio
-//! playlists. Both streams' segments are fetched at once, each segment is retried on its own,
-//! a host that answers 429 or 503 gets fewer parallel requests, and the joined streams are
-//! copied into one container. Every other source shape stays with yt-dlp.
+//! playlists. Both streams' segments are fetched at once over connections kept from one segment
+//! to the next, each segment is retried on its own, a host that answers 429 or 503 gets fewer
+//! parallel requests, and the joined streams are copied into one container. Every other source
+//! shape stays with yt-dlp.
 
 use super::*;
 use std::{
@@ -192,6 +193,27 @@ pub(super) fn download_streams(
     network: &NetworkGovernor,
     progress: &mut dyn FnMut(TransferProgress),
 ) -> Result<PathBuf> {
+    let joins = fetch_segments(streams, workspace, request, control, network, progress)?;
+    let received = joins.iter().map(Join::stored_bytes).sum::<u64>();
+    progress(TransferProgress {
+        downloaded: received,
+        total: Some(received),
+        phase: crate::i18n::ui("Medya işleniyor", "Processing media").into(),
+        processing: true,
+        ..TransferProgress::default()
+    });
+    merge(streams, &joins, workspace, request, tools, control)
+}
+
+/// Downloads every stream's segments into its joined part.
+fn fetch_segments(
+    streams: &[NativeStream],
+    workspace: &Path,
+    request: &AddRequest,
+    control: &TransferControl,
+    network: &NetworkGovernor,
+    progress: &mut dyn FnMut(TransferProgress),
+) -> Result<Vec<Join>> {
     validate_scoped_cookies(&request.session_cookies, request.page_url.as_deref())?;
     let per_host = fragment_concurrency(request.connections, network.per_host_limit(), 0)
         .parse::<usize>()
@@ -228,14 +250,7 @@ pub(super) fn download_streams(
     if let Some(error) = shared.take_failure() {
         return Err(error);
     }
-    progress(TransferProgress {
-        downloaded: received.load(Ordering::Relaxed),
-        total: Some(received.load(Ordering::Relaxed)),
-        phase: crate::i18n::ui("Medya işleniyor", "Processing media").into(),
-        processing: true,
-        ..TransferProgress::default()
-    });
-    merge(streams, &joins, workspace, request, tools, control)
+    Ok(joins)
 }
 
 fn merge(
@@ -438,9 +453,21 @@ struct Schedule {
     paces: HashMap<(usize, usize), Pace>,
     /// Requests in flight per host across all streams, never above `per_host`.
     busy: Vec<usize>,
+    /// Workers that keep a connection to each host between its segments, never above
+    /// `per_host`: their idle connections hold places of the host's connection bound.
+    holders: Vec<usize>,
+    /// Segments of each host not downloaded yet.
+    left: Vec<usize>,
     per_host: usize,
     remaining: usize,
     failure: Option<anyhow::Error>,
+}
+
+/// What a worker does next.
+enum Next {
+    Fetch(Task),
+    /// Close the kept connection: every segment of its host is downloaded.
+    Release,
 }
 
 impl Shared {
@@ -482,12 +509,18 @@ impl Shared {
                     })
                     .collect()
             })
-            .collect();
+            .collect::<Vec<Vec<usize>>>();
+        let mut left = vec![0; host_names.len()];
+        for task in queues.iter().flatten() {
+            left[hosts[task.stream][task.index]] += 1;
+        }
         Self {
             state: Mutex::new(Schedule {
                 queues,
                 paces: HashMap::new(),
                 busy: vec![0; host_names.len()],
+                holders: vec![0; host_names.len()],
+                left,
                 per_host,
                 remaining,
                 failure: None,
@@ -519,15 +552,25 @@ impl Shared {
         self.wake.notify_all();
     }
 
-    /// The next due segment whose host has room. Each stream offers its lowest playlist
-    /// position, so joins advance while later segments arrive, and the stream furthest behind
-    /// through its own playlist goes first, so video and audio finish together and a throttled
-    /// stream is not left for the end.
-    fn next_task(&self, streams: &[NativeStream], control: &TransferControl) -> Option<Task> {
+    /// The next due segment whose host has room for the worker that keeps a connection to
+    /// `kept`. Each stream offers its lowest playlist position, so joins advance while later
+    /// segments arrive, and the stream furthest behind through its own playlist goes first, so
+    /// video and audio finish together and a throttled stream is not left for the end. A worker
+    /// that takes a segment of another host gives up its place at `kept`.
+    fn next_task(
+        &self,
+        streams: &[NativeStream],
+        control: &TransferControl,
+        kept: Option<usize>,
+    ) -> Option<Next> {
         let mut state = self.lock();
         loop {
             if state.remaining == 0 || state.failure.is_some() || control.stop_requested() {
                 return None;
+            }
+            if let Some(host) = kept.filter(|host| state.left[*host] == 0) {
+                state.holders[host] -= 1;
+                return Some(Next::Release);
             }
             let now = Instant::now();
             let mut earliest: Option<Instant> = None;
@@ -549,7 +592,10 @@ impl Shared {
                         successes: 0,
                         last_cut: None,
                     });
-                    if busy >= per_host || pace.in_flight >= pace.limit {
+                    if busy >= per_host
+                        || pace.in_flight >= pace.limit
+                        || (kept != Some(host) && state.holders[host] >= per_host)
+                    {
                         continue;
                     }
                     let behind = chosen.as_ref().is_none_or(|(other, at, _)| {
@@ -568,7 +614,13 @@ impl Shared {
                 if let Some(pace) = state.paces.get_mut(&(stream, host)) {
                     pace.in_flight += 1;
                 }
-                return state.queues[stream].remove(position);
+                if kept != Some(host) {
+                    state.holders[host] += 1;
+                    if let Some(previous) = kept {
+                        state.holders[previous] -= 1;
+                    }
+                }
+                return state.queues[stream].remove(position).map(Next::Fetch);
             }
             let wait = earliest
                 .map(|at| at.saturating_duration_since(now))
@@ -613,7 +665,10 @@ impl Shared {
             }
         }
         match outcome {
-            Settled::Done => state.remaining -= 1,
+            Settled::Done => {
+                state.remaining -= 1;
+                state.left[host] -= 1;
+            }
             Settled::Failed => {}
             Settled::Retry { task, .. } => {
                 let queue = &mut state.queues[task.stream];
@@ -667,22 +722,47 @@ enum Fetched {
     },
 }
 
+/// A worker's connection to one origin, kept from one segment to the next.
+struct Kept {
+    origin: url::Origin,
+    easy: crate::network::GovernedEasy,
+}
+
 impl WorkerContext<'_> {
     fn work(&self) {
-        while let Some(mut task) = self.shared.next_task(self.streams, self.control) {
+        // The host whose connection this worker may keep, and the connection while it is open.
+        let mut held = None;
+        let mut kept = None;
+        while let Some(next) = self.shared.next_task(self.streams, self.control, held) {
+            let mut task = match next {
+                Next::Fetch(task) => task,
+                Next::Release => {
+                    (held, kept) = (None, None);
+                    continue;
+                }
+            };
             let stream_index = task.stream;
             let stream = &self.streams[stream_index];
             let join = &self.joins[stream_index];
             let host = self.shared.hosts[stream_index][task.index];
+            if held != Some(host) {
+                (held, kept) = (Some(host), None);
+            }
             let segment = segment_path(&join.joined, task.index);
             let mut url = stream.segments[task.index].clone();
-            let mut fetched = self.fetch(&url, stream, &segment);
+            let mut fetched = self.fetch_kept(&mut kept, &url, stream, &segment);
             for _ in 0..MAX_REDIRECTS {
                 let Ok(Fetched::Redirect(next)) = &fetched else {
                     break;
                 };
                 url = next.clone();
-                fetched = self.fetch(&url, stream, &segment);
+                // The kept connection closes first: a worker never waits for a connection while
+                // it holds an idle one.
+                kept = None;
+                fetched = self
+                    .network
+                    .easy_for_url(&url, self.control)
+                    .and_then(|mut easy| self.fetch(&mut easy, &url, stream, &segment));
             }
             match fetched {
                 Ok(Fetched::Done) => {
@@ -737,15 +817,51 @@ impl WorkerContext<'_> {
         }
     }
 
+    /// `fetch` over the kept connection when it is to the same origin, keeping the connection
+    /// afterwards unless the transfer itself failed.
+    fn fetch_kept(
+        &self,
+        kept: &mut Option<Kept>,
+        url: &Url,
+        stream: &NativeStream,
+        segment: &Path,
+    ) -> Result<Fetched> {
+        let origin = url.origin();
+        let mut easy = match kept.take().filter(|kept| kept.origin == origin) {
+            Some(kept) => kept.easy,
+            None => self.network.easy_for_url(url, self.control)?,
+        };
+        let fetched = self.fetch(&mut easy, url, stream, segment);
+        if matches!(
+            fetched,
+            Ok(Fetched::Done
+                | Fetched::Redirect(_)
+                | Fetched::Retry {
+                    status: Some(_),
+                    ..
+                })
+        ) {
+            *kept = Some(Kept { origin, easy });
+        }
+        fetched
+    }
+
     /// One request for a segment into `<segment>.tmp`, renamed to `segment` once whole.
-    fn fetch(&self, url: &Url, stream: &NativeStream, segment: &Path) -> Result<Fetched> {
+    fn fetch(
+        &self,
+        easy: &mut crate::network::GovernedEasy,
+        url: &Url,
+        stream: &NativeStream,
+        segment: &Path,
+    ) -> Result<Fetched> {
         let partial = partial_path(segment);
         let mut file = match File::create(&partial) {
             Ok(file) => file,
             Err(error) => return Ok(file_retry(&error)),
         };
-        let mut easy = self.network.easy_for_url(url, self.control)?;
-        crate::transfer::configure_easy(&mut easy, url)?;
+        // Each request sets its options again on a kept handle; a reset would also remove the
+        // handle's socket accounting.
+        crate::transfer::configure_easy(easy, url)?;
         easy.low_speed_time(Duration::from_secs(30))?;
         easy.progress(true)?;
         let mut headers = List::new();
@@ -1110,6 +1226,14 @@ mod tests {
         assert!(!declined(&separate(), &video));
     }
 
+    /// The segment `next_task` hands to a worker that keeps a connection to `kept`.
+    fn task_for(shared: &Shared, streams: &[NativeStream], kept: Option<usize>) -> Task {
+        match shared.next_task(streams, &TransferControl::default(), kept) {
+            Some(Next::Fetch(task)) => task,
+            _ => panic!("no segment was handed out"),
+        }
+    }
+
     fn one_host_stream(segments: usize) -> NativeStream {
         NativeStream {
             role: "audio",
@@ -1129,14 +1253,13 @@ mod tests {
         let streams = [one_host_stream(64)];
         let joins = [Join::resume(&root, &streams[0]).unwrap()];
         let shared = Shared::new(&streams, &joins, 8);
-        let control = TransferControl::default();
         let host = "cdn.example";
         let key = (0, 0);
         assert_eq!(shared.host_names, [host]);
         let limit = || shared.lock().paces[&key].limit;
 
         let tasks = (0..8)
-            .map(|_| shared.next_task(&streams, &control).unwrap())
+            .map(|_| task_for(&shared, &streams, None))
             .collect::<Vec<_>>();
         // The host has its full share in flight: nothing more is handed out for it.
         {
@@ -1209,11 +1332,10 @@ mod tests {
             Join::resume(&root, &streams[1]).unwrap(),
         ];
         let shared = Shared::new(&streams, &joins, 4);
-        let control = TransferControl::default();
         let host = 0;
 
         let tasks = (0..4)
-            .map(|_| shared.next_task(&streams, &control).unwrap())
+            .map(|_| task_for(&shared, &streams, None))
             .collect::<Vec<_>>();
         // Each stream advances through its own playlist at the same rate, ties to the first.
         assert_eq!(
@@ -1244,11 +1366,115 @@ mod tests {
             assert_eq!(state.paces[&(0, host)].limit, 4);
             assert_eq!(state.busy[host], 3);
         }
-        // The audio is still furthest behind, so its next segment takes the free slot.
-        let next = shared.next_task(&streams, &control).unwrap();
+        // The audio is still furthest behind, so its next segment takes the free slot of the
+        // worker that keeps the connection.
+        let next = task_for(&shared, &streams, Some(host));
         assert_eq!((next.stream, next.index), (1, 1));
         assert_eq!(shared.lock().busy[host], 4);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_more_workers_keep_a_host_than_its_bound_and_they_let_go_once_it_is_done() {
+        let root = std::env::temp_dir().join(format!("ssdownload-kept-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let audio = NativeStream {
+            segments: (0..4)
+                .map(|index| Url::parse(&format!("https://audio.example/{index}.ts")).unwrap())
+                .collect(),
+            ..one_host_stream(4)
+        };
+        let streams = [
+            NativeStream {
+                role: "video",
+                ..one_host_stream(4)
+            },
+            audio,
+        ];
+        let joins = [
+            Join::resume(&root, &streams[0]).unwrap(),
+            Join::resume(&root, &streams[1]).unwrap(),
+        ];
+        let shared = Shared::new(&streams, &joins, 2);
+        let (video, audio) = (0, 1);
+        assert_eq!(shared.host_names, ["cdn.example", "audio.example"]);
+
+        let tasks = (0..4)
+            .map(|_| task_for(&shared, &streams, None))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| (task.stream, task.index))
+                .collect::<Vec<_>>(),
+            [(0, 0), (1, 0), (0, 1), (1, 1)]
+        );
+        assert_eq!(shared.lock().holders, [2, 2]);
+        shared.settle(0, video, Settled::Done);
+        shared.settle(1, audio, Settled::Done);
+        // The video host has a free request but both of its places are kept: the worker that
+        // keeps the audio connection takes the next audio segment, though the video is as far.
+        let next = task_for(&shared, &streams, Some(audio));
+        assert_eq!((next.stream, next.index), (1, 2));
+        assert_eq!(shared.lock().holders, [2, 2]);
+
+        // The video's last segments come in; a worker that keeps that host lets it go then.
+        shared.settle(0, video, Settled::Done);
+        for index in [2, 3] {
+            assert_eq!(task_for(&shared, &streams, Some(video)).index, index);
+            shared.settle(0, video, Settled::Done);
+        }
+        assert!(matches!(
+            shared.next_task(&streams, &TransferControl::default(), Some(video)),
+            Some(Next::Release)
+        ));
+        assert_eq!(shared.lock().holders, [1, 2]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn each_worker_keeps_its_connection_from_one_segment_to_the_next() {
+        use crate::test_http::{pattern, Config, Server, TempDir};
+        // Opening a connection takes as long as a distant server's handshakes.
+        let server = Server::start(Config {
+            size: 2000,
+            connection_delay: Some(Duration::from_millis(50)),
+            ..Config::default()
+        });
+        let workspace = TempDir::new("native-keep-alive");
+        let streams = [NativeStream {
+            segments: (0..48)
+                .map(|index| Url::parse(&server.url(&format!("/a/{index}.ts"))).unwrap())
+                .collect(),
+            ..one_host_stream(0)
+        }];
+        let request = AddRequest {
+            connections: Some(4),
+            ..AddRequest::default()
+        };
+
+        let joins = fetch_segments(
+            &streams,
+            &workspace.0,
+            &request,
+            &TransferControl::default(),
+            &NetworkGovernor::new(8),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(&joins[0].joined).unwrap(),
+            pattern(1, 2000).repeat(48)
+        );
+        let log = server.log();
+        assert_eq!(log.len(), 48);
+        // Four requests at a time, so four connections serve all of them.
+        let connections = log
+            .iter()
+            .map(|entry| entry.connection)
+            .collect::<std::collections::HashSet<_>>();
+        assert!(connections.len() <= 4, "{} connections", connections.len());
     }
 
     #[test]
