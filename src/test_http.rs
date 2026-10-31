@@ -15,6 +15,9 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+/// How long a stalled response waits for a request to take part of its range.
+const STALL_LIMIT: Duration = Duration::from_secs(10);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RangeSupport {
     /// Single ranges answer 206; an unsatisfiable range answers 416.
@@ -108,6 +111,24 @@ pub struct Config {
     /// above 0, replacing `throttle` there. Probes, refused connections and connections that
     /// start otherwise do not count.
     pub slow_connection: Option<(usize, u64)>,
+    /// The body of the k-th connection, counted as for `slow_connection`, stops after this many
+    /// bytes. It goes on once a request for a range that starts inside the body arrives, the
+    /// client closes the connection, or `STALL_LIMIT` has passed.
+    pub stall: Option<(usize, u64)>,
+    /// A stalled body, once a request takes part of its range, goes on only up to the start of
+    /// that part and then stays silent until the client closes the connection or `STALL_LIMIT`
+    /// has passed.
+    pub hold_at_takeover: bool,
+    /// A `GET` with a `Range` header, the probe among them, is answered only after this long,
+    /// so that the first byte of every ranged response is late.
+    pub first_byte_delay: Option<Duration>,
+    /// The first request on every connection, whatever it asks for, is answered only after this
+    /// long, as if the connection took that long to set up; later requests on it are not held
+    /// back.
+    pub connection_delay: Option<Duration>,
+    /// The first this many bytes of a body without a stall are sent at once, and `throttle` and
+    /// `slow_connection` pace only what follows.
+    pub burst: u64,
     pub max_connections: Option<usize>,
     pub over_limit: OverLimit,
     pub cut_body: Option<CutBody>,
@@ -145,6 +166,11 @@ impl Default for Config {
             last_modified_fixed: false,
             throttle: None,
             slow_connection: None,
+            stall: None,
+            hold_at_takeover: false,
+            first_byte_delay: None,
+            connection_delay: None,
+            burst: 0,
             max_connections: None,
             over_limit: OverLimit::Unavailable(None),
             cut_body: None,
@@ -189,6 +215,8 @@ struct Shared {
     scripted: AtomicUsize,
     target_requests: AtomicUsize,
     ranged_connections: AtomicUsize,
+    /// Silent bodies that ended because the client closed the connection.
+    abandoned: AtomicUsize,
     /// Index of the first request that gets the second body version.
     switch_from: AtomicUsize,
     open: AtomicUsize,
@@ -219,6 +247,7 @@ impl Server {
             scripted: AtomicUsize::new(0),
             target_requests: AtomicUsize::new(0),
             ranged_connections: AtomicUsize::new(0),
+            abandoned: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
             body_bytes: AtomicU64::new(0),
             stop: AtomicBool::new(false),
@@ -254,6 +283,12 @@ impl Server {
     /// Body bytes written to sockets so far, whether or not the client read them.
     pub fn body_bytes_sent(&self) -> u64 {
         self.shared.body_bytes.load(Ordering::Acquire)
+    }
+
+    /// How many bodies that `hold_at_takeover` left silent ended because the client closed the
+    /// connection rather than because `STALL_LIMIT` passed.
+    pub fn abandoned_holds(&self) -> usize {
+        self.shared.abandoned.load(Ordering::Acquire)
     }
 
     /// Blocks until every connection has closed and no request has arrived for a moment, so
@@ -335,17 +370,42 @@ pub fn file_sha256(path: &Path) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// A deterministic generator for tests that vary their input: a seed gives the same numbers on
+/// every run.
+pub struct Sequence(u64);
+
+impl Sequence {
+    pub fn new(seed: u64) -> Self {
+        Self(seed | 1)
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    /// A number below `bound`, which must not be 0.
+    pub fn below(&mut self, bound: u64) -> u64 {
+        self.next_u64() % bound
+    }
+}
+
 pub struct TempDir(pub PathBuf);
 
 impl TempDir {
     pub fn new(label: &str) -> Self {
+        // Tests that start together with the same label must not share a directory.
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
         let stamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "ssdownload-loopback-{label}-{}-{stamp}",
-            std::process::id()
+            "ssdownload-loopback-{label}-{}-{stamp}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&path).unwrap();
         Self(path)
@@ -442,7 +502,7 @@ fn serve(shared: &Shared, stream: TcpStream, connection: usize, over_limit: bool
     };
     let mut reader = BufReader::new(reader_stream);
     let mut stream = stream;
-    let mut slow = None;
+    let mut place = None;
     while let Some(request) = read_request(&mut reader) {
         if !answer(
             shared,
@@ -450,7 +510,7 @@ fn serve(shared: &Shared, stream: TcpStream, connection: usize, over_limit: bool
             connection,
             &request,
             over_limit,
-            &mut slow,
+            &mut place,
         ) {
             break;
         }
@@ -458,19 +518,88 @@ fn serve(shared: &Shared, stream: TcpStream, connection: usize, over_limit: bool
     let _ = stream.shutdown(Shutdown::Write);
 }
 
-/// Judged on an admitted connection's first request: whether it is the configured slow one.
-fn is_slow(shared: &Shared, request: &Request) -> bool {
-    let Some((slow, _)) = shared.config.slow_connection else {
-        return false;
-    };
+/// Where a range request starts.
+fn range_start(spec: &str) -> Option<u64> {
+    spec.strip_prefix("bytes=")?
+        .split('-')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Judged on an admitted connection's first request: its place, from 0, among the connections
+/// that start with a GET whose range begins above 0; `None` for any other connection.
+fn ranged_place(shared: &Shared, request: &Request) -> Option<usize> {
     let above_zero = request.method == "GET"
         && request
             .header("range")
-            .and_then(|spec| spec.strip_prefix("bytes="))
-            .and_then(|spec| spec.split('-').next())
-            .and_then(|start| start.trim().parse::<u64>().ok())
+            .and_then(range_start)
             .is_some_and(|start| start > 0);
-    above_zero && shared.ranged_connections.fetch_add(1, Ordering::AcqRel) == slow
+    above_zero.then(|| shared.ranged_connections.fetch_add(1, Ordering::AcqRel))
+}
+
+/// Whether the client has closed a non-blocking connection.
+fn closed_by_client(stream: &TcpStream) -> bool {
+    match stream.peek(&mut [0]) {
+        Ok(0) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::WouldBlock,
+        Ok(_) => false,
+    }
+}
+
+/// Holds a response, whose body is `start..end` and whose request is logged at `position`, until
+/// another request has been logged for a range that starts inside the body, or `STALL_LIMIT` has
+/// passed. Returns where the part taken starts, or `end` after the limit; `None` when the client
+/// closed the connection meanwhile.
+fn wait_for_takeover(
+    shared: &Shared,
+    stream: &TcpStream,
+    position: usize,
+    start: u64,
+    end: u64,
+) -> Option<u64> {
+    let deadline = Instant::now() + STALL_LIMIT;
+    let _ = stream.set_nonblocking(true);
+    let taken = loop {
+        let taken = shared
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != position)
+            .filter_map(|(_, entry)| entry.range.as_deref().and_then(range_start))
+            .filter(|&from| from > start && from < end)
+            .min();
+        if taken.is_some() {
+            break taken;
+        }
+        if Instant::now() >= deadline {
+            break Some(end);
+        }
+        if closed_by_client(stream) {
+            break None;
+        }
+        thread::sleep(Duration::from_millis(2));
+    };
+    let _ = stream.set_nonblocking(false);
+    taken
+}
+
+/// Keeps a response silent until the client closes the connection, which is counted, or
+/// `STALL_LIMIT` has passed.
+fn hold(shared: &Shared, stream: &TcpStream) {
+    let deadline = Instant::now() + STALL_LIMIT;
+    let _ = stream.set_nonblocking(true);
+    while Instant::now() < deadline {
+        if closed_by_client(stream) {
+            shared.abandoned.fetch_add(1, Ordering::AcqRel);
+            break;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    let _ = stream.set_nonblocking(false);
 }
 
 struct Reply {
@@ -736,7 +865,7 @@ fn answer(
     connection: usize,
     request: &Request,
     over_limit: bool,
-    slow: &mut Option<bool>,
+    place: &mut Option<Option<usize>>,
 ) -> bool {
     let config = &shared.config;
     let index = shared.requests.fetch_add(1, Ordering::AcqRel);
@@ -750,8 +879,14 @@ fn answer(
         (cut_index < cut.responses)
             .then(|| (cut.after_bytes + cut_index as u64 * config.cut_growth).min(length))
     });
+    let first_on_connection = place.is_none();
     let mut log = shared.log.lock().unwrap();
-    let slow = *slow.get_or_insert_with(|| !over_limit && is_slow(shared, request));
+    let place = *place.get_or_insert_with(|| {
+        (!over_limit)
+            .then(|| ranged_place(shared, request))
+            .flatten()
+    });
+    let position = log.len();
     log.push(Logged {
         connection,
         method: request.method.clone(),
@@ -771,6 +906,14 @@ fn answer(
     });
     drop(log);
 
+    if let Some(delay) = config.connection_delay.filter(|_| first_on_connection) {
+        thread::sleep(delay);
+    }
+    if let Some(delay) = config.first_byte_delay {
+        if request.method == "GET" && request.header("range").is_some() {
+            thread::sleep(delay);
+        }
+    }
     let mut head = format!("HTTP/1.1 {} {}\r\n", reply.status, reason(reply.status));
     for header in &reply.headers {
         head.push_str(header);
@@ -790,13 +933,45 @@ fn answer(
         return !reply.close;
     };
     let rate = match config.slow_connection {
-        Some((_, rate)) if slow => Some(rate),
+        Some((slow, rate)) if place == Some(slow) => Some(rate),
         _ => config.throttle,
     };
     let sent = cut_after.unwrap_or(length);
-    write_body(stream, &shared.body_bytes, reply.version, start, sent, rate)
-        && sent == length
-        && !reply.close
+    let stall = config
+        .stall
+        .filter(|&(stalled, after)| place == Some(stalled) && after < sent)
+        .map(|(_, after)| after);
+    let body = &shared.body_bytes;
+    let delivered = match stall {
+        Some(after) => {
+            write_body(stream, body, reply.version, start, after, rate)
+                && match wait_for_takeover(shared, stream, position, start, start + length) {
+                    None => false,
+                    Some(taken) if config.hold_at_takeover => {
+                        let until = taken.saturating_sub(start + after);
+                        if write_body(stream, body, reply.version, start + after, until, rate) {
+                            hold(shared, stream);
+                        }
+                        false
+                    }
+                    Some(_) => write_body(
+                        stream,
+                        body,
+                        reply.version,
+                        start + after,
+                        sent - after,
+                        rate,
+                    ),
+                }
+        }
+        None => {
+            let burst = config.burst.min(sent);
+            let (after, rest) = (start + burst, sent - burst);
+            write_body(stream, body, reply.version, start, burst, None)
+                && write_body(stream, body, reply.version, after, rest, rate)
+        }
+    };
+    delivered && sent == length && !reply.close
 }
 
 fn write_body(
@@ -1236,6 +1411,156 @@ mod tests {
         let slow = request(&mut admitted, "GET", "/", &["Range: bytes=1-16384"]);
         assert_eq!(slow.body.len(), 16 * 1024);
         assert!(began.elapsed() >= Duration::from_millis(450));
+    }
+
+    /// Sends a GET for `range` and reads the head of the answer.
+    fn start_ranged_get(connection: &mut BufReader<TcpStream>, range: &str) {
+        connection
+            .get_mut()
+            .write_all(
+                format!("GET / HTTP/1.1\r\nHost: test\r\nRange: bytes={range}\r\n\r\n").as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(read_head(connection).unwrap().0, 206);
+    }
+
+    fn is_silent(connection: &mut BufReader<TcpStream>) -> bool {
+        connection
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let silent = connection.fill_buf().is_err();
+        connection
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        silent
+    }
+
+    #[test]
+    fn a_stalled_body_goes_on_when_a_request_takes_a_range_inside_it() {
+        let server = Server::start(Config {
+            stall: Some((0, 10)),
+            ..config(1000)
+        });
+        let body = pattern(1, 1000);
+        let mut stalled = connect(&server);
+        start_ranged_get(&mut stalled, "100-399");
+        let mut first = [0; 10];
+        stalled.read_exact(&mut first).unwrap();
+        assert_eq!(first, body[100..110]);
+        assert!(is_silent(&mut stalled));
+
+        // Only the first connection that starts with a range above 0 stalls, and a range that
+        // starts outside the body does not release it.
+        request(&mut connect(&server), "GET", "/", &["Range: bytes=500-599"]);
+        assert!(is_silent(&mut stalled));
+        request(&mut connect(&server), "GET", "/", &["Range: bytes=300-399"]);
+        let mut rest = vec![0; 290];
+        stalled.read_exact(&mut rest).unwrap();
+        assert_eq!(rest, body[110..400]);
+    }
+
+    #[test]
+    fn a_stalled_body_ends_when_the_client_closes_the_connection() {
+        let server = Server::start(Config {
+            stall: Some((0, 10)),
+            ..config(1000)
+        });
+        let mut stalled = connect(&server);
+        start_ranged_get(&mut stalled, "100-399");
+        let mut first = [0; 10];
+        stalled.read_exact(&mut first).unwrap();
+        drop(stalled);
+        let began = Instant::now();
+        server.wait_idle();
+        assert!(began.elapsed() < STALL_LIMIT / 2);
+    }
+
+    #[test]
+    fn a_held_body_stops_where_the_part_taken_starts_and_ends_when_the_client_closes() {
+        let server = Server::start(Config {
+            stall: Some((0, 10)),
+            hold_at_takeover: true,
+            ..config(1000)
+        });
+        let body = pattern(1, 1000);
+        let mut held = connect(&server);
+        start_ranged_get(&mut held, "100-399");
+        let mut first = [0; 10];
+        held.read_exact(&mut first).unwrap();
+        assert!(is_silent(&mut held));
+
+        request(&mut connect(&server), "GET", "/", &["Range: bytes=300-399"]);
+        let mut rest = vec![0; 190];
+        held.read_exact(&mut rest).unwrap();
+        assert_eq!(rest, body[110..300]);
+        assert!(is_silent(&mut held));
+        assert_eq!(server.abandoned_holds(), 0);
+
+        drop(held);
+        let began = Instant::now();
+        server.wait_idle();
+        assert!(began.elapsed() < STALL_LIMIT / 2);
+        assert_eq!(server.abandoned_holds(), 1);
+    }
+
+    #[test]
+    fn a_ranged_get_is_answered_only_after_the_first_byte_delay() {
+        let delay = Duration::from_millis(300);
+        let server = Server::start(Config {
+            first_byte_delay: Some(delay),
+            ..config(1000)
+        });
+        let began = Instant::now();
+        let answer = request(&mut connect(&server), "GET", "/", &["Range: bytes=10-19"]);
+        assert!(began.elapsed() >= delay);
+        assert_eq!(
+            (answer.status, answer.body),
+            (206, pattern(1, 1000)[10..20].to_vec())
+        );
+    }
+
+    #[test]
+    fn only_the_first_request_on_a_connection_waits_for_the_connection_delay() {
+        let delay = Duration::from_millis(400);
+        let server = Server::start(Config {
+            connection_delay: Some(delay),
+            ..config(1000)
+        });
+        let mut connection = connect(&server);
+        let began = Instant::now();
+        assert_eq!(request(&mut connection, "HEAD", "/", &[]).status, 200);
+        assert!(began.elapsed() >= delay);
+
+        let began = Instant::now();
+        let ranged = request(&mut connection, "GET", "/", &["Range: bytes=10-19"]);
+        assert_eq!(ranged.body, pattern(1, 1000)[10..20]);
+        assert!(began.elapsed() < delay);
+
+        let began = Instant::now();
+        let fresh = request(&mut connect(&server), "GET", "/", &["Range: bytes=10-19"]);
+        assert_eq!(fresh.body, pattern(1, 1000)[10..20]);
+        assert!(began.elapsed() >= delay);
+    }
+
+    #[test]
+    fn a_burst_is_sent_at_once_and_the_rest_of_the_body_is_paced() {
+        // A body of 64 KiB at 32 KiB/s takes two seconds. With 48 KiB of it sent at once, the
+        // 16 KiB that follow take half a second.
+        let server = Server::start(Config {
+            throttle: Some(32 * 1024),
+            burst: 48 * 1024,
+            ..config(64 * 1024)
+        });
+        let began = Instant::now();
+        assert_eq!(
+            request(&mut connect(&server), "GET", "/", &[]).body.len(),
+            64 * 1024
+        );
+        let elapsed = began.elapsed();
+        assert!(elapsed >= Duration::from_millis(450), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
     }
 
     #[test]
