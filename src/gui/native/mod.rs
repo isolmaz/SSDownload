@@ -4037,7 +4037,7 @@ unsafe fn update_status(ui: &MainUi) {
     set_text(
         ui.status,
         &format!(
-            "{} {} · {} {} · {} {} · {} {} · {}{}",
+            "{} {} · {} {} · {} {} · {} {} · {}{}{}",
             ui.snapshot.jobs.len(),
             if ui.snapshot.jobs.len() == 1 {
                 crate::i18n::ui("iş", "job")
@@ -4059,7 +4059,12 @@ unsafe fn update_status(ui: &MainUi) {
                 format!(" · {selection} {}", crate::i18n::ui("seçili", "selected"))
             } else {
                 String::new()
-            }
+            },
+            ui.snapshot
+                .hold
+                .notice()
+                .map(|notice| format!(" · {notice}"))
+                .unwrap_or_default()
         ),
     );
     if let Some(warning) = &ui.snapshot.warning {
@@ -5596,6 +5601,7 @@ const S_METERED: i32 = 2137;
 const S_HOTKEY: i32 = 2138;
 const S_DOUBLE_CLICK: i32 = 2139;
 const S_HISTORY: i32 = 2140;
+const S_BATTERY_SAVER: i32 = 2141;
 const SP_EDIT: i32 = 2701;
 const RN_EDIT: i32 = 2703;
 const RN_OK: i32 = 2704;
@@ -5719,6 +5725,7 @@ struct SettingsFields {
     takeover: HWND,
     completion_card: HWND,
     metered: HWND,
+    battery_saver: HWND,
     hotkey: HWND,
     double_click: HWND,
     history: HWND,
@@ -6557,6 +6564,7 @@ unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
             takeover: null_mut(),
             completion_card: null_mut(),
             metered: null_mut(),
+            battery_saver: null_mut(),
             hotkey: null_mut(),
             double_click: null_mut(),
             history: null_mut(),

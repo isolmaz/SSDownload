@@ -1716,6 +1716,7 @@ pub(super) unsafe fn collect_settings(
     value.browser_takeover = check(f.takeover);
     value.completion_card = check(f.completion_card);
     value.pause_on_metered = check(f.metered);
+    value.pause_on_battery_saver = check(f.battery_saver);
     value.global_hotkey = check(f.hotkey);
     value.double_click = if combo_index(f.double_click) == 1 {
         "folder"
