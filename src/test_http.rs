@@ -122,6 +122,9 @@ pub struct Config {
     /// A `GET` with a `Range` header, the probe among them, is answered only after this long,
     /// so that the first byte of every ranged response is late.
     pub first_byte_delay: Option<Duration>,
+    /// The first this many bytes of a body without a stall are sent at once, and `throttle` and
+    /// `slow_connection` pace only what follows.
+    pub burst: u64,
     pub max_connections: Option<usize>,
     pub over_limit: OverLimit,
     pub cut_body: Option<CutBody>,
@@ -162,6 +165,7 @@ impl Default for Config {
             stall: None,
             hold_at_takeover: false,
             first_byte_delay: None,
+            burst: 0,
             max_connections: None,
             over_limit: OverLimit::Unavailable(None),
             cut_body: None,
@@ -951,7 +955,12 @@ fn answer(
                     ),
                 }
         }
-        None => write_body(stream, body, reply.version, start, sent, rate),
+        None => {
+            let burst = config.burst.min(sent);
+            let (after, rest) = (start + burst, sent - burst);
+            write_body(stream, body, reply.version, start, burst, None)
+                && write_body(stream, body, reply.version, after, rest, rate)
+        }
     };
     delivered && sent == length && !reply.close
 }
@@ -1501,6 +1510,25 @@ mod tests {
             (answer.status, answer.body),
             (206, pattern(1, 1000)[10..20].to_vec())
         );
+    }
+
+    #[test]
+    fn a_burst_is_sent_at_once_and_the_rest_of_the_body_is_paced() {
+        // A body of 64 KiB at 32 KiB/s takes two seconds. With 48 KiB of it sent at once, the
+        // 16 KiB that follow take half a second.
+        let server = Server::start(Config {
+            throttle: Some(32 * 1024),
+            burst: 48 * 1024,
+            ..config(64 * 1024)
+        });
+        let began = Instant::now();
+        assert_eq!(
+            request(&mut connect(&server), "GET", "/", &[]).body.len(),
+            64 * 1024
+        );
+        let elapsed = began.elapsed();
+        assert!(elapsed >= Duration::from_millis(450), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
     }
 
     #[test]

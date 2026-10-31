@@ -1921,8 +1921,9 @@ impl Allowance {
     }
 }
 
-/// How a worker received the last range it finished: how long it waited for the first byte,
-/// and the bytes per second from that byte on.
+/// How a worker received the last range of at least `MIN_SEGMENT_SIZE` it finished: how long
+/// it waited for the first byte, and the bytes per second from that byte on. A shorter range
+/// can arrive in one burst, which shows a rate that no lasting transfer has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Delivery {
     wait: Duration,
@@ -2023,7 +2024,8 @@ struct Checkpoints {
     leases: Vec<Option<Lease>>,
     written: Vec<Arc<AtomicU64>>,
     allowances: Vec<Arc<Allowance>>,
-    /// How each worker received the last range it finished; `None` before the first.
+    /// How each worker received the last range of at least `MIN_SEGMENT_SIZE` it finished;
+    /// `None` before the first.
     deliveries: Vec<Option<Delivery>>,
     pace: Pace,
 }
@@ -2091,10 +2093,10 @@ impl Checkpoints {
     /// and then fetches the half at the rate of that range, while the lease's worker fetches the
     /// whole remainder at the rate the lease has had since its first byte. Of the leases that
     /// qualify, the one with the most bytes still to come is cut; none is when none has at least
-    /// twice `MIN_SEGMENT_SIZE` to come, or no idle worker has finished a range yet, and `idle`
-    /// is left as it is. The lease keeps the front: its worker writes no byte beyond the cut,
-    /// however many are already in flight, and the cut is never before the last byte it has
-    /// claimed.
+    /// twice `MIN_SEGMENT_SIZE` to come, or no idle worker has finished a range of that size
+    /// yet, and `idle` is left as it is. The lease keeps the front: its worker writes no byte
+    /// beyond the cut, however many are already in flight, and the cut is never before the last
+    /// byte it has claimed.
     fn split(&mut self, idle: &mut Vec<usize>, now: Instant) -> Option<(usize, RangeWork)> {
         let (thief, delivery) = idle
             .iter()
@@ -2177,8 +2179,11 @@ impl Checkpoints {
             return;
         };
         if let Some(wait) = self.allowances[worker].first_byte_wait() {
-            if let Some(rate) = bytes_per_second(lease.range.len(), lease.flowing(wait, now)) {
-                self.deliveries[worker] = Some(Delivery { wait, rate });
+            let length = lease.range.len();
+            if length >= MIN_SEGMENT_SIZE {
+                if let Some(rate) = bytes_per_second(length, lease.flowing(wait, now)) {
+                    self.deliveries[worker] = Some(Delivery { wait, rate });
+                }
             }
         }
         if let Some(rest) = lease.rest() {
@@ -7510,6 +7515,43 @@ mod tests {
         assert_eq!(ledger.allowance(0).take(8 * MIB), 3 * MIB);
         ledger.finish(0, start + Duration::from_secs(5));
         assert_eq!(ledger.deliveries[0], without_wait(MIB));
+    }
+
+    #[test]
+    fn a_lease_shorter_than_a_minimum_segment_leaves_the_delivery_of_its_worker_as_it_was() {
+        let directory = TestDirectory::new("split-finish-short");
+        let start = Instant::now();
+        // The first byte comes after 100 ms and the last a millisecond later: a rate of a few
+        // GiB/s, which no lasting transfer has.
+        let finished = start + Duration::from_millis(101);
+        for (length, sets) in [
+            (MIN_SEGMENT_SIZE - 1, false),
+            (MIN_SEGMENT_SIZE, true),
+            (MIN_SEGMENT_SIZE + 1, true),
+        ] {
+            let mut ledger = ledger_over(&directory, 1, 16 * MIB);
+            ledger.assign(0, work(0, length), start);
+            ledger
+                .allowance(0)
+                .note_first_byte(Duration::from_millis(100));
+            ledger.finish(0, finished);
+            assert_eq!(
+                ledger.deliveries[0].is_some(),
+                sets,
+                "a lease of {length} bytes"
+            );
+        }
+
+        let mut ledger = ledger_over(&directory, 1, 16 * MIB);
+        let before = Delivery {
+            wait: Duration::from_secs(1),
+            rate: 4 * MIB,
+        };
+        ledger.deliveries[0] = Some(before);
+        ledger.assign(0, work(8 * MIB, 8 * MIB + 64 * 1024), start);
+        ledger.allowance(0).note_first_byte(Duration::ZERO);
+        ledger.finish(0, start + Duration::from_millis(1));
+        assert_eq!(ledger.deliveries[0], Some(before));
     }
 }
 

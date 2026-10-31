@@ -2284,12 +2284,13 @@ fn a_worker_that_has_finished_takes_the_back_of_a_lease_that_is_slow() {
     assert_eq!(ranged_gets(&log, size).len(), 3, "{log:?}");
 }
 
-#[test]
-fn a_slow_connection_with_nothing_left_does_not_take_the_back_of_a_fast_lease() {
-    // The record leaves the first 8 MiB and the last 64 KiB. The 64 KiB come over a connection
-    // at 0.25 MiB/s and end after a quarter of a second, when the lease of the first 8 MiB, at
-    // 8 MiB/s, has 6 MiB to come. The slow connection would need 12 s for the back half of
-    // them, the lease needs 0.75 s for all.
+/// Resumes a download of 16 MiB over 2 connections. The record leaves the first 8 MiB and the
+/// last 64 KiB. The 64 KiB come over a connection at 0.25 MiB/s, of which the first `burst`
+/// bytes arrive at once, while the lease of the first 8 MiB runs at 8 MiB/s. That connection
+/// fetches no range of 2 MiB, so it takes no part of the lease however quickly its 64 KiB
+/// arrive: the back half of the lease would take it at least 12 s, and the lease needs 1 s for
+/// all. Asserts that the requests are the two for the gaps.
+fn assert_a_slow_tail_takes_nothing_from_a_fast_lease(burst: u64) {
     let size = 16 * MIB;
     let tail = size - 64 * 1024;
     let source = pattern(1, size);
@@ -2297,6 +2298,7 @@ fn a_slow_connection_with_nothing_left_does_not_take_the_back_of_a_fast_lease() 
         size,
         throttle: Some(8 * MIB),
         slow_connection: Some((0, MIB / 4)),
+        burst,
         ..Config::default()
     });
     let directory = TempDir::new("slow-thief");
@@ -2334,6 +2336,19 @@ fn a_slow_connection_with_nothing_left_does_not_take_the_back_of_a_fast_lease() 
     let mut ranges = ranged_gets(&log, size);
     ranges.sort_unstable();
     assert_eq!(ranges, [(0, 8 * MIB), (tail, size)], "{log:?}");
+}
+
+#[test]
+fn a_slow_connection_with_nothing_left_does_not_take_the_back_of_a_fast_lease() {
+    assert_a_slow_tail_takes_nothing_from_a_fast_lease(0);
+}
+
+#[test]
+fn a_short_range_that_arrives_in_one_burst_does_not_make_its_connection_the_fastest() {
+    // The 64 KiB are in before the first 256 KiB have gone by, so over the few milliseconds they
+    // took the connection seems to fetch far faster than the lease, and a rate measured over
+    // them would let it cut the lease and then fetch the back half at 0.25 MiB/s.
+    assert_a_slow_tail_takes_nothing_from_a_fast_lease(256 * 1024);
 }
 
 #[test]
