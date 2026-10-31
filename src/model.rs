@@ -749,15 +749,18 @@ impl Settings {
         }
     }
 
-    /// Brings a stored profile to the current default values, once. Only the exact pair of
-    /// 4 connections per file and 2 per host is replaced (by 8 and 8); every other stored value
-    /// is the user's choice. Returns whether the settings changed.
+    /// Brings a stored profile to the current default values, once. Each field moves on its
+    /// own and only when it holds its own earlier default (4 connections per file, 2 per host;
+    /// both become 8); every other stored value is the user's choice. Returns whether the
+    /// settings changed.
     pub(crate) fn adopt_current_defaults(&mut self) -> bool {
         if self.defaults_version >= DEFAULTS_VERSION {
             return false;
         }
-        if self.connections == 4 && self.per_host_limit == 2 {
+        if self.connections == 4 {
             self.connections = 8;
+        }
+        if self.per_host_limit == 2 {
             self.per_host_limit = 8;
         }
         self.defaults_version = DEFAULTS_VERSION;
@@ -1040,12 +1043,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_exact_old_default_pair_moves_to_the_current_defaults() {
+    fn each_field_with_its_old_default_moves_to_the_current_default_on_its_own() {
         for (connections, per_host_limit, expected) in [
             (4, 2, (8, 8)),
-            (4, 3, (4, 3)),
-            (3, 2, (3, 2)),
-            (8, 2, (8, 2)),
+            (16, 2, (16, 8)),
+            (4, 5, (8, 5)),
+            (2, 2, (2, 8)),
+            (3, 6, (3, 6)),
+            (8, 2, (8, 8)),
             (2, 4, (2, 4)),
             (1, 1, (1, 1)),
             (16, 16, (16, 16)),

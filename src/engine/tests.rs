@@ -1388,6 +1388,13 @@ fn a_stored_profile_with_the_old_default_pair_moves_to_eight_and_eight_once() {
 
     let engine = Engine::open(paths.clone()).unwrap();
     assert_eq!(connection_limits(&engine), (8, 8));
+    let saved = Store::open(&paths.database)
+        .unwrap()
+        .load_settings()
+        .unwrap()
+        .unwrap();
+    assert_eq!((saved.connections, saved.per_host_limit), (8, 8));
+    assert_eq!(saved.defaults_version, 1);
     engine.shutdown();
 
     let reopened = Engine::open(paths).unwrap();
@@ -1397,12 +1404,14 @@ fn a_stored_profile_with_the_old_default_pair_moves_to_eight_and_eight_once() {
 }
 
 #[test]
-fn a_stored_profile_with_any_other_pair_keeps_its_values() {
+fn a_stored_profile_moves_each_field_with_its_old_default_and_keeps_the_others() {
     for (stored, expected) in [
         ((4, 2), (8, 8)),
-        ((4, 3), (4, 3)),
-        ((3, 2), (3, 2)),
-        ((8, 2), (8, 2)),
+        ((16, 2), (16, 8)),
+        ((4, 5), (8, 5)),
+        ((2, 2), (2, 8)),
+        ((3, 6), (3, 6)),
+        ((8, 2), (8, 8)),
         ((2, 4), (2, 4)),
         ((1, 1), (1, 1)),
         ((16, 16), (16, 16)),
