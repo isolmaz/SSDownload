@@ -1388,10 +1388,12 @@ unsafe fn filter_glyph_x(dpi: u32) -> i32 {
 }
 
 /// Draws one entry of the filter box's open list: the flyout surface, a
-/// rounded plate under the hot and the chosen entry, the accent pill of the
-/// chosen one, the entry's glyph and its text. The closed box paints itself
-/// (`combo_proc`), so a request for it only asks for that paint; high
-/// contrast draws both with system colours.
+/// rounded plate and the accent pill under the selected entry, the entry's
+/// glyph and its text. The open list moves its selection with the pointer,
+/// and only the entry's own state says whether it is selected: the box's
+/// current selection still names the entry being left while that entry is
+/// repainted. The closed box paints itself (`combo_proc`), so a request for
+/// it only asks for that paint; high contrast draws both with system colours.
 pub(super) unsafe fn draw_filter_item(ui: &MainUi, item: &DRAWITEMSTRUCT) {
     let dc = item.hDC;
     let field = item.itemState & ODS_COMBOBOXEDIT != 0;
@@ -1403,7 +1405,6 @@ pub(super) unsafe fn draw_filter_item(ui: &MainUi, item: &DRAWITEMSTRUCT) {
     let palette = main_palette(ui.hwnd);
     let hot = item.itemState & ODS_SELECTED != 0;
     let index = item.itemID as i32;
-    let chosen = !field && index == combo_index(item.hwndItem);
     let rect = item.rcItem;
     let text_colour = if contrast {
         let (back, fore) = if hot {
@@ -1415,7 +1416,7 @@ pub(super) unsafe fn draw_filter_item(ui: &MainUi, item: &DRAWITEMSTRUCT) {
         GetSysColor(fore)
     } else {
         fill_colour(dc, &rect, palette.flyout);
-        if hot || chosen {
+        if hot {
             let plate = RECT {
                 left: rect.left + scale(4, ui.dpi),
                 top: rect.top + scale(2, ui.dpi),
@@ -1435,17 +1436,15 @@ pub(super) unsafe fn draw_filter_item(ui: &MainUi, item: &DRAWITEMSTRUCT) {
                 over(subtle, palette.flyout),
                 None,
             );
-            if chosen {
-                let height = scale(16, ui.dpi).min(plate.bottom - plate.top);
-                let top = plate.top + (plate.bottom - plate.top - height) / 2;
-                let pill = RECT {
-                    left: plate.left,
-                    top,
-                    right: plate.left + scale(3, ui.dpi),
-                    bottom: top + height,
-                };
-                round_rect(dc, &pill, scale(2, ui.dpi), palette.accent, None);
-            }
+            let height = scale(16, ui.dpi).min(plate.bottom - plate.top);
+            let top = plate.top + (plate.bottom - plate.top - height) / 2;
+            let pill = RECT {
+                left: plate.left,
+                top,
+                right: plate.left + scale(3, ui.dpi),
+                bottom: top + height,
+            };
+            round_rect(dc, &pill, scale(2, ui.dpi), palette.accent, None);
         }
         palette.text
     };
