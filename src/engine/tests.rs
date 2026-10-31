@@ -451,6 +451,55 @@ fn source_refresh_save_failure_rolls_back_staged_direct_state() {
 }
 
 #[test]
+fn a_failed_file_job_is_logged_at_the_file_stage_and_not_at_a_media_stage() {
+    let job_of = |request: AddRequest| Job {
+        id: "job".into(),
+        request,
+        name: "report.pdf".into(),
+        state: JobState::Failed,
+        path: PathBuf::from("report.pdf"),
+        downloaded: 0,
+        total: None,
+        speed: 0,
+        eta: None,
+        error: None,
+        phase: JobState::Failed.label().into(),
+        created_at: 0,
+        updated_at: 0,
+        attempts: 0,
+        work_dir: None,
+        remove_requested: None,
+        claim: None,
+        legacy_completed: false,
+        browser_transfer_authorized: false,
+        priority: 0,
+        force_start: false,
+        open_when_done: false,
+        live: false,
+        sequence: 0,
+    };
+    let request = |kind| AddRequest {
+        url: "https://files.example.test/a".into(),
+        kind,
+        ..Default::default()
+    };
+    let detail = |request: AddRequest| {
+        let message = crate::error_codes::coded_default(crate::error_codes::NET_004).to_string();
+        let event = failure_event(&job_of(request), &message);
+        assert_eq!(event.code, Some("SSD-NET-004"));
+        event.detail.unwrap()
+    };
+    assert!(detail(request(DownloadKind::File)).starts_with("aşama=dosya "));
+    assert!(detail(request(DownloadKind::Video)).starts_with("aşama=medya kaynağı "));
+    // A file job that asks for a media selection runs in the media pipeline.
+    let selected = AddRequest {
+        format_id: Some("18".into()),
+        ..request(DownloadKind::File)
+    };
+    assert!(detail(selected).starts_with("aşama=medya kaynağı "));
+}
+
+#[test]
 fn completion_requires_every_remaining_job_to_succeed() {
     let make_job = |id: &str, state| Job {
         id: id.into(),
@@ -2349,6 +2398,40 @@ mod retry_budget {
         assert_eq!(job.state, JobState::Failed);
         // Each attempt sends the HEAD probe and gives up on its answer.
         assert_eq!(server.log().len(), 3);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_file_job_redirected_to_a_page_fails_at_once_and_is_neither_retried_nor_sent_to_a_refresh()
+    {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            ..Config::default()
+        });
+        let source = Server::start(Config {
+            redirect_to: Some(page.url("/signin")),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-redirected-page");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        // A job with a page to refresh from goes to the refresh on an authorization failure.
+        let id = engine
+            .add(AddRequest {
+                page_url: Some("https://page.example.test/watch".into()),
+                ..file_request(source.url("/report.pdf"), &root.0.join("out"))
+            })
+            .unwrap()
+            .remove(0);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        let error = job.error.as_deref().unwrap();
+        assert!(error.starts_with("SSD-NET-004 "), "{error}");
+        assert_eq!(job.attempts, 0);
+        assert!(!job.path.exists());
+        assert_eq!(attempts_made(&source), 1);
+        assert!(page.log().iter().all(|entry| entry.method == "HEAD"));
         engine.shutdown();
     }
 

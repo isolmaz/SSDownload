@@ -47,7 +47,8 @@ The Chrome/Edge extension adds the overlay button on videos, the right-click ent
 - **On sites with feeds or previews,** open the video's own page first. DRM-protected streams are not supported.
 - **Batch:** a numeric or letter range such as `https://host/img[001-120].jpg` expands into up to 1000 jobs; **File → Batch download** shows an example, **Import list** loads a plain-text URL list and **Export list** writes the selected addresses.
 - **Duplicates:** adding an address already in the queue asks once per batch: use the existing job, download a new copy, or cancel.
-- **Session cookies:** some downloads need the site's session. Grant **Allow session cookies for this site** in the extension for that one site; nothing is read without that gesture, and **Remove site session permission** withdraws it.
+- **Session cookies:** some downloads need the site's session. Grant **Allow session cookies for this site** in the extension for that one site; nothing is read without that gesture, and **Remove site session permission** withdraws it. The extension's takeover of a browser download sends no cookies.
+- **Sign-in pages:** a file download whose request was redirected to a web page (`text/html` or `application/xhtml+xml`) that the server does not send as an attachment fails at once with `SSD-NET-004`, without a retry, and nothing is saved: such a page is where a site sends a request that lacks the session, not the file. Download the file in the browser, or allow session cookies for the site from the extension's context menu and add the link again. A page that the request reaches without a redirect, a file whose name ends in `.htm`, `.html` or `.xhtml`, and a page sent as an attachment are saved. An automatic job (**Auto**) whose address leads to a web page is handed to the media tools instead.
 - **Expired links:** a job whose signed address expired waits as **Awaiting source**; **Refresh source address** (or the extension's browser transfer entry) resumes the same job with a fresh address. **Pause all** and **Start now** leave such a job waiting; **Pause all** also cancels a refresh still running for it.
 - **Order and priority:** drag rows or use Alt+Home / Alt+End; within a queue, queued work starts in list order, and several queues take turns. **Start now** starts a job immediately, outside the concurrency limit.
 - **Mini panel and completion card:** **Downloads → Mini panel** (or the tray) opens a small list of active downloads that can be pinned on top. A finished download shows a card with **Open** and **Show in folder**.
@@ -98,6 +99,7 @@ The Basic level shows only **General**; the other tabs keep their saved values.
 | Download stays disabled after analysis | Read the error, fix the source or session, analyze again. |
 | A quality or track disappeared | Analyze again and choose an available option; nothing is substituted silently. |
 | Signed address expired | The job waits for **Refresh source address** instead of failing. |
+| `SSD-NET-004`: the source answered with a sign-in or web page | The file needs your session. Download it in the browser, or allow session cookies for the site from the extension's context menu and add the link again. |
 | Merge fails or a work folder remains | Free space and resume; parts stay under `<destination>\.ssdownload-work\jobs\<job-id>`. |
 | Remove hits a sharing violation | Close the program holding the file and retry. |
 | The queue cannot be saved | Active jobs pause and new work waits while saving is retried. |

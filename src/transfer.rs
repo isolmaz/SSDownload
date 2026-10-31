@@ -387,7 +387,12 @@ pub(crate) struct RemoteInfo {
     last_modified: Option<String>,
     retained: Retained,
     content_type: Option<String>,
+    /// The answer that `content_type` belongs to was sent as an attachment.
+    attachment: bool,
     filename: Option<String>,
+    /// A redirect led to `url`, so a web page answering there is a sign-in or interstitial page
+    /// and not the file. `download` clears it for a requested name that is a page's.
+    refuse_page: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -397,6 +402,7 @@ struct ResponseHeaders {
     etag: Option<String>,
     last_modified: Option<String>,
     content_type: Option<String>,
+    attachment: bool,
     filename: Option<String>,
     content_length: Option<u64>,
     content_range: Option<ContentRange>,
@@ -1024,12 +1030,19 @@ pub(crate) fn download(
     if url.scheme() == "ftp" {
         download_ftp(request, output, url, control, network, progress)
     } else {
+        let mut remote = prepared
+            .map(Ok)
+            .unwrap_or_else(|| probe_http(request, url, control, network))?;
+        if is_html_name(output) {
+            remote.refuse_page = false;
+        }
+        if remote.refuse_page && is_web_page(remote.content_type.as_deref(), remote.attachment) {
+            return Err(page_instead_of_file());
+        }
         download_http(
             request,
             output,
-            prepared
-                .map(Ok)
-                .unwrap_or_else(|| probe_http(request, url, control, network))?,
+            remote,
             control,
             network,
             connections.clamp(1, 16),
@@ -1384,6 +1397,7 @@ fn download_http_single(
     let original_origin = remote.credential_origin.clone();
     let mut redirects = 0usize;
     let mut retries = 0u8;
+    let mut asked = remote.clone();
     loop {
         let expected = if offset > 0 {
             ExpectedResponse::Range {
@@ -1402,7 +1416,7 @@ fn download_http_single(
             &state_path,
             offset,
             expected,
-            remote,
+            &asked,
             control,
             network,
             1,
@@ -1422,6 +1436,7 @@ fn download_http_single(
                     }
                     redirects += 1;
                     current = redirected_url(&current, headers.location.as_deref())?;
+                    asked.refuse_page = !is_html_name(output);
                     continue;
                 }
                 let bytes = offset.saturating_add(written);
@@ -1609,7 +1624,9 @@ fn http_to_file(
                 if control.stop_requested() {
                     return Ok(0);
                 }
-                if !response_allows_remote_body(&write_response.borrow(), expected, remote) {
+                if !response_allows_remote_body(&write_response.borrow(), expected, remote)
+                    || page_refused(&write_response.borrow(), remote)
+                {
                     return Ok(0);
                 }
                 if sink.written == 0 && matches!(expected, ExpectedResponse::Full) {
@@ -1711,6 +1728,9 @@ fn http_to_file(
             )),
             Ok(()) => Err(AttemptFailure::RangeRejected),
         };
+    }
+    if page_refused(&headers, remote) {
+        return Err(AttemptFailure::Other(page_instead_of_file()));
     }
     if identity_changed(&headers, expected, remote) {
         return Err(AttemptFailure::ResourceChanged);
@@ -2867,7 +2887,9 @@ impl DynamicRangeWorker<'_> {
                     if control.stop_requested() || abort.load(Ordering::Acquire) {
                         return Ok(0);
                     }
-                    if !response_allows_remote_body(&write_response.borrow(), expected, remote) {
+                    if !response_allows_remote_body(&write_response.borrow(), expected, remote)
+                        || page_refused(&write_response.borrow(), remote)
+                    {
                         return Ok(0);
                     }
                     let remaining = range.len().saturating_sub(written);
@@ -2957,6 +2979,9 @@ impl DynamicRangeWorker<'_> {
                 )),
                 Ok(()) => Err(AttemptFailure::RangeRejected),
             };
+        }
+        if page_refused(&headers, remote) {
+            return Err(AttemptFailure::Other(page_instead_of_file()));
         }
         if identity_changed(&headers, expected, remote) {
             return Err(AttemptFailure::ResourceChanged);
@@ -3641,7 +3666,9 @@ fn probe_http(
             last_modified: headers.last_modified,
             retained: Retained::None,
             content_type: headers.content_type,
+            attachment: headers.attachment,
             filename: headers.filename,
+            refuse_page: redirects > 0,
         });
     }
 }
@@ -3686,7 +3713,9 @@ fn probe_ftp(
         last_modified: modified,
         retained: Retained::None,
         content_type: None,
+        attachment: false,
         filename: None,
+        refuse_page: false,
     })
 }
 
@@ -3755,6 +3784,9 @@ fn verify_range_support(
     let headers = response.borrow().clone();
     if matches!(headers.status, 429 | 503) {
         control.mark_throttled();
+    }
+    if page_refused(&headers, remote) {
+        return Err(AttemptFailure::Other(page_instead_of_file()));
     }
     if !fresh && validators_changed(&headers, remote) {
         return Err(AttemptFailure::ResourceChanged);
@@ -3924,7 +3956,13 @@ fn parse_header_line(headers: &mut ResponseHeaders, bytes: &[u8]) {
         "location" => headers.location = Some(value.into()),
         "etag" => headers.etag = Some(value.into()),
         "last-modified" => headers.last_modified = Some(value.into()),
-        "content-disposition" => headers.filename = disposition_name(value),
+        "content-disposition" => {
+            headers.filename = disposition_name(value);
+            headers.attachment = value
+                .split(';')
+                .next()
+                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("attachment"));
+        }
         "content-type" => {
             headers.content_type = Some(
                 value
@@ -4531,6 +4569,41 @@ fn is_media_content_type(value: &str) -> bool {
             | "application/dash+xml"
     )
 }
+
+/// An answer that is a web page and not a file: HTML that the server did not send as an
+/// attachment.
+fn is_web_page(content_type: Option<&str>, attachment: bool) -> bool {
+    !attachment && matches!(content_type, Some("text/html" | "application/xhtml+xml"))
+}
+
+fn is_html_name(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["htm", "html", "xhtml"]
+                .iter()
+                .any(|html| extension.eq_ignore_ascii_case(html))
+        })
+}
+
+/// Whether `headers` answer a file download with the web page that a redirect led it to. Such
+/// a page is where a site sends a request that lacks the session, so it is never saved as the
+/// file.
+fn page_refused(headers: &ResponseHeaders, remote: &RemoteInfo) -> bool {
+    remote.refuse_page
+        && (200..300).contains(&headers.status)
+        && is_web_page(headers.content_type.as_deref(), headers.attachment)
+}
+
+fn page_instead_of_file() -> anyhow::Error {
+    crate::error_codes::coded(
+        crate::error_codes::NET_004,
+        crate::i18n::ui(
+            "Kaynak dosya yerine bir oturum açma veya web sayfasıyla yanıt verdi. Dosyayı tarayıcıda indirin ya da eklentinin sağ tık menüsünden Bu site için oturum çerezlerine izin ver seçeneğini kullanın.",
+            "The source answered with a sign-in or web page instead of the file. Download it in the browser, or choose Allow session cookies for this site in the extension's context menu.",
+        ),
+    )
+}
 fn eta(total: Option<u64>, downloaded: u64, speed: u64) -> Option<u64> {
     total
         .filter(|total| *total >= downloaded)
@@ -4806,7 +4879,9 @@ mod tests {
             last_modified: None,
             retained: Retained::None,
             content_type: None,
+            attachment: false,
             filename: None,
+            refuse_page: false,
         }
     }
 
@@ -5187,6 +5262,124 @@ mod tests {
             disposition_name("attachment; filename*=ISO-8859-1''bad"),
             None
         );
+    }
+
+    fn headers_of(lines: &[&str]) -> ResponseHeaders {
+        let mut headers = ResponseHeaders::default();
+        for line in lines {
+            parse_header_line(&mut headers, format!("{line}\r\n").as_bytes());
+        }
+        headers
+    }
+
+    #[test]
+    fn only_a_disposition_of_type_attachment_marks_an_attachment() {
+        let attachment = |value: &str| {
+            let line = format!("Content-Disposition: {value}");
+            headers_of(&[line.as_str()]).attachment
+        };
+        assert!(attachment("attachment"));
+        assert!(attachment("Attachment; filename=\"a.bin\""));
+        assert!(attachment("  ATTACHMENT ;filename=a.bin"));
+        assert!(!attachment("inline; filename=\"attachment\""));
+        assert!(!attachment("inline"));
+        assert!(!attachment("form-data; name=\"attachment\""));
+        assert!(!headers_of(&["Content-Type: text/html"]).attachment);
+        // A new status line starts a new answer: a redirect's disposition is not the page's.
+        let mut headers = headers_of(&["HTTP/1.1 302 Found", "Content-Disposition: attachment"]);
+        parse_header_line(&mut headers, b"HTTP/1.1 200 OK\r\n");
+        assert!(!headers.attachment);
+    }
+
+    #[test]
+    fn a_web_page_is_html_that_is_not_an_attachment() {
+        assert!(is_web_page(Some("text/html"), false));
+        assert!(is_web_page(Some("application/xhtml+xml"), false));
+        assert!(!is_web_page(Some("text/html"), true));
+        assert!(!is_web_page(Some("text/plain"), false));
+        assert!(!is_web_page(Some("application/octet-stream"), false));
+        assert!(!is_web_page(Some("application/vnd.apple.mpegurl"), false));
+        assert!(!is_web_page(None, false));
+        // The type is lowercased and cut at its parameters when the header is read.
+        let page = headers_of(&["Content-Type: Text/HTML; charset=UTF-8"]);
+        assert!(is_web_page(page.content_type.as_deref(), page.attachment));
+    }
+
+    #[test]
+    fn a_requested_name_is_a_page_name_by_its_extension_only() {
+        for name in [
+            "a.htm",
+            "a.html",
+            "a.xhtml",
+            "A.HTML",
+            "page (1).Htm",
+            "x.y.html",
+        ] {
+            assert!(is_html_name(Path::new(name)), "{name}");
+        }
+        for name in [
+            "html",
+            "a.html.bin",
+            "a.htmlx",
+            "a.php",
+            "a.pdf",
+            "uc",
+            "a.html ",
+        ] {
+            assert!(!is_html_name(Path::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_page_is_refused_only_for_a_redirect_and_only_when_the_server_sends_it_as_a_page() {
+        let answer = |status: u32, content_type: Option<&str>, attachment: bool| ResponseHeaders {
+            status,
+            content_type: content_type.map(str::to_owned),
+            attachment,
+            ..Default::default()
+        };
+        let redirected = RemoteInfo {
+            refuse_page: true,
+            ..remote_with_etag(None)
+        };
+        let direct = remote_with_etag(None);
+        for status in [200, 206] {
+            assert!(page_refused(
+                &answer(status, Some("text/html"), false),
+                &redirected
+            ));
+            assert!(!page_refused(
+                &answer(status, Some("text/html"), false),
+                &direct
+            ));
+            assert!(!page_refused(
+                &answer(status, Some("text/html"), true),
+                &redirected
+            ));
+            assert!(!page_refused(
+                &answer(status, Some("application/pdf"), false),
+                &redirected
+            ));
+        }
+        // An error status or a redirect has its own handling; a page there is not the file.
+        for status in [0, 302, 403, 404, 503] {
+            assert!(!page_refused(
+                &answer(status, Some("text/html"), false),
+                &redirected
+            ));
+        }
+    }
+
+    #[test]
+    fn the_refusal_of_a_page_is_the_authorization_code_and_no_transient_failure() {
+        let error = page_instead_of_file();
+        assert_eq!(
+            crate::error_codes::code_of_text(&error),
+            Some(crate::error_codes::NET_004)
+        );
+        assert!(format!("{error:#}").starts_with("SSD-NET-004 "));
+        assert!(retry_after(&error).is_none() && http_status(&error).is_none());
+        assert!(!preserves_partial(&error));
     }
 
     #[test]

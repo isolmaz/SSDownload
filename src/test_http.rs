@@ -141,6 +141,17 @@ pub struct Config {
     pub etag_rotation_heads: Option<usize>,
     pub scripted: Vec<Scripted>,
     pub redirect: Option<Redirect>,
+    /// Every `GET`, and every `HEAD` unless `head_not_redirected` is set, is answered 302 to this
+    /// address, which can name another server.
+    pub redirect_to: Option<String>,
+    pub head_not_redirected: bool,
+    /// `Content-Type` of every `HEAD` and `GET` answer that carries the file's headers.
+    pub content_type: Option<String>,
+    /// Requests from this index on (counting every request, from 0) answer with this
+    /// `Content-Type` instead of `content_type`.
+    pub content_type_from: Option<(usize, String)>,
+    /// `Content-Disposition` of every such answer.
+    pub content_disposition: Option<String>,
     /// Request headers copied into the log, matched case-insensitively.
     pub logged_headers: Vec<String>,
 }
@@ -179,6 +190,11 @@ impl Default for Config {
             etag_rotation_heads: None,
             scripted: Vec::new(),
             redirect: None,
+            redirect_to: None,
+            head_not_redirected: false,
+            content_type: None,
+            content_type_from: None,
+            content_disposition: None,
             logged_headers: vec!["authorization".into(), "cookie".into(), "referer".into()],
         }
     }
@@ -712,6 +728,13 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
         }
         return reply;
     }
+    if let Some(target) = &config.redirect_to {
+        if request.method != "HEAD" || !config.head_not_redirected {
+            let mut reply = Reply::empty(302);
+            reply.headers.push(format!("Location: {target}"));
+            return reply;
+        }
+    }
     if let Some(redirect) = &config.redirect {
         if request.path == redirect.from {
             let refused = shared.target_requests.load(Ordering::Acquire)
@@ -774,6 +797,18 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
     }
     if let Some(date) = last_modified {
         identity.push(format!("Last-Modified: {date}"));
+    }
+    let content_type = config
+        .content_type_from
+        .as_ref()
+        .filter(|(from, _)| index >= *from)
+        .map(|(_, value)| value)
+        .or(config.content_type.as_ref());
+    if let Some(value) = content_type {
+        identity.push(format!("Content-Type: {value}"));
+    }
+    if let Some(value) = &config.content_disposition {
+        identity.push(format!("Content-Disposition: {value}"));
     }
 
     let size = config.size;
@@ -1687,6 +1722,71 @@ Host: test
         assert_eq!(bad_gateway.status, 502);
         assert_eq!(bad_gateway.header("Retry-After"), None);
         assert_eq!(request(&mut connection, "GET", "/", &[]).status, 200);
+    }
+
+    #[test]
+    fn content_headers_follow_the_configuration_and_change_from_a_chosen_request() {
+        let server = Server::start(Config {
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((2, "text/html".into())),
+            content_disposition: Some("attachment; filename=\"a.bin\"".into()),
+            ..config(10)
+        });
+        let mut connection = connect(&server);
+        let types = |connection: &mut BufReader<TcpStream>, method: &str| {
+            let answer = request(connection, method, "/", &[]);
+            (
+                answer.header("Content-Type").map(str::to_owned),
+                answer.header("Content-Disposition").map(str::to_owned),
+            )
+        };
+        let (kind, disposition) = types(&mut connection, "HEAD");
+        assert_eq!(kind.as_deref(), Some("application/octet-stream"));
+        assert_eq!(
+            disposition.as_deref(),
+            Some("attachment; filename=\"a.bin\"")
+        );
+        assert_eq!(
+            types(&mut connection, "GET").0.as_deref(),
+            Some("application/octet-stream")
+        );
+        assert_eq!(
+            types(&mut connection, "GET").0.as_deref(),
+            Some("text/html")
+        );
+
+        let plain = Server::start(config(10));
+        let answer = request(&mut connect(&plain), "GET", "/", &[]);
+        assert_eq!(answer.header("Content-Type"), None);
+        assert_eq!(answer.header("Content-Disposition"), None);
+    }
+
+    #[test]
+    fn a_redirect_away_names_another_address_and_can_spare_the_head() {
+        let away = "http://other.example/file";
+        let server = Server::start(Config {
+            redirect_to: Some(away.into()),
+            ..config(10)
+        });
+        let mut connection = connect(&server);
+        for method in ["GET", "HEAD"] {
+            let answer = request(&mut connection, method, "/a.bin", &[]);
+            assert_eq!(
+                (answer.status, answer.header("Location")),
+                (302, Some(away)),
+                "{method}"
+            );
+        }
+
+        let spared = Server::start(Config {
+            redirect_to: Some(away.into()),
+            head_not_redirected: true,
+            ..config(10)
+        });
+        let mut connection = connect(&spared);
+        assert_eq!(request(&mut connection, "HEAD", "/a.bin", &[]).status, 200);
+        let get = request(&mut connection, "GET", "/a.bin", &[]);
+        assert_eq!((get.status, get.header("Location")), (302, Some(away)));
     }
 
     #[test]

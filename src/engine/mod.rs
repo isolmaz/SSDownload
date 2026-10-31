@@ -153,6 +153,14 @@ fn source_host_of(job: &Job) -> String {
 /// stage and kind otherwise, so the log states where the transfer broke.
 fn failure_event(job: &Job, message: &str) -> crate::logging::Event {
     let (stage, kind) = crate::media::classify_download_error(message, &job.request);
+    // The classifier's stages are parts of a media download; a file transfer has none.
+    let stage = if job.request.kind == DownloadKind::File
+        && !transfer::request_requires_media_pipeline(&job.request)
+    {
+        "dosya"
+    } else {
+        stage
+    };
     let detail = format!("aşama={stage} tür={kind} {message}");
     match crate::error_codes::from_text(message) {
         Some(code) => {
