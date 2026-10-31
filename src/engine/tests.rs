@@ -2279,8 +2279,8 @@ fn a_job_waiting_for_a_new_source_is_neither_paused_nor_started_by_bulk_commands
 mod retry_budget {
     use super::*;
     use crate::test_http::{
-        file_sha256, pattern_sha256, Config, CutBody, Logged, Scripted, Server, Signing, TempDir,
-        Validity,
+        file_sha256, pattern_sha256, repr_digest_header, Config, CutBody, Logged, Scripted, Server,
+        Signing, TempDir, Validity,
     };
 
     const MIB: u64 = 1024 * 1024;
@@ -2736,6 +2736,195 @@ mod retry_budget {
             .flatten()
             .any(|entry| entry.file_name().to_string_lossy().contains(".ssdownload."));
         assert!(kept, "the part file was not kept");
+        engine.shutdown();
+    }
+
+    /// A request for `payload.bin` that carries a page address, which would let a failure that
+    /// looks like an expired link ask the page for a new source.
+    fn add_download_from_page(engine: &Engine, server: &Server, directory: &Path) -> String {
+        engine
+            .add(AddRequest {
+                page_url: Some("https://example.test/watch/digest".into()),
+                ..file_request(server.url("/payload.bin"), directory)
+            })
+            .unwrap()
+            .remove(0)
+    }
+
+    /// What the job's work folder keeps of the download: its part, resume record and the record
+    /// of a used re-download.
+    fn kept_in(job: &Job) -> Vec<String> {
+        fs::read_dir(job.work_dir.as_ref().unwrap())
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.contains(".ssdownload."))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn gets(server: &Server) -> usize {
+        server
+            .log()
+            .iter()
+            .filter(|entry| entry.method == "GET")
+            .count()
+    }
+
+    #[test]
+    fn two_downloads_that_differ_and_miss_the_published_digest_end_after_two_downloads_whatever_the_limit(
+    ) {
+        let size = MIB;
+        // The digest is that of body version 3. The first pass gets version 1 and the second one
+        // version 2: no pass meets the digest and the passes differ from each other.
+        let server = Server::start(Config {
+            size,
+            extra_headers: vec![repr_digest_header(3, size)],
+            switch_version_at_head: Some(2),
+            cut_body: Some(CutBody {
+                after_bytes: 150 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-published-digest");
+        let engine = engine_with_retry_limit(&root.0, 20);
+        let id = add_download_from_page(&engine, &server, &root.0.join("out"));
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        assert!(
+            job.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SSD-TRF-003"),
+            "{:?}",
+            job.error
+        );
+        // The first attempt is cut after keeping bytes and the second finishes the file, finds
+        // the digest wrong and fetches the file once more within itself: three probes in all,
+        // although the limit of twenty would allow many more. The file is read in full twice.
+        let log = server.log();
+        assert_eq!(attempts_made(&server), 3, "{log:?}");
+        assert_eq!(gets(&server), 3, "{log:?}");
+        assert!(server.body_bytes_sent() >= 2 * size);
+        assert!(server.body_bytes_sent() < 3 * size);
+        assert!(!job.path.exists());
+        assert_eq!(kept_in(&job), Vec::<String>::new());
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_stale_published_digest_does_not_fail_a_download_that_two_passes_agree_on() {
+        let size = MIB;
+        // The server always serves body version 1 and publishes the digest of version 2.
+        let server = Server::start(Config {
+            size,
+            extra_headers: vec![repr_digest_header(2, size)],
+            cut_body: Some(CutBody {
+                after_bytes: 150 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-stale-digest");
+        let engine = engine_with_retry_limit(&root.0, 20);
+        let id = add_download_from_page(&engine, &server, &root.0.join("out"));
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(file_sha256(&job.path), pattern_sha256(1, size));
+        // The note on the job names the source of the digest.
+        let note = job.error.as_deref().unwrap_or_default();
+        assert!(note.contains("Repr-Digest"), "{note}");
+        assert_eq!(attempts_made(&server), 3);
+        assert_eq!(gets(&server), 3);
+        assert!(server.body_bytes_sent() < 3 * size);
+        assert_eq!(kept_in(&job), Vec::<String>::new());
+        engine.shutdown();
+    }
+
+    /// A job whose first pass met a digest it did not match and whose second pass was refused:
+    /// the server answers the second `HEAD` with 404. `differ` makes the next pass serve other
+    /// bytes than the first; otherwise the bytes stay the same and only the digest is stale.
+    fn failed_in_its_second_pass(root: &TempDir, differ: bool) -> (Engine, Server, Job) {
+        let size = MIB;
+        let server = Server::start(Config {
+            size,
+            extra_headers: vec![repr_digest_header(3, size)],
+            switch_version_at_head: differ.then_some(2),
+            head_statuses: vec![None, Some(404)],
+            ..Config::default()
+        });
+        let engine = engine_with_retry_limit(&root.0, 20);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        assert!(
+            !job.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SSD-TRF-003"),
+            "{:?}",
+            job.error
+        );
+        // The re-download was granted and recorded before the first bytes were discarded, and
+        // the failed pass left nothing else.
+        let kept = kept_in(&job);
+        assert!(
+            kept.iter().all(|name| name.ends_with(".digest-retry")) && kept.len() == 1,
+            "{kept:?}"
+        );
+        assert_eq!(server.body_bytes_sent(), size);
+        (engine, server, job)
+    }
+
+    #[test]
+    fn a_second_pass_that_fails_for_another_reason_keeps_the_one_re_download_for_a_retry() {
+        let size = MIB;
+        // Stale digest, same bytes: the retry is the job's second download and ends the matter.
+        let root = TempDir::new("retry-second-pass-refused-stale");
+        let (engine, server, job) = failed_in_its_second_pass(&root, false);
+        engine.retry_failed().unwrap();
+        let job = finished_job(&engine, &job.id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(file_sha256(&job.path), pattern_sha256(1, size));
+        assert!(job
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Repr-Digest"));
+        // Two downloads of the file in all, not three, and no record is left behind.
+        assert_eq!(server.body_bytes_sent(), 2 * size);
+        assert_eq!(kept_in(&job), Vec::<String>::new());
+        engine.shutdown();
+
+        // Other bytes: the retry is the second download as well, and fails the job for good.
+        let root = TempDir::new("retry-second-pass-refused-differ");
+        let (engine, server, job) = failed_in_its_second_pass(&root, true);
+        engine.retry_failed().unwrap();
+        let job = finished_job(&engine, &job.id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        assert!(job
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("SSD-TRF-003"));
+        assert_eq!(server.body_bytes_sent(), 2 * size);
+        assert_eq!(kept_in(&job), Vec::<String>::new());
+        engine.shutdown();
+    }
+
+    #[test]
+    fn removing_a_job_that_failed_in_its_second_pass_removes_the_record_of_the_used_re_download() {
+        let root = TempDir::new("retry-second-pass-removed");
+        let (engine, _server, job) = failed_in_its_second_pass(&root, false);
+        let work = job.work_dir.clone().unwrap();
+        assert!(work.exists());
+        engine.remove(&job.id, false).unwrap();
+        wait_until("the work folder to go", || !work.exists());
         engine.shutdown();
     }
 

@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::test_http::{
-    file_sha256, pattern, pattern_sha256, Config, CutBody, EtagKind, Logged, RangeSupport,
-    Redirect, RetryAfter, Scripted, Sequence, Server, Signing, TempDir, Validity,
+    file_sha256, pattern, pattern_sha256, repr_digest_header, Config, CutBody, Document, EtagKind,
+    Logged, RangeSupport, Redirect, RetryAfter, Scripted, Sequence, Server, Signing, TempDir,
+    Validity,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -4262,6 +4263,1248 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
         assert_file_is(&result.path, &pattern(1, size), "rival");
         assert!(!rival_ended, "the download waited for the other job to end");
     });
+}
+
+/// A text file served at `path`.
+fn text_document(path: &str, body: &str) -> Document {
+    Document {
+        path: path.into(),
+        status: 200,
+        headers: vec!["Content-Type: text/plain".into()],
+        body: body.as_bytes().to_vec(),
+        unframed: false,
+    }
+}
+
+/// An answer of `status` that holds no digest, as a server gives for a file it does not have.
+fn answer_without_digest(path: &str, status: u16, headers: Vec<String>) -> Document {
+    Document {
+        path: path.into(),
+        status,
+        headers,
+        body: b"no".to_vec(),
+        unframed: false,
+    }
+}
+
+fn missing(path: &str) -> Document {
+    answer_without_digest(path, 404, Vec::new())
+}
+
+/// A server for `payload.bin` (body version 1) that serves the digest files in `documents`.
+fn serving(size: u64, documents: Vec<Document>) -> Server {
+    Server::start(Config {
+        size,
+        documents,
+        ..Config::default()
+    })
+}
+
+/// A server whose file is body version 1 for its first pass and body version 2 from its second
+/// `HEAD` on, and whose `Repr-Digest` states the digest of body version 2: the first pass fails
+/// the digest, the second one meets it.
+fn corrupted_once(size: u64, documents: Vec<Document>) -> Server {
+    Server::start(Config {
+        size,
+        extra_headers: vec![repr_digest_header(2, size)],
+        switch_version_at_head: Some(1),
+        documents,
+        ..Config::default()
+    })
+}
+
+/// A server whose file is body version 1 for its first pass and body version 2 from its second
+/// `HEAD` on, and whose digests state body version 3: no pass meets them, and the passes differ
+/// from each other. The digest is a `Repr-Digest` header when `header` is set, else the digests
+/// are in `documents`.
+fn corrupted_differently(size: u64, header: bool, documents: Vec<Document>) -> Server {
+    Server::start(Config {
+        size,
+        extra_headers: if header {
+            vec![repr_digest_header(3, size)]
+        } else {
+            Vec::new()
+        },
+        switch_version_at_head: Some(1),
+        documents,
+        ..Config::default()
+    })
+}
+
+fn forget_verified() {
+    TEST_VERIFIED.with(|verified| verified.borrow_mut().clear());
+}
+
+fn verified_by() -> Vec<digest::Source> {
+    TEST_VERIFIED.with(|verified| verified.borrow().clone())
+}
+
+fn lookup_paths(server: &Server) -> Vec<String> {
+    server
+        .lookups()
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect()
+}
+
+/// The names in `directory`: a download that failed leaves none, one that succeeded only the
+/// file, whatever it kept beside it while it ran.
+fn left_in(directory: &TempDir) -> Vec<String> {
+    let mut names = fs::read_dir(&directory.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn is_trf_003(error: &anyhow::Error) -> bool {
+    crate::error_codes::code_of(error) == Some(crate::error_codes::TRF_003)
+}
+
+fn heads(server: &Server) -> usize {
+    server
+        .log()
+        .iter()
+        .filter(|entry| entry.method == "HEAD")
+        .count()
+}
+
+/// Downloads `payload.bin` from `server` into a fresh directory.
+fn fetch_payload(server: &Server, connections: u8) -> (Result<TransferResult>, TempDir) {
+    let directory = TempDir::new("digest");
+    let output = directory.0.join("payload.bin");
+    let result = fetch(
+        &request_for(server),
+        &output,
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    );
+    (result, directory)
+}
+
+fn assert_published(result: Result<TransferResult>, directory: &TempDir, version: u8, size: u64) {
+    let result = result.unwrap_or_else(|error| panic!("{error:#}"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(version, size));
+    assert_eq!(left_in(directory), ["payload.bin"]);
+}
+
+fn assert_refused(result: Result<TransferResult>, directory: &TempDir) -> anyhow::Error {
+    let error = result.expect_err("the file should not have been published");
+    assert!(is_trf_003(&error), "{error:#}");
+    assert_eq!(left_in(directory), Vec::<String>::new());
+    error
+}
+
+fn repr_digest_verifies(connections: u8, size: u64) {
+    let server = Server::start(Config {
+        size,
+        extra_headers: vec![repr_digest_header(1, size)],
+        logged_headers: vec!["accept-encoding".into(), "want-repr-digest".into()],
+        ..Config::default()
+    });
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, connections);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), [digest::Source::ReprDigest]);
+    // The digest costs no request, and the engine asks for neither a coding nor a digest.
+    assert_eq!(server.lookups().len(), 0);
+    for entry in server.requests() {
+        assert_eq!(entry.header("accept-encoding"), None, "{entry:?}");
+        assert_eq!(entry.header("want-repr-digest"), None, "{entry:?}");
+    }
+    assert_eq!(
+        ranged_gets(&server.log(), size).is_empty(),
+        connections == 1
+    );
+}
+
+#[test]
+fn a_matching_repr_digest_verifies_a_one_connection_download() {
+    repr_digest_verifies(1, 3 * MIB + 5);
+}
+
+#[test]
+fn a_matching_repr_digest_verifies_a_download_over_several_connections() {
+    repr_digest_verifies(4, 9 * MIB + 5);
+}
+
+#[test]
+fn a_repr_digest_verifies_a_file_of_any_size() {
+    repr_digest_verifies(1, 100_000);
+}
+
+#[test]
+fn a_repr_digest_that_only_the_get_answer_carries_verifies_the_file() {
+    for (connections, size) in [(1, 3 * MIB + 5), (4, 9 * MIB + 5)] {
+        let server = Server::start(Config {
+            size,
+            head_bare: true,
+            extra_headers: vec![repr_digest_header(1, size)],
+            ..Config::default()
+        });
+        forget_verified();
+        let (result, directory) = fetch_payload(&server, connections);
+        assert_published(result, &directory, 1, size);
+        assert_eq!(verified_by(), [digest::Source::ReprDigest], "{connections}");
+    }
+}
+
+#[test]
+fn a_repr_digest_describes_the_stored_bytes_whatever_content_coding_the_server_names() {
+    // The digest of a representation covers the bytes as sent, with their coding applied, and
+    // the engine stores exactly those bytes.
+    let size = 3 * MIB + 5;
+    let server = Server::start(Config {
+        size,
+        extra_headers: vec!["Content-Encoding: gzip".into(), repr_digest_header(1, size)],
+        ..Config::default()
+    });
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), [digest::Source::ReprDigest]);
+}
+
+#[test]
+fn a_repr_digest_that_covers_a_resumed_download_is_the_digest_of_the_whole_file() {
+    let size = 3 * MIB + 5;
+    let server = Server::start(Config {
+        size,
+        extra_headers: vec![repr_digest_header(1, size)],
+        cut_body: Some(CutBody {
+            after_bytes: MIB,
+            responses: 1,
+        }),
+        ..Config::default()
+    });
+    let directory = TempDir::new("digest-resumed");
+    let output = directory.0.join("payload.bin");
+    let request = request_for(&server);
+    let control = TransferControl::default();
+    fetch(&request, &output, &control, 1, 1, &mut |_| {}).unwrap_err();
+    assert!(retained_bytes(&output).unwrap() > 0);
+
+    forget_verified();
+    let result = fetch(&request, &output, &control, 1, 1, &mut |_| {}).unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_eq!(verified_by(), [digest::Source::ReprDigest]);
+    let ranged = server
+        .log()
+        .into_iter()
+        .filter(|entry| entry.status == 206)
+        .count();
+    assert_eq!(ranged, 1);
+}
+
+fn mismatch_then_match(connections: u8, size: u64) {
+    let server = corrupted_once(size, Vec::new());
+    let directory = TempDir::new("digest-again");
+    let output = directory.0.join("payload.bin");
+    let mut phases = Vec::new();
+    let control = TransferControl::default();
+    forget_verified();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &control,
+        connections,
+        connections,
+        &mut |progress| phases.push(progress.phase),
+    );
+    assert_published(result, &directory, 2, size);
+    assert_eq!(verified_by(), [digest::Source::ReprDigest]);
+    assert_eq!(heads(&server), 2);
+    // Bytes that were discarded and fetched again are no progress for the engine.
+    assert!(control.restarted());
+    // The whole body was fetched twice, and a mismatch is announced once.
+    assert!(server.body_bytes_sent() >= 2 * size);
+    assert!(server.body_bytes_sent() < 3 * size);
+    let notice = DigestRetry(0).to_string();
+    assert_eq!(phases.iter().filter(|phase| **phase == notice).count(), 1);
+}
+
+#[test]
+fn a_repr_digest_mismatch_is_followed_by_one_download_from_scratch_that_is_published() {
+    mismatch_then_match(1, 3 * MIB + 5);
+}
+
+#[test]
+fn a_repr_digest_mismatch_over_several_connections_is_followed_by_one_download_from_scratch() {
+    mismatch_then_match(4, 9 * MIB + 5);
+}
+
+fn mismatch_twice(connections: u8, size: u64) {
+    let server = corrupted_differently(size, true, Vec::new());
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, connections);
+    let error = assert_refused(result, &directory);
+    assert!(format!("{error:#}").contains("Repr-Digest"), "{error:#}");
+    assert_eq!(heads(&server), 2);
+    assert!(server.body_bytes_sent() >= 2 * size);
+    assert!(server.body_bytes_sent() < 3 * size);
+    assert_eq!(verified_by(), []);
+
+    // The used re-download is not carried over to a retry of the failed job: it starts anew, and
+    // gets a re-download of its own. The server now serves body version 2 throughout, so the
+    // two passes agree and the file stays.
+    let output = directory.0.join("payload.bin");
+    let again = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    );
+    assert_kept_with_a_warning(again, &directory, "Repr-Digest", 2, size);
+    assert_eq!(heads(&server), 4);
+}
+
+#[test]
+fn two_downloads_that_differ_and_miss_the_digest_fail_with_trf_003_and_publish_nothing() {
+    mismatch_twice(1, 3 * MIB + 5);
+}
+
+#[test]
+fn two_downloads_over_several_connections_that_differ_and_miss_the_digest_fail_with_trf_003() {
+    mismatch_twice(4, 9 * MIB + 5);
+}
+
+/// A server that always serves body version 1 and publishes the digest of body version 2: a stale
+/// digest, as when the publisher replaced the file and not its checksum.
+fn stale_digest(size: u64, header: bool, documents: Vec<Document>) -> Server {
+    Server::start(Config {
+        size,
+        extra_headers: if header {
+            vec![repr_digest_header(2, size)]
+        } else {
+            Vec::new()
+        },
+        documents,
+        ..Config::default()
+    })
+}
+
+/// The file of a download whose two passes gave the same bytes of body `version`, not the
+/// digest's: published, with a note on the job that names `source`.
+fn assert_kept_with_a_warning(
+    result: Result<TransferResult>,
+    directory: &TempDir,
+    source: &str,
+    version: u8,
+    size: u64,
+) {
+    let result = result.unwrap_or_else(|error| panic!("{error:#}"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(version, size));
+    assert_eq!(left_in(directory), ["payload.bin"]);
+    let warning = result.warning.expect("the job gets a note");
+    assert!(warning.contains(source), "{warning}");
+    assert_eq!(verified_by(), []);
+}
+
+fn stale_repr_digest(connections: u8, size: u64) {
+    let server = stale_digest(size, true, Vec::new());
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, connections);
+    assert_kept_with_a_warning(result, &directory, "Repr-Digest", 1, size);
+    // The file was fetched twice, and the second copy is the one that stays.
+    assert_eq!(heads(&server), 2);
+    assert!(server.body_bytes_sent() >= 2 * size);
+    assert!(server.body_bytes_sent() < 3 * size);
+}
+
+#[test]
+fn a_stale_repr_digest_that_two_identical_downloads_do_not_meet_keeps_the_file_with_a_warning() {
+    stale_repr_digest(1, 3 * MIB + 5);
+}
+
+#[test]
+fn a_stale_repr_digest_over_several_connections_keeps_the_file_with_a_warning() {
+    stale_repr_digest(4, 9 * MIB + 5);
+}
+
+#[test]
+fn a_restart_between_the_first_mismatch_and_the_second_download_allows_no_third() {
+    let size = 3 * MIB + 5;
+    let server = corrupted_differently(size, true, Vec::new());
+    let directory = TempDir::new("digest-restart");
+    let output = directory.0.join("payload.bin");
+    let request = request_for(&server);
+
+    // The app closes right after the first mismatch is acted on.
+    let control = TransferControl::default();
+    let closing = control.clone();
+    let notice = DigestRetry(0).to_string();
+    let error = fetch(&request, &output, &control, 1, 1, &mut |progress| {
+        if progress.phase == notice {
+            closing.pause();
+        }
+    })
+    .unwrap_err();
+    assert!(!is_trf_003(&error), "{error:#}");
+    assert_eq!(heads(&server), 1);
+    assert!(!part_path(&output).exists() && !state_path(&output).exists());
+    let record = digest::retry_record(&state_path(&output));
+    assert_eq!(
+        digest::first_download(&record),
+        Some(pattern_sha256(1, size)),
+        "the first download is not recorded"
+    );
+
+    // The next start downloads once more, finds other bytes that miss the digest and stops there.
+    let error = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(is_trf_003(&error), "{error:#}");
+    assert_eq!(heads(&server), 2);
+    assert_eq!(server.body_bytes_sent(), 2 * size);
+    assert_eq!(left_in(&directory), Vec::<String>::new());
+}
+
+#[test]
+fn a_restart_between_the_first_mismatch_and_a_second_download_of_the_same_bytes_keeps_the_file() {
+    let size = 3 * MIB + 5;
+    let server = stale_digest(size, true, Vec::new());
+    let directory = TempDir::new("digest-restart-same");
+    let output = directory.0.join("payload.bin");
+    let request = request_for(&server);
+
+    let control = TransferControl::default();
+    let closing = control.clone();
+    let notice = DigestRetry(0).to_string();
+    fetch(&request, &output, &control, 1, 1, &mut |progress| {
+        if progress.phase == notice {
+            closing.pause();
+        }
+    })
+    .unwrap_err();
+
+    forget_verified();
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    );
+    assert_kept_with_a_warning(result, &directory, "Repr-Digest", 1, size);
+    assert_eq!(heads(&server), 2);
+    assert_eq!(server.body_bytes_sent(), 2 * size);
+}
+
+#[test]
+fn a_sha256_file_next_to_the_address_verifies_the_file() {
+    let size = 2 * MIB + 11;
+    let digest = pattern_sha256(1, size);
+    let upper = digest.to_ascii_uppercase();
+    for body in [
+        format!("{digest}\n"),
+        format!("{digest}  payload.bin\n"),
+        format!("{digest} *payload.bin\r\n"),
+        format!("\n{upper}  payload.bin\n\n"),
+    ] {
+        let server = serving(
+            size,
+            vec![
+                text_document("/payload.bin.sha256", &body),
+                missing("/SHA256SUMS"),
+            ],
+        );
+        forget_verified();
+        let (result, directory) = fetch_payload(&server, 1);
+        assert_published(result, &directory, 1, size);
+        assert_eq!(verified_by(), [digest::Source::Sha256File], "{body:?}");
+        // The first source that answers cleanly ends the lookup.
+        assert_eq!(lookup_paths(&server), ["/payload.bin.sha256"], "{body:?}");
+    }
+}
+
+#[test]
+fn a_stale_sha256_file_that_two_identical_downloads_do_not_meet_keeps_the_file_with_a_warning() {
+    let size = 2 * MIB + 11;
+    let stale = pattern_sha256(2, size);
+    let server = stale_digest(
+        size,
+        false,
+        vec![
+            text_document("/payload.bin.sha256", &format!("{stale}  payload.bin\n")),
+            missing("/SHA256SUMS"),
+        ],
+    );
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_kept_with_a_warning(result, &directory, ".sha256", 1, size);
+    assert_eq!(heads(&server), 2);
+    // Each of the two downloads asked once.
+    assert_eq!(lookup_paths(&server), ["/payload.bin.sha256"; 2]);
+}
+
+#[test]
+fn a_sha256_file_that_two_different_downloads_do_not_meet_fails_the_download() {
+    let size = 2 * MIB + 11;
+    let wrong = pattern_sha256(3, size);
+    let server = corrupted_differently(
+        size,
+        false,
+        vec![
+            text_document("/payload.bin.sha256", &format!("{wrong}  payload.bin\n")),
+            missing("/SHA256SUMS"),
+        ],
+    );
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    let error = assert_refused(result, &directory);
+    assert!(format!("{error:#}").contains(".sha256"), "{error:#}");
+    assert_eq!(heads(&server), 2);
+    assert_eq!(verified_by(), []);
+    assert_eq!(lookup_paths(&server), ["/payload.bin.sha256"; 2]);
+}
+
+#[test]
+fn a_sha256_file_that_matches_the_second_download_publishes_it() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(2, size);
+    let server = Server::start(Config {
+        size,
+        switch_version_at_head: Some(1),
+        documents: vec![
+            text_document("/payload.bin.sha256", &format!("{right}\n")),
+            missing("/SHA256SUMS"),
+        ],
+        ..Config::default()
+    });
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_published(result, &directory, 2, size);
+    assert_eq!(verified_by(), [digest::Source::Sha256File]);
+    assert_eq!(heads(&server), 2);
+}
+
+#[test]
+fn sha256sums_verifies_the_file_by_the_line_that_names_it() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let other = "0".repeat(64);
+    let sums = format!(
+        "{other}  payload.bin.old\n{right}  payload.bin\n{other} *xpayload.bin\n{other}  payload.bin2\n"
+    );
+    let server = serving(
+        size,
+        vec![
+            missing("/payload.bin.sha256"),
+            text_document("/SHA256SUMS", &sums),
+        ],
+    );
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), [digest::Source::Sha256Sums]);
+    assert_eq!(
+        lookup_paths(&server),
+        ["/payload.bin.sha256", "/SHA256SUMS"]
+    );
+
+    let documents = |version| {
+        let line = format!("{}  payload.bin", pattern_sha256(version, size));
+        vec![
+            missing("/payload.bin.sha256"),
+            text_document(
+                "/SHA256SUMS",
+                &format!("{other}  payload.bin.old\n{line}\n"),
+            ),
+        ]
+    };
+    // A stale line, with both downloads alike: the file stays, with a note.
+    let server = stale_digest(size, false, documents(2));
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_kept_with_a_warning(result, &directory, "SHA256SUMS", 1, size);
+    assert_eq!(heads(&server), 2);
+
+    // A line that neither download meets, with downloads that differ: the job fails.
+    let server = corrupted_differently(size, false, documents(3));
+    let (result, directory) = fetch_payload(&server, 1);
+    let error = assert_refused(result, &directory);
+    assert!(format!("{error:#}").contains("SHA256SUMS"), "{error:#}");
+    assert_eq!(heads(&server), 2);
+}
+
+#[test]
+fn a_digest_file_that_is_not_a_clean_match_leaves_the_file_unverified() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let wrong = pattern_sha256(2, size);
+    let page = Document {
+        headers: vec!["Content-Type: text/html".into()],
+        ..text_document("/payload.bin.sha256", &format!("{wrong}\n"))
+    };
+    let unclean = [
+        // A name other than the file's, a name that only contains it, several candidates.
+        (
+            text_document("/payload.bin.sha256", &format!("{right}  other.bin\n")),
+            missing("/SHA256SUMS"),
+        ),
+        (
+            text_document(
+                "/payload.bin.sha256",
+                &format!("{right}  payload.bin.old\n"),
+            ),
+            missing("/SHA256SUMS"),
+        ),
+        (
+            text_document(
+                "/payload.bin.sha256",
+                &format!("{wrong}  payload.bin\n{right}  payload.bin\n"),
+            ),
+            missing("/SHA256SUMS"),
+        ),
+        // Malformed digests and an empty file.
+        (
+            text_document("/payload.bin.sha256", &format!("{}\n", &right[1..])),
+            missing("/SHA256SUMS"),
+        ),
+        (
+            text_document("/payload.bin.sha256", &format!("{}z\n", &right[1..])),
+            missing("/SHA256SUMS"),
+        ),
+        (
+            text_document("/payload.bin.sha256", ""),
+            missing("/SHA256SUMS"),
+        ),
+        // A web page, however it is spelled, and answers that are not a file.
+        (page, missing("/SHA256SUMS")),
+        (
+            answer_without_digest("/payload.bin.sha256", 403, Vec::new()),
+            answer_without_digest("/SHA256SUMS", 500, Vec::new()),
+        ),
+        // No line of SHA256SUMS names the file, or two of them do.
+        (
+            missing("/payload.bin.sha256"),
+            text_document(
+                "/SHA256SUMS",
+                &format!("{right}  other.bin\n{wrong}  Payload.bin\n"),
+            ),
+        ),
+        (
+            missing("/payload.bin.sha256"),
+            text_document(
+                "/SHA256SUMS",
+                &format!("{wrong}  payload.bin\n{right}  payload.bin\n"),
+            ),
+        ),
+        (
+            missing("/payload.bin.sha256"),
+            text_document("/SHA256SUMS", &format!("{right}\n")),
+        ),
+    ];
+    for (index, (file, sums)) in unclean.into_iter().enumerate() {
+        let server = serving(size, vec![file, sums]);
+        forget_verified();
+        let (result, directory) = fetch_payload(&server, 1);
+        assert_published(result, &directory, 1, size);
+        assert_eq!(verified_by(), [], "case {index}");
+        assert_eq!(lookup_paths(&server).len(), 2, "case {index}");
+        assert_eq!(heads(&server), 1);
+    }
+}
+
+#[test]
+fn a_catch_all_server_that_answers_digest_addresses_with_the_file_itself_is_ignored() {
+    let size = 2 * MIB + 11;
+    for unframed in [false, true] {
+        let server = Server::start(Config {
+            size,
+            get_length_header: !unframed,
+            ..Config::default()
+        });
+        forget_verified();
+        let (result, directory) = fetch_payload(&server, 1);
+        assert_published(result, &directory, 1, size);
+        assert_eq!(verified_by(), []);
+        assert_eq!(lookup_paths(&server).len(), 2);
+    }
+}
+
+#[test]
+fn a_digest_file_is_read_up_to_64_kib_and_not_beyond() {
+    let size = 2 * MIB + 11;
+    let line = format!("{}  payload.bin\n", pattern_sha256(1, size));
+    let cap = 64 * 1024;
+    let padded = |length: usize| format!("{line}{}", "\n".repeat(length - line.len()));
+    for (body, unframed, accepted) in [
+        (padded(cap), false, true),
+        (padded(cap), true, true),
+        (padded(cap + 1), false, false),
+        (padded(cap + 1), true, false),
+        (padded(4 * cap), false, false),
+        (padded(4 * cap), true, false),
+    ] {
+        let sha256 = Document {
+            unframed,
+            ..text_document("/payload.bin.sha256", &body)
+        };
+        let server = serving(size, vec![sha256, missing("/SHA256SUMS")]);
+        forget_verified();
+        let (result, directory) = fetch_payload(&server, 1);
+        assert_published(result, &directory, 1, size);
+        let expected: &[digest::Source] = if accepted {
+            &[digest::Source::Sha256File]
+        } else {
+            &[]
+        };
+        assert_eq!(
+            verified_by(),
+            expected,
+            "{} bytes, unframed {unframed}",
+            body.len()
+        );
+    }
+}
+
+/// The requests that are no part of the file's own traffic: for its digest files and what they
+/// redirect to.
+fn extra_requests(server: &Server) -> usize {
+    server
+        .requests()
+        .iter()
+        .filter(|entry| entry.path != "/payload.bin")
+        .count()
+}
+
+#[test]
+fn a_download_asks_for_at_most_two_digest_files_even_through_redirects() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let redirect = |to: &str| vec![format!("Location: {to}")];
+    let chain = vec![
+        answer_without_digest("/payload.bin.sha256", 302, redirect("/a")),
+        answer_without_digest("/a", 302, redirect("/b")),
+        text_document("/b", &format!("{right}\n")),
+        text_document("/SHA256SUMS", &format!("{right}  payload.bin\n")),
+    ];
+    let server = serving(size, chain);
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_published(result, &directory, 1, size);
+    // The chain needs a third request for the digest, and nothing else is tried.
+    assert_eq!(verified_by(), []);
+    let requests = server.requests();
+    let paths = requests
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        ["/payload.bin", "/payload.bin", "/payload.bin.sha256", "/a"]
+    );
+    assert_eq!(extra_requests(&server), 2);
+
+    let sums_after_a_failure = vec![
+        missing("/payload.bin.sha256"),
+        text_document("/SHA256SUMS", &format!("{right}  payload.bin\n")),
+    ];
+    let server = serving(size, sums_after_a_failure);
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), [digest::Source::Sha256Sums]);
+    assert_eq!(extra_requests(&server), 2);
+}
+
+#[test]
+fn a_digest_file_behind_a_redirect_inside_the_origin_is_read() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let server = serving(
+        size,
+        vec![
+            answer_without_digest(
+                "/payload.bin.sha256",
+                302,
+                vec!["Location: /checksums/payload.txt".into()],
+            ),
+            text_document("/checksums/payload.txt", &format!("{right}  payload.bin\n")),
+        ],
+    );
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), [digest::Source::Sha256File]);
+    assert_eq!(extra_requests(&server), 2);
+    assert_eq!(
+        server.requests().last().map(|entry| entry.path.as_str()),
+        Some("/checksums/payload.txt")
+    );
+}
+
+#[test]
+fn digest_files_are_read_from_the_origin_of_the_address_given_never_from_a_redirect_target() {
+    let size = 2 * MIB + 11;
+    let wrong = pattern_sha256(2, size);
+    // The file lives on `target`, which also publishes digests, wrong ones: they must not be
+    // read, whatever the address that redirected to them is.
+    let target = serving(
+        size,
+        vec![
+            text_document("/payload.bin.sha256", &format!("{wrong}\n")),
+            text_document("/SHA256SUMS", &format!("{wrong}  payload.bin\n")),
+        ],
+    );
+    let source = Server::start(Config {
+        redirect_to: Some(target.url("/payload.bin")),
+        ..Config::default()
+    });
+    forget_verified();
+    let (result, directory) = fetch_payload(&source, 1);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), []);
+    assert_eq!(
+        lookup_paths(&source),
+        ["/payload.bin.sha256", "/SHA256SUMS"]
+    );
+    // The redirects of the digest requests lead to the target, which is not followed.
+    assert_eq!(target.lookups().len(), 0);
+    assert!(target
+        .requests()
+        .iter()
+        .all(|entry| entry.path == "/payload.bin"));
+
+    // A digest file that redirects to another origin is not followed either.
+    let elsewhere = serving(size, Vec::new());
+    let redirect = |path: &str| {
+        answer_without_digest(
+            path,
+            302,
+            vec![format!(
+                "Location: {}",
+                elsewhere.url("/payload.bin.sha256")
+            )],
+        )
+    };
+    let source = serving(
+        size,
+        vec![redirect("/payload.bin.sha256"), redirect("/SHA256SUMS")],
+    );
+    let (result, directory) = fetch_payload(&source, 1);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(lookup_paths(&source).len(), 2);
+    assert_eq!(elsewhere.requests().len(), 0);
+}
+
+#[test]
+fn digest_file_requests_carry_the_headers_of_the_download_to_its_origin_only() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            missing("/payload.bin.sha256"),
+            text_document("/SHA256SUMS", &format!("{right}  payload.bin\n")),
+        ],
+        logged_headers: vec!["authorization".into(), "cookie".into(), "referer".into()],
+        ..Config::default()
+    });
+    let mut request = request_for(&server);
+    request
+        .headers
+        .insert("Authorization".into(), "Bearer token".into());
+    request.referer = Some("https://page.example/".into());
+    request.session_cookies = vec![crate::model::ScopedCookie {
+        name: "session".into(),
+        value: "abc".into(),
+        domain: "127.0.0.1".into(),
+        path: "/".into(),
+        host_only: true,
+        ..Default::default()
+    }];
+    let directory = TempDir::new("digest-headers");
+    let output = directory.0.join("payload.bin");
+    forget_verified();
+    fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(verified_by(), [digest::Source::Sha256Sums]);
+
+    let download = server
+        .log()
+        .into_iter()
+        .find(|entry| entry.method == "GET")
+        .unwrap();
+    assert_eq!(download.header("authorization"), Some("Bearer token"));
+    assert_eq!(download.header("cookie"), Some("session=abc"));
+    let lookups = server.lookups();
+    assert_eq!(lookups.len(), 2);
+    for lookup in lookups {
+        assert_eq!(lookup.headers, download.headers, "{lookup:?}");
+    }
+}
+
+#[test]
+fn a_user_checksum_decides_alone_and_asks_for_nothing_else() {
+    let size = 2 * MIB + 11;
+    let wrong = pattern_sha256(2, size);
+    let published_wrong = |size| {
+        Server::start(Config {
+            size,
+            extra_headers: vec![repr_digest_header(2, size)],
+            documents: vec![
+                text_document("/payload.bin.sha256", &format!("{wrong}\n")),
+                text_document("/SHA256SUMS", &format!("{wrong}  payload.bin\n")),
+            ],
+            ..Config::default()
+        })
+    };
+
+    // The user's digest matches, the source's do not: the file is published.
+    let server = published_wrong(size);
+    let mut request = request_for(&server);
+    request.checksum = Some(pattern_sha256(1, size));
+    let directory = TempDir::new("digest-user");
+    let output = directory.0.join("payload.bin");
+    forget_verified();
+    fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&output), pattern_sha256(1, size));
+    assert_eq!(verified_by(), []);
+    assert_eq!(server.lookups().len(), 0);
+
+    // The user's digest does not match, the source's do not either: one download, then the
+    // error the user's digest always gave.
+    let server = published_wrong(size);
+    let mut request = request_for(&server);
+    request.checksum = Some("0".repeat(64));
+    let directory = TempDir::new("digest-user-wrong");
+    let output = directory.0.join("payload.bin");
+    let error = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(is_trf_003(&error), "{error:#}");
+    assert_eq!(heads(&server), 1);
+    assert_eq!(server.lookups().len(), 0);
+    assert_eq!(left_in(&directory), Vec::<String>::new());
+
+    // The source's digest is right and the user's is wrong: the user's still decides.
+    let server = Server::start(Config {
+        size,
+        extra_headers: vec![repr_digest_header(1, size)],
+        ..Config::default()
+    });
+    let mut request = request_for(&server);
+    request.checksum = Some(wrong);
+    let error = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(is_trf_003(&error), "{error:#}");
+    assert!(!output.exists());
+}
+
+#[test]
+fn digest_files_are_only_looked_up_for_files_of_at_least_one_mebibyte() {
+    let right = |size| pattern_sha256(1, size);
+    for (size, looked_up) in [(MIB - 1, false), (MIB, true), (2 * MIB, true)] {
+        let server = serving(
+            size,
+            vec![
+                text_document("/payload.bin.sha256", &format!("{}\n", right(size))),
+                missing("/SHA256SUMS"),
+            ],
+        );
+        forget_verified();
+        let (result, directory) = fetch_payload(&server, 1);
+        assert_published(result, &directory, 1, size);
+        assert_eq!(server.lookups().len(), usize::from(looked_up), "{size}");
+        assert_eq!(
+            verified_by(),
+            if looked_up {
+                vec![digest::Source::Sha256File]
+            } else {
+                Vec::new()
+            },
+            "{size}"
+        );
+    }
+}
+
+#[test]
+fn a_file_without_any_published_digest_is_published_as_it_is() {
+    let size = 3 * MIB + 5;
+    let server = serving(
+        size,
+        vec![missing("/payload.bin.sha256"), missing("/SHA256SUMS")],
+    );
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 1);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), []);
+    assert_eq!(heads(&server), 1);
+}
+
+#[test]
+fn a_download_stopped_when_it_is_complete_asks_for_no_digest_file_and_is_not_published() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let server = serving(
+        size,
+        vec![
+            text_document("/payload.bin.sha256", &format!("{right}\n")),
+            missing("/SHA256SUMS"),
+        ],
+    );
+    let directory = TempDir::new("digest-stopped");
+    let output = directory.0.join("payload.bin");
+    let request = request_for(&server);
+    let control = TransferControl::default();
+    let pausing = control.clone();
+    let error = fetch(&request, &output, &control, 1, 1, &mut |progress| {
+        if progress.downloaded == size {
+            pausing.pause();
+        }
+    })
+    .unwrap_err();
+    assert!(!is_trf_003(&error), "{error:#}");
+    assert!(!output.exists());
+    assert_eq!(server.lookups().len(), 0);
+    assert!(part_path(&output).exists());
+
+    // Resumed, the complete file is verified and published.
+    forget_verified();
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_eq!(verified_by(), [digest::Source::Sha256File]);
+}
+
+#[test]
+fn the_digest_files_of_an_address_with_an_encoded_name_and_a_query_are_found() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let server = serving(
+        size,
+        vec![
+            missing("/dir/my%20file.bin.sha256"),
+            text_document("/dir/SHA256SUMS", &format!("{right}  my file.bin\n")),
+        ],
+    );
+    let directory = TempDir::new("digest-name");
+    let output = directory.0.join("my file.bin");
+    forget_verified();
+    let result = fetch(
+        &file_request(server.url("/dir/my%20file.bin?download=1#top")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_eq!(verified_by(), [digest::Source::Sha256Sums]);
+    assert_eq!(
+        lookup_paths(&server),
+        ["/dir/my%20file.bin.sha256", "/dir/SHA256SUMS"]
+    );
+}
+
+/// Runs `run` with the whole digest lookup limited to `limit`.
+fn with_lookup_limit<T>(limit: Duration, run: impl FnOnce() -> T) -> T {
+    digest::TEST_LOOKUP_LIMIT.with(|cell| cell.set(Some(limit)));
+    let result = run();
+    digest::TEST_LOOKUP_LIMIT.with(|cell| cell.set(None));
+    result
+}
+
+/// A server for `payload.bin` that publishes the right `.sha256` and answers digest files only
+/// after `delay`.
+fn slow_lookups(size: u64, delay: Duration) -> Server {
+    let right = pattern_sha256(1, size);
+    Server::start(Config {
+        size,
+        lookup_delay: Some(delay),
+        documents: vec![
+            text_document("/payload.bin.sha256", &format!("{right}\n")),
+            missing("/SHA256SUMS"),
+        ],
+        ..Config::default()
+    })
+}
+
+#[test]
+fn a_repr_digest_that_only_the_head_answer_carries_survives_the_range_probe() {
+    let size = 9 * MIB + 5;
+    let server = Server::start(Config {
+        size,
+        head_extra_headers: vec![repr_digest_header(1, size)],
+        ..Config::default()
+    });
+    forget_verified();
+    let (result, directory) = fetch_payload(&server, 4);
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), [digest::Source::ReprDigest]);
+    // The one-byte probe of the ranges was answered without the digest.
+    assert!(server
+        .log()
+        .iter()
+        .any(|entry| entry.range.as_deref() == Some("bytes=0-0")));
+}
+
+#[test]
+fn a_digest_file_is_read_only_from_a_200_answer() {
+    let size = 2 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    for status in [201, 202, 203, 206, 403, 404, 410, 500, 503] {
+        let answer = |path: &str, body: String| Document {
+            status,
+            ..text_document(path, &body)
+        };
+        let server = serving(
+            size,
+            vec![
+                answer("/payload.bin.sha256", format!("{right}\n")),
+                answer("/SHA256SUMS", format!("{right}  payload.bin\n")),
+            ],
+        );
+        forget_verified();
+        let (result, directory) = fetch_payload(&server, 1);
+        assert_published(result, &directory, 1, size);
+        assert_eq!(verified_by(), [], "status {status}");
+        assert_eq!(lookup_paths(&server).len(), 2, "status {status}");
+    }
+}
+
+#[test]
+fn a_digest_lookup_that_outlasts_its_limit_is_dropped_and_the_file_published_unverified() {
+    let size = 2 * MIB + 11;
+    let server = slow_lookups(size, Duration::from_secs(5));
+    forget_verified();
+    let started = Instant::now();
+    let (result, directory) =
+        with_lookup_limit(Duration::from_secs(1), || fetch_payload(&server, 1));
+    let waited = started.elapsed();
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), []);
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+}
+
+#[test]
+fn a_stop_during_a_digest_lookup_ends_the_download_at_once_and_publishes_nothing() {
+    let size = 2 * MIB + 11;
+    let server = slow_lookups(size, Duration::from_secs(5));
+    let directory = TempDir::new("digest-stop-lookup");
+    let output = directory.0.join("payload.bin");
+    let request = request_for(&server);
+    let control = TransferControl::default();
+    forget_verified();
+    let started = Instant::now();
+    let error = thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..2000 {
+                if !server.lookups().is_empty() {
+                    control.pause();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        fetch(&request, &output, &control, 1, 1, &mut |_| {}).unwrap_err()
+    });
+    let waited = started.elapsed();
+    assert!(!is_trf_003(&error), "{error:#}");
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+    assert!(!output.exists());
+    assert!(part_path(&output).exists());
+    assert_eq!(verified_by(), []);
+}
+
+#[test]
+fn a_download_whose_host_has_no_free_connection_for_a_lookup_is_published_unverified() {
+    let size = 4 * MIB + 11;
+    let right = pattern_sha256(1, size);
+    let server = serving(
+        size,
+        vec![
+            text_document("/payload.bin.sha256", &format!("{right}\n")),
+            missing("/SHA256SUMS"),
+        ],
+    );
+    let directory = TempDir::new("digest-no-slot");
+    let output = directory.0.join("payload.bin");
+    let governor = NetworkGovernor::new(2);
+    // Other downloads take every connection of the host the moment this one has its bytes, and
+    // keep them for longer than the test lets anything wait.
+    let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let releasing = held.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(12));
+        releasing.lock().unwrap().clear();
+    });
+    let completing = crate::i18n::ui("Tamamlanıyor", "Completing");
+    forget_verified();
+    let started = Instant::now();
+    let result = with_lookup_limit(Duration::from_secs(1), || {
+        download(
+            &request_for(&server),
+            &output,
+            &TransferControl::default(),
+            &governor,
+            2,
+            None,
+            &mut |progress| {
+                if progress.phase == completing {
+                    let mut held = held.lock().unwrap();
+                    while let Some(lease) = governor.try_acquire_host("127.0.0.1".into()) {
+                        held.push(lease);
+                    }
+                }
+            },
+        )
+    });
+    let waited = started.elapsed();
+    assert!(!held.lock().unwrap().is_empty(), "no slot was taken");
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), []);
+    assert_eq!(server.lookups().len(), 0);
+    assert!(waited < Duration::from_secs(6), "{waited:?}");
 }
 
 const BENCH_SIZE: u64 = 128 * MIB;

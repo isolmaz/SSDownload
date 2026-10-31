@@ -174,6 +174,7 @@ pub(crate) fn recovered(paths: &AppPaths, id: &str) -> Result<Option<TransferRes
         return Ok(Some(TransferResult {
             path: value.target,
             bytes: value.bytes,
+            warning: None,
         }));
     }
     if value.source.exists()
@@ -375,6 +376,7 @@ pub(crate) fn publish(
             return Ok(TransferResult {
                 path: target,
                 bytes: result.bytes,
+                warning: result.warning,
             });
         }
         let error = std::io::Error::last_os_error();
@@ -601,6 +603,7 @@ mod tests {
             TransferResult {
                 path: scratch,
                 bytes: 11,
+                warning: None,
             },
         )
         .unwrap();
@@ -661,6 +664,7 @@ mod tests {
             TransferResult {
                 path: scratch,
                 bytes: 9,
+                warning: None,
             },
         )
         .unwrap();

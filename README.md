@@ -21,7 +21,7 @@
 
 ## Features
 
-- **Fast, resumable downloads** over up to 16 connections per file. A download resumes only when the server proves the file is unchanged, and a finished file never overwrites an existing one.
+- **Fast, resumable downloads** over up to 16 connections per file. A download resumes only when the server proves the file is unchanged, and a finished file never overwrites an existing one. A file is checked against the SHA-256 its source publishes, when there is one.
 - **Video and audio** from the page you are watching: choose the quality, container, audio and subtitle tracks, or save as MP3. Every result is checked with FFmpeg before it is published. Live streams are recorded, from their beginning where the site keeps it, and a live video recording can be finished early with what was recorded so far.
 - **Browser extension** for Chrome and Edge: a download button on videos, right-click entries and optional download takeover.
 - **A tidy queue:** drag to reorder, pause and resume, speed limits, a mini panel, completion cards and tray controls.

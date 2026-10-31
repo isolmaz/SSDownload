@@ -980,6 +980,8 @@ pub struct TransferProgress {
 pub struct TransferResult {
     pub path: PathBuf,
     pub bytes: u64,
+    /// A note for the finished job when the file was kept although a check did not pass.
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

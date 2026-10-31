@@ -900,6 +900,7 @@ pub(crate) fn download(
     Ok(TransferResult {
         path: result_path,
         bytes,
+        warning: None,
     })
 }
 
