@@ -4,7 +4,7 @@
 use super::*;
 use crate::test_http::{
     file_sha256, pattern, pattern_sha256, Config, CutBody, EtagKind, Logged, RangeSupport,
-    RetryAfter, Scripted, Sequence, Server, TempDir,
+    Redirect, RetryAfter, Scripted, Sequence, Server, TempDir,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -3234,6 +3234,259 @@ fn an_auto_job_redirected_to_a_page_stays_a_media_job() {
     .unwrap();
     assert!(media);
     assert!(prepared.is_some());
+}
+
+#[test]
+fn a_redirect_inside_one_origin_to_a_page_is_refused() {
+    let site = Server::start(Config {
+        size: 4_000,
+        content_type: Some("text/html".into()),
+        redirect: Some(Redirect {
+            from: "/download".into(),
+            target: "/login".into(),
+            fresh_target: "/login".into(),
+            target_requests_before_403: usize::MAX,
+        }),
+        ..Config::default()
+    });
+    let directory = TempDir::new("same-origin-page");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &file_request(site.url("/download")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+    site.wait_idle();
+    let log = site.log();
+    let reached = log
+        .iter()
+        .map(|entry| (entry.method.as_str(), entry.path.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reached,
+        [("HEAD", "/download"), ("HEAD", "/login")],
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_redirect_taken_by_the_transfer_to_a_page_is_saved_under_the_name_of_a_page() {
+    let size = 4_000;
+    for name in ["page.html", "page.HTM", "page.xhtml"] {
+        // The probe's HEAD sees the file, so the redirect is first met by the transfer's GET.
+        let page = page_server(size, "text/html");
+        let source = redirecting_get(page.url("/landing"), size);
+        let directory = TempDir::new("redirected-get-page-name");
+        let output = directory.0.join(name);
+        let result = fetch(
+            &file_request(source.url("/file")),
+            &output,
+            &TransferControl::default(),
+            1,
+            1,
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        assert_eq!(fs::read(result.path).unwrap(), pattern(1, size), "{name}");
+        page.wait_idle();
+        assert!(
+            page.log().iter().any(|entry| entry.method == "GET"),
+            "{name}: the transfer should have reached the page"
+        );
+    }
+}
+
+/// What a resume record claims, apart from the address digest and the synced length that an
+/// attempt that resumes rewrites.
+type Claims = (
+    Option<String>,
+    Option<String>,
+    Option<u64>,
+    bool,
+    Vec<(u64, u64)>,
+);
+
+fn claims_of(output: &Path) -> Option<Claims> {
+    read_state(&state_path(output)).map(|state| {
+        (
+            state.etag,
+            state.last_modified,
+            state.total,
+            state.segmented,
+            state
+                .completed
+                .iter()
+                .map(|range| (range.start, range.end))
+                .collect(),
+        )
+    })
+}
+
+/// Resumes the download that an earlier attempt left in `output`, whose request now reaches a
+/// page, and asserts that the page is refused and that the part file and its record are as
+/// they were: the retained work was neither discarded nor restarted.
+fn assert_a_page_leaves_the_retained_work_alone(url: String, output: &Path, connections: u8) {
+    let part = fs::read(part_path(output)).unwrap();
+    let claims = claims_of(output);
+    let retained = retained_bytes(output);
+    assert!(claims.is_some() && retained.is_some());
+
+    let control = TransferControl::default();
+    let error = fetch(
+        &file_request(url),
+        output,
+        &control,
+        connections,
+        connections,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::NET_004),
+        "{error:#}"
+    );
+    assert!(!output.exists(), "the page was published");
+    assert!(!control.restarted(), "the retained work was discarded");
+    assert!(
+        fs::read(part_path(output)).unwrap() == part,
+        "the part file changed"
+    );
+    assert_eq!(claims_of(output), claims);
+    assert_eq!(retained_bytes(output), retained);
+}
+
+/// A source that is redirected as a whole to a 6 MiB resource which is a file for its first
+/// `file_requests` requests and a page afterwards, with validators of its own.
+fn segmented_page_with_other_validators(file_requests: usize) -> (Server, Server) {
+    let target = Server::start(Config {
+        size: 6 * MIB,
+        content_type: Some("application/octet-stream".into()),
+        content_type_from: Some((file_requests, "text/html".into())),
+        switch_version_after: Some(file_requests),
+        ..Config::default()
+    });
+    let source = redirecting(target.url("/signin"));
+    (source, target)
+}
+
+#[test]
+fn a_resumed_one_connection_download_that_is_redirected_to_a_page_keeps_its_part_file() {
+    let size = MIB;
+    let held = 300_001usize;
+    let pages = [
+        // A sign-in page: no validators, and a ranged request is answered with the whole page.
+        Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            etag: EtagKind::Absent,
+            last_modified: false,
+            ranges: RangeSupport::Ignore,
+            ..Config::default()
+        },
+        // A page with validators of its own.
+        Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            switch_version_after: Some(0),
+            ..Config::default()
+        },
+    ];
+    for (index, page) in pages.into_iter().enumerate() {
+        // The probe's HEAD sees the file, so the resume goes ahead and its GET meets the page.
+        let page = Server::start(page);
+        let source = redirecting_get(page.url("/signin"), size);
+        let directory = TempDir::new("resume-into-page");
+        let output = directory.0.join("payload.bin");
+        fs::write(part_path(&output), &pattern(1, size)[..held]).unwrap();
+        fs::write(
+            state_path(&output),
+            previous_release_state(&source, size, false, "[]"),
+        )
+        .unwrap();
+
+        assert_a_page_leaves_the_retained_work_alone(source.url("/payload.bin"), &output, 1);
+        page.wait_idle();
+        let log = page.log();
+        let gets = log
+            .iter()
+            .filter(|entry| entry.method == "GET")
+            .collect::<Vec<_>>();
+        assert_eq!(gets.len(), 1, "page {index}: {log:?}");
+        assert_eq!(
+            gets[0].range,
+            Some(format!("bytes={held}-")),
+            "page {index}"
+        );
+        assert_eq!(gets[0].if_range.as_deref(), Some("\"v1\""), "page {index}");
+    }
+}
+
+#[test]
+fn a_resumed_segmented_download_whose_ranges_meet_a_page_keeps_its_part_file() {
+    let size = 6 * MIB;
+    let done = MIB;
+    // The HEAD (request 0) sees the file; every range request after it meets the page.
+    let (source, target) = segmented_page_with_other_validators(1);
+    let directory = TempDir::new("resume-ranges-into-page");
+    let output = directory.0.join("payload.bin");
+    let mut part = File::create(part_path(&output)).unwrap();
+    part.write_all(&pattern(1, size)[..done as usize]).unwrap();
+    part.set_len(size).unwrap();
+    drop(part);
+    fs::write(
+        state_path(&output),
+        previous_release_state(
+            &source,
+            size,
+            true,
+            &format!(r#"[{{"start":0,"end":{done}}}]"#),
+        ),
+    )
+    .unwrap();
+
+    assert_a_page_leaves_the_retained_work_alone(source.url("/payload.bin"), &output, 2);
+    target.wait_idle();
+    let log = target.log();
+    assert!(
+        data_gets(&log).any(|entry| entry.range.is_some()),
+        "the ranges should have reached the page: {log:?}"
+    );
+}
+
+#[test]
+fn a_resumed_download_whose_range_probe_meets_a_page_keeps_its_part_file() {
+    let size = 6 * MIB;
+    // The HEAD (request 0) sees the file; the one-byte probe after it meets the page. The
+    // record holds no range yet, so the probe is what decides whether the ranges can be used.
+    let (source, target) = segmented_page_with_other_validators(1);
+    let directory = TempDir::new("resume-probe-into-page");
+    let output = directory.0.join("payload.bin");
+    File::create(part_path(&output))
+        .unwrap()
+        .set_len(size)
+        .unwrap();
+    fs::write(
+        state_path(&output),
+        previous_release_state(&source, size, true, "[]"),
+    )
+    .unwrap();
+
+    assert_a_page_leaves_the_retained_work_alone(source.url("/payload.bin"), &output, 2);
+    target.wait_idle();
+    let log = target.log();
+    let gets = log
+        .iter()
+        .filter(|entry| entry.method == "GET")
+        .collect::<Vec<_>>();
+    assert_eq!(gets.len(), 1, "{log:?}");
+    assert_eq!(gets[0].range.as_deref(), Some("bytes=0-0"), "{log:?}");
+    assert_eq!(gets[0].if_range.as_deref(), Some("\"v1\""), "{log:?}");
 }
 
 const BENCH_SIZE: u64 = 128 * MIB;
