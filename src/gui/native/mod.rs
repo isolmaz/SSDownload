@@ -63,6 +63,7 @@ mod dialog_commands;
 mod dialog_controls;
 mod dialog_layout;
 mod dialog_refresh;
+mod fluent;
 mod theme;
 use alert::*;
 use card::*;
@@ -70,6 +71,7 @@ use dialog_commands::*;
 use dialog_controls::*;
 use dialog_layout::*;
 use dialog_refresh::*;
+use fluent::*;
 use theme::*;
 
 const CLASS_MAIN: &str = crate::bridge::MAIN_WINDOW_CLASS;
@@ -335,11 +337,11 @@ const ID_QUEUE_BASE: i32 = 1500;
 const WM_SHOW_TOUR: u32 = WM_APP + 37;
 const HOTKEY_ADD: i32 = 1;
 const NIN_BALLOONUSERCLICK_: u32 = 0x0405;
-pub const ID_SEARCH: i32 = 1010;
 pub const ID_FILTER: i32 = 1011;
 pub const ID_JOB_LIST: i32 = 1020;
 pub const ID_DETAILS: i32 = 1021;
 pub const ID_STATUS: i32 = 1022;
+pub const ID_JOB_TABS: i32 = 1023;
 pub const ID_PAUSE_ALL: i32 = 1101;
 pub const ID_RESUME_ALL: i32 = 1102;
 pub const ID_CLEAR_COMPLETED: i32 = 1103;
@@ -491,15 +493,27 @@ fn job_category(job: &Job) -> Option<Filter> {
 struct MainUi {
     app: App,
     hwnd: HWND,
+    /// Body text: commands, rows, tabs and the filter box.
     font: HFONT,
     details_font: HFONT,
+    /// Caption text: the status line and the column headers.
+    caption_font: HFONT,
+    /// The menu bar's font, sized like the system menu font the bar is measured with.
+    menu_font: HFONT,
+    /// The command icons' font; null when no icon font is installed.
+    icon_font: HFONT,
     icon: HICON,
     list: HWND,
+    /// The tab page: the text of the selected tab.
     details: HWND,
-    search: HWND,
     filter: HWND,
     status: HWND,
-    toolbar: Vec<HWND>,
+    /// The tabs over the page: details, log and error of the selected download.
+    tabs: HWND,
+    /// Names the command buttons while only their icons show.
+    tooltip: HWND,
+    /// True while the window is too narrow for the command labels.
+    labels_hidden: std::cell::Cell<bool>,
     visible_ids: Vec<String>,
     row_cache: HashMap<String, Vec<String>>,
     taskbar_created: u32,
@@ -1097,6 +1111,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
         let common = INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
             dwICC: ICC_LISTVIEW_CLASSES
+                | ICC_BAR_CLASSES
                 | ICC_PROGRESS_CLASS
                 | ICC_STANDARD_CLASSES
                 | ICC_TAB_CLASSES,
@@ -1126,13 +1141,17 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             hwnd: null_mut(),
             font: null_mut(),
             details_font: null_mut(),
+            caption_font: null_mut(),
+            menu_font: null_mut(),
+            icon_font: null_mut(),
             icon: null_mut(),
             list: null_mut(),
             details: null_mut(),
-            search: null_mut(),
             filter: null_mut(),
             status: null_mut(),
-            toolbar: Vec::new(),
+            tabs: null_mut(),
+            tooltip: null_mut(),
+            labels_hidden: std::cell::Cell::new(false),
             visible_ids: Vec::new(),
             row_cache: HashMap::new(),
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
@@ -1283,11 +1302,6 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
                 fVirt: FVIRTKEY | FCONTROL,
                 key: b'V' as u16,
                 cmd: 1403,
-            },
-            ACCEL {
-                fVirt: FVIRTKEY | FCONTROL,
-                key: b'F' as u16,
-                cmd: 1404,
             },
             ACCEL {
                 fVirt: FVIRTKEY | FCONTROL,
@@ -1481,6 +1495,20 @@ unsafe extern "system" fn main_proc(
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
     let ui = &mut *raw;
+    // The main window paints its own layers in both schemes; the shared dark
+    // painter below only covers the dialogs' surfaces.
+    match msg {
+        WM_ERASEBKGND => {
+            paint_main_surfaces(ui, wparam as HDC);
+            return 1;
+        }
+        WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
+            if let Some(brush) = main_control_colour(ui, wparam as HDC, lparam as HWND) {
+                return brush;
+            }
+        }
+        _ => {}
+    }
     if let Some(value) = paint_theme(hwnd, msg, wparam, lparam) {
         return value;
     }
@@ -1494,10 +1522,10 @@ unsafe extern "system" fn main_proc(
     }
     match msg {
         WM_NCPAINT => {
-            // The default paints the frame and the light menu bar strip; the
-            // strip is repainted here so the whole bar follows the scheme.
+            // The default paints the frame and the system's menu bar strip; the
+            // strip is repainted here so the whole bar sits on the base layer.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if scheme_dark(hwnd) {
+            if menu_strip_painted() {
                 paint_menu_strip(ui);
             }
             value
@@ -1507,7 +1535,7 @@ unsafe extern "system" fn main_proc(
             // menu bar included, and they do it outside WM_NCPAINT. The strip is
             // painted again on top so a focus change cannot leave the bar light.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if scheme_dark(hwnd) {
+            if menu_strip_painted() {
                 paint_menu_strip(ui);
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
@@ -1527,7 +1555,7 @@ unsafe extern "system" fn main_proc(
                 // shell keeps it.
                 ui.menu_hot = -1;
             }
-            if scheme_dark(hwnd) {
+            if menu_strip_painted() {
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
             0
@@ -1559,12 +1587,12 @@ unsafe extern "system" fn main_proc(
         WM_EXITMENULOOP => {
             ui.menu_open = false;
             ui.menu_hot = -1;
-            if scheme_dark(hwnd) {
+            if menu_strip_painted() {
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
             0
         }
-        WM_UAHDRAWMENU if scheme_dark(hwnd) => {
+        WM_UAHDRAWMENU if menu_strip_painted() => {
             // The theme asks for the bar's own drawing and hands over the
             // context it presents. That context is the only one the shell
             // blits, so the strip is drawn into it rather than into a window
@@ -1573,7 +1601,7 @@ unsafe extern "system" fn main_proc(
             paint_menu_strip_into(ui, ask.dc);
             1
         }
-        WM_UAHDRAWMENUITEM if scheme_dark(hwnd) => {
+        WM_UAHDRAWMENUITEM if menu_strip_painted() => {
             // The same request for one item, with a DRAWITEMSTRUCT at the head
             // of the request; its hDC is the context to draw in.
             let ask = &*(lparam as *const DRAWITEMSTRUCT);
@@ -1586,7 +1614,7 @@ unsafe extern "system" fn main_proc(
             // is handled, so the strip keeps the hot item itself and lands on
             // top of it in the same message instead of flashing light.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if scheme_dark(hwnd) {
+            if menu_strip_painted() {
                 track_nc_leave(hwnd);
                 let over_bar = loword(wparam) as u32 == HTMENU;
                 let menu = GetMenu(hwnd);
@@ -1620,7 +1648,7 @@ unsafe extern "system" fn main_proc(
             // tracks, the cursor only left for the popup and the item keeps the
             // highlight the open menu gives it.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if scheme_dark(hwnd) {
+            if menu_strip_painted() {
                 if !ui.menu_open {
                     ui.menu_hot = -1;
                 }
@@ -1629,7 +1657,7 @@ unsafe extern "system" fn main_proc(
             value
         }
         WM_PAINT_MENU => {
-            if scheme_dark(hwnd) {
+            if menu_strip_painted() {
                 RedrawWindow(
                     hwnd,
                     std::ptr::null_mut(),
@@ -1673,6 +1701,7 @@ unsafe extern "system" fn main_proc(
         }
         WM_SETTINGCHANGE => {
             apply_dark_mode(hwnd, ui.snapshot.settings.dark_mode);
+            refresh_main_surfaces(ui);
             0
         }
         WM_DISPLAYCHANGE => {
@@ -1701,6 +1730,14 @@ unsafe extern "system" fn main_proc(
         WM_COMMAND => {
             main_command(ui, loword(wparam) as i32, hiword(wparam));
             0
+        }
+        WM_DRAWITEM => {
+            let item = &*(lparam as *const DRAWITEMSTRUCT);
+            if item.CtlType == ODT_BUTTON {
+                draw_main_button(ui, item);
+                return 1;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_SHOW_WIZARD => {
             if ui.wizard_pending && IsWindowVisible(hwnd) != 0 {
@@ -1784,10 +1821,15 @@ unsafe extern "system" fn main_proc(
         WM_NOTIFY => {
             let hdr = &*(lparam as *const NMHDR);
             if hdr.hwndFrom == ui.list && hdr.code == NM_CUSTOMDRAW {
-                if scheme_dark(ui.hwnd) {
-                    return list_custom_draw(ui, lparam);
-                }
-                return light_list_custom_draw(ui, lparam);
+                return list_custom_draw(ui, lparam);
+            }
+            if hdr.hwndFrom == ui.tooltip && hdr.code == TTN_GETDISPINFOW {
+                button_tooltip(lparam);
+                return 0;
+            }
+            if hdr.hwndFrom == ui.tabs && hdr.code == TCN_SELCHANGE {
+                update_details(ui);
+                return 0;
             }
             if hdr.hwndFrom == ui.list && hdr.code == LVN_BEGINDRAG {
                 let ids = selected_ids(ui);
@@ -1937,11 +1979,16 @@ unsafe extern "system" fn main_proc(
                 DestroyIcon(ui.tray_icon);
                 ui.tray_icon = null_mut();
             }
-            if !ui.font.is_null() {
-                DeleteObject(ui.font);
-            }
-            if !ui.details_font.is_null() {
-                DeleteObject(ui.details_font);
+            for font in [
+                ui.font,
+                ui.details_font,
+                ui.caption_font,
+                ui.menu_font,
+                ui.icon_font,
+            ] {
+                if !font.is_null() {
+                    DeleteObject(font);
+                }
             }
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1956,6 +2003,12 @@ const MAIN_BUTTONS: [(i32, &str, &str); 5] = [
     (ID_PAUSE_RESUME, "Duraklat / Sürdür", "Pause / Resume"),
     (ID_REMOVE, "Kaldır", "Remove"),
     (ID_OPEN_FOLDER, "Klasör", "Folder"),
+];
+/// The tabs over the page, in order: details, the job's own log, its error.
+const JOB_TABS: [(&str, &str); 3] = [
+    ("Ayrıntılar", "Details"),
+    ("İş günlüğü", "Job log"),
+    ("Hata ayrıntısı", "Error details"),
 ];
 const MAIN_FILTERS: [(&str, &str); 9] = [
     ("Tümü", "All"),
@@ -1985,13 +2038,11 @@ const MAIN_COLUMNS: [(&str, &str, i32); 6] = [
     ("İlerleme", "Progress", 170),
     ("Hız", "Speed", 100),
     ("Kalan", "Remaining", 85),
-    ("Konum", "Location", 300),
+    ("Konum", "Location", 280),
 ];
 
 unsafe fn create_main_controls(ui: &mut MainUi) {
     ui.dpi = GetDpiForWindow(ui.hwnd).max(96);
-    ui.font = make_font(ui.dpi, 9, FW_NORMAL as i32);
-    ui.details_font = make_font(ui.dpi, 9, FW_NORMAL as i32);
     ui.icon = {
         let own = LoadIconW(GetModuleHandleW(null()), 101usize as *const u16);
         if own.is_null() {
@@ -2002,38 +2053,19 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     };
     SendMessageW(ui.hwnd, WM_SETICON, ICON_BIG as usize, ui.icon as isize);
     SendMessageW(ui.hwnd, WM_SETICON, ICON_SMALL as usize, ui.icon as isize);
-    let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32;
+    // Creation order is the Tab order: buttons, filter, list, tabs, page.
     for (id, tr, en) in MAIN_BUTTONS {
-        let h = control(
+        let button = control(
             ui.hwnd,
             "BUTTON",
             crate::i18n::ui(tr, en),
-            button_style,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
             0,
             id,
         );
-        apply_font(h, ui.font);
-        ui.toolbar.push(h);
+        subclass(button, button_proc);
     }
-    let search_label = control(
-        ui.hwnd,
-        "STATIC",
-        crate::i18n::ui("Ara:", "Search:"),
-        WS_CHILD | WS_VISIBLE,
-        0,
-        0,
-    );
-    apply_font(search_label, ui.font);
-    ui.toolbar.push(search_label);
-    ui.search = control(
-        ui.hwnd,
-        "EDIT",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
-        WS_EX_CLIENTEDGE,
-        ID_SEARCH,
-    );
-    apply_font(ui.search, ui.font);
+    create_button_tooltip(ui);
     ui.filter = control(
         ui.hwnd,
         "COMBOBOX",
@@ -2042,7 +2074,6 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
         0,
         ID_FILTER,
     );
-    apply_font(ui.filter, ui.font);
     for (tr, en) in MAIN_FILTERS {
         combo_add(ui.filter, crate::i18n::ui(tr, en));
     }
@@ -2052,16 +2083,15 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
         ui.hwnd,
         "SysListView32",
         crate::i18n::ui("İndirme işleri", "Downloads"),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS,
-        WS_EX_CLIENTEDGE,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS,
+        0,
         ID_JOB_LIST,
     );
-    apply_font(ui.list, ui.font);
     SendMessageW(
         ui.list,
         LVM_SETEXTENDEDLISTVIEWSTYLE,
         0,
-        (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP) as isize,
+        (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP) as isize,
     );
     for (index, (tr, en, width)) in MAIN_COLUMNS.iter().enumerate() {
         let mut name_w = wide(crate::i18n::ui(tr, en));
@@ -2085,6 +2115,19 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
             &column as *const _ as isize,
         );
     }
+    ui.tabs = control(
+        ui.hwnd,
+        "SysTabControl32",
+        "",
+        // The strip paints itself with the Settings dialog's painter.
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_OWNERDRAWFIXED | TCS_FIXEDWIDTH,
+        0,
+        ID_JOB_TABS,
+    );
+    for (index, (tr, en)) in JOB_TABS.iter().enumerate() {
+        tab_item(ui.tabs, index as i32, crate::i18n::ui(tr, en));
+    }
+    subclass(ui.tabs, tabs_proc);
     ui.details = control(
         ui.hwnd,
         "EDIT",
@@ -2092,35 +2135,33 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
         WS_CHILD
             | WS_VISIBLE
             | WS_TABSTOP
-            | WS_BORDER
             | ES_MULTILINE as u32
             | ES_READONLY as u32
             | ES_AUTOVSCROLL as u32
             | WS_VSCROLL,
-        WS_EX_CLIENTEDGE,
+        0,
         ID_DETAILS,
     );
-    apply_font(ui.details, ui.details_font);
-    // The list header paints itself in dark mode; the hook is installed here so
-    // the first frame already matches the scheme.
+    // The list header paints itself; the hook is installed here so the first
+    // frame already matches the scheme.
     subclass(
         SendMessageW(ui.list, LVM_GETHEADER, 0, 0) as HWND,
         header_proc,
     );
+    // No size grip: the window resizes from its edges.
     ui.status = CreateStatusWindowW(
-        (WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP) as i32,
+        (WS_CHILD | WS_VISIBLE) as i32,
         wide(crate::i18n::ui("Hazır", "Ready")).as_ptr(),
         ui.hwnd,
         ID_STATUS as u32,
     );
-    apply_font(ui.status, ui.font);
     subclass(ui.status, status_proc);
     // A menu bar measures its items with the menu font, so the bar has to carry
     // the same font the strip paints with; otherwise every caption outgrows its
-    // item rect and the last letter is clipped.
+    // item rect and the last letter is clipped. `apply_main_metrics` sets it.
     let menu = create_main_menu(ui.ui_mode, ui.debug_mode);
-    SendMessageW(menu as HWND, WM_SETFONT, ui.font as usize, 1);
     SetMenu(ui.hwnd, menu);
+    apply_main_metrics(ui);
     update_profile_controls(ui);
 
     DragAcceptFiles(ui.hwnd, 1);
@@ -2138,6 +2179,7 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     add_tray(ui);
     SetTimer(ui.hwnd, TIMER_REFRESH, 350, None);
     apply_dark_mode(ui.hwnd, ui.snapshot.settings.dark_mode);
+    refresh_main_surfaces(ui);
     layout_main(ui);
     refresh(ui, true);
 }
@@ -2407,7 +2449,7 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
     ui.debug_mode = debug;
     ui.update_version = update_version;
     let menu = create_main_menu(mode, debug);
-    SendMessageW(menu as HWND, WM_SETFONT, ui.font as usize, 1);
+    SendMessageW(menu as HWND, WM_SETFONT, ui.menu_font as usize, 1);
     let previous = GetMenu(ui.hwnd);
     SetMenu(ui.hwnd, menu);
     if !previous.is_null() {
@@ -2421,8 +2463,14 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
         for (id, tr, en) in MAIN_BUTTONS {
             set_text(GetDlgItem(ui.hwnd, id), crate::i18n::ui(tr, en));
         }
-        if let Some(label) = ui.toolbar.get(5) {
-            set_text(*label, crate::i18n::ui("Ara:", "Search:"));
+        for (index, (tr, en)) in JOB_TABS.iter().enumerate() {
+            let mut label = wide(crate::i18n::ui(tr, en));
+            let item = TCITEMW {
+                mask: TCIF_TEXT,
+                pszText: label.as_mut_ptr(),
+                ..zeroed()
+            };
+            SendMessageW(ui.tabs, TCM_SETITEMW, index, &item as *const _ as isize);
         }
         let filter = combo_index(ui.filter);
         SendMessageW(ui.filter, CB_RESETCONTENT, 0, 0);
@@ -2455,6 +2503,8 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
             );
         }
         ui.row_cache.clear();
+        // Arabic and the other languages use different faces.
+        apply_main_metrics(ui);
         layout_main(ui);
         DrawMenuBar(ui.hwnd);
         InvalidateRect(ui.hwnd, null(), 1);
@@ -2557,98 +2607,105 @@ unsafe fn update_main_dpi(ui: &mut MainUi) {
             width * ui.dpi as isize / old_dpi.max(96) as isize,
         );
     }
-    let new_font = make_font(ui.dpi, 9, FW_NORMAL as i32);
-    let new_details = make_font(ui.dpi, 9, FW_NORMAL as i32);
-    for &h in &ui.toolbar {
-        apply_font(h, new_font);
-    }
-    for h in [ui.search, ui.filter, ui.list, ui.status] {
-        apply_font(h, new_font);
-    }
-    apply_font(ui.details, new_details);
-    DeleteObject(ui.font);
-    DeleteObject(ui.details_font);
-    ui.font = new_font;
-    ui.details_font = new_details;
-    // The bar measures its items with the menu font, so the items have to be
-    // re-measured with the new font before the strip paints with it.
-    let menu = GetMenu(ui.hwnd);
-    if !menu.is_null() {
-        SendMessageW(menu as HWND, WM_SETFONT, ui.font as usize, 1);
-    }
+    apply_main_metrics(ui);
     layout_main(ui);
     DrawMenuBar(ui.hwnd);
 }
 
+/// The command row on top (buttons left, filter right), the list card, the
+/// tabs, the tab page card and the status line, on a 4 epx grid: 16 epx
+/// window margins, 8 epx between controls and 12 epx between content areas.
 unsafe fn layout_main(ui: &MainUi) {
     let mut rect: RECT = zeroed();
     GetClientRect(ui.hwnd, &mut rect);
-    let w = rect.right.max(scale(640, ui.dpi));
+    let s = |value: i32| scale(value, ui.dpi);
+    let w = rect.right.max(s(640));
     let h = rect.bottom;
-    let m = scale(10, ui.dpi);
-    let top = scale(10, ui.dpi);
-    let bh = scale(32, ui.dpi);
-    let gap = scale(6, ui.dpi);
-    let widths = [
-        scale(112, ui.dpi),
-        scale(80, ui.dpi),
-        scale(142, ui.dpi),
-        scale(76, ui.dpi),
-        scale(78, ui.dpi),
-    ];
-    let mut x = m;
-    for (i, &button) in ui.toolbar.iter().take(5).enumerate() {
-        // A longer translation widens its button instead of being cut off.
-        let width = widths[i].max(text_width(button) + scale(24, ui.dpi));
-        MoveWindow(button, x, top, width, bh, 1);
-        x += width + gap;
+    let m = s(16);
+    let gap = s(8);
+    let section = s(12);
+    let top = s(ROW_TOP);
+    let row = s(ROW_HEIGHT);
+
+    let filter_w = s(160);
+    let filter_x = w - m - filter_w;
+    // A theme change re-measures the combo box from its font, so its selection
+    // field is brought back to the button row's height here.
+    let field_h = (row - s(6)) as isize;
+    if SendMessageW(ui.filter, CB_GETITEMHEIGHT, usize::MAX, 0) != field_h {
+        SendMessageW(ui.filter, CB_SETITEMHEIGHT, usize::MAX, field_h);
     }
-    x = m;
-    let search_top = top + bh + gap;
-    let filter_w = scale(125, ui.dpi);
-    let label = ui.toolbar[5];
-    // "Search:" is wider than "Ara:", so the label follows its own text.
-    let label_w = (text_width(label) + scale(2, ui.dpi)).max(scale(30, ui.dpi));
-    let search_w = (w - x - filter_w - m * 2 - label_w - scale(6, ui.dpi)).max(scale(120, ui.dpi));
-    MoveWindow(
-        label,
-        x,
-        search_top + scale(8, ui.dpi),
-        label_w,
-        scale(20, ui.dpi),
-        1,
-    );
-    x += label_w + scale(4, ui.dpi);
-    MoveWindow(
-        ui.search,
-        x,
-        search_top + scale(2, ui.dpi),
-        search_w,
-        scale(27, ui.dpi),
-        1,
-    );
+    let mut combo: RECT = zeroed();
+    GetWindowRect(ui.filter, &mut combo);
+    let combo_h = (combo.bottom - combo.top).max(1);
     MoveWindow(
         ui.filter,
-        x + search_w + gap,
-        search_top + scale(2, ui.dpi),
+        filter_x,
+        top + (row - combo_h) / 2,
         filter_w,
-        scale(240, ui.dpi),
+        s(240),
         1,
     );
-    let status_h = scale(24, ui.dpi);
-    let details_h = (h / 4).clamp(scale(130, ui.dpi), scale(210, ui.dpi));
-    let list_top = search_top + bh + scale(10, ui.dpi);
-    let details_y = h - status_h - details_h - m;
+    // The labels go when the buttons would reach the filter; the tooltip then
+    // carries the command names.
+    let room = filter_x - gap - m;
+    let fits = |widths: [i32; 5]| widths.iter().sum::<i32>() + gap * 4 <= room;
+    let labels = fits(button_widths(ui, true));
+    if ui.labels_hidden.replace(!labels) == labels {
+        for button in MAIN_BUTTONS {
+            InvalidateRect(GetDlgItem(ui.hwnd, button.0), null(), 0);
+        }
+    }
+    SendMessageW(ui.tooltip, TTM_ACTIVATE, !labels as usize, 0);
+    // Each button reaches FOCUS_MARGIN past its face for the focus ring.
+    let ring = s(FOCUS_MARGIN);
+    let mut x = m;
+    for ((id, _, _), width) in MAIN_BUTTONS.iter().zip(button_widths(ui, labels)) {
+        MoveWindow(
+            GetDlgItem(ui.hwnd, *id),
+            x - ring,
+            top - ring,
+            width + 2 * ring,
+            row + 2 * ring,
+            1,
+        );
+        x += width + gap;
+    }
+
+    let mut status: RECT = zeroed();
+    GetWindowRect(ui.status, &mut status);
+    let status_h = status.bottom - status.top;
+    let (pad_x, pad_y) = (s(PAGE_PAD_X), s(PAGE_PAD_Y));
+    // Tall enough for the eleven lines a single job can show, while that
+    // leaves the list most of the window.
+    let page_h = (11 * line_height(ui.details, ui.details_font) + 2 * pad_y)
+        .min(h * 2 / 5)
+        .max(s(132));
+    let page_top = h - status_h - s(4) - page_h;
+    let tabs_h = s(40);
+    let tabs_top = page_top - s(4) - tabs_h;
+    let list_top = top + row + section;
+    let list_bottom = (tabs_top - s(4)).max(list_top + s(100));
+    let inset = s(LIST_INSET);
     MoveWindow(
         ui.list,
-        m,
-        list_top,
-        w - 2 * m,
-        (details_y - list_top - gap).max(scale(100, ui.dpi)),
+        m + inset,
+        list_top + inset,
+        w - 2 * m - 2 * inset,
+        list_bottom - list_top - 2 * inset,
         1,
     );
-    MoveWindow(ui.details, m, details_y, w - 2 * m, details_h, 1);
+    MoveWindow(ui.tabs, m, tabs_top, w - 2 * m, tabs_h, 1);
+    MoveWindow(
+        ui.details,
+        m + pad_x,
+        page_top + pad_y,
+        w - 2 * m - 2 * pad_x,
+        page_h - 2 * pad_y,
+        1,
+    );
     SendMessageW(ui.status, WM_SIZE, 0, 0);
+    sync_details_scrollbar(ui);
 }
 
 /// Whether the current surface offers a main-window command. Mirrors
@@ -2935,7 +2992,6 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         ID_BROWSER_SETUP => dispatch(ui, Action::BrowserSetup),
         ID_DIAGNOSTICS => dispatch(ui, Action::ExportDiagnostics),
         ID_EXIT => exit_app(ui),
-        ID_SEARCH if notify_code as u32 == EN_CHANGE => refresh(ui, true),
         ID_FILTER if notify_code as u32 == CBN_SELCHANGE => {
             ui.filter_value = FILTER_VALUES
                 .get(combo_index(ui.filter).max(0) as usize)
@@ -2947,8 +3003,8 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
             message(
                 ui.hwnd,
                 crate::i18n::ui(
-                    "Ctrl+N  Yeni indirme\nCtrl+Shift+N  Video indir\nCtrl+V  Panodaki URL'leri ekle\nCtrl+F  Arama\nCtrl+A  Tümünü seç\nDelete  Seçilenleri kaldır\nF5  Yenile\nEnter  Dosyayı aç\nBoşluk  Duraklat / sürdür\nAlt+Home / Alt+End  En üste / en alta taşı\nCtrl+Shift+D  Panodaki bağlantıyı her yerden ekle",
-                    "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere",
+                    "Ctrl+N  Yeni indirme\nCtrl+Shift+N  Video indir\nCtrl+V  Panodaki URL'leri ekle\nCtrl+A  Tümünü seç\nDelete  Seçilenleri kaldır\nF5  Yenile\nEnter  Dosyayı aç\nBoşluk  Duraklat / sürdür\nAlt+Home / Alt+End  En üste / en alta taşı\nCtrl+Shift+D  Panodaki bağlantıyı her yerden ekle",
+                    "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere",
                 ),
                 crate::i18n::ui("Klavye kısayolları", "Keyboard shortcuts"),
                 MB_OK | MB_ICONINFORMATION,
@@ -2957,28 +3013,20 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         1402 => show_about(ui),
         ID_SHOW_TOUR => show_tour(ui, true),
         1403 => {
-            if GetFocus() == ui.search {
-                SendMessageW(ui.search, WM_PASTE, 0, 0);
+            let urls = clipboard_urls();
+            if urls.is_empty() {
+                message(
+                    ui.hwnd,
+                    crate::i18n::ui(
+                        "Panoda geçerli bir HTTP/HTTPS bağlantısı yok.",
+                        "The clipboard does not contain a valid HTTP/HTTPS link.",
+                    ),
+                    crate::i18n::ui("Panodan ekle", "Add from clipboard"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
             } else {
-                let urls = clipboard_urls();
-                if urls.is_empty() {
-                    message(
-                        ui.hwnd,
-                        crate::i18n::ui(
-                            "Panoda geçerli bir HTTP/HTTPS bağlantısı yok.",
-                            "The clipboard does not contain a valid HTTP/HTTPS link.",
-                        ),
-                        crate::i18n::ui("Panodan ekle", "Add from clipboard"),
-                        MB_OK | MB_ICONINFORMATION,
-                    );
-                } else {
-                    show_add_dialog(ui.hwnd, ui.app.clone(), urls.join("\r\n"), false);
-                }
+                show_add_dialog(ui.hwnd, ui.app.clone(), urls.join("\r\n"), false);
             }
-        }
-        1404 => {
-            SetFocus(ui.search);
-            SendMessageW(ui.search, EM_SETSEL, 0, -1);
         }
         1405 => refresh(ui, true),
         ID_TRAY_SHOW => show_main(ui),
@@ -3939,6 +3987,7 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     }
     if snapshot.settings.dark_mode != ui.snapshot.settings.dark_mode {
         apply_dark_mode(ui.hwnd, snapshot.settings.dark_mode);
+        refresh_main_surfaces(ui);
     }
     if snapshot.settings.clipboard_watch && !ui.snapshot.settings.clipboard_watch {
         handle_clipboard_change(ui);
@@ -4118,18 +4167,11 @@ fn matches_filter(job: &Job, filter: Filter) -> bool {
     }
 }
 unsafe fn update_rows(ui: &mut MainUi, force: bool) {
-    let query = search_key(text(ui.search).trim());
     let jobs: Vec<&Job> = ui
         .snapshot
         .jobs
         .iter()
-        .filter(|j| {
-            matches_filter(j, ui.filter_value)
-                && (query.is_empty()
-                    || search_key(&j.name).contains(&query)
-                    || search_key(&j.request.url).contains(&query)
-                    || search_key(&j.path.to_string_lossy()).contains(&query))
-        })
+        .filter(|j| matches_filter(j, ui.filter_value))
         .collect();
     let ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
     let prior = selected_ids(ui);
@@ -4212,7 +4254,7 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
                 SendMessageW(ui.list, LVM_SETITEMSTATE, pos, &item as *const _ as isize);
             }
         }
-        // A new search or filter starts at the top; only a change made by the
+        // A new filter starts at the top; only a change made by the
         // engine keeps the user's place.
         if !force && top_row > 0 && !ui.visible_ids.is_empty() {
             let mut first = RECT {
@@ -4250,15 +4292,6 @@ unsafe fn set_list_cell(list: HWND, row: i32, col: i32, value: &str) {
     );
 }
 
-fn search_key(value: &str) -> String {
-    // Dotted and dotless i fold together: a file name written "IMG_01" or
-    // "Image" must still match a query typed with the plain letter, and a
-    // Turkish "ışık" must still match "IŞIK".
-    value
-        .replace(['İ', 'I'], "i")
-        .to_lowercase()
-        .replace('ı', "i")
-}
 fn source_refresh_available(job: &Job) -> bool {
     let has_page = job
         .request
@@ -4388,13 +4421,50 @@ unsafe fn update_details(ui: &MainUi) {
     }
 
     if jobs.is_empty() {
-        set_text(
-            ui.details,
+        set_details(
+            ui,
             crate::i18n::ui(
                 "Bir indirme işi seçin. URL eklemek için Ctrl+N tuşlarına basın veya bağlantıyı pencereye sürükleyin.",
                 "Select a download job. Press Ctrl+N to add a URL or drag a link onto the window.",
             ),
         );
+        update_status(ui);
+        return;
+    }
+    let tab = SendMessageW(ui.tabs, TCM_GETCURSEL, 0, 0).max(0);
+    if tab > 0 {
+        let page = match (tab, jobs.as_slice()) {
+            (_, [_, _, ..]) => {
+                crate::i18n::ui("Tek bir indirme seçin.", "Select a single download.").to_string()
+            }
+            (1, [job]) => {
+                let lines = crate::logging::job_timeline(&job.id, 400);
+                if lines.is_empty() {
+                    crate::i18n::ui(
+                        "Bu indirme için henüz kayıt yok.",
+                        "No entries for this download yet.",
+                    )
+                    .to_string()
+                } else {
+                    lines.join("\r\n")
+                }
+            }
+            (_, [job]) => match &job.error {
+                Some(error) => error.replace("\r\n", "\n").replace('\n', "\r\n"),
+                None => crate::i18n::ui(
+                    "Bu indirme için bir hata kaydedilmedi.",
+                    "No error was recorded for this download.",
+                )
+                .to_string(),
+            },
+            _ => String::new(),
+        };
+        let changed = text(ui.details) != page;
+        set_details(ui, &page);
+        // A changed log shows its newest lines.
+        if changed && tab == 1 {
+            SendMessageW(ui.details, EM_LINESCROLL, 0, isize::MAX >> 1);
+        }
         update_status(ui);
         return;
     }
@@ -4413,8 +4483,8 @@ unsafe fn update_details(ui: &MainUi) {
             .collect::<Vec<_>>()
             .join(" · ");
         let speed: u64 = jobs.iter().map(|job| job.speed).sum();
-        set_text(
-            ui.details,
+        set_details(
+            ui,
             &format!(
                 "{} {}\r\n{}: {}\r\n{}: {}\r\n\r\n{}",
                 jobs.len(),
@@ -4457,15 +4527,20 @@ unsafe fn update_details(ui: &MainUi) {
         crate::i18n::ui("Konum", "Location"), job.path.display(),
         crate::i18n::ui("URL", "URL"), display_url(&job.request.url),
         job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), display_text(ui.snapshot.settings.debug_mode, short_error(job, error)))).unwrap_or_default());
-    set_text(ui.details, &body);
+    set_details(ui, &body);
     update_status(ui);
 }
 
-/// Ctrl+A. Text controls keep their own select-all behavior, so the shortcut
-/// never hijacks typing in the search box or the details pane.
+unsafe fn set_details(ui: &MainUi, value: &str) {
+    set_text(ui.details, value);
+    sync_details_scrollbar(ui);
+}
+
+/// Ctrl+A. The tab page keeps its own select-all behavior, so the shortcut
+/// never hijacks a selection there.
 unsafe fn select_all_jobs(ui: &mut MainUi) {
     let focus = GetFocus();
-    if focus == ui.search || focus == ui.details {
+    if focus == ui.details {
         SendMessageW(focus, EM_SETSEL, 0, -1);
         return;
     }
@@ -8200,19 +8275,6 @@ mod tests {
             super::state_label(&job(JobState::Paused, "MP4")),
             JobState::Paused.label()
         );
-    }
-
-    #[test]
-    fn search_folds_dotted_and_dotless_i_together() {
-        let key = super::search_key;
-        // A capital I of an English file name is found by the plain letter.
-        assert!(key("IMG_0001.JPG").contains(&key("img")));
-        assert!(key("Installer.exe").contains(&key("install")));
-        // Turkish capitals and lower-case forms still find each other.
-        assert!(key("IŞIK.txt").contains(&key("ışık")));
-        assert!(key("İstanbul.pdf").contains(&key("istanbul")));
-        assert!(key("istanbul.pdf").contains(&key("İSTANBUL")));
-        assert!(!key("Notes.txt").contains(&key("video")));
     }
 
     #[test]

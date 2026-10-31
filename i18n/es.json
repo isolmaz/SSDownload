@@ -211,7 +211,7 @@
   "Create a diagnostic package": "Crear un paquete de diagnóstico",
   "Create a diagnostic package and report this error": "Crear un paquete de diagnóstico e informar de este error",
   "Credentials in HTTP addresses are not supported; use the authorization header": "No se admiten credenciales en direcciones HTTP; hay que usar el encabezado de autorización",
-  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Nueva descarga\nCtrl+Shift+N  Descargar vídeo\nCtrl+V  Añadir URL desde el portapapeles\nCtrl+F  Buscar\nCtrl+A  Seleccionar todo\nDelete  Quitar lo seleccionado\nF5  Actualizar\nEnter  Abrir archivo\nSpace  Pausar / reanudar\nAlt+Home / Alt+End  Mover al principio / al final\nCtrl+Shift+D  Añadir el enlace del portapapeles desde cualquier lugar",
+  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Nueva descarga\nCtrl+Shift+N  Descargar vídeo\nCtrl+V  Añadir URL desde el portapapeles\nCtrl+A  Seleccionar todo\nDelete  Quitar lo seleccionado\nF5  Actualizar\nEnter  Abrir archivo\nSpace  Pausar / reanudar\nAlt+Home / Alt+End  Mover al principio / al final\nCtrl+Shift+D  Añadir el enlace del portapapeles desde cualquier lugar",
   "Custom...": "Personalizado...",
   "DRM-protected content is not supported.": "El contenido protegido por DRM no es compatible.",
   "Dark window title and control theme": "Tema oscuro para la barra de título y los controles",
@@ -689,7 +689,6 @@
   "Scheduled": "Programada",
   "Scheduled limit (KiB/s):": "Límite programado (KiB/s):",
   "Scheduled speed limit": "Límite de velocidad programado",
-  "Search:": "Buscar:",
   "Segment {0} of the {1} stream failed after {attempts} attempts: {reason}": "No se pudo descargar el segmento {0} del flujo {1} tras {attempts} intentos: {reason}",
   "Select &all\tCtrl+A": "Seleccionar &todo\tCtrl+A",
   "Select a completion action": "Seleccionar una acción al terminar",
@@ -1693,5 +1692,8 @@
   "The digest did not match; downloading the file again": "El resumen no coincide; se vuelve a descargar el archivo",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "El archivo no coincide con el resumen SHA-256 que publica su origen ({0}) y dos descargas dieron bytes distintos; se eliminó el archivo parcial y el reintento vuelve a descargarlo desde el principio",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "El archivo se guardó, pero no coincide con el resumen SHA-256 que publica su origen ({0}); dos descargas dieron los mismos bytes",
-  "No capacity for the network connection became free in time": "No quedó capacidad libre para la conexión de red a tiempo"
+  "No capacity for the network connection became free in time": "No quedó capacidad libre para la conexión de red a tiempo",
+  "Details": "Detalles",
+  "No error was recorded for this download.": "No se registró ningún error para esta descarga.",
+  "Select a single download.": "Seleccione una sola descarga."
 }

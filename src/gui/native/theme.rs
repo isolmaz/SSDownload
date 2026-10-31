@@ -195,9 +195,25 @@ pub(super) fn card_prop(name: &str) -> *const u16 {
 }
 /// Creates a font from the first face the system really provides.
 pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &[&str]) -> HFONT {
+    face_font(
+        -((points * dpi as i32) / 72),
+        weight,
+        CLEARTYPE_QUALITY,
+        faces,
+    )
+    .unwrap_or_else(|| make_font(dpi, points, weight))
+}
+/// A font of `height` (CreateFontW units) in the first of `faces` that GDI
+/// really provides; `None` when every face would be substituted.
+pub(super) unsafe fn face_font(
+    height: i32,
+    weight: i32,
+    quality: FONT_QUALITY,
+    faces: &[&str],
+) -> Option<HFONT> {
     for face in faces {
         let font = CreateFontW(
-            -((points * dpi as i32) / 72),
+            height,
             0,
             0,
             0,
@@ -208,7 +224,7 @@ pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &
             DEFAULT_CHARSET as u32,
             OUT_DEFAULT_PRECIS as u32,
             CLIP_DEFAULT_PRECIS as u32,
-            CLEARTYPE_QUALITY as u32,
+            quality as u32,
             (DEFAULT_PITCH | FF_DONTCARE) as u32,
             wide(face).as_ptr(),
         );
@@ -218,15 +234,17 @@ pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &
         let dc = GetDC(null_mut());
         let previous = SelectObject(dc, font as HGDIOBJ);
         let mut name = [0u16; 64];
-        let len = GetTextFaceW(dc, name.len() as i32, name.as_mut_ptr()).max(0) as usize;
+        GetTextFaceW(dc, name.len() as i32, name.as_mut_ptr());
+        // The count GetTextFaceW returns includes the terminating NUL.
+        let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
         SelectObject(dc, previous);
         ReleaseDC(null_mut(), dc);
         if String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case(face) {
-            return font;
+            return Some(font);
         }
         DeleteObject(font as HGDIOBJ);
     }
-    make_font(dpi, points, weight)
+    None
 }
 /// A card font, created once per control and DPI and owned by that control.
 pub(super) unsafe fn card_font(
@@ -307,7 +325,7 @@ pub(super) unsafe fn draw_card_glyph(dc: HDC, id: i32, origin: POINT, size: i32,
 /// Splits a card's own caption into its title and its explanation, so the
 /// window text automation reads stays the full sentence.
 pub(super) fn card_text_parts(text: &str) -> (String, String) {
-    match text.split_once(" — ") {
+    match text.split_once(" â€” ") {
         Some((title, description)) => (title.to_string(), description.to_string()),
         None => (text.to_string(), String::new()),
     }
@@ -558,16 +576,17 @@ pub(super) unsafe fn call_previous(
         std::mem::transmute(previous);
     CallWindowProcW(Some(proc), hwnd, msg, wparam, lparam)
 }
-/// Paints the header cells: comctl32 keeps the themed header light even with
-/// the dark subtheme applied, and it answers the list's custom draw itself, so
-/// the whole client area is painted here.
+/// Paints the header cells flat on the card: comctl32 keeps the themed header
+/// light even with the dark subtheme applied, and it answers the list's custom
+/// draw itself, so the whole client area is painted here.
 pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
     let mut client: RECT = zeroed();
     if GetClientRect(hwnd, &mut client) == 0 {
         return;
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
-    FillRect(dc, &client, palette_brush(DARK_BACKGROUND));
+    let palette = main_palette(hwnd);
+    fill_colour(dc, &client, palette.card);
     let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
     let previous = if font == 0 {
         null_mut()
@@ -575,7 +594,7 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
         SelectObject(dc, font as HGDIOBJ)
     };
     SetBkMode(dc, TRANSPARENT as i32);
-    SetTextColor(dc, DARK_TEXT);
+    SetTextColor(dc, palette.secondary);
     for index in 0..SendMessageW(hwnd, HDM_GETITEMCOUNT, 0, 0) as i32 {
         let mut rect: RECT = zeroed();
         if SendMessageW(
@@ -610,11 +629,11 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
         );
         let divider = RECT {
             left: rect.right - 1,
-            top: rect.top + scale(3, dpi),
+            top: rect.top + scale(8, dpi),
             right: rect.right,
-            bottom: rect.bottom - scale(3, dpi),
+            bottom: rect.bottom - scale(8, dpi),
         };
-        FillRect(dc, &divider, palette_brush(DARK_BORDER));
+        fill_colour(dc, &divider, palette.stroke);
     }
     if !previous.is_null() {
         SelectObject(dc, previous);
@@ -626,7 +645,7 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
         right: client.right,
         bottom: client.bottom,
     };
-    FillRect(dc, &edge, palette_brush(DARK_BORDER));
+    fill_colour(dc, &edge, palette.stroke);
 }
 pub(super) unsafe extern "system" fn header_proc(
     hwnd: HWND,
@@ -634,7 +653,18 @@ pub(super) unsafe extern "system" fn header_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if scheme_dark(hwnd) {
+    if msg == HDM_LAYOUT {
+        // A 32 epx header, the height of a Fluent list header.
+        let result = call_previous(hwnd, msg, wparam, lparam);
+        let layout = &*(lparam as *const HDLAYOUT);
+        if !layout.prc.is_null() && !layout.pwpos.is_null() {
+            let wanted = scale(32, GetDpiForWindow(hwnd).max(96));
+            (*layout.prc).top += wanted - (*layout.pwpos).cy;
+            (*layout.pwpos).cy = wanted;
+        }
+        return result;
+    }
+    if !high_contrast() {
         match msg {
             WM_PAINT => {
                 let mut paint: PAINTSTRUCT = zeroed();
@@ -653,158 +683,6 @@ pub(super) unsafe extern "system" fn header_proc(
     }
     call_previous(hwnd, msg, wparam, lparam)
 }
-/// One dotted hint around the focused row. DrawFocusRect inverts to white on a
-/// dark surface, which the palette forbids, so the dots are drawn by hand.
-pub(super) unsafe fn draw_dotted(dc: HDC, rect: &RECT, colour: u32) {
-    let brush = palette_brush(colour);
-    let mut x = rect.left;
-    while x < rect.right {
-        let top = RECT {
-            left: x,
-            top: rect.top,
-            right: x + 1,
-            bottom: rect.top + 1,
-        };
-        let bottom = RECT {
-            left: x,
-            top: rect.bottom - 1,
-            right: x + 1,
-            bottom: rect.bottom,
-        };
-        FillRect(dc, &top, brush);
-        FillRect(dc, &bottom, brush);
-        x += 2;
-    }
-    let mut y = rect.top;
-    while y < rect.bottom {
-        let top = RECT {
-            left: rect.left,
-            top: y,
-            right: rect.left + 1,
-            bottom: y + 1,
-        };
-        let bottom = RECT {
-            left: rect.right - 1,
-            top: y,
-            right: rect.right,
-            bottom: y + 1,
-        };
-        FillRect(dc, &top, brush);
-        FillRect(dc, &bottom, brush);
-        y += 2;
-    }
-}
-/// One cell of one dark row: background, selection, text, our own grid lines
-/// and the focus hint. The list keeps its themed cells light even under the
-/// dark subtheme, so the list answers its own custom draw here.
-pub(super) unsafe fn paint_list_cell(ui: &MainUi, draw: &NMLVCUSTOMDRAW) {
-    let list = draw.nmcd.hdr.hwndFrom;
-    let dc = draw.nmcd.hdc;
-    let rect = draw.nmcd.rc;
-    let selected = draw.nmcd.uItemState & CDIS_SELECTED != 0;
-    let focused = draw.nmcd.uItemState & CDIS_FOCUS != 0;
-    FillRect(
-        dc,
-        &rect,
-        palette_brush(if selected && focused {
-            DARK_SELECTION
-        } else if selected {
-            DARK_SELECTION_DIM
-        } else {
-            DARK_BACKGROUND
-        }),
-    );
-    let mut text = [0u16; 512];
-    let mut item: LVITEMW = zeroed();
-    item.iSubItem = draw.iSubItem;
-    item.pszText = text.as_mut_ptr();
-    item.cchTextMax = text.len() as i32;
-    SendMessageW(
-        list,
-        LVM_GETITEMTEXTW,
-        draw.nmcd.dwItemSpec,
-        &mut item as *mut _ as isize,
-    );
-    let length = text
-        .iter()
-        .position(|value| *value == 0)
-        .unwrap_or(text.len()) as i32;
-    let font = SendMessageW(list, WM_GETFONT, 0, 0);
-    let previous = if font == 0 {
-        null_mut()
-    } else {
-        SelectObject(dc, font as HGDIOBJ)
-    };
-    SetBkMode(dc, TRANSPARENT as i32);
-    SetTextColor(
-        dc,
-        if selected {
-            DARK_TEXT
-        } else if draw.iSubItem == 5 {
-            // The location column is reference text, not a reading column.
-            DARK_MUTED
-        } else {
-            DARK_TEXT
-        },
-    );
-    let mut area = rect;
-    area.left += scale(6, ui.dpi);
-    area.right -= scale(3, ui.dpi);
-    DrawTextW(
-        dc,
-        text.as_mut_ptr(),
-        length,
-        &mut area,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-    );
-    if draw.iSubItem == 2 {
-        paint_row_progress(ui, dc, draw.nmcd.dwItemSpec, rect);
-    }
-    if !previous.is_null() {
-        SelectObject(dc, previous);
-    }
-    // Our own grid lines: the themed ones stay light whatever the subtheme.
-    let vertical = RECT {
-        left: rect.right - 1,
-        top: rect.top,
-        right: rect.right,
-        bottom: rect.bottom,
-    };
-    let horizontal = RECT {
-        left: rect.left,
-        top: rect.bottom - 1,
-        right: rect.right,
-        bottom: rect.bottom,
-    };
-    let line = palette_brush(DARK_BORDER);
-    FillRect(dc, &vertical, line);
-    FillRect(dc, &horizontal, line);
-    if selected && focused {
-        let hint = RECT {
-            left: rect.left + 1,
-            top: rect.top + 1,
-            right: rect.right - 1,
-            bottom: rect.bottom - 1,
-        };
-        draw_dotted(dc, &hint, DARK_MUTED);
-    }
-}
-/// The list's dark body. Cells are painted per subitem, and the empty area
-/// below the last row is painted here too: dark mode drops LVS_EX_GRIDLINES,
-/// so the default pass draws no lines there to leave alone.
-/// Fill of a row's progress cell: completed green, failed red, waiting grey, running blue.
-/// White text stays readable on every one of them, in both schemes.
-fn progress_colour(state: JobState) -> u32 {
-    match state {
-        JobState::Completed => 0x107c10,
-        JobState::Failed | JobState::Cancelled => 0x1c2bc4,
-        JobState::Paused | JobState::AwaitingSource | JobState::Scheduled | JobState::Queued => {
-            0x6e6e6e
-        }
-        _ => 0xb85f00,
-    }
-}
-
 /// How long the block of a processing job's bar takes from one end to the other.
 const SWEEP_ONE_WAY_MS: u64 = 1200;
 /// How often a processing bar is repainted while it sweeps.
@@ -833,7 +711,11 @@ pub(super) fn processing_sweep(clock: u64, width: i32) -> (i32, i32) {
 }
 
 /// Share of the progress cell to fill: finished and failed jobs fill all of it.
-fn progress_fraction(state: JobState, downloaded: u64, total: Option<u64>) -> Option<f64> {
+pub(super) fn progress_fraction(
+    state: JobState,
+    downloaded: u64,
+    total: Option<u64>,
+) -> Option<f64> {
     match (state, total) {
         (JobState::Completed | JobState::Failed | JobState::Cancelled, _) => Some(1.0),
         (_, Some(total)) if total > 0 => Some((downloaded as f64 / total as f64).min(1.0)),
@@ -841,218 +723,6 @@ fn progress_fraction(state: JobState, downloaded: u64, total: Option<u64>) -> Op
     }
 }
 
-/// Fills the progress cell of `row` from the left by the job's progress and redraws the cell
-/// text in white over the filled part; the rest keeps the text the row already painted.
-pub(super) unsafe fn paint_row_progress(ui: &MainUi, dc: HDC, row: usize, cell: RECT) {
-    let Some(job) = ui
-        .visible_ids
-        .get(row)
-        .and_then(|id| ui.snapshot.jobs.iter().find(|job| &job.id == id))
-    else {
-        return;
-    };
-    // The last column and row of pixels are the grid lines.
-    let inner = RECT {
-        right: cell.right - 1,
-        bottom: cell.bottom - 1,
-        ..cell
-    };
-    let width = inner.right - inner.left;
-    let filled = if job.state == JobState::Processing {
-        let (start, end) = processing_sweep(sweep_clock(), width);
-        RECT {
-            left: inner.left + start,
-            right: inner.left + end,
-            ..inner
-        }
-    } else {
-        let Some(fraction) = progress_fraction(job.state, job.downloaded, job.total) else {
-            return;
-        };
-        RECT {
-            right: inner.left + (width as f64 * fraction).round() as i32,
-            ..inner
-        }
-    };
-    if filled.right <= filled.left {
-        return;
-    }
-    fill_solid(dc, &filled, progress_colour(job.state));
-
-    let mut text = [0u16; 512];
-    let mut item: LVITEMW = zeroed();
-    item.iSubItem = 2;
-    item.pszText = text.as_mut_ptr();
-    item.cchTextMax = text.len() as i32;
-    SendMessageW(ui.list, LVM_GETITEMTEXTW, row, &mut item as *mut _ as isize);
-    let length = text
-        .iter()
-        .position(|value| *value == 0)
-        .unwrap_or(text.len()) as i32;
-    let saved = SaveDC(dc);
-    IntersectClipRect(dc, filled.left, filled.top, filled.right, filled.bottom);
-    let font = SendMessageW(ui.list, WM_GETFONT, 0, 0);
-    if font != 0 {
-        SelectObject(dc, font as HGDIOBJ);
-    }
-    SetBkMode(dc, TRANSPARENT as i32);
-    SetTextColor(dc, 0xffffff);
-    let mut area = cell;
-    area.left += scale(6, ui.dpi);
-    area.right -= scale(3, ui.dpi);
-    DrawTextW(
-        dc,
-        text.as_mut_ptr(),
-        length,
-        &mut area,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-    );
-    RestoreDC(dc, saved);
-}
-
-/// Fills `rect` with any colour. `palette_brush` only knows the dark palette and
-/// falls back to the background for everything else.
-unsafe fn fill_solid(dc: HDC, rect: &RECT, colour: u32) {
-    let brush = CreateSolidBrush(colour);
-    if brush.is_null() {
-        return;
-    }
-    FillRect(dc, rect, brush);
-    DeleteObject(brush as HGDIOBJ);
-}
-
-/// Light scheme: the default row painting, plus the progress bar drawn after it.
-pub(super) unsafe fn light_list_custom_draw(ui: &MainUi, lparam: LPARAM) -> LRESULT {
-    let draw = &*(lparam as *const NMLVCUSTOMDRAW);
-    let stage = draw.nmcd.dwDrawStage;
-    if stage == CDDS_PREPAINT {
-        return CDRF_NOTIFYITEMDRAW as LRESULT;
-    }
-    if stage == CDDS_ITEMPREPAINT {
-        return CDRF_NOTIFYSUBITEMDRAW as LRESULT;
-    }
-    if stage == CDDS_ITEMPREPAINT | CDDS_SUBITEM {
-        return if draw.iSubItem == 2 {
-            CDRF_NOTIFYPOSTPAINT as LRESULT
-        } else {
-            CDRF_DODEFAULT as LRESULT
-        };
-    }
-    if stage == CDDS_ITEMPOSTPAINT | CDDS_SUBITEM && draw.iSubItem == 2 {
-        paint_row_progress(ui, draw.nmcd.hdc, draw.nmcd.dwItemSpec, draw.nmcd.rc);
-    }
-    CDRF_DODEFAULT as LRESULT
-}
-
-pub(super) unsafe fn list_custom_draw(ui: &MainUi, lparam: LPARAM) -> LRESULT {
-    let draw = &*(lparam as *const NMLVCUSTOMDRAW);
-    let stage = draw.nmcd.dwDrawStage;
-    if stage == CDDS_PREPAINT {
-        return CDRF_NOTIFYITEMDRAW as LRESULT;
-    }
-    if stage == CDDS_ITEMPREPAINT {
-        return CDRF_NOTIFYSUBITEMDRAW as LRESULT;
-    }
-    if stage == CDDS_ITEMPREPAINT | CDDS_SUBITEM {
-        paint_list_cell(ui, draw);
-        return CDRF_SKIPDEFAULT as LRESULT;
-    }
-    if stage == CDDS_POSTPAINT {
-        paint_list_tail(ui, draw.nmcd.hdc);
-        return CDRF_DODEFAULT as LRESULT;
-    }
-    CDRF_DODEFAULT as LRESULT
-}
-/// Repaints the empty area under the last row: background plus the same grid
-/// lines and column separators the filled rows carry. The first line sits one
-/// row height below the area's top, so on an empty list - where the area starts
-/// at the header - it is the bottom of the first row slot: the header and
-/// first-data-row boundary itself is the header's own bottom edge, drawn in
-/// `paint_header`.
-pub(super) unsafe fn paint_list_tail(ui: &MainUi, dc: HDC) {
-    let list = ui.list;
-    let mut client: RECT = zeroed();
-    if GetClientRect(list, &mut client) == 0 {
-        return;
-    }
-    let count = SendMessageW(list, LVM_GETITEMCOUNT, 0, 0) as i32;
-    let mut row_height = scale(22, ui.dpi);
-    if count > 0 {
-        let mut first = RECT {
-            left: LVIR_BOUNDS as i32,
-            ..zeroed()
-        };
-        if SendMessageW(list, LVM_GETITEMRECT, 0, &mut first as *mut _ as isize) != 0
-            && first.bottom > first.top
-        {
-            row_height = first.bottom - first.top;
-        }
-    }
-    let mut tail_top = client.top;
-    if count > 0 {
-        let mut last = RECT {
-            left: LVIR_BOUNDS as i32,
-            ..zeroed()
-        };
-        if SendMessageW(
-            list,
-            LVM_GETITEMRECT,
-            (count - 1) as usize,
-            &mut last as *mut _ as isize,
-        ) != 0
-        {
-            tail_top = last.bottom;
-        }
-    } else {
-        let header = SendMessageW(list, LVM_GETHEADER, 0, 0) as HWND;
-        let mut header_rect: RECT = zeroed();
-        if !header.is_null() && GetClientRect(header, &mut header_rect) != 0 {
-            tail_top = header_rect.bottom;
-        }
-    }
-    if tail_top >= client.bottom {
-        return;
-    }
-    let tail = RECT {
-        left: client.left,
-        top: tail_top,
-        right: client.right,
-        bottom: client.bottom,
-    };
-    FillRect(dc, &tail, palette_brush(DARK_BACKGROUND));
-    let line = palette_brush(DARK_BORDER);
-    let mut y = tail_top + row_height - 1;
-    while y < client.bottom {
-        let row_line = RECT {
-            left: client.left,
-            top: y,
-            right: client.right,
-            bottom: y + 1,
-        };
-        FillRect(dc, &row_line, line);
-        y += row_height;
-    }
-    let header = SendMessageW(list, LVM_GETHEADER, 0, 0) as HWND;
-    let columns = if header.is_null() {
-        0
-    } else {
-        SendMessageW(header, HDM_GETITEMCOUNT, 0, 0) as i32
-    };
-    let mut edge = client.left;
-    for index in 0..columns {
-        edge += SendMessageW(list, LVM_GETCOLUMNWIDTH, index as usize, 0) as i32;
-        if edge >= client.right {
-            break;
-        }
-        let column_line = RECT {
-            left: edge - 1,
-            top: tail_top,
-            right: edge,
-            bottom: client.bottom,
-        };
-        FillRect(dc, &column_line, line);
-    }
-}
 /// The x coordinate a screen position has in `hwnd`'s window context. A mirrored
 /// window's context counts x from its right edge.
 pub(super) unsafe fn window_x(hwnd: HWND, window: &RECT, screen_x: i32) -> i32 {
@@ -1111,28 +781,26 @@ pub(super) unsafe fn menu_strip(ui: &MainUi) -> Option<MenuStrip> {
     })
 }
 
-/// Fills the bar itself in the scheme's colours, with the edge that separates
-/// it from the client area. Shared by the strip repaint and the theme's own bar
-/// drawing, so both land on the same pixels.
-pub(super) unsafe fn fill_menu_bar(dc: HDC, strip: &MenuStrip) {
-    FillRect(dc, &strip.bar, palette_brush(DARK_BACKGROUND));
-    let edge = RECT {
-        left: strip.bar.left,
-        top: strip.bar.bottom - 1,
-        right: strip.bar.right,
-        bottom: strip.bar.bottom,
-    };
-    FillRect(dc, &edge, palette_brush(DARK_BORDER));
+/// True while the main window paints its menu bar itself: always, except in
+/// high contrast, where the system's bar keeps the system colours.
+pub(super) unsafe fn menu_strip_painted() -> bool {
+    !high_contrast()
 }
 
-/// The font the bar's captions are drawn with: the application font, which is
-/// also the font the menu carries, so the captions and the item boxes the shell
-/// measured agree.
+/// Fills the bar itself with the base layer, so title bar, menu bar and window
+/// read as one surface. Shared by the strip repaint and the theme's own bar
+/// drawing, so both land on the same pixels.
+pub(super) unsafe fn fill_menu_bar(dc: HDC, strip: &MenuStrip, palette: &MainPalette) {
+    fill_colour(dc, &strip.bar, palette.base);
+}
+
+/// The font the bar's captions are drawn with: the font the menu carries, so
+/// the captions and the item boxes the shell measured agree.
 pub(super) unsafe fn menu_font(ui: &MainUi) -> HFONT {
-    if ui.font.is_null() {
+    if ui.menu_font.is_null() {
         SendMessageW(ui.hwnd, WM_GETFONT, 0, 0) as HFONT
     } else {
-        ui.font
+        ui.menu_font
     }
 }
 
@@ -1184,7 +852,7 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
     // A mirrored window context needs a mirrored source, or the copy flips it.
     SetLayout(memory, GetLayout(dc));
     let previous = SelectObject(memory, bitmap as HGDIOBJ);
-    fill_menu_bar(memory, &strip);
+    fill_menu_bar(memory, &strip, &main_palette(ui.hwnd));
     for index in 0..count {
         let mut rect: RECT = zeroed();
         if GetMenuItemRect(ui.hwnd, menu, index as u32, &mut rect) == 0 {
@@ -1226,7 +894,7 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
 
 /// Splits a menu caption into its text and the character index of the letter its
 /// `&` marks; `&&` is a literal ampersand. The index counts characters, not
-/// bytes: "İ&ndirme" has the marker after a two-byte letter.
+/// bytes: "Ä°&ndirme" has the marker after a two-byte letter.
 pub(super) fn split_mnemonic(label: &str) -> (String, Option<usize>) {
     let mut title = String::with_capacity(label.len());
     let mut mnemonic = None;
@@ -1268,8 +936,14 @@ pub(super) unsafe fn draw_menu_item(
     if length <= 0 {
         return;
     }
+    let palette = main_palette(ui.hwnd);
     if hot {
-        FillRect(dc, &item, palette_brush(DARK_SURFACE));
+        let highlight = RECT {
+            top: item.top + scale(2, ui.dpi),
+            bottom: item.bottom - scale(2, ui.dpi),
+            ..item
+        };
+        round_rect(dc, &highlight, scale(CORNER, ui.dpi), palette.hover, None);
     }
     SetBkMode(dc, TRANSPARENT as i32);
     let font = menu_font(ui);
@@ -1281,7 +955,14 @@ pub(super) unsafe fn draw_menu_item(
     let (title, mnemonic) = split_mnemonic(&String::from_utf16_lossy(&label[..length as usize]));
     let state = GetMenuState(menu, index as u32, MF_BYPOSITION);
     let enabled = state & (MF_DISABLED | MF_GRAYED) == 0;
-    SetTextColor(dc, if enabled { DARK_TEXT } else { DARK_MUTED });
+    SetTextColor(
+        dc,
+        if enabled {
+            palette.text
+        } else {
+            palette.disabled
+        },
+    );
     let mut text = item;
     let mut wide_title = wide(&title);
     let mut title_size: SIZE = zeroed();
@@ -1334,7 +1015,7 @@ pub(super) unsafe fn draw_menu_item(
                     right: text_left + size.cx + letter_size.cx.max(scale(4, ui.dpi)),
                     bottom: top + thickness,
                 };
-                FillRect(dc, &underline, palette_brush(DARK_TEXT));
+                fill_colour(dc, &underline, palette.text);
             }
         }
     }
@@ -1400,14 +1081,8 @@ pub(super) unsafe fn paint_status(hwnd: HWND, dc: HDC) {
         return;
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
-    FillRect(dc, &client, palette_brush(DARK_SURFACE));
-    let edge = RECT {
-        left: client.left,
-        top: client.top,
-        right: client.right,
-        bottom: client.top + 1,
-    };
-    FillRect(dc, &edge, palette_brush(DARK_BORDER));
+    let palette = main_palette(hwnd);
+    fill_colour(dc, &client, palette.base);
     let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
     let previous = if font == 0 {
         null_mut()
@@ -1415,7 +1090,7 @@ pub(super) unsafe fn paint_status(hwnd: HWND, dc: HDC) {
         SelectObject(dc, font as HGDIOBJ)
     };
     SetBkMode(dc, TRANSPARENT as i32);
-    SetTextColor(dc, DARK_TEXT);
+    SetTextColor(dc, palette.secondary);
     let parts = SendMessageW(hwnd, SB_GETPARTS, 0, 0).max(1);
     for index in 0..parts {
         let mut rect: RECT = zeroed();
@@ -1437,9 +1112,10 @@ pub(super) unsafe fn paint_status(hwnd: HWND, dc: HDC) {
                 index as usize,
                 text.as_mut_ptr() as isize,
             );
+            // The text lines up with the cards' left edge.
             let mut area = rect;
-            area.left += scale(6, dpi);
-            area.right -= scale(4, dpi);
+            area.left = area.left.max(client.left + scale(16, dpi));
+            area.right -= scale(16, dpi);
             DrawTextW(
                 dc,
                 text.as_mut_ptr(),
@@ -1455,26 +1131,11 @@ pub(super) unsafe fn paint_status(hwnd: HWND, dc: HDC) {
                 right: rect.right,
                 bottom: rect.bottom - scale(2, dpi),
             };
-            FillRect(dc, &divider, palette_brush(DARK_BORDER));
+            fill_colour(dc, &divider, palette.stroke);
         }
     }
     if !previous.is_null() {
         SelectObject(dc, previous);
-    }
-    // The grip the control would have drawn in its own colours.
-    if GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & SBARS_SIZEGRIP != 0 {
-        let brush = palette_brush(DARK_MUTED);
-        for row in 0..3 {
-            for column in 0..3 - row {
-                let dot = RECT {
-                    left: client.right - scale(6, dpi) - column * scale(4, dpi),
-                    top: client.bottom - scale(6, dpi) - row * scale(4, dpi),
-                    right: client.right - scale(4, dpi) - column * scale(4, dpi),
-                    bottom: client.bottom - scale(4, dpi) - row * scale(4, dpi),
-                };
-                FillRect(dc, &dot, brush);
-            }
-        }
     }
 }
 pub(super) unsafe extern "system" fn status_proc(
@@ -1483,7 +1144,7 @@ pub(super) unsafe extern "system" fn status_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if scheme_dark(hwnd) {
+    if !high_contrast() {
         match msg {
             WM_PAINT => {
                 let mut paint: PAINTSTRUCT = zeroed();
@@ -1607,34 +1268,6 @@ pub(super) unsafe fn apply_dark_mode(hwnd: HWND, enabled: bool) {
     let theme = wide("DarkMode_Explorer");
     SetWindowTheme(hwnd, if enabled { theme.as_ptr() } else { null() }, null());
     EnumChildWindows(hwnd, Some(theme_child), enabled as LPARAM);
-    let list = GetDlgItem(hwnd, ID_JOB_LIST);
-    if !list.is_null() {
-        let bg = if enabled {
-            0x202020
-        } else {
-            GetSysColor(COLOR_WINDOW)
-        };
-        let fg = if enabled {
-            0xeeeeee
-        } else {
-            GetSysColor(COLOR_WINDOWTEXT)
-        };
-        SendMessageW(list, LVM_SETBKCOLOR, 0, bg as isize);
-        SendMessageW(list, LVM_SETTEXTBKCOLOR, 0, bg as isize);
-        SendMessageW(list, LVM_SETTEXTCOLOR, 0, fg as isize);
-        // The themed grid lines stay light whatever the subtheme, and there is
-        // no message to recolour them: the dark table drops them, light keeps
-        // them.
-        let styles = SendMessageW(list, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0) as u32;
-        let wanted = if enabled {
-            styles & !LVS_EX_GRIDLINES
-        } else {
-            styles | LVS_EX_GRIDLINES
-        };
-        if wanted != styles {
-            SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, wanted as isize);
-        }
-    }
     // Children keep their previous painting until they are invalidated, so a
     // theme switch has to redraw the whole descendant tree.
     RedrawWindow(
@@ -1705,6 +1338,10 @@ pub(super) unsafe fn paint_tabs(hwnd: HWND, dc: HDC) {
         return;
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
+    if GetDlgCtrlID(hwnd) == ID_JOB_TABS {
+        paint_job_tabs(hwnd, dc, &client, dpi);
+        return;
+    }
     let palette = tab_palette(scheme_dark(hwnd));
     FillRect(dc, &client, palette.background);
     let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
@@ -1758,6 +1395,75 @@ pub(super) unsafe fn paint_tabs(hwnd: HWND, dc: HDC) {
         SelectObject(dc, previous);
     }
 }
+/// The main window's tabs in the WinUI SelectorBar look: labels on the base
+/// layer, the selected one in the primary text colour over a short accent
+/// pill, and a focus ring around it while the strip has the keyboard focus.
+unsafe fn paint_job_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
+    let palette = main_palette(GetParent(hwnd));
+    fill_colour(dc, client, palette.base);
+    let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
+    let previous = if font == 0 {
+        null_mut()
+    } else {
+        SelectObject(dc, font as HGDIOBJ)
+    };
+    SetBkMode(dc, TRANSPARENT as i32);
+    let selected = SendMessageW(hwnd, TCM_GETCURSEL, 0, 0) as i32;
+    let focus_shown = GetFocus() == hwnd
+        && SendMessageW(hwnd, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0;
+    for index in 0..SendMessageW(hwnd, TCM_GETITEMCOUNT, 0, 0) as i32 {
+        let mut rect: RECT = zeroed();
+        if SendMessageW(
+            hwnd,
+            TCM_GETITEMRECT,
+            index as usize,
+            &mut rect as *mut _ as isize,
+        ) == 0
+        {
+            continue;
+        }
+        if index == selected && focus_shown {
+            round_rect(
+                dc,
+                &inflate(rect, -scale(2, dpi), -scale(2, dpi)),
+                scale(CORNER, dpi),
+                palette.base,
+                Some(palette.focus_outer),
+            );
+        }
+        let mut title = tab_title(hwnd, index);
+        SetTextColor(
+            dc,
+            if index == selected {
+                palette.text
+            } else {
+                palette.secondary
+            },
+        );
+        let mut text = rect;
+        text.bottom -= scale(4, dpi);
+        DrawTextW(
+            dc,
+            title.as_mut_ptr(),
+            -1,
+            &mut text,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        if index == selected {
+            let centre = (rect.left + rect.right) / 2;
+            let pill = RECT {
+                left: centre - scale(8, dpi),
+                top: rect.bottom - scale(7, dpi),
+                right: centre + scale(8, dpi),
+                bottom: rect.bottom - scale(4, dpi),
+            };
+            round_rect(dc, &pill, scale(1, dpi), palette.accent, None);
+        }
+    }
+    if !previous.is_null() {
+        SelectObject(dc, previous);
+    }
+}
 pub(super) unsafe extern "system" fn tabs_proc(
     hwnd: HWND,
     msg: u32,
@@ -1777,6 +1483,10 @@ pub(super) unsafe extern "system" fn tabs_proc(
             return 0;
         }
         WM_ERASEBKGND => return 1,
+        // The main window's focus ring follows the keyboard focus.
+        WM_SETFOCUS | WM_KILLFOCUS if GetDlgCtrlID(hwnd) == ID_JOB_TABS => {
+            InvalidateRect(hwnd, null(), 0);
+        }
         _ => {}
     }
     call_previous(hwnd, msg, wparam, lparam)
@@ -1875,9 +1585,7 @@ pub(super) unsafe extern "system" fn progress_proc(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        processing_sweep, progress_colour, progress_fraction, split_mnemonic, SWEEP_ONE_WAY_MS,
-    };
+    use super::{processing_sweep, progress_fraction, split_mnemonic, SWEEP_ONE_WAY_MS};
     use crate::model::JobState;
 
     #[test]
@@ -1892,40 +1600,6 @@ mod tests {
         assert!(at(SWEEP_ONE_WAY_MS * 5 / 4).0 > at(SWEEP_ONE_WAY_MS * 3 / 2).0);
         assert_eq!(processing_sweep(500, 0), (0, 0));
         assert_eq!(processing_sweep(500, 2), (0, 1));
-    }
-
-    /// WCAG relative luminance of a COLORREF (0x00BBGGRR).
-    fn luminance(colour: u32) -> f64 {
-        let channel = |shift: u32| {
-            let value = ((colour >> shift) & 0xff) as f64 / 255.0;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * channel(0) + 0.7152 * channel(8) + 0.0722 * channel(16)
-    }
-
-    /// The progress cell text is redrawn in white over the fill, so every fill must keep
-    /// normal-text contrast (4.5:1) with white.
-    #[test]
-    fn white_cell_text_is_readable_on_every_progress_fill() {
-        for state in [
-            JobState::Queued,
-            JobState::Scheduled,
-            JobState::Connecting,
-            JobState::Downloading,
-            JobState::Processing,
-            JobState::Paused,
-            JobState::AwaitingSource,
-            JobState::Completed,
-            JobState::Failed,
-            JobState::Cancelled,
-        ] {
-            let contrast = 1.05 / (luminance(progress_colour(state)) + 0.05);
-            assert!(contrast >= 4.5, "{state:?} fill contrast {contrast:.2}");
-        }
     }
 
     #[test]
@@ -1951,12 +1625,12 @@ mod tests {
     fn mnemonic_index_counts_characters_not_bytes() {
         // The marker follows a two-byte letter, so a byte offset would underline
         // the wrong letter of the Turkish "Downloads" caption.
-        let (title, at) = split_mnemonic("İ&ndirme");
-        assert_eq!(title, "İndirme");
+        let (title, at) = split_mnemonic("Ä°&ndirme");
+        assert_eq!(title, "Ä°ndirme");
         assert_eq!(title.chars().nth(at.unwrap()), Some('n'));
         let (title, at) = split_mnemonic("&Dosya");
         assert_eq!((title.as_str(), at), ("Dosya", Some(0)));
-        let (title, at) = split_mnemonic("A&raçlar");
+        let (title, at) = split_mnemonic("A&raÃ§lar");
         assert_eq!(title.chars().nth(at.unwrap()), Some('r'));
     }
 

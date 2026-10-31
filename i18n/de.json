@@ -211,7 +211,7 @@
   "Create a diagnostic package": "Diagnosepaket erstellen",
   "Create a diagnostic package and report this error": "Diagnosepaket erstellen und diesen Fehler melden",
   "Credentials in HTTP addresses are not supported; use the authorization header": "Anmeldedaten in HTTP-Adressen werden nicht unterstützt; verwenden Sie den Autorisierungs-Header",
-  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Neuer Download\nCtrl+Shift+N  Video herunterladen\nCtrl+V  URLs aus der Zwischenablage hinzufügen\nCtrl+F  Suchen\nCtrl+A  Alle auswählen\nDelete  Ausgewählte entfernen\nF5  Aktualisieren\nEnter  Datei öffnen\nSpace  Pausieren / fortsetzen\nAlt+Home / Alt+End  Ganz nach oben / unten verschieben\nCtrl+Shift+D  Link aus der Zwischenablage von überall hinzufügen",
+  "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Neuer Download\nCtrl+Shift+N  Video herunterladen\nCtrl+V  URLs aus der Zwischenablage hinzufügen\nCtrl+A  Alle auswählen\nDelete  Ausgewählte entfernen\nF5  Aktualisieren\nEnter  Datei öffnen\nSpace  Pausieren / fortsetzen\nAlt+Home / Alt+End  Ganz nach oben / unten verschieben\nCtrl+Shift+D  Link aus der Zwischenablage von überall hinzufügen",
   "Custom...": "Benutzerdefiniert...",
   "DRM-protected content is not supported.": "DRM-geschützte Inhalte werden nicht unterstützt.",
   "Dark window title and control theme": "Dunkle Fenstertitelleiste und Design der Steuerelemente",
@@ -689,7 +689,6 @@
   "Scheduled": "Geplant",
   "Scheduled limit (KiB/s):": "Zeitgesteuertes Limit (KiB/s):",
   "Scheduled speed limit": "Zeitgesteuertes Geschwindigkeitslimit",
-  "Search:": "Suchen:",
   "Segment {0} of the {1} stream failed after {attempts} attempts: {reason}": "Segment {0} des Streams {1} ist nach {attempts} Versuchen fehlgeschlagen: {reason}",
   "Select &all\tCtrl+A": "Alle a&uswählen\tCtrl+A",
   "Select a completion action": "Wählen Sie eine Aktion nach Abschluss",
@@ -1693,5 +1692,8 @@
   "The digest did not match; downloading the file again": "Die Prüfsumme stimmt nicht überein; die Datei wird erneut heruntergeladen",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "Die Datei stimmt nicht mit der SHA-256-Prüfsumme überein, die ihre Quelle veröffentlicht ({0}), und zwei Downloads lieferten unterschiedliche Bytes; die unvollständige Datei wurde gelöscht und wird beim nächsten Versuch erneut heruntergeladen",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "Die Datei wurde gespeichert, stimmt aber nicht mit der SHA-256-Prüfsumme überein, die ihre Quelle veröffentlicht ({0}); zwei Downloads lieferten dieselben Bytes",
-  "No capacity for the network connection became free in time": "Für die Netzwerkverbindung wurde nicht rechtzeitig Kapazität frei"
+  "No capacity for the network connection became free in time": "Für die Netzwerkverbindung wurde nicht rechtzeitig Kapazität frei",
+  "Details": "Details",
+  "No error was recorded for this download.": "Für diesen Download wurde kein Fehler aufgezeichnet.",
+  "Select a single download.": "Wählen Sie einen einzelnen Download aus."
 }
