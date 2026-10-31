@@ -1491,7 +1491,7 @@ impl Replay {
         );
     }
 
-    /// One line a 100 ms for `seconds` at `rate` bytes a second, counting on from `start`.
+    /// One line every 100 ms for `seconds` at `rate` bytes a second, counting on from `start`.
     fn flow(&mut self, from: Duration, seconds: u64, rate: u64, start: u64, total: u64) {
         for step in 1..=seconds * 10 {
             self.line(
@@ -1654,9 +1654,50 @@ fn the_next_stream_of_a_download_is_measured_from_its_own_start() {
     );
 }
 
+/// A download that starts over inside one run (a server that ignores the range of a resumed
+/// request) counts from zero without a finished stream.
+#[test]
+fn a_download_that_starts_over_is_measured_afresh() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 100, 1_000_000, 0, 400_000_000);
+    replay.flow(ms(100_000), 70, 1_000_000, 0, 400_000_000);
+
+    for seconds in [10, 30, 50, 70] {
+        let (_, update) = replay
+            .events
+            .iter()
+            .find(|(at, _)| *at >= ms(100_000 + seconds * 1000))
+            .unwrap();
+        assert!(
+            update.speed.abs_diff(1_000_000) < 100_000 && update.eta.is_some(),
+            "{seconds} s after the restart: {update:?}"
+        );
+    }
+}
+
+/// Counts of the tool's threads that arrive late fall behind the highest one by at most a few
+/// blocks; early in a download that can be more than half of it.
+#[test]
+fn a_late_count_early_in_a_download_does_not_restart_the_measurement() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 2, 200_000, 0, 10_000_000);
+    replay.line(ms(2_050), "downloading\t50000\t10000000");
+    replay.flow(ms(2_050), 8, 200_000, 400_000, 10_000_000);
+
+    let (_, update) = replay
+        .events
+        .iter()
+        .find(|(at, _)| *at >= ms(2_500))
+        .unwrap();
+    assert!(update.speed.abs_diff(200_000) < 20_000, "{}", update.speed);
+}
+
 /// Runs a PowerShell script as the tool and returns when each progress update reached the
 /// monitor's callback.
-fn updates_from_script(script: &str) -> Vec<(Instant, TransferProgress)> {
+fn updates_from_script(
+    script: &str,
+    live: Option<&mut LiveRecordingGauge>,
+) -> Vec<(Instant, TransferProgress)> {
     let args = vec![
         "-NoProfile".into(),
         "-NonInteractive".into(),
@@ -1673,7 +1714,7 @@ fn updates_from_script(script: &str) -> Vec<(Instant, TransferProgress)> {
         &mut |update| updates.push((Instant::now(), update)),
         &mut HashSet::new(),
         &mut None,
-        None,
+        live,
     )
     .unwrap();
     assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
@@ -1687,7 +1728,7 @@ const SLOW_THEN_SILENT: &str = "$p = \"SSDOWNLOAD_PROGRESS`tdownloading`t\"; \
 
 #[test]
 fn lines_a_tool_writes_slowly_reach_the_callback_as_they_are_written() {
-    let updates = updates_from_script(SLOW_THEN_SILENT);
+    let updates = updates_from_script(SLOW_THEN_SILENT, None);
 
     let arrival = |downloaded| {
         updates
@@ -1702,7 +1743,7 @@ fn lines_a_tool_writes_slowly_reach_the_callback_as_they_are_written() {
 
 #[test]
 fn a_silent_tool_does_not_freeze_the_progress() {
-    let updates = updates_from_script(SLOW_THEN_SILENT);
+    let updates = updates_from_script(SLOW_THEN_SILENT, None);
 
     let last_line = updates
         .iter()
@@ -1723,6 +1764,24 @@ fn a_silent_tool_does_not_freeze_the_progress() {
     assert!(repeats
         .windows(2)
         .all(|pair| pair[1].1.speed <= pair[0].1.speed));
+}
+
+/// The tool's own counter of a live job covers one stream: it neither alternates with the size
+/// of the recording nor is repeated while the tool is silent.
+#[test]
+fn a_live_recording_reports_only_its_own_size() {
+    let root = std::env::temp_dir().join(format!("ssdownload-live-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("media.mp4.part"), vec![0u8; 2048]).unwrap();
+    let mut recording = LiveRecordingGauge::new(&root);
+
+    let updates = updates_from_script(SLOW_THEN_SILENT, Some(&mut recording));
+
+    assert!(updates.len() >= 3, "{}", updates.len());
+    for (_, update) in &updates {
+        assert_eq!(update.downloaded, 2048, "{update:?}");
+    }
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

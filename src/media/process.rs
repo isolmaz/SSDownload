@@ -482,6 +482,9 @@ impl DownloadGauge {
     const MAX_WINDOW: Duration = Duration::from_secs(60);
     /// A shorter measurement is too noisy to be a speed.
     const MIN_SPAN: Duration = Duration::from_secs(1);
+    /// A recorded run left a count at most 247 KB behind an earlier one because of the tool's
+    /// unordered threads; this is four times that, while a restart falls to nearly zero.
+    const RESTART_DROP: u64 = 1 << 20;
     const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
     pub(super) fn new() -> Self {
@@ -495,8 +498,14 @@ impl DownloadGauge {
     }
 
     /// The tool counts across its download threads, so a report can carry a total a few blocks
-    /// behind an earlier one; a lower count is ignored.
+    /// behind an earlier one; a lower count is ignored. A count that has fallen by half and by
+    /// `RESTART_DROP` is the tool starting over inside one run, which measures afresh.
     fn record(&mut self, bytes: u64, now: Instant) {
+        let drop = self.newest.saturating_sub(bytes);
+        if drop >= Self::RESTART_DROP && drop > self.newest / 2 {
+            self.steps.clear();
+            self.newest = 0;
+        }
         let first = self.steps.is_empty();
         let grew = bytes > self.newest;
         let due = self
@@ -621,14 +630,16 @@ pub(super) fn monitor_download(
     }
     let mut activity = ActivityWatch::new(STALL_LIMIT, pings);
     let mut live_bytes = None;
+    // A live recording's size comes from the recording gauge alone; the tool's own counter
+    // covers one stream and would alternate with it.
+    let is_live = live.is_some();
+    let ignored = move |line: &str| is_live && line.starts_with(PROGRESS_PREFIX);
     loop {
         let mut active = false;
         while let Ok(line) = running.lines.try_recv() {
             active = true;
             activity.observe(&line);
-            // A live recording's size comes from the gauge alone; the tool's own counter
-            // covers one stream and would alternate with it.
-            if live.is_some() && line.starts_with(PROGRESS_PREFIX) {
+            if ignored(&line) {
                 continue;
             }
             handle_machine_line(
@@ -695,27 +706,31 @@ pub(super) fn monitor_download(
         }
         if let Some(status) = running.child.try_wait()? {
             while let Ok(line) = running.lines.try_recv() {
-                handle_machine_line(
-                    &line,
-                    Instant::now(),
-                    progress,
-                    completed_files,
-                    last_path,
-                    &mut gauge,
-                );
+                if !ignored(&line) {
+                    handle_machine_line(
+                        &line,
+                        Instant::now(),
+                        progress,
+                        completed_files,
+                        last_path,
+                        &mut gauge,
+                    );
+                }
             }
             // The tool has exited: anything still alive is an orphan holding the output pipes.
             running.job.terminate();
             running.join_readers();
             while let Ok(line) = running.lines.try_recv() {
-                handle_machine_line(
-                    &line,
-                    Instant::now(),
-                    progress,
-                    completed_files,
-                    last_path,
-                    &mut gauge,
-                );
+                if !ignored(&line) {
+                    handle_machine_line(
+                        &line,
+                        Instant::now(),
+                        progress,
+                        completed_files,
+                        last_path,
+                        &mut gauge,
+                    );
+                }
             }
             if running.overflow.load(std::sync::atomic::Ordering::Acquire) {
                 bail!(crate::i18n::ui("Medya çıktı kuyruğu sınırı aşıldı; eksik playlist yayınlanmadı", "The media output queue limit was exceeded; the incomplete playlist was not published"))
@@ -725,14 +740,16 @@ pub(super) fn monitor_download(
         match running.lines.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
                 activity.observe(&line);
-                handle_machine_line(
-                    &line,
-                    Instant::now(),
-                    progress,
-                    completed_files,
-                    last_path,
-                    &mut gauge,
-                );
+                if !ignored(&line) {
+                    handle_machine_line(
+                        &line,
+                        Instant::now(),
+                        progress,
+                        completed_files,
+                        last_path,
+                        &mut gauge,
+                    );
+                }
                 activity.touch();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
