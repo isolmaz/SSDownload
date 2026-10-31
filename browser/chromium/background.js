@@ -1139,6 +1139,29 @@ async function revokeSessionConsent(tabId, pageUrl) {
   logEvent("ext.session.consent", { level: "info", outcome: "ok", host: new URL(site).hostname, detail: "revoked" });
   return { site };
 }
+// The consent scopes when the user recorded session consent for `site`, otherwise null.
+// The cookies permission is checked first and then the site's scope; no cookie store is
+// resolved here, so a site without consent never touches the cookie API. A failing
+// permission query is an error and never "not granted": that would silently drop the
+// consent the user recorded. A genuine false still means no permission and ships no cookies.
+async function recordedConsent(site) {
+  let granted;
+  try {
+    granted = await invoke(api.permissions, "contains", { permissions: ["cookies"] });
+  } catch (_) {
+    const error = new Error(t("sessionPermissionQueryFailed"));
+    error.code = "SSD-EXT-001";
+    throw error;
+  }
+  if (!granted) return null;
+  const scopes = (await invoke(api.storage.local, "get", { sessionScopes: [] })).sessionScopes || [];
+  return Array.isArray(scopes) && scopes.some(scope => scope?.site === site) ? scopes : null;
+}
+function scopedCookie(cookie, storeId, partitionKey) {
+  return { name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path || "/", secure: Boolean(cookie.secure),
+    http_only: Boolean(cookie.httpOnly), host_only: Boolean(cookie.hostOnly), expires: cookie.expirationDate || null,
+    store_id: storeId, partition_key: partitionKey };
+}
 // Headers and (only with recorded consent) scoped cookies for one candidate. The
 // permission and the site scope are checked before any cookie store is resolved, so
 // a site without consent never touches the cookie API; once a scope exists, a store
@@ -1157,21 +1180,8 @@ async function sessionMetadata(tabId, item) {
     throw error;
   }
   const site = siteOf(page) || siteOf(item.url);
-  if (!site) return { headers, referer };
-  // The permission answer decides whether a recorded session may travel at all: a failing
-  // query must not be read as "not granted", because that would silently drop the consent
-  // the user recorded. A genuine false still means no permission and ships no cookies.
-  let granted;
-  try {
-    granted = await invoke(api.permissions, "contains", { permissions: ["cookies"] });
-  } catch (_) {
-    const error = new Error(t("sessionPermissionQueryFailed"));
-    error.code = "SSD-EXT-001";
-    throw error;
-  }
-  if (!granted) return { headers, referer };
-  const scopes = (await invoke(api.storage.local, "get", { sessionScopes: [] })).sessionScopes || [];
-  if (!Array.isArray(scopes) || !scopes.some(scope => scope?.site === site)) return { headers, referer };
+  const scopes = site ? await recordedConsent(site) : null;
+  if (!scopes) return { headers, referer };
   const storeId = await currentCookieStore(tabId);
   if (!hasSessionConsent(scopes, site, storeId)) {
     const error = new Error(t("sessionPermissionWrongStore"));
@@ -1190,9 +1200,7 @@ async function sessionMetadata(tabId, item) {
     for (const cookie of [...ordinary, ...partitioned]) {
       if (cookie?.storeId !== storeId || !cookieMatchesTarget(cookie, target)) continue;
       if (cookie.partitionKey && !samePartition(cookie.partitionKey, partition)) continue;
-      const value = { name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path || "/", secure: Boolean(cookie.secure),
-        http_only: Boolean(cookie.httpOnly), host_only: Boolean(cookie.hostOnly), expires: cookie.expirationDate || null,
-        store_id: storeId, partition_key: cookie.partitionKey ? partitionKey : null };
+      const value = scopedCookie(cookie, storeId, cookie.partitionKey ? partitionKey : null);
       cookies.set(JSON.stringify([value.name, value.domain, value.path, value.partition_key]), value);
       if (cookies.size > 500) throw new Error(t("cookieLimit"));
     }
@@ -1856,7 +1864,8 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // browser_takeover). An ordinary http(s) file download is paused, handed to the desktop
 // as a file job and erased from Chrome only after the desktop accepted it; a refusal or
 // an unreachable desktop resumes it in Chrome. Incognito, blob/data and extension-made
-// downloads always stay in the browser, and no cookie leaves it on this path.
+// downloads always stay in the browser. Cookies leave the browser on this path only for a
+// site whose session consent the user recorded (`takeoverCookies`); without consent none does.
 const TAKEOVER_EXTENSIONS = new Set(["7z","aac","apk","avi","bin","bz2","cab","deb","dmg","doc","docx","epub","exe","flac","gz","img","iso","jar","m4a","mkv","mov","mp3","mp4","msi","msix","ogg","pdf","pkg","ppt","pptx","rar","rpm","tar","tgz","torrent","wav","webm","xls","xlsx","xz","zip","zst"]);
 function takeoverExtension(item) {
   const name = String(item?.filename || "").split(/[\\/]/).pop() || pathFilename(item?.finalUrl || item?.url || "") || "";
@@ -1869,6 +1878,48 @@ function takeoverCandidate(item) {
   if (!address || !/^https?:$/.test(address.protocol)) return false;
   return TAKEOVER_EXTENSIONS.has(takeoverExtension(item));
 }
+// A takeover candidate is never incognito and a DownloadItem names no tab, so its cookie store
+// cannot be read from a tab as `currentCookieStore` does. It is the one store that holds the
+// browser's regular (non-incognito) tabs: a store counts only when the store list names one of
+// those tabs in it. Anything but exactly one such store (no regular tab open, several regular
+// stores as with containers, no store list) is unverifiable and throws.
+async function regularCookieStore() {
+  if (typeof api.cookies?.getAllCookieStores !== "function" || !api.tabs?.query) throw new Error(t("takeoverStoreUnverifiable"));
+  const regular = new Set((await invoke(api.tabs, "query", { incognito: false })).map(tab => tab?.id).filter(Number.isInteger));
+  const stores = (await invoke(api.cookies, "getAllCookieStores")).filter(store => typeof store?.id === "string" && store.id
+    && Array.isArray(store.tabIds) && store.tabIds.some(id => regular.has(id)));
+  if (stores.length !== 1) throw new Error(t("takeoverStoreUnverifiable"));
+  return stores[0].id;
+}
+// The cookies a takeover hands over, or null when the download's site has no recorded consent.
+// The site is the page's (the download's referrer) or else the download address', as on the
+// context-menu path, and the consent rules are sessionMetadata's: the permission and the site's
+// scope come first and a site without consent never touches the cookie API; a granted site whose
+// store or cookies cannot be verified throws, so the caller keeps the download in the browser
+// instead of exporting nothing. A top-level download has no embedding context, so only
+// unpartitioned cookies are read. Chrome reports the first and the final address of a redirect
+// chain, and those are the cookie targets.
+async function takeoverCookies(item, address) {
+  const site = siteOf(item.referrer) || siteOf(item.url);
+  const scopes = site ? await recordedConsent(site) : null;
+  if (!scopes) return null;
+  const storeId = await regularCookieStore();
+  if (!hasSessionConsent(scopes, site, storeId)) {
+    const error = new Error(t("takeoverSessionWrongStore"));
+    error.code = "SSD-EXT-001";
+    throw error;
+  }
+  const cookies = new Map();
+  for (const target of cookieTargets({ url: address, requestChain: [{ url: item.url }] })) {
+    for (const cookie of await invoke(api.cookies, "getAll", { url: target, storeId })) {
+      if (cookie?.storeId !== storeId || cookie.partitionKey || !cookieMatchesTarget(cookie, target)) continue;
+      const value = scopedCookie(cookie, storeId, null);
+      cookies.set(JSON.stringify([value.name, value.domain, value.path]), value);
+      if (cookies.size > 500) throw new Error(t("cookieLimit"));
+    }
+  }
+  return [...cookies.values()];
+}
 async function takeOverDownload(item) {
   // A download that wakes a suspended worker is judged by the stored switch, not its default.
   await sessionReady;
@@ -1878,17 +1929,22 @@ async function takeOverDownload(item) {
   const address = safeUrl(item.finalUrl || item.url).href;
   try { await invoke(api.downloads, "pause", item.id); } catch (_) { return; }
   const referer = safeUrl(item.referrer || "")?.href || null;
+  // No request header travels besides the referrer: a DownloadItem names neither its request nor
+  // its tab, and a navigation download is outside the capture filter, so no observed header can
+  // be tied to it.
   const request = { url: address, kind: "file", headers: {}, referer, page_url: referer, playlist: false,
     container: null, filename: fileName(String(item.filename || "").split(/[\\/]/).pop()),
     request_id: crypto.randomUUID() };
   let accepted = false;
   try {
+    const cookies = await takeoverCookies(item, address);
+    if (cookies?.length) request.session_cookies = cookies;
     const response = await sendNative({ type: "add", request });
     accepted = response?.ok === true;
     logEvent(accepted ? "ext.takeover.ok" : "ext.takeover.refused", { level: accepted ? "info" : "warn",
       outcome: accepted ? "ok" : "failed", host: urlHost(address), code: accepted ? undefined : (replyCode(response) || undefined) });
   } catch (error) {
-    logEvent("ext.takeover.refused", { level: "warn", outcome: "failed", host: urlHost(address), detail: String(error?.message || error).slice(0, 300) });
+    logEvent("ext.takeover.refused", { level: "warn", outcome: "failed", code: error?.code, host: urlHost(address), detail: String(error?.message || error).slice(0, 300) });
   }
   if (accepted) {
     noteHandoff();

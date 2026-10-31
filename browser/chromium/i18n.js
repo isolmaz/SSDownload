@@ -159,6 +159,8 @@
     sessionPermissionWrongStore: "The site session permission was not granted for this tab's cookie store. Grant it again in this tab.",
     partitionedScopeUnverifiable: "This Chrome version cannot verify the partitioned session scope. Update the browser or remove the site session permission.",
     partitionScopeUntransferable: "The session scope of this Chrome partition cannot be handed over safely.",
+    takeoverStoreUnverifiable: "The browser's cookie store could not be verified as exactly one for this download, so it stays in the browser.",
+    takeoverSessionWrongStore: "The site session permission was not granted for the browser's regular cookie store, so the download stays in the browser.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "The source tab and document for the transfer were not found. Open the page to download in this tab and try again.",
@@ -233,6 +235,7 @@
     relayDirectNoEtag: "No strong ETag for resuming the direct file; an explicit restart is required",
     relayDirectWithTracks: "A direct combined file cannot be transferred as a graph of separately selected tracks",
     relayDirectNowManifest: "The earlier direct stream is now a manifest; an explicit restart is required",
+    relayPageNotFile: "The source answered with a web page instead of the file, so nothing was written. Sign in to the site in this tab and restart the transfer.",
     roleVideo: "video",
     roleAudio: "audio",
     roleSubtitle: "subtitle",
@@ -420,6 +423,8 @@
     sessionPermissionWrongStore: "Site oturum izni bu sekmenin çerez deposu için verilmiş değil. İzni bu sekmede yeniden verin.",
     partitionedScopeUnverifiable: "Bu Chrome sürümünde bölümlenmiş oturum kapsamı doğrulanamıyor. Tarayıcıyı güncelleyin veya site oturumu iznini kaldırın.",
     partitionScopeUntransferable: "Bu Chrome bölümünün oturum kapsamı güvenle aktarılamıyor.",
+    takeoverStoreUnverifiable: "Bu indirme için tarayıcının çerez deposu tek olarak doğrulanamadı; indirme tarayıcıda kalıyor.",
+    takeoverSessionWrongStore: "Site oturum izni tarayıcının normal çerez deposu için verilmiş değil; indirme tarayıcıda kalıyor.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "Aktarım için kaynak sekmesi ve belgesi bulunamadı. İndirilecek sayfayı bu sekmede açıp yeniden deneyin.",
@@ -494,6 +499,7 @@
     relayDirectNoEtag: "Doğrudan dosya sürdürmesi için güçlü ETag yok; açık yeniden başlatma gerekli",
     relayDirectWithTracks: "Doğrudan birleşik dosya ayrı seçili track grafiği olarak aktarılamaz",
     relayDirectNowManifest: "Önceki doğrudan akış şimdi manifest oldu; açık yeniden başlatma gerekli",
+    relayPageNotFile: "Kaynak dosya yerine bir web sayfasıyla yanıt verdi; hiçbir şey yazılmadı. Bu sekmede siteye giriş yapıp aktarımı yeniden başlatın.",
     roleVideo: "görüntü",
     roleAudio: "ses",
     roleSubtitle: "altyazı",
@@ -681,6 +687,8 @@
     sessionPermissionWrongStore: "لم يُمنح إذن جلسة الموقع لمخزن ملفات تعريف الارتباط الخاص بهذه العلامة. امنحه مرة أخرى في هذه العلامة.",
     partitionedScopeUnverifiable: "لا يمكن لإصدار Chrome هذا التحقق من نطاق الجلسة المقسَّمة. حدّث المتصفح أو أزل إذن جلسة الموقع.",
     partitionScopeUntransferable: "لا يمكن تسليم نطاق الجلسة لقسم Chrome هذا بأمان.",
+    takeoverStoreUnverifiable: "تعذّر التحقق من أن مخزن ملفات تعريف الارتباط في المتصفح واحد فقط لهذا التنزيل، لذلك يبقى التنزيل في المتصفح.",
+    takeoverSessionWrongStore: "لم يُمنح إذن جلسة الموقع لمخزن ملفات تعريف الارتباط العادي في المتصفح، لذلك يبقى التنزيل في المتصفح.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "تعذّر العثور على علامة تبويب المصدر ومستنده للنقل. افتح الصفحة المراد تنزيلها في هذه العلامة وأعد المحاولة.",
@@ -755,6 +763,7 @@
     relayDirectNoEtag: "لا يوجد ETag قوي لاستئناف الملف المباشر؛ يلزم إعادة تشغيل صريحة",
     relayDirectWithTracks: "لا يمكن نقل الملف المباشر المدمج كمخطط من مسارات محددة بشكل منفصل",
     relayDirectNowManifest: "أصبح البث المباشر السابق الآن manifest؛ يلزم إعادة تشغيل صريحة",
+    relayPageNotFile: "ردّ المصدر بصفحة ويب بدلاً من الملف، لذلك لم يتم كتابة أي شيء. سجّل الدخول إلى الموقع في هذه العلامة وأعد تشغيل النقل.",
     roleVideo: "فيديو",
     roleAudio: "صوت",
     roleSubtitle: "ترجمة",
@@ -942,6 +951,8 @@
     sessionPermissionWrongStore: "El permiso de sesión del sitio no se concedió para el almacén de cookies de esta pestaña. Volver a concederlo en esta pestaña.",
     partitionedScopeUnverifiable: "Esta versión de Chrome no puede verificar el ámbito de sesión particionado. Actualizar el navegador o quitar el permiso de sesión del sitio.",
     partitionScopeUntransferable: "El ámbito de sesión de esta partición de Chrome no se puede traspasar de forma segura.",
+    takeoverStoreUnverifiable: "No se ha podido verificar que el almacén de cookies del navegador sea exactamente uno para esta descarga, así que se queda en el navegador.",
+    takeoverSessionWrongStore: "El permiso de sesión del sitio no se concedió para el almacén de cookies normal del navegador, así que la descarga se queda en el navegador.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "No se han encontrado la pestaña de origen ni el documento de la transferencia. Abrir en esta pestaña la página que se quiere descargar y volver a intentarlo.",
@@ -1016,6 +1027,7 @@
     relayDirectNoEtag: "No hay ETag fuerte para reanudar el archivo directo; se requiere reiniciar explícitamente",
     relayDirectWithTracks: "Un archivo directo combinado no se puede transferir como un grafo de pistas seleccionadas por separado",
     relayDirectNowManifest: "El flujo directo anterior es ahora un manifiesto; se requiere reiniciar explícitamente",
+    relayPageNotFile: "El origen respondió con una página web en lugar del archivo, así que no se escribió nada. Iniciar sesión en el sitio en esta pestaña y reiniciar la transferencia.",
     roleVideo: "vídeo",
     roleAudio: "audio",
     roleSubtitle: "subtítulo",
@@ -1203,6 +1215,8 @@
     sessionPermissionWrongStore: "A permissão de sessão do site não foi concedida para o armazenamento de cookies desta guia. Conceda-a novamente nesta guia.",
     partitionedScopeUnverifiable: "Esta versão do Chrome não consegue verificar o escopo de sessão particionado. Atualize o navegador ou remova a permissão de sessão do site.",
     partitionScopeUntransferable: "O escopo de sessão desta partição do Chrome não pode ser transferido com segurança.",
+    takeoverStoreUnverifiable: "Não foi possível verificar que o armazenamento de cookies do navegador seja único para este download, então ele permanece no navegador.",
+    takeoverSessionWrongStore: "A permissão de sessão do site não foi concedida para o armazenamento de cookies normal do navegador, então o download permanece no navegador.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "A guia de origem e o documento da transferência não foram encontrados. Abra a página a baixar nesta guia e tente novamente.",
@@ -1277,6 +1291,7 @@
     relayDirectNoEtag: "Não há ETag forte para retomar o arquivo direto; é necessário um reinício explícito",
     relayDirectWithTracks: "Um arquivo combinado direto não pode ser transferido como um grafo de faixas selecionadas separadamente",
     relayDirectNowManifest: "O fluxo direto anterior agora é um manifesto; é necessário um reinício explícito",
+    relayPageNotFile: "A origem respondeu com uma página da web em vez do arquivo, então nada foi gravado. Faça login no site nesta guia e reinicie a transferência.",
     roleVideo: "vídeo",
     roleAudio: "áudio",
     roleSubtitle: "legenda",
@@ -1464,6 +1479,8 @@
     sessionPermissionWrongStore: "L'autorisation de session du site n'a pas été accordée pour le magasin de cookies de cet onglet. Accordez-la de nouveau dans cet onglet.",
     partitionedScopeUnverifiable: "Cette version de Chrome ne peut pas vérifier la portée de session partitionnée. Mettez à jour le navigateur ou supprimez l'autorisation de session du site.",
     partitionScopeUntransferable: "La portée de session de cette partition Chrome ne peut pas être transmise en toute sécurité.",
+    takeoverStoreUnverifiable: "Le magasin de cookies du navigateur n'a pas pu être vérifié comme unique pour ce téléchargement ; il reste donc dans le navigateur.",
+    takeoverSessionWrongStore: "L'autorisation de session du site n'a pas été accordée pour le magasin de cookies normal du navigateur ; le téléchargement reste donc dans le navigateur.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "L'onglet et le document source du transfert sont introuvables. Ouvrez la page à télécharger dans cet onglet et réessayez.",
@@ -1538,6 +1555,7 @@
     relayDirectNoEtag: "Pas d'ETag fort pour reprendre le fichier direct ; un redémarrage explicite est nécessaire",
     relayDirectWithTracks: "Un fichier combiné direct ne peut pas être transféré comme un graphe de pistes sélectionnées séparément",
     relayDirectNowManifest: "Le flux direct précédent est maintenant un manifeste ; un redémarrage explicite est nécessaire",
+    relayPageNotFile: "La source a répondu par une page web au lieu du fichier ; rien n'a été écrit. Connectez-vous au site dans cet onglet et relancez le transfert.",
     roleVideo: "vidéo",
     roleAudio: "audio",
     roleSubtitle: "sous-titre",
@@ -1725,6 +1743,8 @@
     sessionPermissionWrongStore: "Die Berechtigung für die Website-Sitzung wurde nicht für den Cookie-Speicher dieses Tabs erteilt. Erteilen Sie sie in diesem Tab erneut.",
     partitionedScopeUnverifiable: "Diese Chrome-Version kann den partitionierten Sitzungsbereich nicht prüfen. Aktualisieren Sie den Browser oder entfernen Sie die Berechtigung für die Website-Sitzung.",
     partitionScopeUntransferable: "Der Sitzungsbereich dieser Chrome-Partition kann nicht sicher übergeben werden.",
+    takeoverStoreUnverifiable: "Der Cookie-Speicher des Browsers konnte für diesen Download nicht eindeutig als einzelner Speicher bestätigt werden, daher bleibt er im Browser.",
+    takeoverSessionWrongStore: "Die Berechtigung für die Website-Sitzung wurde nicht für den normalen Cookie-Speicher des Browsers erteilt, daher bleibt der Download im Browser.",
 
     // ---- browser transfer: service-worker side
     relayTargetNotFound: "Der Quell-Tab und das Dokument für die Übertragung wurden nicht gefunden. Öffnen Sie die herunterzuladende Seite in diesem Tab und versuchen Sie es erneut.",
@@ -1799,6 +1819,7 @@
     relayDirectNoEtag: "Kein starkes ETag zum Fortsetzen der direkten Datei; ein ausdrücklicher Neustart ist erforderlich",
     relayDirectWithTracks: "Eine direkte kombinierte Datei kann nicht als Graph separat ausgewählter Spuren übertragen werden",
     relayDirectNowManifest: "Der frühere direkte Stream ist jetzt ein Manifest; ein ausdrücklicher Neustart ist erforderlich",
+    relayPageNotFile: "Die Quelle hat statt der Datei mit einer Webseite geantwortet, daher wurde nichts geschrieben. Melden Sie sich in diesem Tab bei der Website an und starten Sie die Übertragung neu.",
     roleVideo: "Video",
     roleAudio: "Audio",
     roleSubtitle: "Untertitel",
