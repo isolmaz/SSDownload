@@ -1352,6 +1352,102 @@ fn a_stored_profile_with_two_spellings_of_one_login_host_keeps_the_first_and_sav
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Leaves a stored profile as a build without the defaults marker wrote it.
+fn store_profile_without_defaults_marker(paths: &AppPaths, connections: u8, per_host_limit: u8) {
+    Engine::open(paths.clone()).unwrap().shutdown();
+    let mut store = Store::open(&paths.database).unwrap();
+    let mut value = serde_json::to_value(store.load_settings().unwrap().unwrap()).unwrap();
+    let fields = value.as_object_mut().unwrap();
+    fields.remove("defaults_version");
+    fields.insert("connections".into(), connections.into());
+    fields.insert("per_host_limit".into(), per_host_limit.into());
+    store
+        .save_settings(&serde_json::from_value(value).unwrap())
+        .unwrap();
+}
+
+fn connection_limits(engine: &Engine) -> (u8, u8) {
+    let settings = engine.snapshot().settings.clone();
+    (settings.connections, settings.per_host_limit)
+}
+
+#[test]
+fn a_new_profile_starts_with_eight_connections_per_file_and_per_host() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-defaults-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    assert_eq!(connection_limits(&engine), (8, 8));
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_stored_profile_with_the_old_default_pair_moves_to_eight_and_eight_once() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-defaults-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    store_profile_without_defaults_marker(&paths, 4, 2);
+
+    let engine = Engine::open(paths.clone()).unwrap();
+    assert_eq!(connection_limits(&engine), (8, 8));
+    engine.shutdown();
+
+    let reopened = Engine::open(paths).unwrap();
+    assert_eq!(connection_limits(&reopened), (8, 8));
+    reopened.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_stored_profile_with_any_other_pair_keeps_its_values() {
+    for (stored, expected) in [
+        ((4, 2), (8, 8)),
+        ((4, 3), (4, 3)),
+        ((3, 2), (3, 2)),
+        ((8, 2), (8, 2)),
+        ((2, 4), (2, 4)),
+        ((1, 1), (1, 1)),
+        ((16, 16), (16, 16)),
+    ] {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-engine-defaults-{}", Uuid::new_v4()));
+        let paths = AppPaths::new(root.clone()).unwrap();
+        store_profile_without_defaults_marker(&paths, stored.0, stored.1);
+        let engine = Engine::open(paths).unwrap();
+        assert_eq!(connection_limits(&engine), expected, "stored {stored:?}");
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn four_and_two_chosen_after_the_move_stay_through_restarts() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-defaults-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    store_profile_without_defaults_marker(&paths, 4, 2);
+
+    let engine = Engine::open(paths.clone()).unwrap();
+    assert_eq!(connection_limits(&engine), (8, 8));
+    let mut chosen = engine.snapshot().settings.clone();
+    chosen.connections = 4;
+    chosen.per_host_limit = 2;
+    engine.update_settings(chosen.clone()).unwrap();
+    engine.shutdown();
+
+    let engine = Engine::open(paths.clone()).unwrap();
+    assert_eq!(connection_limits(&engine), (4, 2));
+    // A settings file or a stale dialog snapshot that carries no marker does not reopen the move.
+    let mut value = serde_json::to_value(&chosen).unwrap();
+    value.as_object_mut().unwrap().remove("defaults_version");
+    engine
+        .update_settings(serde_json::from_value(value).unwrap())
+        .unwrap();
+    engine.shutdown();
+
+    let engine = Engine::open(paths).unwrap();
+    assert_eq!(connection_limits(&engine), (4, 2));
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn a_job_named_from_the_address_gets_the_decoded_file_name() {
     let root = std::env::temp_dir().join(format!("ssdownload-engine-name-{}", Uuid::new_v4()));
@@ -2123,6 +2219,7 @@ mod retry_budget {
         let engine = Engine::open(AppPaths::new(root.to_path_buf()).unwrap()).unwrap();
         let mut settings = engine.snapshot().settings.clone();
         settings.retry_limit = retry_limit;
+        settings.connections = 4;
         settings.per_host_limit = 4;
         engine.update_settings(settings).unwrap();
         engine

@@ -22,6 +22,8 @@ pub enum DownloadKind {
 /// previous value as well (CONTRIBUTING.md, "App and extension compatibility").
 pub const CAPABILITY_VERSION: u32 = 3;
 pub const ONBOARDING_VERSION: u32 = 1;
+/// Generation of the default settings values a stored profile has been brought to.
+const DEFAULTS_VERSION: u32 = 1;
 pub const DEFAULT_QUEUE_ID: &str = "default";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -570,6 +572,8 @@ pub struct Settings {
     pub usage_modes: UsageModes,
     pub onboarding_version: u32,
     pub settings_revision: u64,
+    /// The generation of default values this profile has been moved to; owned by the engine.
+    pub defaults_version: u32,
     pub queues: Vec<QueuePolicy>,
     pub folder_rules: Vec<FolderRule>,
     pub synchronization_policies: Vec<SyncPolicy>,
@@ -678,9 +682,9 @@ impl Default for Settings {
         Self {
             download_dir: PathBuf::new(),
             max_active: 3,
-            connections: 4,
+            connections: 8,
             media_fragment_connections: 4,
-            per_host_limit: 2,
+            per_host_limit: 8,
             speed_limit_kib: 0,
             retry_limit: 3,
             clipboard_watch: false,
@@ -696,6 +700,7 @@ impl Default for Settings {
             usage_modes: UsageModes::default(),
             onboarding_version: 0,
             settings_revision: 0,
+            defaults_version: 0,
             queues: vec![QueuePolicy::default()],
             folder_rules: Vec::new(),
             synchronization_policies: Vec::new(),
@@ -742,6 +747,21 @@ impl Settings {
             ui_language: crate::i18n::system_language().into(),
             ..Self::default()
         }
+    }
+
+    /// Brings a stored profile to the current default values, once. Only the exact pair of
+    /// 4 connections per file and 2 per host is replaced (by 8 and 8); every other stored value
+    /// is the user's choice. Returns whether the settings changed.
+    pub(crate) fn adopt_current_defaults(&mut self) -> bool {
+        if self.defaults_version >= DEFAULTS_VERSION {
+            return false;
+        }
+        if self.connections == 4 && self.per_host_limit == 2 {
+            self.connections = 8;
+            self.per_host_limit = 8;
+        }
+        self.defaults_version = DEFAULTS_VERSION;
+        true
     }
 }
 
@@ -1006,6 +1026,65 @@ mod tests {
     use super::TransferControl;
     use super::UiMode;
     use std::thread;
+
+    #[test]
+    fn default_settings_use_eight_connections_per_file_and_per_host() {
+        let settings = super::Settings::default();
+        assert_eq!(settings.connections, 8);
+        assert_eq!(settings.per_host_limit, 8);
+        let valid = super::Settings {
+            download_dir: std::env::temp_dir(),
+            ..settings
+        };
+        crate::validation::validate_settings(&valid).unwrap();
+    }
+
+    #[test]
+    fn only_the_exact_old_default_pair_moves_to_the_current_defaults() {
+        for (connections, per_host_limit, expected) in [
+            (4, 2, (8, 8)),
+            (4, 3, (4, 3)),
+            (3, 2, (3, 2)),
+            (8, 2, (8, 2)),
+            (2, 4, (2, 4)),
+            (1, 1, (1, 1)),
+            (16, 16, (16, 16)),
+        ] {
+            let mut settings = super::Settings {
+                connections,
+                per_host_limit,
+                ..Default::default()
+            };
+            assert!(settings.adopt_current_defaults());
+            assert_eq!(
+                (settings.connections, settings.per_host_limit),
+                expected,
+                "stored {connections}/{per_host_limit}"
+            );
+            settings.connections = connections;
+            settings.per_host_limit = per_host_limit;
+            assert!(!settings.adopt_current_defaults());
+            assert_eq!(
+                (settings.connections, settings.per_host_limit),
+                (connections, per_host_limit)
+            );
+        }
+    }
+
+    #[test]
+    fn the_defaults_marker_survives_a_json_round_trip_and_is_absent_in_old_records() {
+        let mut settings = super::Settings::default();
+        assert!(settings.adopt_current_defaults());
+        let stored = serde_json::to_string(&settings).unwrap();
+        let mut loaded: super::Settings = serde_json::from_str(&stored).unwrap();
+        assert_eq!(loaded.defaults_version, settings.defaults_version);
+        assert!(!loaded.adopt_current_defaults());
+
+        let mut old: super::Settings =
+            serde_json::from_str(r#"{"connections":4,"per_host_limit":2}"#).unwrap();
+        assert!(old.adopt_current_defaults());
+        assert_eq!((old.connections, old.per_host_limit), (8, 8));
+    }
 
     #[test]
     fn an_unreadable_surface_value_reads_as_advanced() {
