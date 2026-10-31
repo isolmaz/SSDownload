@@ -4293,10 +4293,10 @@ fn can_pause_or_resume(job: &Job) -> bool {
 }
 fn short_error(job: &Job, value: &str) -> &'static str {
     let lower = crate::media::failure_reading(value);
-    if value.contains(crate::error_codes::NET_004.0) {
+    if crate::error_codes::from_text(value) == Some(crate::error_codes::NET_004) {
         crate::i18n::ui(
-            "Dosya yerine oturum açma veya web sayfası geldi; dosyayı tarayıcıda indirin veya uzantıda bu site için oturum çerezlerine izin verin.",
-            "A sign-in or web page came instead of the file; download it in the browser or allow session cookies for this site in the extension.",
+            "Dosya yerine oturum açma veya web sayfası geldi; dosyayı tarayıcıda indirin veya uzantıda bu site için oturum çerezlerine izin verip bağlantıyı tarayıcıdan yeniden ekleyin.",
+            "A sign-in or web page came instead of the file; download it in the browser, or allow session cookies for this site in the extension and add the link again from the browser.",
         )
     } else if source_refresh_available(job)
         && (job.state == JobState::AwaitingSource
@@ -8126,8 +8126,8 @@ mod tests {
             live: false,
             sequence: 0,
         };
-        let turkish = "SSD-NET-004 Kaynak dosya yerine bir oturum açma veya web sayfasıyla yanıt verdi. Dosyayı tarayıcıda indirin ya da eklentinin sağ tık menüsünden Bu site için oturum çerezlerine izin ver seçeneğini kullanın.";
-        let english = "SSD-NET-004 The source answered with a sign-in or web page instead of the file. Download it in the browser, or choose Allow session cookies for this site in the extension's context menu.";
+        let turkish = "SSD-NET-004 Kaynak dosya yerine bir oturum açma veya web sayfasıyla yanıt verdi. Dosyayı tarayıcıda indirin ya da eklentinin sağ tık menüsünden Bu site için oturum çerezlerine izin ver seçeneğini kullanıp bağlantıyı tarayıcıdan yeniden ekleyin (Bağlantıyı SSDownload ile indir).";
+        let english = "SSD-NET-004 The source answered with a sign-in or web page instead of the file. Download it in the browser, or choose Allow session cookies for this site in the extension's context menu and add the link again from the browser (Download link with SSDownload).";
         let hint = super::short_error(&failed, turkish);
         assert_eq!(super::short_error(&failed, english), hint, "English record");
         assert_eq!(
@@ -8135,7 +8135,17 @@ mod tests {
             hint,
             "code only"
         );
-        assert!(hint.contains("oturum çerezlerine izin verin"), "{hint}");
+        assert!(
+            hint.contains("oturum çerezlerine izin verip bağlantıyı tarayıcıdan yeniden ekleyin"),
+            "{hint}"
+        );
+        crate::i18n::with_language("en", || {
+            let hint = super::short_error(&failed, english);
+            assert!(
+                hint.contains("allow session cookies for this site in the extension and add the link again from the browser"),
+                "{hint}"
+            );
+        });
         assert_ne!(
             super::short_error(&failed, "fragment 7: HTTP Error 403"),
             hint,
