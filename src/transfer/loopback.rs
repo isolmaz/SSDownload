@@ -3560,7 +3560,9 @@ const SIGNED_RATE: u64 = 8 * MIB;
 fn a_segmented_download_follows_the_source_again_when_its_redirect_target_expires() {
     let expected = pattern(1, SIGNED_SIZE);
     for status in [401, 403, 410] {
-        let server = signed_source(SIGNED_SIZE, SIGNED_RATE, status, vec![lasting(400)]);
+        // The first address serves the probe's two requests and the first two ranges, so the
+        // third range meets the expiry.
+        let server = signed_source(SIGNED_SIZE, SIGNED_RATE, status, expiring_after(4));
         let directory = TempDir::new("signed-segmented");
         let output = directory.0.join("payload.bin");
         forget_writes();
@@ -3609,7 +3611,14 @@ fn a_segmented_download_follows_the_source_again_when_its_redirect_target_expire
 #[test]
 fn a_segmented_download_follows_the_source_again_at_each_expiry_that_follows_progress() {
     let size = 40 * MIB + 7;
-    let server = signed_source(size, SIGNED_RATE, 403, vec![lasting(300)]);
+    // Each of the first two addresses serves the two requests that check it and two ranges, and
+    // the third never expires.
+    let server = signed_source(
+        size,
+        SIGNED_RATE,
+        403,
+        vec![valid_for(4), valid_for(4), valid_for(usize::MAX)],
+    );
     let directory = TempDir::new("signed-repeated");
     let output = directory.0.join("payload.bin");
     forget_writes();
@@ -3641,11 +3650,11 @@ fn a_one_connection_download_follows_the_source_again_when_a_retry_meets_an_expi
             signing: Some(Signing {
                 from: "/file".into(),
                 origin: String::new(),
-                validity: vec![lasting(300)],
+                validity: expiring_after(2),
             }),
             expiry: Some(status),
             // The first body is cut before its first byte, so the download waits a second and
-            // asks the same address again.
+            // asks the same address again, which has served its probe and that body.
             cut_body: Some(CutBody {
                 after_bytes: 0,
                 responses: 1,
@@ -3686,26 +3695,28 @@ fn a_one_connection_download_follows_the_source_again_when_a_retry_meets_an_expi
 
 #[test]
 fn a_download_resumed_after_its_redirect_target_expired_asks_the_source_again() {
-    // The first attempt is stopped while its leases run, and the address it used has expired when
-    // the second one starts. Each attempt has as many ranges as connections, so none outlives an
-    // address.
+    // The first attempt is stopped once its leases have written bytes, and the address it used
+    // has expired when the second one starts: it served the requests of the first attempt (the
+    // probe's HEAD, the ranged probe of a segmented download, and one range per connection).
     let size = 12 * MIB + 123;
     let expected = pattern(1, size);
-    for connections in [1u8, 2] {
-        let server = signed_source(size, SIGNED_RATE, 403, vec![lasting(300)]);
+    for (connections, first_attempt) in [(1u8, 2), (2, 4)] {
+        let server = signed_source(size, SIGNED_RATE, 403, expiring_after(first_attempt));
         let directory = TempDir::new("signed-resume");
         let output = directory.0.join("payload.bin");
         let control = TransferControl::default();
-        let stopper = stop_after(&control, Duration::from_millis(500));
         let first = fetch(
             &file_request(server.url("/file")),
             &output,
             &control,
             connections,
             connections,
-            &mut |_| {},
+            &mut |progress| {
+                if progress.downloaded > 0 {
+                    control.cancel();
+                }
+            },
         );
-        stopper.join().unwrap();
         assert!(first.is_err(), "{connections}: the first attempt finished");
         assert!(
             retained_bytes(&output).is_some_and(|kept| kept > 0),
@@ -3798,7 +3809,7 @@ fn only_checked(log: &[Logged], address: u64) -> bool {
 fn a_fresh_target_with_another_identity_is_not_adopted_and_the_retained_work_stays() {
     // The tag changes with each HEAD, so the source's answer after the expiry names another
     // file than the one whose bytes are on disk.
-    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+    let (server, _directory) = signed_download_that_fails_with(403, expiring_after(4), |config| {
         config.etag_rotation_heads = Some(1);
     });
     let log = server.log();
@@ -3814,7 +3825,7 @@ fn a_fresh_target_that_answers_again_with_the_status_is_not_asked_for_data() {
     let (server, _directory) = signed_download_that_fails_with(
         410,
         vec![
-            lasting(400),
+            valid_for(4),
             Validity {
                 lifetime: Duration::ZERO,
                 requests: usize::MAX,
@@ -3837,17 +3848,8 @@ fn a_fresh_target_that_answers_again_with_the_status_is_not_asked_for_data() {
 fn a_fresh_target_that_delivers_nothing_is_followed_only_once() {
     // The second address answers the two requests that check it and refuses everything after
     // them, so its data requests are refused without a byte having come from it.
-    let (server, _directory) = signed_download_that_fails_with(
-        403,
-        vec![
-            lasting(400),
-            Validity {
-                lifetime: Duration::from_secs(3600),
-                requests: 2,
-            },
-        ],
-        |_| {},
-    );
+    let (server, _directory) =
+        signed_download_that_fails_with(403, vec![valid_for(4), valid_for(2)], |_| {});
     let log = server.log();
     assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
     let asked = asked_of(&log, 1);
@@ -3862,7 +3864,7 @@ fn a_fresh_target_that_delivers_nothing_is_followed_only_once() {
 
 #[test]
 fn a_fresh_target_that_is_a_web_page_is_not_adopted_and_the_retained_work_stays() {
-    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+    let (server, _directory) = signed_download_that_fails_with(403, expiring_after(4), |config| {
         config.signed_pages_from = Some(1);
     });
     let log = server.log();
@@ -3882,13 +3884,7 @@ fn a_one_connection_download_follows_the_source_only_once_when_the_fresh_target_
         signing: Some(Signing {
             from: "/file".into(),
             origin: String::new(),
-            validity: vec![
-                lasting(300),
-                Validity {
-                    lifetime: Duration::from_secs(3600),
-                    requests: 2,
-                },
-            ],
+            validity: vec![valid_for(2), valid_for(2)],
         }),
         expiry: Some(403),
         cut_body: Some(CutBody {
@@ -3978,7 +3974,7 @@ fn the_requests_that_follow_an_expiry_keep_the_headers_of_the_origin_they_go_to(
         signing: Some(Signing {
             from: "/file".into(),
             origin: target.url(""),
-            validity: vec![lasting(400)],
+            validity: expiring_after(4),
         }),
         logged_headers: watched.map(String::from).to_vec(),
         ..Config::default()
@@ -4054,27 +4050,26 @@ fn a_fresh_target_is_not_accepted_when_it_is_less_secure_than_the_one_that_expir
     assert_eq!(number_of(fresh.as_str()), Some(2));
 }
 
-/// Signed addresses that answer as expired from their fifth request on: the probe's two, the
-/// first two ranges, and then no more. The addresses after the first never expire.
+/// A signed address that answers its first `requests` requests, however long they take to
+/// arrive, and as expired from the next on.
+fn valid_for(requests: usize) -> Validity {
+    Validity {
+        lifetime: Duration::from_secs(3600),
+        requests,
+    }
+}
+
+/// Signed addresses of which the first answers as expired from its request after the first
+/// `requests` on. The addresses after the first never expire.
 fn expiring_after(requests: usize) -> Vec<Validity> {
-    let hour = Duration::from_secs(3600);
-    vec![
-        Validity {
-            lifetime: hour,
-            requests,
-        },
-        Validity {
-            lifetime: hour,
-            requests: usize::MAX,
-        },
-    ]
+    vec![valid_for(requests), valid_for(usize::MAX)]
 }
 
 #[test]
 fn a_fresh_target_whose_ranged_answer_carries_no_validators_is_not_adopted() {
     // The answers to ranged requests with If-Range have neither ETag nor Last-Modified, so the
     // fresh target proves nothing about the file whose bytes are on disk.
-    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+    let (server, _directory) = signed_download_that_fails_with(403, expiring_after(4), |config| {
         config.partial_without_validators = true;
     });
     let log = server.log();
@@ -4088,7 +4083,7 @@ fn a_fresh_target_whose_ranged_answer_carries_no_validators_is_not_adopted() {
 #[test]
 fn a_fresh_target_whose_one_byte_answer_has_no_body_is_checked_all_the_same() {
     // The check sends no body byte, so nothing but the headers can prove the identity.
-    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+    let (server, _directory) = signed_download_that_fails_with(403, expiring_after(4), |config| {
         config.partial_without_validators = true;
         config.bodiless_probe = true;
     });
