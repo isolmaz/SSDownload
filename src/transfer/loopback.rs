@@ -1938,9 +1938,12 @@ fn the_end_of_a_segmented_download_waits_for_the_running_cycle() {
 fn the_time_trigger_fires_while_no_lease_finishes() {
     let lease = 8 * MIB;
     let size = 2 * lease;
+    // The download is cut short once 6 MiB are written, which at this rate takes 24 seconds, so
+    // the cycle that the clock starts has that long to be recorded. The server makes up for a
+    // stall with a burst, so a faster rate would spend that time on the stall.
     let server = Server::start(Config {
         size,
-        throttle: Some(2 * MIB),
+        throttle: Some(128 * 1024),
         ..Config::default()
     });
     checkpoint_every(Duration::from_millis(50), u64::MAX);
@@ -1970,7 +1973,11 @@ fn the_time_trigger_fires_while_no_lease_finishes() {
     );
     assert!(result.is_err());
     let (cycles, record) = seen.expect("the download was never observed");
-    assert!(cycles > 0, "no cycle started before a lease could finish");
+    assert!(
+        cycles > 0,
+        "no cycle was recorded before a lease could finish: {:?}",
+        steps()
+    );
     let (record, part) = record.expect("the cycle left no record");
     let claimed = assert_claims_are_exact(&record, &part, &pattern(1, size));
     assert!(claimed > 0 && claimed < lease, "{claimed} bytes");
