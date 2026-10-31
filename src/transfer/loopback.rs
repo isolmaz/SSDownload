@@ -4048,6 +4048,221 @@ fn a_fresh_target_is_not_accepted_when_it_is_less_secure_than_the_one_that_expir
     assert_eq!(number_of(fresh.as_str()), Some(2));
 }
 
+/// Signed addresses that answer as expired from their fifth request on: the probe's two, the
+/// first two ranges, and then no more. The addresses after the first never expire.
+fn expiring_after(requests: usize) -> Vec<Validity> {
+    let hour = Duration::from_secs(3600);
+    vec![
+        Validity {
+            lifetime: hour,
+            requests,
+        },
+        Validity {
+            lifetime: hour,
+            requests: usize::MAX,
+        },
+    ]
+}
+
+#[test]
+fn a_fresh_target_whose_ranged_answer_carries_no_validators_is_not_adopted() {
+    // The answers to ranged requests with If-Range have neither ETag nor Last-Modified, so the
+    // fresh target proves nothing about the file whose bytes are on disk.
+    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+        config.partial_without_validators = true;
+    });
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    assert!(
+        !asked_of(&log, 1).is_empty() && only_checked(&log, 1),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_fresh_target_whose_one_byte_answer_has_no_body_is_checked_all_the_same() {
+    // The check sends no body byte, so nothing but the headers can prove the identity.
+    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+        config.partial_without_validators = true;
+        config.bodiless_probe = true;
+    });
+    let log = server.log();
+    assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
+    assert!(
+        !asked_of(&log, 1).is_empty() && only_checked(&log, 1),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_fresh_target_on_another_host_gets_a_new_handle_and_not_the_site_login_of_the_old_host() {
+    let size = 40 * MIB + 123;
+    let target = |size| Config {
+        size,
+        throttle: Some(SIGNED_RATE),
+        expiry: Some(403),
+        ..Config::default()
+    };
+    // The second lease of the old host outlasts the renewal, so its worker meets the fresh host
+    // with the handle it has from the old one.
+    let old = Server::start(Config {
+        slow_connection: Some((0, SIGNED_RATE * 3 / 8)),
+        ..target(size)
+    });
+    let fresh = Server::start(target(size));
+    // The first address is on `localhost`, the ones after it on `127.0.0.1`: two hosts.
+    let source = Server::start(Config {
+        signing: Some(Signing {
+            from: "/file".into(),
+            origin: old.url("").replace("127.0.0.1", "localhost"),
+            validity: expiring_after(4),
+        }),
+        signed_origin_from: Some((1, fresh.url(""))),
+        ..Config::default()
+    });
+    // The logins are process-wide and other tests reset them, so they are installed again
+    // until the download ends.
+    let login = crate::model::SiteLogin {
+        host: "localhost".into(),
+        username: "user".into(),
+        password: String::new(),
+        allow_http: true,
+    };
+    let installed = AtomicBool::new(false);
+    let finished = AtomicBool::new(false);
+    let directory = TempDir::new("signed-other-host");
+    let output = directory.0.join("payload.bin");
+    let result = thread::scope(|scope| {
+        scope.spawn(|| {
+            while !finished.load(Ordering::Acquire) {
+                crate::proxy::configure_site_logins(std::slice::from_ref(&login));
+                installed.store(true, Ordering::Release);
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+        while !installed.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let result = fetch(
+            &file_request(source.url("/file")),
+            &output,
+            &TransferControl::default(),
+            2,
+            2,
+            &mut |_| {},
+        );
+        finished.store(true, Ordering::Release);
+        result
+    });
+    crate::proxy::configure_site_logins(&[]);
+    let result = result.unwrap_or_else(|error| {
+        panic!(
+            "{error:#}: {:?} {:?} {:?}",
+            old.log(),
+            fresh.log(),
+            source.log()
+        )
+    });
+    assert_file_is(&result.path, &pattern(1, size), "other host");
+    old.wait_idle();
+    fresh.wait_idle();
+    let (old_log, fresh_log) = (old.log(), fresh.log());
+    assert!(
+        old_log.iter().any(|entry| entry
+            .header("authorization")
+            .is_some_and(|value| value.starts_with("Basic "))),
+        "the login never reached its own host: {old_log:?}"
+    );
+    assert!(
+        fresh_log.iter().any(|entry| entry.status == 206),
+        "the fresh host served no data: {fresh_log:?}"
+    );
+    for entry in &fresh_log {
+        assert_eq!(entry.header("authorization"), None, "{entry:?}");
+    }
+}
+
+#[test]
+fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gave_up() {
+    // The original address is on a slow host of its own and the signed addresses are on the
+    // host that another job also downloads from, under a limit of two connections per host. The
+    // refused worker frees its slot and the other job takes it; the download must not wait for
+    // that job to end.
+    let size = 40 * MIB + 123;
+    let target = Server::start(Config {
+        size,
+        throttle: Some(5 * MIB),
+        // The second lease runs long after the first one ends and its worker holds a slot.
+        slow_connection: Some((0, 2 * MIB)),
+        expiry: Some(403),
+        ..Config::default()
+    });
+    let source = Server::start(Config {
+        connection_delay: Some(Duration::from_millis(500)),
+        signing: Some(Signing {
+            from: "/file".into(),
+            origin: target.url(""),
+            validity: expiring_after(4),
+        }),
+        ..Config::default()
+    });
+    let rival = Server::start(Config {
+        size: 64 * MIB,
+        throttle: Some(2 * MIB),
+        ..Config::default()
+    });
+    let network = NetworkGovernor::new(2);
+    let directory = TempDir::new("signed-rival");
+    let output = directory.0.join("payload.bin");
+    let rival_output = directory.0.join("rival.bin");
+    let rival_control = TransferControl::default();
+    let (done_tx, done_rx) = mpsc::channel();
+    let (rival_tx, rival_rx) = mpsc::channel();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let result = download(
+                &file_request(source.url("/file").replace("127.0.0.1", "localhost")),
+                &output,
+                &TransferControl::default(),
+                &network,
+                2,
+                None,
+                &mut |_| {},
+            );
+            done_tx.send(result).unwrap();
+        });
+        // The other job starts once the download holds both slots, so it has to wait for one.
+        let started = Instant::now();
+        while data_gets(&target.log()).next().is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "no data request"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        scope.spawn(|| {
+            let result = download(
+                &file_request(rival.url("/rival.bin")),
+                &rival_output,
+                &rival_control,
+                &network,
+                1,
+                None,
+                &mut |_| {},
+            );
+            rival_tx.send(result.is_ok()).unwrap();
+        });
+        let outcome = done_rx.recv_timeout(Duration::from_secs(60));
+        let rival_ended = rival_rx.try_recv().is_ok();
+        rival_control.cancel();
+        let result = outcome
+            .expect("the download never ended")
+            .unwrap_or_else(|error| panic!("{error:#}"));
+        assert_file_is(&result.path, &pattern(1, size), "rival");
+        assert!(!rival_ended, "the download waited for the other job to end");
+    });
+}
+
 const BENCH_SIZE: u64 = 128 * MIB;
 const BENCH_RATE: u64 = 4 * MIB;
 /// The first connection that starts with a ranged GET above byte 0, so the slow socket does

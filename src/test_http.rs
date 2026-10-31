@@ -167,6 +167,10 @@ pub struct Config {
     pub expiry: Option<u16>,
     /// The signed addresses issued from this ordinal on answer as a web page (text/html).
     pub signed_pages_from: Option<usize>,
+    /// The signed addresses issued from this ordinal on name this origin instead of the signing one.
+    pub signed_origin_from: Option<(usize, String)>,
+    /// A GET for ytes=0-0 is answered 206 with its Content-Range and no body.
+    pub bodiless_probe: bool,
     /// Every `GET`, and every `HEAD` unless `head_not_redirected` is set, is answered 302 to this
     /// address, which can name another server.
     pub redirect_to: Option<String>,
@@ -219,6 +223,8 @@ impl Default for Config {
             signing: None,
             expiry: None,
             signed_pages_from: None,
+            signed_origin_from: None,
+            bodiless_probe: false,
             redirect_to: None,
             head_not_redirected: false,
             content_type: None,
@@ -804,7 +810,11 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             let mut reply = Reply::empty(302);
             reply.headers.push(format!(
                 "Location: {}/signed?exp={deadline}&n={ordinal}&max={}{}",
-                signing.origin,
+                config
+                    .signed_origin_from
+                    .as_ref()
+                    .filter(|(from, _)| ordinal >= *from)
+                    .map_or(signing.origin.as_str(), |(_, origin)| origin.as_str()),
                 validity.requests,
                 if page { "&page=1" } else { "" }
             ));
@@ -967,10 +977,11 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
                         headers.retain(|header| !header.starts_with("ETag:"));
                     }
                     headers.push(format!("Content-Range: bytes {start}-{end}/{size}"));
+                    let bodiless = config.bodiless_probe && (start, end) == (0, 0);
                     Reply {
                         headers,
-                        length: end - start + 1,
-                        body: Some((start, end - start + 1)),
+                        length: if bodiless { 0 } else { end - start + 1 },
+                        body: (!bodiless).then_some((start, end - start + 1)),
                         version,
                         ..Reply::empty(206)
                     }

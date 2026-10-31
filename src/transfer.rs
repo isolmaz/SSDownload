@@ -14,7 +14,7 @@ use std::{
     rc::Rc,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc, Condvar, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -27,6 +27,8 @@ const MAX_SEGMENT_SIZE: u64 = 8 * 1024 * 1024;
 const MIN_SPLIT_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
+/// The longest a worker waits for the renewal of an expired target that another worker makes.
+const RENEWAL_WAIT: Duration = Duration::from_secs(60);
 const IO_BUFFER: usize = 1024 * 1024;
 const STATE_VERSION: u8 = 3;
 // A lease is shorter than `MAX_SEGMENT_SIZE + MIN_SEGMENT_SIZE`, and an `Allowance` counts the
@@ -2842,8 +2844,12 @@ struct Target {
     /// The address the download was asked for; `None` when the download goes to it directly.
     original: Option<Url>,
     state: Mutex<TargetState>,
+    /// Signalled when a renewal ends.
+    renewed: Condvar,
     /// One more than the newest generation from which a byte was written, 0 before any.
     delivered: AtomicU32,
+    /// How long a worker waits for a renewal that another worker is making.
+    wait: Duration,
 }
 
 struct TargetState {
@@ -2852,6 +2858,8 @@ struct TargetState {
     generation: u32,
     /// Renewing failed or was refused, so the refusals that follow stand as they are.
     spent: bool,
+    /// A worker is asking the original address; the lock is not held meanwhile.
+    renewing: bool,
 }
 
 impl Target {
@@ -2862,8 +2870,11 @@ impl Target {
                 url,
                 generation: 0,
                 spent: false,
+                renewing: false,
             }),
+            renewed: Condvar::new(),
             delivered: AtomicU32::new(0),
+            wait: RENEWAL_WAIT,
         }
     }
 
@@ -2873,7 +2884,8 @@ impl Target {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// The address to request now and its generation; waits while a renewal is under way.
+    /// The address to request now and its generation. It never waits: a worker that is refused
+    /// by an address that is being replaced gives its connection up in `renew`.
     fn current(&self) -> (Url, u32) {
         let state = self.lock();
         (state.url.clone(), state.generation)
@@ -2885,39 +2897,57 @@ impl Target {
     }
 
     /// Whether the worker whose request to generation `failed` was refused should send it again.
-    /// A newer generation is used as it is. Otherwise `follow` obtains the next one, once per
-    /// generation: the first generation is renewed on its first refusal, a later one only after
-    /// a byte was written from it, so a source whose fresh addresses are refused at once ends the
-    /// transfer with the refusal. A failed renewal is final.
+    /// A newer generation is used as it is. Otherwise one worker at a time makes the next one
+    /// with `follow`, without the lock, and the others wait for it for at most `wait`: the first
+    /// generation is renewed on its first refusal, a later one only after a byte was written from
+    /// it, so a source whose fresh addresses are refused at once ends the transfer with the
+    /// refusal. A failed renewal is final. The caller holds no connection while it waits.
     fn renew(&self, failed: u32, follow: impl FnOnce(&Url, &Url) -> Option<Url>) -> bool {
         let Some(original) = &self.original else {
             return false;
         };
+        let deadline = Instant::now() + self.wait;
         let mut state = self.lock();
-        if state.generation != failed {
-            return true;
-        }
-        if state.spent {
-            return false;
+        loop {
+            if state.generation != failed {
+                return true;
+            }
+            if state.spent {
+                return false;
+            }
+            if !state.renewing {
+                break;
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            state = self
+                .renewed
+                .wait_timeout(state, left)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
         }
         if failed > 0 && self.delivered.load(Ordering::Acquire) <= failed {
             state.spent = true;
             return false;
         }
-        match follow(original, &state.url) {
+        state.renewing = true;
+        let refused = state.url.clone();
+        drop(state);
+        let fresh = follow(original, &refused);
+        let mut state = self.lock();
+        state.renewing = false;
+        match &fresh {
             Some(url) => {
-                state.url = url;
+                state.url = url.clone();
                 state.generation += 1;
-                true
             }
-            None => {
-                state.spent = true;
-                false
-            }
+            None => state.spent = true,
         }
+        self.renewed.notify_all();
+        fresh.is_some()
     }
 }
-
 struct DynamicRangeWorker<'a> {
     easy: Option<GovernedEasy>,
     /// The generation of the target that `easy` was made for.
@@ -3984,11 +4014,17 @@ fn refollow(
         refuse_page: record.refuse_page && fresh.refuse_page,
         ..record.clone()
     };
-    matches!(
-        verify_range_support(request, &candidate, false, control, network),
-        Ok(Some(_))
-    )
-    .then_some(fresh.url)
+    let Ok(Some(headers)) = verify_range_support(request, &candidate, false, control, network)
+    else {
+        return None;
+    };
+    // The check enforces the identity as the body arrives, and a one-byte answer may have none.
+    let expected = ExpectedResponse::Range {
+        start: 0,
+        end: Some(0),
+        total: candidate.total,
+    };
+    (!identity_changed(&headers, expected, &candidate)).then_some(fresh.url)
 }
 
 pub(crate) fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
@@ -8177,6 +8213,59 @@ mod tests {
         }
         assert_eq!(asked.load(Ordering::Acquire), 1);
         assert_eq!(target.current(), (address("b"), 1));
+    }
+
+    #[test]
+    fn a_renewal_in_progress_holds_no_lock_and_makes_no_worker_wait_for_the_address() {
+        let target = Arc::new(Target::new(Some(address("file")), address("a")));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let renewer = {
+            let target = target.clone();
+            thread::spawn(move || {
+                target.renew(0, |_, _| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Some(address("b"))
+                })
+            })
+        };
+        started_rx.recv().unwrap();
+        // The renewal is under way, and is not finished until it is released.
+        let asked = Instant::now();
+        assert_eq!(target.current(), (address("a"), 0));
+        assert!(asked.elapsed() < Duration::from_secs(5));
+        release_tx.send(()).unwrap();
+        assert!(renewer.join().unwrap());
+        assert_eq!(target.current(), (address("b"), 1));
+    }
+
+    #[test]
+    fn a_worker_waits_for_a_renewal_that_another_makes_only_for_a_bounded_time() {
+        let mut target = Target::new(Some(address("file")), address("a"));
+        target.wait = Duration::from_millis(100);
+        let target = Arc::new(target);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let renewer = {
+            let target = target.clone();
+            thread::spawn(move || {
+                target.renew(0, |_, _| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Some(address("b"))
+                })
+            })
+        };
+        started_rx.recv().unwrap();
+        let waited = Instant::now();
+        assert!(!target.renew(0, |_, _| panic!("a second renewal began")));
+        assert!(waited.elapsed() >= Duration::from_millis(100));
+        assert!(waited.elapsed() < Duration::from_secs(5));
+        // The renewal itself goes on, and the workers that come after it use its address.
+        release_tx.send(()).unwrap();
+        assert!(renewer.join().unwrap());
+        assert!(target.renew(0, |_, _| panic!("asked again")));
     }
 }
 
