@@ -170,8 +170,8 @@ pub struct AddRequest {
     /// Page markup the browser captured at handoff time, already bounded by the
     /// extension. It can carry session-bound markup, so it stays inside the
     /// profile: the job record seals it like the rest of the job, no
-    /// browser-facing response carries it (`public_snapshot`) and neither the
-    /// log nor the events dialog shows it.
+    /// browser-facing response carries it (`public_snapshot`, the request copy of a
+    /// browser transfer) and neither the log nor the events dialog shows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_html: Option<String>,
     pub source_identity: Option<SourceIdentity>,

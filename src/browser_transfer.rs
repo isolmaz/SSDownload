@@ -295,6 +295,18 @@ fn digest_file(path: &Path) -> Result<String> {
     }
     Ok(hex::encode(hash.finalize()))
 }
+/// The job's request as the extension receives it with a transfer grant. The relay reads the
+/// address, the page and frame identity, the quality and track selection and the subtitle
+/// access; the cookies, the request headers, the page markup and the destination folder stay
+/// in the app.
+fn relay_request(request: &AddRequest) -> AddRequest {
+    let mut request = request.clone();
+    request.session_cookies.clear();
+    request.headers.clear();
+    request.page_html = None;
+    request.directory = None;
+    request
+}
 fn response(state: &State, request: Option<Box<AddRequest>>) -> Response {
     Response {
         job_id: state.job_id.clone(),
@@ -497,13 +509,7 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 uuid::Uuid::new_v4().simple()
             );
             save(&root, &state)?;
-            let mut request = job.request.clone();
-            request.session_cookies.clear();
-            request.headers.retain(|name, _| {
-                !name.eq_ignore_ascii_case("cookie") && !name.eq_ignore_ascii_case("authorization")
-            });
-            request.directory = None;
-            let mut result = response(&state, Some(Box::new(request)));
+            let mut result = response(&state, Some(Box::new(relay_request(&job.request))));
             result.sender_generation = Some(generation);
             return Ok(result);
         }
@@ -870,4 +876,107 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
         let _ = engine.pause_browser_transfer(&job.id, generation);
     }
     operation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{
+        AudioSelection, ExternalSubtitle, ScopedCookie, SourceIdentity, SubtitleSelection,
+    };
+
+    const MARKUP: &str = "<html><body>account page of the signed-in user</body></html>";
+
+    /// Every field is spelled out, so a field added to the request has to be given a value
+    /// here before the comparison below accepts or rejects it.
+    fn job_request() -> AddRequest {
+        AddRequest {
+            url: "https://media.example/master.m3u8".into(),
+            kind: DownloadKind::Video,
+            filename: Some("film.mp4".into()),
+            directory: Some(PathBuf::from(r"D:\private\downloads")),
+            queue_id: Some("queue-1".into()),
+            headers: [
+                ("User-Agent", "agent"),
+                ("Cookie", "sid=1"),
+                ("authorization", "Bearer token"),
+                ("X-Api-Key", "key"),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .into(),
+            session_cookies: vec![ScopedCookie {
+                name: "sid".into(),
+                value: "1".into(),
+                domain: "media.example".into(),
+                ..Default::default()
+            }],
+            referer: Some("https://site.example/".into()),
+            page_url: Some("https://site.example/watch".into()),
+            page_html: Some(MARKUP.into()),
+            source_identity: Some(SourceIdentity {
+                video_id: "v1".into(),
+                frame_id: 3,
+                document_id: Some("doc".into()),
+                page_url: "https://site.example/watch".into(),
+            }),
+            format_id: Some("fmt-1".into()),
+            video_format_id: Some("hls-720".into()),
+            container: Some("mkv".into()),
+            max_height: Some(1080),
+            exact_height: Some(720),
+            audio_format_id: Some("audio-en".into()),
+            audio_language: Some("en".into()),
+            audio_tracks: vec![AudioSelection {
+                id: "audio-de".into(),
+                language: Some("de".into()),
+            }],
+            subtitle_mode: Some("manual".into()),
+            external_subtitles: vec![ExternalSubtitle {
+                url: "https://media.example/en.vtt".into(),
+                language: "en".into(),
+                label: "English".into(),
+                kind: "subtitles".into(),
+                is_default: true,
+                headers: [("Origin".to_owned(), "https://site.example".to_owned())].into(),
+                referer: Some("https://site.example/".into()),
+            }],
+            request_id: Some("request-1".into()),
+            audio_format: Some("m4a".into()),
+            expected_audio: Some(true),
+            subtitle_languages: vec!["en".into()],
+            subtitle_tracks: vec![SubtitleSelection {
+                language: "tr".into(),
+                automatic: true,
+            }],
+            playlist: true,
+            connections: Some(4),
+            checksum: Some("ab".repeat(32)),
+            start_at: Some(1_900_000_000),
+            speed_limit_kib: Some(512),
+            playlist_items: Some("1-3".into()),
+            full_verification: true,
+            live_from_start: true,
+        }
+    }
+
+    #[test]
+    fn the_copy_for_the_extension_carries_no_page_markup() {
+        let copy = relay_request(&job_request());
+        assert!(copy.page_html.is_none());
+        let wire = serde_json::to_string(&copy).unwrap();
+        assert!(!wire.contains("page_html"), "{wire}");
+        assert!(!wire.contains(MARKUP), "{wire}");
+    }
+
+    #[test]
+    fn the_copy_for_the_extension_keeps_what_the_relay_reads_and_drops_the_rest() {
+        let job = job_request();
+        let mut expected = serde_json::to_value(&job).unwrap();
+        let fields = expected.as_object_mut().unwrap();
+        fields.insert("headers".into(), serde_json::json!({}));
+        fields.insert("session_cookies".into(), serde_json::json!([]));
+        fields.insert("directory".into(), serde_json::Value::Null);
+        fields.remove("page_html");
+        assert_eq!(serde_json::to_value(relay_request(&job)).unwrap(), expected);
+    }
 }

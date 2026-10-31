@@ -4293,7 +4293,12 @@ fn can_pause_or_resume(job: &Job) -> bool {
 }
 fn short_error(job: &Job, value: &str) -> &'static str {
     let lower = crate::media::failure_reading(value);
-    if source_refresh_available(job)
+    if value.contains(crate::error_codes::NET_004.0) {
+        crate::i18n::ui(
+            "Dosya yerine oturum açma veya web sayfası geldi; dosyayı tarayıcıda indirin veya uzantıda bu site için oturum çerezlerine izin verin.",
+            "A sign-in or web page came instead of the file; download it in the browser or allow session cookies for this site in the extension.",
+        )
+    } else if source_refresh_available(job)
         && (job.state == JobState::AwaitingSource
             || lower.contains("kaynak")
             || lower.contains("expired")
@@ -8087,6 +8092,55 @@ mod tests {
             language: language.into(),
             automatic,
         }
+    }
+
+    #[test]
+    fn a_page_instead_of_the_file_gets_the_sign_in_hint_whatever_language_recorded_it() {
+        use crate::model::{AddRequest, Job, JobState};
+        let failed = Job {
+            id: "job".into(),
+            request: AddRequest {
+                page_url: Some("https://site.example/watch".into()),
+                ..AddRequest::default()
+            },
+            name: "file.bin".into(),
+            state: JobState::Failed,
+            path: "file.bin".into(),
+            downloaded: 0,
+            total: None,
+            speed: 0,
+            eta: None,
+            error: None,
+            phase: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            attempts: 0,
+            work_dir: None,
+            remove_requested: None,
+            claim: None,
+            legacy_completed: false,
+            browser_transfer_authorized: false,
+            priority: 0,
+            force_start: false,
+            open_when_done: false,
+            live: false,
+            sequence: 0,
+        };
+        let turkish = "SSD-NET-004 Kaynak dosya yerine bir oturum açma veya web sayfasıyla yanıt verdi. Dosyayı tarayıcıda indirin ya da eklentinin sağ tık menüsünden Bu site için oturum çerezlerine izin ver seçeneğini kullanın.";
+        let english = "SSD-NET-004 The source answered with a sign-in or web page instead of the file. Download it in the browser, or choose Allow session cookies for this site in the extension's context menu.";
+        let hint = super::short_error(&failed, turkish);
+        assert_eq!(super::short_error(&failed, english), hint, "English record");
+        assert_eq!(
+            super::short_error(&failed, "SSD-NET-004"),
+            hint,
+            "code only"
+        );
+        assert!(hint.contains("oturum çerezlerine izin verin"), "{hint}");
+        assert_ne!(
+            super::short_error(&failed, "fragment 7: HTTP Error 403"),
+            hint,
+            "an expired address keeps its own hint"
+        );
     }
 
     #[test]
