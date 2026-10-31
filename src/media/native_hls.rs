@@ -454,10 +454,8 @@ struct Schedule {
     /// Requests in flight per host across all streams, never above `per_host`.
     busy: Vec<usize>,
     /// Workers that keep a connection to each host between its segments, never above
-    /// `per_host`: their idle connections hold places of the host's connection bound.
+    /// `per_host`: their connections hold places of the host's connection bound.
     holders: Vec<usize>,
-    /// Segments of each host not downloaded yet.
-    left: Vec<usize>,
     per_host: usize,
     remaining: usize,
     failure: Option<anyhow::Error>,
@@ -466,7 +464,9 @@ struct Schedule {
 /// What a worker does next.
 enum Next {
     Fetch(Task),
-    /// Close the kept connection: every segment of its host is downloaded.
+    /// Close the kept connection: the worker has nothing to fetch at once, and an idle
+    /// connection would hold a place of its host's bound that another download, or another
+    /// worker of this one, may be waiting for.
     Release,
 }
 
@@ -510,17 +510,12 @@ impl Shared {
                     .collect()
             })
             .collect::<Vec<Vec<usize>>>();
-        let mut left = vec![0; host_names.len()];
-        for task in queues.iter().flatten() {
-            left[hosts[task.stream][task.index]] += 1;
-        }
         Self {
             state: Mutex::new(Schedule {
                 queues,
                 paces: HashMap::new(),
                 busy: vec![0; host_names.len()],
                 holders: vec![0; host_names.len()],
-                left,
                 per_host,
                 remaining,
                 failure: None,
@@ -556,7 +551,8 @@ impl Shared {
     /// `kept`. Each stream offers its lowest playlist position, so joins advance while later
     /// segments arrive, and the stream furthest behind through its own playlist goes first, so
     /// video and audio finish together and a throttled stream is not left for the end. A worker
-    /// that takes a segment of another host gives up its place at `kept`.
+    /// that takes a segment of another host gives up its place at `kept`, and one with nothing
+    /// to take at once closes its connection instead of waiting with it.
     fn next_task(
         &self,
         streams: &[NativeStream],
@@ -567,10 +563,6 @@ impl Shared {
         loop {
             if state.remaining == 0 || state.failure.is_some() || control.stop_requested() {
                 return None;
-            }
-            if let Some(host) = kept.filter(|host| state.left[*host] == 0) {
-                state.holders[host] -= 1;
-                return Some(Next::Release);
             }
             let now = Instant::now();
             let mut earliest: Option<Instant> = None;
@@ -622,6 +614,10 @@ impl Shared {
                 }
                 return state.queues[stream].remove(position).map(Next::Fetch);
             }
+            if let Some(host) = kept {
+                state.holders[host] -= 1;
+                return Some(Next::Release);
+            }
             let wait = earliest
                 .map(|at| at.saturating_duration_since(now))
                 .unwrap_or(Duration::from_millis(200))
@@ -665,10 +661,7 @@ impl Shared {
             }
         }
         match outcome {
-            Settled::Done => {
-                state.remaining -= 1;
-                state.left[host] -= 1;
-            }
+            Settled::Done => state.remaining -= 1,
             Settled::Failed => {}
             Settled::Retry { task, .. } => {
                 let queue = &mut state.queues[task.stream];
@@ -756,9 +749,6 @@ impl WorkerContext<'_> {
                     break;
                 };
                 url = next.clone();
-                // The kept connection closes first: a worker never waits for a connection while
-                // it holds an idle one.
-                kept = None;
                 fetched = self
                     .network
                     .easy_for_url(&url, self.control)
@@ -817,8 +807,9 @@ impl WorkerContext<'_> {
         }
     }
 
-    /// `fetch` over the kept connection when it is to the same origin, keeping the connection
-    /// afterwards unless the transfer itself failed.
+    /// `fetch` over the kept connection when it is to the same origin. The connection is kept
+    /// for the next segment after a whole answer. After a redirect it closes before the target
+    /// gets a connection of its own, so a worker never waits for one while it holds another.
     fn fetch_kept(
         &self,
         kept: &mut Option<Kept>,
@@ -835,7 +826,6 @@ impl WorkerContext<'_> {
         if matches!(
             fetched,
             Ok(Fetched::Done
-                | Fetched::Redirect(_)
                 | Fetched::Retry {
                     status: Some(_),
                     ..
@@ -1430,6 +1420,85 @@ mod tests {
         ));
         assert_eq!(shared.lock().holders, [1, 2]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_worker_with_nothing_to_take_at_once_closes_its_connection() {
+        let root = std::env::temp_dir().join(format!("ssdownload-idle-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let streams = [one_host_stream(2)];
+        let joins = [Join::resume(&root, &streams[0]).unwrap()];
+        let shared = Shared::new(&streams, &joins, 2);
+        let first = task_for(&shared, &streams, None);
+        task_for(&shared, &streams, None);
+        assert_eq!(shared.lock().holders, [2]);
+
+        // The first segment waits out its retry backoff and the second is in flight.
+        shared.settle(
+            0,
+            0,
+            Settled::Retry {
+                task: Task {
+                    attempt: 1,
+                    not_before: Instant::now() + Duration::from_secs(2),
+                    ..first
+                },
+                throttled: false,
+            },
+        );
+        assert!(matches!(
+            shared.next_task(&streams, &TransferControl::default(), Some(0)),
+            Some(Next::Release)
+        ));
+        assert_eq!(shared.lock().holders, [1]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_download_finishes_while_other_connections_hold_part_of_its_host_bound() {
+        use crate::test_http::{pattern, Config, Server, TempDir};
+        let server = Server::start(Config {
+            size: 2000,
+            ..Config::default()
+        });
+        let workspace = TempDir::new("native-idle-release");
+        let streams = [NativeStream {
+            segments: (0..24)
+                .map(|index| Url::parse(&server.url(&format!("/a/{index}.ts"))).unwrap())
+                .collect(),
+            ..one_host_stream(0)
+        }];
+        let request = AddRequest {
+            connections: Some(3),
+            ..AddRequest::default()
+        };
+        let network = NetworkGovernor::new(4);
+        // Another download holds two of the host's four places, so one of the three workers
+        // waits for a place that only a connection of this download can free.
+        let _elsewhere = [(); 2].map(|_| network.try_acquire_host("127.0.0.1".into()).unwrap());
+        let control = TransferControl::default();
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let _ = sender.send(fetch_segments(
+                    &streams,
+                    &workspace.0,
+                    &request,
+                    &control,
+                    &network,
+                    &mut |_| {},
+                ));
+            });
+            let fetched = receiver.recv_timeout(Duration::from_secs(20));
+            // A stalled download is stopped so that the scope can end.
+            control.cancel();
+            let joins = fetched.expect("the download stalled").unwrap();
+            assert_eq!(
+                fs::read(&joins[0].joined).unwrap(),
+                pattern(1, 2000).repeat(24)
+            );
+        });
     }
 
     #[test]
