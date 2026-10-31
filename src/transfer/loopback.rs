@@ -2918,6 +2918,324 @@ fn a_download_stopped_after_a_cut_whose_victim_dropped_records_true_bytes_and_re
     }
 }
 
+/// A file request for `url`.
+fn file_request(url: String) -> AddRequest {
+    AddRequest {
+        url,
+        kind: crate::model::DownloadKind::File,
+        ..Default::default()
+    }
+}
+
+/// A server that sends the web page `kind` instead of a file: what a sign-in redirect ends on.
+fn page_server(size: u64, kind: &str) -> Server {
+    Server::start(Config {
+        size,
+        content_type: Some(kind.into()),
+        ..Config::default()
+    })
+}
+
+/// A server whose `GET` is redirected to `target`, as a sign-in redirect would be; its `HEAD` is
+/// answered itself, as a file's metadata would.
+fn redirecting_get(target: String, size: u64) -> Server {
+    Server::start(Config {
+        size,
+        content_type: Some("application/octet-stream".into()),
+        redirect_to: Some(target),
+        head_not_redirected: true,
+        ..Config::default()
+    })
+}
+
+/// A server whose every request is redirected to `target`.
+fn redirecting(target: String) -> Server {
+    Server::start(Config {
+        redirect_to: Some(target),
+        ..Config::default()
+    })
+}
+
+/// Asserts that a download was refused as a page that stands in for the file: the error is
+/// SSD-NET-004, no file was published, and the part file holds no byte of the page.
+fn assert_page_refused(error: &anyhow::Error, output: &Path) {
+    assert_eq!(
+        crate::error_codes::code_of(error),
+        Some(crate::error_codes::NET_004),
+        "{error:#}"
+    );
+    assert!(!output.exists(), "the page was published");
+    let part = part_path(output);
+    assert!(
+        fs::read(&part).map_or(true, |bytes| bytes.iter().all(|&byte| byte == 0)),
+        "the page was written into the part file"
+    );
+    let kept = [part, state_path(output)].map(|path| path.file_name().unwrap().to_owned());
+    for entry in fs::read_dir(output.parent().unwrap()).unwrap() {
+        let name = entry.unwrap().file_name();
+        assert!(kept.contains(&name), "{name:?} was published");
+    }
+}
+
+/// A file job whose request is redirected to a 4000-byte page, which answers HEAD with
+/// `head_length` (its real length when `None`), fails before the page is fetched.
+fn redirected_page_fails_before_a_byte_is_fetched(head_length: Option<u64>) {
+    let page = Server::start(Config {
+        size: 4_000,
+        head_content_length: head_length,
+        content_type: Some("text/html".into()),
+        ..Config::default()
+    });
+    let source = redirecting(page.url("/signin"));
+    let directory = TempDir::new("redirected-page");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &file_request(source.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+    page.wait_idle();
+    assert!(
+        page.log().iter().all(|entry| entry.method == "HEAD"),
+        "{:?}",
+        page.log()
+    );
+}
+
+#[test]
+fn a_file_job_redirected_to_a_page_fails_when_head_reports_a_length_of_zero() {
+    redirected_page_fails_before_a_byte_is_fetched(Some(0));
+}
+
+#[test]
+fn a_file_job_redirected_to_a_page_fails_when_head_reports_another_length_than_the_page_has() {
+    redirected_page_fails_before_a_byte_is_fetched(Some(77));
+}
+
+#[test]
+fn a_file_job_redirected_to_a_page_fails_when_head_reports_the_length_of_the_page() {
+    redirected_page_fails_before_a_byte_is_fetched(None);
+}
+
+#[test]
+fn a_redirect_to_a_page_is_refused_whatever_its_content_type_is_spelled_like() {
+    for kind in [
+        "application/xhtml+xml",
+        "Text/HTML; charset=utf-8",
+        "TEXT/html;charset=ISO-8859-1",
+    ] {
+        let page = page_server(4_000, kind);
+        let source = redirecting(page.url("/signin"));
+        let directory = TempDir::new("redirected-page-type");
+        let output = directory.0.join("report.pdf");
+        let error = fetch(
+            &file_request(source.url("/file")),
+            &output,
+            &TransferControl::default(),
+            1,
+            1,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+    }
+}
+
+#[test]
+fn a_page_reached_after_a_redirect_in_the_transfer_is_not_written_by_a_one_connection_download() {
+    for kind in [
+        crate::model::DownloadKind::File,
+        crate::model::DownloadKind::Auto,
+    ] {
+        // The probe's HEAD sees the file; the GET is redirected to the page.
+        let page = page_server(4_000, "text/html");
+        let source = redirecting_get(page.url("/signin"), 4_000);
+        let directory = TempDir::new("redirected-get");
+        let output = directory.0.join("report.pdf");
+        let mut request = file_request(source.url("/file"));
+        request.kind = kind;
+        let control = TransferControl::default();
+        let network = NetworkGovernor::new(1);
+        let (media, prepared) = if kind == crate::model::DownloadKind::Auto {
+            prepare_auto(&request, &control, &network).unwrap()
+        } else {
+            (false, None)
+        };
+        assert!(!media, "{kind:?}");
+        let error = download(
+            &request,
+            &output,
+            &control,
+            &network,
+            1,
+            prepared,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+        page.wait_idle();
+        assert!(
+            page.log().iter().any(|entry| entry.method == "GET"),
+            "{kind:?}: the transfer should have reached the page"
+        );
+    }
+}
+
+/// A source that is redirected as a whole to a 6 MiB resource which is a file for the first
+/// `file_requests` requests and a page afterwards.
+fn segmented_page(file_requests: usize) -> (Server, Server) {
+    let target = Server::start(Config {
+        size: 6 * MIB,
+        content_type: Some("application/octet-stream".into()),
+        content_type_from: Some((file_requests, "text/html".into())),
+        ..Config::default()
+    });
+    let source = redirecting(target.url("/signin"));
+    (source, target)
+}
+
+#[test]
+fn a_page_in_the_range_support_probe_is_not_downloaded_over_several_connections() {
+    // The HEAD (request 0) sees the file; the one-byte probe (request 1) sees the page.
+    let (source, target) = segmented_page(1);
+    let directory = TempDir::new("redirected-probe-page");
+    let output = directory.0.join("archive.zip");
+    forget_writes();
+    let error = fetch(
+        &file_request(source.url("/file")),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+    assert!(writes().is_empty());
+    target.wait_idle();
+    assert_eq!(data_gets(&target.log()).count(), 0, "{:?}", target.log());
+}
+
+#[test]
+fn a_page_in_a_ranged_transfer_is_not_written_by_any_connection() {
+    // The HEAD and the one-byte probe (requests 0 and 1) see the file; every range sees the page.
+    let (source, target) = segmented_page(2);
+    let directory = TempDir::new("redirected-range-page");
+    let output = directory.0.join("archive.zip");
+    forget_writes();
+    let error = fetch(
+        &file_request(source.url("/file")),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+    assert!(writes().is_empty(), "{:?}", writes());
+    target.wait_idle();
+    assert!(
+        data_gets(&target.log()).count() > 0,
+        "the ranges should have reached the page: {:?}",
+        target.log()
+    );
+}
+
+/// Downloads from a source that redirects to `target` into a file called `name`. The directory
+/// is returned so that the file outlives the call.
+fn fetch_redirected(target: &Server, name: &str) -> (Result<TransferResult>, TempDir) {
+    let source = redirecting(target.url("/landing"));
+    let directory = TempDir::new("redirected-allowed");
+    let output = directory.0.join(name);
+    let result = fetch(
+        &file_request(source.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    );
+    (result, directory)
+}
+
+#[test]
+fn a_redirect_to_a_file_or_to_a_download_that_names_itself_keeps_downloading() {
+    let size = 4_000;
+    // A file after a redirect.
+    let file = page_server(size, "application/octet-stream");
+    let (result, _directory) = fetch_redirected(&file, "report.pdf");
+    assert_eq!(fs::read(result.unwrap().path).unwrap(), pattern(1, size));
+
+    // A page that the server sends as an attachment, in either spelling of the header.
+    for disposition in ["attachment; filename=\"saved.bin\"", "Attachment"] {
+        let page = Server::start(Config {
+            size,
+            content_type: Some("text/html".into()),
+            content_disposition: Some(disposition.into()),
+            ..Config::default()
+        });
+        let (result, _directory) = fetch_redirected(&page, "report.pdf");
+        assert_eq!(
+            fs::read(result.unwrap().path).unwrap(),
+            pattern(1, size),
+            "{disposition}"
+        );
+    }
+
+    // A page that the user asked to save under the name of a page.
+    for name in ["page.html", "page.HTM", "page.xhtml", "page (1).html"] {
+        let page = page_server(size, "text/html");
+        let (result, _directory) = fetch_redirected(&page, name);
+        assert_eq!(
+            fs::read(result.unwrap().path).unwrap(),
+            pattern(1, size),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_page_that_is_reached_without_a_redirect_is_still_saved() {
+    let size = 4_000;
+    let page = page_server(size, "text/html");
+    let directory = TempDir::new("direct-page");
+    let output = directory.0.join("page");
+    let result = fetch(
+        &file_request(page.url("/page")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(fs::read(result.path).unwrap(), pattern(1, size));
+}
+
+#[test]
+fn an_auto_job_redirected_to_a_page_stays_a_media_job() {
+    let page = page_server(4_000, "text/html");
+    let source = redirecting(page.url("/watch"));
+    let request = AddRequest {
+        url: source.url("/short"),
+        ..Default::default()
+    };
+    let (media, prepared) = prepare_auto(
+        &request,
+        &TransferControl::default(),
+        &NetworkGovernor::new(1),
+    )
+    .unwrap();
+    assert!(media);
+    assert!(prepared.is_some());
+}
+
 const BENCH_SIZE: u64 = 128 * MIB;
 const BENCH_RATE: u64 = 4 * MIB;
 /// The first connection that starts with a ranged GET above byte 0, so the slow socket does

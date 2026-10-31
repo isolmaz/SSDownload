@@ -2247,6 +2247,40 @@ mod retry_budget {
     }
 
     #[test]
+    fn a_file_job_redirected_to_a_page_fails_at_once_and_is_neither_retried_nor_sent_to_a_refresh()
+    {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            ..Config::default()
+        });
+        let source = Server::start(Config {
+            redirect_to: Some(page.url("/signin")),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-redirected-page");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        // A job with a page to refresh from goes to the refresh on an authorization failure.
+        let id = engine
+            .add(AddRequest {
+                page_url: Some("https://page.example.test/watch".into()),
+                ..file_request(source.url("/report.pdf"), &root.0.join("out"))
+            })
+            .unwrap()
+            .remove(0);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        let error = job.error.as_deref().unwrap();
+        assert!(error.starts_with("SSD-NET-004 "), "{error}");
+        assert_eq!(job.attempts, 0);
+        assert!(!job.path.exists());
+        assert_eq!(attempts_made(&source), 1);
+        assert!(page.log().iter().all(|entry| entry.method == "HEAD"));
+        engine.shutdown();
+    }
+
+    #[test]
     fn a_server_that_cuts_every_range_still_finishes_because_each_cut_keeps_its_bytes() {
         // Every response longer than 1 MiB is cut after 1 MiB. A lease that is cut resumes
         // where it stopped, so each cut makes progress and the limit of one is never used up.
