@@ -617,9 +617,10 @@ impl EndFixture {
         }
     }
 
-    /// The video muxed with `audio` in place of the generated track.
-    fn mux(&self, name: &str, audio: &[u8], extra: &[&str]) -> PathBuf {
-        let (input, output) = (format!("{name}.aac"), format!("{name}.mp4"));
+    /// The video muxed with `audio` in place of the generated track, as `file` (its extension
+    /// picks the container).
+    fn mux(&self, file: &str, audio: &[u8], extra: &[&str]) -> PathBuf {
+        let input = format!("{file}.aac");
         fs::write(self.root.join(&input), audio).unwrap();
         let mut args = vec![
             "-i",
@@ -634,34 +635,44 @@ impl EndFixture {
             "copy",
         ];
         args.extend_from_slice(extra);
-        args.push(&output);
+        args.push(file);
         let muxed = run_ffmpeg(&self.tools, &self.root, &args);
         assert!(
             muxed.status.success(),
             "{}",
             String::from_utf8_lossy(&muxed.stderr)
         );
-        self.root.join(output)
+        self.root.join(file)
     }
 
-    fn verify(&self, file: &Path, full: bool, duration: Option<f64>) -> Result<()> {
+    fn verify(&self, file: &Path, full: bool, info: &MediaInfo) -> Result<()> {
         let request = AddRequest {
             kind: DownloadKind::Video,
             container: Some("mp4".into()),
             full_verification: full,
             ..AddRequest::default()
         };
-        let info = MediaInfo {
-            duration,
-            ..MediaInfo::default()
-        };
+        self.verify_request(file, &request, info)
+    }
+
+    fn verify_request(&self, file: &Path, request: &AddRequest, info: &MediaInfo) -> Result<()> {
         verify_media_output(
             file,
-            &request,
-            &info,
+            request,
+            info,
             &self.tools,
             &TransferControl::default(),
         )
+    }
+
+    /// The source as the extractor describes it: `seconds` long, with the tolerance an HLS
+    /// source gets for two-second segments.
+    fn source(seconds: f64, hls: bool) -> MediaInfo {
+        MediaInfo {
+            duration: Some(seconds),
+            duration_tolerance: hls.then_some(2.25),
+            ..MediaInfo::default()
+        }
     }
 }
 
@@ -671,34 +682,77 @@ impl Drop for EndFixture {
     }
 }
 
+fn decode_failure(full: bool) -> &'static str {
+    if full {
+        crate::i18n::ui(
+            "Tam medya doğrulaması: ses/görüntü baştan sona çözülemedi",
+            "Full media verification: the audio/video could not be decoded from start to end",
+        )
+    } else {
+        crate::i18n::ui(
+            "Medya doğrulaması: örneklenen başlangıç/orta/bitiş bölümü çözülemedi",
+            "Media verification: the sampled start/middle/end section could not be decoded",
+        )
+    }
+}
+
 /// A download whose last segment ends inside an AAC frame plays in full, but decoding that frame
-/// reports an error. The decoded sections stop half a second before the end of the file, so that
-/// frame is not judged.
+/// reports an error. Where the source's duration confirms the file, the decoded streams stop half
+/// a second before their end, so that frame is not judged: in an MP4 and in an MPEG-TS file that
+/// does not start at zero.
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
 fn a_download_that_ends_inside_its_last_audio_frame_passes_verification() {
     let fixture = EndFixture::new();
-    let whole = fixture.mux("whole", &fixture.audio, &[]);
-    let cut = fixture.mux("cut", &fixture.ending_inside(fixture.last_frame()), &[]);
+    let cut_audio = fixture.ending_inside(fixture.last_frame());
+    for extension in ["mp4", "ts"] {
+        let whole = fixture.mux(&format!("whole.{extension}"), &fixture.audio, &[]);
+        let cut = fixture.mux(&format!("cut.{extension}"), &cut_audio, &[]);
 
-    let decoded = run_ffmpeg(
-        &fixture.tools,
-        &fixture.root,
-        &[
-            "-xerror", "-sseof", "-2", "-i", "cut.mp4", "-map", "0:a", "-f", "null", "-",
-        ],
-    );
-    assert!(
-        !decoded.status.success(),
-        "the cut frame is a decode error to FFmpeg itself"
-    );
-    for full in [false, true] {
-        fixture
-            .verify(&whole, full, Some(10.0))
-            .unwrap_or_else(|error| panic!("the intact file, full {full}: {error:#}"));
-        fixture
-            .verify(&cut, full, Some(10.0))
-            .unwrap_or_else(|error| panic!("the cut frame, full {full}: {error:#}"));
+        let decoded = run_ffmpeg(
+            &fixture.tools,
+            &fixture.root,
+            &[
+                "-xerror",
+                "-sseof",
+                "-2",
+                "-i",
+                &format!("cut.{extension}"),
+                "-map",
+                "0:a",
+                "-f",
+                "null",
+                "-",
+            ],
+        );
+        assert!(
+            !decoded.status.success(),
+            "{extension}: the cut frame is a decode error to FFmpeg itself"
+        );
+        if extension == "ts" {
+            let probe = std::process::Command::new(&fixture.tools.ffprobe)
+                .args(["-v", "error", "-show_entries", "format=start_time"])
+                .args(["-of", "default=nw=1:nk=1"])
+                .arg(&cut)
+                .output()
+                .unwrap();
+            let start: f64 = String::from_utf8_lossy(&probe.stdout)
+                .trim()
+                .parse()
+                .unwrap();
+            assert!(start > 1.0, "the file starts at {start} s");
+        }
+        for full in [false, true] {
+            let source = EndFixture::source(10.0, false);
+            fixture
+                .verify(&whole, full, &source)
+                .unwrap_or_else(|error| {
+                    panic!("{extension}, the intact file, full {full}: {error:#}")
+                });
+            fixture.verify(&cut, full, &source).unwrap_or_else(|error| {
+                panic!("{extension}, the cut frame, full {full}: {error:#}")
+            });
+        }
     }
 }
 
@@ -714,48 +768,128 @@ fn damage_in_front_of_the_last_audio_frame_still_fails_verification() {
     fixture.add_noise(&mut tail, last - 45..last - 40);
     let mut tail_and_cut = fixture.ending_inside(last);
     fixture.add_noise(&mut tail_and_cut, last - 45..last - 40);
+    // The audio ends inside frame 436, at 9.3 s, with noise in frames 400-404 (8.5 s) in front.
+    let mut early_end = fixture.ending_inside(436);
+    fixture.add_noise(&mut early_end, 400..405);
 
     for (name, audio) in [
         ("middle", middle),
         ("tail", tail),
         ("tail_and_cut", tail_and_cut),
+        ("early_end", early_end),
     ] {
-        let file = fixture.mux(name, &audio, &[]);
+        let file = fixture.mux(&format!("{name}.mp4"), &audio, &[]);
         for full in [false, true] {
             let error = fixture
-                .verify(&file, full, Some(10.0))
+                .verify(&file, full, &EndFixture::source(10.0, true))
                 .expect_err(&format!("{name}, full {full}"));
-            assert!(
-                error
-                    .to_string()
-                    .contains(crate::i18n::ui("çözülemedi", "could not be decoded")),
-                "{name}, full {full}: {error}"
+            assert_eq!(
+                error.to_string(),
+                decode_failure(full),
+                "{name}, full {full}"
             );
         }
     }
 }
 
-/// A download cut short inside a frame is a short file, and the comparison with the source's
-/// duration reports it: the end of the decoded sections is not what notices a missing tail.
+/// The audio of an HLS source can end up to two seconds before its video, and the source's
+/// tolerance lets that pass. The cut frame of such an audio stream is still not judged, while the
+/// same file without a confirming duration is decoded to its end and fails.
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
-fn a_download_cut_short_inside_a_frame_still_fails_on_its_duration() {
+fn a_stream_that_ends_before_the_others_is_bounded_by_its_own_end() {
+    let fixture = EndFixture::new();
+    // Frame 436 starts at 9.3 s: the audio ends inside it, the video runs to 10 s.
+    let audio = fixture.ending_inside(436);
+    for extension in ["mp4", "ts"] {
+        let file = fixture.mux(&format!("early.{extension}"), &audio, &[]);
+        for full in [false, true] {
+            fixture
+                .verify(&file, full, &EndFixture::source(10.0, true))
+                .unwrap_or_else(|error| panic!("{extension}, full {full}: {error:#}"));
+            let unconfirmed = MediaInfo {
+                duration: None,
+                ..EndFixture::source(10.0, true)
+            };
+            let error = fixture
+                .verify(&file, full, &unconfirmed)
+                .expect_err(&format!("{extension}, full {full}, no source duration"));
+            assert_eq!(
+                error.to_string(),
+                decode_failure(full),
+                "{extension}, full {full}"
+            );
+        }
+    }
+}
+
+/// A download that is cut short ends inside a frame, and so does a source whose last segment
+/// does. Only the source's duration tells them apart, so the end is decoded wherever that does
+/// not confirm the file to within half a second: whatever the source's tolerance, for a playlist,
+/// a live recording and a source without a duration.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_download_cut_short_inside_a_frame_is_refused_unless_the_source_confirms_it() {
     let fixture = EndFixture::new();
     // Frame 421 starts at 8.98 s: the audio ends inside it, the video where `-t` stops it.
-    let short = fixture.mux("short", &fixture.ending_inside(421), &["-t", "9"]);
+    let short = fixture.mux("short.mp4", &fixture.ending_inside(421), &["-t", "9"]);
+    let playlist = AddRequest {
+        kind: DownloadKind::Video,
+        playlist: true,
+        ..AddRequest::default()
+    };
+    let live = MediaInfo {
+        is_live: true,
+        ..EndFixture::source(10.0, true)
+    };
 
-    let error = fixture
-        .verify(&short, false, Some(10.0))
-        .expect_err("a file a second shorter than its source");
-    assert!(
-        !error
-            .to_string()
-            .contains(crate::i18n::ui("çözülemedi", "could not be decoded")),
-        "the duration, not a decode error, rejects the file: {error}"
+    // The default tolerance of half a second sees a second missing on its own.
+    let missing = crate::i18n::ui_format!(
+        "Medya doğrulaması: çıktı süresi kaynakla eşleşmiyor (erken bitiş toleransı {tolerance:.3} sn; geç bitiş {0:.3} sn)",
+        "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)",
+        1.5,
+        tolerance = 0.5
     );
-    fixture
-        .verify(&short, false, Some(9.0))
-        .expect("the same file when its source ends there");
+    for full in [false, true] {
+        let error = fixture
+            .verify(&short, full, &EndFixture::source(10.0, false))
+            .expect_err("a second shorter than the source");
+        assert_eq!(error.to_string(), missing, "full {full}");
+
+        for (label, info) in [
+            ("an HLS source's tolerance", EndFixture::source(10.0, true)),
+            ("no source duration", MediaInfo::default()),
+            ("a live recording", live.clone()),
+        ] {
+            let error = fixture
+                .verify(&short, full, &info)
+                .expect_err(&format!("{label}, full {full}"));
+            assert_eq!(
+                error.to_string(),
+                decode_failure(full),
+                "{label}, full {full}"
+            );
+        }
+        let error = fixture
+            .verify_request(
+                &short,
+                &AddRequest {
+                    full_verification: full,
+                    ..playlist.clone()
+                },
+                &EndFixture::source(10.0, true),
+            )
+            .expect_err("a playlist");
+        assert_eq!(
+            error.to_string(),
+            decode_failure(full),
+            "a playlist, full {full}"
+        );
+
+        fixture
+            .verify(&short, full, &EndFixture::source(9.0, false))
+            .unwrap_or_else(|error| panic!("the same file when its source ends there: {error:#}"));
+    }
 }
 
 /// Speech-recognition captions can hold cues that end where they start and two cues that start

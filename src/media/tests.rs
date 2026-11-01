@@ -1961,50 +1961,92 @@ fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
 }
 
 #[test]
-fn verification_sections_stop_half_a_second_before_the_end_of_the_file() {
-    // (start, length) of each section on the file's own timeline.
-    let sections = |duration: f64| {
-        sample_windows(Some(duration))
-            .into_iter()
-            .map(|(offset, length)| match offset {
-                None => (0.0, length),
-                Some(from) if from < 0.0 => (duration + from, length),
-                Some(from) => (from, length),
-            })
-            .collect::<Vec<_>>()
+fn the_end_of_a_file_is_left_out_only_where_the_source_confirms_its_length() {
+    let margin = |source: Option<f64>, output: Option<f64>, edit: &dyn Fn(&mut MediaInfo)| {
+        let mut info = MediaInfo {
+            duration: source,
+            ..MediaInfo::default()
+        };
+        edit(&mut info);
+        end_margin(&AddRequest::default(), &info, output)
     };
-    for duration in [0.6, 1.0, 1.5, 2.0, 2.2, 5.0, 6.5, 7.0, 10.0, 5790.98] {
-        for (start, length) in sections(duration) {
-            assert!(length > 0.0 && length <= 2.0, "{duration}: {length}");
-            assert!(
-                start + length <= duration - 0.5 + 1e-9,
-                "{duration}: {start} + {length}"
-            );
-        }
-    }
+    let plain = |_: &mut MediaInfo| {};
 
-    // The last section still ends close to the end of the file, and every other section keeps
-    // its two seconds.
-    let long = sections(5790.98);
-    assert_eq!(long.len(), 4);
-    assert!(
-        long[..3].iter().all(|(_, length)| *length == 2.0),
-        "{long:?}"
+    assert_eq!(margin(Some(10.0), Some(10.0), &plain), 0.5);
+    // Up to half a second shorter than the source, or longer than it, counts as complete.
+    assert_eq!(margin(Some(10.0), Some(9.5), &plain), 0.5);
+    assert_eq!(margin(Some(10.0), Some(10.4), &plain), 0.5);
+    // More than that is not, whatever tolerance the source has: a cut file ends in a frame
+    // that cannot be decoded, and only the decode can tell that from a source's own last frame.
+    assert_eq!(margin(Some(10.0), Some(9.4), &plain), 0.0);
+    assert_eq!(
+        margin(Some(10.0), Some(9.0), &|info| info.duration_tolerance =
+            Some(6.25)),
+        0.0
     );
-    let (start, length) = long[3];
-    assert!((start - 5788.98).abs() < 1e-6, "{long:?}");
-    assert!((start + length - 5790.48).abs() < 1e-6, "{long:?}");
-    // Up to two seconds a file has only the start section, up to six seconds no middle ones.
-    assert_eq!(sections(1.5).len(), 1);
-    assert_eq!(sections(2.0).len(), 1);
-    assert_eq!(sections(2.2).len(), 2);
-    assert_eq!(sections(6.0).len(), 2);
-    assert_eq!(sections(6.5).len(), 4);
+    assert_eq!(margin(None, Some(10.0), &plain), 0.0);
+    assert_eq!(margin(Some(10.0), None, &plain), 0.0);
+    assert_eq!(
+        margin(Some(10.0), Some(10.0), &|info| info.is_live = true),
+        0.0
+    );
+    let playlist = AddRequest {
+        playlist: true,
+        ..AddRequest::default()
+    };
+    let info = MediaInfo {
+        duration: Some(10.0),
+        ..MediaInfo::default()
+    };
+    assert_eq!(end_margin(&playlist, &info, Some(10.0)), 0.0);
+    // A file of a second or less is decoded in full.
+    assert_eq!(margin(Some(1.0), Some(1.0), &plain), 0.0);
+    assert_eq!(margin(Some(1.2), Some(1.2), &plain), 0.5);
 }
 
 #[test]
-fn a_file_without_a_duration_is_sampled_from_the_start_and_the_end() {
-    assert_eq!(sample_windows(None), [(None, 2.0), (Some(-2.0), 1.5)]);
-    // Too short to leave half a second: the start section is not cut.
-    assert_eq!(sample_windows(Some(0.5)), [(None, 2.0)]);
+fn every_stream_is_decoded_up_to_half_a_second_before_its_own_end() {
+    let stream = |index, end| DecodedStream { index, end };
+    let args = |streams: &[DecodedStream], from: f64, window: Option<f64>, margin: f64| {
+        decode_outputs(streams, from, window, margin).join(" ")
+    };
+
+    // No margin: one output for all audio and video, as long as the section.
+    let both = [stream(0, Some(10.0)), stream(1, Some(9.3))];
+    assert_eq!(
+        args(&both, 8.0, Some(2.0), 0.0),
+        "-t 2.000 -map 0:v? -map 0:a? -f null -"
+    );
+    assert_eq!(args(&both, 0.0, None, 0.0), "-map 0:v? -map 0:a? -f null -");
+
+    // The video ends at 10 s and the audio at 9.3 s: each stops half a second before its own end.
+    assert_eq!(
+        args(&both, 8.0, Some(2.0), 0.5),
+        "-t 1.500 -map 0:0 -f null - -t 0.800 -map 0:1 -f null -"
+    );
+    assert_eq!(
+        args(&both, 0.0, Some(2.0), 0.5),
+        "-t 2.000 -map 0:0 -f null - -t 2.000 -map 0:1 -f null -"
+    );
+    assert_eq!(
+        args(&both, 0.0, None, 0.5),
+        "-t 9.500 -map 0:0 -f null - -t 8.800 -map 0:1 -f null -"
+    );
+    // A stream that has ended before the section starts, or has less than 0.1 s left in it, is
+    // not decoded in it; one whose end is not known is decoded for the whole section.
+    let ended = [stream(0, Some(10.0)), stream(1, Some(8.3)), stream(2, None)];
+    assert_eq!(
+        args(&ended, 8.0, Some(2.0), 0.5),
+        "-t 1.500 -map 0:0 -f null - -t 2.000 -map 0:2 -f null -"
+    );
+    let short = [
+        stream(0, Some(0.7)),
+        stream(1, Some(0.62)),
+        stream(2, Some(0.55)),
+    ];
+    assert_eq!(
+        args(&short, 0.0, Some(2.0), 0.5),
+        "-t 0.200 -map 0:0 -f null - -t 0.120 -map 0:1 -f null -"
+    );
+    assert_eq!(args(&[stream(0, Some(0.55))], 0.0, Some(2.0), 0.5), "");
 }

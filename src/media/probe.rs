@@ -401,18 +401,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
         }
     }
 
-    let output_span = format_time_span(&value["format"]).or_else(|| {
-        video_spans
-            .iter()
-            .copied()
-            .chain(
-                streams
-                    .iter()
-                    .filter(|stream| stream["codec_type"] == "audio")
-                    .filter_map(stream_time_span),
-            )
-            .reduce(|left, right| (left.0.min(right.0), left.1.max(right.1)))
-    });
+    let output_span = output_time_span(value);
     if !request.playlist && !info.is_live {
         if let Some(expected) = info
             .duration
@@ -441,6 +430,18 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
         }
     }
     Ok(())
+}
+
+/// Start and end of the output: the container's, else those of its audio and video streams.
+fn output_time_span(probe: &Value) -> Option<(f64, f64)> {
+    format_time_span(&probe["format"]).or_else(|| {
+        probe["streams"]
+            .as_array()?
+            .iter()
+            .filter(|stream| matches!(stream["codec_type"].as_str(), Some("video" | "audio")))
+            .filter_map(stream_time_span)
+            .reduce(|left, right| (left.0.min(right.0), left.1.max(right.1)))
+    })
 }
 
 pub(super) fn rational_value(value: &Value) -> Option<f64> {
@@ -536,31 +537,93 @@ fn decode_errors(stderr: &str) -> bool {
 }
 
 /// A download whose last segment ends inside a frame plays, but that frame cannot be decoded.
-/// Decoding stops this long before the end of the file, so the decoder never reaches it; damage
-/// anywhere in front of it still fails.
+/// Where the file is known to be complete, decoding stops this long before the end of each
+/// stream (see `end_margin`).
 const END_MARGIN: f64 = 0.5;
 
-fn decode_end(duration: Option<f64>) -> Option<f64> {
-    duration
-        .map(|seconds| seconds - END_MARGIN)
-        .filter(|end| *end > 0.0)
+/// A stream with less than this left to decode in a run is not decoded in it.
+const MIN_DECODE: f64 = 0.1;
+
+/// How long before the end of each stream decoding stops.
+///
+/// A download that is cut short ends with a frame that cannot be decoded, just like a source whose
+/// last segment ends inside a frame, and the cut is always in the last moments of the file. The
+/// decoder cannot tell the two apart, so the end is left out only where the source's duration
+/// confirms the file: it is known, the job is no playlist or live recording, and the file is at
+/// most `END_MARGIN` shorter than the source, whatever wider tolerance the source has. Elsewhere,
+/// and for files of up to twice the margin, decoding runs to the end.
+pub(super) fn end_margin(request: &AddRequest, info: &MediaInfo, duration: Option<f64>) -> f64 {
+    let confirmed = !request.playlist
+        && !info.is_live
+        && matches!(
+            (info.duration, duration),
+            (Some(expected), Some(actual))
+                if expected > 0.0 && actual > 2.0 * END_MARGIN && actual >= expected - END_MARGIN
+        );
+    if confirmed {
+        END_MARGIN
+    } else {
+        0.0
+    }
 }
 
-/// The start, two bounded middle positions and the end of a file as (seek, seconds): a negative
-/// seek counts from the end. None of them runs into the last `END_MARGIN` seconds.
-pub(super) fn sample_windows(duration: Option<f64>) -> Vec<(Option<f64>, f64)> {
-    let end = decode_end(duration);
-    let window = |from: f64| end.map_or(2.0, |end| (end - from).min(2.0));
-    let mut samples = vec![(None, window(0.0))];
-    if let Some(duration) = duration.filter(|seconds| *seconds > 6.0) {
-        for from in [duration / 3.0, duration * 2.0 / 3.0] {
-            samples.push((Some(from), window(from)));
+/// An audio or video stream of the output and where it ends on the file's timeline.
+pub(super) struct DecodedStream {
+    pub(super) index: u64,
+    pub(super) end: Option<f64>,
+}
+
+fn decoded_streams(probe: &Value, start: f64) -> Vec<DecodedStream> {
+    probe["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|stream| matches!(stream["codec_type"].as_str(), Some("video" | "audio")))
+        .filter_map(|stream| {
+            Some(DecodedStream {
+                index: stream["index"].as_u64()?,
+                end: stream_time_span(stream).map(|(_, end)| end - start),
+            })
+        })
+        .collect()
+}
+
+/// The mapping and output arguments of an FFmpeg decode run over `window` seconds (`None`: to the
+/// end) from `from` on the file's timeline. Without a margin all audio and video go to one
+/// output. With one, every stream has an output of its own that stops `margin` before the
+/// stream's own end, so a stream that ends before the others is not decoded into its last frame
+/// either. Empty when no stream has enough left to decode.
+pub(super) fn decode_outputs(
+    streams: &[DecodedStream],
+    from: f64,
+    window: Option<f64>,
+    margin: f64,
+) -> Vec<String> {
+    let limit = |length: Option<f64>| -> Vec<String> {
+        length
+            .map(|seconds| vec!["-t".to_string(), format!("{seconds:.3}")])
+            .unwrap_or_default()
+    };
+    if margin == 0.0 {
+        let mut args = limit(window);
+        args.extend(["-map", "0:v?", "-map", "0:a?", "-f", "null", "-"].map(String::from));
+        return args;
+    }
+    let mut args = Vec::new();
+    for stream in streams {
+        let to_end = stream.end.map(|end| end - margin - from);
+        let length = match (to_end, window) {
+            (Some(to_end), Some(window)) => Some(to_end.min(window)),
+            (to_end, window) => to_end.or(window),
+        };
+        if length.is_some_and(|seconds| seconds < MIN_DECODE) {
+            continue;
         }
+        args.extend(limit(length));
+        args.extend(["-map".to_string(), format!("0:{}", stream.index)]);
+        args.extend(["-f", "null", "-"].map(String::from));
     }
-    if duration.is_none_or(|seconds| seconds > 2.0) {
-        samples.push((Some(-2.0), 2.0 - END_MARGIN));
-    }
-    samples
+    args
 }
 
 pub(super) fn verify_media_output(
@@ -596,16 +659,10 @@ pub(super) fn verify_media_output(
     let probe: Value = serde_json::from_slice(&result.stdout)?;
     validate_probe(&probe, request, info)?;
 
-    let duration = format_time_span(&probe["format"])
-        .map(|(start, end)| end - start)
-        .or_else(|| {
-            probe["streams"]
-                .as_array()?
-                .iter()
-                .filter_map(stream_time_span)
-                .map(|(start, end)| end - start)
-                .reduce(f64::max)
-        });
+    let span = output_time_span(&probe);
+    let duration = span.map(|(start, end)| end - start);
+    let margin = end_margin(request, info, duration);
+    let streams = decoded_streams(&probe, span.map_or(0.0, |(start, _)| start));
     if request.full_verification {
         let mut args: Vec<String> = [
             "-v",
@@ -618,20 +675,12 @@ pub(super) fn verify_media_output(
         .into_iter()
         .map(str::to_string)
         .collect();
-        if let Some(end) = decode_end(duration) {
-            args.extend(["-t".into(), format!("{end:.3}")]);
+        let outputs = decode_outputs(&streams, 0.0, None, margin);
+        if outputs.is_empty() {
+            return Ok(());
         }
-        args.extend([
-            "-i".into(),
-            path.to_string_lossy().into_owned(),
-            "-map".into(),
-            "0:v?".into(),
-            "-map".into(),
-            "0:a?".into(),
-            "-f".into(),
-            "null".into(),
-            "-".into(),
-        ]);
+        args.extend(["-i".into(), path.to_string_lossy().into_owned()]);
+        args.extend(outputs);
         let decoded = run_capture(
             &tools.ffmpeg,
             &args,
@@ -650,7 +699,24 @@ pub(super) fn verify_media_output(
 
     // Start, two bounded middle positions and end are decoded. This deliberately
     // reports bounded sampling rather than claiming a full-file integrity pass.
-    for (offset, length) in sample_windows(duration) {
+    let mut samples = vec![None];
+    if let Some(duration) = duration.filter(|seconds| *seconds > 6.0) {
+        samples.push(Some(duration / 3.0));
+        samples.push(Some(duration * 2.0 / 3.0));
+    }
+    if duration.is_none_or(|seconds| seconds > 2.0) {
+        samples.push(Some(-2.0));
+    }
+    for offset in samples {
+        let from = match offset {
+            Some(seconds) if seconds < 0.0 => duration.map_or(0.0, |duration| duration + seconds),
+            Some(seconds) => seconds,
+            None => 0.0,
+        };
+        let outputs = decode_outputs(&streams, from, Some(2.0), margin);
+        if outputs.is_empty() {
+            continue;
+        }
         let mut args: Vec<String> = ["-v", "error", "-xerror", "-nostdin"]
             .into_iter()
             .map(str::to_string)
@@ -667,16 +733,8 @@ pub(super) fn verify_media_output(
             "file,pipe".into(),
             "-i".into(),
             path.to_string_lossy().into_owned(),
-            "-t".into(),
-            format!("{length:.3}"),
-            "-map".into(),
-            "0:v?".into(),
-            "-map".into(),
-            "0:a?".into(),
-            "-f".into(),
-            "null".into(),
-            "-".into(),
         ]);
+        args.extend(outputs);
         let decoded = run_capture(&tools.ffmpeg, &args, b"", Duration::from_secs(60), control)?;
         if !decoded.status.success() || decode_errors(&decoded.stderr) {
             bail!(crate::i18n::ui(
