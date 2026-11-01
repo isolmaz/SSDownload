@@ -2621,9 +2621,13 @@ impl Actor {
         // A restart of a job authorized for a transfer starts the download over at once: its size
         // and count go to 0. Sending a job that is not authorized to the browser starts it over
         // as well, once the receiver is ready, which authorizes the job and uses up its grant.
-        // Until then nothing of that begin is saved: after a begin that ends early, also when the
-        // app closes, the job is as it was, and the next start does not run it on its own.
+        // Until then the job's record keeps the state it has now, whatever saves the job: after a
+        // begin that ends early, also when the app closes, the job is as it was, and the next
+        // start does not run it on its own.
         let handed_over = !job.browser_transfer_authorized;
+        if handed_over {
+            self.store.hold(&job);
+        }
         let restarted = restart && !handed_over;
         if restarted {
             job.downloaded = 0;
@@ -2959,7 +2963,9 @@ impl Actor {
 
     /// Ends the transfer and with it every network permit it still holds. The extension's
     /// late `end_request` for that generation is refused, so nothing else could release them.
+    /// The job's record is no longer held either.
     fn remove_browser_transfer(&mut self, id: &str) -> Option<BrowserTransferLease> {
+        self.store.release(id);
         self.browser_transfers.remove(id)
     }
 

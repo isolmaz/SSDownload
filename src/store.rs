@@ -4,7 +4,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 /// Schema generation written to `PRAGMA user_version`. A database from a newer
 /// generation is refused instead of being rewritten by an older build.
@@ -15,6 +15,8 @@ const SCHEMA_VERSION: i64 = 1;
 pub(crate) struct Store {
     connection: Connection,
     pub warnings: Vec<String>,
+    /// The state, phase and error of each held job record (see `hold`).
+    held: HashMap<String, (JobState, String, Option<String>)>,
 }
 
 impl Store {
@@ -98,6 +100,7 @@ impl Store {
         Ok(Self {
             connection,
             warnings: Vec::new(),
+            held: HashMap::new(),
         })
     }
 
@@ -245,8 +248,38 @@ impl Store {
         }
     }
 
+    /// Holds the record of a job that a browser transfer begins for before the job is authorized
+    /// for one. Until `release`, a save of the job while it waits for its receiver
+    /// (`Downloading`, not authorized) writes the state, phase and error the job has now.
+    pub(crate) fn hold(&mut self, job: &Job) {
+        self.held.insert(
+            job.id.clone(),
+            (job.state, job.phase.clone(), job.error.clone()),
+        );
+    }
+
+    pub(crate) fn release(&mut self, id: &str) {
+        self.held.remove(id);
+    }
+
+    fn encode(&self, job: &Job) -> Result<String> {
+        match self.held.get(&job.id) {
+            Some((state, phase, error))
+                if job.state == JobState::Downloading && !job.browser_transfer_authorized =>
+            {
+                encode_job(&Job {
+                    state: *state,
+                    phase: phase.clone(),
+                    error: error.clone(),
+                    ..job.clone()
+                })
+            }
+            _ => encode_job(job),
+        }
+    }
+
     pub(crate) fn save_job(&mut self, job: &Job) -> Result<()> {
-        let payload = encode_job(job)?;
+        let payload = self.encode(job)?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -262,7 +295,7 @@ impl Store {
     pub(crate) fn save_jobs(&mut self, jobs: &[Job]) -> Result<()> {
         let encoded = jobs
             .iter()
-            .map(|job| Ok((job, encode_job(job)?)))
+            .map(|job| Ok((job, self.encode(job)?)))
             .collect::<Result<Vec<_>>>()?;
         let tx = self
             .connection
@@ -324,7 +357,7 @@ impl Store {
         ))?;
         let encoded = jobs
             .iter()
-            .map(|job| Ok((job, encode_job(job)?)))
+            .map(|job| Ok((job, self.encode(job)?)))
             .collect::<Result<Vec<_>>>()?;
         let tx = self
             .connection

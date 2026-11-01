@@ -1173,6 +1173,168 @@ fn a_job_sent_to_the_browser_stays_as_it_was_when_the_app_closes_before_the_rece
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Opens the app again and lets another download of `server` complete, by when the start would
+/// have asked for the job had it queued it. Returns the job and whether its file at `path` was
+/// asked for.
+fn after_a_restart(
+    paths: AppPaths,
+    root: &Path,
+    server: &FileServer,
+    id: &str,
+    path: &str,
+) -> (Job, bool) {
+    let engine = Engine::open(paths).unwrap();
+    let other = engine
+        .add(file_request(server.url("/other.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the other download", || {
+        job_state(&engine, &other) == JobState::Completed
+    });
+    let job = engine
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .clone();
+    let asked = server.hits.lock().unwrap().iter().any(|hit| hit == path);
+    engine.shutdown();
+    (job, asked)
+}
+
+#[test]
+fn a_job_sent_to_the_browser_and_moved_up_stays_as_it_was_when_the_app_closes_before_the_receiver_is_ready(
+) {
+    let server = FileServer::start(vec![
+        ("/browser-moved.bin".into(), vec![6; 4096], false),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) =
+        browser_quota_job("browser-moved", server.url("/browser-moved.bin"), |job| {
+            job.downloaded = 1_000_000
+        });
+    let engine = Engine::open(paths.clone()).unwrap();
+    let priority = engine
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .priority;
+    engine.begin_source_refresh(&id).unwrap();
+    begin_as_this_process(&engine, &id, false);
+    // The user moves the job to the top of the list before the receiver is ready.
+    engine.reorder(vec![id.clone()], true).unwrap();
+    engine.shutdown();
+
+    let (job, asked) = after_a_restart(paths, &root, &server, &id, "/browser-moved.bin");
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        (
+            job.state,
+            job.browser_transfer_authorized,
+            job.downloaded,
+            job.priority > priority,
+            asked
+        ),
+        (JobState::AwaitingSource, false, 1_000_000, true, false)
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_stays_as_it_was_when_the_jobs_are_saved_again_after_a_store_error() {
+    let server = FileServer::start(vec![
+        ("/browser-store-error.bin".into(), vec![6; 4096], false),
+        ("/scheduled.bin".into(), vec![8; 4096], false),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) = browser_quota_job(
+        "browser-store-error",
+        server.url("/browser-store-error.bin"),
+        |job| job.downloaded = 1_000_000,
+    );
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    begin_as_this_process(&engine, &id, false);
+    // Before the receiver is ready, another job's start time comes while no job can be written.
+    // The engine stops and, once it can write again, saves every job it has.
+    engine
+        .add(AddRequest {
+            start_at: Some(Utc::now().timestamp() + 3),
+            ..file_request(server.url("/scheduled.bin"), &root.join("out"))
+        })
+        .unwrap();
+    let database = rusqlite::Connection::open(&paths.database).unwrap();
+    database
+        .execute("ALTER TABLE jobs RENAME TO jobs_aside", [])
+        .unwrap();
+    let store_error = || {
+        engine
+            .snapshot()
+            .warning
+            .is_some_and(|warning| warning.contains("no such table: jobs"))
+    };
+    wait_until("the store error", &store_error);
+    database
+        .execute("ALTER TABLE jobs_aside RENAME TO jobs", [])
+        .unwrap();
+    drop(database);
+    wait_until("the jobs to be saved again", || !store_error());
+    engine.shutdown();
+
+    let (job, asked) = after_a_restart(paths, &root, &server, &id, "/browser-store-error.bin");
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        (
+            job.state,
+            job.browser_transfer_authorized,
+            job.downloaded,
+            asked
+        ),
+        (JobState::AwaitingSource, false, 1_000_000, false)
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_saved_as_it_is_once_the_user_pauses_it_before_the_receiver_is_ready(
+) {
+    let server = FileServer::start(vec![("/browser-paused.bin".into(), vec![6; 4096], true)]);
+    let (root, paths, id) =
+        browser_quota_job("browser-paused", server.url("/browser-paused.bin"), |_| {});
+    let engine = Engine::open(paths.clone()).unwrap();
+    let saved = || {
+        Store::open(&paths.database)
+            .unwrap()
+            .load_jobs()
+            .unwrap()
+            .into_iter()
+            .find(|job| job.id == id)
+            .unwrap()
+    };
+    engine.begin_source_refresh(&id).unwrap();
+    begin_as_this_process(&engine, &id, false);
+    engine.pause(&id).unwrap();
+    let paused = saved().state;
+
+    // Resumed in the app, the job runs in the app's own downloader, which saves its progress at
+    // most once a second.
+    engine.resume(&id).unwrap();
+    wait_until("the run", || !server.hits.lock().unwrap().is_empty());
+    wait_until("the saved progress", || {
+        report_downloaded(&engine, &id, &[1_000]);
+        saved().downloaded == 1_000
+    });
+    let running = saved().state;
+    server.release();
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!((paused, running), (JobState::Paused, JobState::Downloading));
+}
+
 #[test]
 fn a_restart_sent_to_the_browser_that_ended_early_leaves_the_count_of_the_apps_own_download() {
     let root =
