@@ -7,7 +7,7 @@ use curl::easy::List;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -1514,25 +1514,29 @@ fn download_http_single(
 
     let state = single_state(request, remote, offset);
     write_state(&state_path, &state)?;
-    // The next attempt keeps these bytes only when it can prove the source is the same
-    // one; a resumed request that is answered at all continues where the part file ends.
-    let kept = state_matches(
-        &state,
-        remote,
-        false,
-        1,
-        normalized_checksum(request.checksum.as_deref()).as_deref(),
-    );
-    let shown = if !kept {
-        Some(false)
-    } else if resumable {
-        Some(true)
-    } else {
-        range_support
+    // Whether the next attempt keeps the bytes that `state` describes: it reads the
+    // source's identity back from the state and applies the resume rule to it. A resumed
+    // request that is answered at all continues where the part file ends.
+    let verdict = |state: &ResumeState| {
+        let mut next = remote.clone();
+        next.etag = state.etag.clone();
+        next.last_modified = state.last_modified.clone();
+        next.total = state.total;
+        let checksum = normalized_checksum(request.checksum.as_deref());
+        if !state_matches(state, &next, false, 1, checksum.as_deref()) {
+            Some(false)
+        } else if resumable {
+            Some(true)
+        } else {
+            range_support
+        }
     };
+    // A full answer settles the identity with its first byte; until then it is unknown.
+    let shown = Cell::new(resumable.then(|| verdict(&state)).flatten());
+    let settled = |state: &ResumeState| shown.set(verdict(state));
     let progress = &mut |value: TransferProgress| {
         progress(TransferProgress {
-            resumable: shown,
+            resumable: shown.get(),
             ..value
         })
     };
@@ -1566,6 +1570,7 @@ fn download_http_single(
             control,
             network,
             1,
+            &settled,
             progress,
         );
         match attempt {
@@ -1713,6 +1718,8 @@ fn http_to_file(
     control: &TransferControl,
     network: &NetworkGovernor,
     divisor: u64,
+    // Told the state that describes a full answer's bytes before the first one is written.
+    settled: &dyn Fn(&ResumeState),
     progress: &mut dyn FnMut(TransferProgress),
 ) -> std::result::Result<(ResponseHeaders, u64), AttemptFailure> {
     let mut easy = network
@@ -1800,15 +1807,17 @@ fn http_to_file(
                 if sink.written == 0 && matches!(expected, ExpectedResponse::Full) {
                     // The state has to describe the bytes before the first one is written.
                     let adopted = adopt_full_response(remote, &write_response.borrow());
+                    let state = single_state(request, &adopted, 0);
                     if adopted.etag != remote.etag
                         || adopted.last_modified != remote.last_modified
                         || adopted.total != remote.total
                     {
-                        if let Err(error) = sink.adopt(single_state(request, &adopted, 0)) {
+                        if let Err(error) = sink.adopt(state.clone()) {
                             *write_error.borrow_mut() = Some(std::io::Error::other(error));
                             return Ok(0);
                         }
                     }
+                    settled(&state);
                 }
                 if let Err(error) = sink.write(data) {
                     *write_error.borrow_mut() = Some(error);
