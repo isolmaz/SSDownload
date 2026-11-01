@@ -1050,10 +1050,13 @@ pub(super) unsafe fn button_widths(ui: &MainUi, labels: bool) -> [i32; 5] {
     for (index, button) in MAIN_BUTTONS.iter().enumerate() {
         let mut width = scale(BUTTON_PAD * 2, ui.dpi) + icon;
         if labels || icon == 0 || button.0 == PRIMARY {
-            // The pause button fits both of its labels.
+            // The pause button fits each of its labels.
             let label = if button.0 == ID_PAUSE_RESUME {
-                label_width(dc, pause_button_label(false))
-                    .max(label_width(dc, pause_button_label(true)))
+                PAUSE_VERBS
+                    .iter()
+                    .map(|verb| label_width(dc, pause_button_label(*verb)))
+                    .max()
+                    .unwrap_or(0)
             } else {
                 label_width(dc, &text(GetDlgItem(ui.hwnd, button.0)))
             };
@@ -1121,7 +1124,7 @@ pub(super) unsafe fn draw_main_button(ui: &MainUi, item: &DRAWITEMSTRUCT) {
     };
     let text = super::text(item.hwndItem);
     // A resume shows the play glyph.
-    let glyph = if id == ID_PAUSE_RESUME && text == pause_button_label(true) {
+    let glyph = if id == ID_PAUSE_RESUME && text == pause_button_label(PauseVerb::Resume) {
         0xe768
     } else {
         COMMAND_GLYPHS[index]
@@ -1952,13 +1955,13 @@ pub(super) unsafe fn line_height(hwnd: HWND, font: HFONT) -> i32 {
 /// mark for the selection, the cell texts and the progress bar. Every row is
 /// painted here because the theme blends its own selection over anything
 /// drawn under it; high contrast keeps the system's rows and adds the bar.
-pub(super) unsafe fn list_custom_draw(ui: &MainUi, lparam: LPARAM) -> LRESULT {
+pub(super) unsafe fn modern_list_custom_draw(ui: &MainUi, lparam: LPARAM) -> LRESULT {
     let draw = &mut *(lparam as *mut NMLVCUSTOMDRAW);
     let stage = draw.nmcd.dwDrawStage;
     let contrast = high_contrast();
     if stage == CDDS_PREPAINT {
         if !contrast {
-            paint_list_tail(ui, draw.nmcd.hdc);
+            modern_list_tail(ui, draw.nmcd.hdc);
         }
         return CDRF_NOTIFYITEMDRAW as LRESULT;
     }
@@ -1979,7 +1982,7 @@ pub(super) unsafe fn list_custom_draw(ui: &MainUi, lparam: LPARAM) -> LRESULT {
         };
     }
     if stage == CDDS_ITEMPOSTPAINT | CDDS_SUBITEM && progress {
-        paint_row_progress(ui, draw.nmcd.hdc, draw.nmcd.dwItemSpec, draw.nmcd.rc);
+        modern_row_progress(ui, draw.nmcd.hdc, draw.nmcd.dwItemSpec, draw.nmcd.rc);
     }
     CDRF_DODEFAULT as LRESULT
 }
@@ -1988,7 +1991,7 @@ pub(super) unsafe fn list_custom_draw(ui: &MainUi, lparam: LPARAM) -> LRESULT {
 /// column edge; the rows cover it with their own colour and this covers the
 /// rest. Nothing above the last row is touched, so a paint that redraws only
 /// some rows, such as a hot-tracking change, leaves the other rows as they are.
-unsafe fn paint_list_tail(ui: &MainUi, dc: HDC) {
+unsafe fn modern_list_tail(ui: &MainUi, dc: HDC) {
     let mut client: RECT = zeroed();
     GetClientRect(ui.list, &mut client);
     let count = SendMessageW(ui.list, LVM_GETITEMCOUNT, 0, 0) as usize;
@@ -2121,7 +2124,7 @@ unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | ellipsis | DT_NOPREFIX,
         );
         if column == COL_PROGRESS {
-            paint_row_progress(ui, dc, row, cell);
+            modern_row_progress(ui, dc, row, cell);
         }
     }
 }
@@ -2197,7 +2200,7 @@ unsafe fn paint_row_backplate(ui: &MainUi, draw: &NMLVCUSTOMDRAW) {
 /// Draws a row's progress the way the Windows 11 ProgressBar does: a 1 epx
 /// track under the cell text with a 3 epx rounded fill on it, accent while
 /// running, success, caution or critical once the job finished, paused or failed.
-pub(super) unsafe fn paint_row_progress(ui: &MainUi, dc: HDC, row: usize, cell: RECT) {
+pub(super) unsafe fn modern_row_progress(ui: &MainUi, dc: HDC, row: usize, cell: RECT) {
     let Some(job) = ui
         .visible_ids
         .get(row)

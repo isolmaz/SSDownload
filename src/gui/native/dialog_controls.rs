@@ -195,10 +195,17 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui(
-                    "URL bağlantıları (her satıra bir bağlantı)",
-                    "URL links (one link per line)",
-                ),
+                if modern() {
+                    crate::i18n::ui(
+                        "URL bağlantıları (her satıra bir bağlantı)",
+                        "URL links (one link per line)",
+                    )
+                } else {
+                    crate::i18n::ui(
+                        "URL bağlantıları (her satıra bir bağlantı):",
+                        "URL links (one link per line):",
+                    )
+                },
                 0,
             );
             f.urls = dialog_edit(dlg.hwnd, dlg.font, D_URLS, true, false);
@@ -207,7 +214,11 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Hedef klasör", "Target folder"),
+                if modern() {
+                    crate::i18n::ui("Hedef klasör", "Target folder")
+                } else {
+                    crate::i18n::ui("Hedef klasör:", "Target folder:")
+                },
                 0,
             );
             f.dir = dialog_edit(dlg.hwnd, dlg.font, D_DIR, false, false);
@@ -225,21 +236,34 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui(
-                    "Dosya adı (isteğe bağlı, tek URL için)",
-                    "File name (optional, for a single URL)",
-                ),
+                if modern() {
+                    crate::i18n::ui(
+                        "Dosya adı (isteğe bağlı, tek URL için)",
+                        "File name (optional, for a single URL)",
+                    )
+                } else {
+                    crate::i18n::ui(
+                        "Dosya adı (isteğe bağlı, tek URL için):",
+                        "File name (optional, for a single URL):",
+                    )
+                },
                 0,
             );
             f.filename = dialog_edit(dlg.hwnd, dlg.font, D_FILENAME, false, false);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("İndirme türü", "Download type"),
+                if modern() {
+                    crate::i18n::ui("İndirme türü", "Download type")
+                } else {
+                    crate::i18n::ui("İndirme türü:", "Download type:")
+                },
                 0,
             );
             f.kind = dialog_combo(dlg.hwnd, dlg.font, D_KIND);
-            subclass(f.kind, combo_proc);
+            if modern() {
+                subclass(f.kind, combo_proc);
+            }
             let modes = dlg.app.snapshot().settings.usage_modes;
             f.kind_values.clear();
             if modes.allows(DownloadKind::Auto) {
@@ -265,53 +289,81 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui(
-                    "Bağlantı sayısı (boş = tür ayarı)",
-                    "Connection count (empty = type default)",
-                ),
+                if modern() {
+                    crate::i18n::ui(
+                        "Bağlantı sayısı (boş = tür ayarı)",
+                        "Connection count (empty = type default)",
+                    )
+                } else {
+                    crate::i18n::ui(
+                        "Bağlantı sayısı (boş = tür ayarı):",
+                        "Connection count (empty = type default):",
+                    )
+                },
                 0,
             );
             f.connections = dialog_edit(dlg.hwnd, dlg.font, D_CONNECTIONS, false, true);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui(
-                    "SHA-256 (isteğe bağlı, 64 onaltılık karakter)",
-                    "SHA-256 (optional, 64 hexadecimal characters)",
-                ),
+                if modern() {
+                    crate::i18n::ui(
+                        "SHA-256 (isteğe bağlı, 64 onaltılık karakter)",
+                        "SHA-256 (optional, 64 hexadecimal characters)",
+                    )
+                } else {
+                    crate::i18n::ui(
+                        "SHA-256 (isteğe bağlı, 64 onaltılık karakter):",
+                        "SHA-256 (optional, 64 hexadecimal characters):",
+                    )
+                },
                 0,
             );
             f.checksum = dialog_edit(dlg.hwnd, dlg.font, D_CHECKSUM, false, false);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui(
-                    "En erken başlama (yerel saat, YYYY-AA-GG SS:DD)",
-                    "Earliest start (local time, YYYY-MM-DD HH:MM)",
-                ),
+                if modern() {
+                    crate::i18n::ui(
+                        "En erken başlama (yerel saat, YYYY-AA-GG SS:DD)",
+                        "Earliest start (local time, YYYY-MM-DD HH:MM)",
+                    )
+                } else {
+                    crate::i18n::ui(
+                        "En erken başlama (yerel saat, YYYY-AA-GG SS:DD):",
+                        "Earliest start (local time, YYYY-MM-DD HH:MM):",
+                    )
+                },
                 0,
             );
             f.schedule = dialog_edit(dlg.hwnd, dlg.font, D_SCHEDULE, false, false);
-            for edit in [
-                f.urls,
-                f.dir,
-                f.filename,
-                f.connections,
-                f.checksum,
-                f.schedule,
-            ] {
-                flatten_edit(edit);
-            }
-            for (index, (tr, en)) in ADD_CUES.iter().enumerate() {
-                let cue = wide(crate::i18n::ui(tr, en));
-                let edit = [f.filename, f.schedule][index];
-                SendMessageW(edit, EM_SETCUEBANNER, 0, cue.as_ptr() as LPARAM);
-                subclass(edit, cue_proc);
+            // Modern: flat fields in painted frames, with cue banners.
+            if modern() {
+                for edit in [
+                    f.urls,
+                    f.dir,
+                    f.filename,
+                    f.connections,
+                    f.checksum,
+                    f.schedule,
+                ] {
+                    flatten_edit(edit);
+                }
+                for (index, (tr, en)) in ADD_CUES.iter().enumerate() {
+                    let cue = wide(crate::i18n::ui(tr, en));
+                    let edit = [f.filename, f.schedule][index];
+                    SendMessageW(edit, EM_SETCUEBANNER, 0, cue.as_ptr() as LPARAM);
+                    subclass(edit, cue_proc);
+                }
             }
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("İndir", "Download"),
+                if modern() {
+                    crate::i18n::ui("İndir", "Download")
+                } else {
+                    crate::i18n::ui("Devam / İndir", "Continue / Download")
+                },
                 D_ADD_OK,
                 true,
             );
@@ -872,6 +924,22 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             );
             f.history = dialog_edit(dlg.hwnd, dlg.font, S_HISTORY, false, true);
             set_text(f.history, &f.value.history_days.to_string());
+            // Genel: the theme row. Its statics are created last so the label
+            // indexes above stay as they are.
+            f.theme_label = dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Tema:", "Theme:"), 0);
+            f.theme = dialog_combo(dlg.hwnd, dlg.font, S_THEME);
+            combo_add(f.theme, "Modern");
+            combo_add(f.theme, crate::i18n::ui("Klasik", "Classic"));
+            combo_select(f.theme, if f.value.modern_theme() { 0 } else { 1 });
+            f.theme_note = dialog_label(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui(
+                    "SSDownload yeniden başlatılınca uygulanır",
+                    "Applies when SSDownload restarts",
+                ),
+                0,
+            );
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -901,7 +969,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 f.connections,
             ];
             if simple {
-                order.extend([f.site_entries, f.startup, f.tray, f.notify, f.dark]);
+                order.extend([f.site_entries, f.startup, f.tray, f.notify, f.dark, f.theme]);
             } else {
                 order.extend([
                     f.mode_video,
@@ -912,6 +980,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                     f.tray,
                     f.notify,
                     f.dark,
+                    f.theme,
                     f.site_entries,
                     f.schedule,
                     f.start,

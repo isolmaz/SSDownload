@@ -568,6 +568,8 @@ pub struct Settings {
     pub schedule_start: String,
     pub schedule_end: String,
     pub dark_mode: bool,
+    /// Look of the desktop windows: `modern` | `classic`. Read when the app starts.
+    pub theme: String,
     pub last_video_container: String,
     pub last_video_height: Option<u32>,
     pub usage_modes: UsageModes,
@@ -704,6 +706,7 @@ impl Default for Settings {
             schedule_start: "00:00".into(),
             schedule_end: "23:59".into(),
             dark_mode: false,
+            theme: "modern".into(),
             last_video_container: "mp4".into(),
             last_video_height: None,
             usage_modes: UsageModes::default(),
@@ -752,6 +755,12 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// True unless the stored theme is `classic`: Modern is the default, and an
+    /// unknown value reads as the default.
+    pub fn modern_theme(&self) -> bool {
+        self.theme != "classic"
+    }
+
     /// The settings of a profile that has none stored yet: the defaults, in the Windows display
     /// language. `Default` stays Turkish, so a stored value that predates `ui_language` reads
     /// as it always did.
@@ -1164,6 +1173,25 @@ mod tests {
             serde_json::from_str(r#"{"connections":4,"per_host_limit":2}"#).unwrap();
         assert!(old.adopt_current_defaults());
         assert_eq!((old.connections, old.per_host_limit), (8, 8));
+    }
+
+    #[test]
+    fn the_theme_is_modern_by_default_and_a_stored_classic_survives_a_round_trip() {
+        assert!(super::Settings::default().modern_theme());
+        assert!(super::Settings::first_run().modern_theme());
+        // A profile written before the theme setting existed.
+        let old: super::Settings = serde_json::from_str(r#"{"connections":4}"#).unwrap();
+        assert!(old.modern_theme());
+        let classic = super::Settings {
+            theme: "classic".into(),
+            ..super::Settings::default()
+        };
+        let stored = serde_json::to_string(&classic).unwrap();
+        let loaded: super::Settings = serde_json::from_str(&stored).unwrap();
+        assert!(!loaded.modern_theme());
+        // A value no build writes reads as the default.
+        let unknown: super::Settings = serde_json::from_str(r#"{"theme":"neon"}"#).unwrap();
+        assert!(unknown.modern_theme());
     }
 
     #[test]

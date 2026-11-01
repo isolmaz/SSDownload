@@ -620,15 +620,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
             }
             D_ADVANCED => {
                 f.advanced = !f.advanced;
-                resize_dialog(
-                    dlg.hwnd,
-                    dlg.dpi,
-                    if f.advanced {
-                        ADD_ADVANCED_HEIGHT + SETTINGS_FRAME + 3
-                    } else {
-                        ADD_DIALOG_HEIGHT
-                    },
-                );
+                resize_dialog(dlg.hwnd, dlg.dpi, add_window_height(f.advanced));
                 layout_dialog(dlg);
             }
             D_ADD_OK => match collect_add(f, false) {
@@ -1557,6 +1549,11 @@ pub(super) unsafe fn collect_settings(
     value.start_with_windows = check(f.startup);
     value.notify_completion = check(f.notify);
     value.dark_mode = check(f.dark);
+    value.theme = if combo_index(f.theme) == 1 {
+        "classic".into()
+    } else {
+        "modern".into()
+    };
     value.update_check_enabled = check(f.update_check);
     // Both modes show these two rows (on the general page in the simple one),
     // so both read them back.

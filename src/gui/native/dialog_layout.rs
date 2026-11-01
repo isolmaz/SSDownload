@@ -9,13 +9,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     let actual_height = r.bottom;
     let logical_height = match &dlg.kind {
         DialogKind::Wizard(_) => 372,
-        DialogKind::Add(f) => {
-            if f.advanced {
-                ADD_ADVANCED_HEIGHT
-            } else {
-                ADD_HEIGHT
-            }
-        }
+        DialogKind::Add(f) => add_content_height(f.advanced),
         DialogKind::Settings(f) => {
             settings_logical_height(UiMode::parse(&f.value.ui_mode).is_simple())
         }
@@ -113,6 +107,88 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 dlg.hwnd,
                 D_CANCEL,
                 w - m - scale(210, dlg.dpi),
+                by,
+                scale(92, dlg.dpi),
+                row,
+            );
+        }
+        DialogKind::Add(f) if !modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let line = scale(22, dlg.dpi);
+            let step = scale(26, dlg.dpi);
+            let cw = w - 2 * m;
+            let field = |index: usize, y: i32, show: bool| {
+                if let Some(label) = labels.get(index) {
+                    ShowWindow(*label, if show { SW_SHOW } else { SW_HIDE });
+                    MoveWindow(*label, m, y, cw, scale(18, dlg.dpi), 1);
+                }
+            };
+            field(0, m, true);
+            MoveWindow(f.urls, m, m + scale(20, dlg.dpi), cw, scale(56, dlg.dpi), 1);
+            field(1, m + scale(80, dlg.dpi), true);
+            MoveWindow(
+                f.dir,
+                m,
+                m + scale(100, dlg.dpi),
+                cw - scale(96, dlg.dpi),
+                line,
+                1,
+            );
+            move_id(
+                dlg.hwnd,
+                D_BROWSE,
+                w - m - scale(88, dlg.dpi),
+                m + scale(100, dlg.dpi),
+                scale(88, dlg.dpi),
+                line,
+            );
+            field(2, m + scale(126, dlg.dpi), true);
+            MoveWindow(f.filename, m, m + scale(146, dlg.dpi), cw, line, 1);
+            field(3, m + scale(172, dlg.dpi), true);
+            // A closed combo box only needs one row; the list it drops belongs
+            // to the item count, not to the control.
+            MoveWindow(
+                f.kind,
+                m,
+                m + scale(192, dlg.dpi),
+                scale(260, dlg.dpi),
+                line,
+                1,
+            );
+            let label_w = scale(276, dlg.dpi);
+            for (index, (label_index, control)) in
+                [(4, f.connections), (5, f.checksum), (6, f.schedule)]
+                    .iter()
+                    .enumerate()
+            {
+                let y = m + scale(222, dlg.dpi) + step * index as i32;
+                if let Some(label) = labels.get(*label_index) {
+                    ShowWindow(*label, if f.advanced { SW_SHOW } else { SW_HIDE });
+                    MoveWindow(
+                        *label,
+                        m,
+                        y + scale(2, dlg.dpi),
+                        label_w,
+                        scale(18, dlg.dpi),
+                        1,
+                    );
+                }
+                ShowWindow(*control, if f.advanced { SW_SHOW } else { SW_HIDE });
+                MoveWindow(*control, m + label_w + gap, y, cw - label_w - gap, line, 1);
+            }
+            move_id(dlg.hwnd, D_ADVANCED, m, by, scale(185, dlg.dpi), row);
+            move_id(
+                dlg.hwnd,
+                D_ADD_OK,
+                w - m - scale(150, dlg.dpi),
+                by,
+                scale(150, dlg.dpi),
+                row,
+            );
+            move_id(
+                dlg.hwnd,
+                D_CANCEL,
+                w - m - scale(250, dlg.dpi),
                 by,
                 scale(92, dlg.dpi),
                 row,
@@ -390,6 +466,26 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             place(f.notify, genel, cx, row_y, cw, line);
             row_y += step;
             place(f.dark, genel, cx, row_y, cw, line);
+            row_y += step;
+            // Tema: the box in the field column like the level box, the note
+            // beside it.
+            place(
+                f.theme_label,
+                genel,
+                cx,
+                row_y + scale(3, dlg.dpi),
+                label_w,
+                scale(18, dlg.dpi),
+            );
+            place(f.theme, genel, field_x, row_y, scale(110, dlg.dpi), line);
+            place(
+                f.theme_note,
+                genel,
+                field_x + scale(118, dlg.dpi),
+                row_y + scale(3, dlg.dpi),
+                cw - label_w - scale(118, dlg.dpi),
+                scale(18, dlg.dpi),
+            );
             row_y += step;
             if !simple {
                 place(f.site_entries, genel, cx, row_y, cw, line);

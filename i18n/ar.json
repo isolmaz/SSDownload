@@ -1713,5 +1713,20 @@
   "Filter": "عامل التصفية",
   "Job details": "تفاصيل المهمة",
   "Search downloads": "البحث في التنزيلات",
-  "Space": "مسافة"
+  "Space": "مسافة",
+  "Connection count (empty = type default):": "عدد الاتصالات (فارغ = الافتراضي حسب النوع):",
+  "Continue / Download": "متابعة / تنزيل",
+  "Download type:": "نوع التنزيل:",
+  "Earliest start (local time, YYYY-MM-DD HH:MM):": "أقرب وقت بدء (بالتوقيت المحلي، YYYY-MM-DD HH:MM):",
+  "File name (optional, for a single URL):": "اسم الملف (اختياري، لعنوان URL واحد):",
+  "Folder": "المجلد",
+  "Pause / Resume": "إيقاف مؤقت / استئناف",
+  "SHA-256 (optional, 64 hexadecimal characters):": "SHA-256 (اختياري، 64 حرفًا سداسي عشريًا):",
+  "Search:": "بحث:",
+  "Settings": "الإعدادات",
+  "URL links (one link per line):": "روابط URL (رابط واحد في كل سطر):",
+  "&Pause / Resume": "إي&قاف مؤقت / استئناف",
+  "Applies when SSDownload restarts": "يُطبَّق عند إعادة تشغيل SSDownload",
+  "Classic": "كلاسيكي",
+  "Theme:": "السمة:"
 }

@@ -1713,5 +1713,20 @@
   "Filter": "Filtro",
   "Job details": "Detalhes da tarefa",
   "Search downloads": "Pesquisar downloads",
-  "Space": "Espaço"
+  "Space": "Espaço",
+  "Connection count (empty = type default):": "Número de conexões (vazio = padrão do tipo):",
+  "Continue / Download": "Continuar / Baixar",
+  "Download type:": "Tipo de download:",
+  "Earliest start (local time, YYYY-MM-DD HH:MM):": "Início mais cedo (hora local, AAAA-MM-DD HH:MM):",
+  "File name (optional, for a single URL):": "Nome do arquivo (opcional, para uma única URL):",
+  "Folder": "Pasta",
+  "Pause / Resume": "Pausar / retomar",
+  "SHA-256 (optional, 64 hexadecimal characters):": "SHA-256 (opcional, 64 caracteres hexadecimais):",
+  "Search:": "Pesquisar:",
+  "Settings": "Configurações",
+  "URL links (one link per line):": "Links de URL (um link por linha):",
+  "&Pause / Resume": "&Pausar / Retomar",
+  "Applies when SSDownload restarts": "Aplica-se quando o SSDownload reinicia",
+  "Classic": "Clássico",
+  "Theme:": "Tema:"
 }

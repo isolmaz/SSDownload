@@ -527,6 +527,8 @@ struct MainUi {
     split_hot: bool,
     filter: HWND,
     status: HWND,
+    /// Classic: the command buttons and the search label, in layout order.
+    toolbar: Vec<HWND>,
     /// The tabs over the page: details, log and error of the selected download.
     tabs: HWND,
     /// Names the command buttons while only their icons show.
@@ -1163,6 +1165,9 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             .and_then(|result| result.capabilities)
             .is_some_and(|value| value.protocol >= 2 && value.capability_version >= 1);
         let snapshot = app.snapshot();
+        // The theme is read once, before the first window: a change applies
+        // after a restart.
+        set_modern(snapshot.settings.modern_theme());
         // uxtheme only honours the shell colour scheme when the process asked
         // for it before the first window exists, so the menu bar and the
         // themed controls match the stored setting from the very first frame.
@@ -1194,6 +1199,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             split_hot: false,
             filter: null_mut(),
             status: null_mut(),
+            toolbar: Vec::new(),
             tabs: null_mut(),
             tooltip: null_mut(),
             labels_hidden: std::cell::Cell::new(false),
@@ -1242,12 +1248,18 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             hotkey_failed: false,
             dragging: None,
             filter_counts: Vec::new(),
-            columns: visible_columns(&snapshot.settings.hidden_columns),
+            // Classic shows every column in the queue order.
+            columns: if modern() {
+                visible_columns(&snapshot.settings.hidden_columns)
+            } else {
+                visible_columns(&[])
+            },
             column_widths: [0; 6],
             sort: snapshot
                 .settings
                 .list_sort
                 .as_ref()
+                .filter(|_| modern())
                 .and_then(|(key, ascending)| {
                     COLUMN_KEYS
                         .iter()
@@ -1562,9 +1574,10 @@ unsafe extern "system" fn main_proc(
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
     let ui = &mut *raw;
-    // The main window paints its own layers in both schemes; the shared dark
-    // painter below only covers the dialogs' surfaces.
+    // Modern paints the main window's own layers in both schemes; the shared
+    // dark painter below covers Classic and the dialogs' surfaces.
     match msg {
+        _ if !modern() => {}
         WM_ERASEBKGND => {
             paint_main_surfaces(ui, wparam as HDC);
             return 1;
@@ -1592,7 +1605,7 @@ unsafe extern "system" fn main_proc(
             // The default paints the frame and the system's menu bar strip; the
             // strip is repainted here so the whole bar sits on the base layer.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if menu_strip_painted() {
+            if menu_strip_painted(hwnd) {
                 paint_menu_strip(ui);
             }
             value
@@ -1602,7 +1615,7 @@ unsafe extern "system" fn main_proc(
             // menu bar included, and they do it outside WM_NCPAINT. The strip is
             // painted again on top so a focus change cannot leave the bar light.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if menu_strip_painted() {
+            if menu_strip_painted(hwnd) {
                 paint_menu_strip(ui);
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
@@ -1622,7 +1635,7 @@ unsafe extern "system" fn main_proc(
                 // shell keeps it.
                 ui.menu_hot = -1;
             }
-            if menu_strip_painted() {
+            if menu_strip_painted(hwnd) {
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
             0
@@ -1641,7 +1654,7 @@ unsafe extern "system" fn main_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
-        WM_INITMENUPOPUP => {
+        WM_INITMENUPOPUP if modern() => {
             update_view_menu(ui);
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -1662,12 +1675,12 @@ unsafe extern "system" fn main_proc(
         WM_EXITMENULOOP => {
             ui.menu_open = false;
             ui.menu_hot = -1;
-            if menu_strip_painted() {
+            if menu_strip_painted(hwnd) {
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
             0
         }
-        WM_UAHDRAWMENU if menu_strip_painted() => {
+        WM_UAHDRAWMENU if menu_strip_painted(hwnd) => {
             // The theme asks for the bar's own drawing and hands over the
             // context it presents. That context is the only one the shell
             // blits, so the strip is drawn into it rather than into a window
@@ -1676,7 +1689,7 @@ unsafe extern "system" fn main_proc(
             paint_menu_strip_into(ui, ask.dc);
             1
         }
-        WM_UAHDRAWMENUITEM if menu_strip_painted() => {
+        WM_UAHDRAWMENUITEM if menu_strip_painted(hwnd) => {
             // The same request for one item, with a DRAWITEMSTRUCT at the head
             // of the request; its hDC is the context to draw in.
             let ask = &*(lparam as *const DRAWITEMSTRUCT);
@@ -1689,7 +1702,7 @@ unsafe extern "system" fn main_proc(
             // is handled, so the strip keeps the hot item itself and lands on
             // top of it in the same message instead of flashing light.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if menu_strip_painted() {
+            if menu_strip_painted(hwnd) {
                 track_nc_leave(hwnd);
                 let over_bar = loword(wparam) as u32 == HTMENU;
                 let menu = GetMenu(hwnd);
@@ -1723,7 +1736,7 @@ unsafe extern "system" fn main_proc(
             // tracks, the cursor only left for the popup and the item keeps the
             // highlight the open menu gives it.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if menu_strip_painted() {
+            if menu_strip_painted(hwnd) {
                 if !ui.menu_open {
                     ui.menu_hot = -1;
                 }
@@ -1732,7 +1745,7 @@ unsafe extern "system" fn main_proc(
             value
         }
         WM_PAINT_MENU => {
-            if menu_strip_painted() {
+            if menu_strip_painted(hwnd) {
                 RedrawWindow(
                     hwnd,
                     std::ptr::null_mut(),
@@ -1751,7 +1764,8 @@ unsafe extern "system" fn main_proc(
             // This arrives before WM_CREATE, so the DPI has to come from the
             // window, not from state that is filled in later.
             let dpi = GetDpiForWindow(hwnd).max(96);
-            let (x, y) = clamp_min_track(hwnd, dpi, 760, 440);
+            // Modern's split lets the window be lower.
+            let (x, y) = clamp_min_track(hwnd, dpi, 760, if modern() { 440 } else { 560 });
             info.ptMinTrackSize.x = x;
             info.ptMinTrackSize.y = y;
             0
@@ -1776,7 +1790,9 @@ unsafe extern "system" fn main_proc(
         }
         WM_SETTINGCHANGE => {
             apply_dark_mode(hwnd, ui.snapshot.settings.dark_mode);
-            refresh_main_surfaces(ui);
+            if modern() {
+                refresh_main_surfaces(ui);
+            }
             0
         }
         WM_DISPLAYCHANGE => {
@@ -1806,7 +1822,7 @@ unsafe extern "system" fn main_proc(
             main_command(ui, loword(wparam) as i32, hiword(wparam));
             0
         }
-        WM_DRAWITEM => {
+        WM_DRAWITEM if modern() => {
             let item = &*(lparam as *const DRAWITEMSTRUCT);
             if item.CtlType == ODT_BUTTON {
                 draw_main_button(ui, item);
@@ -1818,7 +1834,7 @@ unsafe extern "system" fn main_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
-        WM_MEASUREITEM => {
+        WM_MEASUREITEM if modern() => {
             // Arrives while the filter box is created, before the window's DPI
             // is recorded. The closed box's height is set by the layout.
             let item = &mut *(lparam as *mut MEASUREITEMSTRUCT);
@@ -1863,7 +1879,9 @@ unsafe extern "system" fn main_proc(
             show_tour(ui, false);
             0
         }
-        WM_SETCURSOR if wparam as HWND == hwnd && loword(lparam as usize) as u32 == HTCLIENT => {
+        WM_SETCURSOR
+            if modern() && wparam as HWND == hwnd && loword(lparam as usize) as u32 == HTCLIENT =>
+        {
             let mut point: POINT = zeroed();
             GetCursorPos(&mut point);
             ScreenToClient(hwnd, &mut point);
@@ -1873,7 +1891,7 @@ unsafe extern "system" fn main_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
-        WM_LBUTTONDOWN => {
+        WM_LBUTTONDOWN if modern() => {
             let point = POINT {
                 x: loword(lparam as usize) as i16 as i32,
                 y: hiword(lparam as usize) as i16 as i32,
@@ -1915,7 +1933,7 @@ unsafe extern "system" fn main_proc(
             SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
             0
         }
-        WM_MOUSEMOVE => {
+        WM_MOUSEMOVE if modern() => {
             let point = POINT {
                 x: loword(lparam as usize) as i16 as i32,
                 y: hiword(lparam as usize) as i16 as i32,
@@ -1988,7 +2006,13 @@ unsafe extern "system" fn main_proc(
         WM_NOTIFY => {
             let hdr = &*(lparam as *const NMHDR);
             if hdr.hwndFrom == ui.list && hdr.code == NM_CUSTOMDRAW {
-                return list_custom_draw(ui, lparam);
+                if modern() {
+                    return modern_list_custom_draw(ui, lparam);
+                }
+                if scheme_dark(ui.hwnd) {
+                    return list_custom_draw(ui, lparam);
+                }
+                return light_list_custom_draw(ui, lparam);
             }
             if hdr.hwndFrom == ui.tooltip && hdr.code == TTN_GETDISPINFOW {
                 button_tooltip(lparam);
@@ -1998,7 +2022,7 @@ unsafe extern "system" fn main_proc(
                 update_details(ui);
                 return 0;
             }
-            if hdr.hwndFrom == ui.list && hdr.code == LVN_COLUMNCLICK {
+            if modern() && hdr.hwndFrom == ui.list && hdr.code == LVN_COLUMNCLICK {
                 let view = (*(lparam as *const NMLISTVIEW)).iSubItem;
                 if let Some(&column) = ui.columns.get(view as usize) {
                     set_sort(ui, next_sort(ui.sort, column));
@@ -2006,7 +2030,8 @@ unsafe extern "system" fn main_proc(
                 return 0;
             }
             // The last column fills the list once the user has sized a column.
-            if hdr.hwndFrom == list_header(ui)
+            if modern()
+                && hdr.hwndFrom == list_header(ui)
                 && (hdr.code == HDN_ENDTRACKW || hdr.code == HDN_DIVIDERDBLCLICKW)
             {
                 PostMessageW(hwnd, WM_FIT_COLUMNS, 0, 0);
@@ -2106,7 +2131,13 @@ unsafe extern "system" fn main_proc(
             handle_tray(ui, loword(lparam as usize) as u32);
             0
         }
-        WM_CONTEXTMENU if wparam as HWND == ui.list || wparam as HWND == list_header(ui) => {
+        WM_CONTEXTMENU if !modern() && wparam as HWND == ui.list => {
+            show_job_menu(ui, lparam);
+            0
+        }
+        WM_CONTEXTMENU
+            if modern() && (wparam as HWND == ui.list || wparam as HWND == list_header(ui)) =>
+        {
             let point = POINT {
                 x: loword(lparam as usize) as i16 as i32,
                 y: hiword(lparam as usize) as i16 as i32,
@@ -2190,8 +2221,8 @@ unsafe extern "system" fn main_proc(
     }
 }
 
-/// The command buttons. Their access keys differ from each other and from the
-/// menu bar's in every language; the pause button's label follows the
+/// The Modern command buttons. Their access keys differ from each other and
+/// from the menu bar's in every language; the pause button's label follows the
 /// selection (`pause_button_label`).
 const MAIN_BUTTONS: [(i32, &str, &str); 5] = [
     (ID_ADD, "Y&eni indirme", "&New download"),
@@ -2200,11 +2231,42 @@ const MAIN_BUTTONS: [(i32, &str, &str); 5] = [
     (ID_REMOVE, "&Kaldır", "Re&move"),
     (ID_OPEN_FOLDER, "K&lasör", "F&older"),
 ];
-fn pause_button_label(resumes: bool) -> &'static str {
-    if resumes {
-        crate::i18n::ui("&Sürdür", "&Resume")
+/// The Classic command buttons: plain labels, the pause button naming both verbs.
+const CLASSIC_BUTTONS: [(i32, &str, &str); 5] = [
+    (ID_ADD, "Yeni indirme", "New download"),
+    (ID_SETTINGS, "Ayarlar", "Settings"),
+    (ID_PAUSE_RESUME, "Duraklat / Sürdür", "Pause / Resume"),
+    (ID_REMOVE, "Kaldır", "Remove"),
+    (ID_OPEN_FOLDER, "Klasör", "Folder"),
+];
+/// What the pause command does to a selection: every job it can act on is
+/// resumed when it is paused, failed or cancelled and paused otherwise, so a
+/// mixed selection toggles each job.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PauseVerb {
+    Pause,
+    Resume,
+    Both,
+}
+const PAUSE_VERBS: [PauseVerb; 3] = [PauseVerb::Pause, PauseVerb::Resume, PauseVerb::Both];
+/// The verb a selection's pause command applies; Pause when it acts on none.
+fn pause_verb(jobs: &[&Job]) -> PauseVerb {
+    let acting: Vec<&&Job> = jobs.iter().filter(|job| can_pause_or_resume(job)).collect();
+    let resuming = acting.iter().filter(|job| resumable(job.state)).count();
+    if acting.is_empty() || resuming == 0 {
+        PauseVerb::Pause
+    } else if resuming == acting.len() {
+        PauseVerb::Resume
     } else {
-        crate::i18n::ui("Durakla&t", "&Pause")
+        PauseVerb::Both
+    }
+}
+/// The Modern pause button's label for what it will do to the selection.
+fn pause_button_label(verb: PauseVerb) -> &'static str {
+    match verb {
+        PauseVerb::Pause => crate::i18n::ui("Durakla&t", "&Pause"),
+        PauseVerb::Resume => crate::i18n::ui("&Sürdür", "&Resume"),
+        PauseVerb::Both => crate::i18n::ui("Durakla&t / Sürdür", "&Pause / Resume"),
     }
 }
 /// The tabs over the page, in order: details, the job's own log, its error.
@@ -2235,6 +2297,7 @@ const FILTER_VALUES: [Filter; 9] = [
     Filter::Archives,
     Filter::Programs,
 ];
+/// The list's columns with their Modern widths in epx.
 const MAIN_COLUMNS: [(&str, &str, i32); 6] = [
     ("Ad", "Name", 260),
     ("Durum", "State", 145),
@@ -2243,6 +2306,8 @@ const MAIN_COLUMNS: [(&str, &str, i32); 6] = [
     ("Kalan", "Remaining", 85),
     ("Konum", "Location", 280),
 ];
+/// The Classic widths of `MAIN_COLUMNS`.
+const CLASSIC_COLUMN_WIDTHS: [i32; 6] = [260, 145, 170, 100, 85, 300];
 /// The names the settings store columns by, in `MAIN_COLUMNS` order.
 const COLUMN_KEYS: [&str; 6] = [
     "name",
@@ -2685,6 +2750,168 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     };
     SendMessageW(ui.hwnd, WM_SETICON, ICON_BIG as usize, ui.icon as isize);
     SendMessageW(ui.hwnd, WM_SETICON, ICON_SMALL as usize, ui.icon as isize);
+    if modern() {
+        create_modern_controls(ui);
+    } else {
+        create_classic_controls(ui);
+    }
+    update_profile_controls(ui);
+
+    DragAcceptFiles(ui.hwnd, 1);
+    let target = Box::into_raw(Box::new(DropTarget {
+        vtable: &DROP_TARGET_VTABLE,
+        refs: AtomicU32::new(1),
+        hwnd: ui.hwnd,
+    }));
+    if RegisterDragDrop(ui.hwnd, target.cast()) >= 0 {
+        ui.drop_target = target;
+    } else {
+        drop_release(target);
+    }
+    AddClipboardFormatListener(ui.hwnd);
+    add_tray(ui);
+    SetTimer(ui.hwnd, TIMER_REFRESH, 350, None);
+    apply_dark_mode(ui.hwnd, ui.snapshot.settings.dark_mode);
+    if modern() {
+        refresh_main_surfaces(ui);
+    }
+    layout_main(ui);
+    if modern() {
+        name_main_controls(ui);
+    }
+    refresh(ui, true);
+}
+
+/// The Classic main window: system buttons, a labelled search box, the
+/// filter, the grid list, the details box and the status bar with its grip.
+unsafe fn create_classic_controls(ui: &mut MainUi) {
+    ui.font = make_font(ui.dpi, 9, FW_NORMAL as i32);
+    ui.details_font = make_font(ui.dpi, 9, FW_NORMAL as i32);
+    let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32;
+    for (id, tr, en) in CLASSIC_BUTTONS {
+        let h = control(
+            ui.hwnd,
+            "BUTTON",
+            crate::i18n::ui(tr, en),
+            button_style,
+            0,
+            id,
+        );
+        apply_font(h, ui.font);
+        ui.toolbar.push(h);
+    }
+    let search_label = control(
+        ui.hwnd,
+        "STATIC",
+        crate::i18n::ui("Ara:", "Search:"),
+        WS_CHILD | WS_VISIBLE,
+        0,
+        0,
+    );
+    apply_font(search_label, ui.font);
+    ui.toolbar.push(search_label);
+    ui.search = control(
+        ui.hwnd,
+        "EDIT",
+        "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
+        WS_EX_CLIENTEDGE,
+        ID_SEARCH,
+    );
+    apply_font(ui.search, ui.font);
+    ui.filter = control(
+        ui.hwnd,
+        "COMBOBOX",
+        "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32 | WS_VSCROLL,
+        0,
+        ID_FILTER,
+    );
+    apply_font(ui.filter, ui.font);
+    for (tr, en) in MAIN_FILTERS {
+        combo_add(ui.filter, crate::i18n::ui(tr, en));
+    }
+    combo_select(ui.filter, 0);
+
+    ui.list = control(
+        ui.hwnd,
+        "SysListView32",
+        crate::i18n::ui("İndirme işleri", "Downloads"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS,
+        WS_EX_CLIENTEDGE,
+        ID_JOB_LIST,
+    );
+    apply_font(ui.list, ui.font);
+    SendMessageW(
+        ui.list,
+        LVM_SETEXTENDEDLISTVIEWSTYLE,
+        0,
+        (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP) as isize,
+    );
+    for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+        let mut name_w = wide(crate::i18n::ui(tr, en));
+        let column = LVCOLUMNW {
+            mask: LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
+            fmt: LVCFMT_LEFT,
+            cx: scale(CLASSIC_COLUMN_WIDTHS[index], ui.dpi),
+            pszText: name_w.as_mut_ptr(),
+            cchTextMax: name_w.len() as i32,
+            iSubItem: index as i32,
+            iImage: 0,
+            iOrder: index as i32,
+            cxMin: 0,
+            cxDefault: 0,
+            cxIdeal: 0,
+        };
+        SendMessageW(
+            ui.list,
+            LVM_INSERTCOLUMNW,
+            index,
+            &column as *const _ as isize,
+        );
+    }
+    ui.details = control(
+        ui.hwnd,
+        "EDIT",
+        crate::i18n::ui("Bir iş seçin.", "Select a job."),
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | WS_BORDER
+            | ES_MULTILINE as u32
+            | ES_READONLY as u32
+            | ES_AUTOVSCROLL as u32
+            | WS_VSCROLL,
+        WS_EX_CLIENTEDGE,
+        ID_DETAILS,
+    );
+    apply_font(ui.details, ui.details_font);
+    // The list header paints itself in dark mode; the hook is installed here so
+    // the first frame already matches the scheme.
+    subclass(
+        SendMessageW(ui.list, LVM_GETHEADER, 0, 0) as HWND,
+        header_proc,
+    );
+    ui.status = CreateStatusWindowW(
+        (WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP) as i32,
+        wide(crate::i18n::ui("Hazır", "Ready")).as_ptr(),
+        ui.hwnd,
+        ID_STATUS as u32,
+    );
+    apply_font(ui.status, ui.font);
+    subclass(ui.status, status_proc);
+    // A menu bar measures its items with the menu font, so the bar has to carry
+    // the same font the strip paints with; otherwise every caption outgrows its
+    // item rect and the last letter is clipped.
+    let menu = create_main_menu(ui.ui_mode, ui.debug_mode);
+    SendMessageW(menu as HWND, WM_SETFONT, ui.font as usize, 1);
+    SetMenu(ui.hwnd, menu);
+}
+
+/// The Modern main window: owner-drawn command buttons with icons, the search
+/// box and filter in the command row, the list and tab page cards, the tabs
+/// and the status line.
+unsafe fn create_modern_controls(ui: &mut MainUi) {
     // Creation order is the Tab order: buttons, search, filter, list, tabs, page.
     for (id, tr, en) in MAIN_BUTTONS {
         let button = control(
@@ -2796,27 +3023,6 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     let menu = create_main_menu(ui.ui_mode, ui.debug_mode);
     SetMenu(ui.hwnd, menu);
     apply_main_metrics(ui);
-    update_profile_controls(ui);
-
-    DragAcceptFiles(ui.hwnd, 1);
-    let target = Box::into_raw(Box::new(DropTarget {
-        vtable: &DROP_TARGET_VTABLE,
-        refs: AtomicU32::new(1),
-        hwnd: ui.hwnd,
-    }));
-    if RegisterDragDrop(ui.hwnd, target.cast()) >= 0 {
-        ui.drop_target = target;
-    } else {
-        drop_release(target);
-    }
-    AddClipboardFormatListener(ui.hwnd);
-    add_tray(ui);
-    SetTimer(ui.hwnd, TIMER_REFRESH, 350, None);
-    apply_dark_mode(ui.hwnd, ui.snapshot.settings.dark_mode);
-    refresh_main_surfaces(ui);
-    layout_main(ui);
-    name_main_controls(ui);
-    refresh(ui, true);
 }
 
 /// Gives the controls without a label of their own a name for screen readers
@@ -2990,61 +3196,63 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
         jobs as usize,
         wide(crate::i18n::ui("İ&ndirme", "&Downloads")).as_ptr(),
     );
-    // Checks and enabled states are set when the menu opens.
-    let view = CreatePopupMenu();
-    let columns = CreatePopupMenu();
-    let sort = CreatePopupMenu();
-    for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
-        let label = crate::i18n::ui(tr, en);
-        append(columns, ID_COLUMN_BASE + index as i32, label);
-        append(sort, ID_SORT_BASE + index as i32, label);
+    if modern() {
+        // Checks and enabled states are set when the menu opens.
+        let view = CreatePopupMenu();
+        let columns = CreatePopupMenu();
+        let sort = CreatePopupMenu();
+        for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+            let label = crate::i18n::ui(tr, en);
+            append(columns, ID_COLUMN_BASE + index as i32, label);
+            append(sort, ID_SORT_BASE + index as i32, label);
+        }
+        AppendMenuW(sort, MF_SEPARATOR, 0, null());
+        append(
+            sort,
+            ID_SORT_ASCENDING,
+            crate::i18n::ui("&Artan", "&Ascending"),
+        );
+        append(
+            sort,
+            ID_SORT_DESCENDING,
+            crate::i18n::ui("A&zalan", "&Descending"),
+        );
+        AppendMenuW(sort, MF_SEPARATOR, 0, null());
+        append(
+            sort,
+            ID_SORT_QUEUE,
+            crate::i18n::ui("&Kuyruk sırası", "&Queue order"),
+        );
+        AppendMenuW(
+            view,
+            MF_POPUP,
+            columns as usize,
+            wide(crate::i18n::ui("&Sütunlar", "&Columns")).as_ptr(),
+        );
+        AppendMenuW(
+            view,
+            MF_POPUP,
+            sort as usize,
+            wide(crate::i18n::ui("Sı&rala", "&Sort by")).as_ptr(),
+        );
+        AppendMenuW(view, MF_SEPARATOR, 0, null());
+        append(
+            view,
+            ID_PAGE_LARGER,
+            crate::i18n::ui("Ayrıntı bölmesini &büyüt", "&Larger details pane"),
+        );
+        append(
+            view,
+            ID_PAGE_SMALLER,
+            crate::i18n::ui("Ayrıntı bölmesini &küçült", "S&maller details pane"),
+        );
+        AppendMenuW(
+            bar,
+            MF_POPUP,
+            view as usize,
+            wide(crate::i18n::ui("&Görünüm", "&View")).as_ptr(),
+        );
     }
-    AppendMenuW(sort, MF_SEPARATOR, 0, null());
-    append(
-        sort,
-        ID_SORT_ASCENDING,
-        crate::i18n::ui("&Artan", "&Ascending"),
-    );
-    append(
-        sort,
-        ID_SORT_DESCENDING,
-        crate::i18n::ui("A&zalan", "&Descending"),
-    );
-    AppendMenuW(sort, MF_SEPARATOR, 0, null());
-    append(
-        sort,
-        ID_SORT_QUEUE,
-        crate::i18n::ui("&Kuyruk sırası", "&Queue order"),
-    );
-    AppendMenuW(
-        view,
-        MF_POPUP,
-        columns as usize,
-        wide(crate::i18n::ui("&Sütunlar", "&Columns")).as_ptr(),
-    );
-    AppendMenuW(
-        view,
-        MF_POPUP,
-        sort as usize,
-        wide(crate::i18n::ui("Sı&rala", "&Sort by")).as_ptr(),
-    );
-    AppendMenuW(view, MF_SEPARATOR, 0, null());
-    append(
-        view,
-        ID_PAGE_LARGER,
-        crate::i18n::ui("Ayrıntı bölmesini &büyüt", "&Larger details pane"),
-    );
-    append(
-        view,
-        ID_PAGE_SMALLER,
-        crate::i18n::ui("Ayrıntı bölmesini &küçült", "S&maller details pane"),
-    );
-    AppendMenuW(
-        bar,
-        MF_POPUP,
-        view as usize,
-        wide(crate::i18n::ui("&Görünüm", "&View")).as_ptr(),
-    );
     let tools = CreatePopupMenu();
     if !mode.is_simple() {
         append(
@@ -3188,7 +3396,7 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
     ui.debug_mode = debug;
     ui.update_version = update_version;
     let menu = create_main_menu(mode, debug);
-    SendMessageW(menu as HWND, WM_SETFONT, ui.menu_font as usize, 1);
+    SendMessageW(menu as HWND, WM_SETFONT, menu_font(ui) as usize, 1);
     let previous = GetMenu(ui.hwnd);
     SetMenu(ui.hwnd, menu);
     if !previous.is_null() {
@@ -3199,8 +3407,16 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
             ui.hwnd,
             crate::i18n::ui(APP_TITLE, "SSDownload — Download Manager"),
         );
-        for (id, tr, en) in MAIN_BUTTONS {
+        let buttons = if modern() {
+            MAIN_BUTTONS
+        } else {
+            CLASSIC_BUTTONS
+        };
+        for (id, tr, en) in buttons {
             set_text(GetDlgItem(ui.hwnd, id), crate::i18n::ui(tr, en));
+        }
+        if let Some(label) = ui.toolbar.get(5) {
+            set_text(*label, crate::i18n::ui("Ara:", "Search:"));
         }
         for (index, (tr, en)) in JOB_TABS.iter().enumerate() {
             let mut label = wide(crate::i18n::ui(tr, en));
@@ -3221,8 +3437,20 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
         // the label update write them back.
         ui.filter_counts.clear();
         update_filter_labels(ui);
-        let columns = ui.columns.clone();
-        set_main_columns(ui, columns);
+        if modern() {
+            let columns = ui.columns.clone();
+            set_main_columns(ui, columns);
+        } else {
+            for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+                let mut label = wide(crate::i18n::ui(tr, en));
+                let column = LVCOLUMNW {
+                    mask: LVCF_TEXT,
+                    pszText: label.as_mut_ptr(),
+                    ..zeroed()
+                };
+                SendMessageW(ui.list, LVM_SETCOLUMNW, index, &column as *const _ as isize);
+            }
+        }
         set_text(ui.list, crate::i18n::ui("İndirme işleri", "Downloads"));
         if (owned_layout(0) != 0) != crate::i18n::right_to_left() {
             ui.app.message(
@@ -3235,10 +3463,12 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
             );
         }
         ui.row_cache.clear();
-        name_main_controls(ui);
-        // Arabic and the other languages use different faces.
-        apply_main_metrics(ui);
-        update_details(ui);
+        if modern() {
+            name_main_controls(ui);
+            // Arabic and the other languages use different faces.
+            apply_main_metrics(ui);
+            update_details(ui);
+        }
         layout_main(ui);
         DrawMenuBar(ui.hwnd);
         InvalidateRect(ui.hwnd, null(), 1);
@@ -3330,6 +3560,9 @@ unsafe fn clamp_min_track(hwnd: HWND, dpi: u32, design_w: i32, design_h: i32) ->
 }
 
 unsafe fn update_main_dpi(ui: &mut MainUi) {
+    if !modern() {
+        return update_classic_dpi(ui);
+    }
     let old_dpi = ui.dpi;
     ui.dpi = GetDpiForWindow(ui.hwnd).max(96);
     remember_column_widths(ui);
@@ -3349,11 +3582,127 @@ unsafe fn update_main_dpi(ui: &mut MainUi) {
     DrawMenuBar(ui.hwnd);
 }
 
+unsafe fn update_classic_dpi(ui: &mut MainUi) {
+    let old_dpi = ui.dpi;
+    ui.dpi = GetDpiForWindow(ui.hwnd).max(96);
+    for col in 0..6 {
+        let width = SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, col, 0);
+        SendMessageW(
+            ui.list,
+            LVM_SETCOLUMNWIDTH,
+            col,
+            width * ui.dpi as isize / old_dpi.max(96) as isize,
+        );
+    }
+    let new_font = make_font(ui.dpi, 9, FW_NORMAL as i32);
+    let new_details = make_font(ui.dpi, 9, FW_NORMAL as i32);
+    for &h in &ui.toolbar {
+        apply_font(h, new_font);
+    }
+    for h in [ui.search, ui.filter, ui.list, ui.status] {
+        apply_font(h, new_font);
+    }
+    apply_font(ui.details, new_details);
+    DeleteObject(ui.font);
+    DeleteObject(ui.details_font);
+    ui.font = new_font;
+    ui.details_font = new_details;
+    // The bar measures its items with the menu font, so the items have to be
+    // re-measured with the new font before the strip paints with it.
+    let menu = GetMenu(ui.hwnd);
+    if !menu.is_null() {
+        SendMessageW(menu as HWND, WM_SETFONT, ui.font as usize, 1);
+    }
+    layout_main(ui);
+    DrawMenuBar(ui.hwnd);
+}
+
+unsafe fn layout_main(ui: &MainUi) {
+    if modern() {
+        layout_modern(ui);
+    } else {
+        layout_classic(ui);
+    }
+}
+
+/// Classic: the button row, the search row with its label and the filter,
+/// the list and the details box, with 10 px margins.
+unsafe fn layout_classic(ui: &MainUi) {
+    let mut rect: RECT = zeroed();
+    GetClientRect(ui.hwnd, &mut rect);
+    let w = rect.right.max(scale(640, ui.dpi));
+    let h = rect.bottom;
+    let m = scale(10, ui.dpi);
+    let top = scale(10, ui.dpi);
+    let bh = scale(32, ui.dpi);
+    let gap = scale(6, ui.dpi);
+    let widths = [
+        scale(112, ui.dpi),
+        scale(80, ui.dpi),
+        scale(142, ui.dpi),
+        scale(76, ui.dpi),
+        scale(78, ui.dpi),
+    ];
+    let mut x = m;
+    for (i, &button) in ui.toolbar.iter().take(5).enumerate() {
+        // A longer translation widens its button instead of being cut off.
+        let width = widths[i].max(text_width(button) + scale(24, ui.dpi));
+        MoveWindow(button, x, top, width, bh, 1);
+        x += width + gap;
+    }
+    x = m;
+    let search_top = top + bh + gap;
+    let filter_w = scale(125, ui.dpi);
+    let label = ui.toolbar[5];
+    // "Search:" is wider than "Ara:", so the label follows its own text.
+    let label_w = (text_width(label) + scale(2, ui.dpi)).max(scale(30, ui.dpi));
+    let search_w = (w - x - filter_w - m * 2 - label_w - scale(6, ui.dpi)).max(scale(120, ui.dpi));
+    MoveWindow(
+        label,
+        x,
+        search_top + scale(8, ui.dpi),
+        label_w,
+        scale(20, ui.dpi),
+        1,
+    );
+    x += label_w + scale(4, ui.dpi);
+    MoveWindow(
+        ui.search,
+        x,
+        search_top + scale(2, ui.dpi),
+        search_w,
+        scale(27, ui.dpi),
+        1,
+    );
+    MoveWindow(
+        ui.filter,
+        x + search_w + gap,
+        search_top + scale(2, ui.dpi),
+        filter_w,
+        scale(240, ui.dpi),
+        1,
+    );
+    let status_h = scale(24, ui.dpi);
+    let details_h = (h / 4).clamp(scale(130, ui.dpi), scale(210, ui.dpi));
+    let list_top = search_top + bh + scale(10, ui.dpi);
+    let details_y = h - status_h - details_h - m;
+    MoveWindow(
+        ui.list,
+        m,
+        list_top,
+        w - 2 * m,
+        (details_y - list_top - gap).max(scale(100, ui.dpi)),
+        1,
+    );
+    MoveWindow(ui.details, m, details_y, w - 2 * m, details_h, 1);
+    SendMessageW(ui.status, WM_SIZE, 0, 0);
+}
+
 /// The command row on top (buttons left, search and filter right), the list card, the
 /// split, the tabs, the tab page card and the status line, on a 4 epx grid:
 /// 16 epx window margins and space around the command row, 8 epx between
 /// controls and at the split.
-unsafe fn layout_main(ui: &MainUi) {
+unsafe fn layout_modern(ui: &MainUi) {
     let mut rect: RECT = zeroed();
     GetClientRect(ui.hwnd, &mut rect);
     let s = |value: i32| scale(value, ui.dpi);
@@ -3758,13 +4107,16 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         ID_DIAGNOSTICS => dispatch(ui, Action::ExportDiagnostics),
         ID_EXIT => exit_app(ui),
         ID_SEARCH if notify_code as u32 == EN_CHANGE => refresh(ui, true),
-        ID_SEARCH if notify_code as u32 == EN_SETFOCUS || notify_code as u32 == EN_KILLFOCUS => {
+        ID_SEARCH
+            if modern()
+                && (notify_code as u32 == EN_SETFOCUS || notify_code as u32 == EN_KILLFOCUS) =>
+        {
             // The frame's bottom line shows the focus.
             InvalidateRect(ui.hwnd, &ui.search_frame.get(), 1);
         }
-        // Escape in the search box clears it; the dialog manager turns the key
-        // into IDCANCEL.
-        IDCANCEL if GetFocus() == ui.search => {
+        // Modern: Escape in the search box clears it; the dialog manager turns
+        // the key into IDCANCEL.
+        IDCANCEL if modern() && GetFocus() == ui.search => {
             set_text(ui.search, "");
             refresh(ui, true);
         }
@@ -4770,7 +5122,9 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     }
     if snapshot.settings.dark_mode != ui.snapshot.settings.dark_mode {
         apply_dark_mode(ui.hwnd, snapshot.settings.dark_mode);
-        refresh_main_surfaces(ui);
+        if modern() {
+            refresh_main_surfaces(ui);
+        }
     }
     if snapshot.settings.clipboard_watch && !ui.snapshot.settings.clipboard_watch {
         handle_clipboard_change(ui);
@@ -5077,7 +5431,7 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
         }
     }
     SendMessageW(ui.list, WM_SETREDRAW, 1, 0);
-    if rebuild {
+    if rebuild && modern() {
         // A changed row count can bring or take away the vertical scroll bar.
         fit_last_column(ui);
     }
@@ -5234,14 +5588,15 @@ unsafe fn update_details(ui: &MainUi) {
             MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
         );
     }
-    // The pause button names what it will do to the selection. Its width
-    // fits either label, so the row does not move.
-    let resumes = pause_resumes(&jobs) == Some(true);
-    let button = GetDlgItem(ui.hwnd, ID_PAUSE_RESUME);
-    let label = pause_button_label(resumes);
-    if text(button) != label {
-        set_text(button, label);
-        InvalidateRect(button, null(), 0);
+    // Modern: the pause button names what it will do to the selection. Its
+    // width fits every label, so the row does not move.
+    if modern() {
+        let button = GetDlgItem(ui.hwnd, ID_PAUSE_RESUME);
+        let label = pause_button_label(pause_verb(&jobs));
+        if text(button) != label {
+            set_text(button, label);
+            InvalidateRect(button, null(), 0);
+        }
     }
 
     if jobs.is_empty() {
@@ -5255,7 +5610,12 @@ unsafe fn update_details(ui: &MainUi) {
         update_status(ui);
         return;
     }
-    let tab = SendMessageW(ui.tabs, TCM_GETCURSEL, 0, 0).max(0);
+    // Classic has no tabs: its box always shows the details.
+    let tab = if modern() {
+        SendMessageW(ui.tabs, TCM_GETCURSEL, 0, 0).max(0)
+    } else {
+        0
+    };
     if tab > 0 {
         let page = match (tab, jobs.as_slice()) {
             (_, [_, _, ..]) => {
@@ -5355,13 +5715,17 @@ unsafe fn update_details(ui: &MainUi) {
     update_status(ui);
 }
 
+/// Writes the details text. Modern shows the page's scroll bar only while
+/// the text overflows; Classic keeps it.
 unsafe fn set_details(ui: &MainUi, value: &str) {
     set_text(ui.details, value);
-    sync_details_scrollbar(ui);
+    if modern() {
+        sync_details_scrollbar(ui);
+    }
 }
 
-/// Ctrl+A. The tab page keeps its own select-all behavior, so the shortcut
-/// never hijacks a selection there.
+/// Ctrl+A. Text controls keep their own select-all behavior, so the shortcut
+/// never hijacks typing in the search box or the details pane.
 unsafe fn select_all_jobs(ui: &mut MainUi) {
     let focus = GetFocus();
     if focus == ui.search || focus == ui.details {
@@ -5390,16 +5754,14 @@ fn resumable(state: JobState) -> bool {
     )
 }
 
-/// The one verb the pause command applies to a selection: resume (true) when
-/// every job it can act on is paused, failed or cancelled, otherwise pause
-/// the ones that run or wait. None when it can act on none of them.
-fn pause_resumes(jobs: &[&Job]) -> Option<bool> {
-    let mut acting = jobs
-        .iter()
+/// What the pause command does to each selected job, in selection order: the
+/// id and true to resume it (paused, failed or cancelled), false to pause it.
+/// A job it cannot act on is left out.
+fn pause_resume_plan(jobs: &[&Job]) -> Vec<(String, bool)> {
+    jobs.iter()
         .filter(|job| can_pause_or_resume(job))
-        .peekable();
-    acting.peek()?;
-    Some(acting.all(|job| resumable(job.state)))
+        .map(|job| (job.id.clone(), resumable(job.state)))
+        .collect()
 }
 
 unsafe fn pause_resume_selected(ui: &MainUi) {
@@ -5409,17 +5771,10 @@ unsafe fn pause_resume_selected(ui: &MainUi) {
         .iter()
         .filter_map(|id| snapshot.jobs.iter().find(|job| &job.id == id))
         .collect();
-    let Some(resumes) = pause_resumes(&jobs) else {
-        return;
-    };
-    for job in jobs {
-        if !can_pause_or_resume(job) || resumable(job.state) != resumes {
-            continue;
-        }
-        let id = job.id.clone();
+    for (id, resume) in pause_resume_plan(&jobs) {
         dispatch(
             ui,
-            if resumes {
+            if resume {
                 Action::Resume { id }
             } else {
                 Action::Pause { id }
@@ -5845,10 +6200,302 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
         .iter()
         .filter_map(|id| snapshot.jobs.iter().find(|job| &job.id == id))
         .collect();
-    let (Some(first), count) = (jobs.first().copied(), jobs.len()) else {
+    let Some(first) = jobs.first().copied() else {
         return;
     };
     let menu = CreatePopupMenu();
+    let (error, glyphs) = if modern() {
+        modern_job_menu(ui, menu, &jobs)
+    } else {
+        (classic_job_menu(ui, menu, &jobs), Vec::new())
+    };
+    let command = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+        point.x,
+        point.y,
+        0,
+        ui.hwnd,
+        null(),
+    ) as i32;
+    DestroyMenu(menu);
+    for bitmap in glyphs {
+        DeleteObject(bitmap as HGDIOBJ);
+    }
+    PostMessageW(ui.hwnd, WM_NULL, 0, 0);
+    if command == ID_JOB_ERROR {
+        if let Some(error) = error {
+            message(
+                ui.hwnd,
+                &error,
+                crate::i18n::ui("Hata ayrıntısı", "Error details"),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    } else if command == ID_JOB_LOG {
+        show_job_log(ui.hwnd, ui.app.clone(), &first.id, &first.name);
+    } else if command != 0 {
+        main_command(ui, command, 0);
+    }
+}
+
+/// The Classic row menu: the commands in their plain order. Returns the
+/// job's error for Error details.
+unsafe fn classic_job_menu(ui: &MainUi, menu: HMENU, jobs: &[&Job]) -> Option<String> {
+    let (Some(first), count) = (jobs.first().copied(), jobs.len()) else {
+        return None;
+    };
+    let mut error = None;
+    if count == 1 {
+        let job = first;
+        if job.state == JobState::Completed && job.remove_requested.is_none() {
+            append(menu, ID_OPEN_FILE, crate::i18n::ui("Aç", "Open"));
+        }
+        if job.remove_requested.is_none() {
+            append(
+                menu,
+                ID_OPEN_FOLDER,
+                crate::i18n::ui("Klasörde göster", "Show in folder"),
+            );
+        }
+        if source_refresh_available(job) {
+            append(
+                menu,
+                ID_SOURCE_REFRESH,
+                crate::i18n::ui("Kaynak adresini yenile...", "Refresh source address..."),
+            );
+        }
+        if can_pause_or_resume(job) {
+            append(
+                menu,
+                ID_PAUSE_RESUME,
+                match job.state {
+                    JobState::Paused => crate::i18n::ui("Sürdür", "Resume"),
+                    JobState::Failed | JobState::Cancelled => {
+                        crate::i18n::ui("Yeniden dene", "Retry")
+                    }
+                    JobState::AwaitingSource => crate::i18n::ui(
+                        "Yenilemeyi iptal et ve duraklat",
+                        "Cancel refresh and pause",
+                    ),
+                    _ => crate::i18n::ui("Duraklat", "Pause"),
+                },
+            );
+        }
+        if recording_live(job) {
+            append(
+                menu,
+                ID_FINISH_RECORDING,
+                crate::i18n::ui(
+                    "Canlı kaydı bitir ve kaydet",
+                    "Finish live recording and keep it",
+                ),
+            );
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        append(
+            menu,
+            ID_COPY_URL,
+            crate::i18n::ui("Adresi kopyala", "Copy address"),
+        );
+        append(
+            menu,
+            ID_REDOWNLOAD,
+            crate::i18n::ui(
+                "Aynı klasöre yeniden indir",
+                "Download again to the same folder",
+            ),
+        );
+        if job.state == JobState::Completed && job.remove_requested.is_none() {
+            append(
+                menu,
+                ID_RENAME,
+                crate::i18n::ui("Yeniden adlandır...", "Rename..."),
+            );
+        }
+        if !job.state.is_terminal() && job.remove_requested.is_none() {
+            AppendMenuW(
+                menu,
+                MF_STRING | if job.open_when_done { MF_CHECKED } else { 0 },
+                ID_OPEN_WHEN_DONE as usize,
+                wide(crate::i18n::ui("Tamamlanınca aç", "Open when done")).as_ptr(),
+            );
+            if matches!(
+                job.state,
+                JobState::Queued | JobState::Scheduled | JobState::Paused
+            ) {
+                append(
+                    menu,
+                    ID_START_NOW,
+                    crate::i18n::ui("Hemen başlat", "Start now"),
+                );
+            }
+        }
+        append(
+            menu,
+            ID_MOVE_TOP,
+            crate::i18n::ui("En üste taşı\tAlt+Home", "Move to top\tAlt+Home"),
+        );
+        append(
+            menu,
+            ID_MOVE_BOTTOM,
+            crate::i18n::ui("En alta taşı\tAlt+End", "Move to bottom\tAlt+End"),
+        );
+        if !ui.ui_mode.is_simple() && ui.snapshot.settings.queues.len() > 1 {
+            let queues = CreatePopupMenu();
+            for (index, queue) in ui.snapshot.settings.queues.iter().enumerate().take(64) {
+                let current = job.request.queue_id.as_deref() == Some(queue.id.as_str());
+                AppendMenuW(
+                    queues,
+                    MF_STRING | if current { MF_CHECKED } else { 0 },
+                    (ID_QUEUE_BASE + index as i32) as usize,
+                    // A queue named "Work & home" must not turn into a mnemonic.
+                    wide(&queue.display_name().replace('&', "&&")).as_ptr(),
+                );
+            }
+            AppendMenuW(
+                menu,
+                MF_POPUP,
+                queues as usize,
+                wide(crate::i18n::ui("Kuyruğa taşı", "Move to queue")).as_ptr(),
+            );
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        if job.remove_requested.is_none() {
+            append(menu, ID_REMOVE, crate::i18n::ui("Kaldır...", "Remove..."));
+        }
+        if !ui.ui_mode.is_simple() {
+            append(
+                menu,
+                ID_JOB_LOG,
+                crate::i18n::ui("İş günlüğünü göster...", "Show job log..."),
+            );
+        }
+        error = job.error.clone();
+        if error.is_some() {
+            append(
+                menu,
+                ID_JOB_ERROR,
+                crate::i18n::ui("Hata ayrıntısı", "Error details"),
+            );
+        }
+    } else {
+        let openable = jobs
+            .iter()
+            .filter(|job| job.state == JobState::Completed && job.remove_requested.is_none())
+            .count();
+        if openable > 0 {
+            append(
+                menu,
+                ID_OPEN_FILE,
+                &format!("{} ({openable})", crate::i18n::ui("Aç", "Open")),
+            );
+        }
+        let foldered = jobs
+            .iter()
+            .filter(|job| job.remove_requested.is_none())
+            .count();
+        if foldered > 0 {
+            append(
+                menu,
+                ID_OPEN_FOLDER,
+                &format!(
+                    "{} ({foldered})",
+                    crate::i18n::ui("Klasörde göster", "Show in folder")
+                ),
+            );
+        }
+        let renewable = jobs
+            .iter()
+            .filter(|job| source_refresh_available(job))
+            .count();
+        if renewable > 0 {
+            append(
+                menu,
+                ID_SOURCE_REFRESH,
+                &format!(
+                    "{} ({renewable})",
+                    crate::i18n::ui("Kaynak adresini yenile...", "Refresh source address...")
+                ),
+            );
+        }
+        let pausable: Vec<&&Job> = jobs.iter().filter(|job| can_pause_or_resume(job)).collect();
+        if !pausable.is_empty() {
+            let resumable = pausable
+                .iter()
+                .filter(|job| {
+                    matches!(
+                        job.state,
+                        JobState::Paused | JobState::Failed | JobState::Cancelled
+                    )
+                })
+                .count();
+            let label = if resumable == pausable.len() {
+                format!(
+                    "{} ({})",
+                    crate::i18n::ui("Sürdür", "Resume"),
+                    pausable.len()
+                )
+            } else if resumable == 0 {
+                format!(
+                    "{} ({})",
+                    crate::i18n::ui("Duraklat", "Pause"),
+                    pausable.len()
+                )
+            } else {
+                format!(
+                    "{} ({})",
+                    crate::i18n::ui("Duraklat / Sürdür", "Pause / Resume"),
+                    pausable.len()
+                )
+            };
+            append(menu, ID_PAUSE_RESUME, &label);
+        }
+        append(
+            menu,
+            ID_COPY_URL,
+            &format!(
+                "{} ({count})",
+                crate::i18n::ui("Adresleri kopyala", "Copy addresses")
+            ),
+        );
+        append(
+            menu,
+            ID_START_NOW,
+            &format!("{} ({count})", crate::i18n::ui("Hemen başlat", "Start now")),
+        );
+        append(
+            menu,
+            ID_MOVE_TOP,
+            crate::i18n::ui("En üste taşı\tAlt+Home", "Move to top\tAlt+Home"),
+        );
+        append(
+            menu,
+            ID_MOVE_BOTTOM,
+            crate::i18n::ui("En alta taşı\tAlt+End", "Move to bottom\tAlt+End"),
+        );
+        if foldered > 0 {
+            append(
+                menu,
+                ID_REMOVE,
+                &format!("{} ({foldered})", crate::i18n::ui("Kaldır...", "Remove...")),
+            );
+        }
+    }
+    error
+}
+
+/// The Modern row menu: the commands grouped with separators, their
+/// shortcuts and Segoe Fluent glyphs. Returns the job's error for Error
+/// details and the glyph bitmaps, which the caller deletes once the menu closed.
+unsafe fn modern_job_menu(
+    ui: &MainUi,
+    menu: HMENU,
+    jobs: &[&Job],
+) -> (Option<String>, Vec<HBITMAP>) {
+    let (Some(first), count) = (jobs.first().copied(), jobs.len()) else {
+        return (None, Vec::new());
+    };
     let mut error = None;
     // Pause, play, or the refresh arrows of a retry.
     let mut pause_glyph = 0xe769u16;
@@ -6027,18 +6674,18 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
             );
         }
         separate(menu);
-        if let Some(resumes) = pause_resumes(&jobs) {
-            let acted = jobs
-                .iter()
-                .filter(|job| can_pause_or_resume(job) && resumable(job.state) == resumes)
-                .count();
-            let label = if resumes {
-                pause_glyph = 0xe768;
-                crate::i18n::ui("Sürdür", "Resume")
-            } else {
-                crate::i18n::ui("Duraklat", "Pause")
+        // The command toggles each job it can act on, as the button does.
+        let acting = pause_resume_plan(jobs).len();
+        if acting > 0 {
+            let label = match pause_verb(jobs) {
+                PauseVerb::Resume => {
+                    pause_glyph = 0xe768;
+                    crate::i18n::ui("Sürdür", "Resume")
+                }
+                PauseVerb::Pause => crate::i18n::ui("Duraklat", "Pause"),
+                PauseVerb::Both => crate::i18n::ui("Duraklat / Sürdür", "Pause / Resume"),
             };
-            append(menu, ID_PAUSE_RESUME, &format!("{label} ({acted})\tSpace"));
+            append(menu, ID_PAUSE_RESUME, &format!("{label} ({acting})\tSpace"));
         }
         append(
             menu,
@@ -6098,34 +6745,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
     let mut table = JOB_MENU_GLYPHS.to_vec();
     table.push((ID_PAUSE_RESUME, pause_glyph));
     let glyphs = set_menu_glyphs(menu, ui.hwnd, ui.dpi, &table);
-    let command = TrackPopupMenu(
-        menu,
-        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-        point.x,
-        point.y,
-        0,
-        ui.hwnd,
-        null(),
-    ) as i32;
-    DestroyMenu(menu);
-    for bitmap in glyphs {
-        DeleteObject(bitmap as HGDIOBJ);
-    }
-    PostMessageW(ui.hwnd, WM_NULL, 0, 0);
-    if command == ID_JOB_ERROR {
-        if let Some(error) = error {
-            message(
-                ui.hwnd,
-                &error,
-                crate::i18n::ui("Hata ayrıntısı", "Error details"),
-                MB_OK | MB_ICONERROR,
-            );
-        }
-    } else if command == ID_JOB_LOG {
-        show_job_log(ui.hwnd, ui.app.clone(), &first.id, &first.name);
-    } else if command != 0 {
-        main_command(ui, command, 0);
-    }
+    (error, glyphs)
 }
 
 unsafe fn add_tray(ui: &mut MainUi) {
@@ -6575,6 +7195,7 @@ const S_HOTKEY: i32 = 2138;
 const S_DOUBLE_CLICK: i32 = 2139;
 const S_HISTORY: i32 = 2140;
 const S_BATTERY_SAVER: i32 = 2141;
+const S_THEME: i32 = 2142;
 const SP_EDIT: i32 = 2701;
 const RN_EDIT: i32 = 2703;
 const RN_OK: i32 = 2704;
@@ -6675,6 +7296,10 @@ struct SettingsFields {
     start: HWND,
     end: HWND,
     dark: HWND,
+    /// The theme box, its label and the note that it applies after a restart.
+    theme: HWND,
+    theme_label: HWND,
+    theme_note: HWND,
     mode_video: HWND,
     mode_file: HWND,
     mode_audio: HWND,
@@ -7453,7 +8078,7 @@ unsafe fn show_add_dialog(owner: HWND, app: App, initial: String, analyze_first:
         app,
         crate::i18n::ui("Yeni indirme", "New download"),
         620,
-        ADD_DIALOG_HEIGHT,
+        add_window_height(false),
         DialogKind::Add(AddFields {
             urls: null_mut(),
             dir: null_mut(),
@@ -7475,18 +8100,34 @@ unsafe fn show_add_dialog(owner: HWND, app: App, initial: String, analyze_first:
 /// are not replaced by anything.
 fn settings_logical_height(simple: bool) -> i32 {
     if simple {
-        372
-    } else {
         398
+    } else {
+        424
     }
 }
 /// The frame of this dialog, measured once: the 346 logical content height it
 /// shipped with was a 385 window. A mode's window is its own height plus this,
 /// so neither mode opens with rows it does not have.
 const SETTINGS_FRAME: i32 = 39;
-/// The simple add dialog's window: its logical content height plus the
-/// shared frame, with a few pixels so DPI rounding never shows a scroll bar.
-const ADD_DIALOG_HEIGHT: i32 = ADD_HEIGHT + SETTINGS_FRAME + 3;
+/// The add dialog's logical content height without and with the advanced rows.
+fn add_content_height(advanced: bool) -> i32 {
+    match (modern(), advanced) {
+        (true, false) => ADD_HEIGHT,
+        (true, true) => ADD_ADVANCED_HEIGHT,
+        (false, false) => 292,
+        (false, true) => 372,
+    }
+}
+/// The add dialog's window height: the simple dialog's content height plus
+/// the shared frame, with a few pixels so DPI rounding never shows a scroll
+/// bar. Modern's advanced dialog is measured the same way; Classic's is 420.
+fn add_window_height(advanced: bool) -> i32 {
+    if advanced && !modern() {
+        420
+    } else {
+        add_content_height(advanced) + SETTINGS_FRAME + 3
+    }
+}
 
 unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
     let simple = UiMode::parse(&value.ui_mode).is_simple();
@@ -7514,6 +8155,9 @@ unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
             start: null_mut(),
             end: null_mut(),
             dark: null_mut(),
+            theme: null_mut(),
+            theme_label: null_mut(),
+            theme_note: null_mut(),
             mode_video: null_mut(),
             mode_file: null_mut(),
             mode_audio: null_mut(),
@@ -7978,8 +8622,10 @@ unsafe extern "system" fn dialog_proc(
     (*raw).callbacks += 1;
     let _callback = DialogCallback(raw);
     let dlg = &mut *raw;
-    if let Some(value) = add_dialog_message(dlg, msg, wparam, lparam) {
-        return value;
+    if modern() {
+        if let Some(value) = add_dialog_message(dlg, msg, wparam, lparam) {
+            return value;
+        }
     }
     if let Some(value) = paint_theme(hwnd, msg, wparam, lparam) {
         return value;
@@ -8296,10 +8942,10 @@ unsafe fn create_error(dlg: &mut DialogUi) {
     dlg.error = dialog_label(dlg.hwnd, dlg.font, "", D_ERROR);
 }
 
-/// The New download dialog uses the Windows 11 Body style; the others keep
-/// the classic dialog font.
+/// Modern's New download dialog uses the Windows 11 Body style; the others
+/// keep the classic dialog font.
 unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
-    if matches!(dlg.kind, DialogKind::Add(_)) {
+    if modern() && matches!(dlg.kind, DialogKind::Add(_)) {
         ramp_font(dlg.dpi, BODY_PX, false)
     } else {
         make_font(dlg.dpi, 9, FW_NORMAL as i32)
@@ -9262,23 +9908,48 @@ mod tests {
     }
 
     #[test]
-    fn the_pause_command_resumes_only_a_selection_that_is_all_stopped() {
-        use super::pause_resumes;
+    fn the_pause_command_toggles_each_job_of_a_mixed_selection() {
+        use super::pause_resume_plan;
         use crate::model::JobState;
         let running = sample_job("r", JobState::Downloading);
         let queued = sample_job("q", JobState::Queued);
         let paused = sample_job("p", JobState::Paused);
         let failed = sample_job("f", JobState::Failed);
+        let cancelled = sample_job("c", JobState::Cancelled);
         let done = sample_job("d", JobState::Completed);
-        assert_eq!(pause_resumes(&[&paused, &failed]), Some(true));
-        // A mixed selection pauses: the running and waiting jobs stop, the
-        // stopped ones stay as they are.
-        assert_eq!(pause_resumes(&[&paused, &running]), Some(false));
-        assert_eq!(pause_resumes(&[&queued]), Some(false));
-        // A finished job is neither paused nor resumed.
-        assert_eq!(pause_resumes(&[&done, &paused]), Some(true));
-        assert_eq!(pause_resumes(&[&done]), None);
-        assert_eq!(pause_resumes(&[]), None);
+        let mut removing = sample_job("x", JobState::Downloading);
+        removing.remove_requested = Some(false);
+        let plan = pause_resume_plan(&[
+            &running, &paused, &done, &queued, &failed, &cancelled, &removing,
+        ]);
+        let expected: Vec<(String, bool)> = vec![
+            ("r".into(), false),
+            ("p".into(), true),
+            ("q".into(), false),
+            ("f".into(), true),
+            ("c".into(), true),
+        ];
+        // Running and waiting jobs pause, stopped ones resume, in selection
+        // order; a finished job and one being removed are left alone.
+        assert_eq!(plan, expected);
+        assert!(pause_resume_plan(&[&done]).is_empty());
+    }
+
+    #[test]
+    fn the_pause_label_names_both_verbs_for_a_mixed_selection() {
+        use super::{pause_verb, PauseVerb};
+        use crate::model::JobState;
+        let running = sample_job("r", JobState::Downloading);
+        let paused = sample_job("p", JobState::Paused);
+        let failed = sample_job("f", JobState::Failed);
+        let done = sample_job("d", JobState::Completed);
+        assert_eq!(pause_verb(&[&running]), PauseVerb::Pause);
+        assert_eq!(pause_verb(&[&paused, &failed]), PauseVerb::Resume);
+        assert_eq!(pause_verb(&[&paused, &running]), PauseVerb::Both);
+        // A finished job counts for neither verb.
+        assert_eq!(pause_verb(&[&done, &paused]), PauseVerb::Resume);
+        assert_eq!(pause_verb(&[&done]), PauseVerb::Pause);
+        assert_eq!(pause_verb(&[]), PauseVerb::Pause);
     }
 
     #[test]
