@@ -1963,8 +1963,10 @@ fn the_time_trigger_fires_while_no_lease_finishes() {
             // Both leases are 8 MiB, so neither can have finished before 6 MiB are written in
             // all; only the clock can have started a cycle until then.
             if seen.is_none() && (checkpoint_cycles() > 0 || progress.downloaded >= 6 * MIB) {
+                let at_cut = steps();
                 seen = Some((
-                    checkpoint_cycles(),
+                    at_cut.iter().filter(|step| **step == "recorded").count(),
+                    at_cut,
                     read_state(&state_file).zip(fs::read(part_path(&output)).ok()),
                 ));
                 cancel.cancel();
@@ -1972,11 +1974,12 @@ fn the_time_trigger_fires_while_no_lease_finishes() {
         },
     );
     assert!(result.is_err());
-    let (cycles, record) = seen.expect("the download was never observed");
+    let (cycles, at_cut, record) = seen.expect("the download was never observed");
     assert!(
         cycles > 0,
-        "no cycle was recorded before a lease could finish: {:?}",
-        steps()
+        "no cycle was recorded before a lease could finish ({} steps, the first ones): {:?}",
+        at_cut.len(),
+        &at_cut[..at_cut.len().min(16)]
     );
     let (record, part) = record.expect("the cycle left no record");
     let claimed = assert_claims_are_exact(&record, &part, &pattern(1, size));
