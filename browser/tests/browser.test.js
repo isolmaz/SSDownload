@@ -38,7 +38,7 @@ function checkedDownloadQuery(query) {
 // measured to: pause needs a running download, resume needs a paused or resumable one (a running one it
 // accepts and leaves alone), cancel leaves `paused` as it was, and a normal browser exit cancels a paused
 // download while a crash leaves it interrupted and resumable (see the restart tests).
-function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map(), downloadItems = new Map(), browserLanguage = "tr" } = {}) {
+function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map(), downloadItems = new Map(), browserLanguage = "tr", digestDelayMs = 0 } = {}) {
   const events = {
     headers: event(), beforeHeaders: event(), removed: event(), updated: event(), installed: event(), startup: event(),
     menu: event(), message: event(), activated: event(), alarm: event(), download: event(), suspend: event()
@@ -170,9 +170,15 @@ function backgroundHarness({ native = async request => request?.action?.type==="
   };
   const scheduleTimer = (callback, delay) => { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; };
   const cancelTimer = id => { timers.delete(id); };
-  const context = vm.createContext({ browser, URL, crypto: webcrypto, TextEncoder, Uint8Array, Promise, Map, Set, Array, Object, Number, String, RegExp, JSON, Error, Date, queueMicrotask, setTimeout: scheduleTimer, clearTimeout: cancelTimer });
+  // The duplicate check of a context-menu add hashes on another thread; a delay makes the hashes finish late.
+  const slowCrypto = { subtle: { digest: async (...args) => { await new Promise(resolve => setTimeout(resolve, digestDelayMs)); return webcrypto.subtle.digest(...args); } },
+    randomUUID: () => webcrypto.randomUUID(), getRandomValues: array => webcrypto.getRandomValues(array) };
+  const context = vm.createContext({ browser, URL, crypto: digestDelayMs ? slowCrypto : webcrypto, TextEncoder, Uint8Array, Promise, Map, Set, Array, Object, Number, String, RegExp, JSON, Error, Date, queueMicrotask, setTimeout: scheduleTimer, clearTimeout: cancelTimer });
   loadI18n(context);
   for (const name of ["codes.js", "events.js", "background.js"]) vm.runInContext(source(name), context, { filename: name });
+  // The context-menu adds the worker has finished with, whether it sent a request or recognised a repeat.
+  vm.runInContext(`globalThis.__addsFinished = 0; { const decide = contextAdd; contextAdd = async (...args) => { try { return await decide(...args); } finally { globalThis.__addsFinished += 1; } }; }`, context);
+  const addsFinished = () => vm.runInContext("globalThis.__addsFinished", context);
   // `publicState` and `hlsChildren` were removed from the worker as dead code; the
   // harness evaluates the same views against the worker's own globals, so every
   // existing assertion keeps reading exactly what it read before.
@@ -239,7 +245,7 @@ function hlsChildren(text, base) { return hlsRelations(text,base).filter(item=>i
       await new Promise(resolve => setImmediate(resolve));
     }
   }
-  return { events, storage, content, menu, state, waitFor, context, logs, timers, runTimers, settle, actionCalls, menuEntries, nativeRequests, alarmCreates, alarmClears, alarmStore, tabMessages, downloadItems, downloadCalls, trackedAtCall, failures, tabCreates, action: browser.action };
+  return { events, storage, content, menu, state, waitFor, context, logs, timers, runTimers, settle, addsFinished, actionCalls, menuEntries, nativeRequests, alarmCreates, alarmClears, alarmStore, tabMessages, downloadItems, downloadCalls, trackedAtCall, failures, tabCreates, action: browser.action };
 }
 
 // The toolbar icon opens popup.html; its switch sends this message to the worker.
@@ -816,6 +822,14 @@ test("the switch clears discoveries and de-duplicates context submissions across
 // The records of the right-click adds `ms` older, as if that much time had passed (a negative `ms` puts them in the future,
 // as if the clock had gone back).
 const ageTickets = (h, ms = 60000) => vm.runInContext(`for (const ticket of tickets.values()) ticket.at -= ${ms}`, h.context);
+// Clicks the link entry and waits until the worker has finished with that click: it sent a request or recognised a repeat.
+// The duplicate check hashes on another thread and reads its window when the hashes finish, so no fixed number of turns
+// covers it, and a test that ages the records or changes the cookies earlier changes what the click finds.
+async function clickUntilDecided(h, click) {
+  const before = h.addsFinished();
+  await click();
+  await h.waitFor(() => h.addsFinished() > before, 5000);
+}
 
 test("a link added again from the same tab once the site's cookies are allowed or changed is sent, a plain repeat is not", async () => {
   const h = backgroundHarness();
@@ -857,12 +871,11 @@ test("a second click within seconds is a repeat even when the site's cookies cha
   await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: link, kind: "file" }] });
   await h.menu("ssdownload-session-grant");
   jar("a");
-  await addLink();
-  await h.waitFor(() => adds().length === 1);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 1);
   for (const value of ["b", "c"]) {
     jar(value);
-    await addLink();
-    await h.settle();
+    await clickUntilDecided(h, addLink);
   }
   assert.equal(adds().length, 1, "cookies that rotate on every response do not make a quick second click another download");
   await h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/two.pdf" } });
@@ -874,32 +887,34 @@ test("a second click within seconds is a repeat even when the site's cookies cha
   await addLink();
   await h.waitFor(() => adds().length === 3);
   assert.deepEqual(plain(adds()[2].session_cookies.map(cookie => cookie.value)), ["d"], "after the window the cookies decide");
-  await addLink();
-  await h.settle();
+  await clickUntilDecided(h, addLink);
   assert.equal(adds().length, 3, "the same cookies again is still a repeat");
 });
 
-test("the double-click window counts from the add, not from each click", async () => {
-  const h = backgroundHarness();
+async function theDoubleClickWindowCountsFromTheAdd(digestDelayMs) {
+  const h = backgroundHarness({ digestDelayMs });
   const link = "https://files.example/one.pdf";
   const adds = () => h.nativeRequests.filter(request => request?.action?.type === "add").map(request => request.action.request);
   const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: link } });
   const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "lb", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
   await h.menu("ssdownload-session-grant");
   jar("a");
-  await addLink();
-  await h.waitFor(() => adds().length === 1);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 1);
   ageTickets(h, 8000);
   jar("b");
-  await addLink();
-  await h.settle();
+  await clickUntilDecided(h, addLink);
   assert.equal(adds().length, 1, "8 seconds after the add, the rotated cookie is still a repeat");
   ageTickets(h, 8000);
   jar("c");
-  await addLink();
-  await h.waitFor(() => adds().length === 2);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 2);
   assert.deepEqual(plain(adds()[1].session_cookies.map(cookie => cookie.value)), ["c"], "16 seconds after the add, the click in between has not extended the window");
-});
+}
+
+test("the double-click window counts from the add, not from each click", () => theDoubleClickWindowCountsFromTheAdd(0));
+
+test("the double-click window counts from the add when the hashes of the duplicate check finish late", () => theDoubleClickWindowCountsFromTheAdd(40));
 
 test("an add stamped in the future, the clock having gone back, does not make a changed session a repeat", async () => {
   const h = backgroundHarness();
