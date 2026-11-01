@@ -49,12 +49,20 @@ impl NativeStream {
     }
 }
 
-/// File types whose download yt-dlp's audio extraction keeps as it comes when the audio already
-/// fits the asked format (its `COMMON_AUDIO_EXTS`). The app does not copy that, so an audio
-/// download of a format of such a type stays with yt-dlp.
+/// File types whose download yt-dlp's audio extraction keeps as it comes for the best audio (its
+/// `COMMON_AUDIO_EXTS`).
 const AUDIO_FILE_TYPES: &[&str] = &[
     "aiff", "alac", "flac", "m4a", "mka", "mp3", "ogg", "opus", "wav", "wma",
 ];
+
+/// Whether yt-dlp's audio extraction can keep the download of a format of file type `ext` as it
+/// comes, asked as `conversion` (`None` for the best audio): the best audio of a common audio file
+/// type, or a file of the asked type whose codec that type takes unchanged. The app does not keep
+/// a download as it comes, so such a download stays with yt-dlp; as the codec is known only once
+/// the download is there, every format of the asked type does.
+fn kept_as_it_comes(ext: &str, conversion: Option<&str>) -> bool {
+    conversion.map_or(AUDIO_FILE_TYPES.contains(&ext), |asked| ext == asked)
+}
 
 /// The pinned source as native streams, for a single download whose tracks need no per-track
 /// selection: for a video, exactly one video-only and one audio-only finished playlist; for an
@@ -69,6 +77,7 @@ pub(super) fn native_streams(
         DownloadKind::Audio => 1,
         _ => return None,
     };
+    let conversion = audio_conversion(request).ok()?;
     if request.playlist
         || request.live_from_start
         || !request.audio_tracks.is_empty()
@@ -93,7 +102,7 @@ pub(super) fn native_streams(
             };
             if !extractor_cookies_are_known(format, request)
                 || (playlists == 1
-                    && codec("ext").is_some_and(|ext| AUDIO_FILE_TYPES.contains(&ext)))
+                    && codec("ext").is_some_and(|ext| kept_as_it_comes(ext, conversion)))
             {
                 return None;
             }
@@ -477,21 +486,22 @@ fn extract_audio(
     ));
     let started = Instant::now();
     // At least ten minutes, and as long as the audio plays: an encoder runs many times faster.
-    let result = run_ffmpeg_reporting(
-        &tools.ffmpeg,
-        &args,
-        Duration::from_secs_f64(length.max(10.0 * 60.0)),
-        control,
-        &mut |written| {
-            progress(conversion_progress(
-                &output,
-                received,
-                written,
-                length,
-                started.elapsed(),
-            ))
-        },
-    )?;
+    let timeout = Duration::from_secs_f64(length.max(10.0 * 60.0));
+    let result = run_ffmpeg_reporting(&tools.ffmpeg, &args, timeout, control, &mut |written| {
+        progress(conversion_progress(
+            &output,
+            received,
+            written,
+            length,
+            started.elapsed(),
+        ))
+    })
+    .map_err(|error| {
+        // A conversion that a pause, a cancel or the timeout stopped, or that did not start,
+        // leaves no output; the joined stream stays for the next attempt.
+        let _ = fs::remove_file(&staged);
+        unfinished_conversion(error, timeout)
+    })?;
     if !result.status.success() {
         let _ = fs::remove_file(&staged);
         bail!(
@@ -508,10 +518,25 @@ fn extract_audio(
     Ok(converted)
 }
 
+/// The error of a conversion that FFmpeg did not finish, which names a timeout as the
+/// conversion's and not as a media analysis's.
+fn unfinished_conversion(error: anyhow::Error, timeout: Duration) -> anyhow::Error {
+    if crate::error_codes::code_of(&error) == Some(crate::error_codes::MED_011) {
+        anyhow!(crate::i18n::ui_format!(
+            "Ses dönüştürmesi {0} saniye içinde tamamlanmadı",
+            "The audio conversion did not finish within {0} seconds",
+            timeout.as_secs()
+        ))
+    } else {
+        error
+    }
+}
+
 /// The status of a conversion that has written `written` of `length` seconds of audio, `elapsed`
-/// after it started. The bytes stay the downloaded ones: a queue's data limit counts every byte
-/// added to them, and the conversion downloads nothing. The time left follows from the share
-/// written so far, once a second has passed.
+/// after it started. The bytes stay the downloaded ones, as the conversion downloads nothing: a
+/// queue's byte quota counts every byte added to them, and, for a job that reports processing, not
+/// the size of the saved file. The time left follows from the share written so far, once a second
+/// has passed.
 fn conversion_progress(
     output: &AudioOutput,
     received: u64,
@@ -1692,17 +1717,60 @@ mod tests {
             Some(vec![("audio", Some(10.0))])
         );
 
-        // A playlist without audio stays with yt-dlp, as does a format of a file type yt-dlp
-        // keeps as it comes when the audio fits, and a playlist whose length cannot be read.
+        // A playlist without audio stays with yt-dlp, as does a playlist whose length cannot be
+        // read.
         let mut silent = muxed.clone();
         silent["acodec"] = json!("none");
         assert_eq!(taken(&single(silent), &audio), None);
-        let mut kept = rendition.clone();
-        kept["ext"] = json!("m4a");
-        assert_eq!(taken(&single(kept), &audio), None);
         let mut unreadable = single(rendition.clone());
         unreadable.manifests[0].body = PLAIN.replace("#EXTINF:4.0,", "#EXTINF:four,");
         assert_eq!(taken(&unreadable, &audio), None);
+
+        // So does a format yt-dlp can keep as it comes: the best audio of a common audio file
+        // type, and a file of the asked type. A file of another type is converted alike by both.
+        let of_type = |ext: &str| {
+            let mut format = rendition.clone();
+            format["ext"] = json!(ext);
+            single(format)
+        };
+        let asked = |format: &str| AddRequest {
+            audio_format: Some(format.into()),
+            ..audio.clone()
+        };
+        assert_eq!(taken(&of_type("m4a"), &asked("original")), None);
+        assert_eq!(taken(&of_type("mp3"), &asked("mp3")), None);
+        assert_eq!(taken(&of_type("m4a"), &asked("m4a")), None);
+        assert_eq!(
+            taken(&of_type("m4a"), &asked("mp3")),
+            Some(vec![("audio", Some(10.0))])
+        );
+        assert_eq!(
+            taken(&of_type("mp4"), &asked("original")),
+            Some(vec![("audio", Some(10.0))])
+        );
+
+        // So does an audio download of a playlist, of a live stream from its start, or with
+        // subtitles.
+        for request in [
+            AddRequest {
+                playlist: true,
+                ..audio.clone()
+            },
+            AddRequest {
+                live_from_start: true,
+                ..audio.clone()
+            },
+            AddRequest {
+                subtitle_languages: vec!["tr".into()],
+                ..audio.clone()
+            },
+            AddRequest {
+                subtitle_tracks: vec![SubtitleSelection::default()],
+                ..audio.clone()
+            },
+        ] {
+            assert_eq!(taken(&single(rendition.clone()), &request), None);
+        }
         // So does an audio download of two playlists, a video download of one, and a download
         // whose kind is decided when it starts.
         assert_eq!(taken(&separate(), &audio), None);
@@ -1797,10 +1865,14 @@ mod tests {
         assert_eq!(quarter.phase, "Ses MP3 biçimine dönüştürülüyor: %25");
         assert_eq!(quarter.eta, Some(12));
         assert_eq!(report(50.0, 0.5).eta, None);
-        // FFmpeg's last report can run past the playlist's length.
+        // FFmpeg's last report can run past the playlist's length, also far past a playlist that
+        // declares too little.
         let end = report(200.04, 16.0);
         assert_eq!(end.phase, "Ses MP3 biçimine dönüştürülüyor: %100");
         assert_eq!((end.downloaded, end.eta), (1000, Some(0)));
+        let beyond = report(250.0, 20.0);
+        assert_eq!(beyond.phase, "Ses MP3 biçimine dönüştürülüyor: %100");
+        assert_eq!(beyond.eta, Some(0));
         let copy = conversion_progress(
             &audio_output(None, "aac"),
             1000,
@@ -1809,6 +1881,25 @@ mod tests {
             Duration::from_secs(1),
         );
         assert_eq!(copy.phase, "Ses M4A dosyasına kopyalanıyor: %50");
+    }
+
+    #[test]
+    fn a_conversion_that_runs_out_of_time_says_so() {
+        // The error `run_capture` gives once FFmpeg has run for its whole timeout.
+        let timeout = crate::error_codes::coded(
+            crate::error_codes::MED_011,
+            "Medya analizi 600 saniye içinde tamamlanmadı",
+        );
+        assert_eq!(
+            unfinished_conversion(timeout, Duration::from_secs(600)).to_string(),
+            "Ses dönüştürmesi 600 saniye içinde tamamlanmadı"
+        );
+        // A pause or cancel keeps its own error.
+        let stopped = anyhow!("Kaynak hazırlığı durduruldu");
+        assert_eq!(
+            unfinished_conversion(stopped, Duration::from_secs(600)).to_string(),
+            "Kaynak hazırlığı durduruldu"
+        );
     }
 
     /// The segment `next_task` hands to a worker that keeps a connection to `kept`.

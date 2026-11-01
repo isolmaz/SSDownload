@@ -3156,7 +3156,7 @@ segment.ts
     }
 
     #[test]
-    fn only_a_stream_with_a_playlist_of_its_own_is_held_to_one() {
+    fn a_lone_video_playlist_does_not_hold_the_video_to_its_length() {
         let request = AddRequest {
             kind: DownloadKind::Video,
             expected_audio: Some(true),
@@ -3191,17 +3191,12 @@ segment.ts
                 {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":audio}
             ],"format":{"start_time":"0","duration":video}})
         };
-        // The audio is held to the video, not to a playlist it does not have.
+        // The audio is held to the video, and both to the source's duration, which allows a
+        // segment's length either way. Only the audio of an audio download is held to a playlist
+        // without a counterpart.
         assert!(validate_probe(&probe("3603.6", "3603.6"), &request, &info).is_ok());
         assert!(validate_probe(&probe("3603.6", "3590.0"), &request, &info).is_err());
-        // The video is held to its playlist, also when the audio is cut alike.
-        let error = validate_probe(&probe("3597.6", "3597.6"), &request, &info)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("görüntü akışı 3597.6 sn, kaynak listesi 3603.6 sn"),
-            "{error}"
-        );
+        assert!(validate_probe(&probe("3597.6", "3597.6"), &request, &info).is_ok());
     }
 
     #[test]

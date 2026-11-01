@@ -1699,5 +1699,6 @@
   "Converting the audio to {0}: {1}%": "Convirtiendo el audio a {0}: {1} %",
   "Copying the audio into {0}: {1}%": "Copiando el audio a un archivo {0}: {1} %",
   "The downloaded stream has no readable audio": "El flujo descargado no tiene audio legible",
-  "The audio could not be converted: {0}": "No se ha podido convertir el audio: {0}"
+  "The audio could not be converted: {0}": "No se ha podido convertir el audio: {0}",
+  "The audio conversion did not finish within {0} seconds": "La conversión del audio no terminó en {0} segundos"
 }

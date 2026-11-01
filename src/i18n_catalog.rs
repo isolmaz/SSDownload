@@ -7495,6 +7495,9 @@ macro_rules! __ui_template_ar {
     ("The archived work data could not be restored: {0}") => {
         "تعذّرت استعادة بيانات العمل المؤرشفة: {0}"
     };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "لم يكتمل تحويل الصوت خلال {0} ث"
+    };
     ("The audio could not be converted: {0}") => {
         "تعذّر تحويل الصوت: {0}"
     };
@@ -8318,6 +8321,9 @@ macro_rules! __ui_template_es {
     };
     ("The archived work data could not be restored: {0}") => {
         "No se pudieron restaurar los datos de trabajo archivados: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "La conversión del audio no terminó en {0} segundos"
     };
     ("The audio could not be converted: {0}") => {
         "No se ha podido convertir el audio: {0}"
@@ -9143,6 +9149,9 @@ macro_rules! __ui_template_pt {
     ("The archived work data could not be restored: {0}") => {
         "Não foi possível restaurar os dados de trabalho arquivados: {0}"
     };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "A conversão do áudio não terminou em {0} segundos"
+    };
     ("The audio could not be converted: {0}") => {
         "Não foi possível converter o áudio: {0}"
     };
@@ -9967,6 +9976,9 @@ macro_rules! __ui_template_fr {
     ("The archived work data could not be restored: {0}") => {
         "Les données de travail archivées n'ont pas pu être restaurées : {0}"
     };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "La conversion de l'audio ne s'est pas terminée dans les {0} secondes"
+    };
     ("The audio could not be converted: {0}") => {
         "L'audio n'a pas pu être converti : {0}"
     };
@@ -10790,6 +10802,9 @@ macro_rules! __ui_template_de {
     };
     ("The archived work data could not be restored: {0}") => {
         "Die archivierten Arbeitsdaten konnten nicht wiederhergestellt werden: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "Die Umwandlung des Audios wurde nicht innerhalb von {0} Sekunden abgeschlossen"
     };
     ("The audio could not be converted: {0}") => {
         "Das Audio konnte nicht umgewandelt werden: {0}"
