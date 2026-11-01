@@ -2795,9 +2795,6 @@ fn download_segmented(
     let mut successful_since_failure = 0usize;
     let mut last_time = Instant::now();
     let mut last_downloaded = baseline;
-    // The first report is made at once, so a resumed download shows what earlier attempts kept;
-    // a retry notice is reported at once too.
-    let mut report_now = true;
     let mut notice: Option<String> = None;
     let outcome = 'scheduler: loop {
         if control.stop_requested() {
@@ -2925,7 +2922,6 @@ fn download_segmented(
                             effective_workers,
                             status = status
                         ));
-                        report_now = true;
                     }
                     Err(AttemptFailure::RetryableTransport(_error))
                         if work.attempts + 1 < MAX_RANGE_ATTEMPTS =>
@@ -2953,7 +2949,6 @@ fn download_segmented(
                             retry_after.as_secs(),
                             effective_workers
                         ));
-                        report_now = true;
                     }
                     Err(AttemptFailure::RetryableTransport(error)) => {
                         break 'scheduler Err(AttemptFailure::Other(error))
@@ -2981,9 +2976,9 @@ fn download_segmented(
         }
 
         let now = Instant::now();
-        if report_now || now.duration_since(last_time) >= Duration::from_millis(200) {
-            // The only place the ranges are built: once per report, every 200 ms or at a retry
-            // notice, never per write.
+        if now.duration_since(last_time) >= Duration::from_millis(200) {
+            // The only place the ranges are built: once per report, every 200 ms, never per
+            // write. A retry notice waits for it too.
             let (downloaded, ranges) = ledger.view();
             let elapsed = now.duration_since(last_time).as_secs_f64().max(0.001);
             let speed = if notice.is_some() {
@@ -3014,7 +3009,6 @@ fn download_segmented(
             });
             last_time = now;
             last_downloaded = downloaded;
-            report_now = false;
         }
     };
 
@@ -7548,7 +7542,7 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_download_shows_the_bytes_it_kept_in_its_first_report() {
+    fn a_resumed_download_shows_the_bytes_it_kept_in_every_report() {
         let payload = patterned(MIN_SEGMENT_SIZE * 4);
         let total = payload.len() as u64;
         let server = PayloadServer::start(payload.clone(), "\"kept-v1\"");
@@ -7571,11 +7565,14 @@ mod tests {
         );
         state.connections = 4;
         write_state(&state_path(&output), &state).unwrap();
+        let control = TransferControl::default();
+        // Slow enough for reports while the rest is written.
+        control.set_speed_limit(total);
         let mut events = Vec::new();
         let result = download(
             &request,
             &output,
-            &TransferControl::default(),
+            &control,
             &NetworkGovernor::new(16),
             4,
             None,
@@ -7584,14 +7581,21 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read(result.path).unwrap(), payload);
         check_ranges(&events, total);
-        let first = events.first().unwrap();
-        let ranges = first.ranges.as_deref().unwrap_or_default();
+        let (last, running) = events.split_last().unwrap();
+        assert_eq!(last.ranges.as_deref(), Some(&[(0, total)][..]));
         assert!(
-            ranges
-                .first()
-                .is_some_and(|&(start, end)| start == 0 && end >= kept),
-            "the first report does not show the kept bytes: {first:?}"
+            running.iter().any(|event| event.ranges.is_some()),
+            "no report while the download ran: {events:#?}"
         );
+        for event in events.iter().filter(|event| event.ranges.is_some()) {
+            let ranges = event.ranges.as_deref().unwrap();
+            assert!(
+                ranges
+                    .first()
+                    .is_some_and(|&(start, end)| start == 0 && end >= kept),
+                "a report does not show the kept bytes: {event:?}"
+            );
+        }
     }
 
     struct FtpBehavior {
