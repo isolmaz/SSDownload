@@ -1130,6 +1130,26 @@ mod tests {
     }
 
     #[test]
+    fn an_install_request_is_explicit_unless_it_says_it_is_automatic() {
+        let parse = |json: &str| match serde_json::from_str::<super::Action>(json).unwrap() {
+            super::Action::InstallTools {
+                force_update,
+                automatic,
+                ..
+            } => (force_update, automatic),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            parse(r#"{"type":"install_tools","force_update":true}"#),
+            (true, false)
+        );
+        assert_eq!(
+            parse(r#"{"type":"install_tools","force_update":false,"automatic":true}"#),
+            (false, true)
+        );
+    }
+
+    #[test]
     fn default_settings_use_eight_connections_per_file_and_per_host() {
         let settings = super::Settings::default();
         assert_eq!(settings.connections, 8);
@@ -1633,6 +1653,10 @@ pub enum Action {
     },
     InstallTools {
         force_update: bool,
+        /// The application starts the install or refresh itself, without a request from the
+        /// user. Only an explicit request takes a yt-dlp release younger than the waiting period.
+        #[serde(default)]
+        automatic: bool,
         #[serde(default)]
         request_id: Option<String>,
     },

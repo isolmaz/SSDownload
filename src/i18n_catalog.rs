@@ -380,6 +380,8 @@ static AR: &[(&str, &str)] = &[
     ("Location", "الموقع"),
     ("Log site names", "تسجيل أسماء المواقع"),
     ("Logs for this download (newest at bottom):", "سجلات هذا التنزيل (الأحدث في الأسفل):"),
+    ("MKV video", "فيديو MKV"),
+    ("MP4 video", "فيديو MP4"),
     ("Manual", "يدوي"),
     ("Maximum candidates", "الحد الأقصى للمرشحين"),
     ("Maximum candidates:", "الحد الأقصى للمرشحين:"),
@@ -462,7 +464,7 @@ static AR: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "لم يُعثر على أي رابط HTTP/HTTPS في النص الذي تم إفلاته."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "لم يُعثر على ترميز صوت متوافق مع MP4 باللغة المحددة؛ اختر MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "لم يُعثر على ترميز فيديو متوافق مع MP4 بالدقة المحددة؛ اختر MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "لم يُعثر على ملف ZIP لـ FFmpeg (Windows x64، ترخيص LGPL) في أحدث إصدار من BtbN"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "لم يُعثر على ملف ZIP لفرع إصدار FFmpeg (Windows x64، ترخيص LGPL) في أحدث إصدار من BtbN"),
     ("No active completion countdown.", "لا يوجد عد تنازلي نشط لإجراء الاكتمال."),
     ("No active downloads.", "لا توجد تنزيلات نشطة."),
     ("No capacity for the network connection became free in time", "لم تتوفر سعة للاتصال بالشبكة في الوقت المناسب"),
@@ -484,6 +486,7 @@ static AR: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "لم يُحفظ أي صفحة مصدر قابلة للتحديث لهذه المهمة."),
     ("No release notes provided.", "لا توجد ملاحظات حول الإصدار."),
     ("No running SSDownload instance was found", "لم يُعثر على نسخة SSDownload قيد التشغيل"),
+    ("No suitable stable yt-dlp release was found", "لم يُعثر على إصدار مستقر مناسب من yt-dlp"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "لا توجد معلومات عن الأدوات بعد. يقوم زر «تثبيت المفقود» بتنزيل الإصدارات الأصلية الآمنة لأي أداة مفقودة."),
     ("Normal", "عادي"),
     ("Not all selected audio streams were found in the browser transfer", "لم يُعثر على جميع مسارات الصوت المحددة في النقل عبر المتصفح"),
@@ -891,6 +894,7 @@ static AR: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "توقّف عامل التنزيل بشكل غير متوقع"),
     ("The downloaded installer is not a valid Windows installer package.", "ملف المثبّت المُنزَّل ليس حزمة مثبّت صالحة لـ Windows."),
     ("The downloaded installer's SHA-256 does not match", "لا يتطابق SHA-256 لملف المثبّت المُنزَّل"),
+    ("The downloaded stream has no readable audio", "لا يحتوي البث الذي تم تنزيله على صوت قابل للقراءة"),
     ("The dropped text files exceed the combined 1 MiB limit.", "تتجاوز ملفات النص المُفلتة الحد الإجمالي البالغ 1 MiB."),
     ("The embedded public key is invalid", "المفتاح العام المضمَّن غير صالح"),
     ("The embedded public key is not 32 bytes", "المفتاح العام المضمَّن ليس 32 بايت"),
@@ -1024,6 +1028,7 @@ static AR: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "إصدار سجل هوية مصدر الوسائط أو المقطع غير مدعوم"),
     ("The media tool installation lock is corrupted", "قفل تثبيت أداة الوسائط تالف"),
     ("The media tool returned an output outside the expected folder", "أعادت أداة الوسائط مخرجات خارج المجلد المتوقع"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "مسار أدوات الوسائط أطول من 259 حرفًا، وهو الحد الذي يسمح به Windows للبرامج؛ انقل الملف الشخصي إلى مجلد أقصر وشغّل SSDownload مع --data-dir يشير إلى ذلك المجلد"),
     ("The media working folder is missing", "مجلد عمل الوسائط مفقود"),
     ("The named pipe client could not be verified", "تعذّر التحقق من عميل الأنبوب المسمّى"),
     ("The named pipe client does not belong to the current user", "عميل الأنبوب المسمّى لا يتبع المستخدم الحالي"),
@@ -1423,6 +1428,7 @@ static AR: &[(&str, &str)] = &[
     ("errors", "الأخطاء"),
     ("failed", "فشل"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "لم يُعثر على ffmpeg.exe في أرشيف FFmpeg"),
+    ("ffprobe did not print JSON", "لم يطبع ffprobe بيانات JSON"),
     ("ffprobe.exe was not found in the FFmpeg archive", "لم يُعثر على ffprobe.exe في أرشيف FFmpeg"),
     ("file", "ملف"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -1472,6 +1478,9 @@ static AR: &[(&str, &str)] = &[
     ("video", "فيديو"),
     ("yt-dlp did not return valid JSON media information", "لم يُرجع yt-dlp معلومات وسائط بصيغة JSON صالحة"),
     ("yt-dlp failed without giving details", "فشل yt-dlp دون تقديم تفاصيل"),
+    ("yt-dlp printed no output file line", "لم يطبع yt-dlp سطر ملف المخرجات"),
+    ("yt-dlp printed no post-processor line", "لم يطبع yt-dlp أي سطر للمعالجة اللاحقة"),
+    ("yt-dlp printed no progress line", "لم يطبع yt-dlp أي سطر تقدّم"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "حالة yt-dlp وFFmpeg وDeno لتنزيلات الفيديو والصوت:"),
 ];
 
@@ -1841,6 +1850,8 @@ static ES: &[(&str, &str)] = &[
     ("Location", "Ubicación"),
     ("Log site names", "Registrar nombres de sitio"),
     ("Logs for this download (newest at bottom):", "Registros de esta descarga (los más recientes abajo):"),
+    ("MKV video", "Vídeo MKV"),
+    ("MP4 video", "Vídeo MP4"),
     ("Manual", "Manual"),
     ("Maximum candidates", "Número máximo de candidatos"),
     ("Maximum candidates:", "Máximo de candidatos:"),
@@ -1923,7 +1934,7 @@ static ES: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "No se encontró ningún enlace HTTP/HTTPS en el texto soltado."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "No se encontró ningún códec de audio compatible con MP4 en el idioma seleccionado; elija MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "No se encontró ningún códec de vídeo compatible con MP4 en la resolución seleccionada; elija MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "No se encontró el archivo ZIP de FFmpeg LGPL para Windows x64 en la última versión de BtbN"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "No se encontró el archivo ZIP de una rama de versión de FFmpeg LGPL para Windows x64 en la última versión de BtbN"),
     ("No active completion countdown.", "No hay ninguna cuenta atrás de finalización activa."),
     ("No active downloads.", "No hay descargas activas."),
     ("No capacity for the network connection became free in time", "No quedó capacidad libre para la conexión de red a tiempo"),
@@ -1945,6 +1956,7 @@ static ES: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "No se guardó ninguna página de origen actualizable para esta tarea."),
     ("No release notes provided.", "No se proporcionaron notas de la versión."),
     ("No running SSDownload instance was found", "No se encontró ninguna instancia de SSDownload en ejecución"),
+    ("No suitable stable yt-dlp release was found", "No se encontró ninguna versión estable adecuada de yt-dlp"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Todavía no hay información de herramientas. El botón de instalación descarga versiones seguras del proyecto original de lo que falte."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "No se encontraron todos los flujos de audio seleccionados en la transferencia desde el navegador"),
@@ -2352,6 +2364,7 @@ static ES: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "El trabajador de descarga se detuvo inesperadamente"),
     ("The downloaded installer is not a valid Windows installer package.", "El instalador descargado no es un paquete de instalación de Windows válido."),
     ("The downloaded installer's SHA-256 does not match", "El SHA-256 del instalador descargado no coincide"),
+    ("The downloaded stream has no readable audio", "El flujo descargado no tiene audio legible"),
     ("The dropped text files exceed the combined 1 MiB limit.", "Los archivos de texto arrastrados superan el límite combinado de 1 MiB."),
     ("The embedded public key is invalid", "La clave pública incrustada no es válida"),
     ("The embedded public key is not 32 bytes", "La clave pública incrustada no tiene 32 bytes"),
@@ -2485,6 +2498,7 @@ static ES: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "La versión del registro de identidad del origen o segmento multimedia no es compatible"),
     ("The media tool installation lock is corrupted", "El bloqueo de la instalación de la herramienta multimedia está dañado"),
     ("The media tool returned an output outside the expected folder", "La herramienta multimedia ha devuelto una salida fuera de la carpeta esperada"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "La ruta de las herramientas multimedia supera los 259 caracteres que Windows permite para los programas; mueva el perfil a una carpeta más corta e inicie SSDownload con --data-dir apuntando a ella"),
     ("The media working folder is missing", "Falta la carpeta de trabajo multimedia"),
     ("The named pipe client could not be verified", "No se pudo verificar el cliente de named pipe"),
     ("The named pipe client does not belong to the current user", "El cliente de named pipe no pertenece al usuario actual"),
@@ -2884,6 +2898,7 @@ static ES: &[(&str, &str)] = &[
     ("errors", "errores"),
     ("failed", "fallida"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "No se ha encontrado ffmpeg.exe en el archivo de FFmpeg"),
+    ("ffprobe did not print JSON", "ffprobe no imprimió JSON"),
     ("ffprobe.exe was not found in the FFmpeg archive", "No se ha encontrado ffprobe.exe en el archivo de FFmpeg"),
     ("file", "archivo"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -2933,6 +2948,9 @@ static ES: &[(&str, &str)] = &[
     ("video", "vídeo"),
     ("yt-dlp did not return valid JSON media information", "yt-dlp no ha devuelto información multimedia JSON válida"),
     ("yt-dlp failed without giving details", "yt-dlp ha fallado sin proporcionar detalles"),
+    ("yt-dlp printed no output file line", "yt-dlp no imprimió la línea del archivo de salida"),
+    ("yt-dlp printed no post-processor line", "yt-dlp no imprimió ninguna línea de posprocesamiento"),
+    ("yt-dlp printed no progress line", "yt-dlp no imprimió ninguna línea de progreso"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Estado de yt-dlp, FFmpeg y Deno para las descargas de vídeo/audio:"),
 ];
 
@@ -3302,6 +3320,8 @@ static PT: &[(&str, &str)] = &[
     ("Location", "Local"),
     ("Log site names", "Registrar nomes de sites"),
     ("Logs for this download (newest at bottom):", "Registros deste download (os mais recentes no final):"),
+    ("MKV video", "Vídeo MKV"),
+    ("MP4 video", "Vídeo MP4"),
     ("Manual", "Manual"),
     ("Maximum candidates", "Máximo de candidatos"),
     ("Maximum candidates:", "Máximo de candidatos:"),
@@ -3384,7 +3404,7 @@ static PT: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Nenhum link HTTP/HTTPS foi encontrado no texto arrastado."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "Nenhum codec de áudio compatível com MP4 foi encontrado no idioma selecionado; escolha MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Nenhum codec de vídeo compatível com MP4 foi encontrado na resolução selecionada; escolha MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Nenhum arquivo ZIP do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Nenhum arquivo ZIP de uma ramificação de versão do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN"),
     ("No active completion countdown.", "Nenhuma contagem regressiva de conclusão ativa."),
     ("No active downloads.", "Nenhum download ativo."),
     ("No capacity for the network connection became free in time", "Não ficou disponível capacidade para a conexão de rede a tempo"),
@@ -3406,6 +3426,7 @@ static PT: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "Nenhuma página de origem atualizável foi salva para esta tarefa."),
     ("No release notes provided.", "Nenhuma nota de versão fornecida."),
     ("No running SSDownload instance was found", "Nenhuma instância em execução do SSDownload foi encontrada"),
+    ("No suitable stable yt-dlp release was found", "Nenhuma versão estável adequada do yt-dlp foi encontrada"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Ainda não há informações de ferramentas. O botão Instalar ausentes baixa versões upstream seguras para o que estiver faltando."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Nem todos os fluxos de áudio selecionados foram encontrados na transferência pelo navegador"),
@@ -3813,6 +3834,7 @@ static PT: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "O trabalhador de download parou inesperadamente"),
     ("The downloaded installer is not a valid Windows installer package.", "O instalador baixado não é um pacote de instalação do Windows válido."),
     ("The downloaded installer's SHA-256 does not match", "O SHA-256 do instalador baixado não corresponde"),
+    ("The downloaded stream has no readable audio", "O fluxo baixado não tem áudio legível"),
     ("The dropped text files exceed the combined 1 MiB limit.", "Os arquivos de texto soltos excedem o limite combinado de 1 MiB."),
     ("The embedded public key is invalid", "A chave pública incorporada é inválida"),
     ("The embedded public key is not 32 bytes", "A chave pública incorporada não tem 32 bytes"),
@@ -3946,6 +3968,7 @@ static PT: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "A versão do registro de identidade da fonte/segmento de mídia não é suportada"),
     ("The media tool installation lock is corrupted", "O bloqueio de instalação das ferramentas de mídia está corrompido"),
     ("The media tool returned an output outside the expected folder", "A ferramenta de mídia retornou uma saída fora da pasta esperada"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "O caminho das ferramentas de mídia excede os 259 caracteres que o Windows permite para programas; mova o perfil para uma pasta mais curta e inicie o SSDownload com --data-dir apontando para ela"),
     ("The media working folder is missing", "A pasta de trabalho de mídia está ausente"),
     ("The named pipe client could not be verified", "Não foi possível verificar o cliente do named pipe"),
     ("The named pipe client does not belong to the current user", "O cliente do named pipe não pertence ao usuário atual"),
@@ -4345,6 +4368,7 @@ static PT: &[(&str, &str)] = &[
     ("errors", "erros"),
     ("failed", "falhou"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe não foi encontrado no arquivo do FFmpeg"),
+    ("ffprobe did not print JSON", "O ffprobe não imprimiu JSON"),
     ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe não foi encontrado no arquivo do FFmpeg"),
     ("file", "arquivo"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -4394,6 +4418,9 @@ static PT: &[(&str, &str)] = &[
     ("video", "vídeo"),
     ("yt-dlp did not return valid JSON media information", "o yt-dlp não retornou informações de mídia em JSON válido"),
     ("yt-dlp failed without giving details", "o yt-dlp falhou sem fornecer detalhes"),
+    ("yt-dlp printed no output file line", "O yt-dlp não imprimiu a linha do arquivo de saída"),
+    ("yt-dlp printed no post-processor line", "O yt-dlp não imprimiu nenhuma linha de pós-processamento"),
+    ("yt-dlp printed no progress line", "O yt-dlp não imprimiu nenhuma linha de progresso"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Status do yt-dlp, FFmpeg e Deno para downloads de vídeo/áudio:"),
 ];
 
@@ -4763,6 +4790,8 @@ static FR: &[(&str, &str)] = &[
     ("Location", "Emplacement"),
     ("Log site names", "Consigner les noms de site"),
     ("Logs for this download (newest at bottom):", "Journaux de ce téléchargement (les plus récents en bas) :"),
+    ("MKV video", "Vidéo MKV"),
+    ("MP4 video", "Vidéo MP4"),
     ("Manual", "Manuel"),
     ("Maximum candidates", "Nombre maximal de candidats"),
     ("Maximum candidates:", "Nb max. de candidats :"),
@@ -4845,7 +4874,7 @@ static FR: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Aucun lien HTTP/HTTPS n'a été trouvé dans le texte déposé."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "Aucun codec audio compatible MP4 n'a été trouvé dans la langue sélectionnée ; choisissez MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Aucun codec vidéo compatible MP4 n'a été trouvé à la résolution sélectionnée ; choisissez MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Aucun fichier ZIP FFmpeg LGPL Windows x64 n'a été trouvé dans la dernière version de BtbN"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Aucun fichier ZIP d'une branche de version FFmpeg LGPL Windows x64 n'a été trouvé dans la dernière version de BtbN"),
     ("No active completion countdown.", "Aucun compte à rebours de fin n'est actif."),
     ("No active downloads.", "Aucun téléchargement en cours."),
     ("No capacity for the network connection became free in time", "Aucune capacité n'a été libérée à temps pour la connexion réseau"),
@@ -4867,6 +4896,7 @@ static FR: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "Aucune page source actualisable n'a été enregistrée pour cette tâche."),
     ("No release notes provided.", "Aucune note de version fournie."),
     ("No running SSDownload instance was found", "Aucune instance SSDownload en cours d'exécution n'a été trouvée"),
+    ("No suitable stable yt-dlp release was found", "Aucune version stable adaptée de yt-dlp n'a été trouvée"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Aucune information sur les outils pour l'instant. Le bouton Installer les manquants télécharge les versions amont sûres pour les éléments absents."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Tous les flux audio sélectionnés n'ont pas été trouvés dans le transfert par le navigateur"),
@@ -5274,6 +5304,7 @@ static FR: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "Le processus de téléchargement s'est arrêté de manière inattendue"),
     ("The downloaded installer is not a valid Windows installer package.", "Le programme d'installation téléchargé n'est pas un paquet d'installation Windows valide."),
     ("The downloaded installer's SHA-256 does not match", "Le SHA-256 du programme d'installation téléchargé ne correspond pas"),
+    ("The downloaded stream has no readable audio", "Le flux téléchargé ne contient pas d'audio lisible"),
     ("The dropped text files exceed the combined 1 MiB limit.", "Les fichiers texte déposés dépassent la limite combinée de 1 MiB."),
     ("The embedded public key is invalid", "La clé publique intégrée est invalide"),
     ("The embedded public key is not 32 bytes", "La clé publique intégrée ne fait pas 32 octets"),
@@ -5407,6 +5438,7 @@ static FR: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "La version de l'enregistrement d'identité de la source ou du segment média n'est pas prise en charge"),
     ("The media tool installation lock is corrupted", "Le verrou d'installation des outils média est corrompu"),
     ("The media tool returned an output outside the expected folder", "L'outil média a renvoyé une sortie en dehors du dossier attendu"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "Le chemin des outils multimédias dépasse les 259 caractères que Windows autorise pour les programmes ; déplacez le profil dans un dossier plus court et lancez SSDownload avec --data-dir pointant vers ce dossier"),
     ("The media working folder is missing", "Le dossier de travail média est manquant"),
     ("The named pipe client could not be verified", "Le client du tube nommé n'a pas pu être vérifié"),
     ("The named pipe client does not belong to the current user", "Le client du tube nommé n'appartient pas à l'utilisateur actuel"),
@@ -5806,6 +5838,7 @@ static FR: &[(&str, &str)] = &[
     ("errors", "erreurs"),
     ("failed", "échoué"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe est introuvable dans l'archive FFmpeg"),
+    ("ffprobe did not print JSON", "ffprobe n'a pas affiché de JSON"),
     ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe est introuvable dans l'archive FFmpeg"),
     ("file", "fichier"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -5855,6 +5888,9 @@ static FR: &[(&str, &str)] = &[
     ("video", "vidéo"),
     ("yt-dlp did not return valid JSON media information", "yt-dlp n'a pas renvoyé d'informations média JSON valides"),
     ("yt-dlp failed without giving details", "yt-dlp a échoué sans donner de détails"),
+    ("yt-dlp printed no output file line", "yt-dlp n'a pas affiché la ligne du fichier de sortie"),
+    ("yt-dlp printed no post-processor line", "yt-dlp n'a affiché aucune ligne de post-traitement"),
+    ("yt-dlp printed no progress line", "yt-dlp n'a affiché aucune ligne de progression"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "État de yt-dlp, FFmpeg et Deno pour les téléchargements vidéo/audio :"),
 ];
 
@@ -6224,6 +6260,8 @@ static DE: &[(&str, &str)] = &[
     ("Location", "Speicherort"),
     ("Log site names", "Websites protokollieren"),
     ("Logs for this download (newest at bottom):", "Protokolle für diesen Download (neueste unten):"),
+    ("MKV video", "MKV-Video"),
+    ("MP4 video", "MP4-Video"),
     ("Manual", "Manuell"),
     ("Maximum candidates", "Maximale Kandidaten"),
     ("Maximum candidates:", "Maximale Kandidaten:"),
@@ -6306,7 +6344,7 @@ static DE: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Im abgelegten Text wurde kein HTTP/HTTPS-Link gefunden."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "In der ausgewählten Sprache wurde kein MP4-kompatibler Audio-Codec gefunden; wählen Sie MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Bei der ausgewählten Auflösung wurde kein MP4-kompatibler Video-Codec gefunden; wählen Sie MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Im neuesten BtbN-Release wurde keine Windows-x64-LGPL-FFmpeg-ZIP-Datei gefunden"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Im neuesten BtbN-Release wurde keine ZIP-Datei eines FFmpeg-Release-Zweigs (Windows x64, LGPL) gefunden"),
     ("No active completion countdown.", "Kein aktiver Countdown bis zum Abschluss."),
     ("No active downloads.", "Keine aktiven Downloads."),
     ("No capacity for the network connection became free in time", "Für die Netzwerkverbindung wurde nicht rechtzeitig Kapazität frei"),
@@ -6328,6 +6366,7 @@ static DE: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "Für diesen Auftrag wurde keine aktualisierbare Quellseite gespeichert."),
     ("No release notes provided.", "Keine Versionshinweise verfügbar."),
     ("No running SSDownload instance was found", "Keine laufende SSDownload-Instanz gefunden"),
+    ("No suitable stable yt-dlp release was found", "Es wurde kein geeignetes stabiles yt-dlp-Release gefunden"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Noch keine Werkzeuginformationen. Die Schaltfläche „Fehlende installieren“ lädt für alles Fehlende sichere Upstream-Versionen herunter."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Nicht alle ausgewählten Audio-Streams wurden in der Browser-Übertragung gefunden"),
@@ -6735,6 +6774,7 @@ static DE: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "Der Download-Worker wurde unerwartet gestoppt"),
     ("The downloaded installer is not a valid Windows installer package.", "Die heruntergeladene Installationsdatei ist kein gültiges Windows-Installationspaket."),
     ("The downloaded installer's SHA-256 does not match", "Die SHA-256-Prüfsumme der heruntergeladenen Installationsdatei stimmt nicht überein"),
+    ("The downloaded stream has no readable audio", "Der heruntergeladene Stream enthält kein lesbares Audio"),
     ("The dropped text files exceed the combined 1 MiB limit.", "Die abgelegten Textdateien überschreiten das gemeinsame Limit von 1 MiB."),
     ("The embedded public key is invalid", "Der eingebettete öffentliche Schlüssel ist ungültig"),
     ("The embedded public key is not 32 bytes", "Der eingebettete öffentliche Schlüssel ist nicht 32 Byte lang"),
@@ -6868,6 +6908,7 @@ static DE: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "Die Version des Identitätsdatensatzes der Medienquelle oder des Segments wird nicht unterstützt"),
     ("The media tool installation lock is corrupted", "Die Sperre der Medienwerkzeug-Installation ist beschädigt"),
     ("The media tool returned an output outside the expected folder", "Das Medienwerkzeug hat eine Ausgabe außerhalb des erwarteten Ordners zurückgegeben"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "Der Pfad der Medienwerkzeuge ist länger als die 259 Zeichen, die Windows für Programme erlaubt; verschieben Sie das Profil in einen kürzeren Ordner und starten Sie SSDownload mit --data-dir, das auf diesen Ordner zeigt"),
     ("The media working folder is missing", "Der Medien-Arbeitsordner fehlt"),
     ("The named pipe client could not be verified", "Der Named-Pipe-Client konnte nicht geprüft werden"),
     ("The named pipe client does not belong to the current user", "Der Named-Pipe-Client gehört nicht zum aktuellen Benutzer"),
@@ -7267,6 +7308,7 @@ static DE: &[(&str, &str)] = &[
     ("errors", "Fehler"),
     ("failed", "fehlgeschlagen"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe wurde im FFmpeg-Archiv nicht gefunden"),
+    ("ffprobe did not print JSON", "ffprobe hat kein JSON ausgegeben"),
     ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe wurde im FFmpeg-Archiv nicht gefunden"),
     ("file", "Datei"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -7316,6 +7358,9 @@ static DE: &[(&str, &str)] = &[
     ("video", "Video"),
     ("yt-dlp did not return valid JSON media information", "yt-dlp hat keine gültigen JSON-Medieninformationen zurückgegeben"),
     ("yt-dlp failed without giving details", "yt-dlp ist ohne Details fehlgeschlagen"),
+    ("yt-dlp printed no output file line", "yt-dlp hat keine Zeile mit der Ausgabedatei ausgegeben"),
+    ("yt-dlp printed no post-processor line", "yt-dlp hat keine Zeile der Nachbearbeitung ausgegeben"),
+    ("yt-dlp printed no progress line", "yt-dlp hat keine Fortschrittszeile ausgegeben"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Status von yt-dlp, FFmpeg und Deno für Video- und Audio-Downloads:"),
 ];
 
@@ -7388,6 +7433,12 @@ macro_rules! __ui_template_ar {
     ("Completed · {0}") => {
         "مكتمل · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "جارٍ تحويل الصوت إلى {0}: {1}%"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "جارٍ نسخ الصوت إلى ملف {0}: {1}%"
+    };
     ("Copying to quarantine failed: {0}") => {
         "فشل النسخ إلى العزل: {0}"
     };
@@ -7435,6 +7486,9 @@ macro_rules! __ui_template_ar {
     };
     ("Error: {message}\r\n") => {
         "خطأ: {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "لم يُنشئ FFmpeg مقطع الاختبار ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "نقل FTP غير مكتمل: {bytes}/{total} بايت"
@@ -7484,6 +7538,9 @@ macro_rules! __ui_template_ar {
     ("Media found: {0}") => {
         "تم العثور على وسائط: {0}"
     };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "التحقق من الوسائط: محتوى الملف ({0}) لا يطابق امتداده .{1}"
+    };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "التحقق من الوسائط: مدة المخرجات لا تطابق المصدر (هامش النهاية المبكرة {tolerance:.3} ث؛ النهاية المتأخرة {0:.3} ث)"
     };
@@ -7501,6 +7558,12 @@ macro_rules! __ui_template_ar {
     };
     ("Missing value for {flag}") => {
         "القيمة مفقودة لـ {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "لا يوجد إصدار مستقر من Deno {0}.x ضمن أحدث {1} إصدارًا من Deno؛ هذا الإصدار من التطبيق مرتبط بإصدار Deno قديم جدًا"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "لم يُعثر على إصدار مستقر من Deno {0}.x"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "لم يُعثر على SHA-256 صالح لـ {filename} في ملف المجموع الاختباري الأصلي"
@@ -7633,6 +7696,12 @@ macro_rules! __ui_template_ar {
     };
     ("The archived work data could not be restored: {0}") => {
         "تعذّرت استعادة بيانات العمل المؤرشفة: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "لم يكتمل تحويل الصوت خلال {0} ث"
+    };
+    ("The audio could not be converted: {0}") => {
+        "تعذّر تحويل الصوت: {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "تعذّر التراجع عن إعداد التشغيل التلقائي: {rollback:#}"
@@ -7783,6 +7852,9 @@ macro_rules! __ui_template_ar {
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "تعذّر بدء عملية الوسائط بعد ربطها بـ Windows Job (NTSTATUS 0x{0:08x})"
+    };
+    ("The media self-test failed: {0}") => {
+        "فشل الاختبار الذاتي للوسائط: {0}"
     };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "تعذّر إنشاء مفتاح تسجيل المضيف الأصلي (رمز خطأ Windows: {status})"
@@ -7979,8 +8051,14 @@ macro_rules! __ui_template_ar {
     ("client version {0}") => {
         "إصدار العميل {0}"
     };
+    ("exit code {0}") => {
+        "رمز الخروج {0}"
+    };
     ("expected {0}, received {1}") => {
         "المتوقع {0}، والمستلم {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "تعذّرت على ffprobe قراءة المخرجات ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "لم تستجب القناة المحلية خلال {0} ث"
@@ -7990,6 +8068,12 @@ macro_rules! __ui_template_ar {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "جُرّبت القناة المحلية {attempts} مرة، وكان آخر رد: {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "ملف المخرجات {0} غير موجود"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "فشل yt-dlp ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  الحالة: {1}\r\n  الإصدار: {2}\r\n  الموقع: {3}\r\n\r\n"
@@ -8020,6 +8104,9 @@ macro_rules! __ui_template_ar {
     };
     ("{0} downloads") => {
         "التنزيلات: {0}"
+    };
+    ("{0} is not a file address") => {
+        "{0} ليس عنوان ملف"
     };
     ("{0} stage: {error:#}") => {
         "مرحلة {0}: {error:#}"
@@ -8203,6 +8290,12 @@ macro_rules! __ui_template_es {
     ("Completed · {0}") => {
         "Completada · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "Convirtiendo el audio a {0}: {1} %"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "Copiando el audio a un archivo {0}: {1} %"
+    };
     ("Copying to quarantine failed: {0}") => {
         "Error al copiar en cuarentena: {0}"
     };
@@ -8250,6 +8343,9 @@ macro_rules! __ui_template_es {
     };
     ("Error: {message}\r\n") => {
         "Error: {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "FFmpeg no generó el clip de prueba ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transferencia FTP incompleta: {bytes}/{total} bytes"
@@ -8299,6 +8395,9 @@ macro_rules! __ui_template_es {
     ("Media found: {0}") => {
         "Contenido multimedia encontrado: {0}"
     };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "Verificación de medios: el contenido del archivo ({0}) no coincide con su extensión .{1}"
+    };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "Verificación de medios: la duración de la salida no coincide con el origen (tolerancia de final anticipado {tolerance:.3} s; final tardío {0:.3} s)"
     };
@@ -8316,6 +8415,12 @@ macro_rules! __ui_template_es {
     };
     ("Missing value for {flag}") => {
         "Falta el valor de {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Ninguna versión estable de Deno {0}.x figura entre las {1} versiones más recientes de Deno; esta versión de la aplicación está vinculada a una versión de Deno demasiado antigua"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "No se encontró ninguna versión estable de Deno {0}.x"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "No se encontró un SHA-256 válido para {filename} en el archivo de suma de comprobación del proyecto original"
@@ -8448,6 +8553,12 @@ macro_rules! __ui_template_es {
     };
     ("The archived work data could not be restored: {0}") => {
         "No se pudieron restaurar los datos de trabajo archivados: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "La conversión del audio no terminó en {0} segundos"
+    };
+    ("The audio could not be converted: {0}") => {
+        "No se ha podido convertir el audio: {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "No se pudo revertir la configuración de inicio automático: {rollback:#}"
@@ -8598,6 +8709,9 @@ macro_rules! __ui_template_es {
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "No se pudo iniciar el proceso multimedia tras asignarlo al objeto Windows Job (NTSTATUS 0x{0:08x})"
+    };
+    ("The media self-test failed: {0}") => {
+        "Falló la autoprueba de las herramientas multimedia: {0}"
     };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "No se pudo crear la clave del registro del host nativo (código de error de Windows {status})"
@@ -8794,8 +8908,14 @@ macro_rules! __ui_template_es {
     ("client version {0}") => {
         "versión del cliente {0}"
     };
+    ("exit code {0}") => {
+        "código de salida {0}"
+    };
     ("expected {0}, received {1}") => {
         "esperado {0}, recibido {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "ffprobe no pudo leer la salida ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "el canal local no ha respondido durante {0} segundos"
@@ -8805,6 +8925,12 @@ macro_rules! __ui_template_es {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "se ha intentado conectar con el canal local {attempts} veces; última respuesta: {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "el archivo de salida {0} no existe"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "yt-dlp falló ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Estado: {1}\r\n  Versión: {2}\r\n  Ubicación: {3}\r\n\r\n"
@@ -8835,6 +8961,9 @@ macro_rules! __ui_template_es {
     };
     ("{0} downloads") => {
         "{0} descargas"
+    };
+    ("{0} is not a file address") => {
+        "{0} no es una dirección de archivo"
     };
     ("{0} stage: {error:#}") => {
         "En la fase {0}: {error:#}"
@@ -9018,6 +9147,12 @@ macro_rules! __ui_template_pt {
     ("Completed · {0}") => {
         "Concluído · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "Convertendo o áudio para {0}: {1}%"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "Copiando o áudio para um arquivo {0}: {1}%"
+    };
     ("Copying to quarantine failed: {0}") => {
         "Falha ao copiar para a quarentena: {0}"
     };
@@ -9065,6 +9200,9 @@ macro_rules! __ui_template_pt {
     };
     ("Error: {message}\r\n") => {
         "Erro: {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "O FFmpeg não gerou o clipe de teste ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transferência FTP incompleta: {bytes}/{total} bytes"
@@ -9114,6 +9252,9 @@ macro_rules! __ui_template_pt {
     ("Media found: {0}") => {
         "Mídia encontrada: {0}"
     };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "Verificação de mídia: o conteúdo do arquivo ({0}) não corresponde à extensão .{1}"
+    };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "Verificação de mídia: a duração da saída não corresponde à fonte (tolerância de término antecipado {tolerance:.3} s; término tardio {0:.3} s)"
     };
@@ -9131,6 +9272,12 @@ macro_rules! __ui_template_pt {
     };
     ("Missing value for {flag}") => {
         "Valor ausente para {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Nenhuma versão estável do Deno {0}.x está entre as {1} versões mais recentes do Deno; esta versão do aplicativo está vinculada a uma versão do Deno muito antiga"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "Nenhuma versão estável do Deno {0}.x foi encontrada"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "Nenhum SHA-256 válido para {filename} foi encontrado no arquivo de soma de verificação upstream"
@@ -9263,6 +9410,12 @@ macro_rules! __ui_template_pt {
     };
     ("The archived work data could not be restored: {0}") => {
         "Não foi possível restaurar os dados de trabalho arquivados: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "A conversão do áudio não terminou em {0} segundos"
+    };
+    ("The audio could not be converted: {0}") => {
+        "Não foi possível converter o áudio: {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "Não foi possível reverter a configuração de início automático: {rollback:#}"
@@ -9413,6 +9566,9 @@ macro_rules! __ui_template_pt {
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Não foi possível iniciar o processo de mídia após a atribuição ao Job do Windows (NTSTATUS 0x{0:08x})"
+    };
+    ("The media self-test failed: {0}") => {
+        "O autoteste das ferramentas de mídia falhou: {0}"
     };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "Não foi possível criar a chave do registro do host nativo (código de erro do Windows {status})"
@@ -9609,8 +9765,14 @@ macro_rules! __ui_template_pt {
     ("client version {0}") => {
         "versão do cliente {0}"
     };
+    ("exit code {0}") => {
+        "código de saída {0}"
+    };
     ("expected {0}, received {1}") => {
         "esperado {0}, recebido {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "O ffprobe não conseguiu ler a saída ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "o canal local não respondeu por {0} segundos"
@@ -9620,6 +9782,12 @@ macro_rules! __ui_template_pt {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "o canal local foi tentado {attempts} vezes, última resposta: {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "o arquivo de saída {0} não existe"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "O yt-dlp falhou ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Versão: {2}\r\n  Local: {3}\r\n\r\n"
@@ -9650,6 +9818,9 @@ macro_rules! __ui_template_pt {
     };
     ("{0} downloads") => {
         "{0} downloads"
+    };
+    ("{0} is not a file address") => {
+        "{0} não é um endereço de arquivo"
     };
     ("{0} stage: {error:#}") => {
         "etapa {0}: {error:#}"
@@ -9833,6 +10004,12 @@ macro_rules! __ui_template_fr {
     ("Completed · {0}") => {
         "Terminé · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "Conversion de l'audio en {0} : {1} %"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "Copie de l'audio dans un fichier {0} : {1} %"
+    };
     ("Copying to quarantine failed: {0}") => {
         "La copie en quarantaine a échoué : {0}"
     };
@@ -9880,6 +10057,9 @@ macro_rules! __ui_template_fr {
     };
     ("Error: {message}\r\n") => {
         "Erreur : {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "FFmpeg n'a pas généré le clip de test ({0}) : {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transfert FTP incomplet : {bytes}/{total} octets"
@@ -9929,6 +10109,9 @@ macro_rules! __ui_template_fr {
     ("Media found: {0}") => {
         "Média trouvé : {0}"
     };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "Vérification du média : le contenu du fichier ({0}) ne correspond pas à son extension .{1}"
+    };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "Vérification du média : la durée de la sortie ne correspond pas à la source (tolérance de fin anticipée {tolerance:.3} s ; fin tardive {0:.3} s)"
     };
@@ -9946,6 +10129,12 @@ macro_rules! __ui_template_fr {
     };
     ("Missing value for {flag}") => {
         "Valeur manquante pour {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Aucune version stable de Deno {0}.x ne figure parmi les {1} versions les plus récentes de Deno ; cette version de l'application est liée à une version de Deno trop ancienne"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "Aucune version stable de Deno {0}.x n'a été trouvée"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "Aucun SHA-256 valide pour {filename} n'a été trouvé dans le fichier de somme de contrôle amont"
@@ -10078,6 +10267,12 @@ macro_rules! __ui_template_fr {
     };
     ("The archived work data could not be restored: {0}") => {
         "Les données de travail archivées n'ont pas pu être restaurées : {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "La conversion de l'audio ne s'est pas terminée dans les {0} secondes"
+    };
+    ("The audio could not be converted: {0}") => {
+        "L'audio n'a pas pu être converti : {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "Le paramètre de démarrage automatique n'a pas pu être annulé : {rollback:#}"
@@ -10228,6 +10423,9 @@ macro_rules! __ui_template_fr {
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Le processus média n'a pas pu démarrer après l'affectation au Job Windows (NTSTATUS 0x{0:08x})"
+    };
+    ("The media self-test failed: {0}") => {
+        "L'autotest des outils multimédias a échoué : {0}"
     };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "La clé de registre de l'hôte natif n'a pas pu être créée (code d'erreur Windows {status})"
@@ -10424,8 +10622,14 @@ macro_rules! __ui_template_fr {
     ("client version {0}") => {
         "version du client {0}"
     };
+    ("exit code {0}") => {
+        "code de sortie {0}"
+    };
     ("expected {0}, received {1}") => {
         "attendu {0}, reçu {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "ffprobe n'a pas pu lire la sortie ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "le canal local n'a pas répondu pendant {0} secondes"
@@ -10435,6 +10639,12 @@ macro_rules! __ui_template_fr {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "le canal local a été essayé {attempts} fois, dernière réponse : {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "le fichier de sortie {0} n'existe pas"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "yt-dlp a échoué ({0}) : {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  État : {1}\r\n  Version : {2}\r\n  Emplacement : {3}\r\n\r\n"
@@ -10465,6 +10675,9 @@ macro_rules! __ui_template_fr {
     };
     ("{0} downloads") => {
         "{0} téléchargements"
+    };
+    ("{0} is not a file address") => {
+        "{0} n'est pas une adresse de fichier"
     };
     ("{0} stage: {error:#}") => {
         "Étape {0} : {error:#}"
@@ -10648,6 +10861,12 @@ macro_rules! __ui_template_de {
     ("Completed · {0}") => {
         "Abgeschlossen · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "Audio wird in {0} umgewandelt: {1} %"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "Audio wird in eine {0}-Datei kopiert: {1} %"
+    };
     ("Copying to quarantine failed: {0}") => {
         "Kopieren in die Quarantäne fehlgeschlagen: {0}"
     };
@@ -10695,6 +10914,9 @@ macro_rules! __ui_template_de {
     };
     ("Error: {message}\r\n") => {
         "Fehler: {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "FFmpeg hat den Testclip nicht erzeugt ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "FTP-Übertragung unvollständig: {bytes}/{total} Byte"
@@ -10744,6 +10966,9 @@ macro_rules! __ui_template_de {
     ("Media found: {0}") => {
         "Medien gefunden: {0}"
     };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "Medienprüfung: Der Inhalt der Datei ({0}) passt nicht zur Dateiendung .{1}"
+    };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "Medienprüfung: Die Ausgabedauer stimmt nicht mit der Quelle überein (Toleranz für frühes Ende {tolerance:.3} s; spätes Ende {0:.3} s)"
     };
@@ -10761,6 +10986,12 @@ macro_rules! __ui_template_de {
     };
     ("Missing value for {flag}") => {
         "Fehlender Wert für {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Unter den neuesten {1} Deno-Releases ist kein stabiles Release von Deno {0}.x; diese Version der Anwendung ist an eine zu alte Deno-Version gebunden"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "Es wurde kein stabiles Release von Deno {0}.x gefunden"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "In der Upstream-Prüfsummendatei wurde keine gültige SHA-256 für {filename} gefunden"
@@ -10893,6 +11124,12 @@ macro_rules! __ui_template_de {
     };
     ("The archived work data could not be restored: {0}") => {
         "Die archivierten Arbeitsdaten konnten nicht wiederhergestellt werden: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "Die Umwandlung des Audios wurde nicht innerhalb von {0} Sekunden abgeschlossen"
+    };
+    ("The audio could not be converted: {0}") => {
+        "Das Audio konnte nicht umgewandelt werden: {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "Die Autostart-Einstellung konnte nicht zurückgesetzt werden: {rollback:#}"
@@ -11043,6 +11280,9 @@ macro_rules! __ui_template_de {
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Der Medienprozess konnte nach der Zuweisung zum Windows-Job-Objekt nicht gestartet werden (NTSTATUS 0x{0:08x})"
+    };
+    ("The media self-test failed: {0}") => {
+        "Der Selbsttest der Medienwerkzeuge ist fehlgeschlagen: {0}"
     };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "Der Registrierungsschlüssel des Native Host konnte nicht erstellt werden (Windows-Fehlercode {status})"
@@ -11239,8 +11479,14 @@ macro_rules! __ui_template_de {
     ("client version {0}") => {
         "Client-Version {0}"
     };
+    ("exit code {0}") => {
+        "Exitcode {0}"
+    };
     ("expected {0}, received {1}") => {
         "erwartet {0}, erhalten {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "ffprobe konnte die Ausgabe nicht lesen ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "der lokale Kanal hat {0} Sekunden lang nicht geantwortet"
@@ -11250,6 +11496,12 @@ macro_rules! __ui_template_de {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "der lokale Kanal wurde {attempts} Mal versucht, letzte Antwort: {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "die Ausgabedatei {0} existiert nicht"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "yt-dlp ist fehlgeschlagen ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Speicherort: {3}\r\n\r\n"
@@ -11280,6 +11532,9 @@ macro_rules! __ui_template_de {
     };
     ("{0} downloads") => {
         "{0} Downloads"
+    };
+    ("{0} is not a file address") => {
+        "{0} ist keine Dateiadresse"
     };
     ("{0} stage: {error:#}") => {
         "{0}-Phase: {error:#}"

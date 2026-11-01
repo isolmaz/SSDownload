@@ -1689,6 +1689,154 @@ fn file_request(url: String, directory: &Path) -> AddRequest {
     }
 }
 
+#[test]
+fn the_size_of_a_result_that_followed_processing_adds_nothing_to_a_quota() {
+    // A download that fetched 110 bytes and converted them into 673 has counted what it received.
+    assert_eq!(uncounted_result_bytes(JobState::Processing, 110, 673), 0);
+    // A download whose last progress report was lost has the rest of its result left to count.
+    assert_eq!(
+        uncounted_result_bytes(JobState::Downloading, 600, 1000),
+        400
+    );
+    assert_eq!(uncounted_result_bytes(JobState::Downloading, 1000, 700), 0);
+}
+
+/// Gives the default queue a quota that is never reached and returns the queue's id.
+fn give_the_default_queue_a_quota(engine: &Engine) -> String {
+    let queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(QueuePolicy {
+            quota: Some(QueueQuota {
+                limit_bytes: 1 << 30,
+                ..Default::default()
+            }),
+            ..queue.clone()
+        })
+        .unwrap();
+    queue.id
+}
+
+fn consumed_quota_bytes(engine: &Engine, queue: &str) -> u64 {
+    let settings = engine.snapshot().settings;
+    settings
+        .queues
+        .iter()
+        .find(|candidate| candidate.id == queue)
+        .and_then(|candidate| candidate.quota.as_ref())
+        .unwrap()
+        .consumed_bytes
+}
+
+#[test]
+fn a_file_download_adds_its_size_to_the_quota_of_its_queue_once() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-quota-{}", Uuid::new_v4()));
+    let body = vec![7u8; 300_000];
+    let server = FileServer::start(vec![("/quota.bin".into(), body.clone(), false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(file_request(server.url("/quota.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+
+    assert_eq!(consumed_quota_bytes(&engine, &queue), body.len() as u64);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Ends a job that waits for its body the way a worker ends it: with `reports`, then a result of
+/// `result_bytes`. Returns the bytes its queue's quota has consumed. A worker's generation is not
+/// visible, so every message goes out for each generation the job can have; the engine ignores
+/// the ones that are not its worker's.
+fn quota_consumed_by_a_job_that_reports(reports: &[TransferProgress], result_bytes: u64) -> u64 {
+    const GENERATIONS: std::ops::RangeInclusive<u64> = 1..=8;
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-quota-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/held.bin".into(), vec![5; 4096], true)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(file_request(server.url("/held.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the worker to wait for the body", || {
+        server
+            .hits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|hit| hit == "/held.bin")
+    });
+    let path = engine
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .path
+        .clone();
+
+    let send = |event| engine.inner.sender.send(Message::Worker(event)).unwrap();
+    for generation in GENERATIONS {
+        for report in reports {
+            send(WorkerEvent::Progress {
+                id: id.clone(),
+                generation,
+                value: report.clone(),
+            });
+        }
+    }
+    for generation in GENERATIONS {
+        send(WorkerEvent::Finished {
+            id: id.clone(),
+            generation,
+            result: Ok(TransferResult {
+                path: path.clone(),
+                bytes: result_bytes,
+                warning: None,
+            }),
+        });
+    }
+    // The engine waits for the real worker to end before it takes the result.
+    server.release();
+    wait_until("the job", || job_state(&engine, &id) == JobState::Completed);
+
+    let consumed = consumed_quota_bytes(&engine, &queue);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    consumed
+}
+
+#[test]
+fn a_job_that_reported_processing_adds_nothing_when_its_larger_result_arrives() {
+    let converting = TransferProgress {
+        downloaded: 110_000,
+        processing: true,
+        ..TransferProgress::default()
+    };
+
+    assert_eq!(
+        quota_consumed_by_a_job_that_reports(&[converting], 673_000),
+        110_000
+    );
+}
+
+#[test]
+fn a_job_that_did_not_report_everything_gets_the_rest_of_its_result_added() {
+    let downloading = TransferProgress {
+        downloaded: 600_000,
+        ..TransferProgress::default()
+    };
+
+    assert_eq!(
+        quota_consumed_by_a_job_that_reports(&[downloading], 1_000_000),
+        1_000_000
+    );
+}
+
 fn shutdown_when_done(queue: &QueuePolicy) -> QueuePolicy {
     QueuePolicy {
         // The countdown is far longer than any test, and the tests cancel it, so
@@ -2793,22 +2941,16 @@ mod retry_budget {
         engine.shutdown();
     }
 
-    /// A source whose `/file` redirects to a signed address that lives `milliseconds` for the
+    /// A source whose `/file` redirects to a signed address that lives as `first` says for the
     /// first request and, for later ones, as `later` says; expired addresses answer 403.
-    fn signed_source(size: u64, milliseconds: u64, later: Validity) -> Server {
+    fn signed_source(size: u64, first: Validity, later: Validity) -> Server {
         Server::start(Config {
             size,
             throttle: Some(16 * MIB),
             signing: Some(Signing {
                 from: "/file".into(),
                 origin: String::new(),
-                validity: vec![
-                    Validity {
-                        lifetime: Duration::from_millis(milliseconds),
-                        requests: usize::MAX,
-                    },
-                    later,
-                ],
+                validity: vec![first, later],
             }),
             expiry: Some(403),
             ..Config::default()
@@ -2827,13 +2969,19 @@ mod retry_budget {
     fn a_redirect_target_that_expires_midway_is_followed_again_and_costs_no_retry() {
         // Five ranges for four connections: the fifth is requested after the first address
         // has expired. With a limit of 0 nothing is retried, so the download only finishes if
-        // asking the source again is not an attempt.
+        // asking the source again is not an attempt. The first address answers its first six
+        // requests (the two that probe the file and the first four ranges), however long they
+        // take to arrive, and the next one, the fifth range, finds it expired; the address the
+        // source gives then never expires, so asking for it once is enough.
         let size = 36 * MIB;
         let server = signed_source(
             size,
-            250,
             Validity {
-                lifetime: Duration::from_millis(250),
+                lifetime: Duration::from_secs(3600),
+                requests: 6,
+            },
+            Validity {
+                lifetime: Duration::from_secs(3600),
                 requests: usize::MAX,
             },
         );
@@ -2857,7 +3005,10 @@ mod retry_budget {
         let size = 36 * MIB;
         let server = signed_source(
             size,
-            250,
+            Validity {
+                lifetime: Duration::from_millis(250),
+                requests: usize::MAX,
+            },
             Validity {
                 lifetime: Duration::ZERO,
                 requests: usize::MAX,
@@ -3303,11 +3454,10 @@ mod holds {
                 (hold.metered, hold.battery_saver),
                 (!battery_saver, battery_saver)
             );
-            // The row names the hold once the worker that was stopped has ended.
+            // The row names the hold from the moment the hold sends it back, while the worker that was
+            // stopped is still ending.
             let notice = hold.notice().unwrap();
-            wait_until("the row to name the hold", || {
-                job(&engine, &id).phase == notice
-            });
+            assert_eq!(job(&engine, &id).phase, notice);
             let started = requests(&server, "/held.bin");
             thread::sleep(SETTLE);
             assert_eq!(job_state(&engine, &id), JobState::Queued);
@@ -3322,6 +3472,112 @@ mod holds {
             server.release();
             wait_until("the download to finish", || {
                 job_state(&engine, &id) == JobState::Completed
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_job_the_hold_stops_names_the_hold_in_every_snapshot_that_shows_it_queued() {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![("/held.bin".into(), vec![5; 4096], true)]);
+            let sensors = FakeSensors::default();
+            let engine = open(&root, &sensors);
+            let id = add(&engine, &server, "/held.bin", &root.join("out"));
+            wait_until("the download to start", || {
+                job_state(&engine, &id).is_active()
+            });
+
+            switch(&sensors, battery_saver, true);
+            // The stopped worker takes a moment to end, and the job is Queued from the stop on: the
+            // snapshots are read every millisecond so that the first one that shows it Queued is read.
+            let mut queued = Vec::new();
+            let mut first = None;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline
+                && first.is_none_or(|first: Instant| first.elapsed() < SETTLE)
+            {
+                let snapshot = engine.snapshot();
+                let row = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+                if row.state == JobState::Queued {
+                    first.get_or_insert_with(Instant::now);
+                    queued.push((row.phase.clone(), snapshot.hold.notice()));
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(!queued.is_empty(), "the hold never sent the job back");
+            for (phase, notice) in &queued {
+                assert_eq!(Some(phase.as_str()), *notice, "a Queued snapshot");
+            }
+
+            switch(&sensors, battery_saver, false);
+            wait_until("the job to run again", || {
+                job_state(&engine, &id).is_active()
+            });
+            server.release();
+            wait_until("the download to finish", || {
+                job_state(&engine, &id) == JobState::Completed
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_job_the_hold_does_not_stop_never_shows_the_hold_text() {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![
+                ("/live.bin".into(), vec![1; 4096], true),
+                ("/now.bin".into(), vec![2; 4096], true),
+                ("/later.bin".into(), vec![3; 4096], true),
+            ]);
+            let sensors = FakeSensors::default();
+            switch(&sensors, battery_saver, true);
+            let engine = open(&root, &sensors);
+            wait_for_hold(&engine, true);
+            let live = add(&engine, &server, "/live.bin", &root.join("out"));
+            mark_as_live_recording(&live);
+            switch(&sensors, battery_saver, false);
+            wait_until("the live recording to start", || {
+                job_state(&engine, &live).is_active()
+            });
+
+            // A running live recording and a job that Start now forced run through the hold; a job
+            // added during it waits.
+            switch(&sensors, battery_saver, true);
+            wait_for_hold(&engine, true);
+            let notice = engine.snapshot().hold.notice().unwrap();
+            let now = add(&engine, &server, "/now.bin", &root.join("out"));
+            let later = add(&engine, &server, "/later.bin", &root.join("out"));
+            engine.start_now(&now).unwrap();
+            let until = Instant::now() + SETTLE;
+            while Instant::now() < until {
+                let snapshot = engine.snapshot();
+                for (name, id) in [("live", &live), ("start now", &now), ("later", &later)] {
+                    let row = snapshot.jobs.iter().find(|job| &job.id == id).unwrap();
+                    if name == "later" {
+                        assert_eq!((row.state, row.phase.as_str()), (JobState::Queued, notice));
+                    } else {
+                        assert_ne!(row.phase, notice, "the {name} job is not held");
+                    }
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(job_state(&engine, &live).is_active());
+            assert!(job_state(&engine, &now).is_active());
+
+            switch(&sensors, battery_saver, false);
+            wait_until("the waiting job to start", || {
+                job_state(&engine, &later).is_active()
+            });
+            server.release();
+            wait_until("every download to finish", || {
+                [&live, &now, &later]
+                    .iter()
+                    .all(|id| job_state(&engine, id) == JobState::Completed)
             });
             engine.shutdown();
             fs::remove_dir_all(root).unwrap();

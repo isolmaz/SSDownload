@@ -393,6 +393,140 @@ fn yt_dlp_policy_disables_user_configuration_and_plugins() {
 }
 
 #[test]
+fn yt_dlp_is_not_started_when_it_cannot_start_ffmpeg_ffprobe_or_deno() {
+    // The paths are canonical and reach yt-dlp as they are, so the verbatim prefix counts toward
+    // the 259 UTF-16 units a program may start from.
+    let path = |units: usize, name: &str| {
+        let folder = units - r"\\?\C:\".len() - 1 - name.len();
+        PathBuf::from(format!(r"\\?\C:\{}\{name}", "t".repeat(folder)))
+    };
+    let start = |deno: &Path, ffmpeg: &Path, ffprobe: &Path| {
+        ensure_helpers_startable(deno, ffmpeg, ffprobe)
+            .map_err(|error| crate::error_codes::code_of(&error).map(|code| code.to_string()))
+    };
+    let refused = Err(Some("SSD-TOL-005".to_string()));
+    let at = |units: [usize; 3]| {
+        start(
+            &path(units[0], "deno.exe"),
+            &path(units[1], "ffmpeg.exe"),
+            &path(units[2], "ffprobe.exe"),
+        )
+    };
+    assert_eq!(at([259, 259, 259]), Ok(()));
+    assert_eq!(at([260, 259, 259]), refused);
+    assert_eq!(at([259, 260, 259]), refused);
+    assert_eq!(at([259, 259, 260]), refused);
+
+    // A character outside the Basic Multilingual Plane is two units.
+    let astral =
+        |path: PathBuf| PathBuf::from(path.to_string_lossy().replacen('t', "\u{1D11E}", 1));
+    assert_eq!(
+        start(
+            &path(259, "deno.exe"),
+            &path(259, "ffmpeg.exe"),
+            &astral(path(259, "ffprobe.exe")),
+        ),
+        refused
+    );
+}
+
+#[test]
+fn a_file_must_hold_the_container_its_extension_names() {
+    // The format names are what ffprobe reports for these containers.
+    const MP4_FAMILY: &str = "mov,mp4,m4a,3gp,3g2,mj2";
+    let check = |format_name: &str, file: &str| {
+        validate_container(
+            &json!({"format": {"format_name": format_name}}),
+            Path::new(file),
+        )
+    };
+    for (format_name, file) in [
+        (MP4_FAMILY, "media.mp4"),
+        (MP4_FAMILY, "media.M4A"),
+        (MP4_FAMILY, "media.mov"),
+        ("matroska,webm", "media.mkv"),
+        ("matroska,webm", "media.webm"),
+        ("mpegts", "media.ts"),
+        ("mp3", "song.mp3"),
+        ("ogg", "song.opus"),
+        ("flac", "song.flac"),
+        // An extension the app does not write is not judged.
+        ("mpegts", "media.bin"),
+        ("mpegts", "media"),
+    ] {
+        check(format_name, file).unwrap_or_else(|error| panic!("{format_name} in {file}: {error}"));
+    }
+    for (format_name, file) in [
+        ("mpegts", "media.mp4"),
+        ("mpegts", "media.m4a"),
+        ("matroska,webm", "media.mp4"),
+        (MP4_FAMILY, "media.mkv"),
+        (MP4_FAMILY, "media.webm"),
+        ("mp3", "media.mp4"),
+    ] {
+        let error = check(format_name, file).expect_err(&format!("{format_name} in {file}"));
+        let message = error.to_string();
+        assert!(
+            message.contains(format_name)
+                && message.contains(&format!(".{}", file.rsplit('.').next().unwrap())),
+            "{message}"
+        );
+    }
+    // Without a format name there is nothing to judge.
+    validate_container(&json!({"format": {}}), Path::new("media.mp4")).unwrap();
+}
+
+#[test]
+fn a_relayed_raw_file_is_placed_without_the_media_tools() {
+    let root = std::env::temp_dir().join(format!("ssdownload-placed-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    // The tools folder is empty: the profile has no media components.
+    let paths = AppPaths {
+        base_dir: root.clone(),
+        database: root.join("queue.sqlite3"),
+        tools_dir: root.join("tools"),
+        download_dir: root.join("Downloads"),
+    };
+    let request = |kind| AddRequest {
+        kind,
+        ..AddRequest::default()
+    };
+    let control = TransferControl::default();
+    let source = root.join("stream-0");
+    let relayed = b"bytes the page served".to_vec();
+
+    fs::write(&source, &relayed).unwrap();
+    let output = root.join("archive.zip");
+    place_browser_file(
+        &paths,
+        &request(DownloadKind::File),
+        &source,
+        &output,
+        &control,
+    )
+    .unwrap();
+    assert_eq!(fs::read(&output).unwrap(), relayed);
+    assert!(!source.exists());
+
+    // A media job needs ffprobe to read the container of what was relayed.
+    fs::write(&source, &relayed).unwrap();
+    let error = place_browser_file(
+        &paths,
+        &request(DownloadKind::Video),
+        &source,
+        &root.join("clip.mp4"),
+        &control,
+    )
+    .unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::TOL_001)
+    );
+    assert!(source.exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn media_publication_moves_only_the_final_file_out_of_private_workspace() {
     let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
@@ -1421,21 +1555,707 @@ fn every_ffmpeg_input_carries_its_own_protocol_whitelist() {
 fn the_processing_state_comes_from_the_tool_stage_not_the_phase_text() {
     let mut seen = Vec::new();
     let mut completed = HashSet::new();
-    let (mut last_path, mut seen_bytes) = (None, 0);
+    let mut last_path = None;
+    let mut gauge = DownloadGauge::new(0);
     for line in [
-        format!("{PROGRESS_PREFIX}downloading	100	1000	50	9"),
-        format!("{PROGRESS_PREFIX}finished	1000	1000	0	0"),
+        format!("{PROGRESS_PREFIX}downloading	100	1000"),
+        format!("{PROGRESS_PREFIX}finished	1000	1000"),
         format!("{POSTPROCESS_PREFIX}started"),
     ] {
         process::handle_machine_line(
             &line,
+            Instant::now(),
             &mut |value| seen.push(value.processing),
             &mut completed,
             &mut last_path,
-            &mut seen_bytes,
+            &mut gauge,
         );
     }
     assert_eq!(seen, [false, true, true]);
+}
+
+/// Plays a tool's progress lines into the monitor's gauge on a clock the test moves, waking the
+/// monitor every 100 ms between the lines as its loop does.
+struct Replay {
+    origin: Instant,
+    now: Duration,
+    gauge: DownloadGauge,
+    completed: HashSet<PathBuf>,
+    last_path: Option<PathBuf>,
+    events: Vec<(Duration, TransferProgress)>,
+}
+
+fn ms(value: u64) -> Duration {
+    Duration::from_millis(value)
+}
+
+impl Replay {
+    fn new() -> Self {
+        Self::after_files(0)
+    }
+
+    /// A run of the tool that starts with `finished` bytes of files finished before it.
+    fn after_files(finished: u64) -> Self {
+        let gauge = DownloadGauge::new(finished);
+        Self {
+            origin: Instant::now(),
+            now: Duration::ZERO,
+            gauge,
+            completed: HashSet::new(),
+            last_path: None,
+            events: Vec::new(),
+        }
+    }
+
+    fn wait_until(&mut self, to: Duration) {
+        while self.now + ms(100) <= to {
+            self.now += ms(100);
+            if let Some(update) = self.gauge.repeat(self.origin + self.now) {
+                self.events.push((self.now, update));
+            }
+        }
+    }
+
+    fn line(&mut self, at: Duration, fields: &str) {
+        self.feed(at, &format!("{PROGRESS_PREFIX}{fields}"));
+    }
+
+    fn marker(&mut self, at: Duration, status: &str) {
+        self.feed(at, &format!("{POSTPROCESS_PREFIX}{status}"));
+    }
+
+    fn feed(&mut self, at: Duration, line: &str) {
+        self.wait_until(at);
+        self.now = self.now.max(at);
+        let events = &mut self.events;
+        process::handle_machine_line(
+            line,
+            self.origin + at,
+            &mut |update| events.push((at, update)),
+            &mut self.completed,
+            &mut self.last_path,
+            &mut self.gauge,
+        );
+    }
+
+    /// One line every 100 ms for `seconds` at `rate` bytes a second, counting on from `start`.
+    fn flow(&mut self, from: Duration, seconds: u64, rate: u64, start: u64, total: u64) {
+        for step in 1..=seconds * 10 {
+            self.line(
+                from + ms(step * 100),
+                &format!("downloading\t{}\t{total}", start + step * rate / 10),
+            );
+        }
+    }
+}
+
+/// The lines are what yt-dlp 2026.10.26 printed (their offset in ms from the first line) for 300
+/// HLS fragments over 4 connections, from the start, the middle and the end of the run. The
+/// counts of its download threads reach the line out of order (36863840, then 36860768). Its
+/// own speed on the last line was 10323959.
+#[test]
+fn the_speed_follows_the_bytes_of_recorded_progress_lines_whatever_their_order() {
+    let recorded = [
+        (0, "downloading\t1024\t37200000.0"),
+        (1, "downloading\t3072\t37507200.0"),
+        (2, "downloading\t7168\t38121600.0"),
+        (1767, "downloading\t18235168\t37206227.027027026"),
+        (1768, "downloading\t18243360\t37214529.72972973"),
+        (3578, "downloading\t36828000\t37325252.52525253"),
+        (3582, "downloading\t36829024\t37200000.0"),
+        (3583, "downloading\t36831072\t37201030.872483216"),
+        (3585, "downloading\t36835168\t37203092.61744966"),
+        (3586, "downloading\t36843360\t37207216.10738255"),
+        (3589, "downloading\t36844384\t37215463.087248325"),
+        (3590, "downloading\t36861792\t37232987.91946309"),
+        (3591, "downloading\t36863840\t37234018.79194631"),
+        (3592, "downloading\t36860768\t37216493.95973154"),
+        (3593, "downloading\t36869984\t37238142.281879194"),
+        (3594, "downloading\t36902752\t37242265.77181208"),
+        (3596, "downloading\t36910944\t37275253.691275164"),
+        (3597, "downloading\t36970432\t37283500.67114094"),
+        (3597, "downloading\t36986816\t37343387.91946309"),
+        (3599, "downloading\t36865888\t37236080.536912754"),
+        (3600, "downloading\t37019584\t37359881.87919463"),
+        (3600, "downloading\t37023680\t37392869.798657715"),
+        (3603, "downloading\t37031872\t37396993.2885906"),
+        (3605, "downloading\t37091360\t37405240.26845638"),
+        (3605, "downloading\t37107744\t37339826.08695652"),
+        (3607, "downloading\t37091360\t37465127.51677852"),
+        (3607, "downloading\t37140512\t37356264.88294314"),
+        (3608, "downloading\t37200000\t37389142.47491639"),
+        (3610, "downloading\t37200000\t37448829.431438126"),
+        (3612, "downloading\t37200000\t37324000.0"),
+    ];
+    let mut replay = Replay::new();
+    for (at, fields) in recorded {
+        replay.line(ms(at), fields);
+    }
+    let last = &replay.events.last().unwrap().1;
+    assert_eq!(last.downloaded, 37_200_000);
+    assert!(
+        last.speed.abs_diff(10_323_959) < 10_323_959 / 20,
+        "{}",
+        last.speed
+    );
+    assert_eq!(last.eta, Some(0));
+}
+
+/// A source that answers 429 after a few seconds of service makes yt-dlp wait out its retries:
+/// 100 segments of 124000 bytes arrive within 1.5 s, then nothing for 17 s. The tool's own speed
+/// and time left read 0 and unknown at the first line of every burst.
+#[test]
+fn a_source_that_sends_in_bursts_keeps_a_speed_and_a_time_left_between_them() {
+    const BURST: u64 = 12_400_000;
+    let mut replay = Replay::new();
+    for burst in 0..8 {
+        let start = ms(burst * 18_500);
+        for step in 1..=15 {
+            replay.line(
+                start + ms(step * 100),
+                &format!(
+                    "downloading\t{}\t154318396",
+                    burst * BURST + step * BURST / 15
+                ),
+            );
+        }
+    }
+    replay.wait_until(ms(8 * 18_500));
+
+    let average = BURST as f64 / 18.5;
+    let later: Vec<_> = replay
+        .events
+        .iter()
+        .filter(|(at, _)| *at >= ms(40_000))
+        .collect();
+    assert!(later.len() > 100, "{}", later.len());
+    for (at, update) in later {
+        let speed = update.speed as f64;
+        assert!(
+            speed > 0.75 * average && speed < 1.4 * average,
+            "{at:?}: {update:?}"
+        );
+        assert!(update.eta.is_some(), "{at:?}: {update:?}");
+    }
+}
+
+#[test]
+fn a_download_that_stops_reads_a_falling_speed_that_ends_at_zero() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 10, 2_000_000, 0, 100_000_000);
+    replay.wait_until(ms(100_000));
+
+    let silent: Vec<_> = replay
+        .events
+        .iter()
+        .filter(|(at, _)| *at > ms(10_000))
+        .collect();
+    assert!(silent.len() >= 85, "{}", silent.len());
+    assert!(
+        silent
+            .windows(2)
+            .all(|pair| pair[1].1.speed <= pair[0].1.speed),
+        "the speed rose while no byte arrived"
+    );
+    let at = |seconds: u64| {
+        silent
+            .iter()
+            .find(|(at, _)| *at >= ms(10_000 + seconds * 1000))
+            .unwrap()
+            .1
+            .clone()
+    };
+    assert!(at(2).speed > 1_000_000 && at(2).eta.is_some());
+    assert!(at(30).speed > 0);
+    let end = &silent.last().unwrap().1;
+    assert_eq!((end.speed, end.eta), (0, None));
+}
+
+#[test]
+fn a_steady_download_follows_a_change_of_its_rate_within_seconds() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 30, 1_000_000, 0, 100_000_000);
+    replay.flow(ms(30_000), 10, 250_000, 30_000_000, 100_000_000);
+
+    let (_, update) = replay
+        .events
+        .iter()
+        .find(|(at, _)| *at >= ms(38_000))
+        .unwrap();
+    assert!(update.speed.abs_diff(250_000) < 25_000, "{}", update.speed);
+}
+
+#[test]
+fn the_next_stream_of_a_download_is_measured_from_its_own_start() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 5, 1_000_000, 0, 5_000_000);
+    replay.line(ms(5_000), "finished\t5000000\t5000000");
+    replay.flow(ms(5_000), 3, 1_000_000, 0, 3_000_000);
+
+    let (_, update) = replay.events.last().unwrap();
+    assert!(!update.processing);
+    assert!(
+        update.speed.abs_diff(1_000_000) < 100_000,
+        "{}",
+        update.speed
+    );
+}
+
+#[test]
+fn the_time_left_of_the_next_stream_counts_the_bytes_of_the_stream_before() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 5, 1_000_000, 0, 5_000_000);
+    replay.line(ms(5_000), "finished\t5000000\t5000000");
+    replay.flow(ms(5_000), 3, 1_000_000, 0, 10_000_000);
+
+    let (_, update) = replay.events.last().unwrap();
+    assert_eq!(
+        (update.downloaded, update.total),
+        (8_000_000, Some(15_000_000))
+    );
+    let left = update.eta.unwrap();
+    assert!((6..=8).contains(&left), "{left}");
+}
+
+/// A download that starts over inside one run (a server that ignores the range of a resumed
+/// request) counts from zero without a finished stream.
+#[test]
+fn a_download_that_starts_over_is_measured_afresh() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 100, 1_000_000, 0, 400_000_000);
+    replay.flow(ms(100_000), 70, 1_000_000, 0, 400_000_000);
+
+    assert_one_megabyte_a_second_after(&replay, ms(100_000));
+}
+
+/// The size of the playlist items finished before it is part of the displayed count but not of
+/// the stream's own.
+#[test]
+fn a_playlist_item_that_starts_over_is_measured_afresh() {
+    let mut replay = Replay::after_files(300_000_000);
+    replay.flow(Duration::ZERO, 100, 1_000_000, 0, 400_000_000);
+    replay.flow(ms(100_000), 70, 1_000_000, 0, 400_000_000);
+
+    assert_one_megabyte_a_second_after(&replay, ms(100_000));
+}
+
+fn assert_one_megabyte_a_second_after(replay: &Replay, restart: Duration) {
+    for seconds in [10, 30, 50, 70] {
+        let (_, update) = replay
+            .events
+            .iter()
+            .find(|(at, _)| *at >= restart + ms(seconds * 1000))
+            .unwrap();
+        assert!(
+            update.speed.abs_diff(1_000_000) < 100_000 && update.eta.is_some(),
+            "{seconds} s after the restart: {update:?}"
+        );
+    }
+}
+
+/// A fragment retry takes a few MB off the count of a large download: that is no restart, so
+/// the measurement goes on.
+#[test]
+fn a_drop_of_a_few_megabytes_in_a_large_count_is_not_a_restart() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 100, 1_000_000, 0, 400_000_000);
+    replay.line(ms(100_100), "downloading\t95000000\t400000000");
+    replay.flow(ms(100_100), 10, 1_000_000, 95_000_000, 400_000_000);
+
+    let (_, update) = replay
+        .events
+        .iter()
+        .find(|(at, _)| *at >= ms(100_600))
+        .unwrap();
+    assert!(update.speed > 500_000 && update.eta.is_some(), "{update:?}");
+}
+
+/// Counts of the tool's threads that arrive late fall behind the highest one by at most a few
+/// blocks; early in a download that can be more than half of it.
+#[test]
+fn a_late_count_early_in_a_download_does_not_restart_the_measurement() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 2, 200_000, 0, 10_000_000);
+    replay.line(ms(2_050), "downloading\t50000\t10000000");
+    replay.flow(ms(2_050), 8, 200_000, 400_000, 10_000_000);
+
+    let (_, update) = replay
+        .events
+        .iter()
+        .find(|(at, _)| *at >= ms(2_500))
+        .unwrap();
+    assert!(update.speed.abs_diff(200_000) < 20_000, "{}", update.speed);
+}
+
+/// The lines are what yt-dlp 2026.10.26 printed (their offset in ms from the first line) for a
+/// master playlist with a video and a separate audio playlist: 326932 bytes of video, then
+/// 110168 bytes of audio, merged by FFmpeg into a file of 387271 bytes. Each stream counts from
+/// zero, and the counts of the tool's threads arrive out of order (112384, then 86056).
+const VIDEO_THEN_AUDIO: [(u64, &str); 33] = [
+    (0, "downloading\t1024\t313584.0"),
+    (1, "downloading\t3072\t319728.0"),
+    (2, "downloading\t7168\t332016.0"),
+    (3, "downloading\t15360\t356592.0"),
+    (4, "downloading\t31744\t405744.0"),
+    (6, "downloading\t32768\t526608.0"),
+    (12, "downloading\t85032\t833424.0"),
+    (12, "downloading\t110336\t852480.0"),
+    (12, "downloading\t112384\t991392.0"),
+    (13, "downloading\t86056\t828288.0"),
+    (15, "downloading\t116480\t1003680.0"),
+    (17, "downloading\t126720\t520272.0"),
+    (21, "downloading\t171776\t416816.0"),
+    (23, "downloading\t216200\t495888.0"),
+    (28, "downloading\t216200\t542192.0"),
+    (34, "downloading\t217224\t326668.80000000005"),
+    (40, "downloading\t273248\t365990.4"),
+    (43, "downloading\t326932\t430411.19999999995"),
+    (45, "downloading\t326932\t381640.0"),
+    (72, "finished\t326932\t326932"),
+    (102, "downloading\t1024\t126336.0"),
+    (103, "downloading\t3072\t133504.0"),
+    (107, "downloading\t16384\t183680.0"),
+    (113, "downloading\t34432\t361508.0"),
+    (117, "downloading\t67004\t595364.0"),
+    (119, "downloading\t40380\t390180.0"),
+    (120, "downloading\t69880\t298340.0"),
+    (123, "downloading\t72568\t211437.3333333333"),
+    (131, "downloading\t73508\t102911.2"),
+    (143, "downloading\t107104\t146230.0"),
+    (145, "downloading\t110168\t125528.0"),
+    (147, "downloading\t110168\t128592.0"),
+    (171, "finished\t110168\t110168"),
+];
+
+#[test]
+fn the_count_of_a_job_with_two_streams_only_rises_and_ends_at_their_bytes() {
+    let mut replay = Replay::new();
+    for (at, fields) in VIDEO_THEN_AUDIO {
+        replay.line(ms(at), fields);
+    }
+
+    let counts: Vec<_> = replay
+        .events
+        .iter()
+        .map(|(_, update)| update.downloaded)
+        .collect();
+    assert!(
+        counts.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{counts:?}"
+    );
+    assert_eq!(counts.last(), Some(&(326_932 + 110_168)));
+}
+
+#[test]
+fn the_size_of_a_job_with_two_streams_adds_up_the_streams() {
+    let mut replay = Replay::new();
+    for (at, fields) in VIDEO_THEN_AUDIO {
+        replay.line(ms(at), fields);
+    }
+
+    let (_, update) = replay
+        .events
+        .iter()
+        .find(|(_, update)| update.downloaded == 326_932 + 73_508)
+        .unwrap();
+    assert_eq!(update.total, Some(326_932 + 102_911));
+}
+
+#[test]
+fn a_post_processor_marker_keeps_the_count_of_the_job() {
+    let mut replay = Replay::after_files(1_000);
+    for (at, fields) in VIDEO_THEN_AUDIO {
+        replay.line(ms(at), fields);
+    }
+    replay.marker(ms(180), "started");
+
+    let (_, update) = replay.events.last().unwrap();
+    assert!(update.processing);
+    assert_eq!(update.downloaded, 1_000 + 326_932 + 110_168);
+}
+
+/// Runs a PowerShell script as the tool and returns when each progress update reached the
+/// monitor's callback.
+fn updates_from_script(
+    script: &str,
+    live: Option<&mut LiveRecordingGauge>,
+) -> Vec<(Instant, TransferProgress)> {
+    let args = vec![
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-Command".into(),
+        script.to_owned(),
+    ];
+    let mut running =
+        RunningDownload::spawn_with_proxy(Path::new("powershell.exe"), &args, b"", None).unwrap();
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| updates.push((Instant::now(), update)),
+        &mut HashSet::new(),
+        &mut None,
+        live,
+    )
+    .unwrap();
+    assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
+    updates
+}
+
+/// Five lines 300 ms apart, then 3 s of silence before the tool exits.
+const SLOW_THEN_SILENT: &str = "$p = \"SSDOWNLOAD_PROGRESS`tdownloading`t\"; \
+    foreach ($i in 1..5) { [Console]::Out.WriteLine(\"$p$($i * 500000)`t10000000\"); \
+    [Console]::Out.Flush(); Start-Sleep -Milliseconds 300 }; Start-Sleep -Seconds 3";
+
+#[test]
+fn lines_a_tool_writes_slowly_reach_the_callback_as_they_are_written() {
+    let updates = updates_from_script(SLOW_THEN_SILENT, None);
+
+    let arrival = |downloaded| {
+        updates
+            .iter()
+            .find(|(_, update)| update.downloaded == downloaded)
+            .unwrap()
+            .0
+    };
+    let spread = arrival(2_500_000).duration_since(arrival(500_000));
+    assert!(spread >= Duration::from_millis(1000), "{spread:?}");
+}
+
+#[test]
+fn a_silent_tool_does_not_freeze_the_progress() {
+    let updates = updates_from_script(SLOW_THEN_SILENT, None);
+
+    let last_line = updates
+        .iter()
+        .position(|(_, update)| update.downloaded == 2_500_000)
+        .unwrap();
+    let repeats: Vec<_> = updates[last_line + 1..].iter().collect();
+    assert!(repeats.len() >= 2, "{}", repeats.len());
+    let silence = repeats
+        .last()
+        .unwrap()
+        .0
+        .duration_since(updates[last_line].0);
+    assert!(silence >= Duration::from_millis(1800), "{silence:?}");
+    for (_, update) in &repeats {
+        assert_eq!(update.downloaded, 2_500_000);
+        assert!(update.speed > 0 && update.eta.is_some(), "{update:?}");
+    }
+    assert!(repeats
+        .windows(2)
+        .all(|pair| pair[1].1.speed <= pair[0].1.speed));
+}
+
+fn tool_running(script: &str) -> RunningDownload {
+    let args = vec![
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-Command".into(),
+        script.to_owned(),
+    ];
+    RunningDownload::spawn_with_proxy(Path::new("powershell.exe"), &args, b"", None).unwrap()
+}
+
+/// yt-dlp prints its post-processor markers on stderr, because --print keeps stdout for its
+/// own lines.
+#[test]
+fn a_post_processor_marker_on_stderr_reaches_the_progress() {
+    let mut running =
+        tool_running("[Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\")");
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| updates.push(update),
+        &mut HashSet::new(),
+        &mut None,
+        None,
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
+    let phase = crate::i18n::ui("FFmpeg ile işleniyor", "Processing with FFmpeg");
+    assert!(
+        updates
+            .iter()
+            .any(|update| update.processing && update.phase == phase),
+        "{updates:?}"
+    );
+}
+
+/// FFmpeg prints nothing while it merges or converts a large file, and opens no connection.
+#[test]
+fn a_silent_post_processor_is_stalled_by_its_own_limit_not_the_transfer_limit() {
+    let mut running = tool_running(
+        "[Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); \
+         Start-Sleep -Milliseconds 500; \
+         [Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\"); \
+         [Console]::Error.Flush(); Start-Sleep -Seconds 20",
+    );
+    // The limits count from the moment the tool is known to run.
+    running.lines.recv_timeout(Duration::from_secs(30)).unwrap();
+    running.stall_limit = Duration::from_secs(4);
+    running.postprocess_stall_limit = Duration::from_secs(8);
+
+    let began = Instant::now();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |_| {},
+        &mut HashSet::new(),
+        &mut None,
+        None,
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, MonitorOutcome::Stalled));
+    assert!(
+        began.elapsed() >= Duration::from_secs(6),
+        "{:?}",
+        began.elapsed()
+    );
+}
+
+/// The tool's own counter of a live job covers one stream: it neither alternates with the size
+/// of the recording nor is repeated while the tool is silent.
+#[test]
+fn a_live_recording_reports_only_its_own_size() {
+    let folder = recording_folder();
+    let mut recording = LiveRecordingGauge::new(&folder.0);
+
+    let updates = updates_from_script(SLOW_THEN_SILENT, Some(&mut recording));
+
+    assert!(updates.len() >= 3, "{}", updates.len());
+    for (_, update) in &updates {
+        assert_eq!(update.downloaded, 2048, "{update:?}");
+    }
+}
+
+/// The tool post-processes a recording that has ended: its markers report the job as processing,
+/// and the recording's size must not take the state back to downloading every second.
+#[test]
+fn a_live_recording_that_the_tool_post_processes_stays_in_processing() {
+    let folder = recording_folder();
+    let mut recording = LiveRecordingGauge::new(&folder.0);
+    let mut running = tool_running(
+        "[Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\"); \
+         [Console]::Error.Flush(); Start-Sleep -Seconds 3",
+    );
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| updates.push(update),
+        &mut HashSet::new(),
+        &mut None,
+        Some(&mut recording),
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
+    let processing = updates.iter().position(|update| update.processing).unwrap();
+    let after = &updates[processing..];
+    assert!(after.iter().all(|update| update.processing), "{after:?}");
+}
+
+const LIVE_TOOL_LINE: &str = "SSDOWNLOAD_PROGRESS\tdownloading\t9999999\t10000000";
+
+fn recording_folder() -> crate::test_http::TempDir {
+    let folder = crate::test_http::TempDir::new("live-recording");
+    fs::write(folder.0.join("media.mp4.part"), vec![0u8; 2048]).unwrap();
+    folder
+}
+
+/// A tool that has exited already, so that the monitor's exit check finds it on its first pass.
+fn exited_tool() -> RunningDownload {
+    let args = vec!["/C".into(), "exit 0".into()];
+    let mut running =
+        RunningDownload::spawn_with_proxy(Path::new("cmd.exe"), &args, b"", None).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while running.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the tool never exited");
+        thread::sleep(Duration::from_millis(20));
+    }
+    running
+}
+
+/// What the monitor reports for `running` as a live recording of a folder that holds 2048
+/// bytes; `after_update` runs on the monitor's thread after each update.
+fn live_updates(
+    mut running: RunningDownload,
+    mut after_update: impl FnMut(),
+) -> Vec<TransferProgress> {
+    let folder = recording_folder();
+    let mut recording = LiveRecordingGauge::new(&folder.0);
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| {
+            updates.push(update);
+            after_update();
+        },
+        &mut HashSet::new(),
+        &mut None,
+        Some(&mut recording),
+    )
+    .unwrap();
+    assert!(matches!(outcome, MonitorOutcome::Exited(_)));
+    assert!(!updates.is_empty());
+    for update in &updates {
+        assert_eq!(update.downloaded, 2048, "{update:?}");
+    }
+    updates
+}
+
+/// A line that waits in the queue when the monitor starts is read by the drain at the top of
+/// its loop.
+#[test]
+fn a_live_progress_line_in_the_queue_is_not_reported() {
+    let mut running = exited_tool();
+    let (sender, lines) = mpsc::sync_channel(8);
+    sender.send(LIVE_TOOL_LINE.into()).unwrap();
+    running.lines = lines;
+
+    live_updates(running, || {});
+}
+
+/// A line that arrives while the monitor reports, after it has read the queue and before it
+/// finds that the tool exited, is read by the drain after the exit.
+#[test]
+fn a_live_progress_line_that_arrives_before_the_exit_check_is_not_reported() {
+    let mut running = exited_tool();
+    let (sender, lines) = mpsc::sync_channel(8);
+    running.lines = lines;
+    let mut sent = false;
+
+    live_updates(running, || {
+        if !std::mem::replace(&mut sent, true) {
+            sender.send(LIVE_TOOL_LINE.into()).unwrap();
+        }
+    });
+}
+
+/// A line that arrives while the monitor waits for the tool's workers is read by the drain
+/// after them.
+#[test]
+fn a_live_progress_line_that_arrives_while_the_workers_are_joined_is_not_reported() {
+    let mut running = exited_tool();
+    let (sender, lines) = mpsc::sync_channel(8);
+    running.lines = lines;
+    running.stdin_thread = Some(thread::spawn(move || {
+        thread::sleep(Duration::from_millis(500));
+        sender.send(LIVE_TOOL_LINE.into()).unwrap();
+        Ok(())
+    }));
+
+    live_updates(running, || {});
 }
 
 #[test]
@@ -1469,6 +2289,19 @@ fn a_failure_is_classified_alike_in_every_interface_language() {
 }
 
 #[test]
+fn an_ffmpeg_progress_report_gives_the_output_time_of_its_out_time_us_lines() {
+    // A block of FFmpeg 8.1's `-progress pipe:1` report; `out_time_ms` is in microseconds too.
+    let block = "bitrate= 152.5kbits/s\ntotal_size=572688\nout_time_us=30037333\n\
+                 out_time_ms=30037333\nout_time=00:00:30.037333\ndup_frames=0\n\
+                 drop_frames=0\nspeed= 132x\nprogress=end";
+    let times = block.lines().filter_map(reported_time).collect::<Vec<_>>();
+    assert_eq!(times, [Duration::from_micros(30_037_333)]);
+    // Before the first output, and while the first timestamps lie before zero.
+    assert_eq!(reported_time("out_time_us=N/A"), None);
+    assert_eq!(reported_time("out_time_us=-23220"), None);
+}
+
+#[test]
 fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
     let lines: Vec<_> = process::cut_lines("short\nabcdefghij\nlast".as_bytes(), 6)
         .map(Result::unwrap)
@@ -1480,5 +2313,324 @@ fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
             ("abcdef".to_string(), true),
             ("last".to_string(), false)
         ]
+    );
+}
+
+#[test]
+fn the_source_gives_the_lengths_that_can_confirm_a_stream() {
+    let lengths = |edit: &dyn Fn(&mut MediaInfo)| {
+        let mut info = MediaInfo {
+            duration: Some(10.04),
+            ..MediaInfo::default()
+        };
+        edit(&mut info);
+        source_lengths(&AddRequest::default(), &info)
+    };
+    let both = |video: &[f64], audio: &[f64]| SourceLengths {
+        video: video.to_vec(),
+        audio: audio.to_vec(),
+    };
+
+    assert_eq!(lengths(&|_| {}), both(&[10.04], &[10.04]));
+    // A source duration without playlist lengths, or with an unusable one, gives none.
+    assert_eq!(lengths(&|info| info.duration = None), both(&[], &[]));
+    assert_eq!(lengths(&|info| info.duration = Some(0.0)), both(&[], &[]));
+    assert_eq!(
+        lengths(&|info| info.duration = Some(f64::NAN)),
+        both(&[], &[])
+    );
+    // The playlists' lengths are given for their own kind and replace the duration there, the
+    // tolerance the source has is no length.
+    assert_eq!(
+        lengths(&|info| {
+            info.duration_tolerance = Some(2.25);
+            info.declared_video_durations = vec![10.54];
+            info.declared_audio_durations = vec![10.0, 0.0, f64::NAN, 9.34];
+        }),
+        both(&[10.54], &[10.0, 9.34])
+    );
+    assert_eq!(
+        lengths(&|info| info.declared_video_durations = vec![10.54]),
+        both(&[10.54], &[10.04])
+    );
+    assert_eq!(
+        lengths(&|info| info.is_live = true),
+        SourceLengths::default()
+    );
+    let playlist = AddRequest {
+        playlist: true,
+        ..AddRequest::default()
+    };
+    let info = MediaInfo {
+        duration: Some(10.04),
+        ..MediaInfo::default()
+    };
+    assert_eq!(source_lengths(&playlist, &info), SourceLengths::default());
+}
+
+#[test]
+fn a_stream_is_confirmed_by_its_own_end_not_by_the_ends_of_the_others() {
+    let stream = |index: u64, kind: &str, start: f64, duration: f64| {
+        json!({
+            "index": index,
+            "codec_type": kind,
+            "start_time": format!("{start:.6}"),
+            "duration": format!("{duration:.6}"),
+        })
+    };
+    let rounded = |stop: Option<f64>| stop.map(|stop| (stop * 1000.0).round() / 1000.0);
+    let stops_in = |probe: Value, lengths: &SourceLengths| -> Vec<Option<f64>> {
+        decoded_streams(&probe, lengths)
+            .iter()
+            .map(|stream| rounded(stream.stop))
+            .collect()
+    };
+    let same = |length: f64| SourceLengths {
+        video: vec![length],
+        audio: vec![length],
+    };
+    let stops = |streams: Vec<Value>, lengths: &SourceLengths| {
+        stops_in(json!({ "streams": streams }), lengths)
+    };
+
+    // The video is complete; the audio ends 0.7 s before it, which can be a truncated download.
+    let video_and_audio = vec![stream(0, "video", 0.0, 10.0), stream(1, "audio", 0.0, 9.3)];
+    assert_eq!(
+        stops(video_and_audio.clone(), &same(10.04)),
+        [Some(9.5), None]
+    );
+    // Within half a second of the source's length, the audio is complete as well.
+    assert_eq!(
+        stops(
+            vec![stream(0, "video", 0.0, 10.0), stream(1, "audio", 0.0, 9.6)],
+            &same(10.04)
+        ),
+        [Some(9.5), Some(9.1)]
+    );
+    // Nothing is left out where the source gives no length.
+    assert_eq!(
+        stops(video_and_audio.clone(), &SourceLengths::default()),
+        [None, None]
+    );
+    // A length in whole seconds confirms nothing, however close the stream ends to it.
+    assert_eq!(stops(video_and_audio.clone(), &same(10.0)), [None, None]);
+    // Each kind is held to its own playlist: the audio playlist declares 9.34 s.
+    let own = SourceLengths {
+        video: vec![10.04],
+        audio: vec![9.34],
+    };
+    assert_eq!(stops(video_and_audio.clone(), &own), [Some(9.5), Some(8.8)]);
+    // Whole seconds declared for the audio confirm nothing, and the video's length is not the
+    // audio's.
+    let rounded_audio = SourceLengths {
+        video: vec![10.04],
+        audio: vec![9.0],
+    };
+    assert_eq!(stops(video_and_audio, &rounded_audio), [Some(9.5), None]);
+    // The longest length of the kind holds a stream. A kind can list the lengths of several
+    // playlists, and a stream that was cut short is not confirmed by a shorter one of them.
+    let several = SourceLengths {
+        video: vec![9.04],
+        audio: vec![9.04, 10.04],
+    };
+    let cut_short = vec![stream(0, "video", 0.0, 9.0), stream(1, "audio", 0.0, 8.98)];
+    assert_eq!(stops(cut_short.clone(), &several), [Some(8.5), None]);
+    let own_playlist = SourceLengths {
+        video: vec![9.04],
+        audio: vec![9.04],
+    };
+    assert_eq!(stops(cut_short, &own_playlist), [Some(8.5), Some(8.48)]);
+    // A whole-second longest length confirms nothing, a fractional one far from the stream does
+    // not hide anything, and a stream that reaches the longest one is confirmed.
+    let rounded_longest = SourceLengths {
+        video: vec![600.5, 601.0],
+        audio: vec![600.5, 601.0],
+    };
+    assert_eq!(
+        stops(vec![stream(0, "video", 0.0, 600.2)], &rounded_longest),
+        [None]
+    );
+    let two = SourceLengths {
+        video: vec![10.0, 600.5],
+        audio: vec![10.0, 600.5],
+    };
+    assert_eq!(stops(vec![stream(0, "video", 0.0, 9.9)], &two), [None]);
+    assert_eq!(
+        stops(vec![stream(0, "video", 0.0, 600.2)], &two),
+        [Some(599.7)]
+    );
+    // Ends count from the earliest audio or video start; subtitles and data are not decoded.
+    assert_eq!(
+        stops(
+            vec![
+                stream(0, "video", 1.4, 10.0),
+                stream(1, "audio", 2.4, 8.896),
+                stream(2, "subtitle", 1.4, 10.0),
+            ],
+            &same(10.04)
+        ),
+        [Some(9.5), Some(9.396)]
+    );
+    // Decoding is counted from the start of the container. A subtitle that starts before the
+    // video and audio puts that start before them, and every stop lies that much later.
+    assert_eq!(
+        stops_in(
+            json!({
+                "format": { "start_time": "0.000000" },
+                "streams": [
+                    stream(0, "video", 0.8, 10.0),
+                    stream(1, "audio", 0.8, 9.9),
+                    stream(2, "subtitle", 0.0, 0.5),
+                ],
+            }),
+            &same(10.04)
+        ),
+        [Some(10.3), Some(10.2)]
+    );
+    // A container start after the first stream is not used.
+    assert_eq!(
+        stops_in(
+            json!({
+                "format": { "start_time": "1.000000" },
+                "streams": [stream(0, "video", 0.5, 10.0)],
+            }),
+            &same(10.04)
+        ),
+        [Some(9.5)]
+    );
+    // A stream of a second or less is decoded in full; one just over it is not.
+    assert_eq!(
+        stops(vec![stream(0, "video", 0.0, 1.0)], &same(1.04)),
+        [None]
+    );
+    assert_eq!(
+        stops(vec![stream(0, "video", 0.0, 1.2)], &same(1.54)),
+        [Some(0.7)]
+    );
+    // A stream without a length is decoded in full.
+    assert_eq!(
+        stops(
+            vec![json!({ "index": 0, "codec_type": "audio" })],
+            &same(10.04)
+        ),
+        [None]
+    );
+}
+
+#[test]
+fn a_matroska_stream_tag_is_the_end_of_the_stream_not_its_length() {
+    let tagged = |start: &str, tag: &str| {
+        stream_time_span(&json!({
+            "start_time": start,
+            "tags": { "DURATION": tag },
+        }))
+    };
+
+    // Audio that starts 1 s late and ends at 11 s in a file whose video runs from 0 to 11 s.
+    assert_eq!(tagged("1.000000", "00:00:11.000000000"), Some((1.0, 11.0)));
+    assert_eq!(tagged("0.000000", "00:00:11.000000000"), Some((0.0, 11.0)));
+    assert_eq!(tagged("11.000000", "00:00:11.000000000"), None);
+    // A duration the stream carries itself is a length and wins over the tag.
+    assert_eq!(
+        stream_time_span(&json!({
+            "start_time": "1.000000",
+            "duration": "9.000000",
+            "tags": { "DURATION": "00:00:11.000000000" },
+        })),
+        Some((1.0, 10.0))
+    );
+}
+
+#[test]
+fn every_stream_is_decoded_up_to_half_a_second_before_its_own_end() {
+    let stream = |index, stop| DecodedStream { index, stop };
+    let args = |streams: &[DecodedStream], from: f64, window: Option<f64>| {
+        decode_outputs(streams, from, window).join(" ")
+    };
+
+    // No stream is confirmed: one output for all audio and video, as long as the section.
+    let unconfirmed = [stream(0, None), stream(1, None)];
+    assert_eq!(
+        args(&unconfirmed, 8.0, Some(2.0)),
+        "-t 2.000 -map 0:v? -map 0:a? -f null -"
+    );
+    assert_eq!(
+        args(&unconfirmed, 0.0, None),
+        "-map 0:v? -map 0:a? -f null -"
+    );
+
+    // Both are confirmed: the video stops at 9.5 s and the audio at 8.8 s.
+    let both = [stream(0, Some(9.5)), stream(1, Some(8.8))];
+    assert_eq!(
+        args(&both, 8.0, Some(2.0)),
+        "-t 1.500 -map 0:0 -f null - -t 0.800 -map 0:1 -f null -"
+    );
+    assert_eq!(
+        args(&both, 0.0, Some(2.0)),
+        "-t 2.000 -map 0:0 -f null - -t 2.000 -map 0:1 -f null -"
+    );
+    assert_eq!(
+        args(&both, 0.0, None),
+        "-t 9.500 -map 0:0 -f null - -t 8.800 -map 0:1 -f null -"
+    );
+    // Only the video is confirmed: the audio is decoded to its end.
+    let video_only = [stream(0, Some(9.5)), stream(1, None)];
+    assert_eq!(
+        args(&video_only, 8.0, Some(2.0)),
+        "-t 1.500 -map 0:0 -f null - -t 2.000 -map 0:1 -f null -"
+    );
+    assert_eq!(
+        args(&video_only, 0.0, None),
+        "-t 9.500 -map 0:0 -f null - -map 0:1 -f null -"
+    );
+    // A stream that has ended before the section starts, or has less than 0.1 s left in it, is
+    // not decoded in it; one that is decoded to its end is decoded for the whole section.
+    let ended = [stream(0, Some(9.5)), stream(1, Some(7.8)), stream(2, None)];
+    assert_eq!(
+        args(&ended, 8.0, Some(2.0)),
+        "-t 1.500 -map 0:0 -f null - -t 2.000 -map 0:2 -f null -"
+    );
+    let short = [
+        stream(0, Some(0.2)),
+        stream(1, Some(0.12)),
+        stream(2, Some(0.05)),
+    ];
+    assert_eq!(
+        args(&short, 0.0, Some(2.0)),
+        "-t 0.200 -map 0:0 -f null - -t 0.120 -map 0:1 -f null -"
+    );
+    assert_eq!(args(&[stream(0, Some(0.05))], 0.0, Some(2.0)), "");
+    // A confirmed stream always has something to decode from the start, so a full verification
+    // never ends up with nothing to run.
+    assert_eq!(
+        args(&[stream(0, Some(0.55))], 0.0, None),
+        "-t 0.550 -map 0:0 -f null -"
+    );
+}
+
+#[test]
+fn an_evidence_request_is_sent_only_with_a_millisecond_or_more_left() {
+    let now = Instant::now();
+    let mut budget = EvidenceBudget {
+        deadline: now + Duration::from_micros(500),
+        requests: 0,
+        bytes: 0,
+    };
+    assert_eq!(budget.request_timeout_at(now), None);
+    assert_eq!(
+        budget.requests, 0,
+        "a request that is not sent is not counted"
+    );
+    budget.deadline = now + Duration::from_millis(3);
+    assert_eq!(
+        budget.request_timeout_at(now),
+        Some(Duration::from_millis(3))
+    );
+    assert_eq!(budget.requests, 1);
+    budget.deadline = now + Duration::from_secs(15);
+    assert_eq!(
+        budget.request_timeout_at(now),
+        Some(SOURCE_EVIDENCE_REQUEST_TIMEOUT),
+        "a request is never given more than its own limit"
     );
 }

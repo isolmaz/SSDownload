@@ -1381,6 +1381,12 @@ fn pause_cycles_for(pause: Duration) {
     TEST_PAUSE.with(|current| current.set(pause));
 }
 
+/// Makes the range workers of the downloads that the current test thread starts wait `delay`
+/// between receiving a range and requesting it, as a busy machine makes them.
+fn delay_range_starts_by(delay: Duration) {
+    TEST_START_DELAY.with(|current| current.set(delay));
+}
+
 /// The steps of every cycle, split at the step that begins a cycle.
 fn cycles() -> Vec<Vec<&'static str>> {
     let mut cycles: Vec<Vec<&'static str>> = Vec::new();
@@ -1699,6 +1705,11 @@ fn stopping_a_one_connection_download_at_any_point_leaves_a_record_of_true_bytes
     every_stop_leaves_a_record_of_true_bytes(1, 12 * MIB + 17, 32 * MIB, 18);
 }
 
+/// The rate at which a test holds a download while it waits for checkpoint cycles. The 12 MiB of
+/// the smallest of these downloads take more than three minutes at it, so the download ends long
+/// after the cycles that the test waits for.
+const HELD_RATE: u64 = 64 * 1024;
+
 /// Opens `path` the way a scanner or a sync client can: other processes may read it but not
 /// replace or delete it. Retries while a record write has the file.
 fn hold_against_replacement(path: &Path) -> File {
@@ -1718,23 +1729,26 @@ fn hold_against_replacement(path: &Path) -> File {
 }
 
 /// The record cannot be replaced for as long as the first periodic cycle takes to give up, then
-/// it can again; the download has to finish all the same.
+/// it can again; the download has to finish all the same. The download is held at `HELD_RATE`
+/// until that cycle has failed and the record is free: a segmented download that ended first
+/// would have its last record refused as well.
 fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
     let server = Server::start(Config {
         size,
-        throttle: Some(2 * MIB),
         ..Config::default()
     });
     checkpoint_every(Duration::from_secs(1), u64::MAX);
     let directory = TempDir::new("failing-checkpoint");
     let output = directory.0.join("payload.bin");
     let state_file = state_path(&output);
+    let control = TransferControl::default();
+    control.set_speed_limit(HELD_RATE);
     let mut held = None;
     let mut acquired = false;
     let result = fetch(
         &request_for(&server),
         &output,
-        &TransferControl::default(),
+        &control,
         connections,
         connections,
         &mut |progress| {
@@ -1744,6 +1758,7 @@ fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
             }
             if failed_cycles() > 0 {
                 held = None;
+                control.set_speed_limit(0);
             }
         },
     );
@@ -1769,9 +1784,11 @@ fn a_segmented_download_survives_periodic_checkpoints_that_fail() {
     survives_periodic_checkpoints_that_fail(2, 24 * MIB);
 }
 
-/// Runs a one-connection download while the record cannot be replaced from the first byte until
-/// `fetch` returns, and no periodic cycle runs: only the cycle at the end could write it.
+/// Runs a download over `connections` connections while the record cannot be replaced from the
+/// first byte until `fetch` returns, and no periodic cycle runs: only the cycle at the end could
+/// write it.
 fn fetch_with_a_record_that_cannot_be_written(
+    connections: u8,
     config: Config,
 ) -> (TempDir, PathBuf, Result<TransferResult>) {
     let server = Server::start(config);
@@ -1784,8 +1801,8 @@ fn fetch_with_a_record_that_cannot_be_written(
         &request_for(&server),
         &output,
         &TransferControl::default(),
-        1,
-        1,
+        connections,
+        connections,
         &mut |progress| {
             if held.is_none() && progress.downloaded > 0 {
                 held = Some(hold_against_replacement(&state_file));
@@ -1800,29 +1817,124 @@ fn fetch_with_a_record_that_cannot_be_written(
 #[test]
 fn a_one_connection_download_completes_when_only_the_final_record_cannot_be_written() {
     let size = 6 * MIB;
-    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(Config {
-        size,
-        throttle: Some(4 * MIB),
-        ..Config::default()
-    });
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        1,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            ..Config::default()
+        },
+    );
     let result = result.unwrap_or_else(|error| panic!("{error:#}"));
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     assert!(!part_path(&output).exists());
 }
 
 #[test]
+fn a_segmented_download_completes_when_only_the_final_record_cannot_be_written() {
+    let size = 12 * MIB;
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        2,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            ..Config::default()
+        },
+    );
+    let result = result.unwrap_or_else(|error| panic!("{error:#}"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert!(!part_path(&output).exists());
+    // The only cycle is the one at the end: it flushed through its own handle and both writers,
+    // tried the record and could not write it.
+    let mut tried = cycle_of(2, false);
+    tried.push("failed");
+    assert_eq!(cycles(), [tried], "{:?}", steps());
+}
+
+#[test]
+fn a_segmented_download_stopped_after_its_final_record_failed_resumes_from_the_previous_record() {
+    let size = 12 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(4 * MIB),
+        ..Config::default()
+    });
+    // One periodic cycle records, and the record is held from then on: the cycle at the end
+    // cannot write it. The download is stopped by the report that comes right before the file is
+    // published.
+    checkpoint_every(NEVER, 4 * MIB);
+    let directory = TempDir::new("stopped-after-final-record");
+    let output = directory.0.join("payload.bin");
+    let state_file = state_path(&output);
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let mut held = None;
+    let mut observed = None;
+    let completing = crate::i18n::ui("Tamamlanıyor", "Completing");
+    let first = fetch(
+        &request_for(&server),
+        &output,
+        &control,
+        2,
+        2,
+        &mut |progress| {
+            if held.is_none() && checkpoint_cycles() > 0 {
+                held = Some(hold_against_replacement(&state_file));
+                // The record that stays, read with the part file as it is while it is held.
+                observed = read_state(&state_file).zip(fs::read(part_path(&output)).ok());
+            }
+            if progress.phase == completing {
+                cancel.cancel();
+            }
+        },
+    );
+    assert!(held.is_some(), "the record was never held");
+    drop(held);
+    first.expect_err("the download was stopped before it was published");
+
+    // The record is the one of the periodic cycle, as it was when it was held: every byte it
+    // claims was in the part file then, and it does not claim them all.
+    let (observed, part_then) = observed.expect("the record was never read");
+    let claimed = assert_claims_are_exact(&observed, &part_then, &pattern(1, size));
+    assert!(claimed > 0 && claimed < size, "{claimed} of {size} bytes");
+    let state = read_state(&state_file).expect("the previous record stays");
+    assert_eq!(state.completed, observed.completed);
+
+    server.wait_idle();
+    let first_attempt = server.log().len();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert!(!part_path(&output).exists() && !state_path(&output).exists());
+    server.wait_idle();
+    let mut requested = delivered(&server.log()[first_attempt..], size);
+    requested.extend(state.completed.iter().map(|range| (range.start, range.end)));
+    assert_tiles(requested, size);
+}
+
+#[test]
 fn a_transport_error_stays_a_transport_error_when_the_record_cannot_be_written() {
     let size = 6 * MIB;
     let cut = 3 * MIB;
-    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(Config {
-        size,
-        throttle: Some(4 * MIB),
-        cut_body: Some(CutBody {
-            after_bytes: cut,
-            responses: 1,
-        }),
-        ..Config::default()
-    });
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        1,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            cut_body: Some(CutBody {
+                after_bytes: cut,
+                responses: 1,
+            }),
+            ..Config::default()
+        },
+    );
     let error = result.expect_err("the body was cut");
     // The engine retries what carries a libcurl transport error and not a disk error.
     let chain = error.chain().collect::<Vec<_>>();
@@ -1845,19 +1957,26 @@ fn flushes_before_it_records(connections: u8) {
     let size = 12 * MIB;
     let server = Server::start(Config {
         size,
-        throttle: Some(4 * MIB),
         ..Config::default()
     });
     checkpoint_every(Duration::from_millis(100), u64::MAX);
     let directory = TempDir::new("cycle-order");
     let output = directory.0.join("payload.bin");
+    // The download is held at `HELD_RATE` until two periodic cycles have recorded; the rest then
+    // arrives, and a cycle at the end covers it.
+    let control = TransferControl::default();
+    control.set_speed_limit(HELD_RATE);
     let result = fetch(
         &request_for(&server),
         &output,
-        &TransferControl::default(),
+        &control,
         connections,
         connections,
-        &mut |_| {},
+        &mut |_| {
+            if checkpoint_cycles() >= 2 {
+                control.set_speed_limit(0);
+            }
+        },
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
@@ -2364,6 +2483,20 @@ fn a_short_range_that_arrives_in_one_burst_does_not_make_its_connection_the_fast
 
 #[test]
 fn a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows() {
+    assert_a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows();
+}
+
+#[test]
+fn a_worker_that_starts_late_does_not_make_its_range_look_slow() {
+    // The wait for the first byte counts from the moment the scheduler handed the range over, so
+    // that the time a busy machine takes to start the worker is not taken for time in which the
+    // range was flowing. Otherwise a worker that starts 200 ms late makes its range look slow
+    // until it has flowed for a while, and an idle worker is given its back half.
+    delay_range_starts_by(Duration::from_millis(200));
+    assert_a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows();
+}
+
+fn assert_a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows() {
     // Three leases of 8 MiB over 2 connections at 8 MiB/s, and every ranged response, the probe
     // among them, starts a second after its request. The worker that finishes first takes the
     // last lease and the other has nothing to take. Once the last lease flows, a request for its
@@ -2404,6 +2537,20 @@ fn a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_f
 
 #[test]
 fn a_short_wait_for_the_first_byte_still_lets_an_idle_worker_take_the_back_of_a_range() {
+    assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range();
+}
+
+#[test]
+fn the_time_before_a_request_is_sent_is_not_a_wait_for_its_first_byte() {
+    // The workers send their requests 1.2 s after the ranges are handed to them, as if each had
+    // to renew an expired address first. The wait that an idle worker is expected to have for its
+    // own request is the 0.1 s that the request took, not the 1.3 s since the hand-over, which
+    // would keep it from taking the back half it is quicker with.
+    delay_range_starts_by(Duration::from_millis(1200));
+    assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range();
+}
+
+fn assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range() {
     // Three leases of 8 MiB over 2 connections at 4 MiB/s, every ranged response a tenth of a
     // second late. The worker that finishes first takes the last lease, the other is idle. The
     // last lease needs 2 s for its 8 MiB; the back half takes the idle worker 1 s at the rate of
@@ -2445,15 +2592,18 @@ fn a_worker_that_has_closed_its_socket_waits_for_a_new_connection_before_it_take
     // after its request, and the first request on a connection another 0.6 s later. The two
     // workers open their connections for the first two leases and reuse them for the next two.
     // The worker that finishes first takes the last lease, and the other is idle for more than
-    // 0.2 s before that lease flows, so it has closed its socket. Its request for the back half
-    // would open a connection and wait 0.9 s for the first byte, longer than the 0.45 s that the
-    // half of at most 7.2 MiB would save the lease; on the connection it had left open it would
-    // have waited 0.3 s.
+    // 0.2 s before that lease flows, so it has closed its socket. The response for the last
+    // lease starts 1.2 s after its request, so that the other worker is idle that long
+    // however far it runs behind the first. Its request for the back half would open a
+    // connection and wait 0.9 s for the first byte, longer than the 0.45 s that the half of at
+    // most 7.2 MiB would save the lease; on the connection it had left open it would have
+    // waited 0.3 s.
     let size = 40 * MIB;
     let server = Server::start(Config {
         size,
         throttle: Some(8 * MIB),
         first_byte_delay: Some(Duration::from_millis(300)),
+        late_first_byte_from: Some((4 * 8 * MIB, Duration::from_millis(1200))),
         connection_delay: Some(Duration::from_millis(600)),
         ..Config::default()
     });
@@ -3570,7 +3720,9 @@ const SIGNED_RATE: u64 = 8 * MIB;
 fn a_segmented_download_follows_the_source_again_when_its_redirect_target_expires() {
     let expected = pattern(1, SIGNED_SIZE);
     for status in [401, 403, 410] {
-        let server = signed_source(SIGNED_SIZE, SIGNED_RATE, status, vec![lasting(400)]);
+        // The first address serves the probe's two requests and the first two ranges, so the
+        // third range meets the expiry.
+        let server = signed_source(SIGNED_SIZE, SIGNED_RATE, status, expiring_after(4));
         let directory = TempDir::new("signed-segmented");
         let output = directory.0.join("payload.bin");
         forget_writes();
@@ -3619,7 +3771,14 @@ fn a_segmented_download_follows_the_source_again_when_its_redirect_target_expire
 #[test]
 fn a_segmented_download_follows_the_source_again_at_each_expiry_that_follows_progress() {
     let size = 40 * MIB + 7;
-    let server = signed_source(size, SIGNED_RATE, 403, vec![lasting(300)]);
+    // Each of the first two addresses serves the two requests that check it and two ranges, and
+    // the third never expires.
+    let server = signed_source(
+        size,
+        SIGNED_RATE,
+        403,
+        vec![valid_for(4), valid_for(4), valid_for(usize::MAX)],
+    );
     let directory = TempDir::new("signed-repeated");
     let output = directory.0.join("payload.bin");
     forget_writes();
@@ -3651,11 +3810,11 @@ fn a_one_connection_download_follows_the_source_again_when_a_retry_meets_an_expi
             signing: Some(Signing {
                 from: "/file".into(),
                 origin: String::new(),
-                validity: vec![lasting(300)],
+                validity: expiring_after(2),
             }),
             expiry: Some(status),
             // The first body is cut before its first byte, so the download waits a second and
-            // asks the same address again.
+            // asks the same address again, which has served its probe and that body.
             cut_body: Some(CutBody {
                 after_bytes: 0,
                 responses: 1,
@@ -3696,26 +3855,33 @@ fn a_one_connection_download_follows_the_source_again_when_a_retry_meets_an_expi
 
 #[test]
 fn a_download_resumed_after_its_redirect_target_expired_asks_the_source_again() {
-    // The first attempt is stopped while its leases run, and the address it used has expired when
-    // the second one starts. Each attempt has as many ranges as connections, so none outlives an
-    // address.
+    // The first attempt is stopped once its leases have written bytes, and the address it used
+    // has expired when the second one starts: it served the requests of the first attempt (the
+    // probe's HEAD, the ranged probe of a segmented download, and one range per connection).
     let size = 12 * MIB + 123;
     let expected = pattern(1, size);
-    for connections in [1u8, 2] {
-        let server = signed_source(size, SIGNED_RATE, 403, vec![lasting(300)]);
+    for (connections, first_attempt_requests) in [(1u8, 2), (2, 4)] {
+        let server = signed_source(
+            size,
+            SIGNED_RATE,
+            403,
+            expiring_after(first_attempt_requests),
+        );
         let directory = TempDir::new("signed-resume");
         let output = directory.0.join("payload.bin");
         let control = TransferControl::default();
-        let stopper = stop_after(&control, Duration::from_millis(500));
         let first = fetch(
             &file_request(server.url("/file")),
             &output,
             &control,
             connections,
             connections,
-            &mut |_| {},
+            &mut |progress| {
+                if progress.downloaded > 0 {
+                    control.cancel();
+                }
+            },
         );
-        stopper.join().unwrap();
         assert!(first.is_err(), "{connections}: the first attempt finished");
         assert!(
             retained_bytes(&output).is_some_and(|kept| kept > 0),
@@ -3723,7 +3889,13 @@ fn a_download_resumed_after_its_redirect_target_expired_asks_the_source_again() 
         );
         let recorded = recorded_ranges(&output);
         server.wait_idle();
-        let first_attempt = server.log().len();
+        let log = server.log();
+        assert_eq!(
+            asked_of(&log, 0).len(),
+            first_attempt_requests,
+            "{connections}: the first attempt did not use up the address: {log:?}"
+        );
+        let first_attempt = log.len();
 
         forget_writes();
         let result = fetch(
@@ -3808,7 +3980,7 @@ fn only_checked(log: &[Logged], address: u64) -> bool {
 fn a_fresh_target_with_another_identity_is_not_adopted_and_the_retained_work_stays() {
     // The tag changes with each HEAD, so the source's answer after the expiry names another
     // file than the one whose bytes are on disk.
-    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+    let (server, _directory) = signed_download_that_fails_with(403, expiring_after(4), |config| {
         config.etag_rotation_heads = Some(1);
     });
     let log = server.log();
@@ -3824,7 +3996,7 @@ fn a_fresh_target_that_answers_again_with_the_status_is_not_asked_for_data() {
     let (server, _directory) = signed_download_that_fails_with(
         410,
         vec![
-            lasting(400),
+            valid_for(4),
             Validity {
                 lifetime: Duration::ZERO,
                 requests: usize::MAX,
@@ -3847,17 +4019,8 @@ fn a_fresh_target_that_answers_again_with_the_status_is_not_asked_for_data() {
 fn a_fresh_target_that_delivers_nothing_is_followed_only_once() {
     // The second address answers the two requests that check it and refuses everything after
     // them, so its data requests are refused without a byte having come from it.
-    let (server, _directory) = signed_download_that_fails_with(
-        403,
-        vec![
-            lasting(400),
-            Validity {
-                lifetime: Duration::from_secs(3600),
-                requests: 2,
-            },
-        ],
-        |_| {},
-    );
+    let (server, _directory) =
+        signed_download_that_fails_with(403, vec![valid_for(4), valid_for(2)], |_| {});
     let log = server.log();
     assert_eq!(requests_for_the_source(&log), 2, "{log:?}");
     let asked = asked_of(&log, 1);
@@ -3872,7 +4035,7 @@ fn a_fresh_target_that_delivers_nothing_is_followed_only_once() {
 
 #[test]
 fn a_fresh_target_that_is_a_web_page_is_not_adopted_and_the_retained_work_stays() {
-    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+    let (server, _directory) = signed_download_that_fails_with(403, expiring_after(4), |config| {
         config.signed_pages_from = Some(1);
     });
     let log = server.log();
@@ -3892,13 +4055,7 @@ fn a_one_connection_download_follows_the_source_only_once_when_the_fresh_target_
         signing: Some(Signing {
             from: "/file".into(),
             origin: String::new(),
-            validity: vec![
-                lasting(300),
-                Validity {
-                    lifetime: Duration::from_secs(3600),
-                    requests: 2,
-                },
-            ],
+            validity: vec![valid_for(2), valid_for(2)],
         }),
         expiry: Some(403),
         cut_body: Some(CutBody {
@@ -3940,15 +4097,12 @@ fn an_address_with_no_redirect_that_expires_is_not_followed_again() {
         expiry: Some(403),
         ..Config::default()
     });
-    let deadline = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        + 400;
     let directory = TempDir::new("signed-direct");
     let output = directory.0.join("payload.bin");
+    // The address answers the probe's two requests and the first two ranges, so the third range
+    // meets the expiry however long the requests take.
     let error = fetch(
-        &file_request(server.url(&format!("/direct?exp={deadline}&n=0&max=999999"))),
+        &file_request(server.url("/direct?exp=99999999999999&n=0&max=4")),
         &output,
         &TransferControl::default(),
         2,
@@ -3965,7 +4119,7 @@ fn an_address_with_no_redirect_that_expires_is_not_followed_again() {
         1,
         "{log:?}"
     );
-    assert!(log.iter().any(|entry| entry.status == 403), "{log:?}");
+    assert!(data_gets(&log).any(|entry| entry.status == 403), "{log:?}");
 }
 
 #[test]
@@ -3988,7 +4142,7 @@ fn the_requests_that_follow_an_expiry_keep_the_headers_of_the_origin_they_go_to(
         signing: Some(Signing {
             from: "/file".into(),
             origin: target.url(""),
-            validity: vec![lasting(400)],
+            validity: expiring_after(4),
         }),
         logged_headers: watched.map(String::from).to_vec(),
         ..Config::default()
@@ -4064,27 +4218,26 @@ fn a_fresh_target_is_not_accepted_when_it_is_less_secure_than_the_one_that_expir
     assert_eq!(number_of(fresh.as_str()), Some(2));
 }
 
-/// Signed addresses that answer as expired from their fifth request on: the probe's two, the
-/// first two ranges, and then no more. The addresses after the first never expire.
+/// A signed address that answers its first `requests` requests, however long they take to
+/// arrive, and as expired from the next on.
+fn valid_for(requests: usize) -> Validity {
+    Validity {
+        lifetime: Duration::from_secs(3600),
+        requests,
+    }
+}
+
+/// Signed addresses of which the first answers as expired from its request after the first
+/// `requests` on. The addresses after the first never expire.
 fn expiring_after(requests: usize) -> Vec<Validity> {
-    let hour = Duration::from_secs(3600);
-    vec![
-        Validity {
-            lifetime: hour,
-            requests,
-        },
-        Validity {
-            lifetime: hour,
-            requests: usize::MAX,
-        },
-    ]
+    vec![valid_for(requests), valid_for(usize::MAX)]
 }
 
 #[test]
 fn a_fresh_target_whose_ranged_answer_carries_no_validators_is_not_adopted() {
     // The answers to ranged requests with If-Range have neither ETag nor Last-Modified, so the
     // fresh target proves nothing about the file whose bytes are on disk.
-    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+    let (server, _directory) = signed_download_that_fails_with(403, expiring_after(4), |config| {
         config.partial_without_validators = true;
     });
     let log = server.log();
@@ -4098,7 +4251,7 @@ fn a_fresh_target_whose_ranged_answer_carries_no_validators_is_not_adopted() {
 #[test]
 fn a_fresh_target_whose_one_byte_answer_has_no_body_is_checked_all_the_same() {
     // The check sends no body byte, so nothing but the headers can prove the identity.
-    let (server, _directory) = signed_download_that_fails_with(403, vec![lasting(400)], |config| {
+    let (server, _directory) = signed_download_that_fails_with(403, expiring_after(4), |config| {
         config.partial_without_validators = true;
         config.bodiless_probe = true;
     });
@@ -5438,6 +5591,21 @@ fn a_digest_lookup_that_outlasts_its_limit_is_dropped_and_the_file_published_unv
     let waited = started.elapsed();
     assert_published(result, &directory, 1, size);
     assert_eq!(verified_by(), []);
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+}
+
+#[test]
+fn a_lookup_limit_under_a_millisecond_sends_no_lookup() {
+    let size = 2 * MIB + 11;
+    let server = slow_lookups(size, Duration::from_secs(5));
+    forget_verified();
+    let started = Instant::now();
+    let (result, directory) =
+        with_lookup_limit(Duration::from_micros(999), || fetch_payload(&server, 1));
+    let waited = started.elapsed();
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), []);
+    assert_eq!(lookup_paths(&server), Vec::<String>::new());
     assert!(waited < Duration::from_secs(3), "{waited:?}");
 }
 

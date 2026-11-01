@@ -29,6 +29,13 @@ const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 /// The most ranges a progress report lists; the narrowest gaps close first beyond it.
 const SHOWN_RANGES: usize = 64;
+/// How long a lease has to flow before its rate is taken for the rate it keeps. The bytes of the
+/// first moments of a transfer come unevenly (a new connection ramps up, writes arrive in
+/// bursts), and a lease cut on a rate seen over less than this is cut on noise. It is longer
+/// than the 200 ms between two looks of the scheduler at its leases, so that a rate spans more
+/// than one look. Waiting for it delays a cut by this long and the end of the download by about
+/// half as much.
+const MIN_RATE_SAMPLE: Duration = Duration::from_millis(250);
 /// How often a worker that waits for a renewal looks at a stop request.
 const RENEWAL_POLL: Duration = Duration::from_millis(100);
 const IO_BUFFER: usize = 1024 * 1024;
@@ -184,6 +191,9 @@ thread_local! {
     /// How long the cycles of the downloads that the current test thread starts wait between
     /// their flush and their record.
     static TEST_PAUSE: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+    /// How long the range workers of the downloads that the current test thread starts wait,
+    /// after they receive a range, before they request it.
+    static TEST_START_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
     /// The sources of the digests that verified the files the current test thread finished.
     static TEST_VERIFIED: RefCell<Vec<digest::Source>> = const { RefCell::new(Vec::new()) };
 }
@@ -1937,7 +1947,9 @@ struct RangeWork {
 }
 
 enum RangeCommand {
-    Download(RangeWork),
+    /// A range for the worker, and the moment the scheduler handed it over, from which the wait
+    /// for its first byte counts.
+    Download(RangeWork, Instant),
     Stop,
 }
 
@@ -2005,13 +2017,17 @@ impl Standing {
 /// counts as claimed, and it never writes beyond the size at the moment it claims. The high
 /// half of the word is the bytes claimed, the low half the size; both count from the start of
 /// the lease. Beside the word it holds how long the first byte of the lease took to come, from
-/// which the scheduler tells how fast the lease runs once its bytes flow, and whether the
-/// request for the lease opened a connection.
+/// which the scheduler tells how fast the lease runs once its bytes flow, how much of that wait
+/// passed before the request that brought the byte was sent, and whether that request opened a
+/// connection.
 struct Allowance {
     word: AtomicU64,
     /// How long the worker waited for the first byte of the lease, in nanoseconds plus one; 0
     /// until that byte comes.
     first_byte: AtomicU64,
+    /// How long after the worker was handed the lease the request that brought its first byte
+    /// was sent, in nanoseconds.
+    sent: AtomicU64,
     /// Whether the request for the lease opened a connection instead of reusing one.
     connected: AtomicBool,
 }
@@ -2021,6 +2037,7 @@ impl Allowance {
         Self {
             word: AtomicU64::new(0),
             first_byte: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
             connected: AtomicBool::new(false),
         }
     }
@@ -2033,6 +2050,7 @@ impl Allowance {
             size: u64::from(size),
         };
         self.first_byte.store(0, Ordering::Release);
+        self.sent.store(0, Ordering::Release);
         self.connected.store(false, Ordering::Release);
         self.word.store(standing.pack(), Ordering::Release);
     }
@@ -2055,6 +2073,20 @@ impl Allowance {
             0 => None,
             stored => Some(Duration::from_nanos(stored - 1)),
         }
+    }
+
+    /// Notes that the request that brought the first byte of the lease was sent `after` the
+    /// worker was handed the lease. The worker calls it before `note_first_byte`.
+    fn note_request(&self, after: Duration) {
+        let nanos = u64::try_from(after.as_nanos()).unwrap_or(u64::MAX);
+        self.sent.store(nanos, Ordering::Release);
+    }
+
+    /// How long the request itself took to get the first byte, out of the `wait` since the
+    /// lease was handed over. What passed before the request was sent (a worker that starts
+    /// late, an expired address that is renewed) is not part of what another request waits for.
+    fn answer_wait(&self, wait: Duration) -> Duration {
+        wait.saturating_sub(Duration::from_nanos(self.sent.load(Ordering::Acquire)))
     }
 
     /// Notes that the request for the lease opened a connection.
@@ -2103,8 +2135,8 @@ impl Allowance {
 }
 
 /// How a worker received the last range of at least `MIN_SEGMENT_SIZE` it finished: how long
-/// it waited for the first byte, and the bytes per second from that byte on. A shorter range
-/// can arrive in one burst, which shows a rate that no lasting transfer has.
+/// its request took to get the first byte, and the bytes per second from that byte on. A
+/// shorter range can arrive in one burst, which shows a rate that no lasting transfer has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Delivery {
     wait: Duration,
@@ -2197,7 +2229,8 @@ struct Checkpoints {
     /// The record's identity; `completed` is filled in at each write.
     state: ResumeState,
     total: u64,
-    /// Recorded ranges, sorted and merged.
+    /// Ranges made durable by a cycle, sorted and merged. The record lists all of them except
+    /// those of an end cycle whose record could not be written; the previous record stays then.
     completed: Vec<ByteRange>,
     /// Ranges that are written but in no cycle yet: finished leases and the written part of
     /// leases that dropped.
@@ -2275,14 +2308,15 @@ impl Checkpoints {
 
     /// Cuts the back half off a running lease for the `idle` worker that fetched its last range
     /// fastest, takes that worker out of `idle` and returns it with the range cut off. A lease
-    /// is cut only when its first byte has come, so that its rate is known, and the idle worker
-    /// is expected to have the back half before the lease's own worker would reach the end of
-    /// its range: the idle worker waits for its first byte as long as it did for its last range
-    /// and then fetches the half at the rate of that range, while the lease's worker fetches the
-    /// whole remainder at the rate the lease has had since its first byte. An idle worker that
-    /// finished its last range `RANGE_WORKER_IDLE_TIMEOUT` ago or earlier has closed its socket
-    /// and has to open a connection for the half, so it waits at least as long as the latest
-    /// range that opened one. Of the leases that qualify, the one with the most bytes still to
+    /// is cut only when it has flowed for `MIN_RATE_SAMPLE` since its first byte, so that its
+    /// rate is known, and the idle worker is expected to have the back half before the lease's
+    /// own worker would reach the end of its range: the idle worker waits for its first byte as
+    /// long as its request for its last range took and then fetches the half at the rate of
+    /// that range, while the lease's worker fetches the whole remainder at the rate the lease
+    /// has had since its first byte. An idle worker that finished its last range
+    /// `RANGE_WORKER_IDLE_TIMEOUT` ago or earlier has closed its socket and has to open a
+    /// connection for the half, so it waits at least as long as the request of the latest range
+    /// that opened one took. Of the leases that qualify, the one with the most bytes still to
     /// come is cut; none is when none has at least twice `MIN_SEGMENT_SIZE` to come, or no idle
     /// worker has finished a range of that size yet, and `idle` is left as it is. The lease
     /// keeps the front: its worker writes no byte beyond the cut, however many are already in
@@ -2311,7 +2345,11 @@ impl Checkpoints {
                     let seen = self.allowances[worker].view();
                     let size = seen.cut_size()?;
                     let wait = self.allowances[worker].first_byte_wait()?;
-                    let rate = bytes_per_second(seen.claimed, lease.flowing(wait, now))?;
+                    let flowed = lease.flowing(wait, now);
+                    if flowed < MIN_RATE_SAMPLE {
+                        return None;
+                    }
+                    let rate = bytes_per_second(seen.claimed, flowed)?;
                     delivery
                         .gets_the_back_half_sooner(seen, rate)
                         .then_some((worker, seen, size))
@@ -2402,13 +2440,14 @@ impl Checkpoints {
         };
         self.idle_since[worker] = Some(now);
         if let Some(wait) = self.allowances[worker].first_byte_wait() {
+            let answer = self.allowances[worker].answer_wait(wait);
             if self.allowances[worker].opened_connection() {
-                self.connection_wait = Some(wait);
+                self.connection_wait = Some(answer);
             }
             let length = lease.range.len();
             if length >= MIN_SEGMENT_SIZE {
                 if let Some(rate) = bytes_per_second(length, lease.flowing(wait, now)) {
-                    self.deliveries[worker] = Some(Delivery { wait, rate });
+                    self.deliveries[worker] = Some(Delivery { wait: answer, rate });
                 }
             }
         }
@@ -2509,16 +2548,17 @@ impl Checkpoints {
         }
     }
 
-    /// Makes everything written so far durable and recorded, after any cycle in progress. No
-    /// worker may be writing.
-    fn checkpoint(&mut self) -> std::result::Result<(), AttemptFailure> {
+    /// Makes everything written so far durable, after any cycle in progress, and records it as
+    /// `record` says. Fails when the flush fails, when the ranges cannot be merged into a
+    /// record, or when a required record cannot be written. No worker may be writing.
+    fn checkpoint(&mut self, record: Record) -> std::result::Result<(), AttemptFailure> {
         if let Some(ended) = self.cycle.wait() {
             let _ = self.absorb(ended);
         }
-        let Some((record, snapshot)) = self.snapshot()? else {
+        let Some((state, snapshot)) = self.snapshot()? else {
             return Ok(());
         };
-        let result = self.cycle.run(&record, Record::Required).map(|_| ());
+        let result = self.cycle.run(&state, record).map(|_| ());
         self.absorb((snapshot, result))
             .map_err(AttemptFailure::Other)
     }
@@ -2649,6 +2689,8 @@ fn download_segmented(
     let mut senders = Vec::with_capacity(worker_count);
     let mut handles = Vec::with_capacity(worker_count);
     let writes = Writes::current();
+    #[cfg(test)]
+    let start_delay = TEST_START_DELAY.with(std::cell::Cell::get);
     let target = Arc::new(Target::new(
         validate_source_url(&request.url)
             .ok()
@@ -2697,10 +2739,12 @@ fn download_segmented(
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
-                let RangeCommand::Download(work) = command else {
+                let RangeCommand::Download(work, handed) = command else {
                     break;
                 };
-                let result = downloader.download(work.range);
+                #[cfg(test)]
+                thread::sleep(start_delay);
+                let result = downloader.download(work.range, handed);
                 if events
                     .send(RangeEvent::Complete {
                         worker,
@@ -2770,7 +2814,10 @@ fn download_segmented(
             };
             ledger.assign(worker, work, now);
             busy.fetch_add(1, Ordering::AcqRel);
-            if senders[worker].send(RangeCommand::Download(work)).is_err() {
+            if senders[worker]
+                .send(RangeCommand::Download(work, now))
+                .is_err()
+            {
                 break 'scheduler Err(AttemptFailure::Other(anyhow!(
                     "{}",
                     crate::i18n::ui(
@@ -2967,15 +3014,19 @@ fn download_segmented(
         }
     }
     // Every writer has stopped, so the counts are final. A pause, a stop or a failure keeps
-    // what was written; a source that rejected a range, ignored ranges or changed is about to
-    // be discarded, and only what earlier checkpoints recorded stands.
+    // what was written, and the record is what lets a resume use it; a source that rejected a
+    // range, ignored ranges or changed is about to be discarded, and only what earlier
+    // checkpoints recorded stands. The end of the download tries the record, so that a stop
+    // before the file is published keeps what was received, and goes on without it: the record
+    // is deleted when the file is published.
     let settled = match &outcome {
         Err(
             AttemptFailure::RangeRejected
             | AttemptFailure::RangeIgnored
             | AttemptFailure::ResourceChanged,
         ) => Ok(()),
-        _ => ledger.checkpoint(),
+        Ok(()) => ledger.checkpoint(Record::Attempted),
+        Err(_) => ledger.checkpoint(Record::Required),
     };
     if let Err(failure) = outcome {
         return Err(match (failure, settled) {
@@ -3177,10 +3228,14 @@ struct DynamicRangeWorker<'a> {
 }
 
 impl DynamicRangeWorker<'_> {
-    fn download(&mut self, range: ByteRange) -> std::result::Result<(), AttemptFailure> {
+    fn download(
+        &mut self,
+        range: ByteRange,
+        handed: Instant,
+    ) -> std::result::Result<(), AttemptFailure> {
         loop {
             let (url, generation) = self.target.current();
-            let error = match self.request_range(range, &url, generation) {
+            let error = match self.request_range(range, &url, generation, handed) {
                 Err(AttemptFailure::Other(error)) if lost_to_expiry(&error) => error,
                 other => return other,
             };
@@ -3204,13 +3259,19 @@ impl DynamicRangeWorker<'_> {
         }
     }
 
+    /// `handed` is when the scheduler handed the range to the worker, the moment the lease counts
+    /// its wait for the first byte from. The time a worker takes to start is part of that wait:
+    /// counted from the request, it would be taken for time in which the lease was flowing, and
+    /// the lease would look slow. When the request was sent is noted apart
+    /// (`Allowance::note_request`), because a worker that is expected to make a request of its
+    /// own does not wait for the time before it.
     fn request_range(
         &mut self,
         range: ByteRange,
         url: &Url,
         generation: u32,
+        handed: Instant,
     ) -> std::result::Result<(), AttemptFailure> {
-        let requested = Instant::now();
         let abort = self.abort;
         if abort.load(Ordering::Acquire) {
             return Err(AttemptFailure::Interrupted);
@@ -3248,6 +3309,7 @@ impl DynamicRangeWorker<'_> {
         )?)
         .map_err(anyhow::Error::from)?;
 
+        let sent = handed.elapsed();
         let response = Rc::new(RefCell::new(ResponseHeaders::default()));
         let callback_response = response.clone();
         let write_response = response.clone();
@@ -3284,7 +3346,8 @@ impl DynamicRangeWorker<'_> {
                         return Ok(0);
                     }
                     if written == 0 {
-                        allowance.note_first_byte(requested.elapsed());
+                        allowance.note_request(sent);
+                        allowance.note_first_byte(handed.elapsed());
                     }
                     // The bytes are claimed before they are written: a cut of the lease then
                     // leaves them to this worker, and what lies beyond the cut is not written.
@@ -4366,7 +4429,7 @@ fn build_headers(
 /// Credentials and site-specific request metadata must never follow a redirect
 /// to another origin.  The short allow-list contains only browser-neutral
 /// negotiation headers.
-fn header_is_safe_across_origin(name: &str, same_origin: bool) -> bool {
+pub(crate) fn header_is_safe_across_origin(name: &str, same_origin: bool) -> bool {
     same_origin || matches!(name, "accept" | "accept-language" | "user-agent")
 }
 
@@ -5066,7 +5129,7 @@ fn remove_if_exists(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
-fn redirected_url(current: &Url, location: Option<&str>) -> Result<Url> {
+pub(crate) fn redirected_url(current: &Url, location: Option<&str>) -> Result<Url> {
     let location = location.ok_or_else(|| {
         anyhow!(
             "{}",
@@ -6064,6 +6127,34 @@ mod tests {
             Some("a%FF.bin".into())
         );
         assert_eq!(name("https://example.test/folder/"), None);
+    }
+
+    #[test]
+    fn a_redirect_never_leads_from_https_to_plain_http() {
+        let secure = Url::parse("https://cdn.example/a/0.ts").unwrap();
+        let plain = Url::parse("http://cdn.example/a/0.ts").unwrap();
+        let followed = |current: &Url, location: &str| {
+            redirected_url(current, Some(location)).map(|next| next.to_string())
+        };
+        assert!(followed(&secure, "http://mirror.example/0.ts").is_err());
+        assert!(followed(&secure, "ftp://mirror.example/0.ts").is_err());
+        assert!(redirected_url(&secure, None).is_err());
+        assert_eq!(
+            followed(&secure, "//mirror.example/0.ts").unwrap(),
+            "https://mirror.example/0.ts"
+        );
+        assert_eq!(
+            followed(&secure, "/b/0.ts").unwrap(),
+            "https://cdn.example/b/0.ts"
+        );
+        assert_eq!(
+            followed(&plain, "https://mirror.example/0.ts").unwrap(),
+            "https://mirror.example/0.ts"
+        );
+        assert_eq!(
+            followed(&plain, "http://mirror.example/0.ts").unwrap(),
+            "http://mirror.example/0.ts"
+        );
     }
 
     #[test]
@@ -8357,6 +8448,40 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_lease_sets_the_wait_of_its_worker_from_the_request_that_brought_the_first_byte() {
+        let directory = TestDirectory::new("split-finish-request");
+        let start = Instant::now();
+        let mut ledger = ledger_over(&directory, 2, 16 * MIB);
+        // The worker was handed the lease and sent its request three seconds later, say after
+        // it renewed an expired address; the first byte came a second after that. The lease flowed
+        // for the two seconds from the first byte to the end, at 4 MiB/s. A request of the worker
+        // for another lease waits a second for its first byte, not four.
+        ledger.assign(0, work(0, 8 * MIB), start);
+        let allowance = ledger.allowance(0);
+        allowance.note_connection();
+        allowance.note_request(Duration::from_secs(3));
+        allowance.note_first_byte(Duration::from_secs(4));
+        ledger.finish(0, start + Duration::from_secs(6));
+        assert_eq!(
+            ledger.deliveries[0],
+            Some(Delivery {
+                wait: Duration::from_secs(1),
+                rate: 4 * MIB
+            })
+        );
+        assert_eq!(ledger.connection_wait, Some(Duration::from_secs(1)));
+
+        // A lease that is opened again forgets when its last request was sent.
+        let allowance = Allowance::new();
+        allowance.note_request(Duration::from_secs(3));
+        allowance.open(8 * MIB);
+        assert_eq!(
+            allowance.answer_wait(Duration::from_secs(4)),
+            Duration::from_secs(4)
+        );
+    }
+
+    #[test]
     fn a_lease_that_is_opened_again_has_no_first_byte_until_one_is_noted() {
         let allowance = Allowance::new();
         assert_eq!(allowance.first_byte_wait(), None);
@@ -8438,6 +8563,32 @@ mod tests {
             Some((2, range(12 * MIB + MIB / 2, 15 * MIB), 0))
         );
         assert_eq!(ledger.allowance(0).view().size, 9 * MIB);
+    }
+
+    #[test]
+    fn a_lease_is_cut_only_once_it_has_flowed_long_enough_for_its_rate_to_count() {
+        let directory = TestDirectory::new("split-sample");
+        let start = Instant::now();
+        // The first byte comes after a second, and 64 KiB of the lease come in the first moments
+        // after it: a rate of 0.25 MiB/s, which a worker that fetched its last range at 64 MiB/s
+        // beats by far. The time that counts is the time since the first byte.
+        let wait = Duration::from_secs(1);
+        for (flowed, cuts) in [
+            (Duration::ZERO, false),
+            (MIN_RATE_SAMPLE - Duration::from_nanos(1), false),
+            (MIN_RATE_SAMPLE, true),
+        ] {
+            let mut ledger = ledger_over(&directory, 2, 8 * MIB);
+            ledger.deliveries[1] = without_wait(64 * MIB);
+            ledger.assign(0, work(0, 8 * MIB), start);
+            ledger.allowance(0).note_first_byte(wait);
+            assert_eq!(ledger.allowance(0).take(64 * 1024), 64 * 1024);
+            assert_eq!(
+                stolen(&mut ledger, &[1], start + wait + flowed).is_some(),
+                cuts,
+                "a lease that has flowed for {flowed:?}"
+            );
+        }
     }
 
     #[test]

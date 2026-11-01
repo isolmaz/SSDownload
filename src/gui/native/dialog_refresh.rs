@@ -20,7 +20,7 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                                 SendMessageW(f.list, LB_RESETCONTENT, 0, 0);
                                 for candidate in &result.candidates {
                                     let kind = match candidate.kind {
-                                        DownloadKind::Video => "Video",
+                                        DownloadKind::Video => crate::i18n::ui("Video", "Video"),
                                         DownloadKind::Audio => crate::i18n::ui("Ses", "Audio"),
                                         _ => crate::i18n::ui("Dosya", "File"),
                                     };

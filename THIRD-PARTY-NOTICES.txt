@@ -191,13 +191,16 @@ into SSDownload, and are not included in the installer or portable ZIP.
 
   yt-dlp
     Project/source: https://github.com/yt-dlp/yt-dlp
-    Release API: https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest
-    Selected assets: yt-dlp.exe and SHA2-256SUMS from that stable release
+    Release API: https://api.github.com/repos/yt-dlp/yt-dlp/releases
+    Selected assets: yt-dlp.exe and SHA2-256SUMS from the newest stable release (an
+    install the application starts by itself takes the newest one published at least
+    three days earlier)
     License: The Unlicense
 
   Deno
     Project/source: https://github.com/denoland/deno
-    Release API: https://api.github.com/repos/denoland/deno/releases/latest
+    Release API: https://api.github.com/repos/denoland/deno/releases
+    Selected release: the newest stable (not draft, not prerelease) release of major version 2
     Selected assets: deno-x86_64-pc-windows-msvc.zip and its .sha256sum
     License: MIT
 
@@ -205,7 +208,9 @@ into SSDownload, and are not included in the installer or portable ZIP.
     Upstream source: https://ffmpeg.org/ and https://github.com/FFmpeg/FFmpeg
     Windows build provider: https://github.com/BtbN/FFmpeg-Builds
     Release API: https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest
-    Selected asset: ffmpeg-master-latest-win64-lgpl-shared.zip
+    Selected asset: ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip, the build of the FFmpeg 9.0
+    release branch (the newest published release branch while BtbN does not publish 9.0;
+    never a master snapshot)
     Checksums: checksums.sha256 from that BtbN release
     License: LGPL-3.0-or-later for the selected version-3 LGPL build. SSDownload's installer
     rejects GPL-named build assets and does not describe GPL-enabled FFmpeg as

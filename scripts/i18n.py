@@ -10,7 +10,8 @@ English text in `i18n/<code>.json`, a JSON object from English text to translati
     python scripts/i18n.py check     fails on an untranslated or stale catalog entry, a
                                      placeholder or menu marker a translation changes, two items
                                      of one menu that share an access letter in any language, a
-                                     text the extractor cannot read, or an out-of-date
+                                     text the extractor cannot read, a window text written as a
+                                     bare literal instead of through ui(), or an out-of-date
                                      i18n_catalog.rs
 """
 import json
@@ -428,8 +429,67 @@ def menu_letter_clashes(catalogs):
     return problems
 
 
+# The window helpers and the positions of the arguments that carry a text the user reads.
+TEXT_ARGUMENTS = {
+    "dialog_label": (2,), "dialog_button": (2,), "dialog_check": (2,), "dialog_check_wrapped": (2,),
+    "dialog_card": (2,), "tab_item": (2,), "combo_add": (1,), "append": (2,), "control": (2,),
+    "message": (1, 2), "notify": (1, 2), "set_dialog_error": (2,),
+}
+# Written the same in every language.
+UNTRANSLATED = {"SSDownload"}
+
+
+def bare_texts_in(source, name):
+    """Window texts written as a bare literal in one source file, which no catalog can translate.
+
+    A literal with a word of three lowercase letters is English; one without (URL, VTT) is the same
+    in every language. The scan stops at the test module; a test-only item before it is code."""
+    problems = []
+    text = code_only(source)
+    tests = re.search(r"#\[cfg\(test\)\]\s*mod\s", text)
+    if tests:
+        text = text[:tests.start()]
+    for call in re.finditer(r"(?<![\w.:$])(" + "|".join(TEXT_ARGUMENTS) + r")\s*\(", text):
+        if text[max(0, call.start() - 3):call.start()] == "fn ":
+            continue
+        arguments = split_top(text[call.end():closing(text, call.end())])
+        for position in TEXT_ARGUMENTS[call.group(1)]:
+            value = literal_value(arguments[position]) if position < len(arguments) else None
+            if value and value not in UNTRANSLATED and re.search(r"[a-z]{3}", value):
+                where = f"{name}:{text[:call.start()].count(chr(10)) + 1}"
+                problems.append(f'{where}: {call.group(1)}() shows {json.dumps(value, ensure_ascii=False)} as a bare literal; write it as ui("Türkçe", "English") so the catalogs translate it')
+    return problems
+
+
+def bare_texts():
+    problems = []
+    for path in sorted((SOURCE / "gui").rglob("*.rs")):
+        problems += bare_texts_in(path.read_text(encoding="utf-8"), path.relative_to(ROOT).as_posix())
+    return problems
+
+
+# A test-only item before the code it must not hide, and a literal inside the test module.
+BARE_TEXT_FIXTURE = """
+#[cfg(test)]
+thread_local! { static SEAM: u8 = 0; }
+unsafe fn shown(hwnd: HWND) { dialog_label(hwnd, null_mut(), "Bare caption text", 0); }
+#[cfg(test)]
+mod tests {
+    unsafe fn probe(hwnd: HWND) { dialog_label(hwnd, null_mut(), "Bare test text", 0); }
+}
+"""
+
+
+def bare_text_scan_problems():
+    """The scan of bare literals reports the one after a `#[cfg(test)]` item and not the one in the tests."""
+    found = bare_texts_in(BARE_TEXT_FIXTURE, "fixture.rs")
+    if len(found) == 1 and found[0].startswith("fixture.rs:4: dialog_label() shows \"Bare caption text\""):
+        return []
+    return [f"the bare-literal scan misreads its fixture: {found}"]
+
+
 def check(extraction):
-    problems = list(extraction.problems)
+    problems = list(extraction.problems) + bare_texts() + bare_text_scan_problems()
     catalogs = {}
     for code, _ in LANGUAGES:
         catalog = catalogs[code] = load_catalog(code)

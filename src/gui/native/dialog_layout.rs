@@ -3,6 +3,8 @@
 use super::*;
 
 pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
+    let pass = dlg.layout_pass.get().wrapping_add(1);
+    dlg.layout_pass.set(pass);
     let mut r: RECT = zeroed();
     GetClientRect(dlg.hwnd, &mut r);
     let w = r.right;
@@ -29,8 +31,8 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::JobLog(_) => 425,
         DialogKind::Speed(f) if modern() => one_field_height(f.label_lines),
         DialogKind::Rename(_) if modern() => one_field_height(1),
-        DialogKind::Speed(_) => 110,
-        DialogKind::Rename(_) => 110,
+        DialogKind::Speed(_) => SPEED_LOGICAL_HEIGHT,
+        DialogKind::Rename(_) => RENAME_LOGICAL_HEIGHT,
         DialogKind::Logins(_) if modern() => FORM_HEIGHT,
         DialogKind::Logins(_) => 425,
         DialogKind::Media(f) if modern() => media_content_height(dlg, f),
@@ -2210,7 +2212,12 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         nPos: offset,
         nTrackPos: 0,
     };
-    SetScrollInfo(dlg.hwnd, SB_VERT, &info, 1);
+    // Setting the range shows a hidden bar, and the call below hides it again in the dark
+    // scheme: the client area would be resized twice, and the dialog laid out twice inside this
+    // layout. Dark mode keeps the bar hidden, so it never sets a range.
+    if !dialog_is_dark(dlg) {
+        SetScrollInfo(dlg.hwnd, SB_VERT, &info, 1);
+    }
     // The themed scroll bar has no dark form, and the compacted pages fit, so
     // the bar only shows when there is really something to scroll.
     let overflows = h > actual_height;
@@ -2227,6 +2234,13 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             0
         },
     );
+    // Showing or hiding the bar resizes the client area, and the layout that resize ran has
+    // placed and shifted the controls for the final size. This assumes that a layout runs inside
+    // this one only during the calls that show or hide the bar; the placement above must not
+    // lay the dialog out again.
+    if dlg.layout_pass.get() != pass {
+        return;
+    }
     if dialog_is_dark(dlg) {
         let mut client: RECT = zeroed();
         if GetClientRect(dlg.hwnd, &mut client) != 0 {

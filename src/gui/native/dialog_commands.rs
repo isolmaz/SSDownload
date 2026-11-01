@@ -14,9 +14,20 @@ fn parse_number<T: std::str::FromStr>(value: &str, label: &str) -> anyhow::Resul
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What `confirm_removal` answers in a test, where no box is shown.
+    pub(super) static TEST_REMOVAL_ANSWER: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// Asks before a list entry is deleted. "No" is the default button and Escape
 /// answers it, and a dialog closed from under the box counts as "No" too.
 unsafe fn confirm_removal(hwnd: HWND, body: &str) -> bool {
+    #[cfg(test)]
+    if let Some(answer) = TEST_REMOVAL_ANSWER.with(std::cell::Cell::get) {
+        return answer;
+    }
     let answer = message(
         hwnd,
         body,
@@ -200,6 +211,31 @@ pub(super) unsafe fn queue_command(
     refresh_queue_controls(hwnd, f, &app.snapshot())?;
     Ok(())
 }
+unsafe fn reset_rule_form(f: &RuleFields) {
+    SendMessageW(f.list, LB_SETCURSEL, usize::MAX, 0);
+    set_text(f.host, "");
+    set_text(f.dir, "");
+    set_text(f.priority, "0");
+    set_check(f.subdomains, false);
+    set_check(f.file, false);
+    set_check(f.video, false);
+    set_check(f.audio, false);
+}
+unsafe fn reset_sync_form(f: &SyncFields) {
+    SendMessageW(f.list, LB_SETCURSEL, usize::MAX, 0);
+    set_text(f.url, "");
+    set_text(f.dir, "");
+    set_text(f.interval, "60");
+    set_check(f.enabled, true);
+    set_check(f.overwrite, false);
+}
+/// Selects the record a list was rebuilt around again, so that the next save
+/// updates it instead of adding a second one. The form keeps what it shows.
+unsafe fn reselect(list: HWND, ids: &[String], saved: Option<String>) {
+    if let Some(index) = saved.and_then(|saved| ids.iter().position(|id| *id == saved)) {
+        SendMessageW(list, LB_SETCURSEL, index, 0);
+    }
+}
 pub(super) unsafe fn rule_command(
     hwnd: HWND,
     app: &App,
@@ -209,6 +245,8 @@ pub(super) unsafe fn rule_command(
 ) -> anyhow::Result<()> {
     let mut settings = app.snapshot().settings.clone();
     let selected = selected_management_id(f.list, &f.ids).map(str::to_owned);
+    let mut saved = None;
+    let mut removed = false;
     if id == R_LIST && code as u32 == LBN_SELCHANGE {
         if let Some(rule) = settings
             .folder_rules
@@ -227,14 +265,7 @@ pub(super) unsafe fn rule_command(
     }
     match id {
         R_NEW => {
-            SendMessageW(f.list, LB_SETCURSEL, usize::MAX, 0);
-            set_text(f.host, "");
-            set_text(f.dir, "");
-            set_text(f.priority, "0");
-            set_check(f.subdomains, false);
-            set_check(f.file, false);
-            set_check(f.video, false);
-            set_check(f.audio, false);
+            reset_rule_form(f);
             return Ok(());
         }
         R_SAVE => {
@@ -263,6 +294,7 @@ pub(super) unsafe fn rule_command(
                     .and_then(|id| settings.folder_rules.iter().find(|r| &r.id == id))
                     .is_none_or(|existing| existing.enabled),
             };
+            saved = Some(rule.id.clone());
             if let Some(old) = settings.folder_rules.iter_mut().find(|r| r.id == rule.id) {
                 *old = rule;
             } else {
@@ -293,11 +325,17 @@ pub(super) unsafe fn rule_command(
                 return Ok(());
             }
             settings.folder_rules.retain(|r| r.id != selected);
+            removed = true;
         }
         _ => return Ok(()),
     }
     app.dispatch(Action::SetSettings { settings })?;
     refresh_rule_list(f, &app.snapshot().settings.folder_rules);
+    if removed {
+        reset_rule_form(f);
+    } else {
+        reselect(f.list, &f.ids, saved);
+    }
     Ok(())
 }
 pub(super) unsafe fn sync_command(
@@ -309,6 +347,8 @@ pub(super) unsafe fn sync_command(
 ) -> anyhow::Result<()> {
     let mut settings = app.snapshot().settings.clone();
     let selected = selected_management_id(f.list, &f.ids).map(str::to_owned);
+    let mut saved = None;
+    let mut removed = false;
     if id == Y_LIST && code as u32 == LBN_SELCHANGE {
         if let Some(policy) = settings
             .synchronization_policies
@@ -325,12 +365,7 @@ pub(super) unsafe fn sync_command(
     }
     match id {
         Y_NEW => {
-            SendMessageW(f.list, LB_SETCURSEL, usize::MAX, 0);
-            set_text(f.url, "");
-            set_text(f.dir, "");
-            set_text(f.interval, "60");
-            set_check(f.enabled, true);
-            set_check(f.overwrite, false);
+            reset_sync_form(f);
             return Ok(());
         }
         Y_RUN => {
@@ -370,6 +405,7 @@ pub(super) unsafe fn sync_command(
             settings
                 .synchronization_policies
                 .retain(|p| p.id != selected);
+            removed = true;
         }
         Y_SAVE => {
             let mut policy = settings
@@ -398,6 +434,7 @@ pub(super) unsafe fn sync_command(
             )?;
             policy.enabled = check(f.enabled);
             policy.overwrite = check(f.overwrite);
+            saved = Some(policy.id.clone());
             if let Some(old) = settings
                 .synchronization_policies
                 .iter_mut()
@@ -412,6 +449,11 @@ pub(super) unsafe fn sync_command(
     }
     app.dispatch(Action::SetSettings { settings })?;
     refresh_sync_list(f, &app.snapshot().settings.synchronization_policies);
+    if removed {
+        reset_sync_form(f);
+    } else {
+        reselect(f.list, &f.ids, saved);
+    }
     Ok(())
 }
 pub(super) unsafe fn crawler_command(
@@ -867,6 +909,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                 if let Err(e) = dlg.app.dispatch(Action::InstallTools {
                     request_id: None,
                     force_update: false,
+                    automatic: false,
                 }) {
                     set_dialog_error(
                         dlg.hwnd,
@@ -883,6 +926,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
             T_UPDATE => {
                 if let Err(e) = dlg.app.dispatch(Action::InstallTools {
                     force_update: true,
+                    automatic: false,
                     request_id: None,
                 }) {
                     set_dialog_error(
@@ -1107,6 +1151,10 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                     ) {
                         f.logins.remove(index as usize);
                         refresh_login_list(f);
+                        for field in [f.host, f.user, f.pass] {
+                            set_text(field, "");
+                        }
+                        set_check(f.allow_http, false);
                     }
                 }
             }
