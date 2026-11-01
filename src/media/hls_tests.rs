@@ -914,8 +914,8 @@ fn a_file_in_another_container_than_its_extension_names_fails_verification() {
 
 /// The browser relays a muxed HLS playlist as one file of MPEG-TS segments, and a packed-audio
 /// playlist as raw ADTS, whatever container the job's name promises. A media job gets a copy of
-/// the file in the container its name asks for; a file already in it and a raw file job are moved
-/// as they are.
+/// the file in the container its name asks for, also when the segments were muxed one by one; a
+/// file already in it and a raw file job are moved as they are.
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
 fn a_relayed_file_is_copied_into_the_container_its_name_promises() {
@@ -974,6 +974,23 @@ fn a_relayed_file_is_copied_into_the_container_its_name_promises() {
         segments += 1;
     }
     assert!(segments >= 2, "{segments} segments");
+    // Segments muxed one by one restart the continuity counters of the transport stream, and
+    // FFmpeg flags the packets at the join as corrupt. The offset undoes the muxer's start delay
+    // of 1.4 s, so the timestamps stay continuous.
+    ffmpeg(&[
+        "-copyts",
+        "-i",
+        "seg1.ts",
+        "-c",
+        "copy",
+        "-output_ts_offset",
+        "-1.4",
+        "-f",
+        "mpegts",
+        "seg1-restarted.ts",
+    ]);
+    let mut restarted = fs::read(root.join("seg0.ts")).unwrap();
+    restarted.extend(fs::read(root.join("seg1-restarted.ts")).unwrap());
     encode(&["-f", "mp4", "right.mp4"]);
     let in_mp4 = fs::read(root.join("right.mp4")).unwrap();
     ffmpeg(&[
@@ -1002,6 +1019,7 @@ fn a_relayed_file_is_copied_into_the_container_its_name_promises() {
         ("c.mp4", &in_mp4, DownloadKind::Video, Some("mp4"), "mp4"),
         ("d.m4a", &packed, DownloadKind::Audio, None, "mp4"),
         ("e.mp4", &transport, DownloadKind::File, None, "mpegts"),
+        ("f.mp4", &restarted, DownloadKind::Video, Some("mp4"), "mp4"),
     ];
     let control = TransferControl::default();
     let mut failures = Vec::new();
@@ -1115,9 +1133,14 @@ fn yt_dlp_finds_the_tools_exactly_where_the_check_lets_them_start() {
     }
     for deno_units in [259, 260] {
         let deno = deno_at(deno_units);
-        let (_, runtimes) = reach(&ffmpeg_folders[0], &deno);
+        let (tools_line, runtimes) = reach(&ffmpeg_folders[0], &deno);
         let allowed = ensure_helpers_startable(&deno, &tools.ffmpeg, &tools.ffprobe).is_ok();
-        reached.push((deno_units, true, runtimes.contains("deno"), allowed));
+        reached.push((
+            deno_units,
+            tools_line.contains("ffmpeg"),
+            runtimes.contains("deno"),
+            allowed,
+        ));
     }
     let _ = fs::remove_dir_all(&root);
 

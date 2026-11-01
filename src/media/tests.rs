@@ -477,6 +477,56 @@ fn a_file_must_hold_the_container_its_extension_names() {
 }
 
 #[test]
+fn a_relayed_raw_file_is_placed_without_the_media_tools() {
+    let root = std::env::temp_dir().join(format!("ssdownload-placed-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    // The tools folder is empty: the profile has no media components.
+    let paths = AppPaths {
+        base_dir: root.clone(),
+        database: root.join("queue.sqlite3"),
+        tools_dir: root.join("tools"),
+        download_dir: root.join("Downloads"),
+    };
+    let request = |kind| AddRequest {
+        kind,
+        ..AddRequest::default()
+    };
+    let control = TransferControl::default();
+    let source = root.join("stream-0");
+    let relayed = b"bytes the page served".to_vec();
+
+    fs::write(&source, &relayed).unwrap();
+    let output = root.join("archive.zip");
+    place_browser_file(
+        &paths,
+        &request(DownloadKind::File),
+        &source,
+        &output,
+        &control,
+    )
+    .unwrap();
+    assert_eq!(fs::read(&output).unwrap(), relayed);
+    assert!(!source.exists());
+
+    // A media job needs ffprobe to read the container of what was relayed.
+    fs::write(&source, &relayed).unwrap();
+    let error = place_browser_file(
+        &paths,
+        &request(DownloadKind::Video),
+        &source,
+        &root.join("clip.mp4"),
+        &control,
+    )
+    .unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::TOL_001)
+    );
+    assert!(source.exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn media_publication_moves_only_the_final_file_out_of_private_workspace() {
     let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();

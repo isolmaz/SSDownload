@@ -1119,50 +1119,51 @@ pub(crate) fn place_browser_file(
     output: &Path,
     control: &TransferControl,
 ) -> Result<()> {
-    let extension = output.extension().and_then(|extension| extension.to_str());
-    let tools = tools::verified_toolchain(paths, control)?;
-    let remux_to = match extension {
-        Some(extension) if matches!(request.kind, DownloadKind::Video | DownloadKind::Audio) => {
-            let probed = run_capture(
-                &tools.ffprobe,
-                &[
-                    "-v".into(),
-                    "error".into(),
-                    "-protocol_whitelist".into(),
-                    "file,pipe".into(),
-                    "-show_entries".into(),
-                    "format=format_name".into(),
-                    "-of".into(),
-                    "default=nw=1:nk=1".into(),
-                    source.to_string_lossy().into_owned(),
-                ],
-                b"",
-                Duration::from_secs(60),
-                control,
-            )?;
-            let format_name = String::from_utf8_lossy(&probed.stdout);
-            // A file ffprobe cannot read is left for the verification to report.
-            (probed.status.success() && !container_matches_extension(format_name.trim(), extension))
-                .then_some(extension)
-        }
-        _ => None,
-    };
-    let Some(extension) = remux_to else {
+    let extension = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|_| matches!(request.kind, DownloadKind::Video | DownloadKind::Audio));
+    let Some(extension) = extension else {
         fs::rename(source, output)?;
         return Ok(());
     };
+    let tools = tools::verified_toolchain(paths, control)?;
+    let probed = run_capture(
+        &tools.ffprobe,
+        &[
+            "-v".into(),
+            "error".into(),
+            "-protocol_whitelist".into(),
+            "file,pipe".into(),
+            "-show_entries".into(),
+            "format=format_name".into(),
+            "-of".into(),
+            "default=nw=1:nk=1".into(),
+            source.to_string_lossy().into_owned(),
+        ],
+        b"",
+        Duration::from_secs(60),
+        control,
+    )?;
+    let format_name = String::from_utf8_lossy(&probed.stdout);
+    // A file ffprobe cannot read is left for the verification to report.
+    if !probed.status.success() || container_matches_extension(format_name.trim(), extension) {
+        fs::rename(source, output)?;
+        return Ok(());
+    }
     let parent = output.parent().context(crate::i18n::ui(
         "Tarayıcı medya hedef klasörü eksik",
         "The browser media target folder is missing",
     ))?;
     // The extension picks the muxer.
     let staged = parent.join(format!(".browser-mux-{}.{extension}", uuid::Uuid::new_v4()));
+    // No `-xerror`: segments muxed one by one restart the transport stream's continuity counters,
+    // FFmpeg flags the packets at each join as corrupt, and `-xerror` stops at the first.
     let result = run_capture(
         &tools.ffmpeg,
         &[
             "-v".into(),
             "error".into(),
-            "-xerror".into(),
             "-nostdin".into(),
             "-protocol_whitelist".into(),
             "file,crypto,data".into(),
