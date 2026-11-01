@@ -4,7 +4,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
@@ -56,6 +56,31 @@ pub enum OverLimit {
 pub struct CutBody {
     pub after_bytes: u64,
     pub responses: usize,
+}
+
+/// How many requests the server admits. A refused request is answered `status` with an empty
+/// body.
+#[derive(Clone, Debug)]
+pub struct RequestLimit {
+    pub kind: Limit,
+    pub status: u16,
+    /// A refusal carries `Retry-After` with the whole seconds, rounded up, until the limit admits
+    /// a request again: one second for `Limit::InFlight`, which cannot know.
+    pub retry_after: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Limit {
+    /// An admitted request takes a token. Tokens come back at `rate` per second up to `burst`,
+    /// and the bucket starts full. A refused request takes none.
+    TokenBucket { rate: f64, burst: f64 },
+    /// At most `requests` in any `window`, refused requests counted too.
+    SlidingWindow { requests: usize, window: Duration },
+    /// At most `requests` admitted in each `window`, the windows following each other from the
+    /// first request on.
+    FixedWindow { requests: usize, window: Duration },
+    /// At most `requests` admitted requests are answered at once.
+    InFlight { requests: usize },
 }
 
 /// One scripted answer with an empty body. The script is consumed in order, one entry per
@@ -164,11 +189,16 @@ pub struct Config {
     /// long, as if the connection took that long to set up; later requests on it are not held
     /// back.
     pub connection_delay: Option<Duration>,
+    /// Every answer, a refusal under `limit` too, is sent only after this long, as a distant
+    /// server's answers come.
+    pub latency: Option<Duration>,
     /// The first this many bytes of a body without a stall are sent at once, and `throttle` and
     /// `slow_connection` pace only what follows.
     pub burst: u64,
     pub max_connections: Option<usize>,
     pub over_limit: OverLimit,
+    /// Applies to every request on an admitted connection, before anything else answers it.
+    pub limit: Option<RequestLimit>,
     pub cut_body: Option<CutBody>,
     /// Each cut response lets this many more body bytes through than the one before it.
     pub cut_growth: u64,
@@ -239,9 +269,11 @@ impl Default for Config {
             hold_at_takeover: false,
             first_byte_delay: None,
             connection_delay: None,
+            latency: None,
             burst: 0,
             max_connections: None,
             over_limit: OverLimit::Unavailable(None),
+            limit: None,
             cut_body: None,
             cut_growth: 0,
             cut_from: 0,
@@ -313,6 +345,82 @@ struct Shared {
     stop: AtomicBool,
     log: Mutex<Vec<Logged>>,
     sockets: Mutex<Vec<TcpStream>>,
+    limiter: Mutex<Limiter>,
+}
+
+/// What `Config::limit` has counted so far.
+struct Limiter {
+    tokens: f64,
+    /// When `tokens` was last brought up to date.
+    updated: Instant,
+    /// The times of the requests in the sliding window.
+    arrivals: VecDeque<Instant>,
+    /// When the first fixed window began, and how many requests it and the current window admitted.
+    windows: Option<(Instant, u64, usize)>,
+    in_flight: usize,
+}
+
+impl Limiter {
+    /// Admits a request now, or tells how long until the limit admits one.
+    fn admit(&mut self, limit: Limit, now: Instant) -> Result<(), Duration> {
+        match limit {
+            Limit::TokenBucket { rate, burst } => {
+                self.tokens = (self.tokens + rate * now.duration_since(self.updated).as_secs_f64())
+                    .min(burst);
+                self.updated = now;
+                if self.tokens < 1.0 {
+                    return Err(Duration::from_secs_f64((1.0 - self.tokens) / rate));
+                }
+                self.tokens -= 1.0;
+            }
+            Limit::SlidingWindow { requests, window } => {
+                while self
+                    .arrivals
+                    .front()
+                    .is_some_and(|at| now.duration_since(*at) >= window)
+                {
+                    self.arrivals.pop_front();
+                }
+                self.arrivals.push_back(now);
+                let counted = self.arrivals.len();
+                if counted > requests {
+                    // Admitted again once all but `requests - 1` of the counted ones have left.
+                    let leaves = self.arrivals[counted - requests] + window;
+                    return Err(leaves.saturating_duration_since(now));
+                }
+            }
+            Limit::FixedWindow { requests, window } => {
+                let (first, current, admitted) = self.windows.get_or_insert((now, 0, 0));
+                let index = (now.duration_since(*first).as_nanos() / window.as_nanos()) as u64;
+                if index != *current {
+                    (*current, *admitted) = (index, 0);
+                }
+                if *admitted >= requests {
+                    let ends = *first + window * (index as u32 + 1);
+                    return Err(ends.saturating_duration_since(now));
+                }
+                *admitted += 1;
+            }
+            Limit::InFlight { requests } => {
+                if self.in_flight >= requests {
+                    return Err(Duration::from_secs(1));
+                }
+                self.in_flight += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Gives an admitted request's `Limit::InFlight` place back once it has been answered.
+struct InFlight<'a>(Option<&'a Shared>);
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        if let Some(shared) = self.0 {
+            shared.limiter.lock().unwrap().in_flight -= 1;
+        }
+    }
 }
 
 pub struct Server {
@@ -332,7 +440,18 @@ impl Server {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let switch_from = AtomicUsize::new(config.switch_version_after.unwrap_or(usize::MAX));
+        let tokens = match config.limit.as_ref().map(|limit| limit.kind) {
+            Some(Limit::TokenBucket { burst, .. }) => burst,
+            _ => 0.0,
+        };
         let shared = Arc::new(Shared {
+            limiter: Mutex::new(Limiter {
+                tokens,
+                updated: Instant::now(),
+                arrivals: VecDeque::new(),
+                windows: None,
+                in_flight: 0,
+            }),
             config,
             switch_from,
             requests: AtomicUsize::new(0),
@@ -1112,7 +1231,29 @@ fn answer(
 ) -> bool {
     let config = &shared.config;
     let index = shared.requests.fetch_add(1, Ordering::AcqRel);
-    let reply = plan(shared, request, index, over_limit);
+    let limit = config.limit.as_ref().filter(|_| !over_limit);
+    let refusal = limit.and_then(|limit| {
+        let wait = shared
+            .limiter
+            .lock()
+            .unwrap()
+            .admit(limit.kind, Instant::now())
+            .err()?;
+        let mut reply = Reply::empty(limit.status);
+        if limit.retry_after {
+            let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            reply
+                .headers
+                .push(retry_after_header(&RetryAfter::Seconds(seconds)));
+        }
+        Some(reply)
+    });
+    let _in_flight = InFlight(
+        limit
+            .filter(|limit| refusal.is_none() && matches!(limit.kind, Limit::InFlight { .. }))
+            .map(|_| shared),
+    );
+    let reply = refusal.unwrap_or_else(|| plan(shared, request, index, over_limit));
     let cut_after = config.cut_body.and_then(|cut| {
         let (start, length) = reply.body?;
         if start < config.cut_from || length <= cut.after_bytes {
@@ -1150,6 +1291,9 @@ fn answer(
     drop(log);
 
     if let Some(delay) = config.connection_delay.filter(|_| first_on_connection) {
+        thread::sleep(delay);
+    }
+    if let Some(delay) = config.latency {
         thread::sleep(delay);
     }
     if let Some(delay) = config.first_byte_delay {
@@ -1797,6 +1941,21 @@ mod tests {
     }
 
     #[test]
+    fn every_answer_on_a_connection_waits_for_the_latency() {
+        let delay = Duration::from_millis(200);
+        let server = Server::start(Config {
+            latency: Some(delay),
+            ..config(10)
+        });
+        let mut connection = connect(&server);
+        for _ in 0..2 {
+            let began = Instant::now();
+            assert_eq!(request(&mut connection, "GET", "/", &[]).status, 200);
+            assert!(began.elapsed() >= delay);
+        }
+    }
+
+    #[test]
     fn a_burst_is_sent_at_once_and_the_rest_of_the_body_is_paced() {
         // A body of 64 KiB at 32 KiB/s takes two seconds. With 48 KiB of it sent at once, the
         // 16 KiB that follow take half a second.
@@ -1938,6 +2097,99 @@ Host: test
         let bad_gateway = request(&mut connection, "HEAD", "/", &[]);
         assert_eq!(bad_gateway.status, 502);
         assert_eq!(bad_gateway.header("Retry-After"), None);
+        assert_eq!(request(&mut connection, "GET", "/", &[]).status, 200);
+    }
+
+    #[test]
+    fn each_request_limit_admits_what_its_model_allows_and_says_when_to_return() {
+        let limited = |kind: Limit, status: u16| {
+            Server::start(Config {
+                limit: Some(RequestLimit {
+                    kind,
+                    status,
+                    retry_after: true,
+                }),
+                ..config(10)
+            })
+        };
+        let answers = |server: &Server, count: usize| {
+            let mut connection = connect(server);
+            (0..count)
+                .map(|_| {
+                    let answer = request(&mut connection, "GET", "/", &[]);
+                    let retry_after = answer.header("Retry-After").map(str::to_owned);
+                    (answer.status, retry_after)
+                })
+                .collect::<Vec<_>>()
+        };
+        let admitted = (200, None);
+        let refused = |seconds: &str| (429, Some(seconds.to_owned()));
+
+        // Two tokens at the start, one more per second; the refused requests take none.
+        let bucket = limited(
+            Limit::TokenBucket {
+                rate: 1.0,
+                burst: 2.0,
+            },
+            429,
+        );
+        assert_eq!(
+            answers(&bucket, 5),
+            [
+                admitted.clone(),
+                admitted.clone(),
+                refused("1"),
+                refused("1"),
+                refused("1")
+            ]
+        );
+        // The refused ones count in this window: once the first request has left it, the refusal
+        // that came later still fills it.
+        let window = limited(
+            Limit::SlidingWindow {
+                requests: 1,
+                window: Duration::from_secs(2),
+            },
+            429,
+        );
+        assert_eq!(answers(&window, 2), [admitted.clone(), refused("2")]);
+        let fixed = limited(
+            Limit::FixedWindow {
+                requests: 2,
+                window: Duration::from_secs(1),
+            },
+            429,
+        );
+        assert_eq!(
+            answers(&fixed, 3),
+            [admitted.clone(), admitted.clone(), refused("1")]
+        );
+        thread::sleep(Duration::from_millis(1300));
+        assert_eq!(answers(&bucket, 2), [admitted.clone(), refused("1")]);
+        assert_eq!(answers(&window, 1), [refused("2")]);
+        assert_eq!(answers(&fixed, 1), [admitted]);
+        thread::sleep(Duration::from_millis(1000));
+        assert_eq!(answers(&window, 1), [refused("2")]);
+
+        // One answer at a time: a request that arrives while another is answered is refused.
+        let server = Server::start(Config {
+            limit: Some(RequestLimit {
+                kind: Limit::InFlight { requests: 1 },
+                status: 503,
+                retry_after: true,
+            }),
+            connection_delay: Some(Duration::from_millis(600)),
+            ..config(10)
+        });
+        let slow = {
+            let mut connection = connect(&server);
+            thread::spawn(move || request(&mut connection, "GET", "/", &[]).status)
+        };
+        thread::sleep(Duration::from_millis(200));
+        let mut connection = connect(&server);
+        let busy = request(&mut connection, "GET", "/", &[]);
+        assert_eq!((busy.status, busy.header("Retry-After")), (503, Some("1")));
+        assert_eq!(slow.join().unwrap(), 200);
         assert_eq!(request(&mut connection, "GET", "/", &[]).status, 200);
     }
 
