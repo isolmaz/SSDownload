@@ -1499,11 +1499,11 @@ pub(super) unsafe fn paint_theme(
         _ => None,
     }
 }
-/// A check box or radio button in the dark scheme. The themed button draws its
-/// label in the theme's own text colour, which ignores WM_CTLCOLORBTN and is
-/// dark on some Windows 11 builds, so uxtheme draws the box and the label is
-/// drawn here in the scheme's colours. This answers the button's NM_CUSTOMDRAW;
-/// any other notification is left to the window.
+/// A check box in the dark scheme. The themed button draws its label in the
+/// theme's own text colour, which ignores WM_CTLCOLORBTN and is dark on some
+/// Windows 11 builds, so uxtheme draws the box and the label is drawn here in
+/// the scheme's colours. This answers the NM_CUSTOMDRAW of a check box; any
+/// other notification and any other kind of button is left to the window.
 unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
     if (*(lparam as *const NMHDR)).code != NM_CUSTOMDRAW {
         return None;
@@ -1514,29 +1514,24 @@ unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
         return None;
     }
     let style = GetWindowLongPtrW(button, GWL_STYLE) as u32;
-    let radio = match (style & BS_TYPEMASK as u32) as i32 {
-        BS_CHECKBOX | BS_AUTOCHECKBOX | BS_3STATE | BS_AUTO3STATE => false,
-        BS_RADIOBUTTON | BS_AUTORADIOBUTTON => true,
-        _ => return None,
-    };
+    let kind = (style & BS_TYPEMASK as u32) as i32;
     // A push-like check box looks like a button; the wizard's cards paint themselves.
-    if style & BS_PUSHLIKE as u32 != 0 {
+    if !(kind == BS_CHECKBOX || kind == BS_AUTOCHECKBOX) || style & BS_PUSHLIKE as u32 != 0 {
         return None;
     }
     let theme = OpenThemeData(button, wide("Button").as_ptr());
     if theme == 0 {
         return None;
     }
-    let part = if radio { BP_RADIOBUTTON } else { BP_CHECKBOX };
     let enabled = IsWindowEnabled(button) != 0;
     let held = SendMessageW(button, BM_GETSTATE, 0, 0) as u32;
-    let mark = match SendMessageW(button, BM_GETCHECK, 0, 0) as u32 {
-        BST_CHECKED => CBS_CHECKEDNORMAL,
-        BST_INDETERMINATE => CBS_MIXEDNORMAL,
-        _ => CBS_UNCHECKEDNORMAL,
+    let mark = if SendMessageW(button, BM_GETCHECK, 0, 0) as u32 == BST_CHECKED {
+        CBS_CHECKEDNORMAL
+    } else {
+        CBS_UNCHECKEDNORMAL
     };
-    // Normal, hot, pressed and disabled follow each other in every group of
-    // states, and radio buttons number theirs the way check boxes do.
+    // Normal, hot, pressed and disabled follow each other in each group of
+    // states.
     let state = mark
         + if !enabled {
             CBS_UNCHECKEDDISABLED - CBS_UNCHECKEDNORMAL
@@ -1549,7 +1544,7 @@ unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
         };
     let dc = draw.hdc;
     let mut glyph: SIZE = zeroed();
-    if GetThemePartSize(theme, dc, part, state, null(), TS_DRAW, &mut glyph) < 0 {
+    if GetThemePartSize(theme, dc, BP_CHECKBOX, state, null(), TS_DRAW, &mut glyph) < 0 {
         CloseThemeData(theme);
         return None;
     }
@@ -1564,7 +1559,7 @@ unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
         right: area.left + glyph.cx,
         bottom: top + glyph.cy,
     };
-    DrawThemeBackground(theme, dc, part, state, &box_rect, null());
+    DrawThemeBackground(theme, dc, BP_CHECKBOX, state, &box_rect, null());
     CloseThemeData(theme);
 
     let font = SendMessageW(button, WM_GETFONT, 0, 0);

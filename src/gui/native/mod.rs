@@ -11178,8 +11178,7 @@ mod tests {
         }
     }
 
-    /// Check boxes and radio buttons in the dark scheme, painted by the themed
-    /// button class. The test binary has no manifest, so every test activates the
+    /// Check boxes in the dark scheme, painted by the themed button class. The test binary has no manifest, so every test activates the
     /// visual styles that the executable's manifest asks for on its own thread.
     mod dark_buttons {
         use super::super::{self as native, DARK_BACKGROUND, DARK_MUTED, DARK_TEXT};
@@ -11452,25 +11451,25 @@ mod tests {
             canvas.face()
         }
 
-        /// The size the theme gives the box of a check box or radio button.
-        unsafe fn box_size(button: HWND, part: i32, state: i32) -> SIZE {
+        /// The size the theme gives the box of a check box in `state`.
+        unsafe fn box_size(button: HWND, state: i32) -> SIZE {
             let theme = OpenThemeData(button, native::wide("Button").as_ptr());
             assert_ne!(theme, 0, "the button has a theme");
             let dc = GetDC(null_mut());
             let mut size: SIZE = zeroed();
-            GetThemePartSize(theme, dc, part, state, null(), TS_DRAW, &mut size);
+            GetThemePartSize(theme, dc, BP_CHECKBOX, state, null(), TS_DRAW, &mut size);
             ReleaseDC(null_mut(), dc);
             CloseThemeData(theme);
             size
         }
 
-        /// The box of `part` in `state` the way uxtheme draws it on the dark
-        /// surface, centred on the control's height.
-        unsafe fn themed_box(button: HWND, part: i32, state: i32) -> Face {
+        /// The box of a check box in `state` the way uxtheme draws it on the
+        /// dark surface, centred on the control's height.
+        unsafe fn themed_box(button: HWND, state: i32) -> Face {
             let mut client: RECT = zeroed();
             GetClientRect(button, &mut client);
             let canvas = Canvas::new(client.right, client.bottom, DARK_BACKGROUND);
-            let size = box_size(button, part, state);
+            let size = box_size(button, state);
             let top = (client.bottom - size.cy) / 2;
             let area = RECT {
                 left: 0,
@@ -11479,7 +11478,7 @@ mod tests {
                 bottom: top + size.cy,
             };
             let theme = OpenThemeData(button, native::wide("Button").as_ptr());
-            DrawThemeBackground(theme, canvas.dc, part, state, &area, null());
+            DrawThemeBackground(theme, canvas.dc, BP_CHECKBOX, state, &area, null());
             CloseThemeData(theme);
             canvas.face()
         }
@@ -11636,8 +11635,7 @@ mod tests {
                                     DARK_MUTED
                                 };
                                 let face = paint(button, 0);
-                                let from =
-                                    box_size(button, BP_CHECKBOX, CBS_UNCHECKEDNORMAL).cx + 1;
+                                let from = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
                                 let got = face.brightest(from, face.width);
                                 seen += 1;
                                 if got != channels(wanted) {
@@ -11684,11 +11682,39 @@ mod tests {
                             own,
                             "dark {dark}: a check box"
                         );
-                        // Push buttons and the push-like check boxes of the cards
-                        // paint themselves in both schemes.
+                        if !dark {
+                            // The theme keeps drawing the light labels.
+                            let face = paint(boxes[0], 0);
+                            let from = box_size(boxes[0], CBS_UNCHECKEDNORMAL).cx + 1;
+                            assert_eq!(
+                                face.darkest(from, face.width),
+                                channels(GetSysColor(COLOR_WINDOWTEXT)),
+                                "the light label"
+                            );
+                        }
+                    },
+                );
+            }
+        }
+
+        #[test]
+        fn buttons_other_than_check_boxes_are_left_to_the_default_drawing() {
+            for dark in [false, true] {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        // The cards of the wizard are push-like check boxes that paint
+                        // themselves.
                         for (what, style) in [
                             ("a push button", BS_PUSHBUTTON),
+                            ("a default push button", BS_DEFPUSHBUTTON),
                             ("a push-like check box", BS_AUTOCHECKBOX | BS_PUSHLIKE),
+                            ("a radio button", BS_AUTORADIOBUTTON),
+                            ("a three-state check box", BS_AUTO3STATE),
+                            ("a group box", BS_GROUPBOX),
                         ] {
                             let button = add_button(dialog, what, style, 0, dark);
                             assert_eq!(
@@ -11697,16 +11723,6 @@ mod tests {
                                 "dark {dark}: {what}"
                             );
                             DestroyWindow(button);
-                        }
-                        if !dark {
-                            // The theme keeps drawing the light labels.
-                            let face = paint(boxes[0], 0);
-                            let from = box_size(boxes[0], BP_CHECKBOX, CBS_UNCHECKEDNORMAL).cx + 1;
-                            assert_eq!(
-                                face.darkest(from, face.width),
-                                channels(GetSysColor(COLOR_WINDOWTEXT)),
-                                "the light label"
-                            );
                         }
                     },
                 );
@@ -11730,8 +11746,7 @@ mod tests {
                             for button in check_boxes(dialog.hwnd) {
                                 SendMessageW(button, BM_SETCHECK, 0, 0);
                                 let face = paint(button, 0);
-                                let edge =
-                                    box_size(button, BP_CHECKBOX, CBS_UNCHECKEDNORMAL).cx + 1;
+                                let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
                                 found.push((
                                     (tab, GetDlgCtrlID(button)),
                                     face.ink(0, edge),
@@ -11761,11 +11776,9 @@ mod tests {
             }
         }
 
-        /// A state of a check box or radio button and the part state uxtheme
-        /// has for it.
+        /// A state of a check box and the part state uxtheme has for it.
         struct Look {
             what: &'static str,
-            radio: bool,
             check: u32,
             disabled: bool,
             pressed: bool,
@@ -11773,27 +11786,17 @@ mod tests {
             state: i32,
         }
 
-        fn looks() -> Vec<Look> {
-            let check = |what, check, disabled, pressed, hot, state| Look {
+        fn looks() -> [Look; 8] {
+            let look = |what, check, disabled, pressed, hot, state| Look {
                 what,
-                radio: false,
                 check,
                 disabled,
                 pressed,
                 hot,
                 state,
             };
-            let radio = |what, check, disabled, pressed, hot, state| Look {
-                what,
-                radio: true,
-                check,
-                disabled,
-                pressed,
-                hot,
-                state,
-            };
-            vec![
-                check(
+            [
+                look(
                     "unchecked",
                     BST_UNCHECKED,
                     false,
@@ -11801,7 +11804,7 @@ mod tests {
                     false,
                     CBS_UNCHECKEDNORMAL,
                 ),
-                check(
+                look(
                     "unchecked, hot",
                     BST_UNCHECKED,
                     false,
@@ -11809,7 +11812,7 @@ mod tests {
                     true,
                     CBS_UNCHECKEDHOT,
                 ),
-                check(
+                look(
                     "unchecked, pressed",
                     BST_UNCHECKED,
                     false,
@@ -11817,7 +11820,7 @@ mod tests {
                     false,
                     CBS_UNCHECKEDPRESSED,
                 ),
-                check(
+                look(
                     "unchecked, disabled",
                     BST_UNCHECKED,
                     true,
@@ -11825,7 +11828,7 @@ mod tests {
                     false,
                     CBS_UNCHECKEDDISABLED,
                 ),
-                check(
+                look(
                     "checked",
                     BST_CHECKED,
                     false,
@@ -11833,7 +11836,7 @@ mod tests {
                     false,
                     CBS_CHECKEDNORMAL,
                 ),
-                check(
+                look(
                     "checked, hot",
                     BST_CHECKED,
                     false,
@@ -11841,7 +11844,7 @@ mod tests {
                     true,
                     CBS_CHECKEDHOT,
                 ),
-                check(
+                look(
                     "checked, pressed",
                     BST_CHECKED,
                     false,
@@ -11849,7 +11852,7 @@ mod tests {
                     false,
                     CBS_CHECKEDPRESSED,
                 ),
-                check(
+                look(
                     "checked, disabled",
                     BST_CHECKED,
                     true,
@@ -11857,115 +11860,21 @@ mod tests {
                     false,
                     CBS_CHECKEDDISABLED,
                 ),
-                check(
-                    "mixed",
-                    BST_INDETERMINATE,
-                    false,
-                    false,
-                    false,
-                    CBS_MIXEDNORMAL,
-                ),
-                check(
-                    "mixed, disabled",
-                    BST_INDETERMINATE,
-                    true,
-                    false,
-                    false,
-                    CBS_MIXEDDISABLED,
-                ),
-                radio(
-                    "unchecked",
-                    BST_UNCHECKED,
-                    false,
-                    false,
-                    false,
-                    RBS_UNCHECKEDNORMAL,
-                ),
-                radio(
-                    "unchecked, hot",
-                    BST_UNCHECKED,
-                    false,
-                    false,
-                    true,
-                    RBS_UNCHECKEDHOT,
-                ),
-                radio(
-                    "unchecked, pressed",
-                    BST_UNCHECKED,
-                    false,
-                    true,
-                    false,
-                    RBS_UNCHECKEDPRESSED,
-                ),
-                radio(
-                    "unchecked, disabled",
-                    BST_UNCHECKED,
-                    true,
-                    false,
-                    false,
-                    RBS_UNCHECKEDDISABLED,
-                ),
-                radio(
-                    "checked",
-                    BST_CHECKED,
-                    false,
-                    false,
-                    false,
-                    RBS_CHECKEDNORMAL,
-                ),
-                radio(
-                    "checked, hot",
-                    BST_CHECKED,
-                    false,
-                    false,
-                    true,
-                    RBS_CHECKEDHOT,
-                ),
-                radio(
-                    "checked, pressed",
-                    BST_CHECKED,
-                    false,
-                    true,
-                    false,
-                    RBS_CHECKEDPRESSED,
-                ),
-                radio(
-                    "checked, disabled",
-                    BST_CHECKED,
-                    true,
-                    false,
-                    false,
-                    RBS_CHECKEDDISABLED,
-                ),
             ]
         }
 
         #[test]
-        fn dark_check_boxes_and_radio_buttons_draw_the_box_of_their_state_and_a_scheme_label() {
+        fn dark_check_boxes_draw_the_box_of_their_state_and_a_scheme_label() {
             with_styled_dialog(
                 true,
                 settings_advanced,
                 560,
                 settings_height(false),
                 |dialog| unsafe {
-                    let mut drawn: Vec<(bool, &str, Vec<u32>)> = Vec::new();
+                    let mut drawn: Vec<(&str, Vec<u32>)> = Vec::new();
                     for look in looks() {
-                        let kind = if look.radio {
-                            "radio button"
-                        } else {
-                            "check box"
-                        };
-                        let button = add_button(
-                            dialog,
-                            "A label to read",
-                            if look.radio {
-                                BS_AUTORADIOBUTTON
-                            } else {
-                                BS_AUTO3STATE
-                            },
-                            0,
-                            true,
-                        );
+                        let button =
+                            add_button(dialog, "A label to read", BS_AUTOCHECKBOX, 0, true);
                         SendMessageW(button, BM_SETCHECK, look.check as usize, 0);
                         EnableWindow(button, !look.disabled as i32);
                         if look.pressed {
@@ -11974,35 +11883,30 @@ mod tests {
                         if look.hot {
                             SendMessageW(button, WM_MOUSEMOVE, 0, 5 | (5 << 16));
                         }
-                        let part = if look.radio {
-                            BP_RADIOBUTTON
-                        } else {
-                            BP_CHECKBOX
-                        };
                         let face = paint(button, 0);
-                        let size = box_size(button, part, look.state);
-                        let wanted = themed_box(button, part, look.state);
+                        let size = box_size(button, look.state);
+                        let wanted = themed_box(button, look.state);
                         assert!(
                             face.columns(0, size.cx) == wanted.columns(0, size.cx),
-                            "{kind}, {}: the box is not the one uxtheme draws for the state",
+                            "{}: the box is not the one uxtheme draws for the state",
                             look.what
                         );
                         let colour = if look.disabled { DARK_MUTED } else { DARK_TEXT };
                         assert_eq!(
                             face.brightest(size.cx + 1, face.width),
                             channels(colour),
-                            "{kind}, {}: the label",
+                            "{}: the label",
                             look.what
                         );
-                        drawn.push((look.radio, look.what, wanted.columns(0, size.cx)));
+                        drawn.push((look.what, wanted.columns(0, size.cx)));
                         DestroyWindow(button);
                     }
                     // The comparison above means something only if uxtheme draws the
                     // states differently.
-                    for (index, (radio, what, pixels)) in drawn.iter().enumerate() {
-                        for (other_radio, other, other_pixels) in &drawn[index + 1..] {
+                    for (index, (what, pixels)) in drawn.iter().enumerate() {
+                        for (other, other_pixels) in &drawn[index + 1..] {
                             assert!(
-                                radio != other_radio || pixels != other_pixels,
+                                pixels != other_pixels,
                                 "uxtheme draws \"{what}\" and \"{other}\" alike"
                             );
                         }
@@ -12044,7 +11948,7 @@ mod tests {
                     );
                     keyboard_cues(dialog.hwnd, true);
                     let focused = paint(button, 0);
-                    let edge = box_size(button, BP_CHECKBOX, CBS_UNCHECKEDNORMAL).cx + 1;
+                    let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
                     let outline = focused.ink(edge, focused.width).unwrap();
                     let text = underlined.ink(edge, underlined.width).unwrap();
                     assert!(
@@ -12075,7 +11979,7 @@ mod tests {
                         true,
                     );
                     let face = paint(button, LAYOUT_RTL);
-                    let size = box_size(button, BP_CHECKBOX, CBS_UNCHECKEDNORMAL);
+                    let size = box_size(button, CBS_UNCHECKEDNORMAL);
                     let label_end = face.width - size.cx - 1;
                     let glyph = face.ink(label_end, face.width).expect("the box is drawn");
                     assert_eq!(glyph[2], face.width - 1, "the box touches the right edge");
