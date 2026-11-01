@@ -1444,6 +1444,48 @@ pub(super) unsafe fn place_modern(control: HWND, show: bool, face: RECT, dpi: u3
     );
 }
 
+/// A WinUI check box's box fill, stroke and mark for its state on the
+/// content card.
+fn check_box_colours(
+    palette: &MainPalette,
+    dark: bool,
+    checked: bool,
+    look: ButtonState,
+) -> (u32, u32, u32) {
+    let card = palette.card;
+    let alt = |light: u32, dark_value: u32| over(if dark { dark_value } else { light }, card);
+    // ControlStrongStrokeColorDisabled, also AccentFillColorDisabled.
+    let muted = alt(0x37000000, 0x28ffffff);
+    // ControlAltFillColor and ControlStrongStrokeColor while clear,
+    // AccentFillColor and TextOnAccentFillColor while checked.
+    match (checked, look.disabled, look.pressed, look.hot) {
+        (true, true, _, _) => (
+            muted,
+            muted,
+            if dark {
+                over(0x87ffffff, muted)
+            } else {
+                0xffffff
+            },
+        ),
+        (true, _, true, _) => (
+            palette.accent_pressed,
+            palette.accent_pressed,
+            palette.on_accent_pressed,
+        ),
+        (true, _, _, true) => (
+            palette.accent_hover,
+            palette.accent_hover,
+            palette.on_accent,
+        ),
+        (true, _, _, _) => (palette.accent, palette.accent, palette.on_accent),
+        (false, true, _, _) => (card, muted, card),
+        (false, _, true, _) => (alt(0x18000000, 0x12ffffff), muted, card),
+        (false, _, _, true) => (alt(0x0f000000, 0x0bffffff), palette.strong_stroke, card),
+        _ => (alt(0x06000000, 0x19000000), palette.strong_stroke, card),
+    }
+}
+
 /// Paints a check box on the content card as a WinUI CheckBox: the 20 epx
 /// box, filled with the accent and a check mark while checked, the label
 /// 8 epx after it (wrapped for a multiline box), and the focus ring around
@@ -1479,37 +1521,7 @@ pub(super) unsafe fn paint_check_box(
         },
     );
     let checked = SendMessageW(control, BM_GETCHECK, 0, 0) as u32 == BST_CHECKED;
-    let alt = |light: u32, dark_value: u32| over(if dark { dark_value } else { light }, card);
-    // ControlStrongStrokeColorDisabled, also AccentFillColorDisabled.
-    let muted = alt(0x37000000, 0x28ffffff);
-    // ControlAltFillColor and ControlStrongStrokeColor while clear,
-    // AccentFillColor and TextOnAccentFillColor while checked.
-    let (fill, stroke, mark) = match (checked, look.disabled, look.pressed, look.hot) {
-        (true, true, _, _) => (
-            muted,
-            muted,
-            if dark {
-                over(0x87ffffff, muted)
-            } else {
-                0xffffff
-            },
-        ),
-        (true, _, true, _) => (
-            palette.accent_pressed,
-            palette.accent_pressed,
-            palette.on_accent_pressed,
-        ),
-        (true, _, _, true) => (
-            palette.accent_hover,
-            palette.accent_hover,
-            palette.on_accent,
-        ),
-        (true, _, _, _) => (palette.accent, palette.accent, palette.on_accent),
-        (false, true, _, _) => (card, muted, card),
-        (false, _, true, _) => (alt(0x18000000, 0x12ffffff), muted, card),
-        (false, _, _, true) => (alt(0x0f000000, 0x0bffffff), palette.strong_stroke, card),
-        _ => (alt(0x06000000, 0x19000000), palette.strong_stroke, card),
-    };
+    let (fill, stroke, mark) = check_box_colours(palette, dark, checked, look);
     let size = scale(CHECK_BOX, dpi).min(height);
     let (box_x, box_y) = (ring, (height - size) / 2);
     // The pixels are not mirrored with a right-to-left DC, while the mark and
@@ -3029,6 +3041,54 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_check_box_takes_winui_s_colours_for_each_state() {
+        use super::{check_box_colours, ButtonState};
+        let look = |disabled, pressed, hot| ButtonState {
+            primary: false,
+            disabled,
+            pressed,
+            hot,
+            focused: false,
+            underline: false,
+        };
+        for dark in [false, true] {
+            let p = fluent_palette(
+                dark,
+                AccentShades {
+                    dark1: 0xb35a00,
+                    light2: 0xffc54c,
+                },
+            );
+            let rest = look(false, false, false);
+            assert_eq!(
+                check_box_colours(&p, dark, true, rest),
+                (p.accent, p.accent, p.on_accent)
+            );
+            assert_eq!(
+                check_box_colours(&p, dark, true, look(false, false, true)),
+                (p.accent_hover, p.accent_hover, p.on_accent)
+            );
+            // Pressed wins over hot, as the pointer is on a pressed box.
+            assert_eq!(
+                check_box_colours(&p, dark, true, look(false, true, true)),
+                (p.accent_pressed, p.accent_pressed, p.on_accent_pressed)
+            );
+            let (fill, stroke, mark) = check_box_colours(&p, dark, false, rest);
+            assert_eq!((stroke, mark), (p.strong_stroke, p.card));
+            assert_ne!(fill, p.card);
+            // A disabled clear box is the card with a muted stroke, whatever
+            // the pointer does.
+            let disabled = check_box_colours(&p, dark, false, look(true, true, true));
+            assert_eq!(disabled.0, p.card);
+            assert_ne!(disabled.1, p.strong_stroke);
+            assert_eq!(
+                disabled,
+                check_box_colours(&p, dark, false, look(true, false, false))
+            );
         }
     }
 
