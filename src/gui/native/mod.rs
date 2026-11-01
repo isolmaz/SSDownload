@@ -537,6 +537,9 @@ struct MainUi {
     labels_hidden: std::cell::Cell<bool>,
     visible_ids: Vec<String>,
     row_cache: HashMap<String, Vec<String>>,
+    /// The Job log tab's page with the job and the file stamps it was read
+    /// for: a refresh that finds the same stamps keeps the page.
+    job_log: std::cell::RefCell<Option<JobLogPage>>,
     taskbar_created: u32,
     snapshot: AppSnapshot,
     filter_value: Filter,
@@ -1205,6 +1208,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             labels_hidden: std::cell::Cell::new(false),
             visible_ids: Vec::new(),
             row_cache: HashMap::new(),
+            job_log: std::cell::RefCell::new(None),
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
             snapshot: snapshot.clone(),
             filter_value: Filter::All,
@@ -2282,6 +2286,13 @@ const JOB_TABS: [(&str, &str); 3] = [
     ("Hata ayrıntısı", "Error details"),
 ];
 const JOB_LOG_PAGE: usize = 1;
+
+/// One job's Job log page and the stamps of the files it was read from.
+struct JobLogPage {
+    job: String,
+    stamp: Vec<Option<(u64, std::time::SystemTime)>>,
+    text: String,
+}
 
 /// The pages a level has tabs for. The job log follows the job log command:
 /// a level that refuses the command has no tab for it either.
@@ -3427,6 +3438,7 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
     ui.update_version = update_version;
     if modern() && (mode != previous_mode || language_changed) {
         fill_job_tabs(ui, previous_mode);
+        ui.job_log.borrow_mut().take();
     }
     let menu = create_main_menu(mode, debug);
     SendMessageW(menu as HWND, WM_SETFONT, menu_font(ui) as usize, 1);
@@ -5667,15 +5679,28 @@ unsafe fn update_details(ui: &MainUi) {
                 crate::i18n::ui("Tek bir indirme seçin.", "Select a single download.").to_string()
             }
             (JOB_LOG_PAGE, [job]) => {
-                let lines = crate::logging::job_timeline(&job.id, 400);
-                if lines.is_empty() {
-                    crate::i18n::ui(
-                        "Bu indirme için henüz kayıt yok.",
-                        "No entries for this download yet.",
-                    )
-                    .to_string()
-                } else {
-                    lines.join("\r\n")
+                let stamp = crate::logging::job_timeline_stamp(&job.id);
+                let mut cache = ui.job_log.borrow_mut();
+                match &*cache {
+                    Some(page) if page.job == job.id && page.stamp == stamp => page.text.clone(),
+                    _ => {
+                        let lines = crate::logging::job_timeline(&job.id, 400);
+                        let text = if lines.is_empty() {
+                            crate::i18n::ui(
+                                "Bu indirme için henüz kayıt yok.",
+                                "No entries for this download yet.",
+                            )
+                            .to_string()
+                        } else {
+                            lines.join("\r\n")
+                        };
+                        *cache = Some(JobLogPage {
+                            job: job.id.clone(),
+                            stamp,
+                            text: text.clone(),
+                        });
+                        text
+                    }
                 }
             }
             (_, [job]) => match &job.error {

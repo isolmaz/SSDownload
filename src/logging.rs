@@ -637,18 +637,38 @@ pub fn job_timeline(job_id: &str, limit: usize) -> Vec<String> {
     read_job_timeline(&writer.logs.join("jobs"), job_id, limit)
 }
 
+/// The length and modification time of each file of a job's timeline, None for a missing one:
+/// while they stay the same, `job_timeline` reads the same lines.
+pub fn job_timeline_stamp(job_id: &str) -> Vec<Option<(u64, std::time::SystemTime)>> {
+    let Some(writer) = WRITER.get() else {
+        return Vec::new();
+    };
+    timeline_files(&writer.logs.join("jobs"), job_id)
+        .iter()
+        .map(|file| {
+            let metadata = fs::metadata(file).ok()?;
+            Some((metadata.len(), metadata.modified().ok()?))
+        })
+        .collect()
+}
+
+/// A job timeline's live file and its rotated predecessor.
+fn timeline_files(dir: &Path, job_id: &str) -> [PathBuf; 2] {
+    let name = safe_name(job_id, 64);
+    [
+        dir.join(format!("job-{name}.jsonl")),
+        dir.join(format!("job-{name}.1.jsonl")),
+    ]
+}
+
 /// Reads one job timeline from `dir`. Rotated content is read after the live file, so the newest
 /// lines win when `limit` truncates the history.
 pub(crate) fn read_job_timeline(dir: &Path, job_id: &str, limit: usize) -> Vec<String> {
     if limit == 0 {
         return Vec::new();
     }
-    let name = safe_name(job_id, 64);
     let mut chosen: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    for file in [
-        dir.join(format!("job-{name}.jsonl")),
-        dir.join(format!("job-{name}.1.jsonl")),
-    ] {
+    for file in timeline_files(dir, job_id) {
         if chosen.len() >= limit {
             break;
         }
