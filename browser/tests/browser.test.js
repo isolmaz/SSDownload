@@ -813,6 +813,111 @@ test("the switch clears discoveries and de-duplicates context submissions across
   assert.equal(restarted.storage.session.downloadTickets[0][1].submitted, true);
 });
 
+// The records of the right-click adds `ms` older, as if that much time had passed (a negative `ms` puts them in the future,
+// as if the clock had gone back).
+const ageTickets = (h, ms = 60000) => vm.runInContext(`for (const ticket of tickets.values()) ticket.at -= ${ms}`, h.context);
+
+test("a link added again from the same tab once the site's cookies are allowed or changed is sent, a plain repeat is not", async () => {
+  const h = backgroundHarness();
+  const link = "https://files.example/one.pdf";
+  const adds = () => h.nativeRequests.filter(request => request?.action?.type === "add").map(request => request.action.request);
+  const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: link } });
+  const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "sid", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
+  await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: link, kind: "file" }] });
+  await addLink();
+  await h.waitFor(() => adds().length === 1);
+  assert.equal(adds()[0].session_cookies, undefined, "no consent yet, so no cookies");
+  await addLink();
+  await h.settle();
+  assert.equal(adds().length, 1, "a double add without any change is a duplicate");
+
+  await h.menu("ssdownload-session-grant");
+  jar("first");
+  await addLink();
+  await h.waitFor(() => adds().length === 2);
+  assert.deepEqual(plain(adds()[1].session_cookies.map(cookie => [cookie.name, cookie.value])), [["sid", "first"]]);
+  assert.notEqual(adds()[1].request_id, adds()[0].request_id, "the app receives it as a new request");
+  await addLink();
+  await h.settle();
+  assert.equal(adds().length, 2, "the same cookies again is a duplicate");
+
+  ageTickets(h);
+  jar("second");
+  await addLink();
+  await h.waitFor(() => adds().length === 3);
+  assert.deepEqual(plain(adds()[2].session_cookies.map(cookie => cookie.value)), ["second"], "a signed-in-again session is another request");
+});
+
+test("a second click within seconds is a repeat even when the site's cookies change between the clicks", async () => {
+  const h = backgroundHarness();
+  const link = "https://files.example/one.pdf";
+  const adds = () => h.nativeRequests.filter(request => request?.action?.type === "add").map(request => request.action.request);
+  const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: link } });
+  const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "lb", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
+  await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: link, kind: "file" }] });
+  await h.menu("ssdownload-session-grant");
+  jar("a");
+  await addLink();
+  await h.waitFor(() => adds().length === 1);
+  for (const value of ["b", "c"]) {
+    jar(value);
+    await addLink();
+    await h.settle();
+  }
+  assert.equal(adds().length, 1, "cookies that rotate on every response do not make a quick second click another download");
+  await h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/two.pdf" } });
+  await h.waitFor(() => adds().length === 2);
+  assert.equal(adds()[1].url, "https://files.example/two.pdf", "another link inside the window is its own request");
+
+  ageTickets(h);
+  jar("d");
+  await addLink();
+  await h.waitFor(() => adds().length === 3);
+  assert.deepEqual(plain(adds()[2].session_cookies.map(cookie => cookie.value)), ["d"], "after the window the cookies decide");
+  await addLink();
+  await h.settle();
+  assert.equal(adds().length, 3, "the same cookies again is still a repeat");
+});
+
+test("the double-click window counts from the add, not from each click", async () => {
+  const h = backgroundHarness();
+  const link = "https://files.example/one.pdf";
+  const adds = () => h.nativeRequests.filter(request => request?.action?.type === "add").map(request => request.action.request);
+  const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: link } });
+  const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "lb", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
+  await h.menu("ssdownload-session-grant");
+  jar("a");
+  await addLink();
+  await h.waitFor(() => adds().length === 1);
+  ageTickets(h, 8000);
+  jar("b");
+  await addLink();
+  await h.settle();
+  assert.equal(adds().length, 1, "8 seconds after the add, the rotated cookie is still a repeat");
+  ageTickets(h, 8000);
+  jar("c");
+  await addLink();
+  await h.waitFor(() => adds().length === 2);
+  assert.deepEqual(plain(adds()[1].session_cookies.map(cookie => cookie.value)), ["c"], "16 seconds after the add, the click in between has not extended the window");
+});
+
+test("an add stamped in the future, the clock having gone back, does not make a changed session a repeat", async () => {
+  const h = backgroundHarness();
+  const link = "https://files.example/one.pdf";
+  const adds = () => h.nativeRequests.filter(request => request?.action?.type === "add").map(request => request.action.request);
+  const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: link } });
+  const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "sid", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
+  await h.menu("ssdownload-session-grant");
+  jar("first");
+  await addLink();
+  await h.waitFor(() => adds().length === 1);
+  ageTickets(h, -3600000);
+  jar("second");
+  await addLink();
+  await h.waitFor(() => adds().length === 2);
+  assert.deepEqual(plain(adds()[1].session_cookies.map(cookie => cookie.value)), ["second"], "signed in again after the clock went back by an hour");
+});
+
 test("native host failures are converted into an actionable browser message", async () => {
   const h = backgroundHarness({ native: async () => { throw new Error("Native messaging host not found"); } });
   await h.menu("ssdownload-app");

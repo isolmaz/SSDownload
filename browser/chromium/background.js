@@ -11,6 +11,7 @@ const REQUEST_CONTEXT_MAX_AGE = 120000;
 const CAPABILITY_CACHE_AGE = 60000;
 const CAPABILITY_ERROR_AGE = 5000;
 const SESSION_SAVE_DELAY = 750;
+const DUPLICATE_ADD_WINDOW = 10000;
 // The page markup a handoff may carry for the error report, bounded in bytes: a truncated
 // capture says so in place, and neither side of the wire ever sees more than the bound.
 const PAGE_HTML_LIMIT = 192 * 1024;
@@ -163,7 +164,8 @@ function isExtensionContent(sender) {
 function validBrowserTabId(value) { return Number.isInteger(value) && value >= 0; }
 function validTicket(key, value) {
   return /^[a-f0-9]{64}$/.test(key) && typeof value?.id==="string" && /^[0-9a-f-]{36}$/i.test(value.id)
-    && typeof value.submitted==="boolean" && (value.tabId===undefined||validBrowserTabId(value.tabId));
+    && typeof value.submitted==="boolean" && (value.tabId===undefined||validBrowserTabId(value.tabId))
+    && (value.plain===undefined||/^[a-f0-9]{64}$/.test(value.plain)) && (value.at===undefined||Number.isFinite(value.at));
 }
 function validLaunch(key, value) {
   return typeof key==="string" && key.length>0 && key.length<=16384 && typeof value?.id==="string"
@@ -1251,6 +1253,10 @@ async function openMediaPicker(tabId, item, frameId, requestedKind) {
     throw error;
   }
 }
+async function sha256(parts) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(parts)));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
 // Direct context-menu submissions keep the existing digest de-duplication so a
 // repeated click cannot queue the same job twice.
 async function contextAdd(tabId, target, kind, pageUrl, label, frameId) {
@@ -1265,12 +1271,19 @@ async function contextAdd(tabId, target, kind, pageUrl, label, frameId) {
     if (pageHtml) request.page_html = pageHtml;
   }
   if (session.session_cookies?.length) request.session_cookies = session.session_cookies;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([tabId, kind, target, request.filename])));
-  const key = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
-  let ticket = tickets.get(key);
+  // The cookies sent are part of the identity: a link added again once the site's cookies are allowed, or have changed,
+  // is another request, not a repeat. Some cookies change on their own (a load balancer's stickiness cookie), and two
+  // clicks a few seconds apart must stay one request. So for DUPLICATE_ADD_WINDOW after an add, the same link with
+  // cookies sent (or not sent) alike is that add, whatever the values. An add stamped in the future (the clock went
+  // back) is outside the window. Only digests of the keys are kept.
+  const jar = (request.session_cookies || []).map(cookie => JSON.stringify([cookie.name, cookie.domain, cookie.path, cookie.partition_key, cookie.value])).sort();
+  const key = await sha256([tabId, kind, target, request.filename, jar]);
+  const plain = await sha256([tabId, kind, target, request.filename, jar.length > 0]);
+  const now = Date.now();
+  let ticket = tickets.get(key) || Array.from(tickets.values()).find(entry => entry.plain === plain && entry.at <= now && now - entry.at < DUPLICATE_ADD_WINDOW);
   if (ticket && ticket.tabId === undefined) ticket.tabId = tabId;
   if (!ticket) {
-    ticket = { id: crypto.randomUUID(), submitted: false, tabId };
+    ticket = { id: crypto.randomUUID(), submitted: false, tabId, plain, at: now };
     tickets.set(key, ticket);
     while (tickets.size > 100) tickets.delete(tickets.keys().next().value);
   }

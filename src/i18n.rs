@@ -91,6 +91,29 @@ pub const LANGUAGES: [LanguageInfo; 7] = [
 /// The active interface language, as an index into `LANGUAGES`.
 static LANGUAGE: AtomicU8 = AtomicU8::new(0);
 
+#[cfg(test)]
+thread_local! {
+    static THREAD_LANGUAGE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `body` with this thread reading its texts in the language `code` selects. Tests run in
+/// parallel, so the process-wide language stays untouched.
+#[cfg(test)]
+pub(crate) fn with_language<T>(code: &str, body: impl FnOnce() -> T) -> T {
+    let previous = THREAD_LANGUAGE.replace(Some(index_of(code)));
+    let result = body();
+    THREAD_LANGUAGE.set(previous);
+    result
+}
+
+fn active() -> usize {
+    #[cfg(test)]
+    if let Some(index) = THREAD_LANGUAGE.get() {
+        return index;
+    }
+    usize::from(LANGUAGE.load(Ordering::Relaxed))
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn GetUserDefaultUILanguage() -> u16;
@@ -112,7 +135,7 @@ pub(crate) fn set_language(value: &str) {
 
 /// The active interface language.
 pub fn language() -> Language {
-    LANGUAGES[usize::from(LANGUAGE.load(Ordering::Relaxed))].language
+    LANGUAGES[active()].language
 }
 
 /// The code of the language a stored `Settings.ui_language` value selects.
@@ -122,7 +145,7 @@ pub fn code_of(value: &str) -> &'static str {
 
 /// The code of the active interface language.
 pub fn code() -> &'static str {
-    LANGUAGES[usize::from(LANGUAGE.load(Ordering::Relaxed))].code
+    LANGUAGES[active()].code
 }
 
 /// Whether the active language is written right to left, so windows are laid out mirrored.

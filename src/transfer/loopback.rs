@@ -2965,6 +2965,11 @@ fn assert_page_refused(error: &anyhow::Error, output: &Path) {
         Some(crate::error_codes::NET_004),
         "{error:#}"
     );
+    assert_eq!(
+        crate::error_codes::from_text(&format!("{error:#}")),
+        Some(crate::error_codes::NET_004),
+        "the recorded text leads with the code"
+    );
     assert!(!output.exists(), "the page was published");
     let part = part_path(output);
     assert!(
