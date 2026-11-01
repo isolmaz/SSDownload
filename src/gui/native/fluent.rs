@@ -2046,6 +2046,41 @@ unsafe fn modern_list_tail(ui: &MainUi, dc: HDC) {
 /// text, except on a selected row, whose accent tint is too dark for it in
 /// light mode. The name has a 16 epx glyph slot in front of it: an error mark for a
 /// failed job and a pause mark for a paused one.
+/// The info tip of a row: its full name when the row cuts it short. The
+/// list measures a name with its own, smaller insets and then calls it
+/// unfolded, so a name cut by the glyph slot is named here.
+pub(super) unsafe fn name_tip(ui: &MainUi, tip: &mut NMLVGETINFOTIPW) {
+    if tip.iSubItem != 0
+        || tip.dwFlags & LVGIT_UNFOLDED == 0
+        || tip.pszText.is_null()
+        || tip.cchTextMax < 2
+    {
+        return;
+    }
+    let Some(job) = usize::try_from(tip.iItem)
+        .ok()
+        .and_then(|row| ui.visible_ids.get(row))
+        .and_then(|id| ui.snapshot.jobs.iter().find(|job| &job.id == id))
+    else {
+        return;
+    };
+    let room =
+        SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, 0, 0) as i32 - scale(8 + 16 + 8 + 6, ui.dpi);
+    let dc = GetDC(ui.list);
+    let previous = SelectObject(dc, SendMessageW(ui.list, WM_GETFONT, 0, 0) as HGDIOBJ);
+    let width = label_width(dc, &job.name);
+    SelectObject(dc, previous);
+    ReleaseDC(ui.list, dc);
+    if width <= room {
+        return;
+    }
+    let name: Vec<u16> = job.name.encode_utf16().collect();
+    let length = name.len().min(tip.cchTextMax as usize - 1);
+    let target = std::slice::from_raw_parts_mut(tip.pszText, length + 1);
+    target[..length].copy_from_slice(&name[..length]);
+    target[length] = 0;
+}
+
 unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
     let palette = main_palette(ui.hwnd);
     let pad = scale(8, ui.dpi);
