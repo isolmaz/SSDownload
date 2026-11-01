@@ -244,33 +244,27 @@ pub(crate) fn ensure(
     let Some(Plan {
         yt_release,
         previous,
-    }) = plan(
-        &existing,
-        automatic,
-        self_test_failed_at(paths),
-        unix_seconds(),
-        || {
-            emit(
-                progress,
-                crate::i18n::ui("Medya bileşenleri", "Media components"),
-                crate::i18n::ui(
-                    "Güncel sürüm bilgileri alınıyor",
-                    "Fetching current version information",
-                ),
-                0,
-                None,
-            );
-            github_json(
-                "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=10",
-                control,
-                network,
-            )
-            .context(crate::i18n::ui(
-                "yt-dlp sürüm bilgisi alınamadı",
-                "The yt-dlp version information could not be retrieved",
-            ))
-        },
-    )?
+    }) = plan(paths, &existing, automatic, unix_seconds(), || {
+        emit(
+            progress,
+            crate::i18n::ui("Medya bileşenleri", "Media components"),
+            crate::i18n::ui(
+                "Güncel sürüm bilgileri alınıyor",
+                "Fetching current version information",
+            ),
+            0,
+            None,
+        );
+        github_json(
+            "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=10",
+            control,
+            network,
+        )
+        .context(crate::i18n::ui(
+            "yt-dlp sürüm bilgisi alınamadı",
+            "The yt-dlp version information could not be retrieved",
+        ))
+    })?
     else {
         crate::logging::record(crate::logging::Event::info("tools.refresh_deferred"));
         return Ok(existing);
@@ -570,18 +564,18 @@ struct Plan {
 }
 
 /// Decides an install or refresh from the installed set, whether the application started it
-/// itself, the time of the last failed automatic self-test and the clock. `None` means nothing
-/// is done now: an automatic refresh of a working set waits `SELF_TEST_RETRY_AFTER` after a
-/// failed self-test. `releases` fetches the yt-dlp release list and is not called then.
+/// itself and the clock. `None` means nothing is done now: an automatic refresh of a working set
+/// waits `SELF_TEST_RETRY_AFTER` after the failed self-test that `paths` remembers. `releases`
+/// fetches the yt-dlp release list and is not called then.
 fn plan(
+    paths: &AppPaths,
     existing: &[ToolInfo],
     automatic: bool,
-    last_failure: Option<i64>,
     now: i64,
     releases: impl FnOnce() -> Result<Vec<GithubRelease>>,
 ) -> Result<Option<Plan>> {
     let previous = previous_set(existing, automatic);
-    if previous == Previous::Kept && retry_deferred(last_failure, now) {
+    if previous == Previous::Kept && retry_deferred(self_test_failed_at(paths), now) {
         return Ok(None);
     }
     let yt_release = yt_dlp_release(releases()?, now, yt_dlp_min_age(automatic))?;
@@ -606,6 +600,13 @@ fn self_test_failed_at(paths: &AppPaths) -> Option<i64> {
         .trim()
         .parse()
         .ok()
+}
+
+fn remember_self_test_failure(paths: &AppPaths, at: i64) {
+    let _ = crate::recovery::atomic_write(
+        &paths.tools_dir.join(SELF_TEST_FAILED_FILE),
+        at.to_string().as_bytes(),
+    );
 }
 
 /// Runs the self-test of the staged set in a scratch folder next to it.
@@ -652,10 +653,7 @@ fn install_candidate(
                     .detail(format!("{}: {error:#}; {previous:?}", manifest.install_id)),
             );
             if previous == Previous::Kept {
-                let _ = crate::recovery::atomic_write(
-                    &paths.tools_dir.join(SELF_TEST_FAILED_FILE),
-                    unix_seconds().to_string().as_bytes(),
-                );
+                remember_self_test_failure(paths, unix_seconds());
             }
             return match previous {
                 Previous::Missing => Err(error),
@@ -2615,9 +2613,10 @@ mod tests {
     #[test]
     fn a_plan_takes_a_settled_release_for_an_automatic_install_and_the_newest_for_an_explicit_one()
     {
+        let paths = test_paths();
         let working = installed_tools(true);
         let tag = |automatic| {
-            plan(&working, automatic, None, at(NOW), two_releases)
+            plan(&paths, &working, automatic, at(NOW), two_releases)
                 .unwrap()
                 .unwrap()
                 .yt_release
@@ -2630,11 +2629,12 @@ mod tests {
 
     #[test]
     fn a_plan_tells_what_a_failed_self_test_means_for_the_installed_set() {
+        let paths = test_paths();
         let previous = |working, automatic| {
             plan(
+                &paths,
                 &installed_tools(working),
                 automatic,
-                None,
                 at(NOW),
                 two_releases,
             )
@@ -2651,37 +2651,50 @@ mod tests {
 
     #[test]
     fn an_automatic_refresh_of_a_working_set_waits_a_day_after_a_failed_self_test() {
+        let paths = test_paths();
+        fs::create_dir_all(&paths.tools_dir).unwrap();
         let (working, broken) = (installed_tools(true), installed_tools(false));
         let now = at(NOW);
         let day = SELF_TEST_RETRY_AFTER.as_secs() as i64;
         let never_fetched = || -> Result<Vec<GithubRelease>> {
             panic!("the release list was fetched although the refresh waits")
         };
+        // The self-test failed at the given time; `None`: no failure is remembered.
+        let failed_at = |time: Option<i64>| match time {
+            Some(time) => remember_self_test_failure(&paths, time),
+            None => {
+                let _ = fs::remove_file(paths.tools_dir.join(SELF_TEST_FAILED_FILE));
+            }
+        };
 
         assert_eq!(day, 24 * 60 * 60);
-        assert!(plan(&working, true, Some(now - 3_600), now, never_fetched)
+        failed_at(Some(now - 3_600));
+        assert!(plan(&paths, &working, true, now, never_fetched)
             .unwrap()
             .is_none());
-        assert!(
-            plan(&working, true, Some(now - day + 1), now, never_fetched)
-                .unwrap()
-                .is_none()
-        );
-        assert!(plan(&working, true, Some(now - day), now, two_releases)
+        failed_at(Some(now - day + 1));
+        assert!(plan(&paths, &working, true, now, never_fetched)
+            .unwrap()
+            .is_none());
+        failed_at(Some(now - day));
+        assert!(plan(&paths, &working, true, now, two_releases)
             .unwrap()
             .is_some());
-        assert!(plan(&working, true, None, now, two_releases)
+        failed_at(None);
+        assert!(plan(&paths, &working, true, now, two_releases)
             .unwrap()
             .is_some());
         // An explicit request, a set that is not installed and a time in the future (a clock
         // that was set back) are not held back.
-        assert!(plan(&working, false, Some(now - 3_600), now, two_releases)
+        failed_at(Some(now - 3_600));
+        assert!(plan(&paths, &working, false, now, two_releases)
             .unwrap()
             .is_some());
-        assert!(plan(&broken, true, Some(now - 3_600), now, two_releases)
+        assert!(plan(&paths, &broken, true, now, two_releases)
             .unwrap()
             .is_some());
-        assert!(plan(&working, true, Some(now + 3_600), now, two_releases)
+        failed_at(Some(now + 3_600));
+        assert!(plan(&paths, &working, true, now, two_releases)
             .unwrap()
             .is_some());
     }
