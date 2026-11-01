@@ -11177,4 +11177,903 @@ mod tests {
             );
         }
     }
+
+    /// Check boxes in the dark scheme, painted by the themed button class. The test binary has no manifest, so every test activates the
+    /// visual styles that the executable's manifest asks for on its own thread.
+    mod dark_buttons {
+        use super::super::{self as native, DARK_BACKGROUND, DARK_MUTED, DARK_TEXT};
+        use super::{on_private_desktop, settings_kind, HiddenDialog};
+        use crate::model::UiMode;
+        use std::{
+            mem::{size_of, zeroed},
+            ptr::{null, null_mut},
+        };
+        use windows_sys::Win32::{
+            Foundation::{HWND, RECT, SIZE},
+            Graphics::Gdi::*,
+            UI::{
+                Controls::*,
+                Input::KeyboardAndMouse::{EnableWindow, GetFocus, IsWindowEnabled, SetFocus},
+                WindowsAndMessaging::*,
+            },
+        };
+
+        #[repr(C)]
+        struct ActCtx {
+            size: u32,
+            flags: u32,
+            source: *const u16,
+            architecture: u16,
+            language: u16,
+            assembly_directory: *const u16,
+            resource_name: *const u16,
+            application_name: *const u16,
+            module: isize,
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CreateActCtxW(context: *const ActCtx) -> isize;
+            fn ActivateActCtx(context: isize, cookie: *mut usize) -> i32;
+            fn DeactivateActCtx(flags: u32, cookie: usize) -> i32;
+            fn ReleaseActCtx(context: isize);
+        }
+
+        /// The common controls version 6 of the executable's manifest, active on
+        /// the current thread: buttons are themed and send NM_CUSTOMDRAW only
+        /// under it.
+        struct VisualStyles {
+            context: isize,
+            cookie: usize,
+        }
+
+        impl VisualStyles {
+            fn activate() -> Self {
+                use std::os::windows::ffi::OsStrExt;
+
+                let manifest = include_str!("../../../assets/app.manifest")
+                    .replace("@VERSION_QUAD@", "0.0.0.0");
+                let path = std::env::temp_dir().join(format!(
+                    "ssdownload-visual-styles-{}.manifest",
+                    uuid::Uuid::new_v4()
+                ));
+                std::fs::write(&path, manifest).unwrap();
+                let source: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+                unsafe {
+                    let request = ActCtx {
+                        size: size_of::<ActCtx>() as u32,
+                        flags: 0,
+                        source: source.as_ptr(),
+                        architecture: 0,
+                        language: 0,
+                        assembly_directory: null(),
+                        resource_name: null(),
+                        application_name: null(),
+                        module: 0,
+                    };
+                    let context = CreateActCtxW(&request);
+                    let _ = std::fs::remove_file(&path);
+                    assert_ne!(context, -1, "the manifest is accepted");
+                    let mut cookie = 0usize;
+                    assert_ne!(
+                        ActivateActCtx(context, &mut cookie),
+                        0,
+                        "the context activates"
+                    );
+                    Self { context, cookie }
+                }
+            }
+        }
+
+        impl Drop for VisualStyles {
+            fn drop(&mut self) {
+                unsafe {
+                    DeactivateActCtx(0, self.cookie);
+                    ReleaseActCtx(self.context);
+                }
+            }
+        }
+
+        /// A dialog on a private desktop with the visual styles on its thread
+        /// while it is built, drawn and dropped, in the dark scheme or the light
+        /// one.
+        fn with_styled_dialog<T: Send>(
+            dark: bool,
+            make: impl FnOnce() -> native::DialogKind + Send,
+            width: i32,
+            height: i32,
+            body: impl FnOnce(&HiddenDialog) -> T + Send,
+        ) -> T {
+            on_private_desktop(|| {
+                let _styles = VisualStyles::activate();
+                let dialog = HiddenDialog::seeded(make(), width, height, |app| {
+                    let mut settings = app.snapshot().settings.clone();
+                    settings.dark_mode = dark;
+                    app.update_settings_quiet(settings).unwrap();
+                });
+                body(&dialog)
+            })
+        }
+
+        fn settings_advanced() -> native::DialogKind {
+            settings_kind(UiMode::Advanced)
+        }
+
+        fn settings_simple() -> native::DialogKind {
+            settings_kind(UiMode::Simple)
+        }
+
+        fn settings_height(simple: bool) -> i32 {
+            native::settings_logical_height(simple) + native::SETTINGS_FRAME
+        }
+
+        /// A memory device context over a 32-bit bitmap whose pixels are read
+        /// back as 0x00RRGGBB.
+        struct Canvas {
+            dc: HDC,
+            bitmap: HBITMAP,
+            previous: HGDIOBJ,
+            bits: *const u32,
+            width: i32,
+            height: i32,
+        }
+
+        impl Canvas {
+            unsafe fn new(width: i32, height: i32, fill: u32) -> Self {
+                let mut info: BITMAPINFO = zeroed();
+                info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                info.bmiHeader.biWidth = width;
+                info.bmiHeader.biHeight = -height;
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = BI_RGB;
+                let mut bits = null_mut();
+                let bitmap =
+                    CreateDIBSection(null_mut(), &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+                assert!(!bitmap.is_null(), "the bitmap is created");
+                let dc = CreateCompatibleDC(null_mut());
+                let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize)
+                    .fill(fill);
+                Self {
+                    dc,
+                    bitmap,
+                    previous,
+                    bits: bits as *const u32,
+                    width,
+                    height,
+                }
+            }
+
+            unsafe fn face(&self) -> Face {
+                GdiFlush();
+                Face {
+                    pixels: std::slice::from_raw_parts(
+                        self.bits,
+                        (self.width * self.height) as usize,
+                    )
+                    .to_vec(),
+                    width: self.width,
+                    height: self.height,
+                }
+            }
+        }
+
+        impl Drop for Canvas {
+            fn drop(&mut self) {
+                unsafe {
+                    SelectObject(self.dc, self.previous);
+                    DeleteObject(self.bitmap as HGDIOBJ);
+                    DeleteDC(self.dc);
+                }
+            }
+        }
+
+        /// What a control painted into its client area. The top left pixel is
+        /// the background.
+        #[derive(PartialEq)]
+        struct Face {
+            pixels: Vec<u32>,
+            width: i32,
+            height: i32,
+        }
+
+        impl Face {
+            fn pixel(&self, x: i32, y: i32) -> u32 {
+                self.pixels[(y * self.width + x) as usize]
+            }
+
+            /// The columns `from..to` as one list of pixels.
+            fn columns(&self, from: i32, to: i32) -> Vec<u32> {
+                (0..self.height)
+                    .flat_map(|y| (from..to.min(self.width)).map(move |x| (x, y)))
+                    .map(|(x, y)| self.pixel(x, y))
+                    .collect()
+            }
+
+            /// The box around the pixels in columns `from..to` that differ from
+            /// the background: left, top, right, bottom.
+            fn ink(&self, from: i32, to: i32) -> Option<[i32; 4]> {
+                let background = self.pixel(0, 0);
+                let mut found: Option<[i32; 4]> = None;
+                for y in 0..self.height {
+                    for x in from.max(0)..to.min(self.width) {
+                        if self.pixel(x, y) != background {
+                            let [left, top, right, bottom] = found.unwrap_or([x, y, x, y]);
+                            found = Some([left.min(x), top.min(y), right.max(x), bottom.max(y)]);
+                        }
+                    }
+                }
+                found
+            }
+
+            /// The highest value of each colour channel in columns `from..to`.
+            fn brightest(&self, from: i32, to: i32) -> [u32; 3] {
+                let mut top = [0; 3];
+                for pixel in self.columns(from, to) {
+                    for (channel, value) in top.iter_mut().enumerate() {
+                        *value = (*value).max((pixel >> (16 - 8 * channel)) & 255);
+                    }
+                }
+                top
+            }
+
+            /// The lowest value of each colour channel in columns `from..to`.
+            fn darkest(&self, from: i32, to: i32) -> [u32; 3] {
+                let mut bottom = [255; 3];
+                for pixel in self.columns(from, to) {
+                    for (channel, value) in bottom.iter_mut().enumerate() {
+                        *value = (*value).min((pixel >> (16 - 8 * channel)) & 255);
+                    }
+                }
+                bottom
+            }
+        }
+
+        /// A COLORREF as red, green and blue.
+        fn channels(colour: u32) -> [u32; 3] {
+            [colour & 255, (colour >> 8) & 255, (colour >> 16) & 255]
+        }
+
+        /// A button's client area as it paints into a device context whose
+        /// layout is `layout`.
+        unsafe fn paint(button: HWND, layout: u32) -> Face {
+            let mut client: RECT = zeroed();
+            GetClientRect(button, &mut client);
+            let canvas = Canvas::new(client.right, client.bottom, 0x00ff_00ff);
+            SetLayout(canvas.dc, layout);
+            SendMessageW(
+                button,
+                WM_PRINTCLIENT,
+                canvas.dc as usize,
+                PRF_CLIENT as isize,
+            );
+            canvas.face()
+        }
+
+        /// The size the theme gives the box of a check box in `state`.
+        unsafe fn box_size(button: HWND, state: i32) -> SIZE {
+            let theme = OpenThemeData(button, native::wide("Button").as_ptr());
+            assert_ne!(theme, 0, "the button has a theme");
+            let dc = GetDC(null_mut());
+            let mut size: SIZE = zeroed();
+            GetThemePartSize(theme, dc, BP_CHECKBOX, state, null(), TS_DRAW, &mut size);
+            ReleaseDC(null_mut(), dc);
+            CloseThemeData(theme);
+            size
+        }
+
+        /// The box of a check box in `state` the way uxtheme draws it on the
+        /// dark surface, centred on the control's height.
+        unsafe fn themed_box(button: HWND, state: i32) -> Face {
+            let mut client: RECT = zeroed();
+            GetClientRect(button, &mut client);
+            let canvas = Canvas::new(client.right, client.bottom, DARK_BACKGROUND);
+            let size = box_size(button, state);
+            let top = (client.bottom - size.cy) / 2;
+            let area = RECT {
+                left: 0,
+                top,
+                right: size.cx,
+                bottom: top + size.cy,
+            };
+            let theme = OpenThemeData(button, native::wide("Button").as_ptr());
+            DrawThemeBackground(theme, canvas.dc, BP_CHECKBOX, state, &area, null());
+            CloseThemeData(theme);
+            canvas.face()
+        }
+
+        /// The visible check boxes the dialog's own code created.
+        unsafe fn check_boxes(dialog: HWND) -> Vec<HWND> {
+            let mut found = Vec::new();
+            let mut child = GetWindow(dialog, GW_CHILD);
+            while !child.is_null() {
+                let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+                if style & WS_VISIBLE != 0
+                    && native::window_class(child).eq_ignore_ascii_case("Button")
+                    && style & BS_TYPEMASK as u32 == BS_AUTOCHECKBOX as u32
+                    && style & BS_PUSHLIKE as u32 == 0
+                {
+                    found.push(child);
+                }
+                child = GetWindow(child, GW_HWNDNEXT);
+            }
+            found
+        }
+
+        /// A button of its own on the dialog, themed like the dialog's controls.
+        unsafe fn add_button(
+            dialog: &HiddenDialog,
+            label: &str,
+            style: i32,
+            ex_style: u32,
+            dark: bool,
+        ) -> HWND {
+            let dlg = &*dialog.raw;
+            let button = native::control(
+                dialog.hwnd,
+                "BUTTON",
+                label,
+                WS_CHILD | WS_VISIBLE | style as u32,
+                ex_style,
+                9000,
+            );
+            native::apply_font(button, dlg.font);
+            MoveWindow(
+                button,
+                0,
+                0,
+                native::scale(220, dlg.dpi),
+                native::scale(22, dlg.dpi),
+                0,
+            );
+            native::apply_dark_mode(dialog.hwnd, dark);
+            button
+        }
+
+        /// The answer a dialog gives to a button's NM_CUSTOMDRAW.
+        unsafe fn custom_draw_answer(dialog: HWND, button: HWND) -> isize {
+            let mut client: RECT = zeroed();
+            GetClientRect(button, &mut client);
+            let canvas = Canvas::new(client.right, client.bottom, 0);
+            let mut draw: NMCUSTOMDRAW = zeroed();
+            draw.hdr.hwndFrom = button;
+            draw.hdr.idFrom = GetDlgCtrlID(button) as usize;
+            draw.hdr.code = NM_CUSTOMDRAW;
+            draw.dwDrawStage = CDDS_PREPAINT;
+            draw.hdc = canvas.dc;
+            draw.rc = client;
+            SendMessageW(
+                dialog,
+                WM_NOTIFY,
+                draw.hdr.idFrom,
+                &draw as *const NMCUSTOMDRAW as isize,
+            )
+        }
+
+        /// Shows or hides the keyboard cues of the dialog: the focus rectangle and
+        /// the underline of the access letters.
+        unsafe fn keyboard_cues(dialog: HWND, shown: bool) {
+            let flags = (UISF_HIDEFOCUS | UISF_HIDEACCEL) as usize;
+            let action = (if shown { UIS_CLEAR } else { UIS_SET }) as usize;
+            SendMessageW(dialog, WM_UPDATEUISTATE, action | (flags << 16), 0);
+        }
+
+        /// A dialog that has check boxes: how it is made, its size in logical
+        /// pixels and how many tabs it has.
+        struct Case {
+            name: &'static str,
+            make: fn() -> native::DialogKind,
+            width: i32,
+            height: i32,
+            tabs: usize,
+        }
+
+        fn dialogs_with_check_boxes() -> [Case; 8] {
+            let case = |name, make, width, height, tabs| Case {
+                name,
+                make,
+                width,
+                height,
+                tabs,
+            };
+            [
+                case(
+                    "settings",
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    4,
+                ),
+                case(
+                    "simple settings",
+                    settings_simple,
+                    560,
+                    settings_height(true),
+                    1,
+                ),
+                case("queues", super::queues_kind, 700, 470, 1),
+                case("folder rules", super::rules_kind, 700, 470, 1),
+                case("file sync", super::sync_kind, 700, 470, 1),
+                case("saved logins", super::logins_kind, 700, 470, 1),
+                case("media picker", super::media_kind, 640, 420, 1),
+                case("job view", super::progress_kind, 700, 470, 1),
+            ]
+        }
+
+        #[test]
+        fn dark_check_box_labels_are_drawn_in_the_scheme_colours_in_every_dialog() {
+            let mut wrong = Vec::new();
+            for Case {
+                name,
+                make,
+                width,
+                height,
+                tabs,
+            } in dialogs_with_check_boxes()
+            {
+                let (seen, problems) = with_styled_dialog(
+                    true,
+                    make,
+                    width,
+                    height,
+                    |dialog| unsafe {
+                        let mut seen = 0;
+                        let mut problems = Vec::new();
+                        for tab in 0..tabs {
+                            dialog.show_tab(tab);
+                            for (index, button) in check_boxes(dialog.hwnd).into_iter().enumerate()
+                            {
+                                // Checked and unchecked, enabled and disabled.
+                                SendMessageW(button, BM_SETCHECK, index % 2, 0);
+                                if index % 3 == 2 {
+                                    EnableWindow(button, 0);
+                                }
+                                let wanted = if IsWindowEnabled(button) != 0 {
+                                    DARK_TEXT
+                                } else {
+                                    DARK_MUTED
+                                };
+                                let face = paint(button, 0);
+                                let from = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                                let got = face.brightest(from, face.width);
+                                seen += 1;
+                                if got != channels(wanted) {
+                                    problems.push(format!(
+                                    "tab {tab}, control {}: the brightest label pixel is {got:02x?}, not {:02x?}",
+                                    GetDlgCtrlID(button),
+                                    channels(wanted)
+                                ));
+                                }
+                            }
+                        }
+                        (seen, problems)
+                    },
+                );
+                assert!(seen > 0, "{name} has check boxes to look at");
+                wrong.extend(
+                    problems
+                        .into_iter()
+                        .map(|problem| format!("{name}: {problem}")),
+                );
+            }
+            assert!(wrong.is_empty(), "{wrong:#?}");
+        }
+
+        #[test]
+        fn only_the_dark_scheme_takes_over_the_drawing_of_check_boxes() {
+            for dark in [false, true] {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        dialog.show_tab(0);
+                        let boxes = check_boxes(dialog.hwnd);
+                        assert!(!boxes.is_empty());
+                        let own = (if dark {
+                            CDRF_SKIPDEFAULT
+                        } else {
+                            CDRF_DODEFAULT
+                        }) as isize;
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, boxes[0]),
+                            own,
+                            "dark {dark}: a check box"
+                        );
+                        if !dark {
+                            // The theme keeps drawing the light labels.
+                            let face = paint(boxes[0], 0);
+                            let from = box_size(boxes[0], CBS_UNCHECKEDNORMAL).cx + 1;
+                            assert_eq!(
+                                face.darkest(from, face.width),
+                                channels(GetSysColor(COLOR_WINDOWTEXT)),
+                                "the light label"
+                            );
+                        }
+                    },
+                );
+            }
+        }
+
+        #[test]
+        fn buttons_other_than_check_boxes_are_left_to_the_default_drawing() {
+            for dark in [false, true] {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        // The cards of the wizard are push-like check boxes that paint
+                        // themselves.
+                        for (what, style, ex_style) in [
+                            ("a push button", BS_PUSHBUTTON, 0),
+                            ("a default push button", BS_DEFPUSHBUTTON, 0),
+                            ("a push-like check box", BS_AUTOCHECKBOX | BS_PUSHLIKE, 0),
+                            ("a radio button", BS_AUTORADIOBUTTON, 0),
+                            ("a three-state check box", BS_AUTO3STATE, 0),
+                            ("a group box", BS_GROUPBOX, 0),
+                            // The label of a check box that is placed another way.
+                            (
+                                "a check box with its text on the left",
+                                BS_AUTOCHECKBOX | BS_LEFTTEXT,
+                                0,
+                            ),
+                            ("a right-aligned check box", BS_AUTOCHECKBOX | BS_RIGHT, 0),
+                            ("a centred check box", BS_AUTOCHECKBOX | BS_CENTER, 0),
+                            (
+                                "a check box with its text at the top",
+                                BS_AUTOCHECKBOX | BS_TOP,
+                                0,
+                            ),
+                            (
+                                "a check box with its text at the bottom",
+                                BS_AUTOCHECKBOX | BS_BOTTOM,
+                                0,
+                            ),
+                            ("a check box with an icon", BS_AUTOCHECKBOX | BS_ICON, 0),
+                            ("a check box with a bitmap", BS_AUTOCHECKBOX | BS_BITMAP, 0),
+                            (
+                                "a check box with a right-aligned window",
+                                BS_AUTOCHECKBOX,
+                                WS_EX_RIGHT,
+                            ),
+                            (
+                                "a check box that reads right to left",
+                                BS_AUTOCHECKBOX,
+                                WS_EX_RTLREADING,
+                            ),
+                        ] {
+                            let button = add_button(dialog, what, style, ex_style, dark);
+                            // The system can drop an extended style at creation, so
+                            // it is set again, and every case must carry its bits.
+                            SetWindowLongPtrW(
+                                button,
+                                GWL_EXSTYLE,
+                                GetWindowLongPtrW(button, GWL_EXSTYLE) | ex_style as isize,
+                            );
+                            assert_eq!(
+                                GetWindowLongPtrW(button, GWL_STYLE) as u32 & style as u32,
+                                style as u32,
+                                "dark {dark}: {what} has its style"
+                            );
+                            assert_eq!(
+                                GetWindowLongPtrW(button, GWL_EXSTYLE) as u32 & ex_style,
+                                ex_style,
+                                "dark {dark}: {what} has its extended style"
+                            );
+                            assert_eq!(
+                                custom_draw_answer(dialog.hwnd, button),
+                                CDRF_DODEFAULT as isize,
+                                "dark {dark}: {what}"
+                            );
+                            DestroyWindow(button);
+                        }
+                    },
+                );
+            }
+        }
+
+        #[test]
+        fn dark_check_boxes_keep_the_position_the_theme_gives_them() {
+            // Box and label of every check box of the settings, by tab and id: the
+            // light scheme is drawn by the theme alone.
+            let layout = |dark: bool| {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        let mut found = Vec::new();
+                        for tab in 0..4 {
+                            dialog.show_tab(tab);
+                            for button in check_boxes(dialog.hwnd) {
+                                SendMessageW(button, BM_SETCHECK, 0, 0);
+                                let face = paint(button, 0);
+                                let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                                found.push((
+                                    (tab, GetDlgCtrlID(button)),
+                                    face.ink(0, edge),
+                                    face.ink(edge, face.width),
+                                ));
+                            }
+                        }
+                        found
+                    },
+                )
+            };
+            let (light, dark) = (layout(false), layout(true));
+            assert!(light.len() > 15, "the settings have their check boxes");
+            assert_eq!(light.len(), dark.len());
+            for (themed, mine) in light.iter().zip(&dark) {
+                assert_eq!(themed.0, mine.0);
+                assert_eq!(themed.1, mine.1, "tab and control {:?}: the box", themed.0);
+                let (a, b) = (themed.2.unwrap(), mine.2.unwrap());
+                // The last column of a label can hold a faint edge pixel of one
+                // scheme only: the same glyph blends differently with another
+                // text colour.
+                assert!(
+                    a[0] == b[0] && a[1] == b[1] && a[3] == b[3] && (a[2] - b[2]).abs() <= 1,
+                    "tab and control {:?}: the label lies at {a:?} in the theme and {b:?} in the scheme",
+                    themed.0
+                );
+            }
+        }
+
+        /// A state of a check box and the part state uxtheme has for it.
+        struct Look {
+            what: &'static str,
+            check: u32,
+            disabled: bool,
+            pressed: bool,
+            hot: bool,
+            state: i32,
+        }
+
+        fn looks() -> [Look; 8] {
+            let look = |what, check, disabled, pressed, hot, state| Look {
+                what,
+                check,
+                disabled,
+                pressed,
+                hot,
+                state,
+            };
+            [
+                look(
+                    "unchecked",
+                    BST_UNCHECKED,
+                    false,
+                    false,
+                    false,
+                    CBS_UNCHECKEDNORMAL,
+                ),
+                look(
+                    "unchecked, hot",
+                    BST_UNCHECKED,
+                    false,
+                    false,
+                    true,
+                    CBS_UNCHECKEDHOT,
+                ),
+                look(
+                    "unchecked, pressed",
+                    BST_UNCHECKED,
+                    false,
+                    true,
+                    false,
+                    CBS_UNCHECKEDPRESSED,
+                ),
+                look(
+                    "unchecked, disabled",
+                    BST_UNCHECKED,
+                    true,
+                    false,
+                    false,
+                    CBS_UNCHECKEDDISABLED,
+                ),
+                look(
+                    "checked",
+                    BST_CHECKED,
+                    false,
+                    false,
+                    false,
+                    CBS_CHECKEDNORMAL,
+                ),
+                look(
+                    "checked, hot",
+                    BST_CHECKED,
+                    false,
+                    false,
+                    true,
+                    CBS_CHECKEDHOT,
+                ),
+                look(
+                    "checked, pressed",
+                    BST_CHECKED,
+                    false,
+                    true,
+                    false,
+                    CBS_CHECKEDPRESSED,
+                ),
+                look(
+                    "checked, disabled",
+                    BST_CHECKED,
+                    true,
+                    false,
+                    false,
+                    CBS_CHECKEDDISABLED,
+                ),
+            ]
+        }
+
+        #[test]
+        fn dark_check_boxes_draw_the_box_of_their_state_and_a_scheme_label() {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let mut drawn: Vec<(&str, Vec<u32>)> = Vec::new();
+                    for look in looks() {
+                        let button =
+                            add_button(dialog, "A label to read", BS_AUTOCHECKBOX, 0, true);
+                        SendMessageW(button, BM_SETCHECK, look.check as usize, 0);
+                        EnableWindow(button, !look.disabled as i32);
+                        if look.pressed {
+                            SendMessageW(button, BM_SETSTATE, 1, 0);
+                        }
+                        if look.hot {
+                            SendMessageW(button, WM_MOUSEMOVE, 0, 5 | (5 << 16));
+                        }
+                        let face = paint(button, 0);
+                        let size = box_size(button, look.state);
+                        let wanted = themed_box(button, look.state);
+                        assert!(
+                            face.columns(0, size.cx) == wanted.columns(0, size.cx),
+                            "{}: the box is not the one uxtheme draws for the state",
+                            look.what
+                        );
+                        let colour = if look.disabled { DARK_MUTED } else { DARK_TEXT };
+                        assert_eq!(
+                            face.brightest(size.cx + 1, face.width),
+                            channels(colour),
+                            "{}: the label",
+                            look.what
+                        );
+                        drawn.push((look.what, wanted.columns(0, size.cx)));
+                        DestroyWindow(button);
+                    }
+                    // The comparison above means something only if uxtheme draws the
+                    // states differently.
+                    for (index, (what, pixels)) in drawn.iter().enumerate() {
+                        for (other, other_pixels) in &drawn[index + 1..] {
+                            assert!(
+                                pixels != other_pixels,
+                                "uxtheme draws \"{what}\" and \"{other}\" alike"
+                            );
+                        }
+                    }
+                },
+            );
+        }
+
+        /// The box around the label of an "&Open it" check box with the keyboard
+        /// cues shown, without the focus and with it, in the dark scheme or in the
+        /// light one that the theme draws alone.
+        fn label_and_focus_ink(dark: bool) -> ([i32; 4], [i32; 4]) {
+            with_styled_dialog(
+                dark,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let button = add_button(dialog, "&Open it", BS_AUTOCHECKBOX, 0, dark);
+                    let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                    SetFocus(null_mut());
+                    keyboard_cues(dialog.hwnd, true);
+                    let label = paint(button, 0);
+                    SetFocus(button);
+                    let focused = paint(button, 0);
+                    (
+                        label.ink(edge, label.width).unwrap(),
+                        focused.ink(edge, focused.width).unwrap(),
+                    )
+                },
+            )
+        }
+
+        #[test]
+        fn dark_check_boxes_show_the_focus_rectangle_and_the_underline_only_with_keyboard_cues() {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let button = add_button(dialog, "&Open it", BS_AUTOCHECKBOX, 0, true);
+                    SetFocus(null_mut());
+                    keyboard_cues(dialog.hwnd, true);
+                    let underlined = paint(button, 0);
+                    keyboard_cues(dialog.hwnd, false);
+                    let plain = paint(button, 0);
+                    let rows: std::collections::BTreeSet<i32> = (0..plain.height)
+                        .filter(|y| {
+                            (0..plain.width).any(|x| plain.pixel(x, *y) != underlined.pixel(x, *y))
+                        })
+                        .collect();
+                    assert!(
+                        !rows.is_empty() && rows.len() <= 2,
+                        "only the access letter's underline appears with the cues: rows {rows:?}"
+                    );
+
+                    SetFocus(button);
+                    assert_eq!(GetFocus(), button, "the button has the focus");
+                    let focused_without_cues = paint(button, 0);
+                    assert!(
+                        focused_without_cues == plain,
+                        "the focus alone draws nothing while the cues are hidden"
+                    );
+                    keyboard_cues(dialog.hwnd, true);
+                    let focused = paint(button, 0);
+                    let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                    let outline = focused.ink(edge, focused.width).unwrap();
+                    let text = underlined.ink(edge, underlined.width).unwrap();
+                    assert!(
+                        outline[0] < text[0]
+                            && outline[1] < text[1]
+                            && outline[2] > text[2]
+                            && outline[3] > text[3],
+                        "the focus rectangle {outline:?} surrounds the label {text:?}"
+                    );
+                    // Where the theme puts it for the same button: close around the
+                    // label, not stretched to the edge of the control.
+                    let (light_text, light_outline) = label_and_focus_ink(false);
+                    assert!(
+                        light_outline[0] < light_text[0]
+                            && light_outline[1] < light_text[1]
+                            && light_outline[2] > light_text[2]
+                            && light_outline[3] > light_text[3],
+                        "the theme draws a focus rectangle {light_outline:?} around the label {light_text:?}"
+                    );
+                    assert_eq!(
+                        outline, light_outline,
+                        "the focus rectangle lies where the theme draws it"
+                    );
+                },
+            );
+        }
+
+        #[test]
+        fn a_mirrored_dark_check_box_keeps_the_box_on_the_right_and_the_label_in_the_scheme_colour()
+        {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let button = add_button(
+                        dialog,
+                        "A label to read",
+                        BS_AUTOCHECKBOX,
+                        WS_EX_LAYOUTRTL,
+                        true,
+                    );
+                    let face = paint(button, LAYOUT_RTL);
+                    let size = box_size(button, CBS_UNCHECKEDNORMAL);
+                    let label_end = face.width - size.cx - 1;
+                    let glyph = face.ink(label_end, face.width).expect("the box is drawn");
+                    assert_eq!(glyph[2], face.width - 1, "the box touches the right edge");
+                    let label = face.ink(0, label_end).expect("the label is drawn");
+                    assert!(label[0] > 0, "the label ends at the box: {label:?}");
+                    assert_eq!(face.brightest(0, label_end), channels(DARK_TEXT));
+                },
+            );
+        }
+    }
 }
