@@ -910,6 +910,8 @@ struct Schedule {
     failure: Option<anyhow::Error>,
     /// When a host last answered 429 or 503.
     refused: Option<Instant>,
+    /// When a host's pace last held back a due segment that the host had room for.
+    delayed: Option<Instant>,
     /// When the last request started.
     started: Option<Instant>,
 }
@@ -918,8 +920,8 @@ struct Schedule {
 #[derive(Debug, PartialEq)]
 enum Limited {
     No,
-    /// A host answered 429 or 503 within `LIMITED_SHOWN`, or a queued segment's host paces its
-    /// requests, and the download does not wait.
+    /// Within `LIMITED_SHOWN` a host answered 429 or 503, or a host's pace held back a segment
+    /// that could start otherwise, and the download does not wait.
     Flowing,
     /// A host has answered 429 or 503, no request is in flight, and every queued segment is
     /// held back for `WAITING_SHOWN` or longer by its own wait after a failure or by its host's
@@ -927,8 +929,8 @@ enum Limited {
     Waiting,
 }
 
-/// How long the status says that the server limits requests after its last 429 or 503: as long
-/// as the speed it shows covers that answer.
+/// How long the status says that the server limits requests after its last 429 or 503, and after
+/// its pace last held a request back: as long as the speed it shows covers that moment.
 const LIMITED_SHOWN: Duration = SPEED_WINDOW;
 /// A segment held back at least this long, by its own wait or its host's hold, reads as waiting
 /// for the server; a shorter hold, such as the first backoff of 1 s, would only flip the status
@@ -997,6 +999,7 @@ impl Shared {
                 remaining,
                 failure: None,
                 refused: None,
+                delayed: None,
                 started: None,
             }),
             wake: Condvar::new(),
@@ -1103,7 +1106,9 @@ impl Shared {
         if idle && (still_waiting || queued().all(held)) {
             Limited::Waiting
         } else if now.duration_since(refused) < LIMITED_SHOWN
-            || queued().any(|(_, pace)| pace.rate.is_some())
+            || state
+                .delayed
+                .is_some_and(|delayed| now.duration_since(delayed) < LIMITED_SHOWN)
         {
             Limited::Flowing
         } else {
@@ -1120,7 +1125,7 @@ impl Schedule {
     /// video and audio finish together and a throttled stream is not left for the end. A worker
     /// that takes a segment of another host gives up its place at `kept`. Without a segment to
     /// hand out, tells when the next one is due, and whether a segment of `kept` waits for
-    /// nothing but that host's pace.
+    /// nothing but that host's pace; a segment of any host that does so marks `delayed`.
     fn take(
         &mut self,
         hosts: &[Vec<usize>],
@@ -1138,8 +1143,10 @@ impl Schedule {
                 let host = hosts[stream][task.index];
                 let due = task.not_before.max(self.paces[host].next_start);
                 if due > now {
-                    paced |=
-                        kept == Some(host) && task.not_before <= now && self.busy[host] < per_host;
+                    if task.not_before <= now && self.busy[host] < per_host {
+                        self.delayed = Some(now);
+                        paced |= kept == Some(host);
+                    }
                     earliest = Some(earliest.map_or(due, |at| at.min(due)));
                     continue;
                 }
@@ -3134,14 +3141,18 @@ mod tests {
         let retry = take(after(1_000));
         assert_eq!(shared.limited(after(10_900), None), Limited::Flowing);
         assert_eq!(shared.limited(after(11_000), None), Limited::No);
-        // Refused again, it waits for its host, which paces its requests since the first
-        // refusal. A pace's gap is no wait for the server, however long and with nothing in
+        // Refused again, it waits for its host's pace, which holds it back when a worker would
+        // take it. A pace's gap is no wait for the server, however long and with nothing in
         // flight: the status says that the server limits the requests.
         refuse(retry, after(11_100));
         shared
             .lock()
             .settle(0, Settled::Done { sent: second.sent }, after(11_200));
         shared.lock().paces[0].next_start = after(26_200);
+        let held_back = shared
+            .lock()
+            .take(&shared.hosts, &streams, Some(0), after(22_000));
+        assert!(held_back.is_err());
         assert_eq!(shared.limited(after(22_000), None), Limited::Flowing);
         // A hold of the host after it refused every request, of 2 s or more, is a wait for the
         // server; in the last 2 s of the hold only if the status says so already, and then until
@@ -3152,8 +3163,11 @@ mod tests {
         let since = Some(after(24_000));
         assert_eq!(shared.limited(after(24_500), since), Limited::Waiting);
         assert_eq!(shared.limited(after(26_200), since), Limited::Waiting);
+        // Once the segment goes, the status says that the server limits the requests until 10 s
+        // after the pace last held one back.
         take(after(26_200));
-        assert_eq!(shared.limited(after(26_200), since), Limited::No);
+        assert_eq!(shared.limited(after(26_200), since), Limited::Flowing);
+        assert_eq!(shared.limited(after(32_000), None), Limited::No);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3196,6 +3210,12 @@ mod tests {
             .lock()
             .settle(0, Settled::Done { sent: second.sent }, after(3_000));
         assert_eq!(shared.limited(after(4_000), None), Limited::Waiting);
+        // In the last 2 s of the hold, a worker that looks for a segment finds segment 4 held
+        // back by the host.
+        let held_back = shared
+            .lock()
+            .take(&shared.hosts, &streams, Some(0), after(30_200));
+        assert!(held_back.is_err());
         assert_eq!(shared.limited(after(30_200), None), Limited::Flowing);
         let since = Some(after(30_000));
         assert_eq!(shared.limited(after(30_200), since), Limited::Waiting);
@@ -3339,6 +3359,107 @@ mod tests {
                 );
             }
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_status_stops_saying_that_the_server_limits_requests_once_the_pace_holds_none_back() {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-outgrown-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        // Eight connections to one host, each request done in 1 s: eight requests a second. The
+        // host answers the first request with a 503 at 0.5 s and admits every other one, so the
+        // requests then in flight raise its pace above what the connections ask for.
+        let streams = [one_host_stream(400)];
+        let joins = [Join::resume(&root, &streams[0]).unwrap()];
+        let shared = Shared::new(&streams, &joins, 8);
+        let (control, network) = (TransferControl::default(), NetworkGovernor::new(8));
+        let received = [AtomicU64::new(0)];
+        let context = WorkerContext {
+            streams: &streams,
+            joins: &joins,
+            shared: &shared,
+            cookies: &[],
+            control: &control,
+            network: &network,
+            received: &received,
+            workers: 8,
+        };
+        let (downloading, limiting) = (
+            crate::i18n::ui("Medya indiriliyor", "Downloading media"),
+            crate::i18n::ui(
+                "Medya indiriliyor; sunucu istekleri sınırlıyor",
+                "Downloading media; the server is limiting requests",
+            ),
+        );
+        let start = Instant::now();
+        let refusal = start + Duration::from_millis(500);
+        let mut reporter = Reporter::new(&received, start);
+        let mut in_flight: Vec<(Task, Instant, bool)> = Vec::new();
+        let mut last_hold = None;
+        let mut reports = Vec::new();
+        // Thirty seconds in steps of 10 ms, with a report every 250 ms. A free connection takes a
+        // segment as soon as one is due. Every queued segment is due by its own wait and the host
+        // has room, so a connection that finds none is held back by the host's pace.
+        for step in 0..3_000 {
+            let now = start + Duration::from_millis(10) * step;
+            in_flight.retain(|&(task, done, refused)| {
+                if done > now {
+                    return true;
+                }
+                let outcome = if refused {
+                    Settled::Retry {
+                        task,
+                        throttled: true,
+                        retry_after: None,
+                    }
+                } else {
+                    Settled::Done { sent: task.sent }
+                };
+                shared.lock().settle(0, outcome, done);
+                false
+            });
+            while in_flight.len() < 8 {
+                let Ok(task) = shared.lock().take(&shared.hosts, &streams, Some(0), now) else {
+                    last_hold = Some(now);
+                    break;
+                };
+                let first = step == 0 && in_flight.is_empty();
+                let done = if first {
+                    refusal
+                } else {
+                    now + Duration::from_secs(1)
+                };
+                in_flight.push((task, done, first));
+            }
+            if step % 25 == 0 {
+                reports.push((now, reporter.report(&context, now).phase));
+            }
+        }
+
+        // The pace holds requests back only while the first answers set it.
+        let last_hold = last_hold.expect("the pace holds a request back");
+        assert!(last_hold < start + SPEED_WINDOW, "{:?}", last_hold - start);
+        // From the refusal on, the status says that the server limits the requests until 10 s
+        // after the pace last held one back, and then plain "Downloading media" again.
+        let until = last_hold.max(refusal) + LIMITED_SHOWN;
+        let wrong = reports
+            .iter()
+            .filter(|(at, phase)| {
+                let expected = if (refusal..until).contains(at) {
+                    limiting
+                } else {
+                    downloading
+                };
+                phase != expected
+            })
+            .map(|(at, phase)| (*at - start, phase))
+            .collect::<Vec<_>>();
+        assert!(
+            wrong.is_empty(),
+            "limiting until {:?}: {wrong:?}",
+            until - start
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3584,7 +3705,12 @@ mod tests {
             .lock()
             .settle(video, Settled::Done { sent: video_1.sent }, after(4_000));
         assert_eq!(report(after(4_100), 6_000, 300), (waiting, None));
-        // When the audio goes again, its time left follows its bytes.
+        // A worker that looks for a segment meanwhile finds the audio held back by its own wait,
+        // not by its host's pace. When the audio goes again, its time left follows its bytes.
+        let held_back = shared
+            .lock()
+            .take(&shared.hosts, &streams, Some(audio), after(30_000));
+        assert!(held_back.is_err());
         take(Some(audio), after(32_100));
         assert_eq!(
             report(after(32_100), 6_000, 300),
