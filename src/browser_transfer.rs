@@ -428,7 +428,8 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
         } = &command
         {
             let fingerprint = source_key(&job.request)?;
-            let mut state = if state_path(&root).exists() && !restart {
+            let resumed = state_path(&root).exists() && !restart;
+            let mut state = if resumed {
                 let value = load(&root)?;
                 if value.job_id != job.id || value.source != fingerprint {
                     bail!(
@@ -510,6 +511,7 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 uuid::Uuid::new_v4().simple()
             );
             save(&root, &state)?;
+            engine.browser_transfer_prepared(&job.id, generation, resumed)?;
             let mut result = response(&state, Some(Box::new(relay_request(&job.request))));
             result.sender_generation = Some(generation);
             return Ok(result);
