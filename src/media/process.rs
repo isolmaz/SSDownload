@@ -696,7 +696,9 @@ pub(super) fn monitor_download(
         if let Some(update) = gauge.repeat(Instant::now()) {
             progress(update);
         }
-        if let Some(recording) = live.as_deref_mut() {
+        // Once the tool post-processes the recording it no longer grows, and the markers report it
+        // as processing.
+        if let Some(recording) = live.as_deref_mut().filter(|_| !activity.postprocessing) {
             if let Some(update) =
                 recording.sample(completed_file_bytes(completed_files), Instant::now())
             {

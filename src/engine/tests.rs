@@ -1695,12 +1695,8 @@ fn the_size_of_a_result_that_followed_processing_adds_nothing_to_a_quota() {
     assert_eq!(uncounted_result_bytes(JobState::Downloading, 1000, 700), 0);
 }
 
-#[test]
-fn a_file_download_adds_its_size_to_the_quota_of_its_queue_once() {
-    let root = std::env::temp_dir().join(format!("ssdownload-engine-quota-{}", Uuid::new_v4()));
-    let body = vec![7u8; 300_000];
-    let server = FileServer::start(vec![("/quota.bin".into(), body.clone(), false)]);
-    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+/// Gives the default queue a quota that is never reached and returns the queue's id.
+fn give_the_default_queue_a_quota(engine: &Engine) -> String {
     let queue = engine.snapshot().settings.queues[0].clone();
     engine
         .update_queue_policy(QueuePolicy {
@@ -1711,6 +1707,27 @@ fn a_file_download_adds_its_size_to_the_quota_of_its_queue_once() {
             ..queue.clone()
         })
         .unwrap();
+    queue.id
+}
+
+fn consumed_quota_bytes(engine: &Engine, queue: &str) -> u64 {
+    let settings = engine.snapshot().settings;
+    settings
+        .queues
+        .iter()
+        .find(|candidate| candidate.id == queue)
+        .and_then(|candidate| candidate.quota.as_ref())
+        .unwrap()
+        .consumed_bytes
+}
+
+#[test]
+fn a_file_download_adds_its_size_to_the_quota_of_its_queue_once() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-quota-{}", Uuid::new_v4()));
+    let body = vec![7u8; 300_000];
+    let server = FileServer::start(vec![("/quota.bin".into(), body.clone(), false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
     let id = engine
         .add(file_request(server.url("/quota.bin"), &root.join("out")))
         .unwrap()
@@ -1720,16 +1737,98 @@ fn a_file_download_adds_its_size_to_the_quota_of_its_queue_once() {
         job_state(&engine, &id) == JobState::Completed
     });
 
-    let settings = engine.snapshot().settings;
-    let quota = settings
-        .queues
-        .iter()
-        .find(|candidate| candidate.id == queue.id)
-        .and_then(|candidate| candidate.quota.as_ref())
-        .unwrap();
-    assert_eq!(quota.consumed_bytes, body.len() as u64);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), body.len() as u64);
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
+}
+
+/// Ends a job that waits for its body the way a worker ends it: with `reports`, then a result of
+/// `result_bytes`. Returns the bytes its queue's quota has consumed. A worker's generation is not
+/// visible, so every message goes out for each generation the job can have; the engine ignores
+/// the ones that are not its worker's.
+fn quota_consumed_by_a_job_that_reports(reports: &[TransferProgress], result_bytes: u64) -> u64 {
+    const GENERATIONS: std::ops::RangeInclusive<u64> = 1..=8;
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-quota-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/held.bin".into(), vec![5; 4096], true)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(file_request(server.url("/held.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the worker to wait for the body", || {
+        server
+            .hits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|hit| hit == "/held.bin")
+    });
+    let path = engine
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .path
+        .clone();
+
+    let send = |event| engine.inner.sender.send(Message::Worker(event)).unwrap();
+    for generation in GENERATIONS {
+        for report in reports {
+            send(WorkerEvent::Progress {
+                id: id.clone(),
+                generation,
+                value: report.clone(),
+            });
+        }
+    }
+    for generation in GENERATIONS {
+        send(WorkerEvent::Finished {
+            id: id.clone(),
+            generation,
+            result: Ok(TransferResult {
+                path: path.clone(),
+                bytes: result_bytes,
+                warning: None,
+            }),
+        });
+    }
+    // The engine waits for the real worker to end before it takes the result.
+    server.release();
+    wait_until("the job", || job_state(&engine, &id) == JobState::Completed);
+
+    let consumed = consumed_quota_bytes(&engine, &queue);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    consumed
+}
+
+#[test]
+fn a_job_that_reported_processing_adds_nothing_when_its_larger_result_arrives() {
+    let converting = TransferProgress {
+        downloaded: 110_000,
+        processing: true,
+        ..TransferProgress::default()
+    };
+
+    assert_eq!(
+        quota_consumed_by_a_job_that_reports(&[converting], 673_000),
+        110_000
+    );
+}
+
+#[test]
+fn a_job_that_did_not_report_everything_gets_the_rest_of_its_result_added() {
+    let downloading = TransferProgress {
+        downloaded: 600_000,
+        ..TransferProgress::default()
+    };
+
+    assert_eq!(
+        quota_consumed_by_a_job_that_reports(&[downloading], 1_000_000),
+        1_000_000
+    );
 }
 
 fn shutdown_when_done(queue: &QueuePolicy) -> QueuePolicy {

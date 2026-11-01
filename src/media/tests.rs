@@ -1963,8 +1963,8 @@ fn a_silent_post_processor_is_stalled_by_its_own_limit_not_the_transfer_limit() 
     );
     // The limits count from the moment the tool is known to run.
     running.lines.recv_timeout(Duration::from_secs(30)).unwrap();
-    running.stall_limit = Duration::from_secs(2);
-    running.postprocess_stall_limit = Duration::from_secs(5);
+    running.stall_limit = Duration::from_secs(4);
+    running.postprocess_stall_limit = Duration::from_secs(8);
 
     let began = Instant::now();
     let outcome = monitor_download(
@@ -1980,7 +1980,7 @@ fn a_silent_post_processor_is_stalled_by_its_own_limit_not_the_transfer_limit() 
 
     assert!(matches!(outcome, MonitorOutcome::Stalled));
     assert!(
-        began.elapsed() >= Duration::from_secs(4),
+        began.elapsed() >= Duration::from_secs(6),
         "{:?}",
         began.elapsed()
     );
@@ -1999,6 +1999,34 @@ fn a_live_recording_reports_only_its_own_size() {
     for (_, update) in &updates {
         assert_eq!(update.downloaded, 2048, "{update:?}");
     }
+}
+
+/// The tool post-processes a recording that has ended: its markers report the job as processing,
+/// and the recording's size must not take the state back to downloading every second.
+#[test]
+fn a_live_recording_that_the_tool_post_processes_stays_in_processing() {
+    let folder = recording_folder();
+    let mut recording = LiveRecordingGauge::new(&folder.0);
+    let mut running = tool_running(
+        "[Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\"); \
+         [Console]::Error.Flush(); Start-Sleep -Seconds 3",
+    );
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| updates.push(update),
+        &mut HashSet::new(),
+        &mut None,
+        Some(&mut recording),
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
+    let processing = updates.iter().position(|update| update.processing).unwrap();
+    let after = &updates[processing..];
+    assert!(after.iter().all(|update| update.processing), "{after:?}");
 }
 
 const LIVE_TOOL_LINE: &str = "SSDOWNLOAD_PROGRESS\tdownloading\t9999999\t10000000";
