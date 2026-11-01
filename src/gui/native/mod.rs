@@ -47,10 +47,10 @@ use windows_sys::Win32::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
         Input::KeyboardAndMouse::{
-            EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, RegisterHotKey, ReleaseCapture,
-            SetCapture, SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT,
-            MOD_SHIFT, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN, VK_END,
-            VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_TAB, VK_UP,
+            EnableWindow, GetActiveWindow, GetFocus, GetKeyState, IsWindowEnabled, RegisterHotKey,
+            ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL,
+            MOD_NOREPEAT, MOD_SHIFT, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN,
+            VK_END, VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_TAB, VK_UP,
         },
         Shell::*,
         WindowsAndMessaging::*,
@@ -11175,6 +11175,185 @@ mod tests {
                 Some(expected),
                 "button {index} from the left closes the box"
             );
+        }
+    }
+
+    /// The title bar when the colour scheme is applied to a window.
+    mod dark_caption {
+        use super::{rename_kind, with_dialog};
+        use crate::gui::native;
+        use std::cell::{Cell, RefCell};
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetActiveWindow, GetFocus, SetActiveWindow,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+        thread_local! {
+            static SEEN: RefCell<Vec<(u32, usize)>> = const { RefCell::new(Vec::new()) };
+            static ORIGINAL: Cell<isize> = const { Cell::new(0) };
+        }
+
+        /// Passes everything on to the window's own procedure and notes the
+        /// activation messages on the way.
+        unsafe extern "system" fn record(
+            hwnd: native::HWND,
+            msg: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> isize {
+            if matches!(
+                msg,
+                WM_NCACTIVATE | WM_ACTIVATE | WM_SETFOCUS | WM_KILLFOCUS
+            ) {
+                SEEN.with(|seen| seen.borrow_mut().push((msg, wparam)));
+            }
+            let original = std::mem::transmute::<isize, WNDPROC>(ORIGINAL.get());
+            CallWindowProcW(original, hwnd, msg, wparam, lparam)
+        }
+
+        /// What the window is sent while the scheme is applied to it, and the
+        /// active window and the focus before and after. `shown` and `active`
+        /// set the state it is in.
+        struct Switch {
+            seen: Vec<(u32, usize)>,
+            before: (usize, usize),
+            after: (usize, usize),
+        }
+
+        fn switch(shown: bool, active: bool) -> Switch {
+            with_dialog(rename_kind, 460, 150, |dialog| unsafe {
+                let hwnd = dialog.hwnd;
+                // A second window to hold the activation when the dialog must not.
+                let other = native::control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                if shown {
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                }
+                ShowWindow(other, SW_SHOWNOACTIVATE);
+                SetActiveWindow(if active { hwnd } else { other });
+                assert_eq!(
+                    GetActiveWindow() == hwnd,
+                    active,
+                    "the activation is set up"
+                );
+                ORIGINAL.set(SetWindowLongPtrW(
+                    hwnd,
+                    GWLP_WNDPROC,
+                    record as *const () as isize,
+                ));
+                SEEN.with(|seen| seen.borrow_mut().clear());
+                let before = (GetActiveWindow() as usize, GetFocus() as usize);
+                native::apply_dark_mode(hwnd, true);
+                let after = (GetActiveWindow() as usize, GetFocus() as usize);
+                let seen = SEEN.with(|seen| seen.borrow().clone());
+                DestroyWindow(other);
+                Switch {
+                    seen,
+                    before,
+                    after,
+                }
+            })
+        }
+
+        #[test]
+        fn a_shown_active_window_is_told_it_lost_and_regained_the_activation() {
+            let switch = switch(true, true);
+            assert_eq!(
+                switch.seen,
+                [(WM_NCACTIVATE, 0), (WM_NCACTIVATE, 1)],
+                "the title bar is drawn inactive and active again"
+            );
+            assert_eq!(
+                switch.before, switch.after,
+                "the active window and the focus stay"
+            );
+        }
+
+        #[test]
+        fn a_shown_inactive_window_is_told_the_opposite_and_ends_inactive() {
+            let switch = switch(true, false);
+            assert_eq!(
+                switch.seen,
+                [(WM_NCACTIVATE, 1), (WM_NCACTIVATE, 0)],
+                "the title bar is drawn active and inactive again"
+            );
+            assert_eq!(
+                switch.before, switch.after,
+                "the active window and the focus stay"
+            );
+        }
+
+        #[test]
+        fn a_window_that_is_not_shown_has_no_title_bar_to_draw() {
+            assert_eq!(switch(false, false).seen, []);
+        }
+
+        /// The title bar setting the window stores.
+        unsafe fn stored(hwnd: native::HWND) -> Option<i32> {
+            let mut value = 0i32;
+            let result = DwmGetWindowAttribute(
+                hwnd,
+                20,
+                &mut value as *mut i32 as *mut _,
+                size_of::<i32>() as u32,
+            );
+            (result >= 0).then_some(value)
+        }
+
+        #[test]
+        fn the_title_bar_setting_reaches_the_window() {
+            with_dialog(rename_kind, 460, 150, |dialog| unsafe {
+                for dark in [true, false, true] {
+                    assert!(native::set_dark_caption(dialog.hwnd, dark) >= 0);
+                    assert_eq!(stored(dialog.hwnd), Some(dark as i32), "dark {dark}");
+                }
+                assert!(
+                    native::set_dark_caption(null_mut(), true) < 0,
+                    "a window that does not exist is refused"
+                );
+            });
+        }
+
+        #[test]
+        fn applying_the_scheme_to_a_window_sets_its_title_bar() {
+            with_dialog(rename_kind, 460, 150, |dialog| unsafe {
+                native::apply_dark_mode(dialog.hwnd, true);
+                assert_eq!(
+                    stored(dialog.hwnd),
+                    Some(!native::high_contrast() as i32),
+                    "dark"
+                );
+                native::apply_dark_mode(dialog.hwnd, false);
+                assert_eq!(stored(dialog.hwnd), Some(0), "light");
+            });
+        }
+
+        #[test]
+        fn an_alert_takes_the_title_bar_of_the_scheme_of_its_window() {
+            use super::{answer_alert, press_escape};
+            use std::sync::atomic::{AtomicI32, Ordering};
+
+            for dark in [true, false] {
+                let seen = AtomicI32::new(-1);
+                let alert_over_a_window = || unsafe {
+                    let owner = native::control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    if dark {
+                        SetPropW(owner, native::dark_prop(), 1usize as _);
+                    }
+                    let answer = native::run_alert(owner, "A message", "Title", MB_OK);
+                    DestroyWindow(owner);
+                    answer
+                };
+                answer_alert(alert_over_a_window, |alert, buttons| {
+                    seen.store(
+                        unsafe { stored(alert as _) }.unwrap_or(-2),
+                        Ordering::SeqCst,
+                    );
+                    press_escape(alert, buttons);
+                });
+                assert_eq!(seen.load(Ordering::SeqCst), dark as i32, "dark {dark}");
+            }
         }
     }
 }
