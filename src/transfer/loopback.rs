@@ -1699,6 +1699,11 @@ fn stopping_a_one_connection_download_at_any_point_leaves_a_record_of_true_bytes
     every_stop_leaves_a_record_of_true_bytes(1, 12 * MIB + 17, 32 * MIB, 18);
 }
 
+/// The rate at which a test holds a download while it waits for checkpoint cycles. The 12 MiB of
+/// the smallest of these downloads take more than three minutes at it, so the download ends long
+/// after the cycles that the test waits for.
+const HELD_RATE: u64 = 64 * 1024;
+
 /// Opens `path` the way a scanner or a sync client can: other processes may read it but not
 /// replace or delete it. Retries while a record write has the file.
 fn hold_against_replacement(path: &Path) -> File {
@@ -1718,23 +1723,26 @@ fn hold_against_replacement(path: &Path) -> File {
 }
 
 /// The record cannot be replaced for as long as the first periodic cycle takes to give up, then
-/// it can again; the download has to finish all the same.
+/// it can again; the download has to finish all the same. The download is held at `HELD_RATE`
+/// until that cycle has failed and the record is free: a segmented download that ended first
+/// would have its last record refused as well.
 fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
     let server = Server::start(Config {
         size,
-        throttle: Some(2 * MIB),
         ..Config::default()
     });
     checkpoint_every(Duration::from_secs(1), u64::MAX);
     let directory = TempDir::new("failing-checkpoint");
     let output = directory.0.join("payload.bin");
     let state_file = state_path(&output);
+    let control = TransferControl::default();
+    control.set_speed_limit(HELD_RATE);
     let mut held = None;
     let mut acquired = false;
     let result = fetch(
         &request_for(&server),
         &output,
-        &TransferControl::default(),
+        &control,
         connections,
         connections,
         &mut |progress| {
@@ -1744,6 +1752,7 @@ fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
             }
             if failed_cycles() > 0 {
                 held = None;
+                control.set_speed_limit(0);
             }
         },
     );
@@ -1845,19 +1854,26 @@ fn flushes_before_it_records(connections: u8) {
     let size = 12 * MIB;
     let server = Server::start(Config {
         size,
-        throttle: Some(4 * MIB),
         ..Config::default()
     });
     checkpoint_every(Duration::from_millis(100), u64::MAX);
     let directory = TempDir::new("cycle-order");
     let output = directory.0.join("payload.bin");
+    // The download is held at `HELD_RATE` until two periodic cycles have recorded; the rest then
+    // arrives, and a cycle at the end covers it.
+    let control = TransferControl::default();
+    control.set_speed_limit(HELD_RATE);
     let result = fetch(
         &request_for(&server),
         &output,
-        &TransferControl::default(),
+        &control,
         connections,
         connections,
-        &mut |_| {},
+        &mut |_| {
+            if checkpoint_cycles() >= 2 {
+                control.set_speed_limit(0);
+            }
+        },
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
@@ -2445,15 +2461,18 @@ fn a_worker_that_has_closed_its_socket_waits_for_a_new_connection_before_it_take
     // after its request, and the first request on a connection another 0.6 s later. The two
     // workers open their connections for the first two leases and reuse them for the next two.
     // The worker that finishes first takes the last lease, and the other is idle for more than
-    // 0.2 s before that lease flows, so it has closed its socket. Its request for the back half
-    // would open a connection and wait 0.9 s for the first byte, longer than the 0.45 s that the
-    // half of at most 7.2 MiB would save the lease; on the connection it had left open it would
-    // have waited 0.3 s.
+    // 0.2 s before that lease flows, so it has closed its socket. The response for the last
+    // lease starts 1.2 s after its request, so that the other worker is idle that long
+    // however far it runs behind the first. Its request for the back half would open a
+    // connection and wait 0.9 s for the first byte, longer than the 0.45 s that the half of at
+    // most 7.2 MiB would save the lease; on the connection it had left open it would have
+    // waited 0.3 s.
     let size = 40 * MIB;
     let server = Server::start(Config {
         size,
         throttle: Some(8 * MIB),
         first_byte_delay: Some(Duration::from_millis(300)),
+        late_first_byte_from: Some((4 * 8 * MIB, Duration::from_millis(1200))),
         connection_delay: Some(Duration::from_millis(600)),
         ..Config::default()
     });

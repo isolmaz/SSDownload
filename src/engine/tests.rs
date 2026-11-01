@@ -2935,22 +2935,16 @@ mod retry_budget {
         engine.shutdown();
     }
 
-    /// A source whose `/file` redirects to a signed address that lives `milliseconds` for the
+    /// A source whose `/file` redirects to a signed address that lives as `first` says for the
     /// first request and, for later ones, as `later` says; expired addresses answer 403.
-    fn signed_source(size: u64, milliseconds: u64, later: Validity) -> Server {
+    fn signed_source(size: u64, first: Validity, later: Validity) -> Server {
         Server::start(Config {
             size,
             throttle: Some(16 * MIB),
             signing: Some(Signing {
                 from: "/file".into(),
                 origin: String::new(),
-                validity: vec![
-                    Validity {
-                        lifetime: Duration::from_millis(milliseconds),
-                        requests: usize::MAX,
-                    },
-                    later,
-                ],
+                validity: vec![first, later],
             }),
             expiry: Some(403),
             ..Config::default()
@@ -2969,13 +2963,19 @@ mod retry_budget {
     fn a_redirect_target_that_expires_midway_is_followed_again_and_costs_no_retry() {
         // Five ranges for four connections: the fifth is requested after the first address
         // has expired. With a limit of 0 nothing is retried, so the download only finishes if
-        // asking the source again is not an attempt.
+        // asking the source again is not an attempt. The first address answers its first six
+        // requests (the two that probe the file and the first four ranges), however long they
+        // take to arrive, and the next one, the fifth range, finds it expired; the address the
+        // source gives then never expires, so asking for it once is enough.
         let size = 36 * MIB;
         let server = signed_source(
             size,
-            250,
             Validity {
-                lifetime: Duration::from_millis(250),
+                lifetime: Duration::from_secs(3600),
+                requests: 6,
+            },
+            Validity {
+                lifetime: Duration::from_secs(3600),
                 requests: usize::MAX,
             },
         );
@@ -2999,7 +2999,10 @@ mod retry_budget {
         let size = 36 * MIB;
         let server = signed_source(
             size,
-            250,
+            Validity {
+                lifetime: Duration::from_millis(250),
+                requests: usize::MAX,
+            },
             Validity {
                 lifetime: Duration::ZERO,
                 requests: usize::MAX,
