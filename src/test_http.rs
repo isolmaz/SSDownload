@@ -312,6 +312,10 @@ pub struct Logged {
     pub headers: Vec<(String, String)>,
     pub status: u16,
     pub body_cut: bool,
+    /// When the request arrived, and when its answer went out, after every delay the
+    /// configuration adds; `None` until then.
+    pub arrived: Instant,
+    pub answered: Option<Instant>,
 }
 
 impl Logged {
@@ -348,8 +352,9 @@ struct Shared {
     limiter: Mutex<Limiter>,
 }
 
-/// What `Config::limit` has counted so far.
-struct Limiter {
+/// What `Config::limit` has counted so far. Its times are given, so that a test can also run it
+/// on a virtual clock.
+pub struct Limiter {
     tokens: f64,
     /// When `tokens` was last brought up to date.
     updated: Instant,
@@ -361,8 +366,23 @@ struct Limiter {
 }
 
 impl Limiter {
+    /// Starts counting `limit` at `now`; a token bucket starts full.
+    pub fn new(limit: Option<Limit>, now: Instant) -> Self {
+        let tokens = match limit {
+            Some(Limit::TokenBucket { burst, .. }) => burst,
+            _ => 0.0,
+        };
+        Self {
+            tokens,
+            updated: now,
+            arrivals: VecDeque::new(),
+            windows: None,
+            in_flight: 0,
+        }
+    }
+
     /// Admits a request now, or tells how long until the limit admits one.
-    fn admit(&mut self, limit: Limit, now: Instant) -> Result<(), Duration> {
+    pub fn admit(&mut self, limit: Limit, now: Instant) -> Result<(), Duration> {
         match limit {
             Limit::TokenBucket { rate, burst } => {
                 self.tokens = (self.tokens + rate * now.duration_since(self.updated).as_secs_f64())
@@ -410,6 +430,17 @@ impl Limiter {
         }
         Ok(())
     }
+
+    /// Gives back the `Limit::InFlight` place of an admitted request that has been answered.
+    pub fn answered(&mut self) {
+        self.in_flight -= 1;
+    }
+}
+
+/// The `Retry-After` of a refusal whose limit admits a request again after `wait`: whole
+/// seconds, rounded up.
+pub fn retry_after_seconds(wait: Duration) -> u64 {
+    wait.as_secs() + u64::from(wait.subsec_nanos() > 0)
 }
 
 /// Gives an admitted request's `Limit::InFlight` place back once it has been answered.
@@ -418,7 +449,7 @@ struct InFlight<'a>(Option<&'a Shared>);
 impl Drop for InFlight<'_> {
     fn drop(&mut self) {
         if let Some(shared) = self.0 {
-            shared.limiter.lock().unwrap().in_flight -= 1;
+            shared.limiter.lock().unwrap().answered();
         }
     }
 }
@@ -440,18 +471,11 @@ impl Server {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let switch_from = AtomicUsize::new(config.switch_version_after.unwrap_or(usize::MAX));
-        let tokens = match config.limit.as_ref().map(|limit| limit.kind) {
-            Some(Limit::TokenBucket { burst, .. }) => burst,
-            _ => 0.0,
-        };
         let shared = Arc::new(Shared {
-            limiter: Mutex::new(Limiter {
-                tokens,
-                updated: Instant::now(),
-                arrivals: VecDeque::new(),
-                windows: None,
-                in_flight: 0,
-            }),
+            limiter: Mutex::new(Limiter::new(
+                config.limit.as_ref().map(|limit| limit.kind),
+                Instant::now(),
+            )),
             config,
             switch_from,
             requests: AtomicUsize::new(0),
@@ -1229,6 +1253,7 @@ fn answer(
     over_limit: bool,
     place: &mut Option<Option<usize>>,
 ) -> bool {
+    let arrived = Instant::now();
     let config = &shared.config;
     let index = shared.requests.fetch_add(1, Ordering::AcqRel);
     let limit = config.limit.as_ref().filter(|_| !over_limit);
@@ -1241,10 +1266,9 @@ fn answer(
             .err()?;
         let mut reply = Reply::empty(limit.status);
         if limit.retry_after {
-            let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
-            reply
-                .headers
-                .push(retry_after_header(&RetryAfter::Seconds(seconds)));
+            reply.headers.push(retry_after_header(&RetryAfter::Seconds(
+                retry_after_seconds(wait),
+            )));
         }
         Some(reply)
     });
@@ -1287,6 +1311,8 @@ fn answer(
             .collect(),
         status: reply.status,
         body_cut: cut_after.is_some(),
+        arrived,
+        answered: None,
     });
     drop(log);
 
@@ -1304,6 +1330,8 @@ fn answer(
     if let Some(delay) = config.lookup_delay.filter(|_| is_lookup(&request.path)) {
         thread::sleep(delay);
     }
+    // Noted before the answer goes out, so that a client that has its answer finds it logged.
+    shared.log.lock().unwrap()[position].answered = Some(Instant::now());
     let mut head = format!("HTTP/1.1 {} {}\r\n", reply.status, reason(reply.status));
     for header in &reply.headers {
         head.push_str(header);
@@ -1952,6 +1980,10 @@ mod tests {
             let began = Instant::now();
             assert_eq!(request(&mut connection, "GET", "/", &[]).status, 200);
             assert!(began.elapsed() >= delay);
+        }
+        // The log tells when each request came and when its answer went out.
+        for entry in server.log() {
+            assert!(entry.answered.expect("the answer went out") - entry.arrived >= delay);
         }
     }
 
