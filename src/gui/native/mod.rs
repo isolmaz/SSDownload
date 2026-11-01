@@ -6991,6 +6991,32 @@ unsafe fn open_media_launch(ui: &mut MainUi, launch: &MediaLaunch) {
     );
 }
 
+/// The button Enter presses in a dialog: the push button that has the focus,
+/// otherwise the one that carries `BS_DEFPUSHBUTTON`.
+unsafe fn default_button_id(dialog: HWND) -> Option<i32> {
+    let button_type = |window: HWND| {
+        window_class(window)
+            .eq_ignore_ascii_case("Button")
+            .then(|| GetWindowLongPtrW(window, GWL_STYLE) as u32 & BS_TYPEMASK as u32)
+    };
+    let focus = GetFocus();
+    if !focus.is_null() && GetParent(focus) == dialog && IsWindowEnabled(focus) != 0 {
+        if let Some(BS_PUSHBUTTON_TYPE | BS_DEFPUSHBUTTON_TYPE) = button_type(focus) {
+            return Some(GetDlgCtrlID(focus));
+        }
+    }
+    let mut child = GetWindow(dialog, GW_CHILD);
+    while !child.is_null() {
+        if button_type(child) == Some(BS_DEFPUSHBUTTON_TYPE) {
+            return Some(GetDlgCtrlID(child));
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    None
+}
+const BS_PUSHBUTTON_TYPE: u32 = BS_PUSHBUTTON as u32;
+const BS_DEFPUSHBUTTON_TYPE: u32 = BS_DEFPUSHBUTTON as u32;
+
 unsafe extern "system" fn dialog_proc(
     hwnd: HWND,
     msg: u32,
@@ -7051,6 +7077,12 @@ unsafe extern "system" fn dialog_proc(
             dialog_command(dlg, loword(wparam) as i32, hiword(wparam));
             0
         }
+        // The dialog manager asks which button Enter presses; without an answer
+        // it sends IDOK, which no dialog has.
+        DM_GETDEFID => match default_button_id(hwnd) {
+            Some(id) => ((DC_HASDEFID << 16) | id as u32) as LRESULT,
+            None => 0,
+        },
         WM_MEASUREITEM => measure_tab_item(dlg, lparam as *mut MEASUREITEMSTRUCT) as LRESULT,
         WM_NOTIFY => {
             let header = &*(lparam as *const NMHDR);
@@ -8415,39 +8447,35 @@ mod tests {
         );
     }
 
-    /// For each name: the Rename dialog's selection and the client x of the
-    /// first character in its field, read from a dialog that is created the way
-    /// `show_rename` creates it and is never shown.
-    fn rename_fields_after_creation(names: &[&str]) -> Vec<((u32, u32), i16)> {
-        on_private_desktop(|| rename_fields_on_this_desktop(names))
+    /// A dialog window created the way `run_modal` creates it, on an app with a
+    /// temporary data directory, and never shown. It lives on the thread that
+    /// created it, so it is only built and dropped inside `with_dialog`.
+    struct HiddenDialog {
+        app: Option<crate::app::App>,
+        raw: *mut super::DialogUi,
+        hwnd: super::HWND,
+        root: std::path::PathBuf,
     }
 
-    fn rename_fields_on_this_desktop(names: &[&str]) -> Vec<((u32, u32), i16)> {
-        use super::{create_dialog, DialogKind, DialogRequest, RenameFields};
-        use std::ptr::null_mut;
-        use windows_sys::Win32::UI::Controls::{EM_GETSEL, EM_POSFROMCHAR};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyWindow, SendMessageW};
+    impl HiddenDialog {
+        fn new(kind: super::DialogKind, width: i32, height: i32) -> Self {
+            use super::{create_dialog, DialogRequest};
+            use std::ptr::null_mut;
 
-        static CLASSES: std::sync::Once = std::sync::Once::new();
-        let root = std::env::temp_dir().join(format!("ssdownload-rename-{}", uuid::Uuid::new_v4()));
-        let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
-        let app = crate::app::App::open(paths).unwrap();
-        let mut fields = Vec::new();
-        unsafe {
-            CLASSES.call_once(|| super::register_classes().unwrap());
-            for name in names {
-                let kind = DialogKind::Rename(RenameFields {
-                    id: "job".into(),
-                    initial: (*name).into(),
-                    edit: null_mut(),
-                });
+            static CLASSES: std::sync::Once = std::sync::Once::new();
+            let root =
+                std::env::temp_dir().join(format!("ssdownload-dialog-{}", uuid::Uuid::new_v4()));
+            let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
+            let app = crate::app::App::open(paths).unwrap();
+            unsafe {
+                CLASSES.call_once(|| super::register_classes().unwrap());
                 let (raw, hwnd) = create_dialog(
                     null_mut(),
                     app.clone(),
                     DialogRequest {
-                        title: "Rename",
-                        width: 460,
-                        height: 150,
+                        title: "Dialog",
+                        width,
+                        height,
                         kind,
                         origin: None,
                         launch: None,
@@ -8455,25 +8483,97 @@ mod tests {
                     },
                 )
                 .expect("the dialog is created");
-                let DialogKind::Rename(f) = &(*raw).kind else {
-                    unreachable!()
-                };
-                let (mut start, mut end) = (0u32, 0u32);
-                SendMessageW(
-                    f.edit,
-                    EM_GETSEL,
-                    &mut start as *mut u32 as usize,
-                    &mut end as *mut u32 as isize,
-                );
-                let first = SendMessageW(f.edit, EM_POSFROMCHAR, 0, 0);
-                fields.push(((start, end), first as i16));
-                DestroyWindow(hwnd);
-                drop(Box::from_raw(raw));
+                Self {
+                    app: Some(app),
+                    raw,
+                    hwnd,
+                    root,
+                }
             }
         }
-        drop(app);
-        let _ = std::fs::remove_dir_all(root);
-        fields
+
+        fn kind(&self) -> &super::DialogKind {
+            unsafe { &(*self.raw).kind }
+        }
+
+        fn app(&self) -> &crate::app::App {
+            self.app.as_ref().unwrap()
+        }
+
+        fn error_line(&self) -> super::HWND {
+            unsafe { (*self.raw).error }
+        }
+
+        fn is_open(&self) -> bool {
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(self.hwnd) != 0 }
+        }
+    }
+
+    impl Drop for HiddenDialog {
+        fn drop(&mut self) {
+            unsafe {
+                if self.is_open() {
+                    windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(self.hwnd);
+                }
+                drop(Box::from_raw(self.raw));
+            }
+            self.app = None;
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// Runs `body` with a hidden dialog of the kind `make` builds, all on a
+    /// private desktop. `make` runs there too: a dialog kind holds window
+    /// handles, which cannot cross threads.
+    fn with_dialog<T: Send>(
+        make: impl FnOnce() -> super::DialogKind + Send,
+        width: i32,
+        height: i32,
+        body: impl FnOnce(&HiddenDialog) -> T + Send,
+    ) -> T {
+        on_private_desktop(|| body(&HiddenDialog::new(make(), width, height)))
+    }
+
+    /// For each name: the Rename dialog's selection and the client x of the
+    /// first character in its field, read from a dialog that is created the way
+    /// `show_rename` creates it and is never shown.
+    fn rename_fields_after_creation(names: &[&str]) -> Vec<((u32, u32), i16)> {
+        use super::{DialogKind, RenameFields};
+        use windows_sys::Win32::UI::Controls::{EM_GETSEL, EM_POSFROMCHAR};
+        use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+        names
+            .iter()
+            .map(|name| {
+                with_dialog(
+                    || {
+                        DialogKind::Rename(RenameFields {
+                            id: "job".into(),
+                            initial: (*name).into(),
+                            edit: std::ptr::null_mut(),
+                        })
+                    },
+                    460,
+                    150,
+                    |dialog| {
+                        let DialogKind::Rename(f) = dialog.kind() else {
+                            unreachable!()
+                        };
+                        let (mut start, mut end) = (0u32, 0u32);
+                        unsafe {
+                            SendMessageW(
+                                f.edit,
+                                EM_GETSEL,
+                                &mut start as *mut u32 as usize,
+                                &mut end as *mut u32 as isize,
+                            );
+                            let first = SendMessageW(f.edit, EM_POSFROMCHAR, 0, 0);
+                            ((start, end), first as i16)
+                        }
+                    },
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -8500,5 +8600,178 @@ mod tests {
             .map(|(selection, _)| selection)
             .collect();
         assert_eq!(selections, [(0, 7), (0, 6), (0, 11)]);
+    }
+
+    fn speed_kind() -> super::DialogKind {
+        super::DialogKind::Speed(super::SpeedFields {
+            ids: Vec::new(),
+            initial: 0,
+            edit: std::ptr::null_mut(),
+        })
+    }
+
+    fn rename_kind() -> super::DialogKind {
+        super::DialogKind::Rename(super::RenameFields {
+            id: "job".into(),
+            initial: "clip.mp4".into(),
+            edit: std::ptr::null_mut(),
+        })
+    }
+
+    fn add_kind() -> super::DialogKind {
+        super::DialogKind::Add(super::AddFields {
+            urls: std::ptr::null_mut(),
+            dir: std::ptr::null_mut(),
+            filename: std::ptr::null_mut(),
+            kind: std::ptr::null_mut(),
+            kind_values: Vec::new(),
+            connections: std::ptr::null_mut(),
+            checksum: std::ptr::null_mut(),
+            schedule: std::ptr::null_mut(),
+            initial: String::new(),
+            analyze_first: false,
+            advanced: false,
+        })
+    }
+
+    /// Runs a key press through the dialog manager the way the dialogs' message
+    /// loops do; true when the dialog manager consumed it.
+    fn press(dialog: &HiddenDialog, key: u16) -> bool {
+        press_in(dialog, dialog.hwnd, key)
+    }
+
+    /// The same key press, typed into one control of the dialog.
+    fn press_in(dialog: &HiddenDialog, target: super::HWND, key: u16) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, WM_KEYDOWN};
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            msg.hwnd = target;
+            msg.message = WM_KEYDOWN;
+            msg.wParam = key as usize;
+            super::dialog_message(dialog.hwnd, &msg)
+        }
+    }
+
+    /// Delivers what is waiting in this thread's queue, such as the character
+    /// `TranslateMessage` posts for a key press.
+    fn pump_messages() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, MSG, PM_REMOVE,
+        };
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    #[test]
+    fn enter_presses_the_default_button_of_the_speed_dialog() {
+        use super::{set_text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+        with_dialog(speed_kind, 420, 150, |dialog| {
+            let DialogKind::Speed(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe { set_text(f.edit, "512") };
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            assert!(!dialog.is_open(), "Apply closed the dialog");
+            assert_eq!(dialog.app().snapshot().settings.speed_limit_kib, 512);
+        });
+    }
+
+    #[test]
+    fn enter_presses_the_default_button_of_the_rename_dialog() {
+        use super::{set_text, text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+        with_dialog(rename_kind, 460, 150, |dialog| {
+            let DialogKind::Rename(f) = dialog.kind() else {
+                unreachable!()
+            };
+            // An empty name is the one answer Rename gives without touching a job.
+            unsafe { set_text(f.edit, "") };
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            assert_eq!(
+                unsafe { text(dialog.error_line()) },
+                crate::i18n::ui("Dosya adı boş olamaz.", "The file name cannot be empty."),
+                "Rename ran and refused the empty name"
+            );
+            assert!(dialog.is_open());
+        });
+    }
+
+    #[test]
+    fn enter_presses_the_default_button_of_the_new_download_dialog() {
+        use super::text;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            assert!(
+                !unsafe { text(dialog.error_line()) }.is_empty(),
+                "Continue ran and refused the empty link list"
+            );
+        });
+    }
+
+    #[test]
+    fn enter_in_the_links_box_stays_a_new_line() {
+        use super::{text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_RETURN};
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe { SetFocus(f.urls) };
+            assert_eq!(unsafe { GetFocus() }, f.urls, "the links box has the focus");
+            // The dialog manager hands the key to the box, which turns it into
+            // a character once the queue is pumped.
+            assert!(press_in(dialog, f.urls, VK_RETURN));
+            pump_messages();
+            assert_eq!(unsafe { text(f.urls) }, "\r\n", "the box got a new line");
+            assert!(
+                unsafe { text(dialog.error_line()) }.is_empty(),
+                "Continue was not pressed"
+            );
+        });
+    }
+
+    #[test]
+    fn enter_presses_the_push_button_that_has_the_focus() {
+        use super::{set_text, DialogKind, D_CANCEL};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_RETURN};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+
+        with_dialog(speed_kind, 420, 150, |dialog| {
+            let DialogKind::Speed(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe {
+                set_text(f.edit, "512");
+                let cancel = GetDlgItem(dialog.hwnd, D_CANCEL);
+                SetFocus(cancel);
+                assert_eq!(GetFocus(), cancel, "Cancel has the focus");
+                assert!(press_in(dialog, cancel, VK_RETURN));
+            }
+            assert!(!dialog.is_open(), "Cancel closed the dialog");
+            assert_eq!(
+                dialog.app().snapshot().settings.speed_limit_kib,
+                0,
+                "Apply did not run"
+            );
+        });
+    }
+    #[test]
+    fn escape_cancels_a_dialog() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+
+        with_dialog(speed_kind, 420, 150, |dialog| {
+            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
+            assert!(!dialog.is_open());
+        });
     }
 }
