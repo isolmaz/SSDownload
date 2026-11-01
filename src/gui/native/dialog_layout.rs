@@ -910,9 +910,17 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // Program path and arguments stack beside the time windows, whose
             // field runs down both of their rows.
             let half = (room - s(ADD_GROUP_GAP)) / 2;
+            let windows_x = x + half + s(ADD_GROUP_GAP);
+            let windows_w = room - half - s(ADD_GROUP_GAP);
+            // The two columns share one label band, so their fields start
+            // level; each label sits at the band's bottom.
+            let windows_label = label_height(dlg, label(4), windows_w);
+            let program_label = label_height(dlg, label(6), half);
+            let band = windows_label.max(program_label);
             let program = [field(label(6), f.program, Width::Flex, dlg.dpi)];
             let arguments = [field(label(7), f.arguments, Width::Flex, dlg.dpi)];
-            let stack = form_row(dlg, &program, x, 0, half, 0, false)
+            let stack = band - program_label
+                + form_row(dlg, &program, x, 0, half, 0, false)
                 + form_row(dlg, &arguments, x, 0, half, 0, false);
             let status = s(ADD_LABEL + ADD_GROUP_GAP);
             let y = form_rows(
@@ -946,13 +954,18 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 ],
                 stack + status,
             );
-            let top = y + form_row(dlg, &program, x, y, half, 0, true);
+            let program_y = y + band - program_label;
+            let top = program_y + form_row(dlg, &program, x, program_y, half, 0, true);
             form_row(dlg, &arguments, x, top, half, 0, true);
-            let windows_x = x + half + s(ADD_GROUP_GAP);
-            let windows_w = room - half - s(ADD_GROUP_GAP);
-            let windows_label = label_height(dlg, label(4), windows_w);
-            MoveWindow(label(4), windows_x, y, windows_w, windows_label, 1);
-            let field_top = y + windows_label + s(ADD_LABEL_GAP);
+            MoveWindow(
+                label(4),
+                windows_x,
+                y + band - windows_label,
+                windows_w,
+                windows_label,
+                1,
+            );
+            let field_top = y + band + s(ADD_LABEL_GAP);
             place_modern(
                 f.windows,
                 true,
