@@ -379,7 +379,8 @@ fn yt_dlp_policy_disables_user_configuration_and_plugins() {
         Path::new(r"C:\tools\deno.exe"),
         Path::new(r"C:\tools\ffmpeg.exe"),
         false,
-    );
+    )
+    .unwrap();
     assert!(arguments
         .windows(2)
         .any(|pair| pair == ["--ignore-config", "--no-plugin-dirs"]));
@@ -390,6 +391,78 @@ fn yt_dlp_policy_disables_user_configuration_and_plugins() {
     assert!(arguments.contains(&"--no-playlist".into()));
     assert!(arguments.contains(&"--config-locations".into()));
     assert!(arguments.contains(&"-".into()));
+}
+
+#[test]
+fn yt_dlp_is_not_started_when_it_cannot_start_ffmpeg_or_deno() {
+    // The paths are canonical, so they carry the verbatim prefix, which does not count.
+    let path = |length: usize, name: &str| {
+        let folder = length - name.len() - 1 - r"C:\".len();
+        PathBuf::from(format!(r"\\?\C:\{}\{name}", "t".repeat(folder)))
+    };
+    let start = |deno: &Path, ffmpeg: &Path| {
+        common_args(deno, ffmpeg, false)
+            .map(|_| ())
+            .map_err(|error| crate::error_codes::code_of(&error).map(|code| code.to_string()))
+    };
+    let (deno, ffmpeg) = (path(200, "deno.exe"), path(258, "ffmpeg.exe"));
+    assert_eq!(start(&deno, &ffmpeg), Ok(()));
+    // ffprobe.exe is one character longer than ffmpeg.exe.
+    assert_eq!(
+        start(&deno, &path(259, "ffmpeg.exe")),
+        Err(Some("SSD-TOL-005".into()))
+    );
+    assert_eq!(start(&path(259, "deno.exe"), &ffmpeg), Ok(()));
+    assert_eq!(
+        start(&path(260, "deno.exe"), &ffmpeg),
+        Err(Some("SSD-TOL-005".into()))
+    );
+}
+
+#[test]
+fn a_file_must_hold_the_container_its_extension_names() {
+    // The format names are what ffprobe reports for these containers.
+    const MP4_FAMILY: &str = "mov,mp4,m4a,3gp,3g2,mj2";
+    let check = |format_name: &str, file: &str| {
+        validate_container(
+            &json!({"format": {"format_name": format_name}}),
+            Path::new(file),
+        )
+    };
+    for (format_name, file) in [
+        (MP4_FAMILY, "media.mp4"),
+        (MP4_FAMILY, "media.M4A"),
+        (MP4_FAMILY, "media.mov"),
+        ("matroska,webm", "media.mkv"),
+        ("matroska,webm", "media.webm"),
+        ("mpegts", "media.ts"),
+        ("mp3", "song.mp3"),
+        ("ogg", "song.opus"),
+        ("flac", "song.flac"),
+        // An extension the app does not write is not judged.
+        ("mpegts", "media.bin"),
+        ("mpegts", "media"),
+    ] {
+        check(format_name, file).unwrap_or_else(|error| panic!("{format_name} in {file}: {error}"));
+    }
+    for (format_name, file) in [
+        ("mpegts", "media.mp4"),
+        ("mpegts", "media.m4a"),
+        ("matroska,webm", "media.mp4"),
+        (MP4_FAMILY, "media.mkv"),
+        (MP4_FAMILY, "media.webm"),
+        ("mp3", "media.mp4"),
+    ] {
+        let error = check(format_name, file).expect_err(&format!("{format_name} in {file}"));
+        let message = error.to_string();
+        assert!(
+            message.contains(format_name)
+                && message.contains(&format!(".{}", file.rsplit('.').next().unwrap())),
+            "{message}"
+        );
+    }
+    // Without a format name there is nothing to judge.
+    validate_container(&json!({"format": {}}), Path::new("media.mp4")).unwrap();
 }
 
 #[test]

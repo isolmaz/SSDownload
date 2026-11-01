@@ -117,7 +117,7 @@ fn inspect_document_with_tools(
         request.page_url.as_deref(),
         &request.session_cookies,
     )?;
-    let args = common_args(deno, ffmpeg, request.playlist);
+    let args = common_args(deno, ffmpeg, request.playlist)?;
     let mut command_args = args;
     command_args.extend([
         "--dump-single-json".into(),
@@ -462,7 +462,7 @@ pub(crate) fn download(
         &request.session_cookies,
         source_info.is_none(),
     )?;
-    let mut base_args = common_args(deno, ffmpeg, request.playlist);
+    let mut base_args = common_args(deno, ffmpeg, request.playlist)?;
     if let Some(items) = request
         .playlist_items
         .as_deref()
@@ -1432,9 +1432,28 @@ fn load_info_args(info_path: &Path, pinned: bool) -> Vec<String> {
     args
 }
 
-fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
+/// Windows starts a program only from a path of at most 259 characters, yt-dlp's children
+/// included. Past that yt-dlp treats FFmpeg and Deno as not installed, warns and carries on,
+/// which leaves streams unmerged or in the wrong container and still exits successfully.
+fn ensure_helpers_startable(deno: &Path, ffmpeg: &Path) -> Result<()> {
+    let length = |path: &Path| {
+        let text = path.to_string_lossy();
+        text.strip_prefix(r"\\?\")
+            .unwrap_or(&text)
+            .encode_utf16()
+            .count()
+    };
+    // ffprobe.exe sits next to ffmpeg.exe and its name is one character longer.
+    if length(ffmpeg) + 1 > 259 || length(deno) > 259 {
+        crate::bail_code!(crate::error_codes::TOL_005);
+    }
+    Ok(())
+}
+
+fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Result<Vec<String>> {
+    ensure_helpers_startable(deno, ffmpeg)?;
     let ffmpeg_dir = ffmpeg.parent().unwrap_or(ffmpeg);
-    vec![
+    Ok(vec![
         "--ignore-config".into(),
         "--no-plugin-dirs".into(),
         "--no-exec".into(),
@@ -1456,7 +1475,7 @@ fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
         } else {
             "--no-playlist".into()
         },
-    ]
+    ])
 }
 
 fn is_forbidden(error: &str) -> bool {

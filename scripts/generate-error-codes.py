@@ -256,6 +256,10 @@ CODES = [
      "Araç sürümü desteklenmiyor",
      "The tool version is not supported",
      "The installed tool version is older than the supported minimum."),
+    ("TOL-005", "tools", "source", "error", "settings", False,
+     "Medya araçlarının yolu Windows'un programlar için izin verdiği 259 karakterden uzun; SSDownload'ı daha kısa bir --data-dir ile başlatın",
+     "The media tools' path is longer than the 259 characters Windows allows for programs; start SSDownload with a shorter --data-dir",
+     "FFmpeg or Deno is too deep in the data folder for yt-dlp to start it; yt-dlp then runs without it and can leave a stream in the wrong container."),
     # --- network -------------------------------------------------------------------
     ("NET-001", "network", "source", "error", "retry", True,
      "Alan adı çözümlenemedi (DNS)",

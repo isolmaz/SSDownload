@@ -20,6 +20,9 @@ struct Source {
     segment_delay: Duration,
     /// A tag added to both media playlists.
     playlist_tag: Option<&'static str>,
+    /// Downloads into a folder 164 characters deep, so the files of the media workspace pass
+    /// the 259 characters of an unprefixed Windows path.
+    deep_folder: bool,
 }
 
 struct Server {
@@ -31,6 +34,8 @@ struct Server {
 
 struct Fixture {
     root: PathBuf,
+    /// Where the download is saved.
+    folder: PathBuf,
     paths: AppPaths,
     master: String,
     server: Arc<Server>,
@@ -129,8 +134,16 @@ impl Fixture {
                 thread::spawn(move || server.serve(stream));
             }
         });
+        let folder = if source.deep_folder {
+            let padding = 164_usize.saturating_sub(root.as_os_str().len() + 1).max(1);
+            root.join("d".repeat(padding))
+        } else {
+            root.clone()
+        };
+        fs::create_dir_all(&folder).unwrap();
         Self {
             root,
+            folder,
             paths,
             master,
             server,
@@ -146,7 +159,7 @@ impl Fixture {
             connections: Some(connections),
             ..AddRequest::default()
         };
-        let output = self.root.join("film.mp4");
+        let output = self.folder.join("film.mp4");
         download(
             &self.paths,
             &request,
@@ -754,5 +767,147 @@ fn the_audio_of_a_combined_stream_is_muxed_and_verified_as_an_audio_only_output(
             ["audio"],
             "{label}: the output holds the audio alone"
         );
+    }
+}
+
+/// The download folder is the user's choice and holds the media workspace, whose files then pass
+/// the 259 characters of an unprefixed Windows path. Both downloaders still finish with an MP4.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_download_into_a_deep_folder_completes_as_an_mp4() {
+    // A tag the app's own downloader does not know leaves the source to yt-dlp.
+    let unknown_tag = "#EXT-X-DATERANGE:ID=\"intro\",START-DATE=\"2026-01-01T00:00:00Z\"";
+    for (label, playlist_tag) in [
+        ("the app's own downloader", None),
+        ("yt-dlp", Some(unknown_tag)),
+    ] {
+        let fixture = Fixture::new(Source {
+            video_seconds: 6,
+            audio_seconds: 6,
+            playlist_tag,
+            deep_folder: true,
+            ..Source::default()
+        });
+        let output = fixture
+            .download(&TransferControl::default(), 4)
+            .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+
+        let owner = crate::output::identity(&output).unwrap();
+        let part_file = workspace_path(&output, &owner).join("media.fhls-300.mp4.part");
+        assert!(
+            part_file.as_os_str().len() > 259,
+            "{label}: the work files must pass MAX_PATH: {part_file:?}"
+        );
+        let tools = tools::verified_toolchain(&fixture.paths, &TransferControl::default()).unwrap();
+        let container = container_of(&tools, &output);
+        assert!(
+            container.split(',').any(|name| name == "mp4"),
+            "{label}: {container}"
+        );
+        assert!((fixture.stream_seconds(&output, "video") - 6.0).abs() < 0.5);
+        assert!((fixture.stream_seconds(&output, "audio") - 6.0).abs() < 0.5);
+    }
+}
+
+/// ffprobe's name for the container of `file`.
+fn container_of(tools: &tools::VerifiedTools, file: &Path) -> String {
+    let probe = std::process::Command::new(&tools.ffprobe)
+        .args(["-v", "error", "-show_entries", "format=format_name"])
+        .args(["-of", "default=nw=1:nk=1"])
+        .arg(file)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&probe.stdout).trim().to_owned()
+}
+
+/// yt-dlp that cannot start FFmpeg warns, keeps the MPEG-TS it downloaded under an `.mp4` name
+/// and exits successfully. Such a file, or any file whose container is not the one its extension
+/// names, fails verification; the real containers behind the same extensions pass.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_file_in_another_container_than_its_extension_names_fails_verification() {
+    let root = std::env::temp_dir().join(format!("ssdownload-container-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    let ffmpeg = |args: &[&str]| {
+        let output = std::process::Command::new(&tools.ffmpeg)
+            .args(["-v", "error", "-y"])
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}");
+    };
+    ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=320x180:rate=25:duration=4",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=duration=4",
+        "-c:v",
+        "libopenh264",
+        "-g",
+        "50",
+        "-c:a",
+        "aac",
+        "-shortest",
+        "source.mkv",
+    ]);
+    // (file, muxer forced for the copy, whether the extension names that container)
+    let copies = [
+        ("right.mp4", "mp4", true),
+        ("right.mov", "mov", true),
+        ("right.mkv", "matroska", true),
+        ("wrong.mp4", "mpegts", false),
+        ("wrong.mov", "matroska", false),
+        ("wrong.mkv", "mp4", false),
+    ];
+    for (file, muxer, _) in copies {
+        ffmpeg(&["-i", "source.mkv", "-c", "copy", "-f", muxer, file]);
+    }
+    let audio_copies = [("right.m4a", "ipod", true), ("wrong.m4a", "mpegts", false)];
+    for (file, muxer, _) in audio_copies {
+        ffmpeg(&["-i", "source.mkv", "-vn", "-c", "copy", "-f", muxer, file]);
+    }
+    let verify = |file: &str, kind: DownloadKind| {
+        let request = AddRequest {
+            kind,
+            ..AddRequest::default()
+        };
+        verify_media_output(
+            &root.join(file),
+            &request,
+            &MediaInfo::default(),
+            &tools,
+            &TransferControl::default(),
+        )
+    };
+
+    let outcomes = copies
+        .iter()
+        .map(|(file, _, right)| (file, right, verify(file, DownloadKind::Video)))
+        .chain(
+            audio_copies
+                .iter()
+                .map(|(file, _, right)| (file, right, verify(file, DownloadKind::Audio))),
+        )
+        .collect::<Vec<_>>();
+    let _ = fs::remove_dir_all(&root);
+
+    for (file, right, outcome) in outcomes {
+        if *right {
+            outcome.unwrap_or_else(|error| panic!("{file}: {error:#}"));
+        } else {
+            let error = outcome.expect_err(file);
+            let extension = file.rsplit('.').next().unwrap();
+            assert!(
+                error.to_string().contains(&format!(".{extension}")),
+                "{file}: {error}"
+            );
+        }
     }
 }
