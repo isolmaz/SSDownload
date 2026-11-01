@@ -2275,12 +2275,37 @@ fn pause_button_label(verb: PauseVerb) -> &'static str {
         PauseVerb::Both => crate::i18n::ui("Durakla&t / Sürdür", "&Pause / Resume"),
     }
 }
-/// The tabs over the page, in order: details, the job's own log, its error.
+/// The pages under the list, in order: details, the job's own log, its error.
 const JOB_TABS: [(&str, &str); 3] = [
     ("Ayrıntılar", "Details"),
     ("İş günlüğü", "Job log"),
     ("Hata ayrıntısı", "Error details"),
 ];
+const JOB_LOG_PAGE: usize = 1;
+
+/// The pages a level has tabs for. The job log follows the job log command:
+/// a level that refuses the command has no tab for it either.
+fn job_tab_pages(mode: UiMode) -> Vec<usize> {
+    (0..JOB_TABS.len())
+        .filter(|&page| page != JOB_LOG_PAGE || main_command_visible(mode, false, ID_JOB_LOG))
+        .collect()
+}
+
+/// Fills the tab strip with the pages of the current level, keeping the page
+/// that was shown under `previous` when the level still has it.
+unsafe fn fill_job_tabs(ui: &MainUi, previous: UiMode) {
+    let selected = SendMessageW(ui.tabs, TCM_GETCURSEL, 0, 0).max(0) as usize;
+    let shown = job_tab_pages(previous).get(selected).copied().unwrap_or(0);
+    SendMessageW(ui.tabs, TCM_DELETEALLITEMS, 0, 0);
+    let pages = job_tab_pages(ui.ui_mode);
+    for (index, &page) in pages.iter().enumerate() {
+        let (tr, en) = JOB_TABS[page];
+        tab_item(ui.tabs, index as i32, crate::i18n::ui(tr, en));
+    }
+    let index = pages.iter().position(|&page| page == shown).unwrap_or(0);
+    SendMessageW(ui.tabs, TCM_SETCURSEL, index, 0);
+    InvalidateRect(ui.tabs, null(), 0);
+}
 const MAIN_FILTERS: [(&str, &str); 9] = [
     ("Tümü", "All"),
     ("Etkin", "Active"),
@@ -2991,9 +3016,7 @@ unsafe fn create_modern_controls(ui: &mut MainUi) {
         0,
         ID_JOB_TABS,
     );
-    for (index, (tr, en)) in JOB_TABS.iter().enumerate() {
-        tab_item(ui.tabs, index as i32, crate::i18n::ui(tr, en));
-    }
+    fill_job_tabs(ui, ui.ui_mode);
     subclass(ui.tabs, tabs_proc);
     ui.details = control(
         ui.hwnd,
@@ -3398,9 +3421,13 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
     if mode == ui.ui_mode && debug == ui.debug_mode && !language_changed && !update_changed {
         return;
     }
+    let previous_mode = ui.ui_mode;
     ui.ui_mode = mode;
     ui.debug_mode = debug;
     ui.update_version = update_version;
+    if modern() && (mode != previous_mode || language_changed) {
+        fill_job_tabs(ui, previous_mode);
+    }
     let menu = create_main_menu(mode, debug);
     SendMessageW(menu as HWND, WM_SETFONT, menu_font(ui) as usize, 1);
     let previous = GetMenu(ui.hwnd);
@@ -3423,15 +3450,6 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
         }
         if let Some(label) = ui.toolbar.get(5) {
             set_text(*label, crate::i18n::ui("Ara:", "Search:"));
-        }
-        for (index, (tr, en)) in JOB_TABS.iter().enumerate() {
-            let mut label = wide(crate::i18n::ui(tr, en));
-            let item = TCITEMW {
-                mask: TCIF_TEXT,
-                pszText: label.as_mut_ptr(),
-                ..zeroed()
-            };
-            SendMessageW(ui.tabs, TCM_SETITEMW, index, &item as *const _ as isize);
         }
         let filter = combo_index(ui.filter);
         SendMessageW(ui.filter, CB_RESETCONTENT, 0, 0);
@@ -5635,7 +5653,11 @@ unsafe fn update_details(ui: &MainUi) {
     }
     // Classic has no tabs: its box always shows the details.
     let tab = if modern() {
-        SendMessageW(ui.tabs, TCM_GETCURSEL, 0, 0).max(0)
+        let selected = SendMessageW(ui.tabs, TCM_GETCURSEL, 0, 0).max(0) as usize;
+        job_tab_pages(ui.ui_mode)
+            .get(selected)
+            .copied()
+            .unwrap_or(0)
     } else {
         0
     };
@@ -5644,7 +5666,7 @@ unsafe fn update_details(ui: &MainUi) {
             (_, [_, _, ..]) => {
                 crate::i18n::ui("Tek bir indirme seçin.", "Select a single download.").to_string()
             }
-            (1, [job]) => {
+            (JOB_LOG_PAGE, [job]) => {
                 let lines = crate::logging::job_timeline(&job.id, 400);
                 if lines.is_empty() {
                     crate::i18n::ui(
@@ -5669,7 +5691,7 @@ unsafe fn update_details(ui: &MainUi) {
         let changed = text(ui.details) != page;
         set_details(ui, &page);
         // A changed log shows its newest lines.
-        if changed && tab == 1 {
+        if changed && tab == JOB_LOG_PAGE {
             SendMessageW(ui.details, EM_LINESCROLL, 0, isize::MAX >> 1);
         }
         update_status(ui);
@@ -9982,6 +10004,15 @@ mod tests {
             in_queue_order(&queue, vec!["gone".into(), "c".into()]),
             ["c", "gone"]
         );
+    }
+
+    #[test]
+    fn the_basic_level_has_no_job_log_tab_as_it_has_no_job_log_command() {
+        use super::{job_tab_pages, main_command_visible, UiMode, ID_JOB_LOG, JOB_LOG_PAGE};
+        assert!(!main_command_visible(UiMode::Simple, false, ID_JOB_LOG));
+        assert_eq!(job_tab_pages(UiMode::Simple), [0, 2]);
+        assert!(!job_tab_pages(UiMode::Simple).contains(&JOB_LOG_PAGE));
+        assert_eq!(job_tab_pages(UiMode::Advanced), [0, 1, 2]);
     }
 
     #[test]
