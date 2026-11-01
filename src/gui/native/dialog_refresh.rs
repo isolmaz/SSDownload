@@ -7,6 +7,11 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
     let snapshot = dlg.app.snapshot();
     let dlg_ptr = dlg as *mut DialogUi;
     match &mut (*dlg_ptr).kind {
+        // Only the wizard that opens before the main window runs this timer.
+        DialogKind::Wizard(_) if snapshot.quit_requested => {
+            DestroyWindow(dlg.hwnd);
+            return;
+        }
         DialogKind::Queues(f) => refresh_completion_countdown(dlg.hwnd, f, &snapshot),
         DialogKind::Crawler(f) => {
             if let Some(receiver) = &f.pending {

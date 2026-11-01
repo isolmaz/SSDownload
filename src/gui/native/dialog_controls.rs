@@ -224,6 +224,11 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             );
             EnableWindow(f.start, wizard_start_enabled(f) as BOOL);
             SetFocus(f.simple_card);
+            // A wizard that opens before the main window has no main window
+            // timer to act on a quit request; it watches for one itself.
+            if GetWindow(dlg.hwnd, GW_OWNER).is_null() {
+                SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
+            }
         }
         DialogKind::Add(f) => {
             dialog_label(

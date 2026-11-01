@@ -1196,6 +1196,29 @@ unsafe fn owned_layout(ex_style: u32) -> u32 {
     }
 }
 
+/// Opens the first-run wizard when this start asks for it (see
+/// `wizard_opens_first`) and sets the theme the main window is built in, read
+/// after the wizard so that the theme it picks applies at once. A change made
+/// once the main window exists applies after a restart. `None` when a quit
+/// request ended the wizard: the app then exits without a main window.
+unsafe fn before_main_window(
+    app: &App,
+    start_hidden: bool,
+    suppressed: bool,
+) -> Option<AppSnapshot> {
+    let mut snapshot = app.snapshot();
+    if wizard_opens_first(&snapshot.settings, start_hidden, suppressed) {
+        set_modern(snapshot.settings.modern_theme());
+        show_usage_wizard(null_mut(), app.clone(), snapshot.settings.clone());
+        snapshot = app.snapshot();
+        if snapshot.quit_requested {
+            return None;
+        }
+    }
+    set_modern(snapshot.settings.modern_theme());
+    Some(snapshot)
+}
+
 pub fn run(app: App, start_hidden: bool) -> Result<()> {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1229,25 +1252,14 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             .ok()
             .and_then(|result| result.capabilities)
             .is_some_and(|value| value.protocol >= 2 && value.capability_version >= 1);
-        let mut snapshot = app.snapshot();
         // uxtheme only honours the shell colour scheme when the process asked
         // for it before the first window exists, so the menu bar and the
         // themed controls match the stored setting from the very first frame.
-        dark_app_mode(snapshot.settings.dark_mode);
-        // The first-run wizard opens before the main window, so the theme it
-        // picks is the one that window is built in.
-        if wizard_opens_first(
-            &snapshot.settings,
-            start_hidden,
-            wizard_auto_open_suppressed(),
-        ) {
-            set_modern(snapshot.settings.modern_theme());
-            show_usage_wizard(null_mut(), app.clone(), snapshot.settings.clone());
-            snapshot = app.snapshot();
-        }
-        // The theme is read once, before the main window: a change made after
-        // it exists applies after a restart.
-        set_modern(snapshot.settings.modern_theme());
+        dark_app_mode(app.snapshot().settings.dark_mode);
+        let Some(snapshot) = before_main_window(&app, start_hidden, wizard_auto_open_suppressed())
+        else {
+            return Ok(());
+        };
         let state = Box::new(MainUi {
             app,
             hwnd: null_mut(),
@@ -10332,6 +10344,117 @@ mod tests {
         // A start that skips the wizard builds its windows in the stored
         // theme, which a new profile has as Classic.
         assert!(!new.modern_theme());
+    }
+
+    thread_local! {
+        /// What `first_start` does to the wizard once it is up.
+        static WIZARD_STEP: std::cell::Cell<Option<unsafe fn(super::HWND)>> =
+            const { std::cell::Cell::new(None) };
+        /// Whether a first-run wizard was found up, and whether it was still up
+        /// when `first_start` gave up on it.
+        static WIZARD_SEEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static WIZARD_STUCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// The first-run wizard of this thread, if one is up.
+    unsafe fn thread_wizard() -> Option<super::HWND> {
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, IsWindowVisible};
+        unsafe extern "system" fn find(hwnd: super::HWND, found: isize) -> super::BOOL {
+            let mut class = [0u16; 64];
+            let length = super::GetClassNameW(hwnd, class.as_mut_ptr(), 64) as usize;
+            if IsWindowVisible(hwnd) != 0
+                && String::from_utf16_lossy(&class[..length]) == super::CLASS_DIALOG
+            {
+                *(found as *mut super::HWND) = hwnd;
+                return 0;
+            }
+            1
+        }
+        let mut found: super::HWND = std::ptr::null_mut();
+        EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(find),
+            &mut found as *mut _ as isize,
+        );
+        (!found.is_null()).then_some(found)
+    }
+
+    /// A start of a profile that has not finished the wizard, on a private
+    /// desktop, in the Classic theme: `step` runs on the wizard once it is up. A wizard still up after 10 s is closed and counted as stuck.
+    /// Returns what `before_main_window` returned (whether the main window
+    /// would be built in Modern), the theme it set, and whether the wizard was
+    /// seen and was stuck.
+    fn first_start(step: unsafe fn(super::HWND)) -> (Option<bool>, bool, bool, bool) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyWindow, KillTimer, SetTimer};
+        unsafe extern "system" fn on_step(_: super::HWND, _: u32, id: usize, _: u32) {
+            KillTimer(std::ptr::null_mut(), id);
+            if let Some(wizard) = thread_wizard() {
+                WIZARD_SEEN.with(|seen| seen.set(true));
+                if let Some(step) = WIZARD_STEP.with(std::cell::Cell::get) {
+                    step(wizard);
+                }
+            }
+        }
+        unsafe extern "system" fn on_limit(_: super::HWND, _: u32, id: usize, _: u32) {
+            KillTimer(std::ptr::null_mut(), id);
+            if let Some(wizard) = thread_wizard() {
+                WIZARD_STUCK.with(|stuck| stuck.set(true));
+                DestroyWindow(wizard);
+            }
+        }
+        on_private_desktop(|| {
+            let root =
+                std::env::temp_dir().join(format!("ssdownload-first-{}", uuid::Uuid::new_v4()));
+            let app =
+                crate::app::App::open(crate::paths::AppPaths::new(root.clone()).unwrap()).unwrap();
+            let mut settings = crate::model::Settings::first_run();
+            settings.theme = "classic".into();
+            app.update_settings_quiet(settings).unwrap();
+            WIZARD_STEP.with(|cell| cell.set(Some(step)));
+            let result = unsafe {
+                super::register_classes().unwrap();
+                SetTimer(std::ptr::null_mut(), 0, 600, Some(on_step));
+                SetTimer(std::ptr::null_mut(), 0, 10_000, Some(on_limit));
+                super::before_main_window(&app, false, false)
+            };
+            let outcome = (
+                result.map(|snapshot| snapshot.settings.modern_theme()),
+                super::modern(),
+                WIZARD_SEEN.with(std::cell::Cell::get),
+                WIZARD_STUCK.with(std::cell::Cell::get),
+            );
+            app.shutdown();
+            let _ = std::fs::remove_dir_all(root);
+            outcome
+        })
+    }
+
+    #[test]
+    fn the_theme_the_first_run_wizard_picks_builds_the_main_window() {
+        unsafe fn pick_modern(wizard: super::HWND) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COMMAND};
+            SendMessageW(wizard, WM_COMMAND, super::ID_WIZARD_MODERN as usize, 0);
+            SendMessageW(wizard, WM_COMMAND, super::ID_WIZARD_START as usize, 0);
+        }
+        let (main_window, theme, seen, stuck) = first_start(pick_modern);
+        assert!(seen && !stuck, "the wizard came up and closed on Start");
+        assert_eq!(main_window, Some(true), "the main window is built");
+        assert!(theme, "in the Modern theme the wizard picked");
+    }
+
+    #[test]
+    fn a_quit_request_closes_the_first_run_wizard_and_builds_no_main_window() {
+        // `ssdownload --quit` while the wizard is up.
+        unsafe fn quit(wizard: super::HWND) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GWLP_USERDATA};
+            let dialog = GetWindowLongPtrW(wizard, GWLP_USERDATA) as *const super::DialogUi;
+            (*dialog).app.dispatch(crate::model::Action::Quit).unwrap();
+        }
+        let (main_window, _, seen, stuck) = first_start(quit);
+        assert!(seen, "the wizard came up");
+        assert!(!stuck, "the quit request closed it");
+        assert_eq!(main_window, None, "no main window is built");
     }
 
     #[test]
