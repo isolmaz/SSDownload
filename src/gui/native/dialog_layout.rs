@@ -3,6 +3,8 @@
 use super::*;
 
 pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
+    let pass = dlg.layout_pass.get().wrapping_add(1);
+    dlg.layout_pass.set(pass);
     let mut r: RECT = zeroed();
     GetClientRect(dlg.hwnd, &mut r);
     let w = r.right;
@@ -1770,6 +1772,11 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             0
         },
     );
+    // Showing or hiding the bar resizes the client area, and the layout that resize ran has
+    // placed and shifted the controls for the final size.
+    if dlg.layout_pass.get() != pass {
+        return;
+    }
     if dialog_is_dark(dlg) {
         let mut client: RECT = zeroed();
         if GetClientRect(dlg.hwnd, &mut client) != 0 {
