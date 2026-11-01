@@ -957,6 +957,16 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 D_CANCEL,
                 false,
             );
+            // Modern: flat fields in painted frames, WinUI boxes and tabs.
+            if modern() {
+                for edit in settings_inputs(f) {
+                    flatten_edit(edit);
+                }
+                for combo in settings_combos(f) {
+                    subclass(combo, combo_proc);
+                }
+                size_selector_tabs(tabs, dlg.dpi);
+            }
             // Tab order follows the order the controls were created in, and the
             // General page's first row (level, language) and its checkboxes
             // were created after the advanced rows. Put the General page's

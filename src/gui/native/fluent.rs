@@ -1255,6 +1255,19 @@ pub(super) unsafe fn paint_button(
         scale(FOCUS_MARGIN, dpi) as f32,
         &surface,
     );
+    blit_surface(dc, rect, &pixels, |memory| {
+        draw_button_content(
+            memory, width, height, dpi, font, text, label, icon, underline,
+        )
+    });
+}
+
+/// Copies `pixels` (COLORREFs, row by row) into `rect` of `dc` through a
+/// memory DC, after `draw` has painted over them there with a transparent
+/// background.
+unsafe fn blit_surface(dc: HDC, rect: RECT, pixels: &[u32], draw: impl FnOnce(HDC)) {
+    let width = (rect.right - rect.left).max(1);
+    let height = (rect.bottom - rect.top).max(1);
     let memory = CreateCompatibleDC(dc);
     let mut info: BITMAPINFO = zeroed();
     info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
@@ -1276,13 +1289,37 @@ pub(super) unsafe fn paint_button(
     }
     // COLORREF is 0x00BBGGRR, a DIB pixel 0x00RRGGBB.
     let target = std::slice::from_raw_parts_mut(bits as *mut u32, pixels.len());
-    for (out, colour) in target.iter_mut().zip(&pixels) {
+    for (out, colour) in target.iter_mut().zip(pixels) {
         *out = ((colour & 0xff) << 16) | (colour & 0xff00) | ((colour >> 16) & 0xff);
     }
     let previous_bitmap = SelectObject(memory, bitmap as HGDIOBJ);
+    let previous_font = SelectObject(memory, GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(memory, TRANSPARENT as i32);
+    draw(memory);
+    BitBlt(
+        dc, rect.left, rect.top, width, height, memory, 0, 0, SRCCOPY,
+    );
+    SelectObject(memory, previous_font);
+    SelectObject(memory, previous_bitmap);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(memory);
+}
+
+/// A button's icon and label, centred in its `width` x `height` surface.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_button_content(
+    memory: HDC,
+    width: i32,
+    height: i32,
+    dpi: u32,
+    font: HFONT,
+    text: u32,
+    label: &[u16],
+    icon: Option<(HFONT, u16)>,
+    underline: bool,
+) {
     SetTextColor(memory, text);
-    let previous_font = SelectObject(memory, font as HGDIOBJ);
+    SelectObject(memory, font as HGDIOBJ);
     let icon_w = if icon.is_some() { scale(16, dpi) } else { 0 };
     let text_w = if label.is_empty() {
         0
@@ -1331,13 +1368,202 @@ pub(super) unsafe fn paint_button(
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | if underline { 0 } else { DT_HIDEPREFIX },
         );
     }
-    BitBlt(
-        dc, rect.left, rect.top, width, height, memory, 0, 0, SRCCOPY,
+}
+
+/// The WinUI CheckBox's box and the space between it and the label, in epx.
+const CHECK_BOX: i32 = 20;
+const CHECK_GAP: i32 = 8;
+
+/// Whether `control` is a check box button.
+pub(super) unsafe fn is_check_box(control: HWND) -> bool {
+    GetWindowLongW(control, GWL_STYLE) as u32 & BS_TYPEMASK as u32 == BS_AUTOCHECKBOX as u32
+}
+
+/// Places a Modern dialog control so that its face is `face`: an edit inside
+/// its painted frame, a drop-down list box and a push button FOCUS_MARGIN past
+/// the face on every side for the focus ring, a check box that far past it on
+/// the left and right, anything else on the face itself.
+pub(super) unsafe fn place_modern(control: HWND, show: bool, face: RECT, dpi: u32) {
+    if control.is_null() {
+        return;
+    }
+    ShowWindow(control, if show { SW_SHOW } else { SW_HIDE });
+    let ring = scale(FOCUS_MARGIN, dpi);
+    let class = window_class(control).to_ascii_lowercase();
+    let rect = match class.as_str() {
+        "edit" => return place_in_frame(control, face, dpi),
+        "combobox" => return place_combo(control, inflate(face, ring, ring), dpi),
+        "button" if is_check_box(control) => inflate(face, ring, 0),
+        "button" => inflate(face, ring, ring),
+        _ => face,
+    };
+    MoveWindow(
+        control,
+        rect.left,
+        rect.top,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+        1,
     );
-    SelectObject(memory, previous_font);
-    SelectObject(memory, previous_bitmap);
-    DeleteObject(bitmap as HGDIOBJ);
-    DeleteDC(memory);
+}
+
+/// Paints a check box on the content card as a WinUI CheckBox: the 20 epx
+/// box, filled with the accent and a check mark while checked, the label
+/// 8 epx after it (wrapped for a multiline box), and the focus ring around
+/// both. The box starts FOCUS_MARGIN in from the left.
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn paint_check_box(
+    dc: HDC,
+    rect: RECT,
+    dpi: u32,
+    palette: &MainPalette,
+    dark: bool,
+    font: HFONT,
+    control: HWND,
+    look: ButtonState,
+) {
+    let width = (rect.right - rect.left).max(1);
+    let height = (rect.bottom - rect.top).max(1);
+    let ring = scale(FOCUS_MARGIN, dpi);
+    let card = palette.card;
+    let mut pixels = paint_button_surface(
+        width as usize,
+        height as usize,
+        ring as f32,
+        &ButtonSurface {
+            background: card,
+            fill: card,
+            stroke: card,
+            stroke_bottom: card,
+            radius: scale(CORNER, dpi) as f32,
+            focus: look
+                .focused
+                .then_some((palette.focus_outer, palette.focus_inner)),
+        },
+    );
+    let checked = SendMessageW(control, BM_GETCHECK, 0, 0) as u32 == BST_CHECKED;
+    let alt = |light: u32, dark_value: u32| over(if dark { dark_value } else { light }, card);
+    // ControlStrongStrokeColorDisabled, also AccentFillColorDisabled.
+    let muted = alt(0x37000000, 0x28ffffff);
+    // ControlAltFillColor and ControlStrongStrokeColor while clear,
+    // AccentFillColor and TextOnAccentFillColor while checked.
+    let (fill, stroke, mark) = match (checked, look.disabled, look.pressed, look.hot) {
+        (true, true, _, _) => (
+            muted,
+            muted,
+            if dark {
+                over(0x87ffffff, muted)
+            } else {
+                0xffffff
+            },
+        ),
+        (true, _, true, _) => (
+            palette.accent_pressed,
+            palette.accent_pressed,
+            palette.on_accent_pressed,
+        ),
+        (true, _, _, true) => (
+            palette.accent_hover,
+            palette.accent_hover,
+            palette.on_accent,
+        ),
+        (true, _, _, _) => (palette.accent, palette.accent, palette.on_accent),
+        (false, true, _, _) => (card, muted, card),
+        (false, _, true, _) => (alt(0x18000000, 0x12ffffff), muted, card),
+        (false, _, _, true) => (alt(0x0f000000, 0x0bffffff), palette.strong_stroke, card),
+        _ => (alt(0x06000000, 0x19000000), palette.strong_stroke, card),
+    };
+    let size = scale(CHECK_BOX, dpi).min(height);
+    let (box_x, box_y) = (ring, (height - size) / 2);
+    let face = paint_button_surface(
+        size as usize,
+        size as usize,
+        0.0,
+        &ButtonSurface {
+            background: card,
+            fill,
+            stroke,
+            stroke_bottom: stroke,
+            radius: scale(CORNER, dpi) as f32,
+            focus: None,
+        },
+    );
+    for y in 0..size {
+        for x in 0..size {
+            let (tx, ty) = (box_x + x, box_y + y);
+            if tx < width && ty < height {
+                pixels[(ty * width + tx) as usize] = face[(y * size + x) as usize];
+            }
+        }
+    }
+    let mut label: Vec<u16> = super::text(control).encode_utf16().collect();
+    let multiline = GetWindowLongW(control, GWL_STYLE) as u32 & BS_MULTILINE as u32 != 0;
+    let prefix = if look.underline { 0 } else { DT_HIDEPREFIX };
+    blit_surface(dc, rect, &pixels, |memory| {
+        if checked {
+            let glyphs = icon_font_px(dpi, 12);
+            if !glyphs.is_null() {
+                SelectObject(memory, glyphs as HGDIOBJ);
+                SetTextColor(memory, mark);
+                let mut area = RECT {
+                    left: box_x,
+                    top: box_y,
+                    right: box_x + size,
+                    bottom: box_y + size,
+                };
+                DrawTextW(
+                    memory,
+                    &0xe73eu16,
+                    1,
+                    &mut area,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                );
+                SelectObject(memory, font as HGDIOBJ);
+                DeleteObject(glyphs as HGDIOBJ);
+            }
+        }
+        SelectObject(memory, font as HGDIOBJ);
+        SetTextColor(
+            memory,
+            if look.disabled {
+                palette.disabled
+            } else {
+                palette.text
+            },
+        );
+        let mut area = RECT {
+            left: box_x + size + scale(CHECK_GAP, dpi),
+            top: 0,
+            right: width - ring,
+            bottom: height,
+        };
+        if multiline {
+            let mut measured = area;
+            DrawTextW(
+                memory,
+                label.as_mut_ptr(),
+                label.len() as i32,
+                &mut measured,
+                DT_LEFT | DT_WORDBREAK | DT_CALCRECT | prefix,
+            );
+            area.top = ((height - (measured.bottom - measured.top)) / 2).max(0);
+            DrawTextW(
+                memory,
+                label.as_mut_ptr(),
+                label.len() as i32,
+                &mut area,
+                DT_LEFT | DT_WORDBREAK | prefix,
+            );
+        } else {
+            DrawTextW(
+                memory,
+                label.as_mut_ptr(),
+                label.len() as i32,
+                &mut area,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | prefix,
+            );
+        }
+    });
 }
 
 /// One icon font glyph as a `size` x `size` 32-bit premultiplied ARGB bitmap
@@ -1694,24 +1920,107 @@ fn add_inputs(f: &AddFields) -> [HWND; 6] {
     ]
 }
 
-/// The New download dialog's Windows 11 surfaces and controls: the content
-/// card, the command bar with its top stroke, flat input frames with an accent
-/// line under the focused field, WinUI buttons with the primary action as the
-/// accent button, and the label and field colours. Every other dialog keeps
-/// its own painting.
-pub(super) unsafe fn add_dialog_message(
+pub(super) fn settings_inputs(f: &SettingsFields) -> [HWND; 16] {
+    [
+        f.dir,
+        f.max_active,
+        f.connections,
+        f.media_fragments,
+        f.per_host,
+        f.speed,
+        f.retry,
+        f.start,
+        f.end,
+        f.proxy_url,
+        f.proxy_user,
+        f.proxy_pass,
+        f.speed_start,
+        f.speed_end,
+        f.speed_kib,
+        f.history,
+    ]
+}
+
+pub(super) fn settings_combos(f: &SettingsFields) -> [HWND; 6] {
+    [
+        f.ui_mode,
+        f.ui_language,
+        f.log_level,
+        f.proxy_mode,
+        f.double_click,
+        f.theme,
+    ]
+}
+
+/// What a Modern dialog paints itself: its framed inputs, its WinUI buttons
+/// with the primary one, the buttons that sit on the content card rather than
+/// on the command bar, and a static shown as a secondary hint.
+struct ModernForm {
+    inputs: Vec<HWND>,
+    buttons: &'static [i32],
+    primary: i32,
+    card_buttons: &'static [i32],
+    hint: HWND,
+}
+
+unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
+    match &dlg.kind {
+        DialogKind::Add(f) => Some(ModernForm {
+            inputs: add_inputs(f).to_vec(),
+            buttons: &[D_ADD_OK, D_ADVANCED, D_CANCEL, D_BROWSE],
+            primary: D_ADD_OK,
+            card_buttons: &[D_BROWSE],
+            hint: null_mut(),
+        }),
+        DialogKind::Settings(f) => Some(ModernForm {
+            inputs: settings_inputs(f).to_vec(),
+            buttons: &[
+                S_OK,
+                D_CANCEL,
+                S_BROWSE,
+                ID_SETTINGS_REOPEN_WIZARD,
+                ID_SETTINGS_CHECK_UPDATES,
+                ID_SETTINGS_INSTALL_EXTENSION,
+            ],
+            primary: S_OK,
+            card_buttons: &[
+                S_BROWSE,
+                ID_SETTINGS_CHECK_UPDATES,
+                ID_SETTINGS_INSTALL_EXTENSION,
+            ],
+            hint: f.theme_note,
+        }),
+        _ => None,
+    }
+}
+
+/// The top of a Modern dialog's command bar. Settings scrolls, so its bar
+/// starts where its Save button's row does.
+unsafe fn footer_top(dlg: &DialogUi, client: &RECT) -> i32 {
+    let save = GetDlgItem(dlg.hwnd, S_OK);
+    if matches!(dlg.kind, DialogKind::Settings(_)) && !save.is_null() {
+        child_rect(dlg.hwnd, save).top + scale(FOCUS_MARGIN, dlg.dpi) - scale(ADD_PAD, dlg.dpi)
+    } else {
+        client.bottom - scale(ADD_FOOTER, dlg.dpi)
+    }
+}
+
+/// The Windows 11 surfaces and controls of the New download and Settings
+/// dialogs: the content card, the command bar with its top stroke, flat input
+/// frames with an accent line under the focused field, WinUI buttons with the
+/// primary action as the accent button, WinUI check boxes, and the label and
+/// field colours. Every other dialog keeps its own painting.
+pub(super) unsafe fn modern_dialog_message(
     dlg: &DialogUi,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<LRESULT> {
-    let DialogKind::Add(f) = &dlg.kind else {
-        return None;
-    };
+    let form = modern_form(dlg)?;
     let palette = main_palette(dlg.hwnd);
     match msg {
         WM_ERASEBKGND => {
-            paint_add_surfaces(dlg, f, wparam as HDC, &palette);
+            paint_modern_surfaces(dlg, &form, wparam as HDC, &palette);
             Some(1)
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
@@ -1721,6 +2030,8 @@ pub(super) unsafe fn add_dialog_message(
                 (text, fill)
             } else if lparam as HWND == dlg.error {
                 (palette.critical, palette.card)
+            } else if lparam as HWND == form.hint && !form.hint.is_null() {
+                (palette.secondary, palette.card)
             } else {
                 (palette.text, palette.card)
             };
@@ -1732,23 +2043,25 @@ pub(super) unsafe fn add_dialog_message(
         WM_COMMAND => {
             let code = hiword(wparam) as u32;
             let control = lparam as HWND;
-            if (code == EN_SETFOCUS || code == EN_KILLFOCUS) && add_inputs(f).contains(&control) {
+            if (code == EN_SETFOCUS || code == EN_KILLFOCUS) && form.inputs.contains(&control) {
                 let frame = input_frame(dlg.hwnd, control, dlg.dpi);
                 InvalidateRect(dlg.hwnd, &frame, 1);
             }
-            if code == EN_CHANGE && control == f.urls {
-                sync_edit_scrollbar(f.urls);
-            }
-            // OK names what it does: the links and the type decide it.
-            if (code == EN_CHANGE && control == f.urls)
-                || (code == CBN_SELCHANGE && control == f.kind)
-            {
-                let ok = GetDlgItem(dlg.hwnd, D_ADD_OK);
-                let label = add_ok_label(f);
-                if super::text(ok) != label {
-                    set_text(ok, label);
-                    layout_dialog(dlg);
-                    InvalidateRect(ok, null(), 0);
+            if let DialogKind::Add(f) = &dlg.kind {
+                if code == EN_CHANGE && control == f.urls {
+                    sync_edit_scrollbar(f.urls);
+                }
+                // OK names what it does: the links and the type decide it.
+                if (code == EN_CHANGE && control == f.urls)
+                    || (code == CBN_SELCHANGE && control == f.kind)
+                {
+                    let ok = GetDlgItem(dlg.hwnd, D_ADD_OK);
+                    let label = add_ok_label(f);
+                    if super::text(ok) != label {
+                        set_text(ok, label);
+                        layout_dialog(dlg);
+                        InvalidateRect(ok, null(), 0);
+                    }
                 }
             }
             None
@@ -1756,19 +2069,24 @@ pub(super) unsafe fn add_dialog_message(
         WM_NOTIFY => {
             let draw = &*(lparam as *const NMCUSTOMDRAW);
             let id = draw.hdr.idFrom as i32;
-            if draw.hdr.code != NM_CUSTOMDRAW
-                || ![D_ADD_OK, D_ADVANCED, D_CANCEL, D_BROWSE].contains(&id)
-            {
+            let button = draw.hdr.hwndFrom;
+            let check_box = draw.hdr.code == NM_CUSTOMDRAW
+                && window_class(button).eq_ignore_ascii_case("Button")
+                && is_check_box(button);
+            if draw.hdr.code != NM_CUSTOMDRAW || !(form.buttons.contains(&id) || check_box) {
+                return None;
+            }
+            // High contrast keeps the system's check box.
+            if check_box && high_contrast() {
                 return None;
             }
             if draw.dwDrawStage != CDDS_PREPAINT {
                 return Some(CDRF_DODEFAULT as LRESULT);
             }
-            let button = draw.hdr.hwndFrom;
             let state = draw.uItemState;
             let disabled = state & CDIS_DISABLED != 0;
             let look = ButtonState {
-                primary: id == D_ADD_OK,
+                primary: id == form.primary,
                 disabled,
                 pressed: !disabled && state & CDIS_SELECTED != 0,
                 hot: !disabled && state & CDIS_HOT != 0,
@@ -1776,17 +2094,39 @@ pub(super) unsafe fn add_dialog_message(
                     && SendMessageW(button, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0,
                 underline: state & CDIS_SHOWKEYBOARDCUES != 0,
             };
+            if check_box {
+                paint_check_box(
+                    draw.hdc,
+                    draw.rc,
+                    dlg.dpi,
+                    &palette,
+                    scheme_dark(dlg.hwnd),
+                    dlg.font,
+                    button,
+                    look,
+                );
+                return Some(CDRF_SKIPDEFAULT as LRESULT);
+            }
             let label: Vec<u16> = super::text(button).encode_utf16().collect();
             // Advanced options shows whether its rows are open.
-            let chevrons = if id == D_ADVANCED {
+            let open = match &dlg.kind {
+                DialogKind::Add(f) if id == D_ADVANCED => Some(f.advanced),
+                _ => None,
+            };
+            let chevrons = if open.is_some() {
                 icon_font_px(dlg.dpi, 12)
             } else {
                 null_mut()
             };
-            let icon = (!chevrons.is_null())
-                .then_some((chevrons, if f.advanced { 0xe70eu16 } else { 0xe70d }));
-            // Browse sits on the content card; the others on the command bar.
-            let surface = if id == D_BROWSE {
+            let icon = (!chevrons.is_null()).then_some((
+                chevrons,
+                if open == Some(true) {
+                    0xe70eu16
+                } else {
+                    0xe70d
+                },
+            ));
+            let surface = if form.card_buttons.contains(&id) {
                 MainPalette {
                     base: palette.card,
                     ..palette
@@ -1806,10 +2146,10 @@ pub(super) unsafe fn add_dialog_message(
     }
 }
 
-unsafe fn paint_add_surfaces(dlg: &DialogUi, f: &AddFields, dc: HDC, palette: &MainPalette) {
+unsafe fn paint_modern_surfaces(dlg: &DialogUi, form: &ModernForm, dc: HDC, palette: &MainPalette) {
     let mut client: RECT = zeroed();
     GetClientRect(dlg.hwnd, &mut client);
-    let footer_top = client.bottom - scale(ADD_FOOTER, dlg.dpi);
+    let footer_top = footer_top(dlg, &client);
     fill_colour(
         dc,
         &RECT {
@@ -1836,7 +2176,7 @@ unsafe fn paint_add_surfaces(dlg: &DialogUi, f: &AddFields, dc: HDC, palette: &M
         palette.stroke,
     );
     let focus = GetFocus();
-    for edit in add_inputs(f) {
+    for &edit in &form.inputs {
         if edit.is_null() || IsWindowVisible(edit) == 0 {
             continue;
         }
@@ -1944,7 +2284,7 @@ pub(super) unsafe fn apply_main_metrics(ui: &mut MainUi) {
     if previous != 0 {
         ImageList_Destroy(previous);
     }
-    size_job_tabs(ui);
+    size_selector_tabs(ui.tabs, ui.dpi);
     SendMessageW(
         ui.filter,
         CB_SETITEMHEIGHT,
@@ -1958,19 +2298,17 @@ pub(super) unsafe fn apply_main_metrics(ui: &mut MainUi) {
 
 /// Space on each side of a tab's label.
 pub(super) const TAB_PAD: i32 = 12;
+pub(super) const SELECTOR_TABS_HEIGHT: i32 = 36;
 
 /// Every tab as wide as its label plus TAB_PAD on each side, 36 epx high.
-pub(super) unsafe fn size_job_tabs(ui: &MainUi) {
-    let pad = scale(TAB_PAD, ui.dpi);
-    SendMessageW(ui.tabs, TCM_SETPADDING, 0, (pad as u32 & 0xffff) as isize);
+pub(super) unsafe fn size_selector_tabs(tabs: HWND, dpi: u32) {
+    let pad = scale(TAB_PAD, dpi);
+    SendMessageW(tabs, TCM_SETPADDING, 0, (pad as u32 & 0xffff) as isize);
     // Without a fixed width only the height is taken; the width follows the label.
-    let height = scale(36, ui.dpi);
-    SendMessageW(
-        ui.tabs,
-        TCM_SETITEMSIZE,
-        0,
-        ((height as u32) << 16) as isize,
-    );
+    let height = scale(SELECTOR_TABS_HEIGHT, dpi);
+    SendMessageW(tabs, TCM_SETITEMSIZE, 0, ((height as u32) << 16) as isize);
+    // comctl32's default minimum would widen a short label such as "Ağ".
+    SendMessageW(tabs, TCM_SETMINTABWIDTH, 0, 0);
 }
 
 /// Shows the page scroll bar only while the text is taller than the page.

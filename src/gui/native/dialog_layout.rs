@@ -306,24 +306,55 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // The strip is wide enough for all four items; the page below it is
             // the dialog surface itself and paint_tabs owns the strip, so no
             // themed band or divider shows up next to or under the items.
-            move_id(
-                dlg.hwnd,
-                S_TABS,
-                m,
-                m,
-                scale(430, dlg.dpi),
-                scale(30, dlg.dpi),
-            );
-            let cx = m + scale(2, dlg.dpi);
+            // One rhythm for every tab and one label column. Classic: 22 px
+            // controls on a 26 px pitch in 12 px text, so no row ever touches
+            // the next one. Modern: the Windows 11 rhythm of 32 epx controls on
+            // a 40 epx pitch in 14 px Body text, above a command bar.
+            let look = modern();
+            let s = |value: i32| scale(value, dlg.dpi);
+            // A width sized for a caption grows with the text: 14/12 in Modern.
+            let hx = |value: i32| s(if look { value * 7 / 6 } else { value });
+            let put = |control: HWND, show: bool, x: i32, y: i32, width: i32, height: i32| {
+                if look {
+                    let face = RECT {
+                        left: x,
+                        top: y,
+                        right: x + width,
+                        bottom: y + height,
+                    };
+                    place_modern(control, show, face, dlg.dpi);
+                } else {
+                    place(control, show, x, y, width, height);
+                }
+            };
+            let cx = if look { s(ADD_PAD) } else { m + s(2) };
+            if look {
+                // The first label lines up with the page's text.
+                move_id(
+                    dlg.hwnd,
+                    S_TABS,
+                    cx - s(TAB_PAD),
+                    s(16),
+                    hx(430),
+                    s(SELECTOR_TABS_HEIGHT),
+                );
+            } else {
+                move_id(dlg.hwnd, S_TABS, m, m, s(430), s(30));
+            }
             let cw = w - 2 * cx;
-            let cy = m + scale(38, dlg.dpi);
-            // One rhythm for both tabs: 22 px controls on a 26 px pitch, so no
-            // row ever touches the next one, and one label column.
-            let line = scale(22, dlg.dpi);
-            let step = scale(26, dlg.dpi);
-            let label_w = scale(200, dlg.dpi);
+            let cy = if look {
+                s(16 + SELECTOR_TABS_HEIGHT + 12)
+            } else {
+                m + s(38)
+            };
+            let line = s(if look { ADD_FIELD } else { 22 });
+            let step = s(if look { 40 } else { 26 });
+            let label_dy = s(if look { 6 } else { 3 });
+            let label_h = s(if look { ADD_LABEL } else { 18 });
+            let browser_h = s(if look { 44 } else { 38 });
+            let label_w = hx(200);
             let field_x = cx + label_w;
-            let small = scale(72, dlg.dpi);
+            let small = hx(72);
             let half = (cw - gap) / 2;
 
             // Genel: every control stays a direct child of the dialog, so
@@ -334,60 +365,37 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             let mut row_y = cy;
             // Arayüz düzeyi: which rows this page has at all. It is the first
             // row of the page it decides, and it stays reachable in both modes.
-            place_static(
-                &labels,
-                11,
-                cx,
-                row_y + scale(3, dlg.dpi),
-                label_w,
-                scale(18, dlg.dpi),
-                genel,
-            );
-            place(f.ui_mode, genel, field_x, row_y, scale(110, dlg.dpi), line);
+            place_static(&labels, 11, cx, row_y + label_dy, label_w, label_h, genel);
+            put(f.ui_mode, genel, field_x, row_y, hx(110), line);
             // Arayüz dili shares the mode row: the label column belongs to it,
             // so this label sits in the field area beside the combo.
             place_static(
                 &labels,
                 12,
-                field_x + scale(118, dlg.dpi),
-                row_y + scale(3, dlg.dpi),
-                scale(108, dlg.dpi),
-                scale(18, dlg.dpi),
+                field_x + hx(118),
+                row_y + label_dy,
+                hx(108),
+                label_h,
                 genel,
             );
-            place(
+            put(
                 f.ui_language,
                 genel,
-                field_x + scale(230, dlg.dpi),
+                field_x + hx(230),
                 row_y,
-                cw - label_w - scale(230, dlg.dpi),
+                cw - label_w - hx(230),
                 line,
             );
             row_y += step;
 
-            place_static(
-                &labels,
-                0,
-                cx,
-                row_y + scale(3, dlg.dpi),
-                label_w,
-                scale(18, dlg.dpi),
-                genel,
-            );
-            place(
-                f.dir,
-                genel,
-                field_x,
-                row_y,
-                cw - label_w - scale(92, dlg.dpi),
-                line,
-            );
-            place(
+            place_static(&labels, 0, cx, row_y + label_dy, label_w, label_h, genel);
+            put(f.dir, genel, field_x, row_y, cw - label_w - hx(92), line);
+            put(
                 GetDlgItem(dlg.hwnd, S_BROWSE),
                 genel,
-                cx + cw - scale(88, dlg.dpi),
+                cx + cw - hx(88),
                 row_y,
-                scale(88, dlg.dpi),
+                hx(88),
                 line,
             );
             row_y += step;
@@ -405,12 +413,12 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     &labels,
                     *label,
                     cx,
-                    y + scale(3, dlg.dpi),
+                    y + label_dy,
                     label_w,
-                    scale(18, dlg.dpi),
+                    label_h,
                     simple_transfer,
                 );
-                place(*control, simple_transfer, field_x, y, small, line);
+                put(*control, simple_transfer, field_x, y, small, line);
             }
             if simple {
                 row_y += step * 2;
@@ -419,22 +427,14 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // Kullanım amacı: part of the advanced answer only, so the simple
             // page has neither the row nor its label.
             let purpose = genel && !simple;
-            place_static(
-                &labels,
-                1,
-                cx,
-                row_y + scale(3, dlg.dpi),
-                label_w,
-                scale(18, dlg.dpi),
-                purpose,
-            );
+            place_static(&labels, 1, cx, row_y + label_dy, label_w, label_h, purpose);
             // Each box is as wide as its caption, so a longer translation moves the
             // next one along instead of running into it.
             let mut mode_x = field_x;
             for control in [f.mode_video, f.mode_file, f.mode_audio] {
-                let mode_w = scale(58, dlg.dpi).max(text_width(control) + scale(24, dlg.dpi));
-                place(control, purpose, mode_x, row_y, mode_w, line);
-                mode_x += mode_w;
+                let mode_w = hx(58).max(text_width(control) + s(if look { 32 } else { 24 }));
+                put(control, purpose, mode_x, row_y, mode_w, line);
+                mode_x += mode_w + s(if look { 16 } else { 0 });
             }
             if !simple {
                 row_y += step;
@@ -445,13 +445,13 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // the row - and the site-entry toggle, whose label is the longest,
             // gets the wider half of it.
             let clipboard = genel && !simple;
-            place(f.clipboard, clipboard, cx, row_y, half, line);
+            put(f.clipboard, clipboard, cx, row_y, half, line);
             if clipboard {
-                place(f.startup, genel, cx + half + gap, row_y, half, line);
+                put(f.startup, genel, cx + half + gap, row_y, half, line);
             } else {
-                let site_w = half + scale(20, dlg.dpi);
-                place(f.site_entries, genel, cx, row_y, site_w, line);
-                place(
+                let site_w = half + hx(20);
+                put(f.site_entries, genel, cx, row_y, site_w, line);
+                put(
                     f.startup,
                     genel,
                     cx + site_w + gap,
@@ -461,34 +461,27 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 );
             }
             row_y += step;
-            place(f.tray, genel, cx, row_y, cw, line);
+            put(f.tray, genel, cx, row_y, cw, line);
             row_y += step;
-            place(f.notify, genel, cx, row_y, cw, line);
+            put(f.notify, genel, cx, row_y, cw, line);
             row_y += step;
-            place(f.dark, genel, cx, row_y, cw, line);
+            put(f.dark, genel, cx, row_y, cw, line);
             row_y += step;
             // Tema: the box in the field column like the level box, the note
             // beside it.
-            place(
-                f.theme_label,
-                genel,
-                cx,
-                row_y + scale(3, dlg.dpi),
-                label_w,
-                scale(18, dlg.dpi),
-            );
-            place(f.theme, genel, field_x, row_y, scale(110, dlg.dpi), line);
-            place(
+            put(f.theme_label, genel, cx, row_y + label_dy, label_w, label_h);
+            put(f.theme, genel, field_x, row_y, hx(110), line);
+            put(
                 f.theme_note,
                 genel,
-                field_x + scale(118, dlg.dpi),
-                row_y + scale(3, dlg.dpi),
-                cw - label_w - scale(118, dlg.dpi),
-                scale(18, dlg.dpi),
+                field_x + hx(118),
+                row_y + label_dy,
+                cw - label_w - hx(118),
+                label_h,
             );
             row_y += step;
             if !simple {
-                place(f.site_entries, genel, cx, row_y, cw, line);
+                put(f.site_entries, genel, cx, row_y, cw, line);
                 row_y += step;
             }
 
@@ -497,61 +490,47 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             let schedule = genel && !simple;
             // The labels carry the "(SS:DD)" hint, so their slots are sized for
             // the longest language's text.
-            let clock_w = scale(56, dlg.dpi);
-            place(f.schedule, schedule, cx, row_y, scale(194, dlg.dpi), line);
+            let clock_w = hx(56);
+            put(f.schedule, schedule, cx, row_y, hx(194), line);
             place_static(
                 &labels,
                 2,
-                cx + scale(200, dlg.dpi),
-                row_y + scale(3, dlg.dpi),
-                scale(100, dlg.dpi),
-                scale(18, dlg.dpi),
+                cx + hx(200),
+                row_y + label_dy,
+                hx(100),
+                label_h,
                 schedule,
             );
-            place(
-                f.start,
-                schedule,
-                cx + scale(304, dlg.dpi),
-                row_y,
-                clock_w,
-                line,
-            );
+            put(f.start, schedule, cx + hx(304), row_y, clock_w, line);
             place_static(
                 &labels,
                 3,
-                cx + scale(366, dlg.dpi),
-                row_y + scale(3, dlg.dpi),
-                scale(80, dlg.dpi),
-                scale(18, dlg.dpi),
+                cx + hx(366),
+                row_y + label_dy,
+                hx(80),
+                label_h,
                 schedule,
             );
-            place(
-                f.end,
-                schedule,
-                cx + scale(450, dlg.dpi),
-                row_y,
-                clock_w,
-                line,
-            );
+            put(f.end, schedule, cx + hx(450), row_y, clock_w, line);
             if !simple {
                 row_y += step;
             }
-            place(f.update_check, genel, cx, row_y, cw, line);
+            put(f.update_check, genel, cx, row_y, cw, line);
             row_y += step;
-            place(
+            put(
                 GetDlgItem(dlg.hwnd, ID_SETTINGS_CHECK_UPDATES),
                 genel,
                 cx,
                 row_y,
-                scale(232, dlg.dpi),
+                hx(232),
                 line,
             );
-            place(
+            put(
                 GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION),
                 genel,
-                cx + scale(240, dlg.dpi),
+                cx + hx(240),
                 row_y,
-                scale(232, dlg.dpi),
+                hx(232),
                 line,
             );
 
@@ -570,13 +549,13 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                         &labels,
                         *label,
                         cx,
-                        y + scale(3, dlg.dpi),
+                        y + label_dy,
                         label_w,
-                        scale(18, dlg.dpi),
+                        label_h,
                         advanced,
                     );
                     // A two or three digit value needs no 120 px field.
-                    place(*control, advanced, field_x, y, small, line);
+                    put(*control, advanced, field_x, y, small, line);
                 }
             } else {
                 // The two fields belong to the simple rows that already hold
@@ -587,9 +566,9 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                         &labels,
                         *label,
                         cx,
-                        cy + step * i as i32 + scale(3, dlg.dpi),
+                        cy + step * i as i32 + label_dy,
                         label_w,
-                        scale(18, dlg.dpi),
+                        label_h,
                         false,
                     );
                 }
@@ -608,48 +587,34 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     &labels,
                     *label,
                     cx,
-                    y + scale(3, dlg.dpi),
+                    y + label_dy,
                     label_w,
-                    scale(18, dlg.dpi),
+                    label_h,
                     advanced,
                 );
-                place(*control, advanced, field_x, y, small, line);
+                put(*control, advanced, field_x, y, small, line);
             }
             let browser_y = cy + step * 6;
-            place(
-                f.browser_transfer,
-                advanced,
-                cx,
-                browser_y,
-                cw,
-                scale(38, dlg.dpi),
-            );
-            let log_y = browser_y + scale(46, dlg.dpi);
+            put(f.browser_transfer, advanced, cx, browser_y, cw, browser_h);
+            let log_y = browser_y + browser_h + s(if look { 12 } else { 8 });
             place_static(
                 &labels,
                 10,
                 cx,
-                log_y + scale(3, dlg.dpi),
+                log_y + label_dy,
                 label_w,
-                scale(18, dlg.dpi),
+                label_h,
                 advanced,
             );
-            place(
-                f.log_level,
-                advanced,
-                field_x,
-                log_y,
-                scale(140, dlg.dpi),
-                line,
-            );
+            put(f.log_level, advanced, field_x, log_y, hx(140), line);
             // The host-log toggle shares the row with the level it belongs to
             // instead of pushing another row into the error line.
-            place(
+            put(
                 f.log_hosts,
                 advanced,
-                field_x + scale(152, dlg.dpi),
+                field_x + hx(152),
                 log_y,
-                cw - label_w - scale(152, dlg.dpi),
+                cw - label_w - hx(152),
                 line,
             );
 
@@ -664,76 +629,43 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             .enumerate()
             {
                 let y = cy + step * i as i32;
-                place_static(
-                    &labels,
-                    *label,
-                    cx,
-                    y + scale(3, dlg.dpi),
-                    label_w,
-                    scale(18, dlg.dpi),
-                    network,
-                );
-                let width = if i == 0 {
-                    scale(160, dlg.dpi)
-                } else {
-                    cw - label_w
-                };
-                place(*control, network, field_x, y, width, line);
+                place_static(&labels, *label, cx, y + label_dy, label_w, label_h, network);
+                let width = if i == 0 { hx(160) } else { cw - label_w };
+                put(*control, network, field_x, y, width, line);
             }
             let limit_y = cy + step * 4;
-            let clock_w = scale(64, dlg.dpi);
-            place(
-                f.speed_schedule,
-                network,
-                cx,
-                limit_y,
-                scale(238, dlg.dpi),
-                line,
-            );
+            let clock_w = hx(64);
+            put(f.speed_schedule, network, cx, limit_y, hx(238), line);
             place_static(
                 &labels,
                 19,
-                cx + scale(246, dlg.dpi),
-                limit_y + scale(3, dlg.dpi),
-                scale(62, dlg.dpi),
-                scale(18, dlg.dpi),
+                cx + hx(246),
+                limit_y + label_dy,
+                hx(62),
+                label_h,
                 network,
             );
-            place(
-                f.speed_start,
-                network,
-                cx + scale(310, dlg.dpi),
-                limit_y,
-                clock_w,
-                line,
-            );
+            put(f.speed_start, network, cx + hx(310), limit_y, clock_w, line);
             place_static(
                 &labels,
                 20,
-                cx + scale(382, dlg.dpi),
-                limit_y + scale(3, dlg.dpi),
-                scale(38, dlg.dpi),
-                scale(18, dlg.dpi),
+                cx + hx(382),
+                limit_y + label_dy,
+                hx(38),
+                label_h,
                 network,
             );
-            place(
-                f.speed_end,
-                network,
-                cx + scale(424, dlg.dpi),
-                limit_y,
-                clock_w,
-                line,
-            );
+            put(f.speed_end, network, cx + hx(424), limit_y, clock_w, line);
             place_static(
                 &labels,
                 21,
                 cx,
-                limit_y + step + scale(3, dlg.dpi),
+                limit_y + step + label_dy,
                 label_w,
-                scale(18, dlg.dpi),
+                label_h,
                 network,
             );
-            place(f.speed_kib, network, field_x, limit_y + step, small, line);
+            put(f.speed_kib, network, field_x, limit_y + step, small, line);
             // Davranış: switches, then the two labelled rows.
             let behaviour = dlg.tab.get() == 3 && !simple;
             for (i, control) in [
@@ -748,71 +680,112 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             .iter()
             .enumerate()
             {
-                place(*control, behaviour, cx, cy + step * i as i32, cw, line);
+                put(*control, behaviour, cx, cy + step * i as i32, cw, line);
             }
             let choice_y = cy + step * 7;
             place_static(
                 &labels,
                 22,
                 cx,
-                choice_y + scale(3, dlg.dpi),
-                scale(300, dlg.dpi),
-                scale(18, dlg.dpi),
+                choice_y + label_dy,
+                hx(300),
+                label_h,
                 behaviour,
             );
-            place(
+            put(
                 f.double_click,
                 behaviour,
-                cx + scale(304, dlg.dpi),
+                cx + hx(304),
                 choice_y,
-                scale(170, dlg.dpi),
+                hx(170),
                 line,
             );
             place_static(
                 &labels,
                 23,
                 cx,
-                choice_y + step + scale(3, dlg.dpi),
-                scale(300, dlg.dpi),
-                scale(18, dlg.dpi),
+                choice_y + step + label_dy,
+                hx(300),
+                label_h,
                 behaviour,
             );
-            place(
+            put(
                 f.history,
                 behaviour,
-                cx + scale(304, dlg.dpi),
+                cx + hx(304),
                 choice_y + step,
                 small,
                 line,
             );
 
-            // The secondary action sits at the left end of the same button
-            // row, so it never has to fight the purpose check boxes for the
-            // purpose row.
-            place(
-                GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
-                genel,
-                cx,
-                by,
-                scale(200, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                S_OK,
-                w - m - scale(100, dlg.dpi),
-                by,
-                scale(100, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                D_CANCEL,
-                w - m - scale(208, dlg.dpi),
-                by,
-                scale(100, dlg.dpi),
-                row,
-            );
+            if look {
+                // The command bar: the secondary action at its left end, Save
+                // and Cancel at its right, the error line just above it.
+                let bar_y = h - s(ADD_FOOTER) + s(ADD_PAD);
+                let save_w = add_button_width(dlg, S_OK, 120);
+                let cancel_w = add_button_width(dlg, D_CANCEL, 96);
+                let wizard_w = add_button_width(dlg, ID_SETTINGS_REOPEN_WIZARD, 120);
+                put(
+                    GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
+                    genel,
+                    cx,
+                    bar_y,
+                    wizard_w,
+                    line,
+                );
+                put(
+                    GetDlgItem(dlg.hwnd, D_CANCEL),
+                    true,
+                    cx + cw - cancel_w,
+                    bar_y,
+                    cancel_w,
+                    line,
+                );
+                put(
+                    GetDlgItem(dlg.hwnd, S_OK),
+                    true,
+                    cx + cw - cancel_w - gap - save_w,
+                    bar_y,
+                    save_w,
+                    line,
+                );
+                move_id(
+                    dlg.hwnd,
+                    D_ERROR,
+                    cx,
+                    h - s(ADD_FOOTER) - gap - label_h,
+                    cw,
+                    label_h,
+                );
+            } else {
+                // The secondary action sits at the left end of the same button
+                // row, so it never has to fight the purpose check boxes for the
+                // purpose row.
+                place(
+                    GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
+                    genel,
+                    cx,
+                    by,
+                    scale(200, dlg.dpi),
+                    row,
+                );
+                move_id(
+                    dlg.hwnd,
+                    S_OK,
+                    w - m - scale(100, dlg.dpi),
+                    by,
+                    scale(100, dlg.dpi),
+                    row,
+                );
+                move_id(
+                    dlg.hwnd,
+                    D_CANCEL,
+                    w - m - scale(208, dlg.dpi),
+                    by,
+                    scale(100, dlg.dpi),
+                    row,
+                );
+            }
         }
         DialogKind::Tools(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);

@@ -8259,10 +8259,20 @@ unsafe fn show_add_dialog(owner: HWND, app: App, initial: String, analyze_first:
 /// bottom edge. A simple dialog is the shorter one, because the rows it hides
 /// are not replaced by anything.
 fn settings_logical_height(simple: bool) -> i32 {
-    if simple {
-        398
+    match (modern(), simple) {
+        (true, true) => 608,
+        (true, false) => 648,
+        (false, true) => 398,
+        (false, false) => 424,
+    }
+}
+/// The settings dialog's width: Modern's 14 px text needs 7/6 of Classic's,
+/// and the theme row's note a little more.
+fn settings_width() -> i32 {
+    if modern() {
+        720
     } else {
-        424
+        560
     }
 }
 /// The frame of this dialog, measured once: the 346 logical content height it
@@ -8295,7 +8305,7 @@ unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
         owner,
         app,
         crate::i18n::ui("SSDownload ayarları", "SSDownload settings"),
-        560,
+        settings_width(),
         settings_logical_height(simple) + SETTINGS_FRAME,
         DialogKind::Settings(Box::new(SettingsFields {
             opened: value.clone(),
@@ -8783,7 +8793,7 @@ unsafe extern "system" fn dialog_proc(
     let _callback = DialogCallback(raw);
     let dlg = &mut *raw;
     if modern() {
-        if let Some(value) = add_dialog_message(dlg, msg, wparam, lparam) {
+        if let Some(value) = modern_dialog_message(dlg, msg, wparam, lparam) {
             return value;
         }
     }
@@ -8836,6 +8846,10 @@ unsafe extern "system" fn dialog_proc(
                 let selected = SendMessageW(tabs, TCM_GETCURSEL, 0, 0).max(0) as usize;
                 dlg.tab.set(selected);
                 layout_dialog(dlg);
+                // The painted input frames of the page that left stay behind otherwise.
+                if modern() {
+                    InvalidateRect(hwnd, null(), 1);
+                }
             }
             0
         }
@@ -9102,10 +9116,10 @@ unsafe fn create_error(dlg: &mut DialogUi) {
     dlg.error = dialog_label(dlg.hwnd, dlg.font, "", D_ERROR);
 }
 
-/// Modern's New download dialog uses the Windows 11 Body style; the others
-/// keep the classic dialog font.
+/// Modern's New download and Settings dialogs use the Windows 11 Body style;
+/// the others keep the classic dialog font.
 unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
-    if modern() && matches!(dlg.kind, DialogKind::Add(_)) {
+    if modern() && matches!(dlg.kind, DialogKind::Add(_) | DialogKind::Settings(_)) {
         ramp_font(dlg.dpi, BODY_PX, false)
     } else {
         make_font(dlg.dpi, 9, FW_NORMAL as i32)
@@ -9563,6 +9577,10 @@ unsafe fn dialog_dpi(dlg: &mut DialogUi) {
     }
     DeleteObject(dlg.font);
     dlg.font = f;
+    let tabs = GetDlgItem(dlg.hwnd, S_TABS);
+    if modern() && !tabs.is_null() {
+        size_selector_tabs(tabs, dlg.dpi);
+    }
     layout_dialog(dlg);
 }
 

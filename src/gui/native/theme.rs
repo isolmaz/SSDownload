@@ -529,7 +529,8 @@ pub(super) unsafe fn tab_title(tabs: HWND, index: i32) -> [u16; 64] {
     buffer
 }
 pub(super) unsafe fn measure_tab_item(dlg: &DialogUi, item: *mut MEASUREITEMSTRUCT) -> bool {
-    if (*item).CtlID != S_TABS as u32 {
+    // Modern's tabs follow their labels (`size_selector_tabs`).
+    if (*item).CtlID != S_TABS as u32 || modern() {
         return false;
     }
     (*item).itemWidth = scale(120, dlg.dpi) as u32;
@@ -2102,8 +2103,8 @@ pub(super) unsafe fn paint_tabs(hwnd: HWND, dc: HDC) {
         return;
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
-    if GetDlgCtrlID(hwnd) == ID_JOB_TABS {
-        paint_job_tabs(hwnd, dc, &client, dpi);
+    if modern() {
+        paint_selector_tabs(hwnd, dc, &client, dpi);
         return;
     }
     let palette = tab_palette(scheme_dark(hwnd));
@@ -2159,12 +2160,18 @@ pub(super) unsafe fn paint_tabs(hwnd: HWND, dc: HDC) {
         SelectObject(dc, previous);
     }
 }
-/// The main window's tabs in the WinUI SelectorBar look: labels on the base
-/// layer, the selected one in the primary text colour over a short accent
-/// pill, and a focus ring around it while the strip has the keyboard focus.
-unsafe fn paint_job_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
+/// Modern's tabs in the WinUI SelectorBar look: labels on the main window's
+/// base layer or on a dialog's content card, the selected one in the primary
+/// text colour over a short accent pill, and a focus ring around it while the
+/// strip has the keyboard focus.
+unsafe fn paint_selector_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
     let palette = main_palette(GetParent(hwnd));
-    fill_colour(dc, client, palette.base);
+    let surface = if GetDlgCtrlID(hwnd) == ID_JOB_TABS {
+        palette.base
+    } else {
+        palette.card
+    };
+    fill_colour(dc, client, surface);
     let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
     let previous = if font == 0 {
         null_mut()
@@ -2205,7 +2212,7 @@ unsafe fn paint_job_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
                 scale(CORNER, dpi),
                 dpi,
                 &palette,
-                palette.base,
+                surface,
             );
         }
         let mut title = tab_title(hwnd, index);
@@ -2267,8 +2274,8 @@ pub(super) unsafe extern "system" fn tabs_proc(
             return 0;
         }
         WM_ERASEBKGND => return 1,
-        // The main window's focus ring follows the keyboard focus.
-        WM_SETFOCUS | WM_KILLFOCUS if GetDlgCtrlID(hwnd) == ID_JOB_TABS => {
+        // Modern's focus ring follows the keyboard focus.
+        WM_SETFOCUS | WM_KILLFOCUS if modern() => {
             InvalidateRect(hwnd, null(), 0);
         }
         // Modern's tabs show the one under the pointer.
