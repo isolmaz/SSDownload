@@ -1423,10 +1423,6 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 false,
             );
             SetFocus(f.edit);
-            // Select the stem, not the extension, like Explorer does.
-            let stem = f.initial.rfind('.').unwrap_or(f.initial.len());
-            let stem = f.initial[..stem].encode_utf16().count();
-            SendMessageW(f.edit, EM_SETSEL, 0, stem as isize);
         }
         DialogKind::Logins(f) => {
             dialog_label(
