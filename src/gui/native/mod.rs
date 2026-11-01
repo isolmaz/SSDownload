@@ -10509,12 +10509,22 @@ mod tests {
         /// The button that does the dialog's work and closes it; none when the
         /// closing button is the only commit button.
         affirmative: Option<i32>,
+        /// Further buttons that do work and close the dialog, in the order they
+        /// follow the affirmative button.
+        also: &'static [i32],
         /// The button that closes the dialog without doing its work.
         closer: i32,
         /// The button that carries `BS_DEFPUSHBUTTON`, the one Enter presses.
         default: Option<i32>,
         /// Puts the dialog into the state the case is about.
         prepare: fn(&HiddenDialog),
+    }
+
+    impl CommitCase {
+        fn also(mut self, buttons: &'static [i32]) -> Self {
+            self.also = buttons;
+            self
+        }
     }
 
     /// A visible control of a dialog.
@@ -10571,34 +10581,32 @@ mod tests {
         };
 
         let shown = shown_controls(dialog.hwnd);
-        let find = |id: i32| shown.iter().find(|control| control.id == id);
-        let Some(closer) = find(case.closer) else {
-            return vec![format!("the closing button {} is not shown", case.closer)];
-        };
-        let affirmative = match case.affirmative {
-            Some(id) => match find(id) {
-                Some(control) => Some(control),
-                None => return vec![format!("the affirmative button {id} is not shown")],
-            },
-            None => None,
-        };
+        let mut commit: Vec<&Shown> = Vec::new();
+        for id in case
+            .affirmative
+            .into_iter()
+            .chain(case.also.iter().copied())
+            .chain([case.closer])
+        {
+            match shown.iter().find(|control| control.id == id) {
+                Some(control) => commit.push(control),
+                None => return vec![format!("the commit button {id} is not shown")],
+            }
+        }
+        let closer = commit[commit.len() - 1];
         let mut problems = Vec::new();
 
-        if let Some(affirmative) = affirmative {
+        for pair in commit.windows(2) {
+            let (first, second) = (pair[0], pair[1]);
             let in_order = if mirrored {
-                closer.rect.right <= affirmative.rect.left
+                second.rect.right <= first.rect.left
             } else {
-                affirmative.rect.right <= closer.rect.left
+                first.rect.right <= second.rect.left
             };
             if !in_order {
                 problems.push(format!(
-                    "the affirmative button {} (x {}..{}) does not come before the closing button {} (x {}..{})",
-                    affirmative.id,
-                    affirmative.rect.left,
-                    affirmative.rect.right,
-                    closer.id,
-                    closer.rect.left,
-                    closer.rect.right
+                    "the commit button {} (x {}..{}) does not come before the commit button {} (x {}..{})",
+                    first.id, first.rect.left, first.rect.right, second.id, second.rect.left, second.rect.right
                 ));
             }
         }
@@ -10627,17 +10635,20 @@ mod tests {
         let in_row = |control: &Shown| {
             control.rect.top < closer.rect.bottom && control.rect.bottom > closer.rect.top
         };
-        let commit: Vec<i32> = affirmative
-            .map(|control| control.id)
-            .into_iter()
-            .chain([closer.id])
-            .collect();
-        let span_left = affirmative.map_or(closer.rect.left, |a| a.rect.left.min(closer.rect.left));
-        let span_right =
-            affirmative.map_or(closer.rect.right, |a| a.rect.right.max(closer.rect.right));
+        let commit_ids: Vec<i32> = commit.iter().map(|control| control.id).collect();
+        let span_left = commit
+            .iter()
+            .map(|control| control.rect.left)
+            .min()
+            .unwrap();
+        let span_right = commit
+            .iter()
+            .map(|control| control.rect.right)
+            .max()
+            .unwrap();
         for other in shown
             .iter()
-            .filter(|control| !commit.contains(&control.id) && in_row(control))
+            .filter(|control| !commit_ids.contains(&control.id) && in_row(control))
         {
             let before_the_commit_buttons = if mirrored {
                 other.rect.left >= span_right
@@ -10657,21 +10668,32 @@ mod tests {
             .filter(|control| control.tab_stop && in_row(control))
             .map(|control| control.id)
             .collect();
-        if !row_tab.ends_with(&commit) {
+        if !row_tab.ends_with(&commit_ids) {
             problems.push(format!(
-                "the row is reached in the order {row_tab:?} and does not end with {commit:?}"
+                "the row is reached in the order {row_tab:?} and does not end with {commit_ids:?}"
             ));
         }
-        if let Some(affirmative) = affirmative {
-            let button = GetDlgItem(dialog.hwnd, affirmative.id);
-            if IsWindowEnabled(button) != 0 {
-                let next = GetDlgCtrlID(GetNextDlgTabItem(dialog.hwnd, button, 0));
-                if next != closer.id {
-                    problems.push(format!(
-                        "Tab from the affirmative button {} reaches control {next}, not the closing button {}",
-                        affirmative.id, closer.id
-                    ));
-                }
+        let enabled = |id: i32| IsWindowEnabled(GetDlgItem(dialog.hwnd, id)) != 0;
+        for (index, button) in commit.iter().enumerate() {
+            if !enabled(button.id) {
+                continue;
+            }
+            let Some(expected) = commit[index + 1..]
+                .iter()
+                .find(|control| enabled(control.id))
+            else {
+                continue;
+            };
+            let next = GetDlgCtrlID(GetNextDlgTabItem(
+                dialog.hwnd,
+                GetDlgItem(dialog.hwnd, button.id),
+                0,
+            ));
+            if next != expected.id {
+                problems.push(format!(
+                    "Tab from the commit button {} reaches control {next}, not the commit button {}",
+                    button.id, expected.id
+                ));
             }
         }
 
@@ -10694,8 +10716,9 @@ mod tests {
     fn the_commit_row_of_every_dialog_follows_the_windows_order() {
         use super::{
             settings_logical_height, DialogKind, ADD_DIALOG_HEIGHT, C_SCAN, D_ADD_OK, D_CANCEL,
-            E_CLOSE, ID_WIZARD_START, J_CLOSE, L_ADD, L_SAVE, M_QUEUE, RENAME_LOGICAL_HEIGHT,
-            RN_OK, R_SAVE, SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT, SP_OK, S_OK, Y_SAVE,
+            E_CLOSE, ID_WIZARD_START, J_CLOSE, L_ADD, L_SAVE, M_MP3, M_QUEUE,
+            RENAME_LOGICAL_HEIGHT, RN_OK, R_SAVE, SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT, SP_OK,
+            S_OK, Y_SAVE,
         };
         use crate::model::UiMode;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -10745,6 +10768,7 @@ mod tests {
                 width,
                 height,
                 affirmative,
+                also: &[],
                 closer,
                 default,
                 prepare,
@@ -10854,7 +10878,8 @@ mod tests {
                 (Some(M_QUEUE), D_CANCEL),
                 Some(M_QUEUE),
                 nothing,
-            ),
+            )
+            .also(&[M_MP3]),
             case(
                 "media picker, advanced",
                 media_advanced,
@@ -10862,7 +10887,8 @@ mod tests {
                 (Some(M_QUEUE), D_CANCEL),
                 Some(M_QUEUE),
                 nothing,
-            ),
+            )
+            .also(&[M_MP3]),
             case(
                 "media picker, failed analysis",
                 media_kind,

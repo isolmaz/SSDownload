@@ -1587,10 +1587,16 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             ] {
                 EnableWindow(control, (!audio_only) as BOOL);
             }
+            // "MP3 olarak indir" queues the selection and closes the picker like
+            // "İndir", so the commit row reads Download, Download as MP3, Cancel.
+            // A failed analysis has nothing to download, and its report button
+            // next to "Gelişmiş seçenekler" leaves no room for a third commit
+            // button, so the MP3 button gives way.
+            let mp3_shown = !f.report_shown;
             move_id(
                 dlg.hwnd,
                 M_QUEUE,
-                w - m - scale(220, dlg.dpi),
+                w - m - scale(if mp3_shown { 378 } else { 220 }, dlg.dpi),
                 by,
                 scale(120, dlg.dpi),
                 row,
@@ -1606,11 +1612,10 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(112, dlg.dpi),
                 row,
             );
-            // "MP3 olarak indir" uses the same middle place while nothing failed.
             place(
                 GetDlgItem(dlg.hwnd, M_MP3),
-                !f.report_shown,
-                m + scale(197, dlg.dpi),
+                mp3_shown,
+                w - m - scale(250, dlg.dpi),
                 by,
                 scale(150, dlg.dpi),
                 row,
