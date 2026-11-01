@@ -1999,6 +1999,56 @@ fn a_completed_job_shows_all_its_bytes_as_one_range() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn a_completed_job_read_back_at_start_shows_all_its_bytes_as_one_range() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-ranges-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let server = FileServer::start(vec![("/ranges.bin".into(), vec![3; 4096], false)]);
+    let engine = Engine::open(paths.clone()).unwrap();
+    let id = engine
+        .add(file_request(server.url("/ranges.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+    engine.shutdown();
+
+    let engine = Engine::open(paths).unwrap();
+    assert_eq!(
+        job_of(&engine, &id).ranges.as_deref(),
+        Some(&[(0, 4096)][..])
+    );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_source_refresh_that_keeps_the_bytes_keeps_their_ranges() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-ranges-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/ranges.bin".into(), vec![3; 4096], true)]);
+    let (engine, id, ticket) = paused_job_with_ranges(&root, &server);
+    // A record with a strong identity, which the new address answers with too.
+    seed_direct_refresh_state(&engine, &id);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refreshed_url = format!("http://{}/ranges.bin", listener.local_addr().unwrap());
+    let head = thread::spawn(move || read_head_and_respond(listener, None, None));
+    let mut request = (*ticket.request).clone();
+    request.url = refreshed_url;
+    // Scheduled for later, so no new worker reports anything before the job is read.
+    request.start_at = Some(Utc::now().timestamp() + 3600);
+    engine
+        .complete_source_refresh(&id, &ticket.token, request, false)
+        .unwrap();
+    head.join().unwrap();
+    let refreshed = job_of(&engine, &id);
+    assert_eq!(refreshed.ranges.as_deref(), Some(&REPORTED_RANGES[..]));
+    assert_eq!(refreshed.resumable, None);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn shutdown_when_done(queue: &QueuePolicy) -> QueuePolicy {
     QueuePolicy {
         // The countdown is far longer than any test, and the tests cancel it, so

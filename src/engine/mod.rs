@@ -466,7 +466,6 @@ impl Engine {
                         job.path = done.path;
                         job.downloaded = done.bytes;
                         job.total = Some(done.bytes);
-                        job.ranges = Some(Arc::from([(0, done.bytes)]));
                         job.state = JobState::Completed;
                         job.phase =
                             crate::i18n::ui("Tamamlandı (kurtarıldı)", "Completed (recovered)")
@@ -508,6 +507,8 @@ impl Engine {
             .iter_mut()
             .filter(|job| job.state == JobState::Completed)
         {
+            // Ranges are never stored: a completed job read back has all its bytes.
+            job.ranges = Some(Arc::from([(0, job.total.unwrap_or(job.downloaded))]));
             if job.request.holds_session() {
                 job.request.forget_session();
                 forgotten.push(job.clone());
