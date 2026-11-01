@@ -2420,6 +2420,55 @@ unsafe fn modern_list_tail(ui: &MainUi, dc: HDC) {
     }
 }
 
+/// The info tip of a cell: its full text when Modern's painting cuts it
+/// short. The list measures a cell with its own, smaller insets and then
+/// calls it unfolded, so a text cut by Modern's insets is named here.
+pub(super) unsafe fn cell_tip(ui: &MainUi, tip: &mut NMLVGETINFOTIPW) {
+    if tip.dwFlags & LVGIT_UNFOLDED == 0 || tip.pszText.is_null() || tip.cchTextMax < 2 {
+        return;
+    }
+    let (Ok(view), Ok(row)) = (usize::try_from(tip.iSubItem), usize::try_from(tip.iItem)) else {
+        return;
+    };
+    let Some(&column) = ui.columns.get(view) else {
+        return;
+    };
+    let Some(text) = ui
+        .visible_ids
+        .get(row)
+        .and_then(|id| ui.row_cache.get(id))
+        .and_then(|cells| cells.get(column))
+    else {
+        return;
+    };
+    let width = SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, view, 0) as i32;
+    let dc = GetDC(ui.list);
+    let previous = SelectObject(dc, SendMessageW(ui.list, WM_GETFONT, 0, 0) as HGDIOBJ);
+    let needed = label_width(dc, text);
+    SelectObject(dc, previous);
+    ReleaseDC(ui.list, dc);
+    if !cell_cut_short(needed, width, column, ui.dpi) {
+        return;
+    }
+    let text: Vec<u16> = text.encode_utf16().collect();
+    let length = text.len().min(tip.cchTextMax as usize - 1);
+    let target = std::slice::from_raw_parts_mut(tip.pszText, length + 1);
+    target[..length].copy_from_slice(&text[..length]);
+    target[length] = 0;
+}
+
+/// Whether a text `needed` wide is cut short in a cell `width` wide, with the
+/// insets `paint_row_cells` draws: 8 epx in, 6 epx short of the edge, and the
+/// name's glyph slot and gap.
+fn cell_cut_short(needed: i32, width: i32, column: usize, dpi: u32) -> bool {
+    let insets = if column == COL_NAME {
+        8 + 16 + 8 + 6
+    } else {
+        8 + 6
+    };
+    needed > width - scale(insets, dpi)
+}
+
 /// Every cell's text, 8 epx in from the column edge like the header's titles
 /// and with an ellipsis when it does not fit (in the middle of a location),
 /// and the progress bar in the
@@ -2427,41 +2476,6 @@ unsafe fn modern_list_tail(ui: &MainUi, dc: HDC) {
 /// text, except on a selected row, whose accent tint is too dark for it in
 /// light mode. The name has a 16 epx glyph slot in front of it: an error mark for a
 /// failed job and a pause mark for a paused one.
-/// The info tip of a row: its full name when the row cuts it short. The
-/// list measures a name with its own, smaller insets and then calls it
-/// unfolded, so a name cut by the glyph slot is named here.
-pub(super) unsafe fn name_tip(ui: &MainUi, tip: &mut NMLVGETINFOTIPW) {
-    if tip.iSubItem != 0
-        || tip.dwFlags & LVGIT_UNFOLDED == 0
-        || tip.pszText.is_null()
-        || tip.cchTextMax < 2
-    {
-        return;
-    }
-    let Some(job) = usize::try_from(tip.iItem)
-        .ok()
-        .and_then(|row| ui.visible_ids.get(row))
-        .and_then(|id| ui.snapshot.jobs.iter().find(|job| &job.id == id))
-    else {
-        return;
-    };
-    let room =
-        SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, 0, 0) as i32 - scale(8 + 16 + 8 + 6, ui.dpi);
-    let dc = GetDC(ui.list);
-    let previous = SelectObject(dc, SendMessageW(ui.list, WM_GETFONT, 0, 0) as HGDIOBJ);
-    let width = label_width(dc, &job.name);
-    SelectObject(dc, previous);
-    ReleaseDC(ui.list, dc);
-    if width <= room {
-        return;
-    }
-    let name: Vec<u16> = job.name.encode_utf16().collect();
-    let length = name.len().min(tip.cchTextMax as usize - 1);
-    let target = std::slice::from_raw_parts_mut(tip.pszText, length + 1);
-    target[..length].copy_from_slice(&name[..length]);
-    target[length] = 0;
-}
-
 unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
     let palette = main_palette(ui.hwnd);
     let pad = scale(8, ui.dpi);
@@ -2880,6 +2894,21 @@ mod tests {
             assert_eq!(on_deep.on_accent, 0xffffff);
             assert!(contrast(on_deep.on_accent, on_deep.accent) >= 4.5);
         }
+    }
+
+    #[test]
+    fn a_cell_gets_a_tip_once_modern_s_insets_cut_its_text() {
+        use super::{cell_cut_short, COL_LOCATION, COL_NAME};
+        // A name keeps 38 epx for its insets and glyph slot, other cells 14.
+        assert!(!cell_cut_short(162, 200, COL_NAME, 96));
+        assert!(cell_cut_short(163, 200, COL_NAME, 96));
+        assert!(!cell_cut_short(186, 200, COL_LOCATION, 96));
+        assert!(cell_cut_short(187, 200, COL_LOCATION, 96));
+        // The insets grow with the DPI: 57 and 21 px at 144.
+        assert!(cell_cut_short(244, 300, COL_NAME, 144));
+        assert!(!cell_cut_short(243, 300, COL_NAME, 144));
+        assert!(cell_cut_short(280, 300, COL_LOCATION, 144));
+        assert!(!cell_cut_short(279, 300, COL_LOCATION, 144));
     }
 
     #[test]

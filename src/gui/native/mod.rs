@@ -2062,7 +2062,7 @@ unsafe extern "system" fn main_proc(
                 return 0;
             }
             if modern() && hdr.hwndFrom == ui.list && hdr.code == LVN_GETINFOTIPW {
-                name_tip(ui, &mut *(lparam as *mut NMLVGETINFOTIPW));
+                cell_tip(ui, &mut *(lparam as *mut NMLVGETINFOTIPW));
                 return 0;
             }
             if hdr.hwndFrom == ui.list {
@@ -3066,8 +3066,8 @@ unsafe fn create_modern_controls(ui: &mut MainUi) {
         ui.list,
         LVM_SETEXTENDEDLISTVIEWSTYLE,
         0,
-        // The info tip names a job whose name the row cuts short
-        // (`name_tip`); the label tip covers the other cells.
+        // The info tip names a cell's text where Modern's painting cuts it
+        // short (`cell_tip`).
         (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP | LVS_EX_INFOTIP) as isize,
     );
     for (index, (_, _, width)) in MAIN_COLUMNS.iter().enumerate() {
