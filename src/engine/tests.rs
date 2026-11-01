@@ -3297,14 +3297,16 @@ mod holds {
                 (hold.metered, hold.battery_saver),
                 (!battery_saver, battery_saver)
             );
+            // The row names the hold once the worker that was stopped has ended.
+            let notice = hold.notice().unwrap();
+            wait_until("the row to name the hold", || {
+                job(&engine, &id).phase == notice
+            });
             let started = requests(&server, "/held.bin");
             thread::sleep(SETTLE);
             assert_eq!(job_state(&engine, &id), JobState::Queued);
             assert_eq!(requests(&server, "/held.bin"), started);
-            assert_eq!(
-                job(&engine, &id).phase,
-                engine.snapshot().hold.notice().unwrap()
-            );
+            assert_eq!(job(&engine, &id).phase, notice);
 
             switch(&sensors, battery_saver, false);
             wait_until("the job to run again", || {

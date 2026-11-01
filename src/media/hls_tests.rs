@@ -634,3 +634,125 @@ fn captions_with_empty_and_simultaneous_cues_mux_into_mp4() {
     );
     kept_verified.expect("the kept MP4 with the captions passes verification");
 }
+
+/// The browser transfer writes the segments of an HLS variant one after the other. A variant that
+/// holds the video and the audio together, sent as an `audio` stream for an audio-only request,
+/// gives an output with the audio alone that passes the verification, for both segment kinds; sent
+/// as a `video` or `file` stream the same request is refused.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn the_audio_of_a_combined_stream_is_muxed_and_verified_as_an_audio_only_output() {
+    let paths = shared_profile();
+    let tools = tools::verified_toolchain(&paths, &TransferControl::default())
+        .expect("the installed media tools");
+    for (label, fragmented) in [("MPEG-TS segments", false), ("fMP4 segments", true)] {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-combined-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut encode = std::process::Command::new(&tools.ffmpeg);
+        encode
+            .args(["-v", "error", "-f", "lavfi", "-i"])
+            .arg("testsrc=size=320x180:rate=25:duration=4")
+            .args(["-f", "lavfi", "-i"])
+            .arg("sine=frequency=440:sample_rate=48000:duration=4")
+            .args([
+                "-c:v",
+                "libopenh264",
+                "-g",
+                "50",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+            ])
+            .args(["-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod"]);
+        if fragmented {
+            encode
+                .args(["-hls_segment_type", "fmp4", "-hls_fmp4_init_filename"])
+                .arg(root.join("init.mp4"));
+        }
+        let extension = if fragmented { "m4s" } else { "ts" };
+        encode
+            .arg("-hls_segment_filename")
+            .arg(root.join(format!("seg%d.{extension}")))
+            .arg(root.join("variant.m3u8"));
+        assert!(encode.status().unwrap().success(), "{label}: encoding");
+
+        let mut bytes = if fragmented {
+            fs::read(root.join("init.mp4")).unwrap()
+        } else {
+            Vec::new()
+        };
+        let mut segments = 0;
+        while let Ok(segment) = fs::read(root.join(format!("seg{segments}.{extension}"))) {
+            bytes.extend(segment);
+            segments += 1;
+        }
+        assert!(segments >= 2, "{label}: {segments} segments");
+        let combined = root.join("stream-1");
+        fs::write(&combined, bytes).unwrap();
+
+        let request = AddRequest {
+            url: "https://site.example/master.m3u8".into(),
+            kind: DownloadKind::Audio,
+            audio_format_id: Some("hls-300".into()),
+            expected_audio: Some(true),
+            ..AddRequest::default()
+        };
+        let stream = |role: &str| crate::browser_transfer::StreamFile {
+            path: combined.clone(),
+            role: role.into(),
+            format_id: Some("hls-300".into()),
+            language: None,
+        };
+        let streams = [stream("audio")];
+        let output = root.join("audio.mkv");
+        let control = TransferControl::default();
+        mux_browser_streams(&paths, &request, &streams, &output, &control)
+            .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+        verify_external_result(&paths, &request, &output, &streams, Some(4.0), true)
+            .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+        for (role, refusal) in [
+            (
+                "video",
+                crate::i18n::ui(
+                    "Tarayıcı yalnız ses aktarımında görüntü akışı gönderdi",
+                    "The browser sent a video stream in an audio-only transfer",
+                ),
+            ),
+            (
+                "file",
+                crate::i18n::ui(
+                    "Tarayıcı bilinmeyen bir medya akışı rolü gönderdi",
+                    "The browser sent an unknown media stream role",
+                ),
+            ),
+        ] {
+            let refused = root.join(format!("{role}.mkv"));
+            let error = mux_browser_streams(&paths, &request, &[stream(role)], &refused, &control)
+                .err()
+                .unwrap_or_else(|| panic!("{label}: the same stream sent as {role} is accepted"));
+            assert_eq!(error.to_string(), refusal, "{label}: {role}");
+        }
+
+        let probe = std::process::Command::new(&tools.ffprobe)
+            .args(["-v", "error", "-show_entries", "stream=codec_type"])
+            .args(["-of", "json"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        let value: Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let kinds = value["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|stream| stream["codec_type"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(
+            kinds,
+            ["audio"],
+            "{label}: the output holds the audio alone"
+        );
+    }
+}
