@@ -1683,6 +1683,55 @@ fn file_request(url: String, directory: &Path) -> AddRequest {
     }
 }
 
+#[test]
+fn the_size_of_a_result_that_followed_processing_adds_nothing_to_a_quota() {
+    // A download that fetched 110 bytes and converted them into 673 has counted what it received.
+    assert_eq!(uncounted_result_bytes(JobState::Processing, 110, 673), 0);
+    // A download whose last progress report was lost has the rest of its result left to count.
+    assert_eq!(
+        uncounted_result_bytes(JobState::Downloading, 600, 1000),
+        400
+    );
+    assert_eq!(uncounted_result_bytes(JobState::Downloading, 1000, 700), 0);
+}
+
+#[test]
+fn a_file_download_adds_its_size_to_the_quota_of_its_queue_once() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-quota-{}", Uuid::new_v4()));
+    let body = vec![7u8; 300_000];
+    let server = FileServer::start(vec![("/quota.bin".into(), body.clone(), false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].clone();
+    engine
+        .update_queue_policy(QueuePolicy {
+            quota: Some(QueueQuota {
+                limit_bytes: 1 << 30,
+                ..Default::default()
+            }),
+            ..queue.clone()
+        })
+        .unwrap();
+    let id = engine
+        .add(file_request(server.url("/quota.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+
+    let settings = engine.snapshot().settings;
+    let quota = settings
+        .queues
+        .iter()
+        .find(|candidate| candidate.id == queue.id)
+        .and_then(|candidate| candidate.quota.as_ref())
+        .unwrap();
+    assert_eq!(quota.consumed_bytes, body.len() as u64);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn shutdown_when_done(queue: &QueuePolicy) -> QueuePolicy {
     QueuePolicy {
         // The countdown is far longer than any test, and the tests cancel it, so
