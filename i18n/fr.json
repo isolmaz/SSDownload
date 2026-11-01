@@ -1695,5 +1695,7 @@
   "The digest did not match; downloading the file again": "Le condensat ne correspond pas ; le fichier est téléchargé de nouveau",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "Le fichier ne correspond pas au condensat SHA-256 publié par sa source ({0}) et deux téléchargements ont donné des octets différents ; le fichier partiel a été supprimé et la nouvelle tentative le téléchargera à nouveau",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "Le fichier a été enregistré, mais ne correspond pas au condensat SHA-256 publié par sa source ({0}) ; deux téléchargements ont donné les mêmes octets",
-  "No capacity for the network connection became free in time": "Aucune capacité n'a été libérée à temps pour la connexion réseau"
+  "The media self-test failed: {0}": "L'autotest des outils multimédias a échoué : {0}",
+  "No capacity for the network connection became free in time": "Aucune capacité n'a été libérée à temps pour la connexion réseau",
+  "No suitable stable yt-dlp release was found": "Aucune version stable adaptée de yt-dlp n'a été trouvée"
 }

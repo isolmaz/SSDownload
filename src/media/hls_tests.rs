@@ -259,6 +259,24 @@ impl Server {
     }
 }
 
+/// The check a downloaded tool set passes before it replaces the active one also passes with the
+/// installed tools, and takes seconds.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn the_installed_tools_pass_the_self_test() {
+    let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    let scratch =
+        std::env::temp_dir().join(format!("ssdownload-selftest-{}", uuid::Uuid::new_v4()));
+    let started = Instant::now();
+    let result = self_test(&tools, &scratch, &TransferControl::default());
+    let elapsed = started.elapsed();
+    let _ = fs::remove_dir_all(&scratch);
+
+    result.expect("the self-test of the installed tools");
+    assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
+}
+
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
 fn a_source_with_a_longer_audio_playlist_downloads_both_streams_at_once() {

@@ -1282,6 +1282,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
                     let _ = app.dispatch(Action::InstallTools {
                         request_id: None,
                         force_update: stale,
+                        automatic: true,
                     });
                 });
             if let Err(error) = spawned {
@@ -2710,6 +2711,7 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
             if let Err(error) = ui.app.dispatch_result(Action::InstallTools {
                 request_id: None,
                 force_update: false,
+                automatic: false,
             }) {
                 ui.app.message(
                     format!(

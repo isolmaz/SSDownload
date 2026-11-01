@@ -463,6 +463,7 @@ static AR: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "لم يُحفظ أي صفحة مصدر قابلة للتحديث لهذه المهمة."),
     ("No release notes provided.", "لا توجد ملاحظات حول الإصدار."),
     ("No running SSDownload instance was found", "لم يُعثر على نسخة SSDownload قيد التشغيل"),
+    ("No suitable stable yt-dlp release was found", "لم يُعثر على إصدار مستقر مناسب من yt-dlp"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "لا توجد معلومات عن الأدوات بعد. يقوم زر «تثبيت المفقود» بتنزيل الإصدارات الأصلية الآمنة لأي أداة مفقودة."),
     ("Normal", "عادي"),
     ("Not all selected audio streams were found in the browser transfer", "لم يُعثر على جميع مسارات الصوت المحددة في النقل عبر المتصفح"),
@@ -1894,6 +1895,7 @@ static ES: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "No se guardó ninguna página de origen actualizable para esta tarea."),
     ("No release notes provided.", "No se proporcionaron notas de la versión."),
     ("No running SSDownload instance was found", "No se encontró ninguna instancia de SSDownload en ejecución"),
+    ("No suitable stable yt-dlp release was found", "No se encontró ninguna versión estable adecuada de yt-dlp"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Todavía no hay información de herramientas. El botón de instalación descarga versiones seguras del proyecto original de lo que falte."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "No se encontraron todos los flujos de audio seleccionados en la transferencia desde el navegador"),
@@ -3325,6 +3327,7 @@ static PT: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "Nenhuma página de origem atualizável foi salva para esta tarefa."),
     ("No release notes provided.", "Nenhuma nota de versão fornecida."),
     ("No running SSDownload instance was found", "Nenhuma instância em execução do SSDownload foi encontrada"),
+    ("No suitable stable yt-dlp release was found", "Nenhuma versão estável adequada do yt-dlp foi encontrada"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Ainda não há informações de ferramentas. O botão Instalar ausentes baixa versões upstream seguras para o que estiver faltando."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Nem todos os fluxos de áudio selecionados foram encontrados na transferência pelo navegador"),
@@ -4756,6 +4759,7 @@ static FR: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "Aucune page source actualisable n'a été enregistrée pour cette tâche."),
     ("No release notes provided.", "Aucune note de version fournie."),
     ("No running SSDownload instance was found", "Aucune instance SSDownload en cours d'exécution n'a été trouvée"),
+    ("No suitable stable yt-dlp release was found", "Aucune version stable adaptée de yt-dlp n'a été trouvée"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Aucune information sur les outils pour l'instant. Le bouton Installer les manquants télécharge les versions amont sûres pour les éléments absents."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Tous les flux audio sélectionnés n'ont pas été trouvés dans le transfert par le navigateur"),
@@ -6187,6 +6191,7 @@ static DE: &[(&str, &str)] = &[
     ("No refreshable source page was saved for this job.", "Für diesen Auftrag wurde keine aktualisierbare Quellseite gespeichert."),
     ("No release notes provided.", "Keine Versionshinweise verfügbar."),
     ("No running SSDownload instance was found", "Keine laufende SSDownload-Instanz gefunden"),
+    ("No suitable stable yt-dlp release was found", "Es wurde kein geeignetes stabiles yt-dlp-Release gefunden"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Noch keine Werkzeuginformationen. Die Schaltfläche „Fehlende installieren“ lädt für alles Fehlende sichere Upstream-Versionen herunter."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Nicht alle ausgewählten Audio-Streams wurden in der Browser-Übertragung gefunden"),
@@ -7634,6 +7639,9 @@ macro_rules! __ui_template_ar {
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "تعذّر بدء عملية الوسائط بعد ربطها بـ Windows Job (NTSTATUS 0x{0:08x})"
     };
+    ("The media self-test failed: {0}") => {
+        "فشل الاختبار الذاتي للوسائط: {0}"
+    };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "تعذّر إنشاء مفتاح تسجيل المضيف الأصلي (رمز خطأ Windows: {status})"
     };
@@ -8448,6 +8456,9 @@ macro_rules! __ui_template_es {
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "No se pudo iniciar el proceso multimedia tras asignarlo al objeto Windows Job (NTSTATUS 0x{0:08x})"
+    };
+    ("The media self-test failed: {0}") => {
+        "Falló la autoprueba de las herramientas multimedia: {0}"
     };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "No se pudo crear la clave del registro del host nativo (código de error de Windows {status})"
@@ -9264,6 +9275,9 @@ macro_rules! __ui_template_pt {
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Não foi possível iniciar o processo de mídia após a atribuição ao Job do Windows (NTSTATUS 0x{0:08x})"
     };
+    ("The media self-test failed: {0}") => {
+        "O autoteste das ferramentas de mídia falhou: {0}"
+    };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "Não foi possível criar a chave do registro do host nativo (código de erro do Windows {status})"
     };
@@ -10079,6 +10093,9 @@ macro_rules! __ui_template_fr {
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Le processus média n'a pas pu démarrer après l'affectation au Job Windows (NTSTATUS 0x{0:08x})"
     };
+    ("The media self-test failed: {0}") => {
+        "L'autotest des outils multimédias a échoué : {0}"
+    };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "La clé de registre de l'hôte natif n'a pas pu être créée (code d'erreur Windows {status})"
     };
@@ -10893,6 +10910,9 @@ macro_rules! __ui_template_de {
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Der Medienprozess konnte nach der Zuweisung zum Windows-Job-Objekt nicht gestartet werden (NTSTATUS 0x{0:08x})"
+    };
+    ("The media self-test failed: {0}") => {
+        "Der Selbsttest der Medienwerkzeuge ist fehlgeschlagen: {0}"
     };
     ("The native host registry key could not be created (Windows error code {status})") => {
         "Der Registrierungsschlüssel des Native Host konnte nicht erstellt werden (Windows-Fehlercode {status})"

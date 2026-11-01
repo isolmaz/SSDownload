@@ -1695,5 +1695,7 @@
   "The digest did not match; downloading the file again": "O resumo não corresponde; o arquivo está sendo baixado novamente",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "O arquivo não corresponde ao resumo SHA-256 que a fonte publica ({0}) e dois downloads deram bytes diferentes; o arquivo parcial foi excluído e uma nova tentativa o baixa novamente",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "O arquivo foi salvo, mas não corresponde ao resumo SHA-256 que a fonte publica ({0}); dois downloads deram os mesmos bytes",
-  "No capacity for the network connection became free in time": "Não ficou disponível capacidade para a conexão de rede a tempo"
+  "The media self-test failed: {0}": "O autoteste das ferramentas de mídia falhou: {0}",
+  "No capacity for the network connection became free in time": "Não ficou disponível capacidade para a conexão de rede a tempo",
+  "No suitable stable yt-dlp release was found": "Nenhuma versão estável adequada do yt-dlp foi encontrada"
 }
