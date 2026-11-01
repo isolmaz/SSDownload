@@ -3297,11 +3297,10 @@ mod holds {
                 (hold.metered, hold.battery_saver),
                 (!battery_saver, battery_saver)
             );
-            // The row names the hold once the worker that was stopped has ended.
+            // The row names the hold from the moment the hold sends it back, while the worker that was
+            // stopped is still ending.
             let notice = hold.notice().unwrap();
-            wait_until("the row to name the hold", || {
-                job(&engine, &id).phase == notice
-            });
+            assert_eq!(job(&engine, &id).phase, notice);
             let started = requests(&server, "/held.bin");
             thread::sleep(SETTLE);
             assert_eq!(job_state(&engine, &id), JobState::Queued);
@@ -3316,6 +3315,112 @@ mod holds {
             server.release();
             wait_until("the download to finish", || {
                 job_state(&engine, &id) == JobState::Completed
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_job_the_hold_stops_names_the_hold_in_every_snapshot_that_shows_it_queued() {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![("/held.bin".into(), vec![5; 4096], true)]);
+            let sensors = FakeSensors::default();
+            let engine = open(&root, &sensors);
+            let id = add(&engine, &server, "/held.bin", &root.join("out"));
+            wait_until("the download to start", || {
+                job_state(&engine, &id).is_active()
+            });
+
+            switch(&sensors, battery_saver, true);
+            // The stopped worker takes a moment to end, and the job is Queued from the stop on: the
+            // snapshots are read every millisecond so that the first one that shows it Queued is read.
+            let mut queued = Vec::new();
+            let mut first = None;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline
+                && first.is_none_or(|first: Instant| first.elapsed() < SETTLE)
+            {
+                let snapshot = engine.snapshot();
+                let row = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+                if row.state == JobState::Queued {
+                    first.get_or_insert_with(Instant::now);
+                    queued.push((row.phase.clone(), snapshot.hold.notice()));
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(!queued.is_empty(), "the hold never sent the job back");
+            for (phase, notice) in &queued {
+                assert_eq!(Some(phase.as_str()), *notice, "a Queued snapshot");
+            }
+
+            switch(&sensors, battery_saver, false);
+            wait_until("the job to run again", || {
+                job_state(&engine, &id).is_active()
+            });
+            server.release();
+            wait_until("the download to finish", || {
+                job_state(&engine, &id) == JobState::Completed
+            });
+            engine.shutdown();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_job_the_hold_does_not_stop_never_shows_the_hold_text() {
+        for battery_saver in [false, true] {
+            let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", Uuid::new_v4()));
+            let server = FileServer::start(vec![
+                ("/live.bin".into(), vec![1; 4096], true),
+                ("/now.bin".into(), vec![2; 4096], true),
+                ("/later.bin".into(), vec![3; 4096], true),
+            ]);
+            let sensors = FakeSensors::default();
+            switch(&sensors, battery_saver, true);
+            let engine = open(&root, &sensors);
+            wait_for_hold(&engine, true);
+            let live = add(&engine, &server, "/live.bin", &root.join("out"));
+            mark_as_live_recording(&live);
+            switch(&sensors, battery_saver, false);
+            wait_until("the live recording to start", || {
+                job_state(&engine, &live).is_active()
+            });
+
+            // A running live recording and a job that Start now forced run through the hold; a job
+            // added during it waits.
+            switch(&sensors, battery_saver, true);
+            wait_for_hold(&engine, true);
+            let notice = engine.snapshot().hold.notice().unwrap();
+            let now = add(&engine, &server, "/now.bin", &root.join("out"));
+            let later = add(&engine, &server, "/later.bin", &root.join("out"));
+            engine.start_now(&now).unwrap();
+            let until = Instant::now() + SETTLE;
+            while Instant::now() < until {
+                let snapshot = engine.snapshot();
+                for (name, id) in [("live", &live), ("start now", &now), ("later", &later)] {
+                    let row = snapshot.jobs.iter().find(|job| &job.id == id).unwrap();
+                    if name == "later" {
+                        assert_eq!((row.state, row.phase.as_str()), (JobState::Queued, notice));
+                    } else {
+                        assert_ne!(row.phase, notice, "the {name} job is not held");
+                    }
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(job_state(&engine, &live).is_active());
+            assert!(job_state(&engine, &now).is_active());
+
+            switch(&sensors, battery_saver, false);
+            wait_until("the waiting job to start", || {
+                job_state(&engine, &later).is_active()
+            });
+            server.release();
+            wait_until("every download to finish", || {
+                [&live, &now, &later]
+                    .iter()
+                    .all(|id| job_state(&engine, id) == JobState::Completed)
             });
             engine.shutdown();
             fs::remove_dir_all(root).unwrap();

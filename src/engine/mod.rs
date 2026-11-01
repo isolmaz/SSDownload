@@ -4385,11 +4385,11 @@ impl Actor {
         value.revision = self.revision;
         value.hold = self.hold;
         if let Some(notice) = self.hold.notice() {
-            let waiting = Arc::make_mut(&mut value.jobs).iter_mut().filter(|job| {
-                job.state == JobState::Queued
-                    && !job.force_start
-                    && !self.active.contains_key(&job.id)
-            });
+            // A running job is never Queued. A job the hold has stopped is Queued from that moment, while its
+            // worker is still ending and the job is still in `active`, and it already waits.
+            let waiting = Arc::make_mut(&mut value.jobs)
+                .iter_mut()
+                .filter(|job| job.state == JobState::Queued && !job.force_start);
             for job in waiting {
                 job.phase = notice.into();
             }
