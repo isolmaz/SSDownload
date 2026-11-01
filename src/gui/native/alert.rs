@@ -600,13 +600,7 @@ pub(super) unsafe fn run_alert_linked(
         SetPropW(hwnd, dark_prop(), 1usize as HANDLE);
         let theme = wide("DarkMode_Explorer");
         SetWindowTheme(hwnd, theme.as_ptr(), null());
-        let value: BOOL = 1;
-        DwmSetWindowAttribute(
-            hwnd,
-            20,
-            &value as *const _ as *const c_void,
-            size_of::<BOOL>() as u32,
-        );
+        set_dark_caption(hwnd, true);
         EnumChildWindows(hwnd, Some(theme_child), 1);
     }
     center_window(hwnd, owner);
