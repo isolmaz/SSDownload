@@ -1949,11 +1949,13 @@ pub(super) const fn one_field_height(label_lines: i32) -> i32 {
         + ADD_FOOTER
 }
 /// The list and form dialogs' content sizes: the queue manager, and the rule,
-/// scan, sync and login dialogs.
+/// scan, sync, login and log dialogs. A form window fits the work area of a
+/// 1366×768 screen at 125 % and of a 1080p screen at 175 %; the queue manager
+/// scrolls there.
 pub(super) const QUEUES_WIDTH: i32 = 860;
 pub(super) const QUEUES_HEIGHT: i32 = 630;
 pub(super) const FORM_WIDTH: i32 = 800;
-pub(super) const FORM_HEIGHT: i32 = 540;
+pub(super) const FORM_HEIGHT: i32 = 528;
 /// The media picker and the job view it turns into: their width, the content
 /// height the picker opens with before it fits its rows, its summary's height
 /// and the job view's content height.
