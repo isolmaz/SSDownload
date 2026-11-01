@@ -185,6 +185,9 @@ pub struct Config {
     /// A `GET` with a `Range` header, the probe among them, is answered only after this long,
     /// so that the first byte of every ranged response is late.
     pub first_byte_delay: Option<Duration>,
+    /// A `GET` whose `Range` starts at or after the offset is answered after the duration
+    /// instead of `first_byte_delay`.
+    pub late_first_byte_from: Option<(u64, Duration)>,
     /// The first request on every connection, whatever it asks for, is answered only after this
     /// long, as if the connection took that long to set up; later requests on it are not held
     /// back.
@@ -268,6 +271,7 @@ impl Default for Config {
             stall: None,
             hold_at_takeover: false,
             first_byte_delay: None,
+            late_first_byte_from: None,
             connection_delay: None,
             latency: None,
             burst: 0,
@@ -1322,9 +1326,15 @@ fn answer(
     if let Some(delay) = config.latency {
         thread::sleep(delay);
     }
-    if let Some(delay) = config.first_byte_delay {
-        if request.method == "GET" && request.header("range").is_some() {
-            thread::sleep(delay);
+    if request.method == "GET" {
+        if let Some(spec) = request.header("range") {
+            let late = config
+                .late_first_byte_from
+                .filter(|(from, _)| range_start(spec).is_some_and(|start| start >= *from))
+                .map(|(_, delay)| delay);
+            if let Some(delay) = late.or(config.first_byte_delay) {
+                thread::sleep(delay);
+            }
         }
     }
     if let Some(delay) = config.lookup_delay.filter(|_| is_lookup(&request.path)) {
@@ -1943,6 +1953,24 @@ mod tests {
             (answer.status, answer.body),
             (206, pattern(1, 1000)[10..20].to_vec())
         );
+    }
+
+    #[test]
+    fn a_ranged_get_from_the_late_offset_is_answered_after_its_own_delay() {
+        let early = Duration::from_millis(100);
+        let late = Duration::from_millis(1500);
+        let server = Server::start(Config {
+            first_byte_delay: Some(early),
+            late_first_byte_from: Some((500, late)),
+            ..config(1000)
+        });
+        let mut connection = connect(&server);
+        request(&mut connection, "GET", "/", &["Range: bytes=10-19"]);
+        request(&mut connection, "GET", "/", &["Range: bytes=500-509"]);
+        let log = server.log();
+        let waited = |entry: &Logged| entry.answered.unwrap() - entry.arrived;
+        assert!(waited(&log[0]) >= early && waited(&log[0]) < late);
+        assert!(waited(&log[1]) >= late);
     }
 
     #[test]

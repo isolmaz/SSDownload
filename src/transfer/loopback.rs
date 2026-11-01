@@ -2456,15 +2456,18 @@ fn a_worker_that_has_closed_its_socket_waits_for_a_new_connection_before_it_take
     // after its request, and the first request on a connection another 0.6 s later. The two
     // workers open their connections for the first two leases and reuse them for the next two.
     // The worker that finishes first takes the last lease, and the other is idle for more than
-    // 0.2 s before that lease flows, so it has closed its socket. Its request for the back half
-    // would open a connection and wait 0.9 s for the first byte, longer than the 0.45 s that the
-    // half of at most 7.2 MiB would save the lease; on the connection it had left open it would
-    // have waited 0.3 s.
+    // 0.2 s before that lease flows, so it has closed its socket. The response for the last
+    // lease starts 1.2 s after its request, so that the other worker is idle that long
+    // however far it runs behind the first. Its request for the back half would open a
+    // connection and wait 0.9 s for the first byte, longer than the 0.45 s that the half of at
+    // most 7.2 MiB would save the lease; on the connection it had left open it would have
+    // waited 0.3 s.
     let size = 40 * MIB;
     let server = Server::start(Config {
         size,
         throttle: Some(8 * MIB),
         first_byte_delay: Some(Duration::from_millis(300)),
+        late_first_byte_from: Some((4 * 8 * MIB, Duration::from_millis(1200))),
         connection_delay: Some(Duration::from_millis(600)),
         ..Config::default()
     });
