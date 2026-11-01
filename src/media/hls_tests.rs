@@ -1851,6 +1851,61 @@ fn a_relayed_file_is_copied_into_the_container_its_name_promises() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// A relayed MPEG-TS file whose audio ends inside its last frame is copied into the container its
+/// name promises and then verified like any download: the copy keeps the cut frame instead of
+/// stopping on it, the verification leaves that frame out where the source's length confirms the
+/// audio's end and decodes it where the length is a whole number of seconds, and audio that stops
+/// well before the video is refused for its length.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_relayed_transport_stream_with_a_cut_last_frame_is_copied_and_then_verified() {
+    let fixture = EndFixture::new();
+    let paths = shared_profile();
+    let control = TransferControl::default();
+    let request = AddRequest {
+        url: "https://site.example/master.m3u8".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        ..AddRequest::default()
+    };
+    let place = |name: &str, audio: &[u8]| -> PathBuf {
+        let relayed = fixture.mux(&format!("{name}.ts"), audio, &[]);
+        let output = fixture.root.join(format!("{name}.mp4"));
+        place_browser_file(&paths, &request, &relayed, &output, &control)
+            .unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        assert!(!relayed.exists(), "{name}: the relayed file is still there");
+        let container = container_of(&fixture.tools, &output);
+        assert!(
+            container.split(',').any(|format| format == "mp4"),
+            "{name}: holds {container}"
+        );
+        output
+    };
+    // The last frame is cut at 10 s; the other file's audio ends inside frame 390, at 8.3 s.
+    let cut = place("cut", &fixture.ending_inside(fixture.last_frame()));
+    let early = place("early", &fixture.ending_inside(390));
+
+    for full in [false, true] {
+        fixture
+            .verify(&cut, full, &EndFixture::source(10.04, false))
+            .unwrap_or_else(|error| {
+                panic!("the cut frame, source of 10.04 s, full {full}: {error:#}")
+            });
+        let error = fixture
+            .verify(&cut, full, &EndFixture::source(10.0, false))
+            .expect_err(&format!("the cut frame, source of 10 s, full {full}"));
+        assert_eq!(error.to_string(), decode_failure(full), "full {full}");
+        let error = fixture
+            .verify(&early, full, &EndFixture::source(10.04, false))
+            .expect_err(&format!("the audio 1.7 s short, full {full}"));
+        assert_eq!(
+            crate::error_codes::code_of(&error),
+            Some(crate::error_codes::TRF_012),
+            "full {full}: {error:#}"
+        );
+    }
+}
+
 /// yt-dlp starts FFmpeg, FFprobe and Deno from the canonical paths the app gives it, and finds
 /// each of them exactly where the path, verbatim prefix included, is at most 259 UTF-16 units:
 /// the check refuses the paths yt-dlp cannot use and no others.
