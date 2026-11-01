@@ -3700,8 +3700,13 @@ fn a_download_resumed_after_its_redirect_target_expired_asks_the_source_again() 
     // probe's HEAD, the ranged probe of a segmented download, and one range per connection).
     let size = 12 * MIB + 123;
     let expected = pattern(1, size);
-    for (connections, first_attempt) in [(1u8, 2), (2, 4)] {
-        let server = signed_source(size, SIGNED_RATE, 403, expiring_after(first_attempt));
+    for (connections, first_attempt_requests) in [(1u8, 2), (2, 4)] {
+        let server = signed_source(
+            size,
+            SIGNED_RATE,
+            403,
+            expiring_after(first_attempt_requests),
+        );
         let directory = TempDir::new("signed-resume");
         let output = directory.0.join("payload.bin");
         let control = TransferControl::default();
@@ -3724,7 +3729,13 @@ fn a_download_resumed_after_its_redirect_target_expired_asks_the_source_again() 
         );
         let recorded = recorded_ranges(&output);
         server.wait_idle();
-        let first_attempt = server.log().len();
+        let log = server.log();
+        assert_eq!(
+            asked_of(&log, 0).len(),
+            first_attempt_requests,
+            "{connections}: the first attempt did not use up the address: {log:?}"
+        );
+        let first_attempt = log.len();
 
         forget_writes();
         let result = fetch(
@@ -3926,15 +3937,12 @@ fn an_address_with_no_redirect_that_expires_is_not_followed_again() {
         expiry: Some(403),
         ..Config::default()
     });
-    let deadline = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        + 400;
     let directory = TempDir::new("signed-direct");
     let output = directory.0.join("payload.bin");
+    // The address answers the probe's two requests and the first two ranges, so the third range
+    // meets the expiry however long the requests take.
     let error = fetch(
-        &file_request(server.url(&format!("/direct?exp={deadline}&n=0&max=999999"))),
+        &file_request(server.url("/direct?exp=99999999999999&n=0&max=4")),
         &output,
         &TransferControl::default(),
         2,
@@ -3951,7 +3959,7 @@ fn an_address_with_no_redirect_that_expires_is_not_followed_again() {
         1,
         "{log:?}"
     );
-    assert!(log.iter().any(|entry| entry.status == 403), "{log:?}");
+    assert!(data_gets(&log).any(|entry| entry.status == 403), "{log:?}");
 }
 
 #[test]
