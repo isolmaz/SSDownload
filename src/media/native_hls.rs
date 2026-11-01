@@ -1787,9 +1787,54 @@ mod tests {
         assert_eq!(source.log().len(), 1);
     }
 
+    fn moved(path: &str, location: String) -> crate::test_http::Document {
+        crate::test_http::Document {
+            path: path.into(),
+            status: 302,
+            headers: vec![format!("Location: {location}")],
+            body: Vec::new(),
+            unframed: false,
+        }
+    }
+
+    /// The site headers and the session cookie `redirected_stream` sends where they apply.
+    const SITE: [(&str, &str); 4] = [
+        ("referer", "https://site.example/watch"),
+        ("origin", "https://site.example"),
+        ("x-site-token", "token"),
+        ("cookie", "sid=session"),
+    ];
+
+    /// A stream of `segments` with site headers and a session cookie of the loopback host, which
+    /// applies to each of its ports.
+    fn redirected_stream(segments: Vec<Url>) -> (NativeStream, [ScopedCookie; 1]) {
+        let stream = NativeStream {
+            headers: [
+                ("Referer", "https://site.example/watch"),
+                ("Origin", "https://site.example"),
+                ("X-Site-Token", "token"),
+                ("Accept", "video/mp2t"),
+                ("User-Agent", "Player/1.0"),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .to_vec(),
+            segments,
+            ..one_host_stream(0)
+        };
+        let cookie = ScopedCookie {
+            name: "sid".into(),
+            value: "session".into(),
+            domain: "127.0.0.1".into(),
+            path: "/".into(),
+            host_only: true,
+            ..ScopedCookie::default()
+        };
+        (stream, [cookie])
+    }
+
     #[test]
     fn a_redirected_segment_gets_site_headers_and_cookies_only_on_its_own_origin() {
-        use crate::test_http::{pattern, Config, Document, Server, TempDir};
+        use crate::test_http::{pattern, Config, Server, TempDir};
         let logged = [
             "referer",
             "origin",
@@ -1805,13 +1850,6 @@ mod tests {
             logged_headers: logged.clone(),
             ..Config::default()
         });
-        let moved = |path: &str, location: String| Document {
-            path: path.into(),
-            status: 302,
-            headers: vec![format!("Location: {location}")],
-            body: Vec::new(),
-            unframed: false,
-        };
         // A port is part of the origin, so the other server is another origin on the same host.
         let source = Server::start(Config {
             size: 2000,
@@ -1822,33 +1860,14 @@ mod tests {
             logged_headers: logged,
             ..Config::default()
         });
-        let streams = [NativeStream {
-            headers: [
-                ("Referer", "https://site.example/watch"),
-                ("Origin", "https://site.example"),
-                ("X-Site-Token", "token"),
-                ("Accept", "video/mp2t"),
-                ("User-Agent", "Player/1.0"),
-            ]
-            .map(|(name, value)| (name.to_owned(), value.to_owned()))
-            .to_vec(),
-            segments: ["/a/0.ts", "/a/1.ts"]
+        let (stream, cookies) = redirected_stream(
+            ["/a/0.ts", "/a/1.ts"]
                 .map(|path| Url::parse(&source.url(path)).unwrap())
                 .to_vec(),
-            ..one_host_stream(0)
-        }];
-        // A cookie of the host applies to each of its ports.
-        let cookies = [ScopedCookie {
-            name: "sid".into(),
-            value: "session".into(),
-            domain: "127.0.0.1".into(),
-            path: "/".into(),
-            host_only: true,
-            ..ScopedCookie::default()
-        }];
+        );
         let workspace = TempDir::new("native-redirect");
 
-        let (joins, failure) = work_alone(&streams, &cookies, &workspace.0);
+        let (joins, failure) = work_alone(&[stream], &cookies, &workspace.0);
 
         if let Some(error) = failure {
             panic!("{error:#}");
@@ -1857,12 +1876,6 @@ mod tests {
             fs::read(&joins[0].joined).unwrap(),
             pattern(1, 2000).repeat(2)
         );
-        let site = [
-            ("referer", "https://site.example/watch"),
-            ("origin", "https://site.example"),
-            ("x-site-token", "token"),
-            ("cookie", "sid=session"),
-        ];
         let neutral = [("accept", "video/mp2t"), ("user-agent", "Player/1.0")];
         let source_log = source.log();
         assert_eq!(
@@ -1873,17 +1886,86 @@ mod tests {
             ["/a/0.ts", "/a/1.ts", "/b/1.ts"]
         );
         for entry in &source_log {
-            for (name, value) in site.iter().chain(&neutral) {
+            for (name, value) in SITE.iter().chain(&neutral) {
                 assert_eq!(entry.header(name), Some(*value), "{} {name}", entry.path);
             }
         }
         let elsewhere_log = elsewhere.log();
         assert_eq!(elsewhere_log.len(), 1);
-        for (name, _) in site {
+        for (name, _) in SITE {
             assert_eq!(elsewhere_log[0].header(name), None, "{name}");
         }
         for (name, value) in neutral {
             assert_eq!(elsewhere_log[0].header(name), Some(value), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_redirect_chain_gets_site_headers_and_cookies_again_only_back_on_the_segments_origin() {
+        use crate::test_http::{pattern, Config, Server, TempDir};
+        let logged = ["referer", "origin", "x-site-token", "cookie"]
+            .map(String::from)
+            .to_vec();
+        // The source's address is known before it starts, so the other server can send a
+        // segment back to it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let source_origin = format!("http://{}", listener.local_addr().unwrap());
+        // The other origin sends one segment on within itself and the other back to the source.
+        let elsewhere = Server::start(Config {
+            size: 2000,
+            documents: vec![
+                moved("/b/0.ts", "/c/0.ts".into()),
+                moved("/b/1.ts", format!("{source_origin}/a/back/1.ts")),
+            ],
+            logged_headers: logged.clone(),
+            ..Config::default()
+        });
+        let source = Server::start_on(
+            listener,
+            Config {
+                size: 2000,
+                documents: vec![
+                    moved("/a/0.ts", elsewhere.url("/b/0.ts")),
+                    moved("/a/1.ts", elsewhere.url("/b/1.ts")),
+                ],
+                logged_headers: logged,
+                ..Config::default()
+            },
+        );
+        let (stream, cookies) = redirected_stream(
+            ["/a/0.ts", "/a/1.ts"]
+                .map(|path| Url::parse(&source.url(path)).unwrap())
+                .to_vec(),
+        );
+        let workspace = TempDir::new("native-redirect-chain");
+
+        let (joins, failure) = work_alone(&[stream], &cookies, &workspace.0);
+
+        if let Some(error) = failure {
+            panic!("{error:#}");
+        }
+        assert_eq!(
+            fs::read(&joins[0].joined).unwrap(),
+            pattern(1, 2000).repeat(2)
+        );
+        let paths = |log: &[crate::test_http::Logged]| {
+            log.iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        };
+        let source_log = source.log();
+        assert_eq!(paths(&source_log), ["/a/0.ts", "/a/1.ts", "/a/back/1.ts"]);
+        for entry in &source_log {
+            for (name, value) in SITE {
+                assert_eq!(entry.header(name), Some(value), "{} {name}", entry.path);
+            }
+        }
+        let elsewhere_log = elsewhere.log();
+        assert_eq!(paths(&elsewhere_log), ["/b/0.ts", "/c/0.ts", "/b/1.ts"]);
+        for entry in &elsewhere_log {
+            for (name, _) in SITE {
+                assert_eq!(entry.header(name), None, "{} {name}", entry.path);
+            }
         }
     }
 }

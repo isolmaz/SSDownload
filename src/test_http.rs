@@ -323,7 +323,12 @@ pub struct Server {
 
 impl Server {
     pub fn start(config: Config) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        Self::start_on(TcpListener::bind("127.0.0.1:0").unwrap(), config)
+    }
+
+    /// Serves on `listener`, so that another server can be given this one's address before it
+    /// starts.
+    pub fn start_on(listener: TcpListener, config: Config) -> Self {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let switch_from = AtomicUsize::new(config.switch_version_after.unwrap_or(usize::MAX));
