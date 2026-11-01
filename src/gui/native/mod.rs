@@ -5963,6 +5963,9 @@ struct DialogUi {
     scroll_y: std::cell::Cell<i32>,
     /// Content height behind the scrollable area, zero when everything fits.
     scroll_range: std::cell::Cell<i32>,
+    /// How many times the dialog has been laid out, so that a layout can tell that another one
+    /// ran inside it.
+    layout_pass: std::cell::Cell<u32>,
     /// Selected settings tab; other dialogs leave it at zero.
     tab: std::cell::Cell<usize>,
     /// Set by the timer when a newer handoff replaced this picker, so the
@@ -6066,6 +6069,7 @@ unsafe fn create_dialog(
         dpi: 96,
         scroll_y: std::cell::Cell::new(0),
         scroll_range: std::cell::Cell::new(0),
+        layout_pass: std::cell::Cell::new(0),
         tab: std::cell::Cell::new(0),
         superseded: std::cell::Cell::new(false),
         modeless,
@@ -10357,6 +10361,85 @@ mod tests {
                 "Speed limit",
             );
             assert_scroll_steps_move_the_controls_by_the_offset(
+                dark,
+                queues_kind,
+                620,
+                200,
+                "Queues",
+            );
+        }
+    }
+
+    /// Scrolls a dialog that is too short for its controls by one wheel notch, changes the
+    /// scheme in the app's settings and lays the dialog out, which shows or hides its scroll
+    /// bar. That resizes the client area and lays the dialog out again inside the call that does
+    /// it. The controls then lie where the same dialog puts them at offset 0 in the new scheme,
+    /// moved up by the offset once.
+    fn assert_a_scheme_change_keeps_the_controls_at_the_offset(
+        dark: bool,
+        make: impl FnOnce() -> super::DialogKind + Send,
+        width: i32,
+        height: i32,
+        what: &str,
+    ) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_MOUSEWHEEL};
+
+        with_themed_dialog(dark, make, width, height, |dialog| unsafe {
+            let dlg = &*dialog.raw;
+            let step = super::scale(48, dlg.dpi);
+            assert!(dlg.scroll_range.get() >= step, "{what} scrolls a step");
+            SendMessageW(
+                dialog.hwnd,
+                WM_MOUSEWHEEL,
+                ((-120i16) as u16 as usize) << 16,
+                0,
+            );
+            assert_eq!(dlg.scroll_y.get(), step, "{what}, dark {dark}: the scroll");
+
+            let mut settings = dialog.app().snapshot().settings.clone();
+            settings.dark_mode = !dark;
+            dialog.app().update_settings_quiet(settings).unwrap();
+            let passes = dlg.layout_pass.get();
+            super::layout_dialog(dlg);
+            assert!(
+                dlg.layout_pass.get().wrapping_sub(passes) >= 2,
+                "{what}, dark {dark}: showing or hiding the bar did not lay the dialog out again"
+            );
+            assert_eq!(super::dialog_is_dark(dlg), !dark, "{what}: the new scheme");
+            assert_eq!(
+                dlg.scroll_y.get(),
+                step,
+                "{what}, dark {dark}: the offset is kept"
+            );
+            let scrolled = control_tops(dialog.hwnd);
+
+            // The new scheme at offset 0, which changes no bar.
+            dlg.scroll_y.set(0);
+            super::layout_dialog(dlg);
+            let moved: Vec<i32> = control_tops(dialog.hwnd)
+                .iter()
+                .zip(&scrolled)
+                .map(|(top, now)| top.1 - now.1)
+                .collect();
+            assert!(
+                moved.iter().all(|moved| *moved == step),
+                "{what}, dark {dark} -> {}: the offset is {step} and the controls moved up by {moved:?}",
+                !dark
+            );
+        });
+    }
+
+    #[test]
+    fn a_scheme_change_while_scrolled_keeps_the_controls_at_the_offset() {
+        for dark in [false, true] {
+            assert_a_scheme_change_keeps_the_controls_at_the_offset(
+                dark,
+                speed_kind,
+                420,
+                90,
+                "Speed limit",
+            );
+            assert_a_scheme_change_keeps_the_controls_at_the_offset(
                 dark,
                 queues_kind,
                 620,
