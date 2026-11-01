@@ -8346,10 +8346,83 @@ mod tests {
         }
     }
 
+    /// Runs `body` on a fresh thread attached to a private desktop. A dialog's
+    /// controls take the focus when they are created, which makes the dialog the
+    /// foreground window of the process; on a private desktop that never
+    /// reaches the keys the user is typing.
+    fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+        use std::ptr::null;
+        use windows_sys::Win32::Foundation::{GetLastError, GENERIC_ALL};
+        use windows_sys::Win32::System::StationsAndDesktops::{
+            CloseDesktop, CreateDesktopW, SetThreadDesktop,
+        };
+
+        let name: Vec<u16> = format!("ssdownload-test-{}\0", uuid::Uuid::new_v4())
+            .encode_utf16()
+            .collect();
+        unsafe {
+            let desktop = CreateDesktopW(name.as_ptr(), null(), null(), 0, GENERIC_ALL, null());
+            assert!(
+                !desktop.is_null(),
+                "the private desktop is created (Win32 {})",
+                GetLastError()
+            );
+            let handle = desktop as usize;
+            let result = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        assert_ne!(SetThreadDesktop(handle as _), 0, "the thread moves over");
+                        body()
+                    })
+                    .join()
+            });
+            CloseDesktop(desktop);
+            result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        }
+    }
+
+    fn current_desktop_name() -> String {
+        use windows_sys::Win32::System::StationsAndDesktops::{
+            GetThreadDesktop, GetUserObjectInformationW, UOI_NAME,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+
+        let mut name = [0u16; 128];
+        unsafe {
+            let desktop = GetThreadDesktop(GetCurrentThreadId());
+            let mut needed = 0u32;
+            assert_ne!(
+                GetUserObjectInformationW(
+                    desktop,
+                    UOI_NAME,
+                    name.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&name) as u32,
+                    &mut needed,
+                ),
+                0
+            );
+        }
+        String::from_utf16_lossy(&name[..name.iter().position(|c| *c == 0).unwrap_or(0)])
+    }
+
+    #[test]
+    fn a_private_desktop_is_not_the_one_the_user_works_on() {
+        let users = current_desktop_name();
+        let private = on_private_desktop(current_desktop_name);
+        assert!(
+            private.starts_with("ssdownload-test-") && private != users,
+            "the body ran on {private:?}, the test thread is on {users:?}"
+        );
+    }
+
     /// For each name: the Rename dialog's selection and the client x of the
     /// first character in its field, read from a dialog that is created the way
     /// `show_rename` creates it and is never shown.
     fn rename_fields_after_creation(names: &[&str]) -> Vec<((u32, u32), i16)> {
+        on_private_desktop(|| rename_fields_on_this_desktop(names))
+    }
+
+    fn rename_fields_on_this_desktop(names: &[&str]) -> Vec<((u32, u32), i16)> {
         use super::{create_dialog, DialogKind, DialogRequest, RenameFields};
         use std::ptr::null_mut;
         use windows_sys::Win32::UI::Controls::{EM_GETSEL, EM_POSFROMCHAR};
