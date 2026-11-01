@@ -9786,9 +9786,13 @@ unsafe fn resize_dialog(hwnd: HWND, dpi: u32, height: i32) {
     info.cbSize = size_of::<MONITORINFO>() as u32;
     if GetMonitorInfoW(monitor, &mut info) != 0 {
         let area = info.rcWork;
-        // A window taller than the work area stops at its height, as a new
-        // dialog does (`center_window`), and its page scrolls instead.
-        let tall = tall.min(area.bottom - area.top);
+        // In Modern a window taller than the work area stops at its height,
+        // as a new dialog does (`center_window`), and its page scrolls instead.
+        let tall = if modern() {
+            tall.min(area.bottom - area.top)
+        } else {
+            tall
+        };
         let x = ((rect.left + rect.right) / 2 - width / 2)
             .clamp(area.left, (area.right - width).max(area.left));
         let y = ((rect.top + rect.bottom) / 2 - tall / 2)
