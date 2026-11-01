@@ -332,7 +332,7 @@ static AR: &[(&str, &str)] = &[
     ("Install", "تثبيت"),
     ("Install missing", "تثبيت المفقود"),
     ("Install the extension in browsers...", "تثبيت الإضافة في المتصفحات..."),
-    ("Install: download, verify and install. Later: remind me later. Skip: do not ask about this version again.", "تثبيت: تنزيل التحديث والتحقق منه ثم تثبيته. لاحقًا: تذكيري لاحقًا. تخطّي: عدم السؤال عن هذا الإصدار مرة أخرى."),
+    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "تثبيت: تنزيل التحديث والتحقق منه ثم تثبيته. تخطّي: عدم السؤال عن هذا الإصدار مرة أخرى. لاحقًا: تذكيري لاحقًا."),
     ("Installed", "مثبّت"),
     ("Interface language:", "اللغة:"),
     ("Interface level:", "مستوى الواجهة:"),
@@ -517,7 +517,7 @@ static AR: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "فتح في متجر Chrome الإلكتروني"),
     ("Open log folder", "فتح مجلد السجلات"),
     ("Open page", "فتح الصفحة"),
-    ("Open page: open the download page. Later: remind me later. Skip: do not ask about this version again.", "فتح الصفحة: افتح صفحة التنزيل. لاحقًا: تذكيري لاحقًا. تخطّي: عدم السؤال عن هذا الإصدار مرة أخرى."),
+    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "فتح الصفحة: افتح صفحة التنزيل. تخطّي: عدم السؤال عن هذا الإصدار مرة أخرى. لاحقًا: تذكيري لاحقًا."),
     ("Open the error details.", "افتح تفاصيل الخطأ."),
     ("Open the extension folder", "فتح مجلد الإضافة"),
     ("Open the file", "فتح الملف"),
@@ -1813,7 +1813,7 @@ static ES: &[(&str, &str)] = &[
     ("Install", "Instalar"),
     ("Install missing", "Instalar faltantes"),
     ("Install the extension in browsers...", "Instalar la extensión en los navegadores..."),
-    ("Install: download, verify and install. Later: remind me later. Skip: do not ask about this version again.", "Instalar: descargar, verificar e instalar. Más tarde: recordar más tarde. Omitir: no volver a preguntar por esta versión."),
+    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "Instalar: descargar, verificar e instalar. Omitir: no volver a preguntar por esta versión. Más tarde: recordar más tarde."),
     ("Installed", "Instalado"),
     ("Interface language:", "Idioma:"),
     ("Interface level:", "Nivel de la interfaz:"),
@@ -1998,7 +1998,7 @@ static ES: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "Abrir en Chrome Web Store"),
     ("Open log folder", "Abrir carpeta de registros"),
     ("Open page", "Abrir página"),
-    ("Open page: open the download page. Later: remind me later. Skip: do not ask about this version again.", "Abrir página: abrir la página de descarga. Más tarde: recordar más adelante. Omitir: no volver a preguntar por esta versión."),
+    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "Abrir página: abrir la página de descarga. Omitir: no volver a preguntar por esta versión. Más tarde: recordar más adelante."),
     ("Open the error details.", "Abrir los detalles del error."),
     ("Open the extension folder", "Abrir la carpeta de la extensión"),
     ("Open the file", "Abrir el archivo"),
@@ -3294,7 +3294,7 @@ static PT: &[(&str, &str)] = &[
     ("Install", "Instalar"),
     ("Install missing", "Instalar ausentes"),
     ("Install the extension in browsers...", "Instalar a extensão nos navegadores..."),
-    ("Install: download, verify and install. Later: remind me later. Skip: do not ask about this version again.", "Instalar: baixar, verificar e instalar. Mais tarde: lembrar depois. Pular: não perguntar de novo sobre esta versão."),
+    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "Instalar: baixar, verificar e instalar. Pular: não perguntar de novo sobre esta versão. Mais tarde: lembrar depois."),
     ("Installed", "Instalado"),
     ("Interface language:", "Idioma:"),
     ("Interface level:", "Nível da interface:"),
@@ -3479,7 +3479,7 @@ static PT: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "Abrir na Chrome Web Store"),
     ("Open log folder", "Abrir pasta de logs"),
     ("Open page", "Abrir página"),
-    ("Open page: open the download page. Later: remind me later. Skip: do not ask about this version again.", "Abrir página: abre a página de download. Mais tarde: lembrar depois. Pular: não perguntar de novo sobre esta versão."),
+    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "Abrir página: abre a página de download. Pular: não perguntar de novo sobre esta versão. Mais tarde: lembrar depois."),
     ("Open the error details.", "Abra os detalhes do erro."),
     ("Open the extension folder", "Abrir a pasta da extensão"),
     ("Open the file", "Abrir o arquivo"),
@@ -4775,7 +4775,7 @@ static FR: &[(&str, &str)] = &[
     ("Install", "Installer"),
     ("Install missing", "Installer manquants"),
     ("Install the extension in browsers...", "Installer l'extension dans les navigateurs..."),
-    ("Install: download, verify and install. Later: remind me later. Skip: do not ask about this version again.", "Installer : télécharger, vérifier et installer. Plus tard : me le rappeler plus tard. Ignorer : ne plus demander pour cette version."),
+    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "Installer : télécharger, vérifier et installer. Ignorer : ne plus demander pour cette version. Plus tard : me le rappeler plus tard."),
     ("Installed", "Installé"),
     ("Interface language:", "Langue :"),
     ("Interface level:", "Niveau de l'interface :"),
@@ -4960,7 +4960,7 @@ static FR: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "Ouvrir dans le Chrome Web Store"),
     ("Open log folder", "Ouvrir le dossier journaux"),
     ("Open page", "Ouvrir la page"),
-    ("Open page: open the download page. Later: remind me later. Skip: do not ask about this version again.", "Ouvrir la page : ouvrir la page de téléchargement. Plus tard : me le rappeler plus tard. Ignorer : ne plus demander pour cette version."),
+    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "Ouvrir la page : ouvrir la page de téléchargement. Ignorer : ne plus demander pour cette version. Plus tard : me le rappeler plus tard."),
     ("Open the error details.", "Ouvrez les détails de l'erreur."),
     ("Open the extension folder", "Ouvrir le dossier de l'extension"),
     ("Open the file", "Ouvrir le fichier"),
@@ -6256,7 +6256,7 @@ static DE: &[(&str, &str)] = &[
     ("Install", "Installieren"),
     ("Install missing", "Fehlende installieren"),
     ("Install the extension in browsers...", "Erweiterung in Browsern installieren..."),
-    ("Install: download, verify and install. Later: remind me later. Skip: do not ask about this version again.", "Installieren: herunterladen, prüfen und installieren. Später: erneut später erinnern. Überspringen: zu dieser Version nicht erneut fragen."),
+    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "Installieren: herunterladen, prüfen und installieren. Überspringen: zu dieser Version nicht erneut fragen. Später: erneut später erinnern."),
     ("Installed", "Installiert"),
     ("Interface language:", "Sprache:"),
     ("Interface level:", "Umfang der Oberfläche:"),
@@ -6441,7 +6441,7 @@ static DE: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "Im Chrome Web Store öffnen"),
     ("Open log folder", "Protokollordner öffnen"),
     ("Open page", "Seite öffnen"),
-    ("Open page: open the download page. Later: remind me later. Skip: do not ask about this version again.", "Seite öffnen: die Download-Seite öffnen. Später: erneut später erinnern. Überspringen: zu dieser Version nicht erneut fragen."),
+    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "Seite öffnen: die Download-Seite öffnen. Überspringen: zu dieser Version nicht erneut fragen. Später: erneut später erinnern."),
     ("Open the error details.", "Fehlerdetails öffnen."),
     ("Open the extension folder", "Erweiterungsordner öffnen"),
     ("Open the file", "Datei öffnen"),
@@ -8136,9 +8136,6 @@ macro_rules! __ui_template_ar {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  الحالة: {1}\r\n  الإصدار: {2}\r\n  الموقع: {3}\r\n\r\n"
     };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nالحالة: {1}\r\nالتقدم: {2}\r\nالسرعة: {3}\r\nالمتبقي: {4}\r\n"
-    };
     ("{0} address(es) exported: {1}") => {
         "تم تصدير {0} من العناوين: {1}"
     };
@@ -8995,9 +8992,6 @@ macro_rules! __ui_template_es {
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Estado: {1}\r\n  Versión: {2}\r\n  Ubicación: {3}\r\n\r\n"
-    };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nEstado: {1}\r\nProgreso: {2}\r\nVelocidad: {3}\r\nTiempo restante: {4}\r\n"
     };
     ("{0} address(es) exported: {1}") => {
         "{0} dirección(es) exportada(s): {1}"
@@ -9856,9 +9850,6 @@ macro_rules! __ui_template_pt {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Versão: {2}\r\n  Local: {3}\r\n\r\n"
     };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nEstado: {1}\r\nProgresso: {2}\r\nVelocidade: {3}\r\nRestante: {4}\r\n"
-    };
     ("{0} address(es) exported: {1}") => {
         "{0} endereço(s) exportado(s): {1}"
     };
@@ -10716,9 +10707,6 @@ macro_rules! __ui_template_fr {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  État : {1}\r\n  Version : {2}\r\n  Emplacement : {3}\r\n\r\n"
     };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nÉtat : {1}\r\nProgression : {2}\r\nVitesse : {3}\r\nRestant : {4}\r\n"
-    };
     ("{0} address(es) exported: {1}") => {
         "{0} adresse(s) exportée(s) : {1}"
     };
@@ -11575,9 +11563,6 @@ macro_rules! __ui_template_de {
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Speicherort: {3}\r\n\r\n"
-    };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nStatus: {1}\r\nFortschritt: {2}\r\nGeschwindigkeit: {3}\r\nVerbleibend: {4}\r\n"
     };
     ("{0} address(es) exported: {1}") => {
         "{0} Adresse(n) exportiert: {1}"

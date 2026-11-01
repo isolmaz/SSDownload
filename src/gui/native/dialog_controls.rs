@@ -345,6 +345,13 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
+                crate::i18n::ui("Gelişmiş seçenekler", "Advanced options"),
+                D_ADVANCED,
+                false,
+            );
+            dialog_button(
+                dlg.hwnd,
+                dlg.font,
                 if modern() {
                     crate::i18n::ui("İndir", "Download")
                 } else {
@@ -352,13 +359,6 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 },
                 D_ADD_OK,
                 true,
-            );
-            dialog_button(
-                dlg.hwnd,
-                dlg.font,
-                crate::i18n::ui("Gelişmiş seçenekler", "Advanced options"),
-                D_ADVANCED,
-                false,
             );
             dialog_button(
                 dlg.hwnd,
@@ -1962,21 +1962,6 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("MP3 olarak indir", "Download as MP3"),
-                M_MP3,
-                false,
-            );
-            EnableWindow(GetDlgItem(dlg.hwnd, M_MP3), 0);
-            dialog_button(
-                dlg.hwnd,
-                dlg.font,
-                crate::i18n::ui("İndir", "Download"),
-                M_QUEUE,
-                true,
-            );
-            dialog_button(
-                dlg.hwnd,
-                dlg.font,
                 crate::i18n::ui("Gelişmiş seçenekler", "Advanced options"),
                 D_ADVANCED,
                 false,
@@ -1992,8 +1977,23 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 false,
             );
             ShowWindow(report, SW_HIDE);
+            dialog_button(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("İndir", "Download"),
+                M_QUEUE,
+                true,
+            );
             f.video_formats.clear();
             EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
+            dialog_button(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("MP3 olarak indir", "Download as MP3"),
+                M_MP3,
+                false,
+            );
+            EnableWindow(GetDlgItem(dlg.hwnd, M_MP3), 0);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,

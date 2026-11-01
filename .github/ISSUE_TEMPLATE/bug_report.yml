@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in SSDownload or its browser extension does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go privately through **Security → Report a vulnerability**, not into an issue (see [SECURITY.md](https://github.com/isolmaz/SSDownload/blob/main/SECURITY.md)).
+  - type: input
+    id: version
+    attributes:
+      label: SSDownload version
+      description: "Shown in **Help → About**."
+      placeholder: "1.x.y"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: "Run `winver`."
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: input
+    id: code
+    attributes:
+      label: Error code
+      description: "The `SSD-…` code, if one was shown."
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Screenshots or a Report problem ZIP
+      description: "Addresses in a **Report problem** or **Diagnostics** ZIP are redacted, but the page markup (`sayfa.html`) is not; look through it before you attach it."
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I attached no cookies, signed download addresses or private files.
+          required: true
+        - label: I only report problems with content I have the right to download (DRM-protected streams are out of scope).
+          required: true
