@@ -8998,7 +8998,15 @@ unsafe extern "system" fn dialog_proc(
     }
 }
 
+/// Fluent's field labels carry no colon, so Modern drops a trailing one.
+fn field_label(text: &str) -> &str {
+    text.trim_end()
+        .strip_suffix([':', '：'])
+        .map_or(text, str::trim_end)
+}
+
 unsafe fn dialog_label(parent: HWND, font: HFONT, label: &str, id: i32) -> HWND {
+    let label = if modern() { field_label(label) } else { label };
     let id = if id == 0 {
         5000 + child_statics(parent, null_mut()).len() as i32
     } else {
@@ -10310,6 +10318,22 @@ mod tests {
         ));
         assert!(!add_links_open_picker("not a link", Auto));
         assert!(!add_links_open_picker("", Auto));
+    }
+
+    #[test]
+    fn modern_field_labels_drop_a_trailing_colon_only() {
+        use super::field_label;
+        assert_eq!(field_label("Arayüz düzeyi:"), "Arayüz düzeyi");
+        assert_eq!(
+            field_label("Niveau de l'interface :"),
+            "Niveau de l'interface"
+        );
+        assert_eq!(field_label("Niveau\u{a0}:"), "Niveau");
+        assert_eq!(field_label("Başlangıç (SS:DD):"), "Başlangıç (SS:DD)");
+        assert_eq!(field_label("المستوى:"), "المستوى");
+        assert_eq!(field_label("http://host:8080"), "http://host:8080");
+        assert_eq!(field_label("Video"), "Video");
+        assert_eq!(field_label(""), "");
     }
 
     #[test]
