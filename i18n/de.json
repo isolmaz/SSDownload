@@ -1728,5 +1728,6 @@
   "&Pause / Resume": "&Pausieren / Fortsetzen",
   "Applies when SSDownload restarts": "Gilt nach einem Neustart von SSDownload",
   "Classic": "Klassisch",
-  "Theme:": "Design:"
+  "Theme:": "Design:",
+  "Modern": "Modern"
 }

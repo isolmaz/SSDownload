@@ -931,7 +931,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             // indexes above stay as they are.
             f.theme_label = dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Tema:", "Theme:"), 0);
             f.theme = dialog_combo(dlg.hwnd, dlg.font, S_THEME);
-            combo_add(f.theme, "Modern");
+            combo_add(f.theme, crate::i18n::ui("Modern", "Modern"));
             combo_add(f.theme, crate::i18n::ui("Klasik", "Classic"));
             combo_select(f.theme, if f.value.modern_theme() { 0 } else { 1 });
             f.theme_note = dialog_label(

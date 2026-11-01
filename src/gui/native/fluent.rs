@@ -87,6 +87,26 @@ fn with_alpha(colour: u32, alpha: u32) -> u32 {
     (alpha << 24) | ((colour & 0xff) << 16) | (colour & 0xff00) | ((colour >> 16) & 0xff)
 }
 
+/// The WCAG relative luminance of a COLORREF.
+fn luminance(colour: u32) -> f64 {
+    let channel = |value: u32| {
+        let value = value as f64 / 255.0;
+        if value <= 0.03928 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(colour & 0xff)
+        + 0.7152 * channel((colour >> 8) & 0xff)
+        + 0.0722 * channel((colour >> 16) & 0xff)
+}
+/// The WCAG contrast ratio of two COLORREFs.
+fn contrast(a: u32, b: u32) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
 /// The Fluent palette of one scheme, from the WinUI light and dark theme dictionaries.
 pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
     let base = if dark { 0x202020 } else { 0xf3f3f3 };
@@ -96,6 +116,9 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
     let accent_fill = pick(accent.dark1, accent.light2);
     let accent_hover = over(with_alpha(accent_fill, 0xe6), base);
     let accent_pressed = over(with_alpha(accent_fill, 0xcc), base);
+    // TextOnAccentFillColor is white in the light theme and black in the dark
+    // one; a light or dark custom accent takes whichever of the two reads.
+    let on_white = contrast(0xffffff, accent_fill) >= contrast(0x000000, accent_fill);
     MainPalette {
         base,
         card,
@@ -113,8 +136,11 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
         accent: accent_fill,
         accent_hover,
         accent_pressed,
-        on_accent: pick(0xffffff, 0x000000),
-        on_accent_pressed: on(0xb3ffffff, 0x80000000, accent_pressed),
+        on_accent: if on_white { 0xffffff } else { 0x000000 },
+        on_accent_pressed: over(
+            if on_white { 0xb3ffffff } else { 0x80000000 },
+            accent_pressed,
+        ),
         accent_stroke_bottom: on(0x66000000, 0x24000000, accent_fill),
         focus_outer: on(0xe4000000, 0xffffffff, base),
         focus_inner: on(0xb3ffffff, 0xb3000000, base),
@@ -624,6 +650,16 @@ pub(super) unsafe fn place_search(edit: HWND, frame: RECT, dpi: u32) {
     );
 }
 
+/// A text field's fill and text: the control fill, or the system's window
+/// colours while high contrast is on.
+pub(super) unsafe fn input_colours(palette: &MainPalette) -> (u32, u32) {
+    if high_contrast() {
+        (GetSysColor(COLOR_WINDOW), GetSysColor(COLOR_WINDOWTEXT))
+    } else {
+        (palette.control, palette.text)
+    }
+}
+
 /// A WinUI text box frame: control fill, stroke, and a stronger bottom line
 /// (TextControlElevationBorder) that turns accent and 2 epx with the focus.
 pub(super) unsafe fn paint_input_frame(
@@ -637,7 +673,7 @@ pub(super) unsafe fn paint_input_frame(
         dc,
         frame,
         scale(CORNER, dpi),
-        palette.control,
+        input_colours(palette).0,
         Some(palette.control_stroke),
     );
     let line = if focused { scale(2, dpi) } else { 1 };
@@ -661,14 +697,14 @@ pub(super) unsafe fn paint_input_frame(
 /// Text and background of the tab page text and of the search box.
 pub(super) unsafe fn main_control_colour(ui: &MainUi, dc: HDC, control: HWND) -> Option<LRESULT> {
     let palette = main_palette(ui.hwnd);
-    let fill = if control == ui.details {
-        palette.card
+    let (fill, text) = if control == ui.details {
+        (palette.card, palette.text)
     } else if control == ui.search {
-        palette.control
+        input_colours(&palette)
     } else {
         return None;
     };
-    SetTextColor(dc, palette.text);
+    SetTextColor(dc, text);
     SetBkColor(dc, fill);
     SetDCBrushColor(dc, fill);
     Some(GetStockObject(DC_BRUSH) as LRESULT)
@@ -1681,7 +1717,8 @@ pub(super) unsafe fn add_dialog_message(
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
             let dc = wparam as HDC;
             let (text, fill) = if msg == WM_CTLCOLOREDIT {
-                (palette.text, palette.control)
+                let (fill, text) = input_colours(&palette);
+                (text, fill)
             } else if lparam as HWND == dlg.error {
                 (palette.critical, palette.card)
             } else {
@@ -2326,24 +2363,6 @@ mod tests {
         light2: 0xffcd60,
     };
 
-    fn luminance(colour: u32) -> f64 {
-        let channel = |value: u32| {
-            let value = value as f64 / 255.0;
-            if value <= 0.03928 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * channel(colour & 0xff)
-            + 0.7152 * channel((colour >> 8) & 0xff)
-            + 0.0722 * channel((colour >> 16) & 0xff)
-    }
-    fn contrast(a: u32, b: u32) -> f64 {
-        let (a, b) = (luminance(a), luminance(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
-
     #[test]
     fn composited_colours_match_the_winui_values_on_their_layer() {
         // COLORREF is 0x00BBGGRR; the WinUI colour is 0xAARRGGBB.
@@ -2495,6 +2514,28 @@ mod tests {
         assert_eq!(at(&ring, 20, 1), 0xff0000);
         assert_eq!(at(&ring, 20, 2), 0x00ff00);
         assert_eq!(at(&ring, 20, 19), 0xeeeeee);
+    }
+
+    #[test]
+    fn text_on_a_custom_accent_takes_the_colour_that_reads() {
+        // A pale yellow accent in the light theme, a deep navy in the dark one:
+        // the reverse of the default blue's shades.
+        let pale = AccentShades {
+            dark1: 0x80f0ff,
+            light2: 0x80f0ff,
+        };
+        let deep = AccentShades {
+            dark1: 0x401010,
+            light2: 0x401010,
+        };
+        for dark in [false, true] {
+            let on_pale = fluent_palette(dark, pale);
+            assert_eq!(on_pale.on_accent, 0x000000);
+            assert!(contrast(on_pale.on_accent, on_pale.accent) >= 4.5);
+            let on_deep = fluent_palette(dark, deep);
+            assert_eq!(on_deep.on_accent, 0xffffff);
+            assert!(contrast(on_deep.on_accent, on_deep.accent) >= 4.5);
+        }
     }
 
     #[test]

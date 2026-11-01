@@ -205,7 +205,7 @@ pub(super) fn card_prop(name: &str) -> *const u16 {
     }
 }
 /// Creates a font from the first face the system really provides. The Classic
-/// theme keeps the application font: its cards have always been drawn with it.
+/// theme draws its cards with the application font.
 pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &[&str]) -> HFONT {
     if !modern() {
         return make_font(dpi, points, weight);
@@ -1452,7 +1452,7 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
     let Some(strip) = menu_strip(ui) else {
         return;
     };
-    // Classic draws the strip straight into the context, as it always has.
+    // Classic draws the strip straight into the context.
     if !modern() {
         fill_menu_bar(dc, &strip, ui.hwnd);
         draw_strip_items(ui, dc, menu, count, &strip);
@@ -2175,6 +2175,7 @@ unsafe fn paint_job_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
     let selected = SendMessageW(hwnd, TCM_GETCURSEL, 0, 0) as i32;
     let focus_shown = GetFocus() == hwnd
         && SendMessageW(hwnd, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0;
+    let hot = GetPropW(hwnd, tab_hot_prop()) as isize as i32 - 1;
     for index in 0..SendMessageW(hwnd, TCM_GETITEMCOUNT, 0, 0) as i32 {
         let mut rect: RECT = zeroed();
         if SendMessageW(
@@ -2185,6 +2186,17 @@ unsafe fn paint_job_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
         ) == 0
         {
             continue;
+        }
+        // A hovered tab that is not the selected one gets the subtle fill.
+        let hovered = index == hot && index != selected;
+        if hovered && !high_contrast() {
+            round_rect(
+                dc,
+                &inflate(rect, -scale(2, dpi), -scale(2, dpi)),
+                scale(CORNER, dpi),
+                palette.hover,
+                None,
+            );
         }
         if index == selected && focus_shown {
             focus_plate(
@@ -2200,7 +2212,7 @@ unsafe fn paint_job_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
         let length = title.iter().position(|&c| c == 0).unwrap_or(title.len());
         SetTextColor(
             dc,
-            if index == selected {
+            if index == selected || hovered {
                 palette.text
             } else {
                 palette.secondary
@@ -2259,9 +2271,44 @@ pub(super) unsafe extern "system" fn tabs_proc(
         WM_SETFOCUS | WM_KILLFOCUS if GetDlgCtrlID(hwnd) == ID_JOB_TABS => {
             InvalidateRect(hwnd, null(), 0);
         }
+        // Modern's tabs show the one under the pointer.
+        WM_MOUSEMOVE if modern() => {
+            let mut hit = TCHITTESTINFO {
+                pt: POINT {
+                    x: loword(lparam as usize) as i16 as i32,
+                    y: hiword(lparam as usize) as i16 as i32,
+                },
+                flags: 0,
+            };
+            let index = SendMessageW(hwnd, TCM_HITTEST, 0, &mut hit as *mut _ as isize) as i32;
+            if index + 1 != GetPropW(hwnd, tab_hot_prop()) as isize as i32 {
+                SetPropW(hwnd, tab_hot_prop(), (index + 1) as isize as HANDLE);
+                let mut track = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                TrackMouseEvent(&mut track);
+                InvalidateRect(hwnd, null(), 0);
+            }
+        }
+        WM_MOUSELEAVE if modern() => {
+            RemovePropW(hwnd, tab_hot_prop());
+            InvalidateRect(hwnd, null(), 0);
+        }
+        WM_NCDESTROY => {
+            RemovePropW(hwnd, tab_hot_prop());
+        }
         _ => {}
     }
     call_previous(hwnd, msg, wparam, lparam)
+}
+/// The window property holding the hovered tab's index plus one.
+fn tab_hot_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.TabHot"));
+    NAME.as_ptr()
 }
 /// Progress bars keep the themed light fill in dark mode; the bar is painted
 /// here with the palette's surface and accent, border included.

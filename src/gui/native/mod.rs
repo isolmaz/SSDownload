@@ -1439,6 +1439,9 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             // modeless dialog's Ctrl+A / Ctrl+V would run the main window's list
             // commands instead of editing its own fields.
             let main_message = msg.hwnd.is_null() || GetAncestor(msg.hwnd, GA_ROOT) == hwnd;
+            if main_message && msg.message == WM_SYSCHAR && pause_access_key(hwnd, msg.wParam) {
+                continue;
+            }
             if !(main_message && !accel.is_null() && TranslateAcceleratorW(hwnd, accel, &msg) != 0)
                 && !dialog_message(hwnd, &msg)
             {
@@ -2283,6 +2286,37 @@ fn pause_button_label(verb: PauseVerb) -> &'static str {
         PauseVerb::Both => crate::i18n::ui("Durakla&t / Sürdür", "&Pause / Resume"),
     }
 }
+/// Modern's pause button changes its label, and with it its access key, with
+/// the selection; it answers to the key of every label it can show, so a key
+/// that worked a moment ago still works. True when `key` clicked it.
+unsafe fn pause_access_key(main: HWND, key: WPARAM) -> bool {
+    let button = GetDlgItem(main, ID_PAUSE_RESUME);
+    if !modern() || button.is_null() || IsWindowVisible(button) == 0 || IsWindowEnabled(button) == 0
+    {
+        return false;
+    }
+    let Some(typed) = char::from_u32(key as u32).map(|c| c.to_lowercase().to_string()) else {
+        return false;
+    };
+    let access = |label: &str| {
+        let (title, at) = split_mnemonic(label);
+        at.and_then(|at| title.chars().nth(at))
+            .map(|c| c.to_lowercase().to_string())
+    };
+    // The label shown now is the dialog manager's to handle.
+    if access(&text(button)).as_ref() == Some(&typed) {
+        return false;
+    }
+    if PAUSE_VERBS
+        .iter()
+        .any(|&verb| access(pause_button_label(verb)).as_ref() == Some(&typed))
+    {
+        SendMessageW(button, BM_CLICK, 0, 0);
+        return true;
+    }
+    false
+}
+
 /// The pages under the list, in order: details, the job's own log, its error.
 const JOB_TABS: [(&str, &str); 3] = [
     ("Ayrıntılar", "Details"),
@@ -2313,9 +2347,12 @@ unsafe fn fill_job_tabs(ui: &MainUi, previous: UiMode) {
     let shown = job_tab_pages(previous).get(selected).copied().unwrap_or(0);
     SendMessageW(ui.tabs, TCM_DELETEALLITEMS, 0, 0);
     let pages = job_tab_pages(ui.ui_mode);
-    for (index, &page) in pages.iter().enumerate() {
-        let (tr, en) = JOB_TABS[page];
-        tab_item(ui.tabs, index as i32, crate::i18n::ui(tr, en));
+    let mut index = 0;
+    for (page, (tr, en)) in JOB_TABS.iter().enumerate() {
+        if pages.contains(&page) {
+            tab_item(ui.tabs, index, crate::i18n::ui(tr, en));
+            index += 1;
+        }
     }
     let index = pages.iter().position(|&page| page == shown).unwrap_or(0);
     SendMessageW(ui.tabs, TCM_SETCURSEL, index, 0);
@@ -9749,6 +9786,9 @@ unsafe fn resize_dialog(hwnd: HWND, dpi: u32, height: i32) {
     info.cbSize = size_of::<MONITORINFO>() as u32;
     if GetMonitorInfoW(monitor, &mut info) != 0 {
         let area = info.rcWork;
+        // A window taller than the work area stops at its height, as a new
+        // dialog does (`center_window`), and its page scrolls instead.
+        let tall = tall.min(area.bottom - area.top);
         let x = ((rect.left + rect.right) / 2 - width / 2)
             .clamp(area.left, (area.right - width).max(area.left));
         let y = ((rect.top + rect.bottom) / 2 - tall / 2)
@@ -10099,41 +10139,6 @@ mod tests {
     }
 
     #[test]
-    fn the_basic_level_has_no_job_log_tab_as_it_has_no_job_log_command() {
-        use super::{job_tab_pages, main_command_visible, UiMode, ID_JOB_LOG, JOB_LOG_PAGE};
-        assert!(!main_command_visible(UiMode::Simple, false, ID_JOB_LOG));
-        assert_eq!(job_tab_pages(UiMode::Simple), [0, 2]);
-        assert!(!job_tab_pages(UiMode::Simple).contains(&JOB_LOG_PAGE));
-        assert_eq!(job_tab_pages(UiMode::Advanced), [0, 1, 2]);
-    }
-
-    #[test]
-    fn the_pause_label_names_both_verbs_for_a_mixed_selection() {
-        use super::{pause_verb, PauseVerb};
-        use crate::model::JobState;
-        let running = sample_job("r", JobState::Downloading);
-        let paused = sample_job("p", JobState::Paused);
-        let failed = sample_job("f", JobState::Failed);
-        let done = sample_job("d", JobState::Completed);
-        assert_eq!(pause_verb(&[&running]), PauseVerb::Pause);
-        assert_eq!(pause_verb(&[&paused, &failed]), PauseVerb::Resume);
-        assert_eq!(pause_verb(&[&paused, &running]), PauseVerb::Both);
-        // A finished job counts for neither verb.
-        assert_eq!(pause_verb(&[&done, &paused]), PauseVerb::Resume);
-        assert_eq!(pause_verb(&[&done]), PauseVerb::Pause);
-        assert_eq!(pause_verb(&[]), PauseVerb::Pause);
-    }
-
-    #[test]
-    fn a_header_click_goes_ascending_descending_then_back_to_the_queue() {
-        use super::next_sort;
-        assert_eq!(next_sort(None, 3), Some((3, true)));
-        assert_eq!(next_sort(Some((3, true)), 3), Some((3, false)));
-        assert_eq!(next_sort(Some((3, false)), 3), None);
-        assert_eq!(next_sort(Some((3, false)), 1), Some((1, true)));
-    }
-
-    #[test]
     fn sorted_rows_hold_still_until_jobs_come_or_go_or_a_resort_is_asked_for() {
         use super::hold_order;
         let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
@@ -10183,6 +10188,41 @@ mod tests {
         )]));
         assert!(!add_opens_picker(&[page, file]));
         assert!(!add_opens_picker(&[]));
+    }
+
+    #[test]
+    fn the_basic_level_has_no_job_log_tab_as_it_has_no_job_log_command() {
+        use super::{job_tab_pages, main_command_visible, UiMode, ID_JOB_LOG, JOB_LOG_PAGE};
+        assert!(!main_command_visible(UiMode::Simple, false, ID_JOB_LOG));
+        assert_eq!(job_tab_pages(UiMode::Simple), [0, 2]);
+        assert!(!job_tab_pages(UiMode::Simple).contains(&JOB_LOG_PAGE));
+        assert_eq!(job_tab_pages(UiMode::Advanced), [0, 1, 2]);
+    }
+
+    #[test]
+    fn the_pause_label_names_both_verbs_for_a_mixed_selection() {
+        use super::{pause_verb, PauseVerb};
+        use crate::model::JobState;
+        let running = sample_job("r", JobState::Downloading);
+        let paused = sample_job("p", JobState::Paused);
+        let failed = sample_job("f", JobState::Failed);
+        let done = sample_job("d", JobState::Completed);
+        assert_eq!(pause_verb(&[&running]), PauseVerb::Pause);
+        assert_eq!(pause_verb(&[&paused, &failed]), PauseVerb::Resume);
+        assert_eq!(pause_verb(&[&paused, &running]), PauseVerb::Both);
+        // A finished job counts for neither verb.
+        assert_eq!(pause_verb(&[&done, &paused]), PauseVerb::Resume);
+        assert_eq!(pause_verb(&[&done]), PauseVerb::Pause);
+        assert_eq!(pause_verb(&[]), PauseVerb::Pause);
+    }
+
+    #[test]
+    fn a_header_click_goes_ascending_descending_then_back_to_the_queue() {
+        use super::next_sort;
+        assert_eq!(next_sort(None, 3), Some((3, true)));
+        assert_eq!(next_sort(Some((3, true)), 3), Some((3, false)));
+        assert_eq!(next_sort(Some((3, false)), 3), None);
+        assert_eq!(next_sort(Some((3, false)), 1), Some((1, true)));
     }
 
     #[test]
