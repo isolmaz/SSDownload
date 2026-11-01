@@ -1837,6 +1837,168 @@ fn a_job_that_did_not_report_everything_gets_the_rest_of_its_result_added() {
     );
 }
 
+fn job_of(engine: &Engine, id: &str) -> Job {
+    engine
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .clone()
+}
+
+const REPORTED_RANGES: [(u64, u64); 2] = [(0, 100), (500, 600)];
+
+/// Sends the job's worker a report of where its bytes are, for each generation the job can
+/// have (the engine ignores the others), and waits until the job shows it.
+fn report_ranges(engine: &Engine, id: &str) {
+    for generation in 1..=8 {
+        engine
+            .inner
+            .sender
+            .send(Message::Worker(WorkerEvent::Progress {
+                id: id.into(),
+                generation,
+                value: TransferProgress {
+                    downloaded: 200,
+                    total: Some(1000),
+                    ranges: Some(Arc::from(REPORTED_RANGES)),
+                    resumable: Some(true),
+                    ..TransferProgress::default()
+                },
+            }))
+            .unwrap();
+    }
+    wait_until("the reported ranges", || {
+        job_of(engine, id).ranges.as_deref() == Some(&REPORTED_RANGES[..])
+    });
+}
+
+/// A job paused after its worker reported where its bytes are, the way a segmented download
+/// is stopped, and the refresh of its source begun once its worker has stopped.
+fn paused_job_with_ranges(
+    root: &Path,
+    server: &FileServer,
+) -> (Engine, String, SourceRefreshTicket) {
+    let engine = Engine::open(AppPaths::new(root.to_path_buf()).unwrap()).unwrap();
+    let id = engine
+        .add(AddRequest {
+            page_url: Some("https://example.test/watch/ranges".into()),
+            ..file_request(server.url("/ranges.bin"), &root.join("out"))
+        })
+        .unwrap()
+        .remove(0);
+    wait_until("the worker to wait for the body", || {
+        server
+            .hits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|hit| hit == "/ranges.bin")
+    });
+    report_ranges(&engine, &id);
+    engine.pause(&id).unwrap();
+    server.release();
+    wait_until("the pause", || job_state(&engine, &id) == JobState::Paused);
+    assert_eq!(
+        job_of(&engine, &id).ranges.as_deref(),
+        Some(&REPORTED_RANGES[..])
+    );
+    // Paused is reported before the download thread has stopped, which refuses the refresh.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let ticket = loop {
+        match engine.begin_source_refresh(&id) {
+            Ok(ticket) => break ticket,
+            Err(error) => {
+                assert!(Instant::now() < deadline, "{error:#}");
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    (engine, id, ticket)
+}
+
+#[test]
+fn a_paused_job_keeps_its_ranges_and_a_restart_from_zero_clears_them() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-ranges-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/ranges.bin".into(), vec![3; 4096], true)]);
+    let (engine, id, ticket) = paused_job_with_ranges(&root, &server);
+    let paused = job_of(&engine, &id);
+    assert_eq!(paused.ranges.as_deref(), Some(&REPORTED_RANGES[..]));
+    assert_eq!(paused.resumable, Some(true));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refreshed_url = format!("http://{}/ranges.bin", listener.local_addr().unwrap());
+    let head = thread::spawn(move || read_head_and_respond(listener, None, None));
+    let mut request = (*ticket.request).clone();
+    request.url = refreshed_url;
+    // Scheduled for later, so no new worker reports anything before the job is read.
+    request.start_at = Some(Utc::now().timestamp() + 3600);
+    engine
+        .complete_source_refresh(&id, &ticket.token, request, true)
+        .unwrap();
+    head.join().unwrap();
+    let restarted = job_of(&engine, &id);
+    assert_eq!(restarted.downloaded, 0);
+    assert_eq!(restarted.ranges, None);
+    assert_eq!(restarted.resumable, None);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_browser_hand_over_clears_the_ranges_of_the_bytes_it_drops() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-ranges-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/ranges.bin".into(), vec![3; 4096], true)]);
+    // The refresh grant authorizes the hand-over.
+    let (engine, id, _ticket) = paused_job_with_ranges(&root, &server);
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    let sender_started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    engine
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .unwrap();
+    let handed_over = job_of(&engine, &id);
+    assert_eq!(handed_over.downloaded, 0);
+    assert_eq!(handed_over.ranges, None);
+    assert_eq!(handed_over.resumable, None);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_completed_job_shows_all_its_bytes_as_one_range() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-ranges-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/ranges.bin".into(), vec![3; 4096], true)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(file_request(server.url("/ranges.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the worker to wait for the body", || {
+        server
+            .hits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|hit| hit == "/ranges.bin")
+    });
+    report_ranges(&engine, &id);
+    server.release();
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+    assert_eq!(
+        job_of(&engine, &id).ranges.as_deref(),
+        Some(&[(0, 4096)][..])
+    );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn shutdown_when_done(queue: &QueuePolicy) -> QueuePolicy {
     QueuePolicy {
         // The countdown is far longer than any test, and the tests cancel it, so

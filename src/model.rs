@@ -412,10 +412,15 @@ pub struct Job {
     /// Order in which jobs were added; settles jobs created within the same second.
     #[serde(default)]
     pub sequence: u64,
-    /// The running transfer's `TransferProgress::ranges`; never stored.
+    /// The last `TransferProgress::ranges` of the job's transfer: kept through a pause or a
+    /// failure (the part file still holds those bytes), `[(0, total)]` once the job is
+    /// completed, and cleared when its bytes are dropped (a restart from zero, a browser
+    /// hand-over). Never stored.
     #[serde(skip)]
     pub ranges: Option<Arc<[(u64, u64)]>>,
-    /// The running transfer's `TransferProgress::resumable`; never stored.
+    /// The last `TransferProgress::resumable` of the job's transfer: kept through a pause or
+    /// a failure, and cleared when its bytes are dropped or its source is replaced. Never
+    /// stored.
     #[serde(skip)]
     pub resumable: Option<bool>,
 }

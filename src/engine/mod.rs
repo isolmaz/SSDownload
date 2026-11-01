@@ -466,6 +466,7 @@ impl Engine {
                         job.path = done.path;
                         job.downloaded = done.bytes;
                         job.total = Some(done.bytes);
+                        job.ranges = Some(Arc::from([(0, done.bytes)]));
                         job.state = JobState::Completed;
                         job.phase =
                             crate::i18n::ui("Tamamlandı (kurtarıldı)", "Completed (recovered)")
@@ -2117,6 +2118,11 @@ impl Actor {
             updated.downloaded
         };
         updated.total = if active.restart { None } else { updated.total };
+        if active.restart {
+            updated.ranges = None;
+        }
+        // The new source's range support and identity are unknown until it is fetched.
+        updated.resumable = None;
         updated.phase = if updated.state == JobState::Scheduled {
             updated.state.label().into()
         } else if active.restart {
@@ -2590,6 +2596,8 @@ impl Actor {
         };
         job.browser_transfer_authorized = true;
         job.downloaded = 0;
+        job.ranges = None;
+        job.resumable = None;
         job.state = JobState::Downloading;
         job.phase = crate::i18n::ui(
             "Yetkili tarayıcı aktarımı bekleniyor",
@@ -3539,6 +3547,7 @@ impl Actor {
                     .to_owned();
                 job.downloaded = result.bytes;
                 job.total = Some(result.bytes);
+                job.ranges = Some(Arc::from([(0, result.bytes)]));
                 job.speed = 0;
                 job.eta = Some(0);
                 job.state = JobState::Completed;
@@ -3786,6 +3795,7 @@ impl Actor {
                         job.path = done.path;
                         job.downloaded = done.bytes;
                         job.total = Some(done.bytes);
+                        job.ranges = Some(Arc::from([(0, done.bytes)]));
                         job.state = JobState::Completed;
                         job.phase =
                             crate::i18n::ui("Tamamlandı (kurtarıldı)", "Completed (recovered)")
