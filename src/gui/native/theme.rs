@@ -1672,7 +1672,56 @@ pub(super) unsafe fn dark_app_mode(enabled: bool) {
         flush();
     }
 }
+/// Passes the dark title bar setting to `set`, which stores one attribute and
+/// answers its HRESULT. Builds that do not know the documented attribute reject
+/// it and take the setting under the older number, so that one is tried only
+/// after a failure.
+fn set_dark_caption_with(
+    dark: bool,
+    mut set: impl FnMut(u32, *const c_void) -> windows_sys::core::HRESULT,
+) -> windows_sys::core::HRESULT {
+    const DOCUMENTED: u32 = DWMWA_USE_IMMERSIVE_DARK_MODE as u32;
+    const OLDER: u32 = 19;
+    let value: BOOL = dark as BOOL;
+    let value = &value as *const BOOL as *const c_void;
+    let result = set(DOCUMENTED, value);
+    if result >= 0 {
+        return result;
+    }
+    set(OLDER, value)
+}
+/// Draws the title bar of `hwnd` in the dark or the light colours.
+pub(super) unsafe fn set_dark_caption(hwnd: HWND, dark: bool) -> windows_sys::core::HRESULT {
+    set_dark_caption_with(dark, |attribute, value| {
+        DwmSetWindowAttribute(hwnd, attribute, value, size_of::<BOOL>() as u32)
+    })
+}
+/// Whether the frame of `hwnd` is drawn as the active one. That is the
+/// frame's own state: GetActiveWindow still names a window whose frame is drawn
+/// inactive while another thread or process has the foreground.
+unsafe fn frame_is_active(hwnd: HWND) -> bool {
+    let mut info: WINDOWINFO = zeroed();
+    info.cbSize = size_of::<WINDOWINFO>() as u32;
+    GetWindowInfo(hwnd, &mut info) != 0 && info.dwWindowStatus & WS_ACTIVECAPTION != 0
+}
+/// Some builds repaint the title bar after a colour change only when the
+/// activation state changes. Telling the window that it was deactivated and
+/// activated again (or the other way round) makes the default window
+/// procedure draw the title bar anew while the real activation and the focus
+/// stay where they are. `active` is the state the frame had before the colour
+/// change, which is the one it ends in. A window that is not shown has no
+/// title bar to draw.
+unsafe fn redraw_caption(hwnd: HWND, active: bool) {
+    if IsWindowVisible(hwnd) == 0 {
+        return;
+    }
+    SendMessageW(hwnd, WM_NCACTIVATE, !active as WPARAM, 0);
+    SendMessageW(hwnd, WM_NCACTIVATE, active as WPARAM, 0);
+}
 pub(super) unsafe fn apply_dark_mode(hwnd: HWND, enabled: bool) {
+    // SetWindowTheme can draw the frame active again, so the state to keep is
+    // read before it.
+    let framed = frame_is_active(hwnd);
     let enabled = enabled && !high_contrast();
     dark_app_mode(enabled);
     if let Some(allow) = allow_dark_mode_for_window() {
@@ -1687,13 +1736,7 @@ pub(super) unsafe fn apply_dark_mode(hwnd: HWND, enabled: bool) {
             null_mut()
         },
     );
-    let value: BOOL = enabled as BOOL;
-    DwmSetWindowAttribute(
-        hwnd,
-        20,
-        &value as *const _ as *const c_void,
-        size_of::<BOOL>() as u32,
-    );
+    set_dark_caption(hwnd, enabled);
     let theme = wide("DarkMode_Explorer");
     SetWindowTheme(hwnd, if enabled { theme.as_ptr() } else { null() }, null());
     EnumChildWindows(hwnd, Some(theme_child), enabled as LPARAM);
@@ -1733,6 +1776,7 @@ pub(super) unsafe fn apply_dark_mode(hwnd: HWND, enabled: bool) {
         std::ptr::null_mut(),
         RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
     );
+    redraw_caption(hwnd, framed);
 }
 /// Applies the colour scheme to every descendant, including the list header
 /// which is nested inside the list view rather than owned by the window.
@@ -1966,9 +2010,45 @@ pub(super) unsafe extern "system" fn progress_proc(
 #[cfg(test)]
 mod tests {
     use super::{
-        processing_sweep, progress_colour, progress_fraction, split_mnemonic, SWEEP_ONE_WAY_MS,
+        processing_sweep, progress_colour, progress_fraction, set_dark_caption_with,
+        split_mnemonic, SWEEP_ONE_WAY_MS,
     };
     use crate::model::JobState;
+
+    /// The attributes the title bar setting is stored under, in the order they
+    /// are tried, with the value each call carries.
+    fn caption_calls(dark: bool, answers: [i32; 2]) -> (Vec<(u32, i32)>, i32) {
+        let mut calls = Vec::new();
+        let result = set_dark_caption_with(dark, |attribute, value| {
+            calls.push((attribute, unsafe { *(value as *const i32) }));
+            answers[calls.len() - 1]
+        });
+        (calls, result)
+    }
+
+    #[test]
+    fn the_older_title_bar_attribute_is_tried_only_after_the_documented_one_fails() {
+        const REJECTED: i32 = 0x8007_0057_u32 as i32;
+        for dark in [true, false] {
+            let value = dark as i32;
+            // The older attribute would fail too, and is not asked.
+            assert_eq!(
+                caption_calls(dark, [0, REJECTED]),
+                (vec![(20, value)], 0),
+                "dark {dark}: the documented attribute is accepted"
+            );
+            assert_eq!(
+                caption_calls(dark, [REJECTED, 0]),
+                (vec![(20, value), (19, value)], 0),
+                "dark {dark}: the documented attribute is rejected, the older one is accepted"
+            );
+            assert_eq!(
+                caption_calls(dark, [REJECTED, REJECTED]),
+                (vec![(20, value), (19, value)], REJECTED),
+                "dark {dark}: both are rejected and the failure is reported"
+            );
+        }
+    }
 
     #[test]
     fn a_processing_bar_sweeps_to_the_far_end_and_back() {
