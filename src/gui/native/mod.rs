@@ -10264,6 +10264,8 @@ mod tests {
             open_when_done: false,
             live: false,
             sequence: 0,
+            ranges: None,
+            resumable: None,
         };
         let turkish = "SSD-NET-004 Kaynak dosya yerine bir oturum açma veya web sayfasıyla yanıt verdi. Dosyayı tarayıcıda indirin ya da eklentinin sağ tık menüsünden Bu site için oturum çerezlerine izin ver seçeneğini kullanıp bağlantıyı tarayıcıdan yeniden ekleyin (Bağlantıyı SSDownload ile indir).";
         let english = "SSD-NET-004 The source answered with a sign-in or web page instead of the file. Download it in the browser, or choose Allow session cookies for this site in the extension's context menu and add the link again from the browser (Download link with SSDownload).";
@@ -10320,6 +10322,8 @@ mod tests {
             open_when_done: false,
             live: false,
             sequence: 0,
+            ranges: None,
+            resumable: None,
         };
         let downloading = JobState::Downloading.label();
         assert_eq!(
@@ -10366,6 +10370,8 @@ mod tests {
             open_when_done: false,
             live: false,
             sequence: 0,
+            ranges: None,
+            resumable: None,
         }
     }
 

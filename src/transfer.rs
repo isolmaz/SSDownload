@@ -27,6 +27,8 @@ const MAX_SEGMENT_SIZE: u64 = 8 * 1024 * 1024;
 const MIN_SPLIT_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
+/// The most ranges a progress report lists; the narrowest gaps close first beyond it.
+const SHOWN_RANGES: usize = 64;
 /// How often a worker that waits for a renewal looks at a stop request.
 const RENEWAL_POLL: Duration = Duration::from_millis(100);
 const IO_BUFFER: usize = 1024 * 1024;
@@ -1072,6 +1074,8 @@ pub(crate) fn download(
                 Some(bytes) => {
                     control.mark_restarted();
                     progress(TransferProgress {
+                        ranges: None,
+                        resumable: None,
                         processing: false,
                         downloaded: 0,
                         total: Some(bytes),
@@ -1180,6 +1184,8 @@ fn restart_from_zero(
     remove_if_exists(&state_path(output));
     cleanup_legacy_segments(output);
     progress(TransferProgress {
+        ranges: None,
+        resumable: None,
         processing: false,
         downloaded: 0,
         total,
@@ -1282,11 +1288,15 @@ fn download_http_resuming(
     } else {
         !sequential_resume && stable && remote.total.is_some() && segment_count > 1
     };
+    // What this attempt learned of range support, for the progress it reports.
+    let mut resumable = ranges_ignored.then_some(false);
     let range_supported = if reusable_ranges {
+        resumable = Some(true);
         true
     } else if probe_wanted {
         match verify_range_support(request, &remote, fresh, control, network) {
             Ok(Some(headers)) => {
+                resumable = Some(true);
                 if fresh {
                     remote.total = headers.content_range.and_then(|range| range.total);
                     remote.etag = headers.etag;
@@ -1301,7 +1311,10 @@ fn download_http_resuming(
                 }
                 segment_count > 1 && stable
             }
-            Ok(None) => false,
+            Ok(None) => {
+                resumable = Some(false);
+                false
+            }
             Err(AttemptFailure::ResourceChanged) => {
                 return Err(preserved_partial(crate::i18n::ui(
                     "Kaynak kimliği değişti; doğrulanmış parçalar kullanılamaz, sonraki deneme indirmeyi baştan başlatır",
@@ -1348,7 +1361,14 @@ fn download_http_resuming(
                 // file cannot discard resumable data or combine different resources. A server
                 // whose validators differ from one request to the next ends up here.
                 return download_http_single(
-                    request, output, &remote, control, network, progress, false,
+                    request,
+                    output,
+                    &remote,
+                    control,
+                    network,
+                    progress,
+                    false,
+                    Some(false),
                 );
             }
             Err(failure @ (AttemptFailure::RangeRejected | AttemptFailure::RangeIgnored)) => {
@@ -1378,11 +1398,16 @@ fn download_http_resuming(
     }
 
     if empty_dynamic_allocation {
-        return download_http_single(request, output, &remote, control, network, progress, false);
+        return download_http_single(
+            request, output, &remote, control, network, progress, false, resumable,
+        );
     }
-    download_http_single(request, output, &remote, control, network, progress, true)
+    download_http_single(
+        request, output, &remote, control, network, progress, true, resumable,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn download_http_single(
     request: &AddRequest,
     output: &Path,
@@ -1391,6 +1416,7 @@ fn download_http_single(
     network: &NetworkGovernor,
     progress: &mut dyn FnMut(TransferProgress),
     permit_resume: bool,
+    range_support: Option<bool>,
 ) -> Result<TransferResult> {
     let part = part_path(output);
     let state_path = state_path(output);
@@ -1477,6 +1503,14 @@ fn download_http_single(
     }
 
     write_state(&state_path, &single_state(request, remote, offset))?;
+    // A resumed request that is answered at all continues where the part file ends.
+    let shown = if resumable { Some(true) } else { range_support };
+    let progress = &mut |value: TransferProgress| {
+        progress(TransferProgress {
+            resumable: shown,
+            ..value
+        })
+    };
 
     let original = validate_source_url(&request.url)?;
     let mut current = remote.url.clone();
@@ -1571,6 +1605,8 @@ fn download_http_single(
             }) if retries + 1 < MAX_RANGE_ATTEMPTS => {
                 let delay = retry_after.unwrap_or_else(|| range_retry_delay(retries));
                 progress(TransferProgress {
+                    ranges: None,
+                    resumable: None,
                     processing: false,
                     downloaded: offset,
                     total: expected_total(expected, &ResponseHeaders::default(), remote),
@@ -1588,6 +1624,8 @@ fn download_http_single(
             Err(AttemptFailure::RetryableTransport(_)) if retries + 1 < MAX_RANGE_ATTEMPTS => {
                 let delay = range_retry_delay(retries);
                 progress(TransferProgress {
+                    ranges: None,
+                    resumable: None,
                     processing: false,
                     downloaded: offset,
                     total: expected_total(expected, &ResponseHeaders::default(), remote),
@@ -1765,6 +1803,8 @@ fn http_to_file(
                     let speed = ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64;
                     let total = expected_total(expected, &write_response.borrow(), remote);
                     progress(TransferProgress {
+                        ranges: None,
+                        resumable: None,
                         processing: false,
                         downloaded: current,
                         total,
@@ -1878,6 +1918,8 @@ fn http_to_file(
     let speed = (written as f64 / elapsed) as u64;
     let total = expected_total(expected, &headers, remote);
     progress(TransferProgress {
+        ranges: None,
+        resumable: None,
         processing: false,
         downloaded: current,
         total,
@@ -2314,11 +2356,34 @@ impl Checkpoints {
         finished + running
     }
 
-    fn downloaded(&self) -> u64 {
-        let in_cycle = self.cycle.covers().map_or(0, |snapshot| {
-            snapshot.fresh.iter().map(|range| range.len()).sum()
-        });
-        self.recorded_bytes() + in_cycle + self.waiting()
+    /// The bytes downloaded and the ranges they are in, from one reading of each worker's
+    /// count: what is recorded, in a cycle or waiting for one, and the front of each lease
+    /// its worker has written.
+    fn view(&self) -> (u64, Arc<[(u64, u64)]>) {
+        let fresh: &[ByteRange] = self
+            .cycle
+            .covers()
+            .map_or(&[], |snapshot| snapshot.fresh.as_slice());
+        let mut ranges: Vec<ByteRange> = self
+            .completed
+            .iter()
+            .chain(fresh)
+            .chain(&self.unrecorded)
+            .copied()
+            .collect();
+        let mut running = 0;
+        for (lease, written) in self.leases.iter().zip(&self.written) {
+            let Some(lease) = lease else { continue };
+            let written = written.load(Ordering::Acquire).max(lease.taken);
+            running += written - lease.taken;
+            ranges.push(ByteRange {
+                start: lease.range.start,
+                end: lease.range.start + written,
+            });
+        }
+        let length = |ranges: &[ByteRange]| ranges.iter().map(|range| range.len()).sum::<u64>();
+        let downloaded = self.recorded_bytes() + length(fresh) + length(&self.unrecorded) + running;
+        (downloaded, shown_ranges(ranges))
     }
 
     /// Whether a periodic cycle should start now.
@@ -2457,6 +2522,32 @@ impl Checkpoints {
         self.absorb((snapshot, result))
             .map_err(AttemptFailure::Other)
     }
+}
+
+/// `ranges` sorted and merged where they meet or overlap, as `[start, end)` pairs. Beyond
+/// `SHOWN_RANGES` the narrowest gaps are closed, so the list stays short at the cost of showing
+/// those few bytes as written.
+fn shown_ranges(mut ranges: Vec<ByteRange>) -> Arc<[(u64, u64)]> {
+    ranges.retain(|range| range.len() > 0);
+    ranges.sort_by_key(|range| range.start);
+    let mut merged: Vec<ByteRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    while merged.len() > SHOWN_RANGES {
+        let narrowest = (0..merged.len() - 1)
+            .min_by_key(|&index| merged[index + 1].start - merged[index].end)
+            .unwrap_or(0);
+        merged[narrowest].end = merged[narrowest + 1].end;
+        merged.remove(narrowest + 1);
+    }
+    merged
+        .iter()
+        .map(|range| (range.start, range.end))
+        .collect()
 }
 
 /// Writes all of `data` at `offset` without relying on the file position.
@@ -2634,6 +2725,10 @@ fn download_segmented(
     let mut successful_since_failure = 0usize;
     let mut last_time = Instant::now();
     let mut last_downloaded = baseline;
+    // The first report is made at once, so a resumed download shows what earlier attempts kept;
+    // a retry notice is reported at once too.
+    let mut report_now = true;
+    let mut notice: Option<String> = None;
     let outcome = 'scheduler: loop {
         if control.stop_requested() {
             break Err(AttemptFailure::Interrupted);
@@ -2750,20 +2845,14 @@ fn download_segmented(
                         effective_workers = (effective_workers / 2).max(1);
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
-                        progress(TransferProgress {
-                            processing: false,
-                            downloaded: ledger.downloaded(),
-                            total: Some(total),
-                            speed: 0,
-                            eta: None,
-                            phase: crate::i18n::ui_format!(
-                                "HTTP {status}; {0} sn sonra {1} bağlantıyla yeniden denenecek",
-                                "HTTP {status}; retrying in {0} s using {1} connections",
-                                retry_after.as_secs(),
-                                effective_workers,
-                                status = status
-                            ),
-                        });
+                        notice = Some(crate::i18n::ui_format!(
+                            "HTTP {status}; {0} sn sonra {1} bağlantıyla yeniden denenecek",
+                            "HTTP {status}; retrying in {0} s using {1} connections",
+                            retry_after.as_secs(),
+                            effective_workers,
+                            status = status
+                        ));
+                        report_now = true;
                     }
                     Err(AttemptFailure::RetryableTransport(_error))
                         if work.attempts + 1 < MAX_RANGE_ATTEMPTS =>
@@ -2785,19 +2874,13 @@ fn download_segmented(
                         effective_workers = (effective_workers / 2).max(1);
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
-                        progress(TransferProgress {
-                            processing: false,
-                            downloaded: ledger.downloaded(),
-                            total: Some(total),
-                            speed: 0,
-                            eta: None,
-                            phase: crate::i18n::ui_format!(
-                                "Geçici ağ hatası; {0} sn sonra {1} bağlantıyla yeniden denenecek",
-                                "Transient network error; retrying in {0} s using {1} connections",
-                                retry_after.as_secs(),
-                                effective_workers
-                            ),
-                        });
+                        notice = Some(crate::i18n::ui_format!(
+                            "Geçici ağ hatası; {0} sn sonra {1} bağlantıyla yeniden denenecek",
+                            "Transient network error; retrying in {0} s using {1} connections",
+                            retry_after.as_secs(),
+                            effective_workers
+                        ));
+                        report_now = true;
                     }
                     Err(AttemptFailure::RetryableTransport(error)) => {
                         break 'scheduler Err(AttemptFailure::Other(error))
@@ -2825,25 +2908,40 @@ fn download_segmented(
         }
 
         let now = Instant::now();
-        if now.duration_since(last_time) >= Duration::from_millis(200) {
-            let downloaded = ledger.downloaded();
+        if report_now || now.duration_since(last_time) >= Duration::from_millis(200) {
+            // The only place the ranges are built: once per report, every 200 ms or at a retry
+            // notice, never per write.
+            let (downloaded, ranges) = ledger.view();
             let elapsed = now.duration_since(last_time).as_secs_f64().max(0.001);
-            let speed = ((downloaded.saturating_sub(last_downloaded)) as f64 / elapsed) as u64;
+            let speed = if notice.is_some() {
+                0
+            } else {
+                ((downloaded.saturating_sub(last_downloaded)) as f64 / elapsed) as u64
+            };
             progress(TransferProgress {
+                ranges: Some(ranges),
+                resumable: Some(true),
                 processing: false,
                 downloaded: downloaded.min(total),
                 total: Some(total),
                 speed,
                 eta: eta(Some(total), downloaded.min(total), speed),
                 // Shown after the state: "Downloading — 8 connections".
-                phase: if effective_workers == 1 {
-                    crate::i18n::ui("1 bağlantı", "1 connection").to_string()
-                } else {
-                    crate::i18n::ui_format!("{0} bağlantı", "{0} connections", effective_workers)
-                },
+                phase: notice.take().unwrap_or_else(|| {
+                    if effective_workers == 1 {
+                        crate::i18n::ui("1 bağlantı", "1 connection").to_string()
+                    } else {
+                        crate::i18n::ui_format!(
+                            "{0} bağlantı",
+                            "{0} connections",
+                            effective_workers
+                        )
+                    }
+                }),
             });
             last_time = now;
             last_downloaded = downloaded;
+            report_now = false;
         }
     };
 
@@ -2905,6 +3003,8 @@ fn download_segmented(
     // it is renamed.
     drop(ledger);
     progress(TransferProgress {
+        ranges: Some(Arc::from([(0, total)])),
+        resumable: Some(true),
         processing: false,
         downloaded: total,
         total: Some(total),
@@ -3781,6 +3881,8 @@ fn download_ftp_resuming(
                 let elapsed = now.duration_since(last).as_secs_f64().max(0.001);
                 let speed = ((current - last_bytes) as f64 / elapsed) as u64;
                 progress(TransferProgress {
+                    ranges: None,
+                    resumable: None,
                     processing: false,
                     downloaded: current,
                     total: remote.total,
@@ -6881,7 +6983,8 @@ mod tests {
     }
 
     /// Serves one payload over HTTP with `HEAD`, ranged and plain `GET`, on a fresh
-    /// connection per request, until it is dropped.
+    /// connection per request, until it is dropped. A server without ranges answers every
+    /// `GET` with the whole payload.
     struct PayloadServer {
         address: SocketAddr,
         requests: Arc<Mutex<Vec<String>>>,
@@ -6892,6 +6995,10 @@ mod tests {
 
     impl PayloadServer {
         fn start(payload: Vec<u8>, etag: &'static str) -> Self {
+            Self::start_with(payload, etag, true)
+        }
+
+        fn start_with(payload: Vec<u8>, etag: &'static str, ranges: bool) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let address = listener.local_addr().unwrap();
@@ -6908,7 +7015,7 @@ mod tests {
                                 let body = payload.lock().unwrap().clone();
                                 let requests = requests.clone();
                                 thread::spawn(move || {
-                                    serve_payload(&mut stream, &body, etag, &requests)
+                                    serve_payload(&mut stream, &body, etag, ranges, &requests)
                                 });
                             }
                             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -6954,12 +7061,18 @@ mod tests {
         stream: &mut TcpStream,
         payload: &[u8],
         etag: &str,
+        ranges: bool,
         requests: &Mutex<Vec<String>>,
     ) {
         let request = read_request(stream);
         requests.lock().unwrap().push(request.clone());
         let total = payload.len();
-        let identity = format!("Accept-Ranges: bytes\r\nETag: {etag}\r\nConnection: close\r\n");
+        let accepts = if ranges {
+            "Accept-Ranges: bytes\r\n"
+        } else {
+            ""
+        };
+        let identity = format!("{accepts}ETag: {etag}\r\nConnection: close\r\n");
         if request.starts_with("HEAD ") {
             let _ = stream.write_all(
                 format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\n{identity}\r\n").as_bytes(),
@@ -6968,6 +7081,7 @@ mod tests {
         }
         let range = request
             .lines()
+            .filter(|_| ranges)
             .find(|line| line.to_ascii_lowercase().starts_with("range:"))
             .and_then(|line| line.split_once("bytes="))
             .and_then(|(_, value)| value.trim().split_once('-'));
@@ -7156,6 +7270,134 @@ mod tests {
         // 2 MiB at 2 MiB/s: never faster than the limit, and not paced at a quarter of it.
         assert!(elapsed >= Duration::from_millis(900), "{elapsed:?}");
         assert!(elapsed < Duration::from_millis(2500), "{elapsed:?}");
+    }
+
+    /// Every report that lists ranges lists them sorted, apart, inside the file and adding
+    /// up to the bytes it reports downloaded.
+    fn check_ranges(events: &[TransferProgress], total: u64) {
+        for event in events {
+            let Some(ranges) = &event.ranges else {
+                continue;
+            };
+            assert_eq!(event.resumable, Some(true), "{event:?}");
+            assert!(
+                ranges
+                    .iter()
+                    .all(|&(start, end)| start < end && end <= total),
+                "{ranges:?}"
+            );
+            assert!(
+                ranges.windows(2).all(|pair| pair[0].1 < pair[1].0),
+                "{ranges:?}"
+            );
+            let written: u64 = ranges.iter().map(|&(start, end)| end - start).sum();
+            assert_eq!(written, event.downloaded, "{ranges:?}");
+        }
+    }
+
+    #[test]
+    fn a_segmented_download_reports_where_its_bytes_are() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 4);
+        let total = payload.len() as u64;
+        let server = PayloadServer::start(payload.clone(), "\"ranges-v1\"");
+        let directory = TestDirectory::new("ranges-shown");
+        let output = directory.0.join("large.bin");
+        let control = TransferControl::default();
+        // Slow enough for reports while the leases are written.
+        control.set_speed_limit(total);
+        let mut events = Vec::new();
+        let result = download(
+            &local_request(server.url()),
+            &output,
+            &control,
+            &NetworkGovernor::new(16),
+            4,
+            None,
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        check_ranges(&events, total);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.ranges.as_ref().is_some_and(|ranges| ranges.len() > 1)),
+            "no report showed the leases apart: {events:#?}"
+        );
+        let last = events.last().unwrap();
+        assert_eq!(last.ranges.as_deref(), Some(&[(0, total)][..]));
+    }
+
+    #[test]
+    fn a_download_from_a_server_without_ranges_reports_no_ranges_and_no_resume() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 2);
+        let server = PayloadServer::start_with(payload.clone(), "\"whole-v1\"", false);
+        let directory = TestDirectory::new("ranges-none");
+        let output = directory.0.join("whole.bin");
+        let mut events = Vec::new();
+        let result = download(
+            &local_request(server.url()),
+            &output,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            4,
+            None,
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(!events.is_empty());
+        for event in &events {
+            assert!(event.ranges.is_none(), "{event:?}");
+            assert_eq!(event.resumable, Some(false), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn a_resumed_download_shows_the_bytes_it_kept_in_its_first_report() {
+        let payload = patterned(MIN_SEGMENT_SIZE * 4);
+        let total = payload.len() as u64;
+        let server = PayloadServer::start(payload.clone(), "\"kept-v1\"");
+        let request = local_request(server.url());
+        let directory = TestDirectory::new("ranges-kept");
+        let output = directory.0.join("large.bin");
+        let kept = MIN_SEGMENT_SIZE + 4096;
+        let mut part = File::create(part_path(&output)).unwrap();
+        part.write_all(&payload[..kept as usize]).unwrap();
+        part.set_len(total).unwrap();
+        drop(part);
+        let mut state = segmented_state(
+            &request.url,
+            "\"kept-v1\"",
+            total,
+            vec![ByteRange {
+                start: 0,
+                end: kept,
+            }],
+        );
+        state.connections = 4;
+        write_state(&state_path(&output), &state).unwrap();
+        let mut events = Vec::new();
+        let result = download(
+            &request,
+            &output,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            4,
+            None,
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        check_ranges(&events, total);
+        let first = events.first().unwrap();
+        let ranges = first.ranges.as_deref().unwrap_or_default();
+        assert!(
+            ranges
+                .first()
+                .is_some_and(|&(start, end)| start == 0 && end >= kept),
+            "the first report does not show the kept bytes: {first:?}"
+        );
     }
 
     struct FtpBehavior {

@@ -412,6 +412,12 @@ pub struct Job {
     /// Order in which jobs were added; settles jobs created within the same second.
     #[serde(default)]
     pub sequence: u64,
+    /// The running transfer's `TransferProgress::ranges`; never stored.
+    #[serde(skip)]
+    pub ranges: Option<Arc<[(u64, u64)]>>,
+    /// The running transfer's `TransferProgress::resumable`; never stored.
+    #[serde(skip)]
+    pub resumable: Option<bool>,
 }
 
 impl Job {
@@ -998,6 +1004,15 @@ pub struct TransferProgress {
     /// job shows the processing state rather than a nearly full download.
     #[serde(default)]
     pub processing: bool,
+    /// The bytes of the output that are in, as merged `[start, end)` ranges, while the transfer
+    /// runs over ranged connections: what earlier attempts kept and what each connection has
+    /// written since. `None` for a transfer that is not split into ranges. Never stored.
+    #[serde(skip)]
+    pub ranges: Option<Arc<[(u64, u64)]>>,
+    /// Whether the source lets a download continue where it stopped; `None` while unknown.
+    /// Never stored.
+    #[serde(skip)]
+    pub resumable: Option<bool>,
 }
 #[derive(Debug, Clone)]
 pub struct TransferResult {
@@ -1291,6 +1306,8 @@ mod tests {
                 open_when_done: false,
                 live: false,
                 sequence: 0,
+                ranges: None,
+                resumable: None,
             }
         }
 

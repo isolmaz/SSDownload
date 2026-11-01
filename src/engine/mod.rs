@@ -1141,6 +1141,8 @@ impl Actor {
             open_when_done: false,
             live: false,
             sequence,
+            ranges: None,
+            resumable: None,
         };
         if let Err(error) = self.store.save_job(&job) {
             let _ = crate::recovery::release(&job.path, &id);
@@ -3279,6 +3281,8 @@ impl Actor {
                 job.total = value.total;
                 job.speed = value.speed;
                 job.eta = value.eta;
+                job.ranges = value.ranges;
+                job.resumable = value.resumable;
                 job.phase = stage.clone();
                 job.live = active.control.is_live();
                 job.state = if value.processing {

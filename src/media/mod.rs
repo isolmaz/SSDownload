@@ -682,6 +682,8 @@ pub(crate) fn download(
             ),
         ]);
         progress(TransferProgress {
+            ranges: None,
+            resumable: None,
             processing: false,
             downloaded: completed_file_bytes(&completed_files),
             total: None,
@@ -747,6 +749,8 @@ pub(crate) fn download(
                     job_id,
                 )?;
                 progress(TransferProgress {
+                    ranges: None,
+                    resumable: None,
                     phase: crate::i18n::ui_format!(
                         "Aktarım ilerlemedi; bağlantı yenileniyor ({0}).",
                         "The transfer stalled; reconnecting ({0}).",
@@ -760,6 +764,8 @@ pub(crate) fn download(
             MonitorOutcome::Cancelled => crate::bail_code!(crate::error_codes::TRF_008),
             MonitorOutcome::Finished => {
                 progress(TransferProgress {
+                    ranges: None,
+                    resumable: None,
                     downloaded: completed_file_bytes(&completed_files),
                     phase: crate::i18n::ui(
                         "Canlı kayıt bitirildi; kaydedilen kısım işleniyor",
@@ -803,6 +809,8 @@ pub(crate) fn download(
                     if discarded.0 > 0 {
                         fragment_restarts = fragment_restarts.saturating_add(1);
                         progress(TransferProgress {
+                            ranges: None,
+                            resumable: None,
                             phase: crate::i18n::ui_format!("Parça atlandı; yarım kalan {0} dosya ({1:.1} MB) atılıp akış baştan indiriliyor (deneme {2}, {3} bağlantı).", "A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).", discarded.0, discarded.1 as f64 / (1024.0 * 1024.0), fragment_restarts + 1, fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)),
                             ..TransferProgress::default()
                         });
@@ -835,6 +843,8 @@ pub(crate) fn download(
                     if !compatibility_retry && is_forbidden(&error) && completed_files.is_empty() {
                         compatibility_retry = true;
                         progress(TransferProgress {
+                            ranges: None,
+                            resumable: None,
                             phase: crate::i18n::ui(
                                 "Sunucu 403 döndürdü; aynı kaynak tarayıcı uyumlu bağlantıyla bir kez deneniyor",
                                 "The server returned 403; retrying the same source once with a browser-compatible connection",
@@ -890,6 +900,8 @@ pub(crate) fn download(
     )?;
     let bytes = path_bytes(&result_path)?;
     progress(TransferProgress {
+        ranges: None,
+        resumable: None,
         processing: false,
         downloaded: bytes,
         total: Some(bytes),

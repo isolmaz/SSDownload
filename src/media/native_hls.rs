@@ -229,6 +229,8 @@ pub(super) fn download_streams(
         return Err(error);
     }
     progress(TransferProgress {
+        ranges: None,
+        resumable: None,
         downloaded: received.load(Ordering::Relaxed),
         total: Some(received.load(Ordering::Relaxed)),
         phase: crate::i18n::ui("Medya işleniyor", "Processing media").into(),
@@ -908,6 +910,8 @@ fn report_until_done(context: &WorkerContext, progress: &mut dyn FnMut(TransferP
         };
         let total = estimated_total(context);
         progress(TransferProgress {
+            ranges: None,
+            resumable: None,
             processing: false,
             downloaded,
             total,

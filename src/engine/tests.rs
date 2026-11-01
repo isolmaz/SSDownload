@@ -488,6 +488,8 @@ fn a_failed_file_job_is_logged_at_the_file_stage_and_not_at_a_media_stage() {
         open_when_done: false,
         live: false,
         sequence: 0,
+        ranges: None,
+        resumable: None,
     };
     let request = |kind| AddRequest {
         url: "https://files.example.test/a".into(),
@@ -540,6 +542,8 @@ fn completion_requires_every_remaining_job_to_succeed() {
         open_when_done: false,
         live: false,
         sequence: 0,
+        ranges: None,
+        resumable: None,
     };
     let mut jobs = BTreeMap::new();
     jobs.insert("done".into(), make_job("done", JobState::Completed));
@@ -1114,6 +1118,8 @@ fn a_job_whose_destination_folder_was_deleted_recreates_it_before_starting() {
         open_when_done: false,
         live: false,
         sequence: 0,
+        ranges: None,
+        resumable: None,
     };
     let allocation = ConnectionAllocation {
         direct: 1,

@@ -430,6 +430,8 @@ impl LiveRecordingGauge {
             0
         };
         Some(TransferProgress {
+            ranges: None,
+            resumable: None,
             processing: false,
             downloaded: base.saturating_add(bytes),
             total: None,
@@ -589,6 +591,8 @@ pub(super) fn handle_machine_line(
             let total = parse_number(values[2]).map(|v| base.saturating_add(v));
             let status = values[0];
             progress(TransferProgress {
+                ranges: None,
+                resumable: None,
                 downloaded: base.saturating_add(current),
                 total,
                 speed: parse_number(values[3]).unwrap_or(0),
@@ -603,6 +607,8 @@ pub(super) fn handle_machine_line(
         }
     } else if line.starts_with(POSTPROCESS_PREFIX) {
         progress(TransferProgress {
+            ranges: None,
+            resumable: None,
             downloaded: completed_file_bytes(completed_files),
             total: None,
             speed: 0,
