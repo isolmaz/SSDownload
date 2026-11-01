@@ -787,6 +787,10 @@ struct Pace {
     refused_since: usize,
     /// Reactions in a row that found nothing admitted since the one before.
     lockout: u32,
+    /// Until when the lockout's waits and `Retry-After`s hold every request to the host: a wait
+    /// for the server, unlike the gaps of the pace. An earlier request admitted meanwhile ends
+    /// the lockout but not this hold.
+    held: Instant,
 }
 
 impl Pace {
@@ -801,6 +805,7 @@ impl Pace {
             admitted_since: 0,
             refused_since: 0,
             lockout: 0,
+            held: now,
         }
     }
 
@@ -858,16 +863,19 @@ impl Pace {
                     let rate = self.react(rate * PACE_CUT, now);
                     let wait = (f64::from(1u32 << self.lockout.min(16)) / rate)
                         .min(MAX_BACKOFF.as_secs_f64());
-                    self.next_start = self.next_start.max(now + Duration::from_secs_f64(wait));
+                    self.hold(now + Duration::from_secs_f64(wait));
                 }
                 Some(_) => {}
             }
         }
         if let Some(delay) = retry_after.filter(|_| self.lockout > 0) {
-            self.next_start = self
-                .next_start
-                .max(now + delay.min(MAX_SEGMENT_RETRY_AFTER));
+            self.hold(now + delay.min(MAX_SEGMENT_RETRY_AFTER));
         }
+    }
+
+    fn hold(&mut self, until: Instant) {
+        self.next_start = self.next_start.max(until);
+        self.held = self.held.max(until);
     }
 
     /// Sets the rate, no lower than one request per `MAX_BACKOFF`, and starts a new reaction.
@@ -915,16 +923,16 @@ enum Limited {
     Flowing,
     /// A host has answered 429 or 503, no request is in flight, and every queued segment is
     /// held back for `WAITING_SHOWN` or longer by its own wait after a failure or by its host's
-    /// lockout; once shown, until a request starts.
+    /// hold (`Pace::held`); once shown, until a request starts.
     Waiting,
 }
 
 /// How long the status says that the server limits requests after its last 429 or 503: as long
 /// as the speed it shows covers that answer.
 const LIMITED_SHOWN: Duration = SPEED_WINDOW;
-/// A segment held back at least this long, by its own wait or its host's lockout, reads as
-/// waiting for the server; a shorter hold, such as the first backoff of 1 s, would only flip the
-/// status for a moment.
+/// A segment held back at least this long, by its own wait or its host's hold, reads as waiting
+/// for the server; a shorter hold, such as the first backoff of 1 s, would only flip the status
+/// for a moment.
 const WAITING_SHOWN: Duration = Duration::from_secs(2);
 
 /// What a worker does next.
@@ -1087,10 +1095,8 @@ impl Shared {
         let idle = state.busy.iter().all(|busy| *busy == 0) && queued().next().is_some();
         // The gaps of a pace are no wait for the server, however long: a host that admits
         // requests at its pace limits them, and the time left follows that pace.
-        let held = |(not_before, pace): (Instant, &Pace)| {
-            not_before >= now + WAITING_SHOWN
-                || (pace.lockout > 0 && pace.next_start >= now + WAITING_SHOWN)
-        };
+        let held =
+            |(not_before, pace): (Instant, &Pace)| not_before.max(pace.held) >= now + WAITING_SHOWN;
         // A request may start and end between two reports.
         let still_waiting =
             waiting_since.is_some_and(|since| state.started.is_none_or(|started| started < since));
@@ -3137,10 +3143,10 @@ mod tests {
             .settle(0, Settled::Done { sent: second.sent }, after(11_200));
         shared.lock().paces[0].next_start = after(26_200);
         assert_eq!(shared.limited(after(22_000), None), Limited::Flowing);
-        // In a lockout the host admits no request, and its hold of 2 s or more is a wait for the
+        // A hold of the host after it refused every request, of 2 s or more, is a wait for the
         // server; in the last 2 s of the hold only if the status says so already, and then until
         // a request starts.
-        shared.lock().paces[0].lockout = 1;
+        shared.lock().paces[0].held = after(26_200);
         assert_eq!(shared.limited(after(22_000), None), Limited::Waiting);
         assert_eq!(shared.limited(after(24_500), None), Limited::Flowing);
         let since = Some(after(24_000));
@@ -3148,6 +3154,53 @@ mod tests {
         assert_eq!(shared.limited(after(26_200), since), Limited::Waiting);
         take(after(26_200));
         assert_eq!(shared.limited(after(26_200), since), Limited::No);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_download_waits_while_its_host_holds_every_request_also_after_an_earlier_one_comes() {
+        let root = std::env::temp_dir().join(format!("ssdownload-hold-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let streams = [one_host_stream(5)];
+        let joins = [Join::resume(&root, &streams[0]).unwrap()];
+        let shared = Shared::new(&streams, &joins, 3);
+        let start = Instant::now();
+        let after = |millis| start + Duration::from_millis(millis);
+        let take = |now| {
+            shared
+                .lock()
+                .take(&shared.hosts, &streams, Some(0), now)
+                .expect("a segment is due")
+        };
+        let refuse = |task, now| {
+            let refusal = Settled::Retry {
+                task,
+                throttled: true,
+                retry_after: Some(Duration::from_secs(30)),
+            };
+            shared.lock().settle(0, refusal, now);
+        };
+
+        // Segment 0 is refused for 30 s while segment 1 is in flight. Segments 2 and 3, sent at
+        // the pace after that refusal, are refused for 30 s too: the host refused every request
+        // sent since, and its Retry-After holds every request to it until 32.1 s.
+        let [first, second] = [(); 2].map(|_| take(start));
+        refuse(first, after(1_000));
+        let [third, fourth] = [1_000, 1_900].map(|millis| take(after(millis)));
+        refuse(third, after(2_000));
+        refuse(fourth, after(2_100));
+        assert_eq!(shared.limited(after(3_000), None), Limited::Flowing);
+        // Segment 1, sent before the refusals, comes: nothing is in flight, and segment 4, which
+        // was never refused, waits for the host's hold, which the earlier request does not end.
+        shared
+            .lock()
+            .settle(0, Settled::Done { sent: second.sent }, after(3_000));
+        assert_eq!(shared.limited(after(4_000), None), Limited::Waiting);
+        assert_eq!(shared.limited(after(30_200), None), Limited::Flowing);
+        let since = Some(after(30_000));
+        assert_eq!(shared.limited(after(30_200), since), Limited::Waiting);
+        take(after(32_100));
+        assert_eq!(shared.limited(after(32_100), since), Limited::Flowing);
         fs::remove_dir_all(root).unwrap();
     }
 
