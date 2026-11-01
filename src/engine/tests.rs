@@ -1298,6 +1298,71 @@ fn a_job_sent_to_the_browser_and_set_to_open_when_done_stays_as_it_was_when_the_
 }
 
 #[test]
+fn a_job_sent_to_the_browser_is_not_started_now_before_the_receiver_is_ready() {
+    // A download of the job's file would stay running until the end.
+    let server = FileServer::start(vec![
+        ("/browser-start-now.bin".into(), vec![6; 4096], true),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) = browser_quota_job(
+        "browser-start-now",
+        server.url("/browser-start-now.bin"),
+        |job| job.downloaded = 1_000_000,
+    );
+    let engine = Engine::open(paths).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    let started = engine.start_now(&id);
+    // A job that the app's own downloader ran would have been asked for by the time another
+    // download completes.
+    let other = engine
+        .add(file_request(server.url("/other.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the other download", || {
+        job_state(&engine, &other) == JobState::Completed
+    });
+    let asked = server
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|hit| hit == "/browser-start-now.bin");
+    // The transfer goes on: its receiver gets ready.
+    let prepared = engine.browser_transfer_prepared(&id, generation, 0);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        (started.is_err(), asked, prepared.is_ok()),
+        (true, false, true)
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_not_resumed_before_the_receiver_is_ready() {
+    let server = FileServer::start(vec![
+        ("/browser-resume.bin".into(), vec![6; 4096], false),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) =
+        browser_quota_job("browser-resume", server.url("/browser-resume.bin"), |job| {
+            job.downloaded = 1_000_000
+        });
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    begin_as_this_process(&engine, &id, false);
+    let resumed = engine.resume(&id);
+    engine.shutdown();
+
+    let (job, asked) = after_a_restart(paths, &root, &server, &id, "/browser-resume.bin");
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        (resumed.is_err(), job.state, asked),
+        (true, JobState::AwaitingSource, false)
+    );
+}
+
+#[test]
 fn a_job_sent_to_the_browser_stays_as_it_was_when_the_jobs_are_saved_again_after_a_store_error() {
     let server = FileServer::start(vec![
         ("/browser-store-error.bin".into(), vec![6; 4096], false),
