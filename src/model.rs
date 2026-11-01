@@ -1011,7 +1011,9 @@ pub struct TransferProgress {
     pub processing: bool,
     /// The bytes of the output that are in, as merged `[start, end)` ranges, while the transfer
     /// runs over ranged connections: what earlier attempts kept and what each connection has
-    /// written since. `None` for a transfer that is not split into ranges. Never stored.
+    /// written since. At most 64 ranges: beyond that the narrowest gaps are closed, so a few
+    /// bytes not yet written show as written. `None` for a transfer that is not split into
+    /// ranges. Never stored.
     #[serde(skip)]
     pub ranges: Option<Arc<[(u64, u64)]>>,
     /// Whether a later attempt keeps the bytes written so far: `Some(true)` when the

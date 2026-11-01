@@ -2592,12 +2592,23 @@ fn shown_ranges(mut ranges: Vec<ByteRange>) -> Arc<[(u64, u64)]> {
             _ => merged.push(range),
         }
     }
-    while merged.len() > SHOWN_RANGES {
-        let narrowest = (0..merged.len() - 1)
-            .min_by_key(|&index| merged[index + 1].start - merged[index].end)
-            .unwrap_or(0);
-        merged[narrowest].end = merged[narrowest + 1].end;
-        merged.remove(narrowest + 1);
+    if merged.len() > SHOWN_RANGES {
+        // Closing a gap leaves the others as wide as they were, so keeping the widest
+        // `SHOWN_RANGES - 1` gaps is closing the narrowest ones.
+        let mut gaps: Vec<usize> = (0..merged.len() - 1).collect();
+        gaps.sort_by_key(|&index| std::cmp::Reverse(merged[index + 1].start - merged[index].end));
+        let mut kept = vec![false; merged.len() - 1];
+        for &index in &gaps[..SHOWN_RANGES - 1] {
+            kept[index] = true;
+        }
+        let mut coarse: Vec<ByteRange> = Vec::with_capacity(SHOWN_RANGES);
+        for (index, range) in merged.into_iter().enumerate() {
+            match coarse.last_mut() {
+                Some(last) if !kept[index - 1] => last.end = range.end,
+                _ => coarse.push(range),
+            }
+        }
+        merged = coarse;
     }
     merged
         .iter()
@@ -7399,6 +7410,50 @@ mod tests {
             let written: u64 = ranges.iter().map(|&(start, end)| end - start).sum();
             assert_eq!(written, event.downloaded, "{ranges:?}");
         }
+    }
+
+    #[test]
+    fn more_pieces_than_the_bar_shows_are_joined_across_their_narrowest_gaps() {
+        // 1000 pieces of 500 bytes, each gap a different width (7919 and 1009 are coprime).
+        let mut pieces = Vec::new();
+        let mut gaps = Vec::new();
+        let mut at = 0u64;
+        for index in 0..1000u64 {
+            pieces.push(ByteRange {
+                start: at,
+                end: at + 500,
+            });
+            let gap = 1 + index * 7919 % 1009;
+            gaps.push((at + 500, at + 500 + gap));
+            at += 500 + gap;
+        }
+        gaps.pop();
+        // Given out of order and with a piece that is already inside another.
+        pieces.reverse();
+        pieces.push(ByteRange { start: 10, end: 20 });
+        let shown = shown_ranges(pieces.clone());
+
+        assert_eq!(shown.len(), SHOWN_RANGES);
+        assert!(
+            shown.windows(2).all(|pair| pair[0].1 < pair[1].0),
+            "sorted and apart"
+        );
+        for piece in &pieces {
+            assert!(
+                shown
+                    .iter()
+                    .any(|&(start, end)| start <= piece.start && piece.end <= end),
+                "{piece:?} is covered"
+            );
+        }
+        let left: Vec<(u64, u64)> = shown
+            .windows(2)
+            .map(|pair| (pair[0].1, pair[1].0))
+            .collect();
+        gaps.sort_by_key(|&(start, end)| std::cmp::Reverse(end - start));
+        let mut widest = gaps[..SHOWN_RANGES - 1].to_vec();
+        widest.sort();
+        assert_eq!(left, widest, "only the widest gaps stay open");
     }
 
     #[test]
