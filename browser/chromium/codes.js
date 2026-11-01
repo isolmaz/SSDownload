@@ -31,6 +31,7 @@ const ERROR_CODES = {
   "SSD-TOL-002": { area: "tools", stage: "source", severity: "error", action: "retry", retryable: true },
   "SSD-TOL-003": { area: "tools", stage: "source", severity: "error", action: "retry", retryable: true },
   "SSD-TOL-004": { area: "tools", stage: "source", severity: "error", action: "update", retryable: false },
+  "SSD-TOL-005": { area: "tools", stage: "source", severity: "error", action: "settings", retryable: false },
   "SSD-NET-001": { area: "network", stage: "source", severity: "error", action: "retry", retryable: true },
   "SSD-NET-002": { area: "network", stage: "source", severity: "error", action: "retry", retryable: true },
   "SSD-NET-003": { area: "network", stage: "source", severity: "error", action: "retry", retryable: true },
