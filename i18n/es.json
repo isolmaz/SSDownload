@@ -1743,6 +1743,8 @@
   "Copying the audio into {0}: {1}%": "Copiando el audio a un archivo {0}: {1} %",
   "The downloaded stream has no readable audio": "El flujo descargado no tiene audio legible",
   "The audio could not be converted: {0}": "No se ha podido convertir el audio: {0}",
+  "Downloading media; the server is limiting requests": "Descargando contenido multimedia; el servidor está limitando las solicitudes",
+  "Waiting for the server, which is limiting requests": "Esperando al servidor, que está limitando las solicitudes",
   "The audio conversion did not finish within {0} seconds": "La conversión del audio no terminó en {0} segundos",
   "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old": "Ninguna versión estable de Deno {0}.x figura entre las {1} versiones más recientes de Deno; esta versión de la aplicación está vinculada a una versión de Deno demasiado antigua",
   "No stable release of Deno {0}.x was found": "No se encontró ninguna versión estable de Deno {0}.x",
