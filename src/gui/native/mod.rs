@@ -50,7 +50,7 @@ use windows_sys::Win32::{
             EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, RegisterHotKey, ReleaseCapture,
             SetCapture, SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT,
             MOD_SHIFT, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN, VK_END,
-            VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP,
+            VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_TAB, VK_UP,
         },
         Shell::*,
         WindowsAndMessaging::*,
@@ -942,8 +942,28 @@ unsafe fn combo_add(hwnd: HWND, value: &str) {
     let w = wide(value);
     SendMessageW(hwnd, CB_ADDSTRING, 0, w.as_ptr() as isize);
 }
+/// A multi-line edit asks the dialog manager for every key, Tab included, so a
+/// Tab typed in it never moves the focus on and keyboard focus cannot leave a
+/// read-only box at all. Tab goes back to the dialog manager; Enter, the arrows
+/// and the other keys stay with the box.
+unsafe extern "system" fn multiline_edit_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let code = frame_proc(hwnd, msg, wparam, lparam);
+    if msg == WM_GETDLGCODE
+        && wparam == VK_TAB as usize
+        && lparam != 0
+        && (*(lparam as *const MSG)).message == WM_KEYDOWN
+    {
+        return code & !(DLGC_WANTALLKEYS as LRESULT);
+    }
+    code
+}
 unsafe fn control(parent: HWND, class: &str, label: &str, style: u32, ex: u32, id: i32) -> HWND {
-    CreateWindowExW(
+    let hwnd = CreateWindowExW(
         ex,
         wide(class).as_ptr(),
         wide(label).as_ptr(),
@@ -956,7 +976,11 @@ unsafe fn control(parent: HWND, class: &str, label: &str, style: u32, ex: u32, i
         hwnd_id(id),
         GetModuleHandleW(null()),
         null(),
-    )
+    );
+    if class.eq_ignore_ascii_case("EDIT") && style & ES_MULTILINE as u32 != 0 {
+        subclass(hwnd, multiline_edit_proc);
+    }
+    hwnd
 }
 unsafe fn apply_font(hwnd: HWND, font: HFONT) {
     SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
@@ -6519,6 +6543,11 @@ const SETTINGS_FRAME: i32 = 39;
 /// The simple add dialog's window: its 292 logical content height plus the
 /// shared frame, with a few pixels so DPI rounding never shows a scroll bar.
 const ADD_DIALOG_HEIGHT: i32 = 292 + SETTINGS_FRAME + 3;
+/// Logical content height of the one-field dialogs: the label and the field,
+/// a gap, the error line and the button row. Their windows add the frame and a
+/// pixel, like every dialog here.
+const SPEED_LOGICAL_HEIGHT: i32 = 145;
+const RENAME_LOGICAL_HEIGHT: i32 = 133;
 
 unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
     let simple = UiMode::parse(&value.ui_mode).is_simple();
@@ -6582,7 +6611,7 @@ unsafe fn show_speed_limit(owner: HWND, app: App, ids: Vec<String>, initial: u64
         app,
         crate::i18n::ui("İndirme hız sınırı", "Download speed limit"),
         420,
-        150,
+        SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
         DialogKind::Speed(SpeedFields {
             ids,
             initial,
@@ -6596,7 +6625,7 @@ unsafe fn show_rename(owner: HWND, app: App, id: String, name: String) {
         app,
         crate::i18n::ui("Yeniden adlandır", "Rename"),
         460,
-        150,
+        RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
         DialogKind::Rename(RenameFields {
             id,
             initial: name,
@@ -6991,6 +7020,58 @@ unsafe fn open_media_launch(ui: &mut MainUi, launch: &MediaLaunch) {
     );
 }
 
+/// The button of the small form the focus is in, when a dialog holds one next to
+/// its own OK: the external subtitle fields of the media picker add the
+/// subtitle, they do not start the download.
+unsafe fn form_default_id(dlg: &DialogUi) -> Option<i32> {
+    if !matches!(dlg.kind, DialogKind::Media(_)) {
+        return None;
+    }
+    let focus = GetFocus();
+    if focus.is_null() || GetParent(focus) != dlg.hwnd {
+        return None;
+    }
+    matches!(
+        GetDlgCtrlID(focus),
+        ID_MEDIA_EXTERNAL_URL
+            | ID_MEDIA_EXTERNAL_LANGUAGE
+            | ID_MEDIA_EXTERNAL_LABEL
+            | ID_MEDIA_EXTERNAL_KIND
+            | ID_MEDIA_EXTERNAL_DEFAULT
+    )
+    .then_some(ID_MEDIA_EXTERNAL_ADD)
+}
+
+/// The button Enter presses in a dialog: the push button that has the focus,
+/// then the button of the form around the focus, otherwise the one that carries
+/// `BS_DEFPUSHBUTTON`.
+unsafe fn default_button_id(dialog: HWND, form_default: Option<i32>) -> Option<i32> {
+    let button_type = |window: HWND| {
+        window_class(window)
+            .eq_ignore_ascii_case("Button")
+            .then(|| GetWindowLongPtrW(window, GWL_STYLE) as u32 & BS_TYPEMASK as u32)
+    };
+    let focus = GetFocus();
+    if !focus.is_null() && GetParent(focus) == dialog && IsWindowEnabled(focus) != 0 {
+        if let Some(BS_PUSHBUTTON_TYPE | BS_DEFPUSHBUTTON_TYPE) = button_type(focus) {
+            return Some(GetDlgCtrlID(focus));
+        }
+    }
+    if form_default.is_some() {
+        return form_default;
+    }
+    let mut child = GetWindow(dialog, GW_CHILD);
+    while !child.is_null() {
+        if button_type(child) == Some(BS_DEFPUSHBUTTON_TYPE) {
+            return Some(GetDlgCtrlID(child));
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    None
+}
+const BS_PUSHBUTTON_TYPE: u32 = BS_PUSHBUTTON as u32;
+const BS_DEFPUSHBUTTON_TYPE: u32 = BS_DEFPUSHBUTTON as u32;
+
 unsafe extern "system" fn dialog_proc(
     hwnd: HWND,
     msg: u32,
@@ -7051,6 +7132,12 @@ unsafe extern "system" fn dialog_proc(
             dialog_command(dlg, loword(wparam) as i32, hiword(wparam));
             0
         }
+        // The dialog manager asks which button Enter presses; without an answer
+        // it sends IDOK, which no dialog has.
+        DM_GETDEFID => match default_button_id(hwnd, form_default_id(dlg)) {
+            Some(id) => ((DC_HASDEFID << 16) | id as u32) as LRESULT,
+            None => 0,
+        },
         WM_MEASUREITEM => measure_tab_item(dlg, lparam as *mut MEASUREITEMSTRUCT) as LRESULT,
         WM_NOTIFY => {
             let header = &*(lparam as *const NMHDR);
@@ -7332,6 +7419,15 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     create_kind_controls(dlg);
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
     layout_dialog(dlg);
+    if let DialogKind::Rename(f) = &dlg.kind {
+        // Selected once the field has its width: an edit control scrolls the
+        // caret into view, and in the 10 px field the controls are created with
+        // that leaves the start of the name out of view.
+        // Select the stem, not the extension, like Explorer does.
+        let stem = f.initial.rfind('.').unwrap_or(f.initial.len());
+        let stem = f.initial[..stem].encode_utf16().count();
+        SendMessageW(f.edit, EM_SETSEL, 0, stem as isize);
+    }
     dialog_timer(dlg);
 }
 
@@ -8335,5 +8431,1272 @@ mod tests {
                 "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
             );
         }
+    }
+
+    /// Runs `body` on a fresh thread attached to a private desktop. A dialog's
+    /// controls take the focus when they are created, which makes the dialog the
+    /// foreground window of the process; on a private desktop that never
+    /// reaches the keys the user is typing.
+    fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+        use std::ptr::null;
+        use windows_sys::Win32::Foundation::{GetLastError, GENERIC_ALL};
+        use windows_sys::Win32::System::StationsAndDesktops::{
+            CloseDesktop, CreateDesktopW, SetThreadDesktop,
+        };
+
+        let name: Vec<u16> = format!("ssdownload-test-{}\0", uuid::Uuid::new_v4())
+            .encode_utf16()
+            .collect();
+        unsafe {
+            let desktop = CreateDesktopW(name.as_ptr(), null(), null(), 0, GENERIC_ALL, null());
+            assert!(
+                !desktop.is_null(),
+                "the private desktop is created (Win32 {})",
+                GetLastError()
+            );
+            let handle = desktop as usize;
+            let result = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        assert_ne!(SetThreadDesktop(handle as _), 0, "the thread moves over");
+                        body()
+                    })
+                    .join()
+            });
+            CloseDesktop(desktop);
+            result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        }
+    }
+
+    fn current_desktop_name() -> String {
+        use windows_sys::Win32::System::StationsAndDesktops::{
+            GetThreadDesktop, GetUserObjectInformationW, UOI_NAME,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+
+        let mut name = [0u16; 128];
+        unsafe {
+            let desktop = GetThreadDesktop(GetCurrentThreadId());
+            let mut needed = 0u32;
+            assert_ne!(
+                GetUserObjectInformationW(
+                    desktop,
+                    UOI_NAME,
+                    name.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&name) as u32,
+                    &mut needed,
+                ),
+                0
+            );
+        }
+        String::from_utf16_lossy(&name[..name.iter().position(|c| *c == 0).unwrap_or(0)])
+    }
+
+    #[test]
+    fn a_private_desktop_is_not_the_one_the_user_works_on() {
+        let users = current_desktop_name();
+        let private = on_private_desktop(current_desktop_name);
+        assert!(
+            private.starts_with("ssdownload-test-") && private != users,
+            "the body ran on {private:?}, the test thread is on {users:?}"
+        );
+    }
+
+    /// A dialog window created the way `run_modal` creates it, on an app with a
+    /// temporary data directory, and never shown. It lives on the thread that
+    /// created it, so it is only built and dropped inside `with_dialog`.
+    struct HiddenDialog {
+        app: Option<crate::app::App>,
+        raw: *mut super::DialogUi,
+        hwnd: super::HWND,
+        root: std::path::PathBuf,
+    }
+
+    impl HiddenDialog {
+        fn new(kind: super::DialogKind, width: i32, height: i32) -> Self {
+            use super::{create_dialog, DialogRequest};
+            use std::ptr::null_mut;
+
+            static CLASSES: std::sync::Once = std::sync::Once::new();
+            let root =
+                std::env::temp_dir().join(format!("ssdownload-dialog-{}", uuid::Uuid::new_v4()));
+            let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
+            let app = crate::app::App::open(paths).unwrap();
+            unsafe {
+                CLASSES.call_once(|| super::register_classes().unwrap());
+                let (raw, hwnd) = create_dialog(
+                    null_mut(),
+                    app.clone(),
+                    DialogRequest {
+                        title: "Dialog",
+                        width,
+                        height,
+                        kind,
+                        origin: None,
+                        launch: None,
+                        modeless: false,
+                    },
+                )
+                .expect("the dialog is created");
+                Self {
+                    app: Some(app),
+                    raw,
+                    hwnd,
+                    root,
+                }
+            }
+        }
+
+        fn kind(&self) -> &super::DialogKind {
+            unsafe { &(*self.raw).kind }
+        }
+
+        fn app(&self) -> &crate::app::App {
+            self.app.as_ref().unwrap()
+        }
+
+        fn error_line(&self) -> super::HWND {
+            unsafe { (*self.raw).error }
+        }
+
+        fn is_open(&self) -> bool {
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(self.hwnd) != 0 }
+        }
+
+        /// Selects a settings tab and lays the dialog out for it.
+        fn show_tab(&self, tab: usize) {
+            unsafe {
+                (*self.raw).tab.set(tab);
+                super::layout_dialog(&*self.raw);
+            }
+        }
+    }
+
+    impl Drop for HiddenDialog {
+        fn drop(&mut self) {
+            unsafe {
+                if self.is_open() {
+                    windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(self.hwnd);
+                }
+                drop(Box::from_raw(self.raw));
+            }
+            // The engine keeps the database and the logs open until it has stopped.
+            if let Some(app) = self.app.take() {
+                app.shutdown();
+            }
+            for _ in 0..10 {
+                if std::fs::remove_dir_all(&self.root).is_ok() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+
+    /// Runs `body` with a hidden dialog of the kind `make` builds, all on a
+    /// private desktop. `make` runs there too: a dialog kind holds window
+    /// handles, which cannot cross threads.
+    fn with_dialog<T: Send>(
+        make: impl FnOnce() -> super::DialogKind + Send,
+        width: i32,
+        height: i32,
+        body: impl FnOnce(&HiddenDialog) -> T + Send,
+    ) -> T {
+        on_private_desktop(|| body(&HiddenDialog::new(make(), width, height)))
+    }
+
+    /// For each name: the Rename dialog's selection and the client x of the
+    /// first character in its field, read from a dialog that is created the way
+    /// `show_rename` creates it and is never shown.
+    fn rename_fields_after_creation(names: &[&str]) -> Vec<((u32, u32), i16)> {
+        use super::{DialogKind, RenameFields};
+        use windows_sys::Win32::UI::Controls::{EM_GETSEL, EM_POSFROMCHAR};
+        use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+        names
+            .iter()
+            .map(|name| {
+                with_dialog(
+                    || {
+                        DialogKind::Rename(RenameFields {
+                            id: "job".into(),
+                            initial: (*name).into(),
+                            edit: std::ptr::null_mut(),
+                        })
+                    },
+                    460,
+                    150,
+                    |dialog| {
+                        let DialogKind::Rename(f) = dialog.kind() else {
+                            unreachable!()
+                        };
+                        let (mut start, mut end) = (0u32, 0u32);
+                        unsafe {
+                            SendMessageW(
+                                f.edit,
+                                EM_GETSEL,
+                                &mut start as *mut u32 as usize,
+                                &mut end as *mut u32 as isize,
+                            );
+                            let first = SendMessageW(f.edit, EM_POSFROMCHAR, 0, 0);
+                            ((start, end), first as i16)
+                        }
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rename_field_opens_at_the_start_of_the_name_with_the_stem_selected() {
+        let fields = rename_fields_after_creation(&["Holiday video.mp4"]);
+        let (selection, first_x) = fields[0];
+        assert_eq!(
+            selection,
+            (0, "Holiday video".len() as u32),
+            "the stem is selected and the extension is not"
+        );
+        assert!(
+            first_x >= 0,
+            "the name starts {} px left of the field",
+            -first_x
+        );
+    }
+
+    #[test]
+    fn rename_selects_the_stem_in_utf16_units_up_to_the_last_dot() {
+        let names = ["\u{1F600} clip.mp4", "README", "archive.tar.gz"];
+        let selections: Vec<_> = rename_fields_after_creation(&names)
+            .into_iter()
+            .map(|(selection, _)| selection)
+            .collect();
+        assert_eq!(selections, [(0, 7), (0, 6), (0, 11)]);
+    }
+
+    fn speed_kind() -> super::DialogKind {
+        super::DialogKind::Speed(super::SpeedFields {
+            ids: Vec::new(),
+            initial: 0,
+            edit: std::ptr::null_mut(),
+        })
+    }
+
+    fn rename_kind() -> super::DialogKind {
+        super::DialogKind::Rename(super::RenameFields {
+            id: "job".into(),
+            initial: "clip.mp4".into(),
+            edit: std::ptr::null_mut(),
+        })
+    }
+
+    fn add_kind() -> super::DialogKind {
+        super::DialogKind::Add(super::AddFields {
+            urls: std::ptr::null_mut(),
+            dir: std::ptr::null_mut(),
+            filename: std::ptr::null_mut(),
+            kind: std::ptr::null_mut(),
+            kind_values: Vec::new(),
+            connections: std::ptr::null_mut(),
+            checksum: std::ptr::null_mut(),
+            schedule: std::ptr::null_mut(),
+            initial: String::new(),
+            analyze_first: false,
+            advanced: false,
+        })
+    }
+
+    /// Runs a key press through the dialog manager the way the dialogs' message
+    /// loops do; true when the dialog manager consumed it.
+    fn press(dialog: &HiddenDialog, key: u16) -> bool {
+        press_in(dialog, dialog.hwnd, key)
+    }
+
+    /// The same key press, typed into one control of the dialog.
+    fn press_in(dialog: &HiddenDialog, target: super::HWND, key: u16) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, WM_KEYDOWN};
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            msg.hwnd = target;
+            msg.message = WM_KEYDOWN;
+            msg.wParam = key as usize;
+            super::dialog_message(dialog.hwnd, &msg)
+        }
+    }
+
+    /// Delivers what is waiting in this thread's queue, such as the character
+    /// `TranslateMessage` posts for a key press.
+    fn pump_messages() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, MSG, PM_REMOVE,
+        };
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    #[test]
+    fn enter_presses_the_default_button_of_the_speed_dialog() {
+        use super::{set_text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+        with_dialog(speed_kind, 420, 150, |dialog| {
+            let DialogKind::Speed(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe { set_text(f.edit, "512") };
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            assert!(!dialog.is_open(), "Apply closed the dialog");
+            assert_eq!(dialog.app().snapshot().settings.speed_limit_kib, 512);
+        });
+    }
+
+    #[test]
+    fn enter_presses_the_default_button_of_the_rename_dialog() {
+        use super::{set_text, text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+        with_dialog(rename_kind, 460, 150, |dialog| {
+            let DialogKind::Rename(f) = dialog.kind() else {
+                unreachable!()
+            };
+            // An empty name is the one answer Rename gives without touching a job.
+            unsafe { set_text(f.edit, "") };
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            assert_eq!(
+                unsafe { text(dialog.error_line()) },
+                crate::i18n::ui("Dosya adı boş olamaz.", "The file name cannot be empty."),
+                "Rename ran and refused the empty name"
+            );
+            assert!(dialog.is_open());
+        });
+    }
+
+    fn logins_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Logins(super::LoginFields {
+            logins: Vec::new(),
+            list: null_mut(),
+            host: null_mut(),
+            user: null_mut(),
+            pass: null_mut(),
+            allow_http: null_mut(),
+        })
+    }
+
+    fn tools_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Tools(super::ToolsFields {
+            status: null_mut(),
+            progress: null_mut(),
+            install: null_mut(),
+            update: null_mut(),
+            last_render: String::new(),
+        })
+    }
+
+    fn progress_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Progress(Box::new(super::ProgressFields {
+            ids: Vec::new(),
+            selected: 0,
+            raised: std::collections::HashSet::new(),
+            rendered: String::new(),
+            rendered_rows: String::new(),
+            action_label: String::new(),
+            summary: null_mut(),
+            list: null_mut(),
+            status: null_mut(),
+            progress: null_mut(),
+            action: null_mut(),
+            cancel: null_mut(),
+            open_file: null_mut(),
+            open_folder: null_mut(),
+            close: null_mut(),
+            hint: null_mut(),
+            report: null_mut(),
+        }))
+    }
+
+    fn media_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Media(Box::new(super::MediaFields {
+            base: crate::model::AddRequest::default(),
+            subtitle_none: false,
+            session_consent: None,
+            summary: null_mut(),
+            name: null_mut(),
+            kind: null_mut(),
+            kind_values: Vec::new(),
+            format: null_mut(),
+            audio: null_mut(),
+            audio_tracks: null_mut(),
+            subtitles: null_mut(),
+            external_url: null_mut(),
+            external_language: null_mut(),
+            external_label: null_mut(),
+            external_kind: null_mut(),
+            external_default: null_mut(),
+            external_list: null_mut(),
+            full_verification: null_mut(),
+            playlist: null_mut(),
+            renew_job: null_mut(),
+            renew_restart: null_mut(),
+            renew_ids: Vec::new(),
+            video_formats: Vec::new(),
+            audio_values: Vec::new(),
+            info: crate::model::MediaInfo::default(),
+            size: null_mut(),
+            subtitle_values: Vec::new(),
+            external_values: Vec::new(),
+            loaded_title: String::new(),
+            populated: false,
+            inspect_generation: 0,
+            advanced: false,
+            report_shown: false,
+            report_error: None,
+            host: String::new(),
+            auto_queue: false,
+            remember: null_mut(),
+            from_start: null_mut(),
+            from_start_offered: false,
+            playlist_items: null_mut(),
+            thumbnail: null_mut(),
+            thumbnail_requested: false,
+        }))
+    }
+
+    /// What the dialog manager is told Enter presses: the button id, or zero
+    /// when the dialog has no default button.
+    fn default_id(dialog: &HiddenDialog) -> u32 {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, DM_GETDEFID};
+        unsafe { SendMessageW(dialog.hwnd, DM_GETDEFID, 0, 0) as u32 & 0xffff }
+    }
+
+    #[test]
+    fn enter_in_the_site_logins_form_adds_the_login_it_holds() {
+        use super::{set_text, text, DialogKind, L_SAVE};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_RETURN};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, LB_GETCOUNT, WM_COMMAND};
+
+        with_dialog(logins_kind, 560, 420, |dialog| {
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (host, user, pass) = (f.host, f.user, f.pass);
+            let password = uuid::Uuid::new_v4().to_string();
+            unsafe {
+                set_text(host, "Files.Example.test");
+                set_text(user, "reader");
+                set_text(pass, &password);
+                SetFocus(pass);
+            }
+            assert!(press_in(dialog, pass, VK_RETURN));
+            assert!(dialog.is_open(), "Enter did not close the dialog");
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_eq!(f.logins.len(), 1, "the typed login was added");
+            assert_eq!(f.logins[0].host, "files.example.test");
+            assert_eq!(f.logins[0].username, "reader");
+            assert!(!f.logins[0].password.is_empty(), "the password was sealed");
+            assert_eq!(unsafe { SendMessageW(f.list, LB_GETCOUNT, 0, 0) }, 1);
+            assert!(
+                unsafe { text(pass) }.is_empty(),
+                "the password field was cleared"
+            );
+            assert!(
+                dialog.app().snapshot().settings.site_logins.is_empty(),
+                "nothing is stored before Save"
+            );
+            // The login is not lost on the way to Save.
+            unsafe { SendMessageW(dialog.hwnd, WM_COMMAND, L_SAVE as usize, 0) };
+            assert!(!dialog.is_open(), "Save closed the dialog");
+            let stored = dialog.app().snapshot().settings.site_logins;
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].host, "files.example.test");
+        });
+    }
+
+    #[test]
+    fn enter_in_the_media_tools_dialog_installs_nothing() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
+
+        with_dialog(tools_kind, 700, 470, |dialog| {
+            assert_eq!(default_id(dialog), 0, "no button is the default");
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            assert!(dialog.is_open());
+            assert!(
+                dialog.app().snapshot().tool_progress.is_none(),
+                "no install was started"
+            );
+            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
+            assert!(!dialog.is_open(), "Escape still closes the dialog");
+        });
+    }
+
+    #[test]
+    fn enter_in_the_job_view_does_not_pause_the_download() {
+        use super::{DialogKind, JobState, P_ACTION};
+        use crate::model::{Action, AddRequest};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            IsWindowEnabled, VK_ESCAPE, VK_RETURN,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+
+        with_dialog(progress_kind, 640, 420, |dialog| {
+            // Scheduled for later, so the engine does no network I/O for it.
+            let added = dialog
+                .app()
+                .dispatch_result(Action::Add {
+                    request: AddRequest {
+                        url: "https://example.invalid/file.bin".into(),
+                        start_at: Some(chrono::Utc::now().timestamp() + 3_600),
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
+            unsafe {
+                if let DialogKind::Progress(f) = &mut (*dialog.raw).kind {
+                    f.ids = added.job_ids.clone();
+                }
+                super::dialog_timer(&mut *dialog.raw);
+                assert_ne!(
+                    IsWindowEnabled(GetDlgItem(dialog.hwnd, P_ACTION)),
+                    0,
+                    "Pause is available for the job"
+                );
+            }
+            assert_eq!(default_id(dialog), 0, "no button is the default");
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            let snapshot = dialog.app().snapshot();
+            let job = snapshot.jobs.iter().find(|job| job.id == added.job_ids[0]);
+            assert_eq!(
+                job.map(|job| job.state),
+                Some(JobState::Scheduled),
+                "Enter did not pause the job"
+            );
+            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
+            assert!(!dialog.is_open(), "Escape still closes the dialog");
+        });
+    }
+
+    #[test]
+    fn enter_in_the_external_subtitle_fields_adds_the_subtitle() {
+        use super::{set_text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_RETURN};
+
+        with_dialog(media_kind, 640, 420, |dialog| {
+            let DialogKind::Media(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (url, language) = (f.external_url, f.external_language);
+            for (round, field) in [url, language].into_iter().enumerate() {
+                unsafe {
+                    set_text(url, "https://subs.example.test/en.vtt");
+                    set_text(language, "en");
+                    SetFocus(field);
+                }
+                assert!(press_in(dialog, field, VK_RETURN));
+                let DialogKind::Media(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    f.external_values.len(),
+                    round + 1,
+                    "Enter in the field added a subtitle"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn enter_presses_the_default_button_of_the_new_download_dialog() {
+        use super::text;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            assert!(
+                !unsafe { text(dialog.error_line()) }.is_empty(),
+                "Continue ran and refused the empty link list"
+            );
+        });
+    }
+
+    #[test]
+    fn enter_in_the_links_box_stays_a_new_line() {
+        use super::{text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_RETURN};
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe { SetFocus(f.urls) };
+            assert_eq!(unsafe { GetFocus() }, f.urls, "the links box has the focus");
+            // The dialog manager hands the key to the box, which turns it into
+            // a character once the queue is pumped.
+            assert!(press_in(dialog, f.urls, VK_RETURN));
+            pump_messages();
+            assert_eq!(unsafe { text(f.urls) }, "\r\n", "the box got a new line");
+            assert!(
+                unsafe { text(dialog.error_line()) }.is_empty(),
+                "Continue was not pressed"
+            );
+        });
+    }
+
+    fn queues_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Queues(super::QueueFields {
+            list: null_mut(),
+            ids: Vec::new(),
+            name: null_mut(),
+            concurrency: null_mut(),
+            completion: null_mut(),
+            countdown: null_mut(),
+            enabled: null_mut(),
+            windows: null_mut(),
+            quota: null_mut(),
+            program: null_mut(),
+            arguments: null_mut(),
+            delay: null_mut(),
+            job_id: None,
+        })
+    }
+
+    /// Every multi-line edit control of the dialog.
+    fn multiline_edits(dialog: &HiddenDialog) -> Vec<super::HWND> {
+        use super::{window_class, BOOL, HWND, LPARAM};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EnumChildWindows, GetWindowLongPtrW, ES_MULTILINE, GWL_STYLE,
+        };
+
+        unsafe extern "system" fn collect(child: HWND, found: LPARAM) -> BOOL {
+            let found = &mut *(found as *mut Vec<HWND>);
+            let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+            if window_class(child).eq_ignore_ascii_case("Edit") && style & ES_MULTILINE as u32 != 0
+            {
+                found.push(child);
+            }
+            1
+        }
+        let mut found: Vec<HWND> = Vec::new();
+        unsafe { EnumChildWindows(dialog.hwnd, Some(collect), &mut found as *mut _ as LPARAM) };
+        found
+    }
+
+    /// Shift held down in the key state of this thread, which is where
+    /// `GetKeyState` reads it, until the value is dropped. No input is sent.
+    struct ShiftHeld([u8; 256]);
+
+    impl ShiftHeld {
+        fn new() -> Self {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+                GetKeyboardState, SetKeyboardState, VK_SHIFT,
+            };
+            let mut state = [0u8; 256];
+            unsafe { GetKeyboardState(state.as_mut_ptr()) };
+            let before = state;
+            state[VK_SHIFT as usize] = 0x80;
+            unsafe { SetKeyboardState(state.as_ptr()) };
+            Self(before)
+        }
+    }
+
+    impl Drop for ShiftHeld {
+        fn drop(&mut self) {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetKeyboardState;
+            unsafe { SetKeyboardState(self.0.as_ptr()) };
+        }
+    }
+
+    /// Tab, or Shift+Tab when `backwards`, typed into `edit` moves the focus to
+    /// the next, or previous, control of the dialog and leaves the text of the
+    /// box alone.
+    fn assert_tab_leaves(dialog: &HiddenDialog, edit: super::HWND, what: &str, backwards: bool) {
+        use super::text;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_TAB};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetNextDlgTabItem;
+
+        unsafe {
+            let before = text(edit);
+            SetFocus(edit);
+            assert_eq!(GetFocus(), edit, "{what} has the focus");
+            let next = GetNextDlgTabItem(dialog.hwnd, edit, backwards.into());
+            assert!(!next.is_null() && next != edit, "{what} has a target");
+            let _shift = backwards.then(ShiftHeld::new);
+            assert!(press_in(dialog, edit, VK_TAB), "{what}: Tab is handled");
+            pump_messages();
+            assert_eq!(text(edit), before, "{what}: Tab typed nothing");
+            assert_eq!(
+                GetFocus(),
+                next,
+                "{what}: Tab moved the focus (backwards: {backwards})"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_leaves_the_links_box() {
+        use super::DialogKind;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.urls, "the links box", false);
+        });
+    }
+
+    #[test]
+    fn shift_tab_leaves_the_links_box_backwards() {
+        use super::DialogKind;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.urls, "the links box", true);
+        });
+    }
+
+    #[test]
+    fn tab_leaves_the_time_windows_and_program_arguments_boxes() {
+        use super::DialogKind;
+
+        with_dialog(queues_kind, 700, 470, |dialog| {
+            let DialogKind::Queues(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.windows, "the time windows box", false);
+            assert_tab_leaves(dialog, f.arguments, "the program arguments box", false);
+        });
+    }
+
+    #[test]
+    fn tab_leaves_the_read_only_status_box() {
+        use super::DialogKind;
+
+        with_dialog(tools_kind, 700, 470, |dialog| {
+            let DialogKind::Tools(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.status, "the status box", false);
+        });
+    }
+
+    #[test]
+    fn tab_leaves_every_multi_line_edit_of_the_dialogs() {
+        type Case = (&'static str, fn() -> super::DialogKind, i32, i32, usize);
+        let dialogs: [Case; 3] = [
+            ("New download", add_kind, 620, 340, 1),
+            ("Queues", queues_kind, 700, 470, 2),
+            ("Media tools", tools_kind, 700, 470, 1),
+        ];
+        for (name, make, width, height, boxes) in dialogs {
+            with_dialog(make, width, height, |dialog| {
+                let edits = multiline_edits(dialog);
+                assert_eq!(edits.len(), boxes, "{name}: multi-line edits found");
+                for edit in edits {
+                    assert_tab_leaves(dialog, edit, name, false);
+                    assert_tab_leaves(dialog, edit, name, true);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn enter_in_the_queue_boxes_stays_a_new_line() {
+        use super::{text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_RETURN};
+
+        with_dialog(queues_kind, 700, 470, |dialog| {
+            let DialogKind::Queues(f) = dialog.kind() else {
+                unreachable!()
+            };
+            for (edit, what) in [
+                (f.windows, "the time windows box"),
+                (f.arguments, "the program arguments box"),
+            ] {
+                let before = unsafe { text(edit) };
+                unsafe { SetFocus(edit) };
+                assert!(press_in(dialog, edit, VK_RETURN));
+                pump_messages();
+                assert_eq!(
+                    unsafe { text(edit) },
+                    format!("\r\n{before}"),
+                    "{what} got a new line"
+                );
+            }
+            assert!(dialog.is_open(), "no default button was pressed");
+        });
+    }
+
+    /// The alert's long body and the job view's details are multi-line edits of
+    /// windows that are not `CLASS_DIALOG` windows; they come from the same
+    /// `control`.
+    #[test]
+    fn tab_leaves_a_multi_line_edit_outside_the_dialogs() {
+        use super::{control, dialog_message};
+        use std::ptr::null_mut;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_TAB};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DestroyWindow, ES_MULTILINE, ES_READONLY, MSG, WM_KEYDOWN, WS_CHILD, WS_POPUP,
+            WS_TABSTOP, WS_VISIBLE,
+        };
+
+        on_private_desktop(|| unsafe {
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let details = control(
+                parent,
+                "EDIT",
+                "Select a job.",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE as u32 | ES_READONLY as u32,
+                0,
+                1,
+            );
+            let next = control(parent, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 2);
+            SetFocus(details);
+            assert_eq!(GetFocus(), details, "the details box has the focus");
+            let mut msg: MSG = std::mem::zeroed();
+            msg.hwnd = details;
+            msg.message = WM_KEYDOWN;
+            msg.wParam = VK_TAB as usize;
+            assert!(dialog_message(parent, &msg));
+            let focus = GetFocus();
+            DestroyWindow(parent);
+            assert_eq!(focus, next, "Tab moved the focus on");
+        });
+    }
+
+    #[test]
+    fn enter_presses_the_push_button_that_has_the_focus() {
+        use super::{set_text, DialogKind, D_CANCEL};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_RETURN};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+
+        with_dialog(speed_kind, 420, 150, |dialog| {
+            let DialogKind::Speed(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe {
+                set_text(f.edit, "512");
+                let cancel = GetDlgItem(dialog.hwnd, D_CANCEL);
+                SetFocus(cancel);
+                assert_eq!(GetFocus(), cancel, "Cancel has the focus");
+                assert!(press_in(dialog, cancel, VK_RETURN));
+            }
+            assert!(!dialog.is_open(), "Cancel closed the dialog");
+            assert_eq!(
+                dialog.app().snapshot().settings.speed_limit_kib,
+                0,
+                "Apply did not run"
+            );
+        });
+    }
+    #[test]
+    fn escape_cancels_a_dialog() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+
+        with_dialog(speed_kind, 420, 150, |dialog| {
+            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
+            assert!(!dialog.is_open());
+        });
+    }
+
+    /// The ids of the visible controls whose rectangle overlaps the dialog's
+    /// error line.
+    fn controls_over_the_error_line(dialog: &HiddenDialog) -> Vec<i32> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::IntersectRect;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect, GWL_STYLE, GW_CHILD,
+            GW_HWNDNEXT, WS_VISIBLE,
+        };
+
+        unsafe {
+            let mut error: RECT = std::mem::zeroed();
+            GetWindowRect(dialog.error_line(), &mut error);
+            let mut over = Vec::new();
+            let mut child = GetWindow(dialog.hwnd, GW_CHILD);
+            while !child.is_null() {
+                let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+                if child != dialog.error_line() && style & WS_VISIBLE != 0 {
+                    let (mut rect, mut common): (RECT, RECT) =
+                        (std::mem::zeroed(), std::mem::zeroed());
+                    GetWindowRect(child, &mut rect);
+                    if IntersectRect(&mut common, &rect, &error) != 0 {
+                        over.push(GetDlgCtrlID(child));
+                    }
+                }
+                child = GetWindow(child, GW_HWNDNEXT);
+            }
+            over
+        }
+    }
+
+    #[test]
+    fn the_error_line_of_every_dialog_has_its_own_space() {
+        use super::{
+            CrawlerFields, DialogKind, EventFields, JobLogFields, LoginFields, MediaFields,
+            ProgressFields, QueueFields, RuleFields, SyncFields, ToolsFields, UsageModes,
+            WizardFields, ADD_DIALOG_HEIGHT, RENAME_LOGICAL_HEIGHT, SETTINGS_FRAME,
+            SPEED_LOGICAL_HEIGHT,
+        };
+        use crate::model::{AddRequest, MediaInfo};
+        use std::{collections::HashSet, ptr::null_mut};
+
+        fn wizard(simple: bool) -> DialogKind {
+            DialogKind::Wizard(WizardFields {
+                modes: UsageModes {
+                    video: true,
+                    file: true,
+                    audio: true,
+                },
+                simple,
+                video: null_mut(),
+                file: null_mut(),
+                audio: null_mut(),
+                simple_card: null_mut(),
+                advanced_card: null_mut(),
+                start: null_mut(),
+            })
+        }
+        fn add(advanced: bool) -> DialogKind {
+            match add_kind() {
+                DialogKind::Add(mut f) => {
+                    f.advanced = advanced;
+                    DialogKind::Add(f)
+                }
+                _ => unreachable!(),
+            }
+        }
+        fn media() -> DialogKind {
+            DialogKind::Media(Box::new(MediaFields {
+                base: AddRequest::default(),
+                subtitle_none: false,
+                session_consent: None,
+                summary: null_mut(),
+                name: null_mut(),
+                kind: null_mut(),
+                kind_values: Vec::new(),
+                format: null_mut(),
+                audio: null_mut(),
+                audio_tracks: null_mut(),
+                subtitles: null_mut(),
+                external_url: null_mut(),
+                external_language: null_mut(),
+                external_label: null_mut(),
+                external_kind: null_mut(),
+                external_default: null_mut(),
+                external_list: null_mut(),
+                full_verification: null_mut(),
+                playlist: null_mut(),
+                renew_job: null_mut(),
+                renew_restart: null_mut(),
+                renew_ids: Vec::new(),
+                video_formats: Vec::new(),
+                audio_values: Vec::new(),
+                info: MediaInfo::default(),
+                size: null_mut(),
+                subtitle_values: Vec::new(),
+                external_values: Vec::new(),
+                loaded_title: String::new(),
+                populated: false,
+                inspect_generation: 0,
+                advanced: false,
+                report_shown: false,
+                report_error: None,
+                host: String::new(),
+                auto_queue: false,
+                remember: null_mut(),
+                from_start: null_mut(),
+                from_start_offered: false,
+                playlist_items: null_mut(),
+                thumbnail: null_mut(),
+                thumbnail_requested: false,
+            }))
+        }
+        type Case = (
+            &'static str,
+            Box<dyn FnOnce() -> DialogKind + Send>,
+            i32,
+            i32,
+        );
+        let cases: Vec<Case> = vec![
+            ("wizard, simple", Box::new(|| wizard(true)), 576, 412),
+            ("wizard, advanced", Box::new(|| wizard(false)), 576, 412),
+            (
+                "new download",
+                Box::new(|| add(false)),
+                620,
+                ADD_DIALOG_HEIGHT,
+            ),
+            ("new download, advanced", Box::new(|| add(true)), 620, 420),
+            (
+                "speed limit",
+                Box::new(speed_kind),
+                420,
+                SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
+            ),
+            (
+                "rename",
+                Box::new(rename_kind),
+                460,
+                RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
+            ),
+            (
+                "site logins",
+                Box::new(|| {
+                    DialogKind::Logins(LoginFields {
+                        logins: Vec::new(),
+                        list: null_mut(),
+                        host: null_mut(),
+                        user: null_mut(),
+                        pass: null_mut(),
+                        allow_http: null_mut(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "queues",
+                Box::new(|| {
+                    DialogKind::Queues(QueueFields {
+                        list: null_mut(),
+                        ids: Vec::new(),
+                        name: null_mut(),
+                        concurrency: null_mut(),
+                        completion: null_mut(),
+                        countdown: null_mut(),
+                        enabled: null_mut(),
+                        windows: null_mut(),
+                        quota: null_mut(),
+                        program: null_mut(),
+                        arguments: null_mut(),
+                        delay: null_mut(),
+                        job_id: None,
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "event log",
+                Box::new(|| {
+                    DialogKind::Events(EventFields {
+                        list: null_mut(),
+                        rendered: Vec::new(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "job log",
+                Box::new(|| {
+                    DialogKind::JobLog(JobLogFields {
+                        job: "job".into(),
+                        list: null_mut(),
+                        rendered: Vec::new(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "folder rules",
+                Box::new(|| {
+                    DialogKind::Rules(RuleFields {
+                        list: null_mut(),
+                        ids: Vec::new(),
+                        host: null_mut(),
+                        dir: null_mut(),
+                        subdomains: null_mut(),
+                        file: null_mut(),
+                        video: null_mut(),
+                        audio: null_mut(),
+                        priority: null_mut(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "site crawler",
+                Box::new(|| {
+                    DialogKind::Crawler(CrawlerFields {
+                        url: null_mut(),
+                        depth: null_mut(),
+                        pages: null_mut(),
+                        candidates: null_mut(),
+                        list: null_mut(),
+                        result: None,
+                        pending: None,
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "file sync",
+                Box::new(|| {
+                    DialogKind::Synchronization(SyncFields {
+                        list: null_mut(),
+                        ids: Vec::new(),
+                        url: null_mut(),
+                        dir: null_mut(),
+                        interval: null_mut(),
+                        overwrite: null_mut(),
+                        enabled: null_mut(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            ("media picker", Box::new(media), 640, 420),
+            (
+                "job view",
+                Box::new(|| {
+                    DialogKind::Progress(Box::new(ProgressFields {
+                        ids: vec!["job".into()],
+                        selected: 0,
+                        raised: HashSet::new(),
+                        rendered: String::new(),
+                        rendered_rows: String::new(),
+                        action_label: String::new(),
+                        summary: null_mut(),
+                        list: null_mut(),
+                        status: null_mut(),
+                        progress: null_mut(),
+                        action: null_mut(),
+                        cancel: null_mut(),
+                        open_file: null_mut(),
+                        open_folder: null_mut(),
+                        close: null_mut(),
+                        hint: null_mut(),
+                        report: null_mut(),
+                    }))
+                }),
+                640,
+                420,
+            ),
+            (
+                "media tools",
+                Box::new(|| {
+                    DialogKind::Tools(ToolsFields {
+                        status: null_mut(),
+                        progress: null_mut(),
+                        install: null_mut(),
+                        update: null_mut(),
+                        last_render: String::new(),
+                    })
+                }),
+                700,
+                470,
+            ),
+        ];
+        let crowded: Vec<_> = cases
+            .into_iter()
+            .filter_map(|(name, make, width, height)| {
+                let over = with_dialog(make, width, height, controls_over_the_error_line);
+                (!over.is_empty()).then_some((name, over))
+            })
+            .collect();
+        assert!(
+            crowded.is_empty(),
+            "controls (by id) that overlap the error line: {crowded:?}"
+        );
+    }
+
+    #[test]
+    fn the_error_line_of_settings_has_its_own_space_on_every_tab() {
+        use super::{settings_logical_height, DialogKind, SettingsFields, SETTINGS_FRAME};
+        use crate::model::{Settings, UiMode};
+        use std::ptr::null_mut;
+
+        fn settings(mode: UiMode) -> DialogKind {
+            let value = Settings {
+                ui_mode: mode.as_str().into(),
+                ..Settings::default()
+            };
+            DialogKind::Settings(Box::new(SettingsFields {
+                opened: value.clone(),
+                value,
+                dir: null_mut(),
+                max_active: null_mut(),
+                connections: null_mut(),
+                media_fragments: null_mut(),
+                per_host: null_mut(),
+                speed: null_mut(),
+                retry: null_mut(),
+                clipboard: null_mut(),
+                tray: null_mut(),
+                startup: null_mut(),
+                notify: null_mut(),
+                schedule: null_mut(),
+                start: null_mut(),
+                end: null_mut(),
+                dark: null_mut(),
+                mode_video: null_mut(),
+                mode_file: null_mut(),
+                mode_audio: null_mut(),
+                browser_transfer: null_mut(),
+                update_check: null_mut(),
+                log_level: null_mut(),
+                log_hosts: null_mut(),
+                ui_mode: null_mut(),
+                site_entries: null_mut(),
+                ui_language: null_mut(),
+                proxy_mode: null_mut(),
+                proxy_url: null_mut(),
+                proxy_user: null_mut(),
+                proxy_pass: null_mut(),
+                speed_schedule: null_mut(),
+                speed_start: null_mut(),
+                speed_end: null_mut(),
+                speed_kib: null_mut(),
+                keep_awake: null_mut(),
+                sound: null_mut(),
+                takeover: null_mut(),
+                completion_card: null_mut(),
+                metered: null_mut(),
+                battery_saver: null_mut(),
+                hotkey: null_mut(),
+                double_click: null_mut(),
+                history: null_mut(),
+            }))
+        }
+
+        let mut crowded = Vec::new();
+        for (mode, tabs) in [(UiMode::Simple, 1), (UiMode::Advanced, 4)] {
+            let height = settings_logical_height(mode.is_simple()) + SETTINGS_FRAME;
+            let over = with_dialog(
+                move || settings(mode),
+                560,
+                height,
+                |dialog| {
+                    (0..tabs)
+                        .map(|tab| {
+                            dialog.show_tab(tab);
+                            (tab, controls_over_the_error_line(dialog))
+                        })
+                        .filter(|(_, over)| !over.is_empty())
+                        .collect::<Vec<_>>()
+                },
+            );
+            if !over.is_empty() {
+                crowded.push((mode.as_str(), over));
+            }
+        }
+        assert!(
+            crowded.is_empty(),
+            "settings tabs with controls (by id) over the error line: {crowded:?}"
+        );
     }
 }

@@ -205,10 +205,7 @@ fn fetch(
         configure_easy(&mut easy, &current).ok()?;
         easy.follow_location(false).ok()?;
         easy.progress(true).ok()?;
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return None;
-        }
+        let left = crate::network::time_left(deadline, Instant::now())?;
         easy.timeout(left).ok()?;
         easy.http_headers(build_headers(request, &current, original_origin, None).ok()?)
             .ok()?;
