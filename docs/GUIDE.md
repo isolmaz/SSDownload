@@ -75,7 +75,7 @@ Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt
 
 ## Themes
 
-**Settings → General → Theme** chooses **Modern** (the default) or **Classic**; the choice applies when SSDownload restarts. Both themes have the same commands, menus, shortcuts, dialogs and settings, and every command acts on the same jobs. Classic keeps the plain Windows controls. Modern draws the windows in the Windows 11 style and adds:
+**Settings → General → Theme** chooses **Classic** (the default) or **Modern**; the choice applies when SSDownload restarts. Both themes have the same commands, menus, shortcuts, dialogs and settings, and every command acts on the same jobs. Classic keeps the plain Windows controls. Modern draws the windows in the Windows 11 style and adds:
 
 - Icons on the command buttons (in a narrow window only the icons, with a tooltip that names the shortcut) and access keys on them (Alt plus the underlined letter).
 - A pause button whose label follows the selection: **Pause**, **Resume**, or **Pause / Resume** when the selection holds both kinds, which, like Space, pauses the running jobs and resumes the paused ones.
