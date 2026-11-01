@@ -11001,21 +11001,26 @@ mod tests {
         use windows_sys::Win32::System::Threading::GetCurrentThreadId;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             FindWindowW, GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect, IsWindow,
-            PostMessageW, BS_DEFPUSHBUTTON, BS_TYPEMASK, GWL_STYLE, GW_CHILD, GW_HWNDNEXT,
-            WM_CLOSE,
+            IsWindowVisible, PostMessageW, BS_DEFPUSHBUTTON, BS_TYPEMASK, GWL_STYLE, GW_CHILD,
+            GW_HWNDNEXT, WM_CLOSE,
         };
 
         on_private_desktop(|| unsafe {
             register_test_classes();
             let desktop = GetThreadDesktop(GetCurrentThreadId()) as usize;
+            let opened = std::sync::atomic::AtomicBool::new(false);
             std::thread::scope(|scope| {
-                let watcher = scope.spawn(move || {
+                let watcher = scope.spawn(|| {
                     assert_ne!(SetThreadDesktop(desktop as _), 0, "the thread moves over");
                     let class = super::wide(super::CLASS_ALERT);
                     let mut alert = 0usize;
-                    for _ in 0..200 {
-                        alert = FindWindowW(class.as_ptr(), std::ptr::null()) as usize;
-                        if alert != 0 {
+                    // The alert is shown after its buttons exist; a window that is
+                    // found earlier has a part of them, and one that opens late is
+                    // waited for, because nothing else would close it.
+                    while !opened.load(std::sync::atomic::Ordering::SeqCst) {
+                        let found = FindWindowW(class.as_ptr(), std::ptr::null());
+                        if !found.is_null() && IsWindowVisible(found) != 0 {
+                            alert = found as usize;
                             break;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -11039,18 +11044,27 @@ mod tests {
                         }
                         child = GetWindow(child, GW_HWNDNEXT);
                     }
-                    act(alert, &buttons);
+                    // A panic in `act` is raised after the alert is closed: the test
+                    // thread would wait for an open alert for good.
+                    let acted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        act(alert, &buttons)
+                    }));
                     for _ in 0..100 {
                         if IsWindow(alert as _) == 0 {
-                            return buttons;
+                            break;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }
-                    // Never leaves the alert open: the test thread would wait for it for good.
-                    PostMessageW(alert as _, WM_CLOSE, 0, 0);
+                    if IsWindow(alert as _) != 0 {
+                        PostMessageW(alert as _, WM_CLOSE, 0, 0);
+                    }
+                    if let Err(panic) = acted {
+                        std::panic::resume_unwind(panic);
+                    }
                     buttons
                 });
                 let result = open();
+                opened.store(true, std::sync::atomic::Ordering::SeqCst);
                 (result, watcher.join().unwrap())
             })
         })
