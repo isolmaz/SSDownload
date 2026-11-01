@@ -50,7 +50,7 @@ use windows_sys::Win32::{
             EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, RegisterHotKey, ReleaseCapture,
             SetCapture, SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT,
             MOD_SHIFT, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN, VK_END,
-            VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP,
+            VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_TAB, VK_UP,
         },
         Shell::*,
         WindowsAndMessaging::*,
@@ -942,8 +942,28 @@ unsafe fn combo_add(hwnd: HWND, value: &str) {
     let w = wide(value);
     SendMessageW(hwnd, CB_ADDSTRING, 0, w.as_ptr() as isize);
 }
+/// A multi-line edit asks the dialog manager for every key, Tab included, so a
+/// Tab typed in it never moves the focus on and keyboard focus cannot leave a
+/// read-only box at all. Tab goes back to the dialog manager; Enter, the arrows
+/// and the other keys stay with the box.
+unsafe extern "system" fn multiline_edit_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let code = frame_proc(hwnd, msg, wparam, lparam);
+    if msg == WM_GETDLGCODE
+        && wparam == VK_TAB as usize
+        && lparam != 0
+        && (*(lparam as *const MSG)).message == WM_KEYDOWN
+    {
+        return code & !(DLGC_WANTALLKEYS as LRESULT);
+    }
+    code
+}
 unsafe fn control(parent: HWND, class: &str, label: &str, style: u32, ex: u32, id: i32) -> HWND {
-    CreateWindowExW(
+    let hwnd = CreateWindowExW(
         ex,
         wide(class).as_ptr(),
         wide(label).as_ptr(),
@@ -956,7 +976,11 @@ unsafe fn control(parent: HWND, class: &str, label: &str, style: u32, ex: u32, i
         hwnd_id(id),
         GetModuleHandleW(null()),
         null(),
-    )
+    );
+    if class.eq_ignore_ascii_case("EDIT") && style & ES_MULTILINE as u32 != 0 {
+        subclass(hwnd, multiline_edit_proc);
+    }
+    hwnd
 }
 unsafe fn apply_font(hwnd: HWND, font: HFONT) {
     SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
@@ -9022,6 +9046,230 @@ mod tests {
                 unsafe { text(dialog.error_line()) }.is_empty(),
                 "Continue was not pressed"
             );
+        });
+    }
+
+    fn queues_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Queues(super::QueueFields {
+            list: null_mut(),
+            ids: Vec::new(),
+            name: null_mut(),
+            concurrency: null_mut(),
+            completion: null_mut(),
+            countdown: null_mut(),
+            enabled: null_mut(),
+            windows: null_mut(),
+            quota: null_mut(),
+            program: null_mut(),
+            arguments: null_mut(),
+            delay: null_mut(),
+            job_id: None,
+        })
+    }
+
+    /// Every multi-line edit control of the dialog.
+    fn multiline_edits(dialog: &HiddenDialog) -> Vec<super::HWND> {
+        use super::{window_class, BOOL, HWND, LPARAM};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EnumChildWindows, GetWindowLongPtrW, ES_MULTILINE, GWL_STYLE,
+        };
+
+        unsafe extern "system" fn collect(child: HWND, found: LPARAM) -> BOOL {
+            let found = &mut *(found as *mut Vec<HWND>);
+            let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+            if window_class(child).eq_ignore_ascii_case("Edit") && style & ES_MULTILINE as u32 != 0
+            {
+                found.push(child);
+            }
+            1
+        }
+        let mut found: Vec<HWND> = Vec::new();
+        unsafe { EnumChildWindows(dialog.hwnd, Some(collect), &mut found as *mut _ as LPARAM) };
+        found
+    }
+
+    /// Shift held down in the key state of this thread, which is where
+    /// `GetKeyState` reads it, until the value is dropped. No input is sent.
+    struct ShiftHeld([u8; 256]);
+
+    impl ShiftHeld {
+        fn new() -> Self {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+                GetKeyboardState, SetKeyboardState, VK_SHIFT,
+            };
+            let mut state = [0u8; 256];
+            unsafe { GetKeyboardState(state.as_mut_ptr()) };
+            let before = state;
+            state[VK_SHIFT as usize] = 0x80;
+            unsafe { SetKeyboardState(state.as_ptr()) };
+            Self(before)
+        }
+    }
+
+    impl Drop for ShiftHeld {
+        fn drop(&mut self) {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetKeyboardState;
+            unsafe { SetKeyboardState(self.0.as_ptr()) };
+        }
+    }
+
+    /// Tab, or Shift+Tab when `backwards`, typed into `edit` moves the focus to
+    /// the next, or previous, control of the dialog and leaves the text of the
+    /// box alone.
+    fn assert_tab_leaves(dialog: &HiddenDialog, edit: super::HWND, what: &str, backwards: bool) {
+        use super::text;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_TAB};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetNextDlgTabItem;
+
+        unsafe {
+            let before = text(edit);
+            SetFocus(edit);
+            assert_eq!(GetFocus(), edit, "{what} has the focus");
+            let next = GetNextDlgTabItem(dialog.hwnd, edit, backwards.into());
+            assert!(!next.is_null() && next != edit, "{what} has a target");
+            let _shift = backwards.then(ShiftHeld::new);
+            assert!(press_in(dialog, edit, VK_TAB), "{what}: Tab is handled");
+            pump_messages();
+            assert_eq!(text(edit), before, "{what}: Tab typed nothing");
+            assert_eq!(
+                GetFocus(),
+                next,
+                "{what}: Tab moved the focus (backwards: {backwards})"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_leaves_the_links_box() {
+        use super::DialogKind;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.urls, "the links box", false);
+        });
+    }
+
+    #[test]
+    fn shift_tab_leaves_the_links_box_backwards() {
+        use super::DialogKind;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.urls, "the links box", true);
+        });
+    }
+
+    #[test]
+    fn tab_leaves_the_time_windows_and_program_arguments_boxes() {
+        use super::DialogKind;
+
+        with_dialog(queues_kind, 700, 470, |dialog| {
+            let DialogKind::Queues(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.windows, "the time windows box", false);
+            assert_tab_leaves(dialog, f.arguments, "the program arguments box", false);
+        });
+    }
+
+    #[test]
+    fn tab_leaves_the_read_only_status_box() {
+        use super::DialogKind;
+
+        with_dialog(tools_kind, 700, 470, |dialog| {
+            let DialogKind::Tools(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.status, "the status box", false);
+        });
+    }
+
+    #[test]
+    fn tab_leaves_every_multi_line_edit_of_the_dialogs() {
+        type Case = (&'static str, fn() -> super::DialogKind, i32, i32, usize);
+        let dialogs: [Case; 3] = [
+            ("New download", add_kind, 620, 340, 1),
+            ("Queues", queues_kind, 700, 470, 2),
+            ("Media tools", tools_kind, 700, 470, 1),
+        ];
+        for (name, make, width, height, boxes) in dialogs {
+            with_dialog(make, width, height, |dialog| {
+                let edits = multiline_edits(dialog);
+                assert_eq!(edits.len(), boxes, "{name}: multi-line edits found");
+                for edit in edits {
+                    assert_tab_leaves(dialog, edit, name, false);
+                    assert_tab_leaves(dialog, edit, name, true);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn enter_in_the_queue_boxes_stays_a_new_line() {
+        use super::{text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_RETURN};
+
+        with_dialog(queues_kind, 700, 470, |dialog| {
+            let DialogKind::Queues(f) = dialog.kind() else {
+                unreachable!()
+            };
+            for (edit, what) in [
+                (f.windows, "the time windows box"),
+                (f.arguments, "the program arguments box"),
+            ] {
+                let before = unsafe { text(edit) };
+                unsafe { SetFocus(edit) };
+                assert!(press_in(dialog, edit, VK_RETURN));
+                pump_messages();
+                assert_eq!(
+                    unsafe { text(edit) },
+                    format!("\r\n{before}"),
+                    "{what} got a new line"
+                );
+            }
+            assert!(dialog.is_open(), "no default button was pressed");
+        });
+    }
+
+    /// The alert's long body and the job view's details are multi-line edits of
+    /// windows that are not `CLASS_DIALOG` windows; they come from the same
+    /// `control`.
+    #[test]
+    fn tab_leaves_a_multi_line_edit_outside_the_dialogs() {
+        use super::{control, dialog_message};
+        use std::ptr::null_mut;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_TAB};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DestroyWindow, ES_MULTILINE, ES_READONLY, MSG, WM_KEYDOWN, WS_CHILD, WS_POPUP,
+            WS_TABSTOP, WS_VISIBLE,
+        };
+
+        on_private_desktop(|| unsafe {
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let details = control(
+                parent,
+                "EDIT",
+                "Select a job.",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE as u32 | ES_READONLY as u32,
+                0,
+                1,
+            );
+            let next = control(parent, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 2);
+            SetFocus(details);
+            assert_eq!(GetFocus(), details, "the details box has the focus");
+            let mut msg: MSG = std::mem::zeroed();
+            msg.hwnd = details;
+            msg.message = WM_KEYDOWN;
+            msg.wParam = VK_TAB as usize;
+            assert!(dialog_message(parent, &msg));
+            let focus = GetFocus();
+            DestroyWindow(parent);
+            assert_eq!(focus, next, "Tab moved the focus on");
         });
     }
 
