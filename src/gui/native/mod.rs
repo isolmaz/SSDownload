@@ -7332,6 +7332,15 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     create_kind_controls(dlg);
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
     layout_dialog(dlg);
+    if let DialogKind::Rename(f) = &dlg.kind {
+        // Selected once the field has its width: an edit control scrolls the
+        // caret into view, and in the 10 px field the controls are created with
+        // that leaves the start of the name out of view.
+        // Select the stem, not the extension, like Explorer does.
+        let stem = f.initial.rfind('.').unwrap_or(f.initial.len());
+        let stem = f.initial[..stem].encode_utf16().count();
+        SendMessageW(f.edit, EM_SETSEL, 0, stem as isize);
+    }
     dialog_timer(dlg);
 }
 
@@ -8335,5 +8344,88 @@ mod tests {
                 "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
             );
         }
+    }
+
+    /// For each name: the Rename dialog's selection and the client x of the
+    /// first character in its field, read from a dialog that is created the way
+    /// `show_rename` creates it and is never shown.
+    fn rename_fields_after_creation(names: &[&str]) -> Vec<((u32, u32), i16)> {
+        use super::{create_dialog, DialogKind, DialogRequest, RenameFields};
+        use std::ptr::null_mut;
+        use windows_sys::Win32::UI::Controls::{EM_GETSEL, EM_POSFROMCHAR};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyWindow, SendMessageW};
+
+        static CLASSES: std::sync::Once = std::sync::Once::new();
+        let root = std::env::temp_dir().join(format!("ssdownload-rename-{}", uuid::Uuid::new_v4()));
+        let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
+        let app = crate::app::App::open(paths).unwrap();
+        let mut fields = Vec::new();
+        unsafe {
+            CLASSES.call_once(|| super::register_classes().unwrap());
+            for name in names {
+                let kind = DialogKind::Rename(RenameFields {
+                    id: "job".into(),
+                    initial: (*name).into(),
+                    edit: null_mut(),
+                });
+                let (raw, hwnd) = create_dialog(
+                    null_mut(),
+                    app.clone(),
+                    DialogRequest {
+                        title: "Rename",
+                        width: 460,
+                        height: 150,
+                        kind,
+                        origin: None,
+                        launch: None,
+                        modeless: false,
+                    },
+                )
+                .expect("the dialog is created");
+                let DialogKind::Rename(f) = &(*raw).kind else {
+                    unreachable!()
+                };
+                let (mut start, mut end) = (0u32, 0u32);
+                SendMessageW(
+                    f.edit,
+                    EM_GETSEL,
+                    &mut start as *mut u32 as usize,
+                    &mut end as *mut u32 as isize,
+                );
+                let first = SendMessageW(f.edit, EM_POSFROMCHAR, 0, 0);
+                fields.push(((start, end), first as i16));
+                DestroyWindow(hwnd);
+                drop(Box::from_raw(raw));
+            }
+        }
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+        fields
+    }
+
+    #[test]
+    fn rename_field_opens_at_the_start_of_the_name_with_the_stem_selected() {
+        let fields = rename_fields_after_creation(&["Holiday video.mp4"]);
+        let (selection, first_x) = fields[0];
+        assert_eq!(
+            selection,
+            (0, "Holiday video".len() as u32),
+            "the stem is selected and the extension is not"
+        );
+        assert!(
+            first_x >= 0,
+            "the name starts {} px left of the field",
+            -first_x
+        );
+    }
+
+    #[test]
+    fn rename_selects_the_stem_in_utf16_units_up_to_the_last_dot() {
+        let names = ["\u{1F600} clip.mp4", "README", "archive.tar.gz"];
+        let selections: Vec<_> = rename_fields_after_creation(&names)
+            .into_iter()
+            .map(|(selection, _)| selection)
+            .collect();
+        assert_eq!(selections, [(0, 7), (0, 6), (0, 11)]);
     }
 }
