@@ -10399,7 +10399,12 @@ mod tests {
             let mut settings = dialog.app().snapshot().settings.clone();
             settings.dark_mode = !dark;
             dialog.app().update_settings_quiet(settings).unwrap();
+            let passes = dlg.layout_pass.get();
             super::layout_dialog(dlg);
+            assert!(
+                dlg.layout_pass.get().wrapping_sub(passes) >= 2,
+                "{what}, dark {dark}: showing or hiding the bar did not lay the dialog out again"
+            );
             assert_eq!(super::dialog_is_dark(dlg), !dark, "{what}: the new scheme");
             assert_eq!(
                 dlg.scroll_y.get(),

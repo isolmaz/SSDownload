@@ -1749,10 +1749,9 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         nPos: offset,
         nTrackPos: 0,
     };
-    // Setting the range shows a hidden bar again. Showing or hiding a bar resizes
-    // the client area, which lays the dialog out again before the call returns,
-    // and every layout shifts the controls by the offset once more. Dark mode
-    // keeps the bar hidden, so it never sets one.
+    // Setting the range shows a hidden bar, and the call below hides it again in the dark
+    // scheme: the client area would be resized twice, and the dialog laid out twice inside this
+    // layout. Dark mode keeps the bar hidden, so it never sets a range.
     if !dialog_is_dark(dlg) {
         SetScrollInfo(dlg.hwnd, SB_VERT, &info, 1);
     }
@@ -1773,7 +1772,9 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         },
     );
     // Showing or hiding the bar resizes the client area, and the layout that resize ran has
-    // placed and shifted the controls for the final size.
+    // placed and shifted the controls for the final size. This assumes that a layout runs inside
+    // this one only during the calls that show or hide the bar; the placement above must not
+    // lay the dialog out again.
     if dlg.layout_pass.get() != pass {
         return;
     }
