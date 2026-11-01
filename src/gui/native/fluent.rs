@@ -43,6 +43,10 @@ pub(super) struct MainPalette {
     pub(super) on_accent_pressed: u32,
     /// ControlStrokeColorOnAccentSecondary: the primary button's bottom edge.
     pub(super) accent_stroke_bottom: u32,
+    /// AccentFillColorDisabled and TextOnAccentFillColorDisabled: a disabled
+    /// primary button's fill and label.
+    pub(super) accent_disabled: u32,
+    pub(super) on_accent_disabled: u32,
     /// FocusStrokeColorOuter / Inner: the keyboard focus ring.
     pub(super) focus_outer: u32,
     pub(super) focus_inner: u32,
@@ -128,6 +132,7 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
         .unwrap_or(accent_fill);
     let [control, control_hover, control_pressed, control_disabled, control_stroke, control_stroke_bottom] =
         control_layers(dark, base);
+    let (accent_disabled, on_accent_disabled) = accent_disabled(dark, base);
     MainPalette {
         base,
         card,
@@ -151,6 +156,8 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
             accent_pressed,
         ),
         accent_stroke_bottom: on(0x66000000, 0x24000000, accent_fill),
+        accent_disabled,
+        on_accent_disabled,
         focus_outer: on(0xe4000000, 0xffffffff, base),
         focus_inner: on(0xb3ffffff, 0xb3000000, base),
         strong_stroke: on(0x72000000, 0x8bffffff, card),
@@ -182,11 +189,20 @@ fn control_layers(dark: bool, below: u32) -> [u32; 6] {
     ]
 }
 
+/// AccentFillColorDisabled composited over `below`, and
+/// TextOnAccentFillColorDisabled over that fill.
+fn accent_disabled(dark: bool, below: u32) -> (u32, u32) {
+    let fill = over(if dark { 0x28ffffff } else { 0x37000000 }, below);
+    let text = over(if dark { 0x87ffffff } else { 0xffffffff }, fill);
+    (fill, text)
+}
+
 /// The palette of a control on a dialog's content card: the card is its
 /// layer, so its fills and strokes are composited over the card.
 pub(super) fn on_card(palette: MainPalette, dark: bool) -> MainPalette {
     let [control, control_hover, control_pressed, control_disabled, control_stroke, control_stroke_bottom] =
         control_layers(dark, palette.card);
+    let (accent_disabled, on_accent_disabled) = accent_disabled(dark, palette.card);
     MainPalette {
         base: palette.card,
         control,
@@ -195,6 +211,8 @@ pub(super) fn on_card(palette: MainPalette, dark: bool) -> MainPalette {
         control_disabled,
         control_stroke,
         control_stroke_bottom,
+        accent_disabled,
+        on_accent_disabled,
         ..palette
     }
 }
@@ -257,6 +275,8 @@ pub(super) unsafe fn main_palette(hwnd: HWND) -> MainPalette {
         on_accent: highlight_text,
         on_accent_pressed: highlight_text,
         accent_stroke_bottom: button_text,
+        accent_disabled: face,
+        on_accent_disabled: GetSysColor(COLOR_GRAYTEXT),
         focus_outer: text,
         focus_inner: window,
         strong_stroke: text,
@@ -1306,7 +1326,7 @@ pub(super) unsafe fn paint_button(
     } = look;
     let primary = look.primary && !contrast;
     let (fill, text) = match (primary, disabled, pressed, hot) {
-        (_, true, _, _) if primary => (over(0x37000000, palette.base), palette.on_accent),
+        (_, true, _, _) if primary => (palette.accent_disabled, palette.on_accent_disabled),
         (_, true, _, _) => (palette.control_disabled, palette.disabled),
         (true, _, true, _) => (palette.accent_pressed, palette.on_accent_pressed),
         (true, _, _, true) => (palette.accent_hover, palette.on_accent),
@@ -1322,7 +1342,10 @@ pub(super) unsafe fn paint_button(
         _ if contrast => (palette.control, GetSysColor(COLOR_BTNTEXT)),
         _ => (palette.control, palette.text),
     };
-    let (stroke, stroke_bottom) = if primary {
+    // A disabled accent button has no elevation border.
+    let (stroke, stroke_bottom) = if primary && disabled {
+        (fill, fill)
+    } else if primary {
         (fill, palette.accent_stroke_bottom)
     } else if pressed || disabled {
         (palette.control_stroke, palette.control_stroke)
@@ -4296,6 +4319,78 @@ mod tests {
         assert_eq!(at(4), 0x00ff00);
         assert_eq!(at(5), 0x00ff00);
         assert_eq!(at(6), 0x888888);
+    }
+
+    #[test]
+    fn a_disabled_primary_button_takes_winui_s_disabled_accent_colours_and_no_accent_edge() {
+        unsafe {
+            let (width, height) = (120, 40);
+            let screen = GetDC(null_mut());
+            let dc = CreateCompatibleDC(screen);
+            ReleaseDC(null_mut(), screen);
+            let mut info: BITMAPINFO = zeroed();
+            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bits: *mut c_void = null_mut();
+            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            assert!(!bitmap.is_null() && !bits.is_null());
+            let previous = SelectObject(dc, bitmap as HGDIOBJ);
+            let font = ramp_font(96, BODY_PX, false);
+            let label: Vec<u16> = "Download".encode_utf16().collect();
+            let look = ButtonState {
+                primary: true,
+                disabled: true,
+                pressed: false,
+                hot: false,
+                focused: false,
+                underline: false,
+            };
+            let margin = scale(FOCUS_MARGIN, 96);
+            for dark in [false, true] {
+                let window = fluent_palette(dark, BLUE);
+                for palette in [window, on_card(window, dark)] {
+                    // AccentFillColorDisabled over the layer, and
+                    // TextOnAccentFillColorDisabled over that fill.
+                    let fill = over(if dark { 0x28ffffff } else { 0x37000000 }, palette.base);
+                    let text = over(if dark { 0x87ffffff } else { 0xffffffff }, fill);
+                    let rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: width,
+                        bottom: height,
+                    };
+                    paint_button(dc, rect, 96, &palette, font, &label, None, look);
+                    GdiFlush();
+                    let pixels: Vec<u32> =
+                        std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
+                            .iter()
+                            // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+                            .map(|&p| ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff))
+                            .collect();
+                    let at = |x: i32, y: i32| pixels[(y * width + x) as usize];
+                    let face_x = margin + 6;
+                    assert_eq!(at(face_x, height / 2), fill, "fill, dark {dark}");
+                    // The face's edge rows: the top and the bottom one hold the
+                    // fill too, so no accent stroke is left.
+                    for x in [face_x, width / 2] {
+                        assert_eq!(at(x, margin), fill, "top edge, dark {dark}");
+                        assert_eq!(at(x, height - margin - 1), fill, "bottom edge, dark {dark}");
+                    }
+                    assert!(
+                        pixels.contains(&text),
+                        "the label shows in {text:06x}, dark {dark}"
+                    );
+                }
+            }
+            SelectObject(dc, previous);
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteObject(font as HGDIOBJ);
+            DeleteDC(dc);
+        }
     }
 
     /// A checked check box labelled `label`, painted at `width` x `height` into
