@@ -1747,7 +1747,13 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         nPos: offset,
         nTrackPos: 0,
     };
-    SetScrollInfo(dlg.hwnd, SB_VERT, &info, 1);
+    // Setting the range shows a hidden bar again. Showing or hiding a bar resizes
+    // the client area, which lays the dialog out again before the call returns,
+    // and every layout shifts the controls by the offset once more. Dark mode
+    // keeps the bar hidden, so it never sets one.
+    if !dialog_is_dark(dlg) {
+        SetScrollInfo(dlg.hwnd, SB_VERT, &info, 1);
+    }
     // The themed scroll bar has no dark form, and the compacted pages fit, so
     // the bar only shows when there is really something to scroll.
     let overflows = h > actual_height;

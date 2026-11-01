@@ -787,6 +787,7 @@ impl App {
             }
             Action::InstallTools {
                 force_update,
+                automatic,
                 request_id,
             } => {
                 let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -859,6 +860,7 @@ impl App {
                                 tools::ensure(
                                     app.paths(),
                                     force_update,
+                                    automatic,
                                     &governor,
                                     &tools_control,
                                     &mut |progress| {
