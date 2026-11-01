@@ -253,7 +253,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             button(D_BROWSE, x + cw - browse_w, field_top(y), browse_w);
             y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
 
-            let kind_w = s(200);
+            let kind_w = s(200).max(combo_face_width(f.kind, dlg.dpi));
             let name_w = cw - kind_w - s(ADD_GROUP_GAP);
             label(2, x, y, name_w, true);
             label(3, x + name_w + s(ADD_GROUP_GAP), y, kind_w, true);
