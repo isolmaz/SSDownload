@@ -455,11 +455,13 @@
   "Minimize to the notification area when closing the window": "Beim Schließen des Fensters in den Infobereich minimieren",
   "Missing components are installed.": "Fehlende Komponenten wurden installiert.",
   "Missing value for {flag}": "Fehlender Wert für {flag}",
+  "MKV video": "MKV-Video",
   "Move selected job": "Auftrag verschieben",
   "Move to bottom\tAlt+End": "Nach unten verschieben\tAlt+End",
   "Move to queue": "In Warteschlange verschieben",
   "Move to top\tAlt+Home": "Nach oben verschieben\tAlt+Home",
   "Moving to quarantine failed": "Verschieben in die Quarantäne fehlgeschlagen",
+  "MP4 video": "MP4-Video",
   "Multiple audio selection cannot be used together with the legacy single audio fields": "Die Auswahl mehrerer Audiospuren kann nicht zusammen mit den älteren Einzel-Audiofeldern verwendet werden",
   "Multiple audio selection cannot be used together with the legacy single audio selection": "Die Auswahl mehrerer Audiospuren kann nicht zusammen mit der älteren Einzel-Audioauswahl verwendet werden",
   "Multiple audio selection is only available for video output": "Die Auswahl mehrerer Audiospuren ist nur für Videoausgabe verfügbar",
@@ -1699,5 +1701,6 @@
   "The downloaded stream has no readable audio": "Der heruntergeladene Stream enthält kein lesbares Audio",
   "The audio could not be converted: {0}": "Das Audio konnte nicht umgewandelt werden: {0}",
   "Downloading media; the server is limiting requests": "Medien werden heruntergeladen; der Server begrenzt die Anfragen",
-  "Waiting for the server, which is limiting requests": "Warten auf den Server, der die Anfragen begrenzt"
+  "Waiting for the server, which is limiting requests": "Warten auf den Server, der die Anfragen begrenzt",
+  "The audio conversion did not finish within {0} seconds": "Die Umwandlung des Audios wurde nicht innerhalb von {0} Sekunden abgeschlossen"
 }

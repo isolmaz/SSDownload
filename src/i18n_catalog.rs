@@ -362,6 +362,8 @@ static AR: &[(&str, &str)] = &[
     ("Location", "الموقع"),
     ("Log site names", "تسجيل أسماء المواقع"),
     ("Logs for this download (newest at bottom):", "سجلات هذا التنزيل (الأحدث في الأسفل):"),
+    ("MKV video", "فيديو MKV"),
+    ("MP4 video", "فيديو MP4"),
     ("Manual", "يدوي"),
     ("Maximum candidates", "الحد الأقصى للمرشحين"),
     ("Maximum candidates:", "الحد الأقصى للمرشحين:"),
@@ -1794,6 +1796,8 @@ static ES: &[(&str, &str)] = &[
     ("Location", "Ubicación"),
     ("Log site names", "Registrar nombres de sitio"),
     ("Logs for this download (newest at bottom):", "Registros de esta descarga (los más recientes abajo):"),
+    ("MKV video", "Vídeo MKV"),
+    ("MP4 video", "Vídeo MP4"),
     ("Manual", "Manual"),
     ("Maximum candidates", "Número máximo de candidatos"),
     ("Maximum candidates:", "Máximo de candidatos:"),
@@ -3226,6 +3230,8 @@ static PT: &[(&str, &str)] = &[
     ("Location", "Local"),
     ("Log site names", "Registrar nomes de sites"),
     ("Logs for this download (newest at bottom):", "Registros deste download (os mais recentes no final):"),
+    ("MKV video", "Vídeo MKV"),
+    ("MP4 video", "Vídeo MP4"),
     ("Manual", "Manual"),
     ("Maximum candidates", "Máximo de candidatos"),
     ("Maximum candidates:", "Máximo de candidatos:"),
@@ -4658,6 +4664,8 @@ static FR: &[(&str, &str)] = &[
     ("Location", "Emplacement"),
     ("Log site names", "Consigner les noms de site"),
     ("Logs for this download (newest at bottom):", "Journaux de ce téléchargement (les plus récents en bas) :"),
+    ("MKV video", "Vidéo MKV"),
+    ("MP4 video", "Vidéo MP4"),
     ("Manual", "Manuel"),
     ("Maximum candidates", "Nombre maximal de candidats"),
     ("Maximum candidates:", "Nb max. de candidats :"),
@@ -6090,6 +6098,8 @@ static DE: &[(&str, &str)] = &[
     ("Location", "Speicherort"),
     ("Log site names", "Websites protokollieren"),
     ("Logs for this download (newest at bottom):", "Protokolle für diesen Download (neueste unten):"),
+    ("MKV video", "MKV-Video"),
+    ("MP4 video", "MP4-Video"),
     ("Manual", "Manuell"),
     ("Maximum candidates", "Maximale Kandidaten"),
     ("Maximum candidates:", "Maximale Kandidaten:"),
@@ -7495,6 +7505,9 @@ macro_rules! __ui_template_ar {
     ("The archived work data could not be restored: {0}") => {
         "تعذّرت استعادة بيانات العمل المؤرشفة: {0}"
     };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "لم يكتمل تحويل الصوت خلال {0} ث"
+    };
     ("The audio could not be converted: {0}") => {
         "تعذّر تحويل الصوت: {0}"
     };
@@ -8318,6 +8331,9 @@ macro_rules! __ui_template_es {
     };
     ("The archived work data could not be restored: {0}") => {
         "No se pudieron restaurar los datos de trabajo archivados: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "La conversión del audio no terminó en {0} segundos"
     };
     ("The audio could not be converted: {0}") => {
         "No se ha podido convertir el audio: {0}"
@@ -9143,6 +9159,9 @@ macro_rules! __ui_template_pt {
     ("The archived work data could not be restored: {0}") => {
         "Não foi possível restaurar os dados de trabalho arquivados: {0}"
     };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "A conversão do áudio não terminou em {0} segundos"
+    };
     ("The audio could not be converted: {0}") => {
         "Não foi possível converter o áudio: {0}"
     };
@@ -9967,6 +9986,9 @@ macro_rules! __ui_template_fr {
     ("The archived work data could not be restored: {0}") => {
         "Les données de travail archivées n'ont pas pu être restaurées : {0}"
     };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "La conversion de l'audio ne s'est pas terminée dans les {0} secondes"
+    };
     ("The audio could not be converted: {0}") => {
         "L'audio n'a pas pu être converti : {0}"
     };
@@ -10790,6 +10812,9 @@ macro_rules! __ui_template_de {
     };
     ("The archived work data could not be restored: {0}") => {
         "Die archivierten Arbeitsdaten konnten nicht wiederhergestellt werden: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "Die Umwandlung des Audios wurde nicht innerhalb von {0} Sekunden abgeschlossen"
     };
     ("The audio could not be converted: {0}") => {
         "Das Audio konnte nicht umgewandelt werden: {0}"

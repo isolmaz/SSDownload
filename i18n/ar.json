@@ -455,11 +455,13 @@
   "Minimize to the notification area when closing the window": "التصغير إلى منطقة الإشعارات عند إغلاق النافذة",
   "Missing components are installed.": "تم تثبيت المكونات المفقودة.",
   "Missing value for {flag}": "القيمة مفقودة لـ {flag}",
+  "MKV video": "فيديو MKV",
   "Move selected job": "نقل المهمة المحددة",
   "Move to bottom\tAlt+End": "نقل إلى الأسفل\tAlt+End",
   "Move to queue": "نقل إلى قائمة الانتظار",
   "Move to top\tAlt+Home": "نقل إلى الأعلى\tAlt+Home",
   "Moving to quarantine failed": "فشل النقل إلى العزل",
+  "MP4 video": "فيديو MP4",
   "Multiple audio selection cannot be used together with the legacy single audio fields": "لا يمكن استخدام اختيار الصوت المتعدد مع حقول الصوت الفردية القديمة",
   "Multiple audio selection cannot be used together with the legacy single audio selection": "لا يمكن استخدام اختيار الصوت المتعدد مع اختيار الصوت الفردي القديم",
   "Multiple audio selection is only available for video output": "اختيار الصوت المتعدد متاح لمخرجات الفيديو فقط",
@@ -1699,5 +1701,6 @@
   "The downloaded stream has no readable audio": "لا يحتوي البث الذي تم تنزيله على صوت قابل للقراءة",
   "The audio could not be converted: {0}": "تعذّر تحويل الصوت: {0}",
   "Downloading media; the server is limiting requests": "جارٍ تنزيل الوسائط؛ الخادم يحدّ من الطلبات",
-  "Waiting for the server, which is limiting requests": "في انتظار الخادم الذي يحدّ من الطلبات"
+  "Waiting for the server, which is limiting requests": "في انتظار الخادم الذي يحدّ من الطلبات",
+  "The audio conversion did not finish within {0} seconds": "لم يكتمل تحويل الصوت خلال {0} ث"
 }

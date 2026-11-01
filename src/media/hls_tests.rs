@@ -208,6 +208,19 @@ impl Fixture {
         (result.path, updates)
     }
 
+    /// The bytes of the segments the encoder wrote for `prefix`.
+    fn segment_bytes(&self, prefix: &str) -> u64 {
+        fs::read_dir(&self.server.site)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with(prefix) && name.ends_with(".ts")
+            })
+            .map(|entry| entry.metadata().unwrap().len())
+            .sum()
+    }
+
     /// How often each segment the encoder wrote for `prefix` was requested, in playlist order.
     fn requests(&self, prefix: &str) -> Vec<usize> {
         let requests = self.server.requests.lock().unwrap();
@@ -864,13 +877,12 @@ fn an_audio_download_converts_in_the_app_as_yt_dlp_converts_it() {
                     "{case}"
                 );
             }
-            // The app converted the first download itself and left the second to yt-dlp.
-            assert!(
-                updates
-                    .iter()
-                    .any(|update| update.processing && update.phase.starts_with(phase)),
-                "{case}"
-            );
+            // The app converted the first download itself and left the second to yt-dlp. The
+            // conversion reports last, as processing and with the bytes downloaded, so a queue's
+            // byte quota counts those and not the size of the converted file.
+            let last = updates.last().unwrap();
+            assert!(last.processing && last.phase.starts_with(phase), "{case}");
+            assert_eq!(last.downloaded, native.segment_bytes(taken), "{case}");
             assert!(
                 !reference_updates
                     .iter()
@@ -879,6 +891,114 @@ fn an_audio_download_converts_in_the_app_as_yt_dlp_converts_it() {
             );
         }
     }
+}
+
+/// A pause while FFmpeg converts the downloaded audio stops FFmpeg and leaves no output of it,
+/// but keeps the joined audio: the resumed download fetches no segment again and converts all of
+/// it once more.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_conversion_paused_midway_leaves_no_output_and_starts_over_from_the_joined_audio() {
+    // Ten minutes of audio, which the MP3 encoder needs some seconds for; it reports its
+    // progress every half second.
+    let fixture = Fixture::new(Source {
+        video_seconds: 2,
+        audio_seconds: 600,
+        ..Source::default()
+    });
+    let request = AddRequest {
+        url: fixture.master.clone(),
+        kind: DownloadKind::Audio,
+        audio_format: Some("mp3".into()),
+        connections: Some(4),
+        ..AddRequest::default()
+    };
+    let output = fixture.root.join("song");
+    // The files of that name in the download's work folder.
+    let in_work = |name: &str| {
+        fs::read_dir(fixture.root.join(".ssdownload-work"))
+            .into_iter()
+            .flatten()
+            .map(|entry| entry.unwrap().path().join(name))
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>()
+    };
+    let converting = "Ses MP3 biçimine dönüştürülüyor";
+    let control = TransferControl::default();
+    let mut staged_at_pause = None;
+    let mut last_report = String::new();
+    let paused = download(
+        &fixture.paths,
+        &request,
+        &output,
+        &control,
+        &NetworkGovernor::new(16),
+        &mut |update| {
+            if !update.phase.starts_with(converting) {
+                return;
+            }
+            // Pause once FFmpeg has written part of the output.
+            if staged_at_pause.is_none() && !update.phase.ends_with(": %0") {
+                staged_at_pause = Some(in_work("media.native.temp.mp3").len());
+                control.pause();
+            }
+            last_report = update.phase;
+        },
+        "hls-audio-pause",
+    )
+    .expect_err("the conversion was paused");
+    assert!(control.is_paused(), "{paused:#}");
+    assert_eq!(staged_at_pause, Some(1), "{paused:#}");
+    assert!(!last_report.ends_with(": %100"), "{last_report}");
+    // FFmpeg holds its output open while it runs, so the output is gone only once it has ended.
+    assert!(in_work("media.native.temp.mp3").is_empty());
+    assert!(in_work("media.mp3").is_empty());
+    let joined = in_work("media.native-audio.part");
+    assert_eq!(joined.len(), 1);
+    assert_eq!(
+        fs::metadata(&joined[0]).unwrap().len(),
+        fixture.segment_bytes("a")
+    );
+
+    let mut resumed = Vec::new();
+    let result = download(
+        &fixture.paths,
+        &request,
+        &output,
+        &TransferControl::default(),
+        &NetworkGovernor::new(16),
+        &mut |update| resumed.push(update.phase),
+        "hls-audio-pause",
+    )
+    .unwrap_or_else(|error| panic!("the resumed download: {error:#}"));
+    assert!(fixture.requests("a").iter().all(|count| *count == 1));
+    let conversion = resumed
+        .iter()
+        .filter(|phase| phase.starts_with(converting))
+        .collect::<Vec<_>>();
+    assert!(conversion[0].ends_with(": %0"), "{conversion:?}");
+    assert!(
+        conversion.last().unwrap().ends_with(": %100"),
+        "{conversion:?}"
+    );
+    let tools = tools::verified_toolchain(&fixture.paths, &TransferControl::default()).unwrap();
+    let probe = std::process::Command::new(&tools.ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(&result.path)
+        .output()
+        .unwrap();
+    let seconds: f64 = String::from_utf8_lossy(&probe.stdout)
+        .trim()
+        .parse()
+        .unwrap();
+    assert!((seconds - 600.0).abs() < 0.5, "{seconds}");
 }
 
 /// FFmpeg's progress report reaches the caller while FFmpeg runs, not only at its end.

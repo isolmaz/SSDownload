@@ -253,7 +253,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 f.kind_values.push(DownloadKind::File);
             }
             if modes.video {
-                combo_add(f.kind, "Video");
+                combo_add(f.kind, crate::i18n::ui("Video", "Video"));
                 f.kind_values.push(DownloadKind::Video);
             }
             if modes.audio {
@@ -362,7 +362,12 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Kullanım amacı:", "Usage mode:"),
                 0,
             );
-            f.mode_video = dialog_check(dlg.hwnd, dlg.font, "Video", ID_SETTINGS_MODE_VIDEO);
+            f.mode_video = dialog_check(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Video", "Video"),
+                ID_SETTINGS_MODE_VIDEO,
+            );
             f.mode_file = dialog_check(
                 dlg.hwnd,
                 dlg.font,
@@ -961,7 +966,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui("Eksikleri kur", "Install missing"),
                 T_INSTALL,
-                true,
+                false,
             );
             f.update = dialog_button(
                 dlg.hwnd,
@@ -993,7 +998,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Kuyruklar:", "Queues:"),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, Q_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, Q_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Ad:", "Name:"), 0);
             f.name = dialog_edit(dlg.hwnd, dlg.font, Q_NAME, false, false);
             dialog_label(
@@ -1129,7 +1134,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, R_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, R_LIST, LBS_NOTIFY as u32);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
@@ -1159,7 +1164,12 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 R_SUBDOMAINS,
             );
             f.file = dialog_check(dlg.hwnd, dlg.font, crate::i18n::ui("Dosya", "File"), R_FILE);
-            f.video = dialog_check(dlg.hwnd, dlg.font, "Video", R_VIDEO);
+            f.video = dialog_check(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Video", "Video"),
+                R_VIDEO,
+            );
             f.audio = dialog_check(dlg.hwnd, dlg.font, crate::i18n::ui("Ses", "Audio"), R_AUDIO);
             dialog_button(
                 dlg.hwnd,
@@ -1231,7 +1241,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 C_SCAN,
                 true,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, C_LIST, true);
+            f.list = dialog_list(dlg.hwnd, dlg.font, C_LIST, LBS_EXTENDEDSEL as u32);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1257,7 +1267,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Eşitleme kayıtları:", "Sync policies:"),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, Y_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, Y_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, "URL:", 0);
             f.url = dialog_edit(dlg.hwnd, dlg.font, Y_URL, false, false);
             dialog_label(
@@ -1338,7 +1348,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, E_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, E_LIST, 0);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1423,10 +1433,6 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 false,
             );
             SetFocus(f.edit);
-            // Select the stem, not the extension, like Explorer does.
-            let stem = f.initial.rfind('.').unwrap_or(f.initial.len());
-            let stem = f.initial[..stem].encode_utf16().count();
-            SendMessageW(f.edit, EM_SETSEL, 0, stem as isize);
         }
         DialogKind::Logins(f) => {
             dialog_label(
@@ -1438,7 +1444,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, L_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, L_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Sunucu:", "Host:"), 0);
             f.host = dialog_edit(dlg.hwnd, dlg.font, L_HOST, false, false);
             dialog_label(
@@ -1482,7 +1488,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui("Ekle / güncelle", "Add / update"),
                 L_ADD,
-                false,
+                true,
             );
             dialog_button(
                 dlg.hwnd,
@@ -1496,7 +1502,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui("Kaydet", "Save"),
                 L_SAVE,
-                true,
+                false,
             );
             dialog_button(
                 dlg.hwnd,
@@ -1517,7 +1523,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, J_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, J_LIST, 0);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1570,10 +1576,10 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             f.kind = dialog_combo(dlg.hwnd, dlg.font, M_KIND);
             let modes = dlg.app.snapshot().settings.usage_modes;
             if modes.video {
-                combo_add(f.kind, "MP4 video");
+                combo_add(f.kind, crate::i18n::ui("MP4 video", "MP4 video"));
                 f.kind_values
                     .push((DownloadKind::Video, Some("mp4".into())));
-                combo_add(f.kind, "MKV video");
+                combo_add(f.kind, crate::i18n::ui("MKV video", "MKV video"));
                 f.kind_values
                     .push((DownloadKind::Video, Some("mkv".into())));
             }
@@ -1933,7 +1939,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui("Duraklat", "Pause"),
                 P_ACTION,
-                true,
+                false,
             );
             f.cancel = dialog_button(
                 dlg.hwnd,

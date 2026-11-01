@@ -328,13 +328,14 @@ impl EvidenceBudget {
     }
 
     pub(super) fn request_timeout(&mut self) -> Option<Duration> {
+        self.request_timeout_at(Instant::now())
+    }
+
+    pub(super) fn request_timeout_at(&mut self, now: Instant) -> Option<Duration> {
         if self.requests >= MAX_SOURCE_EVIDENCE_REQUESTS {
             return None;
         }
-        let remaining = self.deadline.checked_duration_since(Instant::now())?;
-        if remaining.is_zero() {
-            return None;
-        }
+        let remaining = crate::network::time_left(self.deadline, now)?;
         self.requests += 1;
         Some(remaining.min(SOURCE_EVIDENCE_REQUEST_TIMEOUT))
     }

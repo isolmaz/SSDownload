@@ -16,11 +16,23 @@ use std::{
     },
 };
 
-/// Tries per segment before the download fails; the joined part is kept for a retry.
-const SEGMENT_ATTEMPTS: u32 = 30;
+/// How many refusals (429 or 503) a segment goes again after with its host's next paced request;
+/// after each later one it waits as after other failures.
+const FREE_REFUSALS: u32 = 2;
+/// Tries per segment before the download fails; the joined part is kept for a retry. A segment's
+/// first `FREE_REFUSALS` refusals go again with the host's next paced request, and every other
+/// failure waits out the backoff of the segment's failures counted without those. So whatever mix
+/// of refusals and other failures a segment meets, and however its host answers the other
+/// segments, the waits between its tries span at least 390 s, as between 30 tries after other
+/// failures. Those of a segment that is never refused span 420 s.
+const SEGMENT_ATTEMPTS: u32 = 30 + FREE_REFUSALS;
 const MAX_BACKOFF: Duration = Duration::from_secs(15);
 /// Longest server-requested pause honoured for one segment.
 const MAX_SEGMENT_RETRY_AFTER: Duration = Duration::from_secs(60);
+/// How long a worker with no segment to take waits before it looks again, at least and at most;
+/// a settled segment wakes it sooner.
+const MIN_IDLE_WAIT: Duration = Duration::from_millis(10);
+const MAX_IDLE_WAIT: Duration = Duration::from_millis(200);
 const MAX_REDIRECTS: usize = 5;
 /// The total parallelism stays below the global connection budget, which other jobs share.
 const MAX_WORKERS: usize = crate::network::GLOBAL_CONNECTION_BUDGET - 2;
@@ -42,12 +54,20 @@ impl NativeStream {
     }
 }
 
-/// File types whose download yt-dlp's audio extraction keeps as it comes when the audio already
-/// fits the asked format (its `COMMON_AUDIO_EXTS`). The app does not copy that, so an audio
-/// download of a format of such a type stays with yt-dlp.
+/// File types whose download yt-dlp's audio extraction keeps as it comes for the best audio (its
+/// `COMMON_AUDIO_EXTS`).
 const AUDIO_FILE_TYPES: &[&str] = &[
     "aiff", "alac", "flac", "m4a", "mka", "mp3", "ogg", "opus", "wav", "wma",
 ];
+
+/// Whether yt-dlp's audio extraction can keep the download of a format of file type `ext` as it
+/// comes, asked as `conversion` (`None` for the best audio): the best audio of a common audio file
+/// type, or a file of the asked type whose codec that type takes unchanged. The app does not keep
+/// a download as it comes, so such a download stays with yt-dlp; as the codec is known only once
+/// the download is there, every format of the asked type does.
+fn kept_as_it_comes(ext: &str, conversion: Option<&str>) -> bool {
+    conversion.map_or(AUDIO_FILE_TYPES.contains(&ext), |asked| ext == asked)
+}
 
 /// The pinned source as native streams, for a single download whose tracks need no per-track
 /// selection: for a video, exactly one video-only and one audio-only finished playlist; for an
@@ -62,6 +82,7 @@ pub(super) fn native_streams(
         DownloadKind::Audio => 1,
         _ => return None,
     };
+    let conversion = audio_conversion(request).ok()?;
     if request.playlist
         || request.live_from_start
         || !request.audio_tracks.is_empty()
@@ -86,7 +107,7 @@ pub(super) fn native_streams(
             };
             if !extractor_cookies_are_known(format, request)
                 || (playlists == 1
-                    && codec("ext").is_some_and(|ext| AUDIO_FILE_TYPES.contains(&ext)))
+                    && codec("ext").is_some_and(|ext| kept_as_it_comes(ext, conversion)))
             {
                 return None;
             }
@@ -473,21 +494,22 @@ fn extract_audio(
     ));
     let started = Instant::now();
     // At least ten minutes, and as long as the audio plays: an encoder runs many times faster.
-    let result = run_ffmpeg_reporting(
-        &tools.ffmpeg,
-        &args,
-        Duration::from_secs_f64(length.max(10.0 * 60.0)),
-        control,
-        &mut |written| {
-            progress(conversion_progress(
-                &output,
-                received,
-                written,
-                length,
-                started.elapsed(),
-            ))
-        },
-    )?;
+    let timeout = Duration::from_secs_f64(length.max(10.0 * 60.0));
+    let result = run_ffmpeg_reporting(&tools.ffmpeg, &args, timeout, control, &mut |written| {
+        progress(conversion_progress(
+            &output,
+            received,
+            written,
+            length,
+            started.elapsed(),
+        ))
+    })
+    .map_err(|error| {
+        // A conversion that a pause, a cancel or the timeout stopped, or that did not start,
+        // leaves no output; the joined stream stays for the next attempt.
+        let _ = fs::remove_file(&staged);
+        unfinished_conversion(error, timeout)
+    })?;
     if !result.status.success() {
         let _ = fs::remove_file(&staged);
         bail!(
@@ -504,10 +526,25 @@ fn extract_audio(
     Ok(converted)
 }
 
+/// The error of a conversion that FFmpeg did not finish, which names a timeout as the
+/// conversion's and not as a media analysis's.
+fn unfinished_conversion(error: anyhow::Error, timeout: Duration) -> anyhow::Error {
+    if crate::error_codes::code_of(&error) == Some(crate::error_codes::MED_011) {
+        anyhow!(crate::i18n::ui_format!(
+            "Ses dönüştürmesi {0} saniye içinde tamamlanmadı",
+            "The audio conversion did not finish within {0} seconds",
+            timeout.as_secs()
+        ))
+    } else {
+        error
+    }
+}
+
 /// The status of a conversion that has written `written` of `length` seconds of audio, `elapsed`
-/// after it started. The bytes stay the downloaded ones: a queue's data limit counts every byte
-/// added to them, and the conversion downloads nothing. The time left follows from the share
-/// written so far, once a second has passed.
+/// after it started. The bytes stay the downloaded ones, as the conversion downloads nothing: a
+/// queue's byte quota counts every byte added to them, and, for a job that reports processing, not
+/// the size of the saved file. The time left follows from the share written so far, once a second
+/// has passed.
 fn conversion_progress(
     output: &AudioOutput,
     received: u64,
@@ -690,11 +727,22 @@ fn partial_path(segment: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The wait before a segment's next attempt after `failures` failures: 1, 2, 4 and 8 s, then
+/// `MAX_BACKOFF`.
+fn backoff(failures: u32) -> Duration {
+    Duration::from_secs(1 << failures.saturating_sub(1).min(4)).min(MAX_BACKOFF)
+}
+
 #[derive(Clone, Copy)]
 struct Task {
     stream: usize,
     index: usize,
     attempt: u32,
+    /// How often the segment's host refused it: its first `FREE_REFUSALS` refusals go again with
+    /// the host's pace, and later ones back off by the segment's failures. Admissions of other
+    /// segments leave it as it is, so that a segment its host keeps refusing backs off however the
+    /// others fare.
+    refused: u32,
     not_before: Instant,
     /// When the task was last handed to a worker.
     sent: Instant,
@@ -719,7 +767,8 @@ const PACE_SPEEDUP: Duration = Duration::from_secs(5);
 /// once. An admitted request raises the rate while the pace holds requests back. When the host
 /// admits none of the requests sent after the last reaction and refuses two of them, the wait
 /// before the next request also doubles each time, up to `MAX_BACKOFF`, and until the host admits
-/// one again a `Retry-After` holds every request to it.
+/// one again (the lockout) a `Retry-After` holds every request to it. The host is that of the
+/// segment's own address: a refusal from a redirect target paces the host that redirected.
 struct Pace {
     /// Requests per second, from the host's first 429 or 503 on; never below one per
     /// `MAX_BACKOFF`.
@@ -895,6 +944,7 @@ impl Shared {
                         stream,
                         index,
                         attempt: 0,
+                        refused: 0,
                         not_before: now,
                         sent: now,
                     })
@@ -961,14 +1011,10 @@ impl Shared {
         self.wake.notify_all();
     }
 
-    /// The next due segment whose host has room for the worker that keeps a connection to
-    /// `kept`, and whose host's pace lets a request start. Each stream offers its lowest
-    /// playlist position, so joins advance while later segments arrive, and the stream furthest
-    /// behind through its own playlist goes first, so video and audio finish together and a
-    /// throttled stream is not left for the end. A worker that takes a segment of another host
-    /// gives up its place at `kept`. One with nothing to take at once waits with its connection
-    /// only while a segment of its host waits for nothing but the host's pace and nobody else
-    /// waits for a place of the host; otherwise it closes the connection instead.
+    /// The next due segment (see `Schedule::take`). A worker with nothing to take at once waits
+    /// with its connection only while a segment of its host waits for nothing but the host's
+    /// pace and nobody else waits for a place of the host; otherwise it closes the connection
+    /// instead.
     fn next_task(
         &self,
         streams: &[NativeStream],
@@ -982,52 +1028,13 @@ impl Shared {
                 return None;
             }
             let now = Instant::now();
-            let mut earliest: Option<Instant> = None;
-            let per_host = state.per_host;
-            let mut chosen: Option<(usize, usize, usize)> = None;
-            let mut paced = false;
-            for stream in 0..state.queues.len() {
-                for position in 0..state.queues[stream].len() {
-                    let task = state.queues[stream][position];
-                    let host = self.hosts[stream][task.index];
-                    let due = task.not_before.max(state.paces[host].next_start);
-                    if due > now {
-                        paced |= kept == Some(host)
-                            && task.not_before <= now
-                            && state.busy[host] < per_host;
-                        earliest = Some(earliest.map_or(due, |at| at.min(due)));
-                        continue;
-                    }
-                    if state.busy[host] >= per_host
-                        || (kept != Some(host) && state.holders[host] >= per_host)
-                    {
-                        continue;
-                    }
-                    let behind = chosen.as_ref().is_none_or(|(other, at, _)| {
-                        let other_index = state.queues[*other][*at].index;
-                        task.index * streams[*other].segments.len()
-                            < other_index * streams[stream].segments.len()
-                    });
-                    if behind {
-                        chosen = Some((stream, position, host));
-                    }
-                    break;
-                }
-            }
-            if let Some((stream, position, host)) = chosen {
-                state.busy[host] += 1;
-                state.paces[host].start(now);
-                if kept != Some(host) {
-                    state.holders[host] += 1;
-                    if let Some(previous) = kept {
-                        state.holders[previous] -= 1;
-                    }
-                }
-                return state.queues[stream]
-                    .remove(position)
-                    .map(|task| Next::Fetch(Task { sent: now, ..task }));
-            }
+            let (earliest, paced) = match state.take(&self.hosts, streams, kept, now) {
+                Ok(task) => return Some(Next::Fetch(task)),
+                Err(later) => later,
+            };
             if let Some(host) = kept {
+                // The governor's lock is taken inside the schedule's here and nowhere the other
+                // way round, so the two cannot deadlock.
                 if !paced || network.host_has_waiters(&self.host_names[host]) {
                     state.holders[host] -= 1;
                     return Some(Next::Release);
@@ -1035,8 +1042,8 @@ impl Shared {
             }
             let wait = earliest
                 .map(|at| at.saturating_duration_since(now))
-                .unwrap_or(Duration::from_millis(200))
-                .clamp(Duration::from_millis(10), Duration::from_millis(200));
+                .unwrap_or(MAX_IDLE_WAIT)
+                .clamp(MIN_IDLE_WAIT, MAX_IDLE_WAIT);
             state = self
                 .wake
                 .wait_timeout(state, wait)
@@ -1046,33 +1053,7 @@ impl Shared {
     }
 
     fn settle(&self, host: usize, outcome: Settled) {
-        let mut state = self.lock();
-        state.busy[host] = state.busy[host].saturating_sub(1);
-        let now = Instant::now();
-        match &outcome {
-            Settled::Done { sent } => state.paces[host].admit(*sent, now),
-            Settled::Retry {
-                task,
-                throttled: true,
-                retry_after,
-            } => {
-                state.paces[host].refuse(task.sent, *retry_after, now);
-                state.refused = Some(now);
-            }
-            Settled::Retry { .. } | Settled::Failed => {}
-        }
-        match outcome {
-            Settled::Done { .. } => state.remaining -= 1,
-            Settled::Failed => {}
-            Settled::Retry { task, .. } => {
-                let queue = &mut state.queues[task.stream];
-                let position = queue
-                    .iter()
-                    .position(|queued| queued.index > task.index)
-                    .unwrap_or(queue.len());
-                queue.insert(position, task);
-            }
-        }
+        self.lock().settle(host, outcome, Instant::now());
         self.wake.notify_all();
     }
 
@@ -1099,12 +1080,122 @@ impl Shared {
     }
 }
 
+impl Schedule {
+    /// Hands out at `now` the next due segment whose host has room for the worker that keeps a
+    /// connection to `kept` (`hosts` as `Shared::hosts`), and whose host's pace lets a request
+    /// start. Each stream offers its lowest playlist position, so joins advance while later
+    /// segments arrive, and the stream furthest behind through its own playlist goes first, so
+    /// video and audio finish together and a throttled stream is not left for the end. A worker
+    /// that takes a segment of another host gives up its place at `kept`. Without a segment to
+    /// hand out, tells when the next one is due, and whether a segment of `kept` waits for
+    /// nothing but that host's pace.
+    fn take(
+        &mut self,
+        hosts: &[Vec<usize>],
+        streams: &[NativeStream],
+        kept: Option<usize>,
+        now: Instant,
+    ) -> Result<Task, (Option<Instant>, bool)> {
+        let mut earliest: Option<Instant> = None;
+        let per_host = self.per_host;
+        let mut chosen: Option<(usize, usize, usize)> = None;
+        let mut paced = false;
+        for stream in 0..self.queues.len() {
+            for position in 0..self.queues[stream].len() {
+                let task = self.queues[stream][position];
+                let host = hosts[stream][task.index];
+                let due = task.not_before.max(self.paces[host].next_start);
+                if due > now {
+                    paced |=
+                        kept == Some(host) && task.not_before <= now && self.busy[host] < per_host;
+                    earliest = Some(earliest.map_or(due, |at| at.min(due)));
+                    continue;
+                }
+                if self.busy[host] >= per_host
+                    || (kept != Some(host) && self.holders[host] >= per_host)
+                {
+                    continue;
+                }
+                let behind = chosen.as_ref().is_none_or(|(other, at, _)| {
+                    let other_index = self.queues[*other][*at].index;
+                    task.index * streams[*other].segments.len()
+                        < other_index * streams[stream].segments.len()
+                });
+                if behind {
+                    chosen = Some((stream, position, host));
+                }
+                break;
+            }
+        }
+        let Some((stream, position, host)) = chosen else {
+            return Err((earliest, paced));
+        };
+        self.busy[host] += 1;
+        self.paces[host].start(now);
+        if kept != Some(host) {
+            self.holders[host] += 1;
+            if let Some(previous) = kept {
+                self.holders[previous] -= 1;
+            }
+        }
+        let task = self.queues[stream].remove(position).expect("a queued task");
+        Ok(Task { sent: now, ..task })
+    }
+
+    /// Takes in what became of a segment handed out to a worker, at `now`. A retried segment
+    /// goes back in playlist order. An ordinary retry waits out the backoff of the segment's
+    /// failures. A refused one (429 or 503) goes again with the host's next paced request after
+    /// its first `FREE_REFUSALS` refusals, and after each later one waits out the backoff of its
+    /// failures counted without those, however the host answers the other segments. A
+    /// `Retry-After` replaces the wait of an ordinary or refused retry, but not that backoff.
+    fn settle(&mut self, host: usize, outcome: Settled, now: Instant) {
+        self.busy[host] = self.busy[host].saturating_sub(1);
+        match outcome {
+            Settled::Done { sent } => {
+                self.paces[host].admit(sent, now);
+                self.remaining -= 1;
+            }
+            Settled::Failed => {}
+            Settled::Retry {
+                mut task,
+                throttled,
+                retry_after,
+            } => {
+                let mut wait = retry_after.map_or(
+                    if throttled {
+                        Duration::ZERO
+                    } else {
+                        backoff(task.attempt)
+                    },
+                    |delay| delay.min(MAX_SEGMENT_RETRY_AFTER),
+                );
+                if throttled {
+                    self.paces[host].refuse(task.sent, retry_after, now);
+                    self.refused = Some(now);
+                    task.refused += 1;
+                    if task.refused > FREE_REFUSALS {
+                        wait = wait.max(backoff(task.attempt.saturating_sub(FREE_REFUSALS)));
+                    }
+                }
+                task.not_before = now + wait;
+                let queue = &mut self.queues[task.stream];
+                let position = queue
+                    .iter()
+                    .position(|queued| queued.index > task.index)
+                    .unwrap_or(queue.len());
+                queue.insert(position, task);
+            }
+        }
+    }
+}
+
 enum Settled {
     /// The segment is whole; its request was sent at `sent`.
     Done {
         sent: Instant,
     },
-    /// `throttled` for a 429 or 503 answer, with the answer's `Retry-After`.
+    /// The segment goes again; its attempts count the one that failed. `throttled` for a 429
+    /// or 503 answer, with the answer's `Retry-After`.
     Retry {
         task: Task,
         throttled: bool,
@@ -1205,16 +1296,10 @@ impl WorkerContext<'_> {
                     reason,
                 }) if task.attempt + 1 < SEGMENT_ATTEMPTS => {
                     let throttled = matches!(status, Some(429 | 503));
-                    // A throttled segment goes again with the host's next paced request.
-                    let backoff = if throttled {
+                    if throttled {
                         self.control.mark_throttled();
-                        Duration::ZERO
-                    } else {
-                        Duration::from_secs(1 << task.attempt.min(4)).min(MAX_BACKOFF)
-                    };
+                    }
                     task.attempt += 1;
-                    task.not_before = Instant::now()
-                        + retry_after.map_or(backoff, |delay| delay.min(MAX_SEGMENT_RETRY_AFTER));
                     crate::logging::record(
                         crate::logging::Event::warn("media.segment_retry")
                             .host(self.shared.host_names[host].clone())
@@ -1762,17 +1847,60 @@ mod tests {
             Some(vec![("audio", Some(10.0))])
         );
 
-        // A playlist without audio stays with yt-dlp, as does a format of a file type yt-dlp
-        // keeps as it comes when the audio fits, and a playlist whose length cannot be read.
+        // A playlist without audio stays with yt-dlp, as does a playlist whose length cannot be
+        // read.
         let mut silent = muxed.clone();
         silent["acodec"] = json!("none");
         assert_eq!(taken(&single(silent), &audio), None);
-        let mut kept = rendition.clone();
-        kept["ext"] = json!("m4a");
-        assert_eq!(taken(&single(kept), &audio), None);
         let mut unreadable = single(rendition.clone());
         unreadable.manifests[0].body = PLAIN.replace("#EXTINF:4.0,", "#EXTINF:four,");
         assert_eq!(taken(&unreadable, &audio), None);
+
+        // So does a format yt-dlp can keep as it comes: the best audio of a common audio file
+        // type, and a file of the asked type. A file of another type is converted alike by both.
+        let of_type = |ext: &str| {
+            let mut format = rendition.clone();
+            format["ext"] = json!(ext);
+            single(format)
+        };
+        let asked = |format: &str| AddRequest {
+            audio_format: Some(format.into()),
+            ..audio.clone()
+        };
+        assert_eq!(taken(&of_type("m4a"), &asked("original")), None);
+        assert_eq!(taken(&of_type("mp3"), &asked("mp3")), None);
+        assert_eq!(taken(&of_type("m4a"), &asked("m4a")), None);
+        assert_eq!(
+            taken(&of_type("m4a"), &asked("mp3")),
+            Some(vec![("audio", Some(10.0))])
+        );
+        assert_eq!(
+            taken(&of_type("mp4"), &asked("original")),
+            Some(vec![("audio", Some(10.0))])
+        );
+
+        // So does an audio download of a playlist, of a live stream from its start, or with
+        // subtitles.
+        for request in [
+            AddRequest {
+                playlist: true,
+                ..audio.clone()
+            },
+            AddRequest {
+                live_from_start: true,
+                ..audio.clone()
+            },
+            AddRequest {
+                subtitle_languages: vec!["tr".into()],
+                ..audio.clone()
+            },
+            AddRequest {
+                subtitle_tracks: vec![SubtitleSelection::default()],
+                ..audio.clone()
+            },
+        ] {
+            assert_eq!(taken(&single(rendition.clone()), &request), None);
+        }
         // So does an audio download of two playlists, a video download of one, and a download
         // whose kind is decided when it starts.
         assert_eq!(taken(&separate(), &audio), None);
@@ -1867,10 +1995,14 @@ mod tests {
         assert_eq!(quarter.phase, "Ses MP3 biçimine dönüştürülüyor: %25");
         assert_eq!(quarter.eta, Some(12));
         assert_eq!(report(50.0, 0.5).eta, None);
-        // FFmpeg's last report can run past the playlist's length.
+        // FFmpeg's last report can run past the playlist's length, also far past a playlist that
+        // declares too little.
         let end = report(200.04, 16.0);
         assert_eq!(end.phase, "Ses MP3 biçimine dönüştürülüyor: %100");
         assert_eq!((end.downloaded, end.eta), (1000, Some(0)));
+        let beyond = report(250.0, 20.0);
+        assert_eq!(beyond.phase, "Ses MP3 biçimine dönüştürülüyor: %100");
+        assert_eq!(beyond.eta, Some(0));
         let copy = conversion_progress(
             &audio_output(None, "aac"),
             1000,
@@ -1879,6 +2011,25 @@ mod tests {
             Duration::from_secs(1),
         );
         assert_eq!(copy.phase, "Ses M4A dosyasına kopyalanıyor: %50");
+    }
+
+    #[test]
+    fn a_conversion_that_runs_out_of_time_says_so() {
+        // The error `run_capture` gives once FFmpeg has run for its whole timeout.
+        let timeout = crate::error_codes::coded(
+            crate::error_codes::MED_011,
+            "Medya analizi 600 saniye içinde tamamlanmadı",
+        );
+        assert_eq!(
+            unfinished_conversion(timeout, Duration::from_secs(600)).to_string(),
+            "Ses dönüştürmesi 600 saniye içinde tamamlanmadı"
+        );
+        // A pause or cancel keeps its own error.
+        let stopped = anyhow!("Kaynak hazırlığı durduruldu");
+        assert_eq!(
+            unfinished_conversion(stopped, Duration::from_secs(600)).to_string(),
+            "Kaynak hazırlığı durduruldu"
+        );
     }
 
     /// The segment `next_task` hands to a worker that keeps a connection to `kept`.
@@ -2123,11 +2274,329 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn a_refused_segment_goes_again_twice_with_the_pace_and_then_backs_off_while_others_pass() {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-backoff-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let streams = [one_host_stream(3)];
+        let joins = [Join::resume(&root, &streams[0]).unwrap()];
+        let shared = Shared::new(&streams, &joins, 8);
+        let mut state = shared.lock();
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let take = |state: &mut Schedule, now| {
+            state
+                .take(&shared.hosts, &streams, None, now)
+                .unwrap_or_else(|_| panic!("no segment was handed out"))
+        };
+        let retry = |task: Task, throttled, retry_after| Settled::Retry {
+            task: Task {
+                attempt: task.attempt + 1,
+                ..task
+            },
+            throttled,
+            retry_after,
+        };
+        let not_before = |state: &Schedule, index| {
+            state.queues[0]
+                .iter()
+                .find(|task| task.index == index)
+                .unwrap()
+                .not_before
+        };
+        let (first, second) = (take(&mut state, at(0)), take(&mut state, at(0)));
+
+        // A refused segment goes again with the host's next paced request after its first two
+        // refusals; an ordinary failure waits out the backoff of its attempts.
+        state.settle(0, retry(first, true, None), at(50));
+        assert_eq!(not_before(&state, 0), at(50));
+        let second = Task {
+            attempt: 2,
+            ..second
+        };
+        state.settle(0, retry(second, false, None), at(60));
+        assert_eq!(not_before(&state, 1), at(60) + Duration::from_secs(4));
+        let (first, third) = (take(&mut state, at(60)), take(&mut state, at(110)));
+        assert_eq!((first.index, third.index), (0, 2));
+        state.settle(0, retry(first, true, None), at(110));
+        assert_eq!(not_before(&state, 0), at(110));
+
+        // The host admits another segment, so it is not locked out. The refused segment's third
+        // refusal still waits out the backoff of one failure, and the next ones that of two and
+        // three, also when their Retry-After is shorter; a longer one holds it longer.
+        state.settle(0, Settled::Done { sent: third.sent }, at(160));
+        let first = take(&mut state, at(160));
+        assert_eq!(first.index, 0);
+        state.settle(0, retry(first, true, None), at(210));
+        assert_eq!(state.paces[0].lockout, 0);
+        assert_eq!(not_before(&state, 0), at(1210));
+        let first = take(&mut state, at(1210));
+        state.settle(
+            0,
+            retry(first, true, Some(Duration::from_secs(1))),
+            at(1260),
+        );
+        assert_eq!(not_before(&state, 0), at(3260));
+        let first = take(&mut state, at(3260));
+        state.settle(
+            0,
+            retry(first, true, Some(Duration::from_secs(10))),
+            at(3310),
+        );
+        assert_eq!(not_before(&state, 0), at(13_310));
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Runs the schedule of one stream of `segments` segments on one host in virtual time, with
+    /// `workers` workers, as the workers and `Shared::next_task` do:
+    /// - each answer comes `latency` after its request and up to 40 ms later, by a sequence that
+    ///   is the same in every run;
+    /// - an admitted segment settles 1 ms after its answer, once its file is written;
+    /// - a worker with nothing to take waits until a request settles or its wait of
+    ///   `MIN_IDLE_WAIT` to `MAX_IDLE_WAIT` ends, at the next 15.6 ms timer tick.
+    ///
+    /// `host` answers each request as it is sent, from the segment, the time since the start and
+    /// that of its answer. Returns how long the download took and how many requests were refused,
+    /// or the segment that used up its attempts and when.
+    fn simulate(
+        segments: usize,
+        workers: usize,
+        latency: Duration,
+        mut host: impl FnMut(usize, Duration, Duration) -> Answer,
+    ) -> Result<(Duration, usize), (usize, Duration)> {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-virtual-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let streams = [one_host_stream(segments)];
+        let joins = [Join::resume(&root, &streams[0]).unwrap()];
+        let shared = Shared::new(&streams, &joins, workers);
+        drop(joins);
+        fs::remove_dir_all(root).unwrap();
+        let mut state = shared.lock();
+        let tick = Duration::from_micros(15_625);
+        let start = Instant::now();
+        let mut now = start;
+        let mut refused = 0;
+        let mut seed = 1u32;
+        // Each worker's request in flight, with when it settles and what the host answered.
+        let mut flying = vec![None; workers];
+        while state.remaining > 0 {
+            let mut wake = None;
+            for slot in flying.iter_mut().filter(|slot| slot.is_none()) {
+                match state.take(&shared.hosts, &streams, Some(0), now) {
+                    Ok(task) => {
+                        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                        let answer =
+                            now + latency + Duration::from_millis(u64::from(seed >> 16) % 41);
+                        let verdict = host(task.index, now - start, answer - start);
+                        let written = Duration::from_millis(u64::from(verdict == Answer::Admitted));
+                        *slot = Some((task, answer + written, verdict));
+                    }
+                    Err((earliest, _)) => {
+                        let wait = earliest
+                            .map_or(MAX_IDLE_WAIT, |at| at.saturating_duration_since(now))
+                            .clamp(MIN_IDLE_WAIT, MAX_IDLE_WAIT);
+                        let ticks = (now + wait - start).as_nanos().div_ceil(tick.as_nanos());
+                        wake = Some(start + tick * u32::try_from(ticks).unwrap());
+                        break;
+                    }
+                }
+            }
+            let settles = flying.iter().flatten().map(|(_, at, _)| *at).min();
+            now = settles
+                .into_iter()
+                .chain(wake)
+                .min()
+                .expect("nothing left to wait for");
+            for slot in &mut flying {
+                let Some((task, at, verdict)) = slot.filter(|(_, at, _)| *at <= now) else {
+                    continue;
+                };
+                *slot = None;
+                let (throttled, retry_after) = match verdict {
+                    Answer::Admitted => {
+                        state.settle(0, Settled::Done { sent: task.sent }, at);
+                        continue;
+                    }
+                    _ if task.attempt + 1 >= SEGMENT_ATTEMPTS => {
+                        return Err((task.index, at - start));
+                    }
+                    Answer::Refused(retry_after) => (true, retry_after),
+                    Answer::Failed => (false, None),
+                };
+                refused += usize::from(throttled);
+                let outcome = Settled::Retry {
+                    task: Task {
+                        attempt: task.attempt + 1,
+                        ..task
+                    },
+                    throttled,
+                    retry_after,
+                };
+                state.settle(0, outcome, at);
+            }
+        }
+        Ok((now - start, refused))
+    }
+
+    /// How a simulated host answers a request.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Answer {
+        Admitted,
+        /// A 429, with the `Retry-After` given.
+        Refused(Option<Duration>),
+        /// A failure other than a refusal, such as a 500.
+        Failed,
+    }
+
+    #[test]
+    fn a_download_outlasts_a_host_that_refuses_everything_as_long_as_30_tries_back_off() {
+        // The backoff between 30 tries, 1, 2, 4 and 8 s and then 15 s, spans 390 s. A segment
+        // its host refuses for that long still has a try left after it.
+        let outage = Duration::from_secs(390);
+        for segments in [1, 40] {
+            let refused_until_the_end = |_, sent: Duration, _| {
+                if sent < outage {
+                    Answer::Refused(None)
+                } else {
+                    Answer::Admitted
+                }
+            };
+            match simulate(
+                segments,
+                8,
+                Duration::from_millis(50),
+                refused_until_the_end,
+            ) {
+                Ok((took, _)) => assert!(took >= outage),
+                Err((index, at)) => {
+                    panic!("of {segments}, segment {index} used up its attempts after {at:?}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_segment_refused_while_the_others_are_admitted_lasts_as_long_as_30_tries_back_off() {
+        // However the host answers the other segments, the attempts of a segment it keeps
+        // refusing span the 390 s of the backoff between 30 tries, also when its Retry-After
+        // is shorter than the backoff.
+        for retry_after in [None, Some(Duration::from_secs(1))] {
+            let refused_alone = |index, _, _| {
+                if index == 0 {
+                    Answer::Refused(retry_after)
+                } else {
+                    Answer::Admitted
+                }
+            };
+            let (index, at) = simulate(200, 8, Duration::from_millis(50), refused_alone)
+                .expect_err("the host never admits the first segment");
+            assert_eq!(index, 0);
+            assert!(at >= Duration::from_secs(390), "{retry_after:?}: {at:?}");
+        }
+    }
+
+    #[test]
+    fn a_segment_that_fails_otherwise_and_then_is_refused_lasts_as_long_as_30_tries_back_off() {
+        // A segment that first fails otherwise, as with a 500 or a timeout, and is then refused
+        // waits between its tries as long as one that only fails or is only refused.
+        for failures in 1..=8 {
+            let mut tries = 0;
+            let failing_then_refused = |index, _, _| {
+                if index != 0 {
+                    return Answer::Admitted;
+                }
+                tries += 1;
+                if tries <= failures {
+                    Answer::Failed
+                } else {
+                    Answer::Refused(None)
+                }
+            };
+            let (index, at) = simulate(200, 8, Duration::from_millis(50), failing_then_refused)
+                .expect_err("the host never admits the first segment");
+            assert_eq!(index, 0);
+            assert!(
+                at >= Duration::from_secs(390),
+                "{failures} failures first: {at:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refusal_paces_only_its_own_host() {
+        let root = std::env::temp_dir().join(format!("ssdownload-apart-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let audio = NativeStream {
+            segments: (0..4)
+                .map(|index| Url::parse(&format!("https://audio.example/{index}.ts")).unwrap())
+                .collect(),
+            ..one_host_stream(4)
+        };
+        let streams = [
+            NativeStream {
+                role: "video",
+                ..one_host_stream(4)
+            },
+            audio,
+        ];
+        let joins = [
+            Join::resume(&root, &streams[0]).unwrap(),
+            Join::resume(&root, &streams[1]).unwrap(),
+        ];
+        let shared = Shared::new(&streams, &joins, 2);
+        let (video, audio) = (0, 1);
+        let tasks = (0..2)
+            .map(|_| task_for(&shared, &streams, None))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tasks.iter().map(|task| task.stream).collect::<Vec<_>>(),
+            [video, audio]
+        );
+        // The audio host's 429 paces that host alone. The audio's retry is furthest behind and
+        // goes first; the video's next request starts at once and leaves the one after it free
+        // to start at once too.
+        shared.settle(
+            audio,
+            Settled::Retry {
+                task: Task {
+                    attempt: 1,
+                    ..tasks[1]
+                },
+                throttled: true,
+                retry_after: None,
+            },
+        );
+        let retried = task_for(&shared, &streams, Some(audio));
+        assert_eq!((retried.stream, retried.index), (audio, 0));
+        let next = task_for(&shared, &streams, Some(video));
+        assert_eq!((next.stream, next.index), (video, 1));
+        let state = shared.lock();
+        assert!(state.paces[audio].rate.is_some());
+        assert!(state.paces[video].rate.is_none());
+        assert!(state.paces[video].next_start <= next.sent);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// What a limited host saw of a download, on the loopback server or in virtual time.
+    #[derive(Debug)]
+    struct Served {
+        admitted: usize,
+        refused: usize,
+        /// Seconds from the first request's arrival to the last answer.
+        span: f64,
+        /// Seconds from arrival to answer of every admitted request, added up.
+        serving: f64,
+    }
+
     /// Fetches `segments` segments of 2000 bytes over four connections from a loopback server
-    /// that answers every request after 40 ms and admits them as `limit` allows. Returns how long
-    /// that took and how many requests the server refused.
-    fn fetch_limited(limit: crate::test_http::RequestLimit, segments: usize) -> (Duration, usize) {
-        use crate::test_http::{pattern, Config, Server, TempDir};
+    /// that answers every request after 40 ms and admits them as `limit` allows. A download that
+    /// has not finished after a minute fails the test.
+    fn fetch_limited(limit: crate::test_http::RequestLimit, segments: usize) -> Served {
+        use crate::test_http::{pattern, Config, Logged, Server, TempDir};
         let server = Server::start(Config {
             size: 2000,
             limit: Some(limit),
@@ -2145,82 +2614,167 @@ mod tests {
             connections: Some(4),
             ..AddRequest::default()
         };
-        let began = Instant::now();
-        let joins = fetch_segments(
-            &streams,
-            &workspace.0,
-            &request,
-            &TransferControl::default(),
-            &NetworkGovernor::new(8),
-            &mut |_| {},
-        )
-        .unwrap();
-        let elapsed = began.elapsed();
-        assert_eq!(
-            fs::read(&joins[0].joined).unwrap(),
-            pattern(1, 2000).repeat(segments)
-        );
+        let (control, network) = (TransferControl::default(), NetworkGovernor::new(8));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let _ = sender.send(fetch_segments(
+                    &streams,
+                    &workspace.0,
+                    &request,
+                    &control,
+                    &network,
+                    &mut |_| {},
+                ));
+            });
+            let fetched = receiver.recv_timeout(Duration::from_secs(60));
+            // A stalled download is stopped so that the scope can end.
+            control.cancel();
+            let joins = fetched.expect("the download stalled").unwrap();
+            assert_eq!(
+                fs::read(&joins[0].joined).unwrap(),
+                pattern(1, 2000).repeat(segments)
+            );
+        });
         let log = server.log();
-        let admitted = log.iter().filter(|entry| entry.status == 200).count();
-        assert_eq!(admitted, segments);
-        (elapsed, log.len() - admitted)
+        let answered = |entry: &Logged| entry.answered.expect("every request was answered");
+        let first = log.iter().map(|entry| entry.arrived).min().unwrap();
+        let last = log.iter().map(answered).max().unwrap();
+        let admitted = log.iter().filter(|entry| entry.status == 200);
+        let served = Served {
+            admitted: admitted.clone().count(),
+            refused: log.iter().filter(|entry| entry.status != 200).count(),
+            span: (last - first).as_secs_f64(),
+            serving: admitted
+                .map(|entry| (answered(entry) - entry.arrived).as_secs_f64())
+                .sum(),
+        };
+        assert_eq!(served.admitted, segments);
+        served
+    }
+
+    /// Runs the download `fetch_limited` makes in virtual time (see `simulate`), from a host that
+    /// answers every request after at least 40 ms and admits them as `limit` allows.
+    fn simulate_limited(limit: &crate::test_http::RequestLimit, segments: usize) -> Served {
+        use crate::test_http::{retry_after_seconds, Limit, Limiter};
+        let origin = Instant::now();
+        let mut limiter = Limiter::new(Some(limit.kind), origin);
+        // When the admitted requests in flight are answered, for a limit on requests in flight.
+        let mut answers = Vec::new();
+        let mut serving = Duration::ZERO;
+        let host = |_, sent: Duration, answered: Duration| {
+            let before = answers.len();
+            answers.retain(|at| *at > sent);
+            for _ in answers.len()..before {
+                limiter.answered();
+            }
+            let wait = limiter.admit(limit.kind, origin + sent).err();
+            if wait.is_none() {
+                serving += answered - sent;
+                if matches!(limit.kind, Limit::InFlight { .. }) {
+                    answers.push(answered);
+                }
+            }
+            wait.map_or(Answer::Admitted, |wait| {
+                Answer::Refused(
+                    limit
+                        .retry_after
+                        .then(|| Duration::from_secs(retry_after_seconds(wait))),
+                )
+            })
+        };
+        let (took, refused) = simulate(segments, 4, Duration::from_millis(40), host)
+            .unwrap_or_else(|(index, at)| {
+                panic!("segment {index} used up its attempts after {at:?}")
+            });
+        Served {
+            admitted: segments,
+            refused,
+            span: took.as_secs_f64(),
+            serving: serving.as_secs_f64(),
+        }
+    }
+
+    /// At most 20 requests in any second, the refused ones counted too, so a client that keeps
+    /// asking while it is refused stays refused.
+    fn sliding_window() -> crate::test_http::RequestLimit {
+        crate::test_http::RequestLimit {
+            kind: crate::test_http::Limit::SlidingWindow {
+                requests: 20,
+                window: Duration::from_secs(1),
+            },
+            status: 429,
+            retry_after: false,
+        }
+    }
+
+    fn two_in_flight() -> crate::test_http::RequestLimit {
+        crate::test_http::RequestLimit {
+            kind: crate::test_http::Limit::InFlight { requests: 2 },
+            status: 503,
+            retry_after: true,
+        }
+    }
+
+    /// 20 requests a second after a burst of 10.
+    fn token_bucket() -> crate::test_http::RequestLimit {
+        crate::test_http::RequestLimit {
+            kind: crate::test_http::Limit::TokenBucket {
+                rate: 20.0,
+                burst: 10.0,
+            },
+            status: 429,
+            retry_after: true,
+        }
     }
 
     #[test]
     fn a_host_that_counts_refused_requests_toward_its_limit_is_paced_below_it() {
-        use crate::test_http::{Limit, RequestLimit};
-        // At most 20 requests in any second, the refused ones counted too, so a client that
-        // keeps asking while it is refused stays refused. At the limit, the 100 segments take
-        // four seconds after the first 20.
-        let (elapsed, refused) = fetch_limited(
-            RequestLimit {
-                kind: Limit::SlidingWindow {
-                    requests: 20,
-                    window: Duration::from_secs(1),
-                },
-                status: 429,
-                retry_after: false,
-            },
-            100,
-        );
-        assert!(refused <= 80, "{refused} refused");
-        assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+        let served = simulate_limited(&sliding_window(), 100);
+        // The window admits at most 20 requests in each second of the download and in the
+        // second it ends in.
+        let capacity = 20.0 * (served.span + 1.0);
+        assert!(served.admitted as f64 >= 0.4 * capacity, "{served:?}");
+        assert!(served.refused * 2 <= served.admitted, "{served:?}");
     }
 
     #[test]
     fn a_host_that_answers_two_requests_at_a_time_refuses_few_of_four_connections() {
-        use crate::test_http::{Limit, RequestLimit};
-        // Two answers of 40 ms at a time: the 100 segments take two seconds at the limit.
-        let (elapsed, refused) = fetch_limited(
-            RequestLimit {
-                kind: Limit::InFlight { requests: 2 },
-                status: 503,
-                retry_after: true,
-            },
-            100,
-        );
-        assert!(refused <= 12, "{refused} refused");
-        assert!(elapsed < Duration::from_secs(6), "{elapsed:?}");
+        let served = simulate_limited(&two_in_flight(), 100);
+        // The share of the download's time the host spent on two admitted requests at once.
+        let busy = served.serving / (2.0 * served.span);
+        assert!(busy >= 0.4, "{busy} busy, {served:?}");
+        assert!(served.refused * 4 <= served.admitted, "{served:?}");
     }
 
     #[test]
     fn a_host_with_a_token_bucket_refuses_few_requests_and_stays_near_its_rate() {
-        use crate::test_http::{Limit, RequestLimit};
-        // 20 requests a second after a burst of 10: the 100 segments take four and a half
-        // seconds at the limit.
-        let (elapsed, refused) = fetch_limited(
-            RequestLimit {
-                kind: Limit::TokenBucket {
-                    rate: 20.0,
-                    burst: 10.0,
-                },
-                status: 429,
-                retry_after: true,
-            },
-            100,
-        );
-        assert!(refused <= 50, "{refused} refused");
-        assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+        let served = simulate_limited(&token_bucket(), 100);
+        let capacity = 10.0 + 20.0 * served.span;
+        assert!(served.admitted as f64 >= 0.6 * capacity, "{served:?}");
+        assert!(served.refused * 2 <= served.admitted, "{served:?}");
+    }
+
+    // On a real server the share of its capacity a download uses also depends on how fast this
+    // machine gets its requests out, which a busy test runner slows down whatever the pace.
+    // These check the refusals only.
+
+    #[test]
+    fn a_download_from_a_loopback_server_that_counts_refused_requests_is_seldom_refused() {
+        let served = fetch_limited(sliding_window(), 100);
+        assert!(served.refused * 2 <= served.admitted, "{served:?}");
+    }
+
+    #[test]
+    fn a_download_from_a_loopback_server_that_answers_two_requests_at_a_time_is_seldom_refused() {
+        let served = fetch_limited(two_in_flight(), 100);
+        assert!(served.refused * 4 <= served.admitted, "{served:?}");
+    }
+
+    #[test]
+    fn a_download_from_a_loopback_server_with_a_token_bucket_is_seldom_refused() {
+        let served = fetch_limited(token_bucket(), 100);
+        assert!(served.refused * 2 <= served.admitted, "{served:?}");
     }
 
     #[test]
@@ -2358,7 +2912,6 @@ mod tests {
             Settled::Retry {
                 task: Task {
                     attempt: 1,
-                    not_before: Instant::now() + Duration::from_secs(2),
                     ..first
                 },
                 throttled: false,

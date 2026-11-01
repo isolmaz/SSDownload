@@ -235,15 +235,17 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
     // reason the user has to act on. Metadata findings are reported only for intact streams.
     let start_tolerance = info.duration_tolerance.unwrap_or(0.5).clamp(0.25, 2.0);
     let end_tolerance = start_tolerance;
-    // Source playlists may declare different lengths for video and audio; each stream with a
-    // playlist of its own is held to it, and while both have one, not to its counterpart.
+    // Source playlists may declare different lengths for video and audio; while both have one,
+    // each stream is held to its own playlist instead of to its counterpart. So is the audio of
+    // an audio download, which has no counterpart.
     let declared =
         !info.declared_video_durations.is_empty() && !info.declared_audio_durations.is_empty();
+    let held = declared || request.kind == DownloadKind::Audio;
     for (kind, spans, lengths) in [
         ("video", &video_spans, &info.declared_video_durations),
         ("audio", &audio_spans, &info.declared_audio_durations),
     ] {
-        if !lengths.is_empty() {
+        if held && !lengths.is_empty() {
             for span in spans.iter() {
                 let length = span.1 - span.0;
                 // Whole-second segment lengths are rounded and drift from the stream by up to

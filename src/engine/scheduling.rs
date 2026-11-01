@@ -217,3 +217,14 @@ pub(super) fn consume_queue_bytes_at<Tz: TimeZone>(
     }
     quota.consumed_bytes = quota.consumed_bytes.saturating_add(bytes);
 }
+
+/// The bytes of a finished transfer's result that its progress left uncounted. A transfer that
+/// reported its bytes in (`Processing`) has counted every byte it received, and the size of its
+/// merged or converted result is not a count of bytes received.
+pub(super) fn uncounted_result_bytes(state: JobState, counted: u64, result_bytes: u64) -> u64 {
+    if state == JobState::Processing {
+        0
+    } else {
+        result_bytes.saturating_sub(counted)
+    }
+}
