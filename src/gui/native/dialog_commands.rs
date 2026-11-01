@@ -709,12 +709,20 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         }
                     }
                     let batch = requests.len();
+                    // One download that starts now opens its window; a batch or
+                    // a start scheduled for later does not.
+                    let opens_window =
+                        matches!(requests.as_slice(), [request] if request.starts_now());
                     let mut added = 0usize;
+                    let mut added_ids = Vec::new();
                     let mut remaining = requests.into_iter();
                     while let Some(request) = remaining.next() {
                         let url = request.url.clone();
                         match dlg.app.dispatch_result(Action::Add { request }) {
-                            Ok(result) => added += result.job_ids.len(),
+                            Ok(result) => {
+                                added += result.job_ids.len();
+                                added_ids.extend(result.job_ids);
+                            }
                             Err(e) => {
                                 let pending = std::iter::once(url)
                                     .chain(remaining.map(|request| request.url))
@@ -750,7 +758,12 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                             false,
                         );
                     }
+                    let owner = GetWindow(dlg.hwnd, GW_OWNER);
+                    let app = dlg.app.clone();
                     DestroyWindow(dlg.hwnd);
+                    if opens_window && added_ids.len() == 1 {
+                        open_job_view(owner, app, added_ids);
+                    }
                 }
                 Err((e, h)) => set_dialog_error(dlg.hwnd, dlg.error, &e, h),
             },

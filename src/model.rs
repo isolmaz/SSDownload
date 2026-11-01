@@ -209,6 +209,12 @@ pub struct AddRequest {
     pub live_from_start: bool,
 }
 impl AddRequest {
+    /// Whether the download starts as soon as it is added: it has no start time
+    /// in the future.
+    pub fn starts_now(&self) -> bool {
+        self.start_at
+            .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+    }
     /// Drops the session material a finished job no longer needs: request headers, session
     /// cookies, subtitle headers and captured page markup. Only a completed job forgets
     /// them; paused, failed and waiting jobs keep them for resume, renewal and reports.
@@ -1546,6 +1552,12 @@ pub struct LogBatch {
 #[allow(clippy::large_enum_variant)]
 pub enum Action {
     Add {
+        request: AddRequest,
+    },
+    /// An add the browser extension handed over: the native host turns the
+    /// extension's add into this one, and the desktop opens the download window
+    /// of a single download that starts now.
+    BrowserAdd {
         request: AddRequest,
     },
     Pause {

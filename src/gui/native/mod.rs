@@ -5286,6 +5286,9 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
         ui.last_show_seq = snapshot.show_window_seq;
         show_main(ui);
     }
+    if !ui.exiting {
+        open_handed_over_job_views(ui.hwnd, &ui.app);
+    }
     let seen_messages = ui.seen_messages;
     for item in snapshot.messages.iter().filter(|m| m.id > seen_messages) {
         ui.seen_messages = ui.seen_messages.max(item.id);
@@ -8569,8 +8572,18 @@ unsafe fn show_rename(owner: HWND, app: App, id: String, name: String) {
 }
 
 /// Opens a download's own window for already queued jobs (a card's "Büyüt").
+/// Opens the download window of `ids`, or brings forward the one already open
+/// for them: a job has one window.
 pub(super) unsafe fn open_job_view(owner: HWND, app: App, ids: Vec<String>) {
     if ids.is_empty() {
+        return;
+    }
+    let open = owned_dialogs(owner).into_iter().find(|&hwnd| {
+        let state = dialog_state(hwnd);
+        !state.is_null() && matches!(&(*state).kind, DialogKind::Progress(f) if f.ids == ids)
+    });
+    if let Some(hwnd) = open {
+        activate_window(hwnd);
         return;
     }
     let title = crate::i18n::ui("İndirme", "Download");
@@ -8605,6 +8618,13 @@ pub(super) unsafe fn open_job_view(owner: HWND, app: App, ids: Vec<String>) {
             modeless: true,
         },
     );
+}
+
+/// Opens the download window of each single download the browser handed over.
+unsafe fn open_handed_over_job_views(owner: HWND, app: &App) {
+    for id in app.take_job_views() {
+        open_job_view(owner, app.clone(), vec![id]);
+    }
 }
 
 unsafe fn show_site_logins(owner: HWND, app: App) {
@@ -12346,6 +12366,131 @@ mod tests {
                 unsafe { text(dialog.error_line()) }.is_empty(),
                 "Continue was not pressed"
             );
+        });
+    }
+
+    /// The download windows open for the job `id`.
+    fn job_windows(id: &str) -> Vec<super::HWND> {
+        unsafe {
+            super::owned_dialogs(std::ptr::null_mut())
+                .into_iter()
+                .filter(|&hwnd| {
+                    let state = super::dialog_state(hwnd);
+                    !state.is_null()
+                        && matches!(&(*state).kind, super::DialogKind::Progress(f) if f.ids == [id])
+                })
+                .collect()
+        }
+    }
+
+    /// New download's OK with `links` and `schedule` typed in; returns the app
+    /// and the ids of the jobs it added.
+    fn add_from_new_download(
+        dialog: &HiddenDialog,
+        links: &str,
+        schedule: &str,
+    ) -> (crate::app::App, Vec<String>) {
+        use super::{set_text, DialogKind, D_ADD_OK};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COMMAND};
+
+        let DialogKind::Add(f) = dialog.kind() else {
+            unreachable!()
+        };
+        unsafe {
+            set_text(f.urls, links);
+            set_text(f.schedule, schedule);
+            SendMessageW(dialog.hwnd, WM_COMMAND, D_ADD_OK as usize, 0);
+        }
+        assert!(!dialog.is_open(), "OK added the downloads");
+        let app = dialog.app().clone();
+        let ids = app
+            .snapshot()
+            .jobs
+            .iter()
+            .map(|job| job.id.clone())
+            .collect();
+        (app, ids)
+    }
+
+    #[test]
+    fn new_download_with_one_link_that_starts_now_opens_one_download_window() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            // A closed loopback port: the download fails without leaving the machine.
+            let (app, ids) = add_from_new_download(dialog, "http://127.0.0.1:9/one.zip", "");
+            let [id] = ids.as_slice() else {
+                panic!("one download was added: {ids:?}")
+            };
+            let windows = job_windows(id);
+            assert_eq!(windows.len(), 1, "the download has one window");
+            unsafe { super::open_job_view(std::ptr::null_mut(), app, vec![id.clone()]) };
+            assert_eq!(
+                job_windows(id),
+                windows,
+                "opening it again brings the same window forward"
+            );
+            for hwnd in windows {
+                unsafe { DestroyWindow(hwnd) };
+            }
+        });
+    }
+
+    #[test]
+    fn new_download_with_several_links_or_a_later_start_opens_no_download_window() {
+        for (links, schedule) in [
+            ("http://127.0.0.1:9/a.zip\r\nhttp://127.0.0.1:9/b.zip", ""),
+            ("http://127.0.0.1:9/later.zip", "2099-01-01 10:00"),
+        ] {
+            with_dialog(add_kind, 620, 340, |dialog| {
+                let (_, ids) = add_from_new_download(dialog, links, schedule);
+                assert!(!ids.is_empty(), "the downloads were added");
+                for id in &ids {
+                    assert!(job_windows(id).is_empty(), "{links} {schedule}: no window");
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn a_browser_hand_over_opens_one_download_window_and_other_adds_none() {
+        use crate::model::{Action, AddRequest, DownloadKind};
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let app = dialog.app().clone();
+            let request = |name: &str| AddRequest {
+                url: format!("http://127.0.0.1:9/{name}.zip"),
+                kind: DownloadKind::File,
+                ..Default::default()
+            };
+            let handed = app
+                .dispatch_result(Action::BrowserAdd {
+                    request: request("handed-over"),
+                })
+                .unwrap()
+                .job_ids;
+            let plain = app
+                .dispatch_result(Action::Add {
+                    request: request("plain"),
+                })
+                .unwrap()
+                .job_ids;
+            unsafe { super::open_handed_over_job_views(std::ptr::null_mut(), &app) };
+            let windows = job_windows(&handed[0]);
+            assert_eq!(windows.len(), 1, "the hand-over has one window");
+            assert!(job_windows(&plain[0]).is_empty(), "a plain add has none");
+            app.dispatch(Action::ResumeAll).unwrap();
+            app.dispatch(Action::RetryFailed).unwrap();
+            unsafe { super::open_handed_over_job_views(std::ptr::null_mut(), &app) };
+            assert_eq!(job_windows(&handed[0]), windows, "it opens once");
+            assert!(
+                job_windows(&plain[0]).is_empty(),
+                "resuming or retrying opens no window"
+            );
+            for hwnd in windows {
+                unsafe { DestroyWindow(hwnd) };
+            }
         });
     }
 
