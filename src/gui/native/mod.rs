@@ -6519,6 +6519,11 @@ const SETTINGS_FRAME: i32 = 39;
 /// The simple add dialog's window: its 292 logical content height plus the
 /// shared frame, with a few pixels so DPI rounding never shows a scroll bar.
 const ADD_DIALOG_HEIGHT: i32 = 292 + SETTINGS_FRAME + 3;
+/// Logical content height of the one-field dialogs: the label and the field,
+/// a gap, the error line and the button row. Their windows add the frame and a
+/// pixel, like every dialog here.
+const SPEED_LOGICAL_HEIGHT: i32 = 145;
+const RENAME_LOGICAL_HEIGHT: i32 = 133;
 
 unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
     let simple = UiMode::parse(&value.ui_mode).is_simple();
@@ -6582,7 +6587,7 @@ unsafe fn show_speed_limit(owner: HWND, app: App, ids: Vec<String>, initial: u64
         app,
         crate::i18n::ui("İndirme hız sınırı", "Download speed limit"),
         420,
-        150,
+        SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
         DialogKind::Speed(SpeedFields {
             ids,
             initial,
@@ -6596,7 +6601,7 @@ unsafe fn show_rename(owner: HWND, app: App, id: String, name: String) {
         app,
         crate::i18n::ui("Yeniden adlandır", "Rename"),
         460,
-        150,
+        RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
         DialogKind::Rename(RenameFields {
             id,
             initial: name,
@@ -8533,6 +8538,14 @@ mod tests {
         fn is_open(&self) -> bool {
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(self.hwnd) != 0 }
         }
+
+        /// Selects a settings tab and lays the dialog out for it.
+        fn show_tab(&self, tab: usize) {
+            unsafe {
+                (*self.raw).tab.set(tab);
+                super::layout_dialog(&*self.raw);
+            }
+        }
     }
 
     impl Drop for HiddenDialog {
@@ -9045,5 +9058,397 @@ mod tests {
             assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
             assert!(!dialog.is_open());
         });
+    }
+
+    /// The ids of the visible controls whose rectangle overlaps the dialog's
+    /// error line.
+    fn controls_over_the_error_line(dialog: &HiddenDialog) -> Vec<i32> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::IntersectRect;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect, GWL_STYLE, GW_CHILD,
+            GW_HWNDNEXT, WS_VISIBLE,
+        };
+
+        unsafe {
+            let mut error: RECT = std::mem::zeroed();
+            GetWindowRect(dialog.error_line(), &mut error);
+            let mut over = Vec::new();
+            let mut child = GetWindow(dialog.hwnd, GW_CHILD);
+            while !child.is_null() {
+                let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+                if child != dialog.error_line() && style & WS_VISIBLE != 0 {
+                    let (mut rect, mut common): (RECT, RECT) =
+                        (std::mem::zeroed(), std::mem::zeroed());
+                    GetWindowRect(child, &mut rect);
+                    if IntersectRect(&mut common, &rect, &error) != 0 {
+                        over.push(GetDlgCtrlID(child));
+                    }
+                }
+                child = GetWindow(child, GW_HWNDNEXT);
+            }
+            over
+        }
+    }
+
+    #[test]
+    fn the_error_line_of_every_dialog_has_its_own_space() {
+        use super::{
+            CrawlerFields, DialogKind, EventFields, JobLogFields, LoginFields, MediaFields,
+            ProgressFields, QueueFields, RuleFields, SyncFields, ToolsFields, UsageModes,
+            WizardFields, ADD_DIALOG_HEIGHT, RENAME_LOGICAL_HEIGHT, SETTINGS_FRAME,
+            SPEED_LOGICAL_HEIGHT,
+        };
+        use crate::model::{AddRequest, MediaInfo};
+        use std::{collections::HashSet, ptr::null_mut};
+
+        fn wizard(simple: bool) -> DialogKind {
+            DialogKind::Wizard(WizardFields {
+                modes: UsageModes {
+                    video: true,
+                    file: true,
+                    audio: true,
+                },
+                simple,
+                video: null_mut(),
+                file: null_mut(),
+                audio: null_mut(),
+                simple_card: null_mut(),
+                advanced_card: null_mut(),
+                start: null_mut(),
+            })
+        }
+        fn add(advanced: bool) -> DialogKind {
+            match add_kind() {
+                DialogKind::Add(mut f) => {
+                    f.advanced = advanced;
+                    DialogKind::Add(f)
+                }
+                _ => unreachable!(),
+            }
+        }
+        fn media() -> DialogKind {
+            DialogKind::Media(Box::new(MediaFields {
+                base: AddRequest::default(),
+                subtitle_none: false,
+                session_consent: None,
+                summary: null_mut(),
+                name: null_mut(),
+                kind: null_mut(),
+                kind_values: Vec::new(),
+                format: null_mut(),
+                audio: null_mut(),
+                audio_tracks: null_mut(),
+                subtitles: null_mut(),
+                external_url: null_mut(),
+                external_language: null_mut(),
+                external_label: null_mut(),
+                external_kind: null_mut(),
+                external_default: null_mut(),
+                external_list: null_mut(),
+                full_verification: null_mut(),
+                playlist: null_mut(),
+                renew_job: null_mut(),
+                renew_restart: null_mut(),
+                renew_ids: Vec::new(),
+                video_formats: Vec::new(),
+                audio_values: Vec::new(),
+                info: MediaInfo::default(),
+                size: null_mut(),
+                subtitle_values: Vec::new(),
+                external_values: Vec::new(),
+                loaded_title: String::new(),
+                populated: false,
+                inspect_generation: 0,
+                advanced: false,
+                report_shown: false,
+                report_error: None,
+                host: String::new(),
+                auto_queue: false,
+                remember: null_mut(),
+                from_start: null_mut(),
+                from_start_offered: false,
+                playlist_items: null_mut(),
+                thumbnail: null_mut(),
+                thumbnail_requested: false,
+            }))
+        }
+        type Case = (
+            &'static str,
+            Box<dyn FnOnce() -> DialogKind + Send>,
+            i32,
+            i32,
+        );
+        let cases: Vec<Case> = vec![
+            ("wizard, simple", Box::new(|| wizard(true)), 576, 412),
+            ("wizard, advanced", Box::new(|| wizard(false)), 576, 412),
+            (
+                "new download",
+                Box::new(|| add(false)),
+                620,
+                ADD_DIALOG_HEIGHT,
+            ),
+            ("new download, advanced", Box::new(|| add(true)), 620, 420),
+            (
+                "speed limit",
+                Box::new(speed_kind),
+                420,
+                SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
+            ),
+            (
+                "rename",
+                Box::new(rename_kind),
+                460,
+                RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
+            ),
+            (
+                "site logins",
+                Box::new(|| {
+                    DialogKind::Logins(LoginFields {
+                        logins: Vec::new(),
+                        list: null_mut(),
+                        host: null_mut(),
+                        user: null_mut(),
+                        pass: null_mut(),
+                        allow_http: null_mut(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "queues",
+                Box::new(|| {
+                    DialogKind::Queues(QueueFields {
+                        list: null_mut(),
+                        ids: Vec::new(),
+                        name: null_mut(),
+                        concurrency: null_mut(),
+                        completion: null_mut(),
+                        countdown: null_mut(),
+                        enabled: null_mut(),
+                        windows: null_mut(),
+                        quota: null_mut(),
+                        program: null_mut(),
+                        arguments: null_mut(),
+                        delay: null_mut(),
+                        job_id: None,
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "event log",
+                Box::new(|| {
+                    DialogKind::Events(EventFields {
+                        list: null_mut(),
+                        rendered: Vec::new(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "job log",
+                Box::new(|| {
+                    DialogKind::JobLog(JobLogFields {
+                        job: "job".into(),
+                        list: null_mut(),
+                        rendered: Vec::new(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "folder rules",
+                Box::new(|| {
+                    DialogKind::Rules(RuleFields {
+                        list: null_mut(),
+                        ids: Vec::new(),
+                        host: null_mut(),
+                        dir: null_mut(),
+                        subdomains: null_mut(),
+                        file: null_mut(),
+                        video: null_mut(),
+                        audio: null_mut(),
+                        priority: null_mut(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "site crawler",
+                Box::new(|| {
+                    DialogKind::Crawler(CrawlerFields {
+                        url: null_mut(),
+                        depth: null_mut(),
+                        pages: null_mut(),
+                        candidates: null_mut(),
+                        list: null_mut(),
+                        result: None,
+                        pending: None,
+                    })
+                }),
+                700,
+                470,
+            ),
+            (
+                "file sync",
+                Box::new(|| {
+                    DialogKind::Synchronization(SyncFields {
+                        list: null_mut(),
+                        ids: Vec::new(),
+                        url: null_mut(),
+                        dir: null_mut(),
+                        interval: null_mut(),
+                        overwrite: null_mut(),
+                        enabled: null_mut(),
+                    })
+                }),
+                700,
+                470,
+            ),
+            ("media picker", Box::new(media), 640, 420),
+            (
+                "job view",
+                Box::new(|| {
+                    DialogKind::Progress(Box::new(ProgressFields {
+                        ids: vec!["job".into()],
+                        selected: 0,
+                        raised: HashSet::new(),
+                        rendered: String::new(),
+                        rendered_rows: String::new(),
+                        action_label: String::new(),
+                        summary: null_mut(),
+                        list: null_mut(),
+                        status: null_mut(),
+                        progress: null_mut(),
+                        action: null_mut(),
+                        cancel: null_mut(),
+                        open_file: null_mut(),
+                        open_folder: null_mut(),
+                        close: null_mut(),
+                        hint: null_mut(),
+                        report: null_mut(),
+                    }))
+                }),
+                640,
+                420,
+            ),
+            (
+                "media tools",
+                Box::new(|| {
+                    DialogKind::Tools(ToolsFields {
+                        status: null_mut(),
+                        progress: null_mut(),
+                        install: null_mut(),
+                        update: null_mut(),
+                        last_render: String::new(),
+                    })
+                }),
+                700,
+                470,
+            ),
+        ];
+        let crowded: Vec<_> = cases
+            .into_iter()
+            .filter_map(|(name, make, width, height)| {
+                let over = with_dialog(make, width, height, controls_over_the_error_line);
+                (!over.is_empty()).then_some((name, over))
+            })
+            .collect();
+        assert!(
+            crowded.is_empty(),
+            "controls (by id) that overlap the error line: {crowded:?}"
+        );
+    }
+
+    #[test]
+    fn the_error_line_of_settings_has_its_own_space_on_every_tab() {
+        use super::{settings_logical_height, DialogKind, SettingsFields, SETTINGS_FRAME};
+        use crate::model::{Settings, UiMode};
+        use std::ptr::null_mut;
+
+        fn settings(mode: UiMode) -> DialogKind {
+            let value = Settings {
+                ui_mode: mode.as_str().into(),
+                ..Settings::default()
+            };
+            DialogKind::Settings(Box::new(SettingsFields {
+                opened: value.clone(),
+                value,
+                dir: null_mut(),
+                max_active: null_mut(),
+                connections: null_mut(),
+                media_fragments: null_mut(),
+                per_host: null_mut(),
+                speed: null_mut(),
+                retry: null_mut(),
+                clipboard: null_mut(),
+                tray: null_mut(),
+                startup: null_mut(),
+                notify: null_mut(),
+                schedule: null_mut(),
+                start: null_mut(),
+                end: null_mut(),
+                dark: null_mut(),
+                mode_video: null_mut(),
+                mode_file: null_mut(),
+                mode_audio: null_mut(),
+                browser_transfer: null_mut(),
+                update_check: null_mut(),
+                log_level: null_mut(),
+                log_hosts: null_mut(),
+                ui_mode: null_mut(),
+                site_entries: null_mut(),
+                ui_language: null_mut(),
+                proxy_mode: null_mut(),
+                proxy_url: null_mut(),
+                proxy_user: null_mut(),
+                proxy_pass: null_mut(),
+                speed_schedule: null_mut(),
+                speed_start: null_mut(),
+                speed_end: null_mut(),
+                speed_kib: null_mut(),
+                keep_awake: null_mut(),
+                sound: null_mut(),
+                takeover: null_mut(),
+                completion_card: null_mut(),
+                metered: null_mut(),
+                battery_saver: null_mut(),
+                hotkey: null_mut(),
+                double_click: null_mut(),
+                history: null_mut(),
+            }))
+        }
+
+        let mut crowded = Vec::new();
+        for (mode, tabs) in [(UiMode::Simple, 1), (UiMode::Advanced, 4)] {
+            let height = settings_logical_height(mode.is_simple()) + SETTINGS_FRAME;
+            let over = with_dialog(
+                move || settings(mode),
+                560,
+                height,
+                |dialog| {
+                    (0..tabs)
+                        .map(|tab| {
+                            dialog.show_tab(tab);
+                            (tab, controls_over_the_error_line(dialog))
+                        })
+                        .filter(|(_, over)| !over.is_empty())
+                        .collect::<Vec<_>>()
+                },
+            );
+            if !over.is_empty() {
+                crowded.push((mode.as_str(), over));
+            }
+        }
+        assert!(
+            crowded.is_empty(),
+            "settings tabs with controls (by id) over the error line: {crowded:?}"
+        );
     }
 }

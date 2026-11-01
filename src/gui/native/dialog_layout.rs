@@ -26,8 +26,8 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Synchronization(_) => 425,
         DialogKind::Events(_) => 425,
         DialogKind::JobLog(_) => 425,
-        DialogKind::Speed(_) => 110,
-        DialogKind::Rename(_) => 110,
+        DialogKind::Speed(_) => SPEED_LOGICAL_HEIGHT,
+        DialogKind::Rename(_) => RENAME_LOGICAL_HEIGHT,
         DialogKind::Logins(_) => 425,
         DialogKind::Media(f) => {
             if f.advanced {
