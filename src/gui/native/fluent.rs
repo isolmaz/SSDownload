@@ -1698,6 +1698,18 @@ pub(super) unsafe fn add_dialog_message(
             if code == EN_CHANGE && control == f.urls {
                 sync_edit_scrollbar(f.urls);
             }
+            // OK names what it does: the links and the type decide it.
+            if (code == EN_CHANGE && control == f.urls)
+                || (code == CBN_SELCHANGE && control == f.kind)
+            {
+                let ok = GetDlgItem(dlg.hwnd, D_ADD_OK);
+                let label = add_ok_label(f);
+                if super::text(ok) != label {
+                    set_text(ok, label);
+                    layout_dialog(dlg);
+                    InvalidateRect(ok, null(), 0);
+                }
+            }
             None
         }
         WM_NOTIFY => {

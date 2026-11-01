@@ -381,6 +381,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 D_CANCEL,
                 false,
             );
+            if modern() {
+                set_text(GetDlgItem(dlg.hwnd, D_ADD_OK), add_ok_label(f));
+            }
             if f.analyze_first && !f.initial.trim().is_empty() {
                 PostMessageW(dlg.hwnd, WM_COMMAND, D_ADD_ANALYZE as usize, 0);
             }

@@ -633,7 +633,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         set_dialog_error(dlg.hwnd, dlg.error, mode_error(request.kind), f.kind);
                         return;
                     }
-                    if requests.len() == 1 && !direct_file_request(&requests[0]) {
+                    if add_opens_picker(&requests) {
                         let request = requests.remove(0);
                         let owner = GetWindow(dlg.hwnd, GW_OWNER);
                         let app = dlg.app.clone();

@@ -9489,6 +9489,20 @@ fn valid_clock(value: &str) -> bool {
         && value[..2].parse::<u8>().is_ok_and(|h| h < 24)
         && value[3..].parse::<u8>().is_ok_and(|m| m < 60)
 }
+/// Whether New download's OK opens the format picker for these requests
+/// instead of adding them: one address that is not a direct file.
+fn add_opens_picker(requests: &[AddRequest]) -> bool {
+    matches!(requests, [request] if !direct_file_request(request))
+}
+/// Modern's label for New download's OK: the verb of what it does with the
+/// fields as they are.
+unsafe fn add_ok_label(f: &AddFields) -> &'static str {
+    if collect_add(f, false).is_ok_and(|requests| add_opens_picker(&requests)) {
+        crate::i18n::ui("Devam", "Continue")
+    } else {
+        crate::i18n::ui("İndir", "Download")
+    }
+}
 unsafe fn collect_add(
     f: &AddFields,
     single_required: bool,
@@ -10116,6 +10130,31 @@ mod tests {
         assert!(shown.contains("sürüm bilgisi alınamadı"), "{shown}");
         // The developer surface keeps the upstream names verbatim.
         assert_eq!(super::display_text(true, raw), raw);
+    }
+
+    #[test]
+    fn new_download_opens_the_picker_only_for_one_address_that_is_not_a_file() {
+        use super::add_opens_picker;
+        use crate::model::{AddRequest, DownloadKind};
+        let request = |url: &str, kind: DownloadKind| AddRequest {
+            url: url.into(),
+            kind,
+            ..AddRequest::default()
+        };
+        let page = request("https://example.com/watch?v=1", DownloadKind::Auto);
+        let file = request("https://example.com/setup.zip", DownloadKind::Auto);
+        assert!(add_opens_picker(std::slice::from_ref(&page)));
+        assert!(add_opens_picker(&[request(
+            "https://example.com/a.zip",
+            DownloadKind::Video
+        )]));
+        assert!(!add_opens_picker(std::slice::from_ref(&file)));
+        assert!(!add_opens_picker(&[request(
+            "https://example.com/page",
+            DownloadKind::File
+        )]));
+        assert!(!add_opens_picker(&[page, file]));
+        assert!(!add_opens_picker(&[]));
     }
 
     #[test]
