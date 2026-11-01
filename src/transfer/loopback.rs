@@ -5445,6 +5445,21 @@ fn a_digest_lookup_that_outlasts_its_limit_is_dropped_and_the_file_published_unv
 }
 
 #[test]
+fn a_lookup_limit_under_a_millisecond_sends_no_lookup() {
+    let size = 2 * MIB + 11;
+    let server = slow_lookups(size, Duration::from_secs(5));
+    forget_verified();
+    let started = Instant::now();
+    let (result, directory) =
+        with_lookup_limit(Duration::from_micros(999), || fetch_payload(&server, 1));
+    let waited = started.elapsed();
+    assert_published(result, &directory, 1, size);
+    assert_eq!(verified_by(), []);
+    assert_eq!(lookup_paths(&server), Vec::<String>::new());
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+}
+
+#[test]
 fn a_stop_during_a_digest_lookup_ends_the_download_at_once_and_publishes_nothing() {
     let size = 2 * MIB + 11;
     let server = slow_lookups(size, Duration::from_secs(5));
