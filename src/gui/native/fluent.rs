@@ -2988,15 +2988,9 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
     }
 }
 
-/// The top of a Modern dialog's command bar. Settings scrolls, so its bar
-/// starts where its Save button's row does.
+/// The top of a Modern dialog's command bar.
 unsafe fn footer_top(dlg: &DialogUi, client: &RECT) -> i32 {
-    let save = GetDlgItem(dlg.hwnd, S_OK);
-    if matches!(dlg.kind, DialogKind::Settings(_)) && !save.is_null() {
-        child_rect(dlg.hwnd, save).top + scale(FOCUS_MARGIN, dlg.dpi) - scale(ADD_PAD, dlg.dpi)
-    } else {
-        client.bottom - scale(ADD_FOOTER, dlg.dpi)
-    }
+    client.bottom - scale(ADD_FOOTER, dlg.dpi)
 }
 
 /// The Windows 11 surfaces and controls of Modern's converted dialogs: the
@@ -3053,6 +3047,10 @@ pub(super) unsafe fn modern_dialog_message(
         }
         WM_DRAWITEM => {
             let item = &*(lparam as *const DRAWITEMSTRUCT);
+            if item.CtlType == ODT_STATIC && item.CtlID == S_BAR as u32 {
+                paint_pinned_bar(dlg, item, &palette);
+                return Some(1);
+            }
             if item.CtlType != ODT_LISTBOX || !form.lists.contains(&item.hwndItem) {
                 return None;
             }
@@ -3231,6 +3229,15 @@ unsafe fn paint_modern_surfaces(dlg: &DialogUi, form: &ModernForm, dc: HDC, pale
     );
     let focus = GetFocus();
     let card = card_palette(dlg.hwnd);
+    // The frames of a page that scrolls under a pinned bar stop at it.
+    let saved = SaveDC(dc);
+    IntersectClipRect(
+        dc,
+        client.left,
+        client.top,
+        client.right,
+        page_end(dlg).unwrap_or(footer_top),
+    );
     for &edit in &form.inputs {
         if edit.is_null() || IsWindowVisible(edit) == 0 {
             continue;
@@ -3251,6 +3258,60 @@ unsafe fn paint_modern_surfaces(dlg: &DialogUi, form: &ModernForm, dc: HDC, pale
             Some(card.control_stroke),
         );
     }
+    RestoreDC(dc, saved);
+}
+
+/// The surface under a pinned command bar and the error line above it: the
+/// card down to the bar, then the bar with its top stroke, as
+/// `paint_modern_surfaces` paints them. The pinned controls on it paint
+/// themselves, so their rectangles are left alone.
+unsafe fn paint_pinned_bar(dlg: &DialogUi, item: &DRAWITEMSTRUCT, palette: &MainPalette) {
+    let dc = item.hDC;
+    let surface = item.rcItem;
+    let origin = child_rect(dlg.hwnd, item.hwndItem);
+    let saved = SaveDC(dc);
+    for control in pinned_controls(dlg) {
+        if control == item.hwndItem || IsWindowVisible(control) == 0 {
+            continue;
+        }
+        let rect = child_rect(dlg.hwnd, control);
+        ExcludeClipRect(
+            dc,
+            rect.left - origin.left,
+            rect.top - origin.top,
+            rect.right - origin.left,
+            rect.bottom - origin.top,
+        );
+    }
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let footer = footer_top(dlg, &client) - origin.top;
+    fill_colour(
+        dc,
+        &RECT {
+            bottom: footer,
+            ..surface
+        },
+        palette.card,
+    );
+    fill_colour(
+        dc,
+        &RECT {
+            top: footer,
+            ..surface
+        },
+        palette.base,
+    );
+    fill_colour(
+        dc,
+        &RECT {
+            top: footer,
+            bottom: footer + 1,
+            ..surface
+        },
+        palette.stroke,
+    );
+    RestoreDC(dc, saved);
 }
 
 /// Re-applies everything that follows the scheme or the accent: the caption

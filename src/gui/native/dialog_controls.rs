@@ -995,6 +995,28 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
             ]);
             tab_order(tabs, &order);
+            if modern() {
+                // The surface of the pinned command bar and the error line: on
+                // top of the page, so the page scrolls under it. It takes no
+                // focus and no click.
+                let bar = control(
+                    dlg.hwnd,
+                    "STATIC",
+                    "",
+                    WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+                    0,
+                    S_BAR,
+                );
+                SetWindowPos(
+                    bar,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
         }
         DialogKind::Tools(f) => {
             dialog_label(

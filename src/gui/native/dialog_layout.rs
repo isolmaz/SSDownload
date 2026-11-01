@@ -743,8 +743,9 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
 
             if look {
                 // The command bar: the secondary action at its left end, Save
-                // and Cancel at its right, the error line just above it.
-                let bar_y = h - s(ADD_FOOTER) + s(ADD_PAD);
+                // and Cancel at its right, the error line just above it. Both
+                // stay at the bottom of the window while the page scrolls.
+                let bar_y = actual_height - s(ADD_FOOTER) + s(ADD_PAD);
                 let save_w = add_button_width(dlg, S_OK, 120);
                 let cancel_w = add_button_width(dlg, D_CANCEL, 96);
                 let wizard_w = add_button_width(dlg, ID_SETTINGS_REOPEN_WIZARD, 120);
@@ -772,13 +773,15 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     save_w,
                     line,
                 );
+                let error_top = actual_height - s(ADD_FOOTER) - gap - label_h;
+                move_id(dlg.hwnd, D_ERROR, cx, error_top, cw, label_h);
                 move_id(
                     dlg.hwnd,
-                    D_ERROR,
-                    cx,
-                    h - s(ADD_FOOTER) - gap - label_h,
-                    cw,
-                    label_h,
+                    S_BAR,
+                    0,
+                    error_top - gap,
+                    w,
+                    actual_height - error_top + gap,
                 );
             } else {
                 // The secondary action sits at the left end of the same button
@@ -2034,6 +2037,14 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     if follows_reading_order(&dlg.kind, modern()) {
         tab_in_reading_order(dlg.hwnd);
     }
+    let pinned = pinned_controls(dlg);
+    // Above a pinned bar the page scrolls until its lowest control clears the bar.
+    let h = match page_end(dlg) {
+        Some(end) => {
+            lowest_on_page(dlg, &pinned) + scale(DIALOG_GAP, dlg.dpi) + actual_height - end
+        }
+        None => h,
+    };
     let offset = dlg.scroll_y.get().clamp(0, (h - actual_height).max(0));
     dlg.scroll_y.set(offset);
     let info = SCROLLINFO {
@@ -2089,6 +2100,10 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     if offset > 0 {
         let mut child = GetWindow(dlg.hwnd, GW_CHILD);
         while !child.is_null() {
+            if pinned.contains(&child) {
+                child = GetWindow(child, GW_HWNDNEXT);
+                continue;
+            }
             let mut rect: RECT = zeroed();
             GetWindowRect(child, &mut rect);
             MapWindowPoints(null_mut(), dlg.hwnd, (&mut rect as *mut RECT).cast(), 2);
@@ -2103,6 +2118,106 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
             child = GetWindow(child, GW_HWNDNEXT);
         }
+    }
+    if let Some(end) = page_end(dlg) {
+        clip_to_page(dlg, &pinned, end);
+    }
+}
+
+/// The controls that stay at the bottom of a dialog while its page scrolls:
+/// Modern Settings' command bar, the error line above it and the surface
+/// under both.
+pub(super) unsafe fn pinned_controls(dlg: &DialogUi) -> Vec<HWND> {
+    if !modern() || !matches!(dlg.kind, DialogKind::Settings(_)) {
+        return Vec::new();
+    }
+    let mut pinned: Vec<HWND> = [ID_SETTINGS_REOPEN_WIZARD, S_OK, D_CANCEL, S_BAR]
+        .map(|id| GetDlgItem(dlg.hwnd, id))
+        .into_iter()
+        .filter(|control| !control.is_null())
+        .collect();
+    pinned.push(dlg.error);
+    pinned
+}
+
+/// The bottom of the lowest shown control of a dialog's page.
+unsafe fn lowest_on_page(dlg: &DialogUi, pinned: &[HWND]) -> i32 {
+    let mut lowest = 0;
+    let mut child = GetWindow(dlg.hwnd, GW_CHILD);
+    while !child.is_null() {
+        if !pinned.contains(&child) && GetWindowLongW(child, GWL_STYLE) as u32 & WS_VISIBLE != 0 {
+            lowest = lowest.max(child_rect(dlg.hwnd, child).bottom);
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    lowest
+}
+
+/// Where the page of a dialog with pinned controls ends: the top of the
+/// surface under them.
+pub(super) unsafe fn page_end(dlg: &DialogUi) -> Option<i32> {
+    if pinned_controls(dlg).is_empty() {
+        return None;
+    }
+    let bar = GetDlgItem(dlg.hwnd, S_BAR);
+    (!bar.is_null()).then(|| child_rect(dlg.hwnd, bar).top)
+}
+
+/// Cuts every scrolling control at `bottom`, the top of the pinned surface:
+/// the surface, on top of the page, clips what a control paints there, and
+/// the control's window region keeps clicks there from reaching it. A control
+/// below it keeps its place in the Tab order until it scrolls up.
+unsafe fn clip_to_page(dlg: &DialogUi, pinned: &[HWND], bottom: i32) {
+    let mut child = GetWindow(dlg.hwnd, GW_CHILD);
+    while !child.is_null() {
+        if !pinned.contains(&child) {
+            let style = GetWindowLongW(child, GWL_STYLE) as u32;
+            if style & WS_CLIPSIBLINGS == 0 {
+                SetWindowLongW(child, GWL_STYLE, (style | WS_CLIPSIBLINGS) as i32);
+            }
+            let rect = child_rect(dlg.hwnd, child);
+            let shown = (bottom - rect.top).clamp(0, rect.bottom - rect.top);
+            let mut current: RECT = zeroed();
+            let has = GetWindowRgnBox(child, &mut current) != RGN_ERROR;
+            if shown == rect.bottom - rect.top {
+                if has {
+                    SetWindowRgn(child, null_mut(), 1);
+                }
+            } else if !has || current.bottom - current.top != shown {
+                SetWindowRgn(child, CreateRectRgn(0, 0, rect.right - rect.left, shown), 1);
+            }
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+}
+
+/// Scrolls a dialog with pinned controls so that `focus`, a control on its
+/// page, is wholly between the top of the window and the command bar.
+pub(super) unsafe fn scroll_into_view(dlg: &DialogUi, focus: HWND) {
+    let pinned = pinned_controls(dlg);
+    if pinned.is_empty()
+        || dlg.scroll_range.get() == 0
+        || pinned.contains(&focus)
+        || GetParent(focus) != dlg.hwnd
+    {
+        return;
+    }
+    let Some(end) = page_end(dlg) else {
+        return;
+    };
+    let margin = scale(DIALOG_GAP, dlg.dpi);
+    let bottom = end - margin;
+    let rect = child_rect(dlg.hwnd, focus);
+    let delta = if rect.top < margin {
+        rect.top - margin
+    } else if rect.bottom > bottom {
+        (rect.bottom - bottom).min(rect.top - margin)
+    } else {
+        0
+    };
+    if delta != 0 {
+        dlg.scroll_y.set((dlg.scroll_y.get() + delta).max(0));
+        layout_dialog(dlg);
     }
 }
 

@@ -7460,6 +7460,7 @@ const S_DOUBLE_CLICK: i32 = 2139;
 const S_HISTORY: i32 = 2140;
 const S_BATTERY_SAVER: i32 = 2141;
 const S_THEME: i32 = 2142;
+const S_BAR: i32 = 2143;
 const SP_EDIT: i32 = 2701;
 const RN_EDIT: i32 = 2703;
 const RN_OK: i32 = 2704;
@@ -8202,6 +8203,7 @@ unsafe fn run_modal_at(
     SetForegroundWindow(hwnd);
     let mut msg: MSG = zeroed();
     let mut repost_quit = false;
+    let mut focus = null_mut();
     while IsWindow(hwnd) != 0 {
         let got = GetMessageW(&mut msg, null_mut(), 0, 0);
         if got <= 0 {
@@ -8235,6 +8237,13 @@ unsafe fn run_modal_at(
         if !dialog_message(hwnd, &msg) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+        // A control that takes the focus scrolls into view, whether Tab or a
+        // click moved it there.
+        let now = GetFocus();
+        if now != focus && IsWindow(hwnd) != 0 {
+            focus = now;
+            scroll_into_view(&*raw, now);
         }
     }
     EnableWindow(owner, 1);
@@ -9950,7 +9959,12 @@ unsafe fn paint_scroll_thumb(dlg: &DialogUi, dc: HDC) {
     let row = scale(DIALOG_ROW, dlg.dpi);
     let width = scale(4, dlg.dpi).max(2);
     let track_top = client.top + margin;
-    let track_bottom = (client.bottom - margin - row).max(track_top + width);
+    // A pinned command bar ends the page the thumb travels along.
+    let page_bottom = match page_end(dlg) {
+        Some(end) => end - margin,
+        None => client.bottom - margin - row,
+    };
+    let track_bottom = page_bottom.max(track_top + width);
     let track = track_bottom - track_top;
     let content = (client.bottom - client.top) + range;
     let height = ((track as i64 * (client.bottom - client.top) as i64) / content.max(1) as i64)
@@ -9971,7 +9985,11 @@ unsafe fn child_statics(parent: HWND, error: HWND) -> Vec<HWND> {
     let mut out = Vec::<HWND>::new();
     let mut child = GetWindow(parent, GW_CHILD);
     while !child.is_null() {
-        if window_class(child).eq_ignore_ascii_case("Static") && child != error {
+        // The surface under Modern Settings' pinned bar is no label.
+        if window_class(child).eq_ignore_ascii_case("Static")
+            && child != error
+            && GetDlgCtrlID(child) != S_BAR
+        {
             out.push(child);
         }
         child = GetWindow(child, GW_HWNDNEXT);
@@ -13470,6 +13488,279 @@ mod tests {
         })
     }
 
+    /// The visible part of every control of a dialog that scrolls under a
+    /// pinned bar, in client coordinates: its rectangle cut by its window
+    /// region, if it has one. Pinned controls and hidden ones are left out.
+    unsafe fn page_parts(dlg: &super::DialogUi) -> Vec<(super::HWND, super::RECT)> {
+        use super::*;
+        let pinned = pinned_controls(dlg);
+        let mut parts = Vec::new();
+        let mut child = GetWindow(dlg.hwnd, GW_CHILD);
+        while !child.is_null() {
+            if !pinned.contains(&child) && GetWindowLongW(child, GWL_STYLE) as u32 & WS_VISIBLE != 0
+            {
+                let mut rect = child_rect(dlg.hwnd, child);
+                let mut region: RECT = zeroed();
+                if GetWindowRgnBox(child, &mut region) != RGN_ERROR {
+                    rect.bottom = rect.top + region.bottom.min(rect.bottom - rect.top);
+                }
+                parts.push((child, rect));
+            }
+            child = GetWindow(child, GW_HWNDNEXT);
+        }
+        parts
+    }
+
+    #[test]
+    fn modern_settings_on_a_short_screen_scroll_their_page_under_a_pinned_command_bar() {
+        use super::*;
+        for dark in [false, true] {
+            with_themed_dialog(
+                dark,
+                || {
+                    super::set_modern(true);
+                    settings_kind(crate::model::UiMode::Advanced)
+                },
+                720,
+                420,
+                |dialog| unsafe {
+                    let dlg = &*dialog.raw;
+                    let mut client: RECT = zeroed();
+                    GetClientRect(dialog.hwnd, &mut client);
+                    let footer = client.bottom - scale(ADD_FOOTER, dlg.dpi);
+                    let end = page_end(dlg).expect("Modern Settings pin their command bar");
+                    let range = dlg.scroll_range.get();
+                    assert!(range > 0, "dark {dark}: the page is taller than the window");
+                    let edges = |rect: RECT| (rect.left, rect.top, rect.right, rect.bottom);
+                    let at = |id: i32| edges(child_rect(dialog.hwnd, GetDlgItem(dialog.hwnd, id)));
+                    let save = at(S_OK);
+                    let cancel = at(D_CANCEL);
+                    let error = edges(child_rect(dialog.hwnd, dlg.error));
+                    // The surface under the bar and the error line spans the window's
+                    // width from the end of the page down, on top of every control.
+                    assert_eq!(
+                        at(S_BAR),
+                        (0, end, client.right, client.bottom),
+                        "dark {dark}"
+                    );
+                    assert_eq!(
+                        GetWindow(dialog.hwnd, GW_CHILD),
+                        GetDlgItem(dialog.hwnd, S_BAR),
+                        "dark {dark}: the surface is the topmost control"
+                    );
+                    assert!(
+                        save.1 >= footer && save.3 <= client.bottom && error.1 >= end,
+                        "dark {dark}: Save on the bar and the error line under the page"
+                    );
+                    let check = |at_: &str| {
+                        // The bar and the error line stay where they are.
+                        assert_eq!(at(S_OK), save, "dark {dark}, {at_}: Save");
+                        assert_eq!(at(D_CANCEL), cancel, "dark {dark}, {at_}: Cancel");
+                        assert_eq!(
+                            edges(child_rect(dialog.hwnd, dlg.error)),
+                            error,
+                            "dark {dark}, {at_}: the error line"
+                        );
+                        assert_eq!(page_end(dlg), Some(end), "dark {dark}, {at_}");
+                        // Nothing of the page shows under its end or past the right edge.
+                        let parts = page_parts(dlg);
+                        assert!(parts.len() > 20, "dark {dark}, {at_}: the page's controls");
+                        for (control, part) in parts {
+                            let id = GetDlgCtrlID(control);
+                            // The surface on top clips what the page paints.
+                            assert!(
+                                GetWindowLongW(control, GWL_STYLE) as u32 & WS_CLIPSIBLINGS != 0,
+                                "dark {dark}, {at_}: control {id} is not clipped by the surface"
+                            );
+                            assert!(
+                                part.bottom <= end || part.bottom <= part.top,
+                                "dark {dark}, {at_}: control {id} shows down to {} past the page's end at {end}",
+                                part.bottom
+                            );
+                            assert!(
+                                part.right <= client.right,
+                                "dark {dark}, {at_}: control {id} reaches {} past {}",
+                                part.right,
+                                client.right
+                            );
+                        }
+                    };
+                    check("the top");
+                    let palette = main_palette(dialog.hwnd);
+                    let card = card_palette(dialog.hwnd).card;
+                    // What the window paints under the pinned surface: the card down to
+                    // the bar, its stroke, then the bar. The frame of a field that
+                    // scrolled half under the surface is not painted there, nor is the
+                    // dark scheme's scroll thumb. Frames are painted for shown fields
+                    // only, so the window is shown (on the test's private desktop).
+                    ShowWindow(dialog.hwnd, SW_SHOWNA);
+                    let expected = |y: i32| {
+                        if y < footer {
+                            card
+                        } else if y == footer {
+                            palette.stroke
+                        } else {
+                            palette.base
+                        }
+                    };
+                    let DialogKind::Settings(f) = &dlg.kind else {
+                        unreachable!()
+                    };
+                    let straddle = settings_inputs(f)
+                        .into_iter()
+                        .filter(|&input| GetWindowLongW(input, GWL_STYLE) as u32 & WS_VISIBLE != 0)
+                        .map(|input| child_rect(dialog.hwnd, input).top - (end - 2))
+                        .find(|offset| (0..=range).contains(offset))
+                        .expect("a field can be scrolled to the page's end");
+                    let stray_under_page = |offset: i32| {
+                        dlg.scroll_y.set(offset);
+                        layout_dialog(dlg);
+                        let screen = GetDC(null_mut());
+                        let dc = CreateCompatibleDC(screen);
+                        let bitmap = CreateCompatibleBitmap(screen, client.right, client.bottom);
+                        ReleaseDC(null_mut(), screen);
+                        let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                        SendMessageW(dialog.hwnd, WM_ERASEBKGND, dc as usize, 0);
+                        paint_scroll_thumb(dlg, dc);
+                        let stray = (end..client.bottom)
+                            .flat_map(|y| (0..client.right).map(move |x| (x, y)))
+                            .filter(|&(x, y)| GetPixel(dc, x, y) != expected(y))
+                            .count();
+                        SelectObject(dc, previous);
+                        DeleteObject(bitmap as HGDIOBJ);
+                        DeleteDC(dc);
+                        stray
+                    };
+                    assert_eq!(
+                        stray_under_page(straddle),
+                        0,
+                        "dark {dark}: a field's frame"
+                    );
+                    assert_eq!(stray_under_page(range), 0, "dark {dark}: the page's end");
+                    // The surface paints the same, around the pinned controls on it.
+                    let bar = GetDlgItem(dialog.hwnd, S_BAR);
+                    let (width, height) = (client.right, client.bottom - end);
+                    let screen = GetDC(null_mut());
+                    let dc = CreateCompatibleDC(screen);
+                    let bitmap = CreateCompatibleBitmap(screen, width, height);
+                    ReleaseDC(null_mut(), screen);
+                    let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                    let untouched = 0x00ff00ff;
+                    let brush = CreateSolidBrush(untouched);
+                    FillRect(
+                        dc,
+                        &RECT {
+                            left: 0,
+                            top: 0,
+                            right: width,
+                            bottom: height,
+                        },
+                        brush,
+                    );
+                    DeleteObject(brush as HGDIOBJ);
+                    SendMessageW(bar, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+                    let on_bar: Vec<(i32, i32, i32, i32)> = [
+                        GetDlgItem(dialog.hwnd, S_OK),
+                        GetDlgItem(dialog.hwnd, D_CANCEL),
+                        GetDlgItem(dialog.hwnd, ID_SETTINGS_REOPEN_WIZARD),
+                        dlg.error,
+                    ]
+                    .into_iter()
+                    .filter(|&control| IsWindowVisible(control) != 0)
+                    .map(|control| edges(child_rect(dialog.hwnd, control)))
+                    .collect();
+                    assert!(
+                        on_bar.len() >= 3,
+                        "dark {dark}: the bar's buttons are shown"
+                    );
+                    let inside = |rect: (i32, i32, i32, i32), x: i32, y: i32| {
+                        x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3
+                    };
+                    let mut wrong = 0;
+                    let mut kept = 0;
+                    for y in end..client.bottom {
+                        for x in 0..width {
+                            let pixel = GetPixel(dc, x, y - end);
+                            if on_bar.iter().any(|&rect| inside(rect, x, y)) {
+                                kept += usize::from(pixel == untouched);
+                            } else if pixel != expected(y) {
+                                wrong += 1;
+                            }
+                        }
+                    }
+                    SelectObject(dc, previous);
+                    DeleteObject(bitmap as HGDIOBJ);
+                    DeleteDC(dc);
+                    assert_eq!(wrong, 0, "dark {dark}: the surface's own pixels");
+                    let pinned_area = on_bar
+                        .iter()
+                        .map(|r| ((r.2 - r.0) * (r.3 - r.1)) as usize)
+                        .sum::<usize>();
+                    assert_eq!(
+                        kept, pinned_area,
+                        "dark {dark}: the pinned controls are left alone"
+                    );
+                    dlg.scroll_y.set(range);
+                    layout_dialog(dlg);
+                    assert_eq!(dlg.scroll_y.get(), range, "dark {dark}");
+                    check("the end");
+                    // The focus brings a control into view, below and above.
+                    dlg.scroll_y.set(0);
+                    layout_dialog(dlg);
+                    let lowest = page_parts(dlg)
+                        .into_iter()
+                        .map(|(control, _)| control)
+                        .max_by_key(|&control| child_rect(dialog.hwnd, control).bottom)
+                        .unwrap();
+                    assert!(
+                        child_rect(dialog.hwnd, lowest).bottom > end,
+                        "dark {dark}: the last control starts past the page's end"
+                    );
+                    scroll_into_view(dlg, lowest);
+                    let shown = child_rect(dialog.hwnd, lowest);
+                    assert!(
+                        shown.top >= 0 && shown.bottom <= end,
+                        "dark {dark}: the focused control at {}..{} ends above {end}",
+                        shown.top,
+                        shown.bottom
+                    );
+                    check("the focus");
+                    let tabs = GetDlgItem(dialog.hwnd, S_TABS);
+                    scroll_into_view(dlg, tabs);
+                    assert!(
+                        child_rect(dialog.hwnd, tabs).top >= 0,
+                        "dark {dark}: the tabs scroll back into view"
+                    );
+                    check("the focus back up");
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn classic_settings_on_a_short_screen_scroll_their_buttons_with_the_page_as_on_main() {
+        use super::*;
+        with_themed_dialog(
+            false,
+            || {
+                super::set_modern(false);
+                settings_kind(crate::model::UiMode::Advanced)
+            },
+            560,
+            300,
+            |dialog| unsafe {
+                let dlg = &*dialog.raw;
+                assert!(pinned_controls(dlg).is_empty());
+                assert!(dlg.scroll_range.get() > 0);
+                let save = child_rect(dialog.hwnd, GetDlgItem(dialog.hwnd, S_OK));
+                dlg.scroll_y.set(dlg.scroll_range.get());
+                layout_dialog(dlg);
+                let scrolled = child_rect(dialog.hwnd, GetDlgItem(dialog.hwnd, S_OK));
+                assert_eq!(scrolled.top, save.top - dlg.scroll_range.get());
+            },
+        );
+    }
+
     fn settings_kind(mode: crate::model::UiMode) -> super::DialogKind {
         let value = crate::model::Settings {
             ui_mode: mode.as_str().into(),
@@ -14423,7 +14714,12 @@ mod tests {
             GetClientRect, GetDlgCtrlID, GetDlgItem, GetNextDlgTabItem,
         };
 
-        let shown = shown_controls(dialog.hwnd);
+        // The surface under Modern Settings' pinned bar holds the row; it is
+        // not one of its controls.
+        let shown: Vec<Shown> = shown_controls(dialog.hwnd)
+            .into_iter()
+            .filter(|control| control.id != super::S_BAR)
+            .collect();
         let mut commit: Vec<&Shown> = Vec::new();
         for id in case
             .affirmative
