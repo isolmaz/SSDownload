@@ -191,8 +191,10 @@ into SSDownload, and are not included in the installer or portable ZIP.
 
   yt-dlp
     Project/source: https://github.com/yt-dlp/yt-dlp
-    Release API: https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest
-    Selected assets: yt-dlp.exe and SHA2-256SUMS from that stable release
+    Release API: https://api.github.com/repos/yt-dlp/yt-dlp/releases
+    Selected assets: yt-dlp.exe and SHA2-256SUMS from the newest stable release (an
+    install the application starts by itself takes the newest one published at least
+    three days earlier)
     License: The Unlicense
 
   Deno
