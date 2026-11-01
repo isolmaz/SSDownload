@@ -34,6 +34,7 @@ mod postprocess;
 mod probe;
 mod process;
 mod selection;
+mod selftest;
 mod session;
 mod workspace;
 use evidence::*;
@@ -44,6 +45,9 @@ use probe::*;
 use process::*;
 pub(crate) use selection::selected_formats;
 use selection::*;
+pub(crate) use selftest::self_test;
+#[cfg(test)]
+pub(crate) use selftest::stubs;
 use session::*;
 pub(crate) use session::{scoped_cookie_applies, sweep_stale_cookie_jars};
 use workspace::*;
@@ -517,16 +521,13 @@ pub(crate) fn download(
         "3".into(),
         "--windows-filenames".into(),
         "--no-allow-unplayable-formats".into(),
-        "--newline".into(),
-        "--progress".into(),
-        "--progress-template".into(),
-        format!("download:{PROGRESS_PREFIX}%(progress.status)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes,progress.total_bytes_estimate)s"),
-        "--progress-template".into(),
-        format!("postprocess:{POSTPROCESS_PREFIX}%(progress.status)s"),
-        "--print".into(),
-        format!("after_move:{FILE_PREFIX}%(filepath)j"),
-        "--format".into(), selector,
-        "--output".into(), output_plan.template.to_string_lossy().into_owned(),
+    ]);
+    base_args.extend(marker_args());
+    base_args.extend([
+        "--format".into(),
+        selector,
+        "--output".into(),
+        output_plan.template.to_string_lossy().into_owned(),
     ]);
 
     // Fragment connections beyond the governor's per-host bound only churn
@@ -609,8 +610,8 @@ pub(crate) fn download(
         }
     }
 
-    // A finished HLS source with separate video and audio playlists downloads both streams at
-    // once in the app; every other source goes through yt-dlp below.
+    // A finished HLS source with separate video and audio playlists, or the one playlist of an
+    // audio download, downloads in the app; every other source goes through yt-dlp below.
     let native = source_capture
         .pinned
         .as_ref()
@@ -1422,6 +1423,21 @@ fn load_info_args(info_path: &Path, pinned: bool) -> Vec<String> {
         info_path.to_string_lossy().into_owned(),
     ]);
     args
+}
+
+/// The arguments that make yt-dlp report its progress, its post-processors and the finished
+/// file as the marker lines the download monitor reads.
+fn marker_args() -> Vec<String> {
+    vec![
+        "--newline".into(),
+        "--progress".into(),
+        "--progress-template".into(),
+        format!("download:{PROGRESS_PREFIX}%(progress.status)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes,progress.total_bytes_estimate)s"),
+        "--progress-template".into(),
+        format!("postprocess:{POSTPROCESS_PREFIX}%(progress.status)s"),
+        "--print".into(),
+        format!("after_move:{FILE_PREFIX}%(filepath)j"),
+    ]
 }
 
 fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
@@ -3109,6 +3125,89 @@ segment.ts
         probe["streams"][1]["duration"] = json!("3585.6");
         probe["streams"][0]["duration"] = json!("3585.6");
         assert!(validate_probe(&probe, &request, &info).is_err());
+    }
+
+    #[test]
+    fn a_lone_audio_playlist_does_not_hold_the_audio_to_its_length() {
+        let request = AddRequest {
+            kind: DownloadKind::Audio,
+            ..Default::default()
+        };
+        // An audio playlist that lists each of its 60 segments as 10 s, the last one of 3 s too;
+        // no playlist declares a video.
+        let source = PinnedMediaSource {
+            inspection: json!({"formats": [
+                {"format_id": "audio", "url": "pinned-0", "vcodec": "none", "acodec": "mp4a.40.2"}
+            ]}),
+            manifests: vec![PinnedManifest {
+                marker: "pinned-0".into(),
+                body: format!(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:10\n{}#EXT-X-ENDLIST\n",
+                    "#EXTINF:10,\nsegment.ts\n".repeat(60)
+                ),
+            }],
+            dash_formats: Vec::new(),
+        };
+        let mut info = MediaInfo {
+            duration: Some(600.0),
+            duration_tolerance: pinned_hls_duration_tolerance(&source),
+            ..Default::default()
+        };
+        (info.declared_video_durations, info.declared_audio_durations) =
+            pinned_hls_declared_durations(&source);
+        assert!(info.declared_video_durations.is_empty());
+        let probe = |duration: &str| {
+            json!({"streams":[
+                {"codec_type":"audio","codec_name":"mp3","start_time":"0","duration":duration}
+            ],"format":{"start_time":"0","duration":duration}})
+        };
+        // The source's duration, here the playlist's, allows a segment's length either way: the
+        // 593 s of audio pass, and without one of their segments they do not.
+        assert!(validate_probe(&probe("593.0"), &request, &info).is_ok());
+        assert!(validate_probe(&probe("583.0"), &request, &info).is_err());
+    }
+
+    #[test]
+    fn a_lone_video_playlist_does_not_hold_the_video_to_its_length() {
+        let request = AddRequest {
+            kind: DownloadKind::Video,
+            expected_audio: Some(true),
+            ..Default::default()
+        };
+        // The video comes from a finished playlist of 600 segments of 6.006 s, the audio from a
+        // format no playlist describes.
+        let source = PinnedMediaSource {
+            inspection: json!({"formats": [
+                {"format_id": "video", "url": "pinned-0", "vcodec": "avc1.640028", "acodec": "none"}
+            ]}),
+            manifests: vec![PinnedManifest {
+                marker: "pinned-0".into(),
+                body: format!(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:7\n{}#EXT-X-ENDLIST\n",
+                    "#EXTINF:6.006,\nsegment.ts\n".repeat(600)
+                ),
+            }],
+            dash_formats: Vec::new(),
+        };
+        let mut info = MediaInfo {
+            duration: Some(3603.6),
+            duration_tolerance: pinned_hls_duration_tolerance(&source),
+            ..Default::default()
+        };
+        (info.declared_video_durations, info.declared_audio_durations) =
+            pinned_hls_declared_durations(&source);
+        assert!(info.declared_audio_durations.is_empty());
+        let probe = |video: &str, audio: &str| {
+            json!({"streams":[
+                {"codec_type":"video","codec_name":"h264","start_time":"0","duration":video},
+                {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":audio}
+            ],"format":{"start_time":"0","duration":video}})
+        };
+        // The audio is held to the video, and both to the source's duration, which allows a
+        // segment's length either way.
+        assert!(validate_probe(&probe("3603.6", "3603.6"), &request, &info).is_ok());
+        assert!(validate_probe(&probe("3603.6", "3590.0"), &request, &info).is_err());
+        assert!(validate_probe(&probe("3597.6", "3597.6"), &request, &info).is_ok());
     }
 
     #[test]
