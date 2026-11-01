@@ -1382,6 +1382,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
             );
         }
         DialogKind::Progress(f) => match id {
+            P_DETAILS => toggle_job_details(dlg.hwnd, f),
             P_ACTION => {
                 let snapshot = dlg.app.snapshot();
                 match job_view_job(&snapshot, f) {

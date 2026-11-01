@@ -36,7 +36,6 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Logins(_) if modern() => FORM_HEIGHT,
         DialogKind::Logins(_) => 425,
         DialogKind::Media(f) if modern() => media_content_height(dlg, f),
-        DialogKind::Progress(_) if modern() => PROGRESS_HEIGHT,
         DialogKind::Media(f) => {
             if f.advanced {
                 682
@@ -44,7 +43,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 330
             }
         }
-        DialogKind::Progress(_) => 330,
+        DialogKind::Progress(f) => job_view_height(dlg, f),
     };
     let h = actual_height.max(scale(logical_height, dlg.dpi));
     let m = scale(DIALOG_MARGIN, dlg.dpi);
@@ -1709,70 +1708,6 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
             command_bar(dlg, h, &[(M_QUEUE, 120), (D_CANCEL, 96)]);
         }
-        DialogKind::Progress(f) if modern() => {
-            let s = |value: i32| scale(value, dlg.dpi);
-            let x = s(ADD_PAD);
-            let room = w - 2 * x;
-            // A playlist lists its jobs above the detail; a single job gives
-            // that place to the status text.
-            let multi = f.ids.len() > 1;
-            ShowWindow(f.list, multi as BOOL);
-            let line = |control: HWND, height: i32| Cell {
-                label: null_mut(),
-                control,
-                width: Width::Flex,
-                height,
-            };
-            let mut rows: Vec<Vec<Cell>> = vec![
-                vec![
-                    // Two lines: a long name or status wraps beside the buttons.
-                    line(f.summary, s(2 * ADD_LABEL)),
-                    check_cell(dlg, GetDlgItem(dlg.hwnd, P_PIN)),
-                    button_cell(dlg, P_MINI),
-                ],
-                vec![line(f.hint, s(ADD_LABEL))],
-            ];
-            if multi {
-                rows.push(vec![line(f.list, list_height(4, dlg.dpi))]);
-            }
-            rows.push(vec![line(f.status, 0)]);
-            rows.push(vec![line(f.progress, s(16))]);
-            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
-            // The error line shares its row with the report action it belongs
-            // to, centred on the button, with the card's gap below them.
-            let y = form_rows(dlg, h, &rows, s(ADD_FIELD + ADD_GROUP_GAP - ADD_LABEL));
-            let report_w = add_button_width(dlg, P_REPORT, 96);
-            move_id(
-                dlg.hwnd,
-                D_ERROR,
-                x,
-                y + s(ADD_FIELD - ADD_LABEL) / 2,
-                room - report_w - s(DIALOG_GAP),
-                s(ADD_LABEL),
-            );
-            let ring = s(FOCUS_MARGIN);
-            move_id(
-                dlg.hwnd,
-                P_REPORT,
-                x + room - report_w - ring,
-                y - ring,
-                report_w + 2 * ring,
-                s(ADD_FIELD) + 2 * ring,
-            );
-            bar_start(
-                dlg,
-                h,
-                &[
-                    (P_ACTION, add_button_width(dlg, P_ACTION, 96)),
-                    (P_CANCEL, add_button_width(dlg, P_CANCEL, 96)),
-                ],
-            );
-            command_bar(
-                dlg,
-                h,
-                &[(P_OPEN_FILE, 96), (P_OPEN_FOLDER, 96), (P_CLOSE, 96)],
-            );
-        }
         DialogKind::Media(f) => {
             // The thumbnail and the total size are STATICs too, but they are placed on
             // their own below, not as field labels.
@@ -2085,117 +2020,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
         }
         DialogKind::Progress(f) => {
-            // The report action shares the error line it belongs to instead of
-            // taking a place in the transfer row: the line gives up exactly the
-            // width the button needs, and the button keeps its own visibility.
-            let report_w = scale(104, dlg.dpi);
-            move_id(
-                dlg.hwnd,
-                D_ERROR,
-                m,
-                by - scale(29, dlg.dpi),
-                w - 2 * m - report_w - gap,
-                scale(20, dlg.dpi),
-            );
-            move_id(
-                dlg.hwnd,
-                P_REPORT,
-                w - m - report_w,
-                by - scale(30, dlg.dpi),
-                report_w,
-                scale(22, dlg.dpi),
-            );
-            // A playlist fits its rows above the detail; a single job has
-            // nothing to choose between, so the rows give their place to the
-            // status text.
-            let multi = f.ids.len() > 1;
-            ShowWindow(f.list, multi as BOOL);
-            // "Küçült" and "Üstte tut" share the summary row, at its right end.
-            let tools_w = scale(84, dlg.dpi) + gap + scale(96, dlg.dpi);
-            MoveWindow(
-                f.summary,
-                m,
-                m,
-                w - 2 * m - tools_w - gap,
-                scale(20, dlg.dpi),
-                1,
-            );
-            move_id(
-                dlg.hwnd,
-                P_MINI,
-                w - m - tools_w,
-                m - scale(2, dlg.dpi),
-                scale(84, dlg.dpi),
-                scale(24, dlg.dpi),
-            );
-            move_id(
-                dlg.hwnd,
-                P_PIN,
-                w - m - scale(96, dlg.dpi),
-                m,
-                scale(96, dlg.dpi),
-                scale(20, dlg.dpi),
-            );
-            MoveWindow(
-                f.hint,
-                m,
-                m + scale(22, dlg.dpi),
-                w - 2 * m,
-                scale(18, dlg.dpi),
-                1,
-            );
-            let mut top = m + scale(46, dlg.dpi);
-            if multi {
-                MoveWindow(f.list, m, top, w - 2 * m, scale(92, dlg.dpi), 1);
-                top += scale(92, dlg.dpi) + gap;
-            }
-            // The framework's error line sits just above the button row; the
-            // bar takes the slot under the status text.
-            let body_bottom = by - scale(29, dlg.dpi) - gap;
-            let bar_y = body_bottom - scale(14, dlg.dpi);
-            MoveWindow(
-                f.status,
-                m,
-                top,
-                w - 2 * m,
-                (bar_y - gap - top).max(scale(60, dlg.dpi)),
-                1,
-            );
-            MoveWindow(f.progress, m, bar_y, w - 2 * m, scale(14, dlg.dpi), 1);
-            // Control pair on the left, the output actions on the right.
-            move_id(dlg.hwnd, P_ACTION, m, by, scale(104, dlg.dpi), row);
-            move_id(
-                dlg.hwnd,
-                P_CANCEL,
-                m + scale(112, dlg.dpi),
-                by,
-                scale(104, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                P_CLOSE,
-                w - m - scale(84, dlg.dpi),
-                by,
-                scale(84, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                P_OPEN_FOLDER,
-                w - m - scale(84, dlg.dpi) - gap - scale(132, dlg.dpi),
-                by,
-                scale(132, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                P_OPEN_FILE,
-                w - m - scale(84, dlg.dpi) - gap - scale(132, dlg.dpi) - gap - scale(108, dlg.dpi),
-                by,
-                scale(108, dlg.dpi),
-                row,
-            );
+            job_view_rows(dlg, f, h, true);
         }
     }
     if follows_reading_order(&dlg.kind, modern()) {
@@ -3033,6 +2858,258 @@ unsafe fn grow_window(window: HWND, pixels: i32) {
         frame.right - frame.left,
         frame.bottom - frame.top + pixels,
         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+/// The job view's spacing in each theme, in epx: the margin at the sides and
+/// the top, a text line, a button, the gaps between groups and between facts,
+/// a playlist's rows and the bottom band with the command row.
+struct JobViewRhythm {
+    pad: i32,
+    top: i32,
+    line: i32,
+    button: i32,
+    gap: i32,
+    fact_gap: i32,
+    list: i32,
+    footer: i32,
+}
+
+fn job_view_rhythm(modern: bool, dpi: u32) -> JobViewRhythm {
+    if modern {
+        JobViewRhythm {
+            pad: ADD_PAD,
+            top: ADD_TOP,
+            line: ADD_LABEL,
+            button: ADD_FIELD,
+            gap: ADD_GROUP_GAP,
+            fact_gap: 4,
+            list: list_height(4, dpi) * 96 / dpi as i32,
+            footer: ADD_FOOTER,
+        }
+    } else {
+        JobViewRhythm {
+            pad: DIALOG_MARGIN,
+            top: DIALOG_MARGIN,
+            line: 20,
+            button: DIALOG_ROW,
+            gap: DIALOG_GAP,
+            fact_gap: 0,
+            list: 92,
+            footer: DIALOG_ROW + DIALOG_MARGIN,
+        }
+    }
+}
+
+/// The height of the job view's status text while it shows, in epx.
+pub(super) const JOB_DETAILS: i32 = 140;
+/// The height of its progress bar and of its segment bar, in epx.
+const JOB_BAR: i32 = 16;
+const JOB_SEGMENTS: i32 = 12;
+
+/// Lays the job view out top down in a client `h` pixels tall, or with `place`
+/// false only measures it: the file name with Minimize and Keep on top at the
+/// end of its row, the source and the close hint, a playlist's rows, the facts
+/// as label and value, the progress bar, the segment bar, the details button
+/// with the error line and Report problem, the status text while the details
+/// show, and the command row. Texts take the lines they wrap to. Returns the
+/// content height in pixels.
+pub(super) unsafe fn job_view_rows(dlg: &DialogUi, f: &ProgressFields, h: i32, place: bool) -> i32 {
+    let in_modern = modern();
+    let r = job_view_rhythm(in_modern, dlg.dpi);
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(r.pad);
+    let room = client.right - 2 * x;
+    let ring = if in_modern { s(FOCUS_MARGIN) } else { 0 };
+    let button = |id: i32, left: i32, top: i32, width: i32| {
+        if place {
+            move_id(
+                dlg.hwnd,
+                id,
+                left - ring,
+                top - ring,
+                width + 2 * ring,
+                s(r.button) + 2 * ring,
+            );
+        }
+    };
+    let put = |control: HWND, left: i32, top: i32, width: i32, height: i32| {
+        if place {
+            if in_modern {
+                place_modern(
+                    control,
+                    true,
+                    RECT {
+                        left,
+                        top,
+                        right: left + width,
+                        bottom: top + height,
+                    },
+                    dlg.dpi,
+                );
+            } else {
+                MoveWindow(control, left, top, width, height, 1);
+            }
+        }
+    };
+    let lines = |control: HWND, font: HFONT, width: i32| {
+        wrapped_height(control, font, dlg.dpi, width) / s(ADD_LABEL) * s(r.line)
+    };
+    let mut y = s(r.top);
+
+    // The file name, with Minimize and Keep on top at the end of its row.
+    let pin = GetDlgItem(dlg.hwnd, P_PIN);
+    let mini_w = add_button_width(dlg, P_MINI, 84);
+    let pin_w = text_width(pin) + check_text_inset(dlg.dpi);
+    let tools_w = mini_w + s(r.gap) + pin_w;
+    let title_w = room - tools_w - s(r.gap);
+    let title_h = lines(f.summary, f.title_font, title_w);
+    put(f.summary, x, y, title_w, title_h);
+    button(P_MINI, x + room - tools_w, y, mini_w);
+    let pin_top = if in_modern {
+        y
+    } else {
+        y + (s(r.button) - s(20)) / 2
+    };
+    put(
+        pin,
+        x + room - pin_w,
+        pin_top,
+        pin_w,
+        if in_modern { s(r.button) } else { s(20) },
+    );
+    y += title_h.max(s(r.button)) + s(4);
+    for text in [f.source, f.hint] {
+        let height = lines(text, dlg.font, room);
+        put(text, x, y, room, height);
+        y += height;
+    }
+    y += s(r.gap);
+
+    let multi = f.ids.len() > 1;
+    ShowWindow(f.list, multi as BOOL);
+    if multi {
+        put(f.list, x, y, room, s(r.list));
+        y += s(r.list) + s(r.gap);
+    }
+
+    // The facts: labels in a column as wide as the widest, values beside it.
+    let labels = f.facts.map(|value| GetWindow(value, GW_HWNDPREV));
+    let label_w = labels
+        .iter()
+        .map(|&label| text_width(label))
+        .max()
+        .unwrap_or(0)
+        + s(r.gap);
+    for (&label, &value) in labels.iter().zip(&f.facts) {
+        let height = lines(value, dlg.font, room - label_w).max(s(r.line));
+        put(label, x, y, label_w, s(r.line));
+        put(value, x + label_w, y, room - label_w, height);
+        y += height + s(r.fact_gap);
+    }
+    y += s(r.gap);
+    put(f.progress, x, y, room, s(JOB_BAR));
+    y += s(JOB_BAR) + s(r.gap) / 2;
+    put(f.segment_bar, x, y, room, s(JOB_SEGMENTS));
+    y += s(JOB_SEGMENTS) + s(r.gap);
+
+    // Show details, then the error line with the report action it belongs to.
+    let details_w = add_button_width(dlg, P_DETAILS, 104);
+    let report_w = add_button_width(dlg, P_REPORT, 104);
+    button(P_DETAILS, x, y, details_w);
+    button(P_REPORT, x + room - report_w, y, report_w);
+    if place {
+        MoveWindow(
+            dlg.error,
+            x + details_w + s(r.gap),
+            y + (s(r.button) - s(20)) / 2,
+            room - details_w - report_w - 2 * s(r.gap),
+            s(20),
+            1,
+        );
+    }
+    y += s(r.button) + s(r.gap);
+    if f.details {
+        put(f.status, x, y, room, s(JOB_DETAILS));
+        y += s(JOB_DETAILS) + s(r.gap);
+    }
+    let content = y - s(r.gap) + s(r.footer) + if in_modern { 0 } else { s(r.gap) };
+    if place {
+        let bottom = h.max(content);
+        if in_modern {
+            bar_start(
+                dlg,
+                bottom,
+                &[
+                    (P_OPEN_FILE, add_button_width(dlg, P_OPEN_FILE, 96)),
+                    (P_OPEN_FOLDER, add_button_width(dlg, P_OPEN_FOLDER, 96)),
+                ],
+            );
+            command_bar(
+                dlg,
+                bottom,
+                &[(P_ACTION, 96), (P_CANCEL, 96), (P_CLOSE, 96)],
+            );
+        } else {
+            let by = bottom - s(DIALOG_MARGIN) - s(DIALOG_ROW);
+            let mut left = x;
+            for id in [P_OPEN_FILE, P_OPEN_FOLDER] {
+                let width = add_button_width(dlg, id, 84);
+                button(id, left, by, width);
+                left += width + s(DIALOG_GAP);
+            }
+            let mut right = x + room;
+            for (id, least) in [(P_CLOSE, 84), (P_CANCEL, 104), (P_ACTION, 104)] {
+                let width = add_button_width(dlg, id, least);
+                right -= width;
+                button(id, right, by, width);
+                right -= s(DIALOG_GAP);
+            }
+        }
+    }
+    content
+}
+
+/// The job view's content height in epx at its window's width.
+pub(super) unsafe fn job_view_height(dlg: &DialogUi, f: &ProgressFields) -> i32 {
+    let pixels = job_view_rows(dlg, f, 0, false);
+    (pixels * 96 + dlg.dpi as i32 - 1) / dlg.dpi as i32
+}
+
+/// Fits the job view's window to what it shows: its top stays where it is
+/// and it grows or shrinks at the bottom, within the work area. That height
+/// is also the least it can be made.
+pub(super) unsafe fn fit_job_view(dlg: &mut DialogUi) {
+    let DialogKind::Progress(f) = &dlg.kind else {
+        return;
+    };
+    dlg.design.1 = job_view_height(dlg, f) + SETTINGS_FRAME + 3;
+    let tall = scale(dlg.design.1, dlg.dpi);
+    let mut rect: RECT = zeroed();
+    GetWindowRect(dlg.hwnd, &mut rect);
+    let mut info: MONITORINFO = zeroed();
+    info.cbSize = size_of::<MONITORINFO>() as u32;
+    let monitor = MonitorFromWindow(dlg.hwnd, MONITOR_DEFAULTTONEAREST);
+    let (top, tall) = if GetMonitorInfoW(monitor, &mut info) != 0 {
+        let area = info.rcWork;
+        let tall = tall.min(area.bottom - area.top);
+        (
+            rect.top.clamp(area.top, (area.bottom - tall).max(area.top)),
+            tall,
+        )
+    } else {
+        (rect.top, tall)
+    };
+    SetWindowPos(
+        dlg.hwnd,
+        null_mut(),
+        rect.left,
+        top,
+        rect.right - rect.left,
+        tall,
+        SWP_NOZORDER | SWP_NOACTIVATE,
     );
 }
 

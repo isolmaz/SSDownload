@@ -2469,9 +2469,9 @@ pub(super) unsafe fn modern_list(parent: HWND, font: HFONT, id: i32, style: u32)
     list
 }
 
-/// A Modern dialog's progress bar, painted as the Windows 11 ProgressBar on
-/// the card: a 1 epx track with a 3 epx rounded accent bar, sweeping while the
-/// length is unknown. High contrast keeps the system's bar.
+/// The download window's progress bar in Modern: a framed track as tall as
+/// the bar with a rounded fill, like its segment bar, in the accent colour or
+/// sweeping while the length is unknown. High contrast keeps the system's bar.
 pub(super) unsafe extern "system" fn modern_progress_proc(
     hwnd: HWND,
     msg: u32,
@@ -2526,9 +2526,18 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
     if GetClientRect(hwnd, &mut client) == 0 {
         return;
     }
-    let palette = main_palette(GetParent(hwnd));
+    let palette = card_palette(GetParent(hwnd));
     let dpi = GetDpiForWindow(hwnd).max(96);
     fill_colour(dc, &client, palette.card);
+    let radius = scale(CORNER, dpi);
+    round_rect(
+        dc,
+        &client,
+        radius,
+        palette.control,
+        Some(palette.control_stroke),
+    );
+    let inner = inflate(client, -1, -1);
     let mut range = PBRANGE {
         iLow: 0,
         iHigh: 100,
@@ -2536,7 +2545,7 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
     SendMessageW(hwnd, PBM_GETRANGE, 1, &mut range as *mut _ as isize);
     let position = SendMessageW(hwnd, PBM_GETPOS, 0, 0) as i32;
     let span = (range.iHigh - range.iLow).max(1);
-    let width = client.right - client.left;
+    let width = inner.right - inner.left;
     let stopped = !GetPropW(hwnd, stopped_prop()).is_null();
     // A stopped job's bar fills, as the job list's does.
     let (start, end) = if stopped {
@@ -2549,32 +2558,18 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
             ((position - range.iLow).clamp(0, span) as i64 * width as i64 / span as i64) as i32,
         )
     };
-    let thickness = scale(3, dpi).max(3);
-    let middle = (client.top + client.bottom) / 2;
-    let line = scale(1, dpi).max(1);
-    fill_colour(
-        dc,
-        &RECT {
-            left: client.left,
-            top: middle - line / 2,
-            right: client.right,
-            bottom: middle - line / 2 + line,
-        },
-        palette.strong_stroke,
-    );
     if end > start {
         let bar = RECT {
-            left: client.left + start,
-            top: middle - thickness / 2,
-            right: client.left + end,
-            bottom: middle - thickness / 2 + thickness,
+            left: inner.left + start,
+            right: inner.left + end,
+            ..inner
         };
         let colour = if stopped {
             palette.critical
         } else {
             palette.accent
         };
-        round_rect(dc, &bar, thickness / 2, colour, None);
+        round_rect(dc, &bar, radius - 1, colour, None);
     }
 }
 
@@ -2926,10 +2921,12 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
                 P_OPEN_FOLDER,
                 P_CLOSE,
                 P_MINI,
+                P_DETAILS,
                 P_REPORT,
             ],
-            primary: P_ACTION,
-            card_buttons: &[P_MINI, P_REPORT],
+            // No button is the default (Enter does nothing here), so none looks like one.
+            primary: 0,
+            card_buttons: &[P_MINI, P_DETAILS, P_REPORT],
             hint: f.hint,
         }),
         DialogKind::Events(f) => Some(ModernForm {
@@ -3766,15 +3763,21 @@ pub(super) unsafe fn modern_row_progress(ui: &MainUi, dc: HDC, row: usize, cell:
     } else if contrast {
         GetSysColor(COLOR_HIGHLIGHT)
     } else {
-        match job.state {
-            JobState::Completed => palette.success,
-            JobState::Failed | JobState::Cancelled => palette.critical,
-            JobState::Paused | JobState::AwaitingSource => palette.caution,
-            JobState::Scheduled | JobState::Queued => palette.secondary,
-            _ => palette.accent,
-        }
+        state_fill(&palette, job.state)
     };
     round_rect(dc, &fill, thickness / 2, colour, None);
+}
+
+/// The colour Modern fills a job's progress with: accent while it runs, then
+/// success, caution or critical once it finished, paused or failed.
+pub(super) fn state_fill(palette: &MainPalette, state: JobState) -> u32 {
+    match state {
+        JobState::Completed => palette.success,
+        JobState::Failed | JobState::Cancelled => palette.critical,
+        JobState::Paused | JobState::AwaitingSource => palette.caution,
+        JobState::Scheduled | JobState::Queued => palette.secondary,
+        _ => palette.accent,
+    }
 }
 
 #[cfg(test)]
@@ -4784,7 +4787,17 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_job_s_progress_bar_fills_in_the_critical_colour() {
+    fn the_job_view_has_no_accent_button() {
+        let kind = DialogKind::Progress(ProgressFields::new(vec!["job".into()]));
+        let form = unsafe { modern_form(&kind) }.expect("the job view is a Modern form");
+        assert!(
+            !form.buttons.contains(&form.primary),
+            "no button looks like a default one"
+        );
+    }
+
+    #[test]
+    fn the_job_view_s_bar_fills_the_height_of_its_track_and_turns_critical_when_stopped() {
         crate::gui::native::tests::on_private_desktop(|| {
             unsafe {
                 use windows_sys::Win32::UI::Controls::{
@@ -4795,7 +4808,7 @@ mod tests {
                     dwICC: ICC_PROGRESS_CLASS,
                 };
                 assert_ne!(InitCommonControlsEx(&common), 0);
-                let (width, height) = (120, 12);
+                let (width, height) = (120, 16);
                 let screen = GetDC(null_mut());
                 let dc = CreateCompatibleDC(screen);
                 ReleaseDC(null_mut(), screen);
@@ -4827,18 +4840,24 @@ mod tests {
                 };
                 let normal = painted(false);
                 let failed = painted(true);
+                let track = card_palette(parent).control;
+                let mut client: RECT = zeroed();
+                GetClientRect(bar, &mut client);
                 SelectObject(dc, previous);
                 DeleteObject(bitmap as HGDIOBJ);
                 DeleteDC(dc);
                 DestroyWindow(parent);
-                assert!(normal.contains(&palette.accent));
+                let at = |x: i32, y: i32| (y * width + x) as usize;
                 assert!(!normal.contains(&palette.critical));
-                assert!(failed.contains(&palette.critical));
                 assert!(!failed.contains(&palette.accent));
-                // Half done, the stopped bar still fills to its end.
-                let near_end = (height / 2 * width + width - 12) as usize;
-                assert_ne!(normal[near_end], palette.accent);
-                assert_eq!(failed[near_end], palette.critical);
+                // Half done, the bar fills the left half of its track from its
+                // top to its bottom, and a stopped bar fills to the end.
+                let (right, bottom) = (client.right - 12, client.bottom);
+                for y in [2, bottom / 2, bottom - 3] {
+                    assert_eq!(normal[at(width / 4, y)], palette.accent, "row {y}");
+                    assert_eq!(normal[at(right, y)], track, "row {y}");
+                    assert_eq!(failed[at(right, y)], palette.critical, "row {y}");
+                }
             }
         });
     }

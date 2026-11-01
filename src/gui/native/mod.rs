@@ -36,7 +36,7 @@ use windows_sys::Win32::{
             OleInitialize, OleUninitialize, RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop,
             DROPEFFECT_COPY, DROPEFFECT_NONE,
         },
-        SystemServices::SS_NOPREFIX,
+        SystemServices::{SS_NOPREFIX, SS_OWNERDRAW},
         Threading::{AttachThreadInput, GetCurrentProcessId},
     },
     UI::{
@@ -7506,6 +7506,14 @@ const P_LIST: i32 = 2448;
 const P_HINT: i32 = 2449;
 /// "Hata bildir" on the job view: hidden while the watched job is fine.
 const P_REPORT: i32 = 2450;
+/// "Show details" / "Hide details": shows or hides the status text.
+const P_DETAILS: i32 = 2453;
+/// The bar that shows which parts of the file have arrived.
+const P_SEGMENTS: i32 = 2454;
+/// The source line under the file name.
+const P_SOURCE: i32 = 2455;
+/// The first of the values of `JOB_FACTS`, one id each in that order.
+const P_FACTS: i32 = 2456;
 
 struct AddFields {
     urls: HWND,
@@ -7742,9 +7750,25 @@ struct ProgressFields {
     rendered: String,
     /// Last rendered playlist rows, for the same reason.
     rendered_rows: String,
+    /// The shown job's timeline for the details, and the job and the stamp of
+    /// the files it was read from: it is read again only when they change.
+    timeline: Vec<String>,
+    timeline_key: (String, Vec<Option<(u64, std::time::SystemTime)>>),
     /// Last label of the pause/resume/retry button.
     action_label: String,
+    /// Whether the status text shows; it opens by itself once for a failure,
+    /// which `failure_shown` records.
+    details: bool,
+    failure_shown: bool,
+    /// What the segment bar shows now.
+    segments: SegmentView,
+    /// The file name's semibold face; the window owns it.
+    title_font: HFONT,
     summary: HWND,
+    source: HWND,
+    facts: [HWND; JOB_FACTS.len()],
+    segment_bar: HWND,
+    details_button: HWND,
     list: HWND,
     status: HWND,
     progress: HWND,
@@ -7755,6 +7779,57 @@ struct ProgressFields {
     close: HWND,
     hint: HWND,
     report: HWND,
+}
+
+impl ProgressFields {
+    fn new(ids: Vec<String>) -> Box<Self> {
+        Box::new(ProgressFields {
+            ids,
+            selected: 0,
+            raised: HashSet::new(),
+            rendered: String::new(),
+            rendered_rows: String::new(),
+            timeline: Vec::new(),
+            timeline_key: (String::new(), Vec::new()),
+            action_label: String::new(),
+            details: false,
+            failure_shown: false,
+            segments: SegmentView::default(),
+            title_font: null_mut(),
+            summary: null_mut(),
+            source: null_mut(),
+            facts: [null_mut(); JOB_FACTS.len()],
+            segment_bar: null_mut(),
+            details_button: null_mut(),
+            list: null_mut(),
+            status: null_mut(),
+            progress: null_mut(),
+            action: null_mut(),
+            cancel: null_mut(),
+            open_file: null_mut(),
+            open_folder: null_mut(),
+            close: null_mut(),
+            hint: null_mut(),
+            report: null_mut(),
+        })
+    }
+}
+
+impl Drop for ProgressFields {
+    fn drop(&mut self) {
+        if !self.title_font.is_null() {
+            unsafe { DeleteObject(self.title_font as HGDIOBJ) };
+        }
+    }
+}
+
+/// What the job view's segment bar draws: the parts of a `total`-byte file
+/// that have arrived, in the colour of the job's state.
+#[derive(Clone, Default, PartialEq)]
+struct SegmentView {
+    parts: Vec<(u64, u64)>,
+    total: u64,
+    state: Option<JobState>,
 }
 struct EventFields {
     list: HWND,
@@ -8586,33 +8661,15 @@ pub(super) unsafe fn open_job_view(owner: HWND, app: App, ids: Vec<String>) {
         activate_window(hwnd);
         return;
     }
-    let title = crate::i18n::ui("İndirme", "Download");
+    let title = job_view_title(&app.snapshot(), &ids);
     show_modeless(
         owner,
         app,
         DialogRequest {
-            title,
+            title: &title,
             width: if modern() { MEDIA_WIDTH } else { 640 },
             height: media_window_height(PROGRESS_HEIGHT, 420),
-            kind: DialogKind::Progress(Box::new(ProgressFields {
-                ids,
-                selected: 0,
-                raised: HashSet::new(),
-                rendered: String::new(),
-                rendered_rows: String::new(),
-                action_label: String::new(),
-                summary: null_mut(),
-                list: null_mut(),
-                status: null_mut(),
-                progress: null_mut(),
-                action: null_mut(),
-                cancel: null_mut(),
-                open_file: null_mut(),
-                open_folder: null_mut(),
-                close: null_mut(),
-                hint: null_mut(),
-                report: null_mut(),
-            })),
+            kind: DialogKind::Progress(ProgressFields::new(ids)),
             origin: None,
             launch: None,
             modeless: true,
@@ -9052,6 +9109,13 @@ unsafe extern "system" fn dialog_proc(
     (*raw).callbacks += 1;
     let _callback = DialogCallback(raw);
     let dlg = &mut *raw;
+    if msg == WM_DRAWITEM && wparam == P_SEGMENTS as usize {
+        let draw = &*(lparam as *const DRAWITEMSTRUCT);
+        if let DialogKind::Progress(f) = &dlg.kind {
+            paint_segment_bar(dlg, &f.segments, draw.hDC, draw.rcItem);
+        }
+        return 1;
+    }
     if modern() {
         if let Some(value) = modern_dialog_message(dlg, msg, wparam, lparam) {
             return value;
@@ -9490,6 +9554,8 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
         SendMessageW(f.edit, EM_SETSEL, 0, stem as isize);
     }
     dialog_timer(dlg);
+    // The job view fits its window once the file name and the facts are in.
+    fit_job_view(dlg);
 }
 
 /// Re-creates a window's controls for the kind it now is. A picker that has
@@ -9525,43 +9591,28 @@ unsafe fn release_thumbnail(thumbnail: HWND) {
 /// Turns a picker into the job view of the download it just queued: the window
 /// keeps its place, its handoff and its size, and its title names what it is
 /// now showing.
-unsafe fn begin_job_view(dlg: &mut DialogUi, job_ids: Vec<String>) {
-    let snapshot = dlg.app.snapshot();
-    let title = match job_ids.as_slice() {
+/// The download window's title: "Download — <file name>", "Download" while
+/// the name is not known yet, and the item count for a playlist's window.
+fn job_view_title(snapshot: &AppSnapshot, ids: &[String]) -> String {
+    match ids {
         [id] => snapshot
             .jobs
             .iter()
-            .find(|job| &job.id == id)
+            .find(|job| &job.id == id && !job.name.trim().is_empty())
             .map(|job| crate::i18n::ui_format!("İndirme — {0}", "Download — {0}", job.name))
             .unwrap_or_else(|| crate::i18n::ui("İndirme", "Download").to_string()),
         ids => crate::i18n::ui_format!("İndirme — {0} öğe", "Download — {0} items", ids.len()),
-    };
+    }
+}
+
+unsafe fn begin_job_view(dlg: &mut DialogUi, job_ids: Vec<String>) {
+    let title = job_view_title(&dlg.app.snapshot(), &job_ids);
     if let DialogKind::Media(f) = &dlg.kind {
         release_thumbnail(f.thumbnail);
     }
-    dlg.kind = DialogKind::Progress(Box::new(ProgressFields {
-        ids: job_ids,
-        selected: 0,
-        raised: HashSet::new(),
-        rendered: String::new(),
-        rendered_rows: String::new(),
-        action_label: String::new(),
-        summary: null_mut(),
-        list: null_mut(),
-        status: null_mut(),
-        progress: null_mut(),
-        action: null_mut(),
-        cancel: null_mut(),
-        open_file: null_mut(),
-        open_folder: null_mut(),
-        close: null_mut(),
-        hint: null_mut(),
-        report: null_mut(),
-    }));
+    dlg.kind = DialogKind::Progress(ProgressFields::new(job_ids));
     SetWindowTextW(dlg.hwnd, wide(&title).as_ptr());
-    // The picker may have been unfolded to its advanced geometry; the job view
-    // is one page, so it goes back to the size the window opens with.
-    resize_dialog(dlg.hwnd, dlg.dpi, media_window_height(PROGRESS_HEIGHT, 420));
+    // The window keeps its top and fits its height to the job view.
     rebuild_dialog_controls(dlg);
 }
 
@@ -10617,6 +10668,400 @@ mod tests {
             ranges: None,
             resumable: None,
         }
+    }
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// A segmented download of 200 MiB with two parts in: 30 MiB from the
+    /// start and 20 MiB from the middle.
+    fn segmented_job(state: crate::model::JobState) -> crate::model::Job {
+        let mut job = sample_job("job", state);
+        job.request.url = "https://files.example.org/path/file.bin?token=1".into();
+        job.total = Some(200 * MIB);
+        job.downloaded = 50 * MIB;
+        job.speed = MIB;
+        job.eta = Some(150);
+        job.resumable = Some(true);
+        job.ranges = Some(std::sync::Arc::from([
+            (0, 30 * MIB),
+            (100 * MIB, 120 * MIB),
+        ]));
+        job
+    }
+
+    #[test]
+    fn segment_spans_cover_the_parts_that_arrived() {
+        use super::segment_spans;
+        assert_eq!(
+            segment_spans(&[(0, 25), (50, 75)], 100, 100),
+            [(0, 25), (50, 75)]
+        );
+        assert_eq!(segment_spans(&[(0, 50), (50, 100)], 100, 10), [(0, 10)]);
+        // A part narrower than a pixel still shows.
+        assert_eq!(segment_spans(&[(10, 11)], 1000, 100), [(1, 2)]);
+        // Nothing past the end of the bar.
+        assert_eq!(segment_spans(&[(90, 200)], 100, 10), [(9, 10)]);
+        assert_eq!(segment_spans(&[(0, 10)], 0, 10), []);
+    }
+
+    #[test]
+    fn the_open_parts_of_a_file_are_counted_between_and_after_the_arrived_ones() {
+        use super::unfinished_parts;
+        assert_eq!(unfinished_parts(&[(0, 10), (20, 30)], 40), 2);
+        assert_eq!(unfinished_parts(&[(5, 10)], 10), 1);
+        assert_eq!(unfinished_parts(&[(0, 40)], 40), 0);
+        assert_eq!(unfinished_parts(&[], 40), 1);
+    }
+
+    #[test]
+    fn the_job_view_lists_its_facts_and_a_dash_for_what_it_does_not_know() {
+        use super::{format_bytes, format_speed, job_facts, job_source, state_label};
+        use crate::model::JobState;
+        let running = segmented_job(JobState::Downloading);
+        assert_eq!(
+            job_facts(&running),
+            [
+                state_label(&running),
+                format_bytes(200 * MIB),
+                format!("{} (25.0%)", format_bytes(50 * MIB)),
+                format_speed(MIB),
+                "00:02:30".to_string(),
+                crate::i18n::ui("Evet", "Yes").to_string(),
+                "2".to_string(),
+            ]
+        );
+        assert!(job_source(&running).ends_with("files.example.org"));
+        // The connections are the open parts, not the arrived ranges: one
+        // range with open bytes on both sides leaves two.
+        let mut middle = segmented_job(JobState::Downloading);
+        middle.ranges = Some(std::sync::Arc::from([(10 * MIB, 30 * MIB)]));
+        assert_eq!(job_facts(&middle)[6], "2");
+        // A transfer through a tool reports neither ranges nor resumability.
+        let mut media = sample_job("media", JobState::Downloading);
+        media.downloaded = 1000;
+        let facts = job_facts(&media);
+        assert_eq!(facts[1], "—", "no size");
+        assert_eq!(facts[2], format_bytes(1000));
+        assert_eq!(&facts[5..], ["—", "—"]);
+        // A source that refused a range, and a paused download's old ranges.
+        let mut single = segmented_job(JobState::Paused);
+        single.resumable = Some(false);
+        let facts = job_facts(&single);
+        assert_eq!(facts[5], crate::i18n::ui("Hayır", "No"));
+        assert_eq!(facts[6], "—", "a paused job has no connections");
+    }
+
+    #[test]
+    fn the_segment_bar_shows_the_reported_ranges_or_one_part_from_the_start() {
+        use super::segment_view;
+        use crate::model::JobState;
+        let running = segment_view(&segmented_job(JobState::Downloading));
+        assert_eq!(running.parts, [(0, 30 * MIB), (100 * MIB, 120 * MIB)]);
+        assert_eq!(running.total, 200 * MIB);
+        // A paused job keeps the ranges of its last report.
+        let paused = segment_view(&segmented_job(JobState::Paused));
+        assert_eq!(paused.parts, running.parts);
+        // Without ranges: as far as the download has come.
+        let mut tool = segmented_job(JobState::Downloading);
+        tool.ranges = None;
+        assert_eq!(segment_view(&tool).parts, [(0, 50 * MIB)]);
+        // A stopped or finished job fills the bar.
+        for state in [JobState::Failed, JobState::Cancelled, JobState::Completed] {
+            assert_eq!(
+                segment_view(&segmented_job(state)).parts,
+                [(0, 200 * MIB)],
+                "{state:?}"
+            );
+        }
+    }
+
+    /// The 0x00RRGGBB pixel a COLORREF paints.
+    fn pixel(colour: u32) -> u32 {
+        ((colour & 0xff) << 16) | (colour & 0xff00) | ((colour >> 16) & 0xff)
+    }
+
+    #[test]
+    fn the_segment_bar_fills_the_parts_and_a_failed_job_s_bar_end_to_end_in_both_themes() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let dlg = &*raw;
+                    let paint = |job: &crate::model::Job| {
+                        let view = segment_view(job);
+                        let pixels = fluent::on_white(100, |dc| {
+                            let bar = RECT {
+                                left: 0,
+                                top: 0,
+                                right: 100,
+                                bottom: 12,
+                            };
+                            paint_segment_bar(dlg, &view, dc, bar);
+                        });
+                        pixels[6 * 100..7 * 100].to_vec()
+                    };
+                    let fill = |state: JobState| {
+                        if in_modern {
+                            state_fill(&card_palette(hwnd), state)
+                        } else {
+                            progress_colour(state)
+                        }
+                    };
+                    // The inner 98 pixels stand for 200 MiB: 30 MiB is 14 of them.
+                    let running = paint(&segmented_job(JobState::Downloading));
+                    let blue = pixel(fill(JobState::Downloading));
+                    assert_eq!(running[1..15], [blue; 14], "modern {in_modern}");
+                    assert_ne!(running[20], blue, "modern {in_modern}: nothing in between");
+                    assert_eq!(running[50], blue, "modern {in_modern}: the middle part");
+                    assert_ne!(running[90], blue, "modern {in_modern}: nothing at the end");
+                    let failed = paint(&segmented_job(JobState::Failed));
+                    let red = pixel(fill(JobState::Failed));
+                    assert_eq!(failed[1..99], [red; 98], "modern {in_modern}");
+                    close_test_dialog(raw, hwnd, root);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn the_job_view_shows_its_details_on_request_or_once_a_job_fails_in_both_themes() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let error = (*raw).error;
+                    let mut snapshot = (*raw).app.snapshot();
+                    let mut show = |job: crate::model::Job| {
+                        snapshot.jobs = std::sync::Arc::new(vec![job]);
+                        if let DialogKind::Progress(f) = &mut (*raw).kind {
+                            refresh_job_view(hwnd, error, f, &snapshot);
+                        }
+                    };
+                    let height = || {
+                        let mut rect: RECT = zeroed();
+                        GetWindowRect(hwnd, &mut rect);
+                        rect.bottom - rect.top
+                    };
+                    let state = || match &(*raw).kind {
+                        DialogKind::Progress(f) => (
+                            GetWindowLongW(f.status, GWL_STYLE) as u32 & WS_VISIBLE != 0,
+                            text(f.details_button),
+                            text(f.facts[6]),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    show(segmented_job(JobState::Downloading));
+                    let (shown, label, connections) = state();
+                    assert!(!shown, "modern {in_modern}: the details start hidden");
+                    assert_eq!(label, details_label(false));
+                    assert_eq!(connections, "2", "modern {in_modern}");
+                    let closed = height();
+                    SendMessageW(hwnd, WM_COMMAND, P_DETAILS as usize, 0);
+                    let (shown, label, _) = state();
+                    assert!(shown, "modern {in_modern}: Show details shows them");
+                    assert_eq!(label, details_label(true));
+                    assert!(
+                        height() >= closed + scale(JOB_DETAILS, (*raw).dpi),
+                        "modern {in_modern}: the window makes room for them"
+                    );
+                    SendMessageW(hwnd, WM_COMMAND, P_DETAILS as usize, 0);
+                    assert!(!state().0, "modern {in_modern}: Hide details hides them");
+                    assert_eq!(height(), closed, "modern {in_modern}");
+                    // A failure opens them once; hidden again, they stay hidden.
+                    show(segmented_job(JobState::Failed));
+                    assert!(state().0, "modern {in_modern}: a failure shows its reason");
+                    if let DialogKind::Progress(f) = &(*raw).kind {
+                        assert_eq!(
+                            SendMessageW(f.progress, PBM_GETPOS, 0, 0),
+                            1000,
+                            "modern {in_modern}: the failed job's bar is full"
+                        );
+                    }
+                    SendMessageW(hwnd, WM_COMMAND, P_DETAILS as usize, 0);
+                    show(segmented_job(JobState::Failed));
+                    assert!(!state().0, "modern {in_modern}: the user hid them");
+                    close_test_dialog(raw, hwnd, root);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn the_job_view_s_command_row_keeps_its_commit_group_at_the_end_in_both_themes() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let error = (*raw).error;
+                    let mut snapshot = (*raw).app.snapshot();
+                    snapshot.jobs = std::sync::Arc::new(vec![segmented_job(JobState::Downloading)]);
+                    if let DialogKind::Progress(f) = &mut (*raw).kind {
+                        refresh_job_view(hwnd, error, f, &snapshot);
+                    }
+                    let row = [P_OPEN_FILE, P_OPEN_FOLDER, P_ACTION, P_CANCEL, P_CLOSE];
+                    let rect = |id: i32| {
+                        let mut rect: RECT = zeroed();
+                        GetWindowRect(GetDlgItem(hwnd, id), &mut rect);
+                        rect
+                    };
+                    let rects = row.map(rect);
+                    let walk: Vec<i32> = tab_walk(hwnd)
+                        .into_iter()
+                        .filter(|id| row.contains(id))
+                        .collect();
+                    let mut client: RECT = zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let mut right = POINT {
+                        x: client.right,
+                        y: 0,
+                    };
+                    ClientToScreen(hwnd, &mut right);
+                    let dpi = (*raw).dpi;
+                    let pad = scale(if in_modern { ADD_PAD } else { DIALOG_MARGIN }, dpi);
+                    close_test_dialog(raw, hwnd, root);
+                    assert!(
+                        rects.windows(2).all(|pair| pair[0].right <= pair[1].left),
+                        "modern {in_modern}: left to right in this order"
+                    );
+                    let gap = |a: usize, b: usize| rects[b].left - rects[a].right;
+                    assert!(
+                        gap(1, 2) > gap(2, 3) && gap(1, 2) > gap(3, 4),
+                        "modern {in_modern}: the commit group stands apart"
+                    );
+                    assert!(
+                        (right.x - pad - rects[4].right).abs() <= scale(FOCUS_MARGIN, dpi) + 1,
+                        "modern {in_modern}: Close ends the row"
+                    );
+                    assert_eq!(walk, row, "modern {in_modern}: Tab walks the row in order");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn the_job_view_is_titled_by_its_file_and_its_details_add_what_the_facts_do_not_show() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let error = (*raw).error;
+                    let mut snapshot = (*raw).app.snapshot();
+                    let mut show = |job: crate::model::Job| {
+                        snapshot.jobs = std::sync::Arc::new(vec![job]);
+                        if let DialogKind::Progress(f) = &mut (*raw).kind {
+                            refresh_job_view(hwnd, error, f, &snapshot);
+                        }
+                    };
+                    let details = || match &(*raw).kind {
+                        DialogKind::Progress(f) => text(f.status),
+                        _ => unreachable!(),
+                    };
+                    let no_entries = crate::i18n::ui(
+                        "Bu indirme için henüz kayıt yok.",
+                        "No entries for this download yet.",
+                    );
+                    let mut unnamed = segmented_job(JobState::Downloading);
+                    unnamed.name = String::new();
+                    show(unnamed);
+                    assert_eq!(
+                        text(hwnd),
+                        crate::i18n::ui("İndirme", "Download"),
+                        "modern {in_modern}: no name yet"
+                    );
+                    let mut running = segmented_job(JobState::Downloading);
+                    running.name = "report.zip".into();
+                    show(running);
+                    assert_eq!(
+                        text(hwnd),
+                        crate::i18n::ui_format!("İndirme — {0}", "Download — {0}", "report.zip"),
+                        "modern {in_modern}"
+                    );
+                    // The facts already show the state, size, speed and time left.
+                    assert_eq!(details(), no_entries, "modern {in_modern}");
+                    let mut connecting = segmented_job(JobState::Downloading);
+                    connecting.phase = "8 connections".into();
+                    show(connecting);
+                    assert_eq!(
+                        details(),
+                        no_entries,
+                        "modern {in_modern}: the status shows it"
+                    );
+                    let mut held = segmented_job(JobState::Queued);
+                    held.phase = "Metered connection: downloads are on hold".into();
+                    show(held);
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}\r\n{no_entries}",
+                            crate::i18n::ui_format!(
+                                "Aşama: {0}\r\n",
+                                "Phase: {0}\r\n",
+                                "Metered connection: downloads are on hold"
+                            )
+                        ),
+                        "modern {in_modern}: why it waits"
+                    );
+                    let mut failed = segmented_job(JobState::Failed);
+                    failed.error = Some("the server closed the connection".into());
+                    show(failed);
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}\r\n{no_entries}",
+                            crate::i18n::ui_format!(
+                                "Hata: {message}\r\n",
+                                "Error: {message}\r\n",
+                                message = "the server closed the connection"
+                            )
+                        ),
+                        "modern {in_modern}"
+                    );
+                    // The status takes one line like the other facts.
+                    let tops = match &(*raw).kind {
+                        DialogKind::Progress(f) => f.facts.map(|value| {
+                            let mut rect: RECT = zeroed();
+                            GetWindowRect(GetWindow(value, GW_HWNDPREV), &mut rect);
+                            rect.top
+                        }),
+                        _ => unreachable!(),
+                    };
+                    close_test_dialog(raw, hwnd, root);
+                    assert_eq!(
+                        tops[1] - tops[0],
+                        tops[2] - tops[1],
+                        "modern {in_modern}: no gap after the status"
+                    );
+                }
+            }
+        });
     }
 
     #[test]
@@ -11689,25 +12134,7 @@ mod tests {
             use crate::model::JobState;
             unsafe {
                 let (raw, hwnd, root) = modern_test_dialog(
-                    DialogKind::Progress(Box::new(ProgressFields {
-                        ids: vec!["job".into()],
-                        selected: 0,
-                        raised: HashSet::new(),
-                        rendered: String::new(),
-                        rendered_rows: String::new(),
-                        action_label: String::new(),
-                        summary: null_mut(),
-                        list: null_mut(),
-                        status: null_mut(),
-                        progress: null_mut(),
-                        action: null_mut(),
-                        cancel: null_mut(),
-                        open_file: null_mut(),
-                        open_folder: null_mut(),
-                        close: null_mut(),
-                        hint: null_mut(),
-                        report: null_mut(),
-                    })),
+                    DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
                     MEDIA_WIDTH,
                     media_window_height(PROGRESS_HEIGHT, 420),
                 );
@@ -12118,26 +12545,7 @@ mod tests {
     }
 
     fn progress_kind() -> super::DialogKind {
-        use std::ptr::null_mut;
-        super::DialogKind::Progress(Box::new(super::ProgressFields {
-            ids: Vec::new(),
-            selected: 0,
-            raised: std::collections::HashSet::new(),
-            rendered: String::new(),
-            rendered_rows: String::new(),
-            action_label: String::new(),
-            summary: null_mut(),
-            list: null_mut(),
-            status: null_mut(),
-            progress: null_mut(),
-            action: null_mut(),
-            cancel: null_mut(),
-            open_file: null_mut(),
-            open_folder: null_mut(),
-            close: null_mut(),
-            hint: null_mut(),
-            report: null_mut(),
-        }))
+        super::DialogKind::Progress(super::ProgressFields::new(Vec::new()))
     }
 
     fn media_kind() -> super::DialogKind {
@@ -13313,7 +13721,7 @@ mod tests {
             WIZARD_WIDTH,
         };
         use crate::model::{AddRequest, MediaInfo};
-        use std::{collections::HashSet, ptr::null_mut};
+        use std::ptr::null_mut;
 
         fn wizard(simple: bool) -> DialogKind {
             DialogKind::Wizard(WizardFields {
@@ -13545,27 +13953,7 @@ mod tests {
             ("media picker", Box::new(media), 640, 420),
             (
                 "job view",
-                Box::new(|| {
-                    DialogKind::Progress(Box::new(ProgressFields {
-                        ids: vec!["job".into()],
-                        selected: 0,
-                        raised: HashSet::new(),
-                        rendered: String::new(),
-                        rendered_rows: String::new(),
-                        action_label: String::new(),
-                        summary: null_mut(),
-                        list: null_mut(),
-                        status: null_mut(),
-                        progress: null_mut(),
-                        action: null_mut(),
-                        cancel: null_mut(),
-                        open_file: null_mut(),
-                        open_folder: null_mut(),
-                        close: null_mut(),
-                        hint: null_mut(),
-                        report: null_mut(),
-                    }))
-                }),
+                Box::new(|| DialogKind::Progress(ProgressFields::new(vec!["job".into()]))),
                 640,
                 420,
             ),

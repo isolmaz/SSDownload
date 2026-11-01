@@ -2009,12 +2009,32 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
         DialogKind::Progress(f) => {
+            // Created in reading order, which is also the Tab order in Classic.
             f.summary = dialog_label(
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui("İndirme hazırlanıyor...", "Preparing the download..."),
                 P_SUMMARY,
             );
+            if f.title_font.is_null() {
+                let (points, weight, faces) = card_font_spec(true, modern());
+                f.title_font = make_face_font(dlg.dpi, points, weight, faces);
+            }
+            apply_font(f.summary, f.title_font);
+            dialog_button(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Küçült", "Minimize"),
+                P_MINI,
+                false,
+            );
+            dialog_check(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Üstte tut", "Keep on top"),
+                P_PIN,
+            );
+            f.source = dialog_label(dlg.hwnd, dlg.font, "", P_SOURCE);
             f.hint = dialog_label(
                 dlg.hwnd,
                 dlg.font,
@@ -2047,22 +2067,10 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 )
             };
             apply_font(f.list, dlg.font);
-            f.status = control(
-                dlg.hwnd,
-                "EDIT",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | ES_MULTILINE as u32
-                    | ES_READONLY as u32
-                    | ES_AUTOVSCROLL as u32
-                    | WS_VSCROLL,
-                WS_EX_CLIENTEDGE,
-                P_STATUS,
-            );
-            apply_font(f.status, dlg.font);
+            for (index, (tr, en)) in JOB_FACTS.iter().enumerate() {
+                dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui(tr, en), 0);
+                f.facts[index] = dialog_label(dlg.hwnd, dlg.font, "—", P_FACTS + index as i32);
+            }
             f.progress = control(
                 dlg.hwnd,
                 "msctls_progress32",
@@ -2072,20 +2080,49 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 P_PROGRESS,
             );
             SendMessageW(f.progress, PBM_SETRANGE32, 0, 1000);
-            f.action = dialog_button(
+            f.segment_bar = control(
+                dlg.hwnd,
+                "STATIC",
+                "",
+                WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+                0,
+                P_SEGMENTS,
+            );
+            f.details_button = dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Duraklat", "Pause"),
-                P_ACTION,
+                details_label(f.details),
+                P_DETAILS,
                 false,
             );
-            f.cancel = dialog_button(
+            // Only a failed job has anything to report: the button is created
+            // hidden and the job view shows it with the failure itself.
+            f.report = dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("İptal et", "Cancel"),
-                P_CANCEL,
+                crate::i18n::ui("Hata bildir", "Report problem"),
+                P_REPORT,
                 false,
             );
+            ShowWindow(f.report, SW_HIDE);
+            f.status = control(
+                dlg.hwnd,
+                "EDIT",
+                "",
+                WS_CHILD
+                    | WS_TABSTOP
+                    | WS_BORDER
+                    | ES_MULTILINE as u32
+                    | ES_READONLY as u32
+                    | ES_AUTOVSCROLL as u32
+                    | WS_VSCROLL
+                    | if f.details { WS_VISIBLE } else { 0 },
+                WS_EX_CLIENTEDGE,
+                P_STATUS,
+            );
+            apply_font(f.status, dlg.font);
+            // The actions that leave the window open first, then the commit group, as the
+            // command row shows them.
             f.open_file = dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -2100,18 +2137,19 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 P_OPEN_FOLDER,
                 false,
             );
-            dialog_button(
+            f.action = dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Küçült", "Minimize"),
-                P_MINI,
+                crate::i18n::ui("Duraklat", "Pause"),
+                P_ACTION,
                 false,
             );
-            dialog_check(
+            f.cancel = dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Üstte tut", "Keep on top"),
-                P_PIN,
+                crate::i18n::ui("İptal et", "Cancel"),
+                P_CANCEL,
+                false,
             );
             f.close = dialog_button(
                 dlg.hwnd,
@@ -2120,16 +2158,6 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 P_CLOSE,
                 false,
             );
-            // Only a failed job has anything to report: the button is created
-            // hidden and the job view shows it with the failure itself.
-            f.report = dialog_button(
-                dlg.hwnd,
-                dlg.font,
-                crate::i18n::ui("Hata bildir", "Report problem"),
-                P_REPORT,
-                false,
-            );
-            ShowWindow(f.report, SW_HIDE);
             if modern() {
                 subclass(f.progress, modern_progress_proc);
             }
@@ -2137,6 +2165,26 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             EnableWindow(f.open_folder, 0);
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
+    }
+}
+
+/// The job view's facts, label and value, in the order they are listed.
+pub(super) const JOB_FACTS: [(&str, &str); 7] = [
+    ("Durum:", "Status:"),
+    ("Dosya boyutu:", "File size:"),
+    ("İndirilen:", "Downloaded:"),
+    ("Aktarım hızı:", "Transfer rate:"),
+    ("Kalan süre:", "Time left:"),
+    ("Sürdürme desteği:", "Resume support:"),
+    ("Bağlantılar:", "Connections:"),
+];
+
+/// The job view's details button: what pressing it does.
+pub(super) fn details_label(shown: bool) -> &'static str {
+    if shown {
+        crate::i18n::ui("Ayrıntıları gizle", "Hide details")
+    } else {
+        crate::i18n::ui("Ayrıntıları göster", "Show details")
     }
 }
 

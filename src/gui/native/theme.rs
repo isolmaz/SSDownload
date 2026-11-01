@@ -1121,7 +1121,7 @@ pub(super) unsafe fn paint_list_cell(ui: &MainUi, draw: &NMLVCUSTOMDRAW) {
 /// so the default pass draws no lines there to leave alone.
 /// Fill of a row's progress cell: completed green, failed red, waiting grey, running blue.
 /// White text stays readable on every one of them, in both schemes.
-fn progress_colour(state: JobState) -> u32 {
+pub(super) fn progress_colour(state: JobState) -> u32 {
     match state {
         JobState::Completed => 0x107c10,
         JobState::Failed | JobState::Cancelled => 0x1c2bc4,
@@ -1129,6 +1129,82 @@ fn progress_colour(state: JobState) -> u32 {
             0x6e6e6e
         }
         _ => 0xb85f00,
+    }
+}
+
+/// The pixel spans `[left, right)` of a bar `width` pixels wide that the byte
+/// ranges `[start, end)` of a `total`-byte file cover. A range narrower than a
+/// pixel still takes one, so a connection that has just begun shows.
+pub(super) fn segment_spans(parts: &[(u64, u64)], total: u64, width: i32) -> Vec<(i32, i32)> {
+    if total == 0 || width <= 0 {
+        return Vec::new();
+    }
+    let at = |byte: u64| (byte.min(total) as u128 * width as u128 / total as u128) as i32;
+    let mut spans: Vec<(i32, i32)> = Vec::new();
+    for &(start, end) in parts {
+        if end <= start {
+            continue;
+        }
+        let left = at(start).min(width - 1);
+        let right = at(end).max(left + 1);
+        match spans.last_mut() {
+            Some(last) if left <= last.1 => last.1 = last.1.max(right),
+            _ => spans.push((left, right)),
+        }
+    }
+    spans
+}
+
+/// Paints the job view's segment bar into `rect` of `dc`: a framed track the
+/// width of the file, with the parts that have arrived filled in the colour
+/// the main list gives the job's state.
+pub(super) unsafe fn paint_segment_bar(dlg: &DialogUi, view: &SegmentView, dc: HDC, rect: RECT) {
+    let state = view.state.unwrap_or(JobState::Queued);
+    let (back, track, frame, fill) = if high_contrast() {
+        (
+            GetSysColor(COLOR_WINDOW),
+            GetSysColor(COLOR_WINDOW),
+            GetSysColor(COLOR_WINDOWTEXT),
+            GetSysColor(COLOR_HIGHLIGHT),
+        )
+    } else if modern() {
+        let palette = card_palette(dlg.hwnd);
+        (
+            palette.card,
+            palette.control,
+            palette.control_stroke,
+            state_fill(&palette, state),
+        )
+    } else if dialog_is_dark(dlg) {
+        (
+            DARK_BACKGROUND,
+            DARK_SURFACE,
+            DARK_BORDER,
+            progress_colour(state),
+        )
+    } else {
+        (
+            GetSysColor(COLOR_WINDOW),
+            0xe6e6e6,
+            GetSysColor(COLOR_BTNSHADOW),
+            progress_colour(state),
+        )
+    };
+    fill_colour(dc, &rect, back);
+    if modern() && !high_contrast() {
+        round_rect(dc, &rect, scale(2, dlg.dpi), track, Some(frame));
+    } else {
+        fill_colour(dc, &rect, frame);
+        fill_colour(dc, &inflate(rect, -1, -1), track);
+    }
+    let inner = inflate(rect, -1, -1);
+    for (left, right) in segment_spans(&view.parts, view.total, inner.right - inner.left) {
+        let part = RECT {
+            left: inner.left + left,
+            right: inner.left + right,
+            ..inner
+        };
+        fill_colour(dc, &part, fill);
     }
 }
 

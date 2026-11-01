@@ -1750,5 +1750,15 @@
   "No stable release of Deno {0}.x was found": "لم يُعثر على إصدار مستقر من Deno {0}.x",
   "No suitable stable yt-dlp release was found": "لم يُعثر على إصدار مستقر مناسب من yt-dlp",
   "FFmpeg did not generate the test clip ({0}): {1}": "لم يُنشئ FFmpeg مقطع الاختبار ({0}): {1}",
-  "exit code {0}": "رمز الخروج {0}"
+  "exit code {0}": "رمز الخروج {0}",
+  "Status:": "الحالة:",
+  "File size:": "حجم الملف:",
+  "Downloaded:": "تم تنزيله:",
+  "Transfer rate:": "معدل النقل:",
+  "Time left:": "الوقت المتبقي:",
+  "Resume support:": "دعم الاستئناف:",
+  "Connections:": "الاتصالات:",
+  "Show details": "إظهار التفاصيل",
+  "Hide details": "إخفاء التفاصيل",
+  "Source: {0}": "المصدر: {0}"
 }

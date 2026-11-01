@@ -245,6 +245,9 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
 /// The job this window is showing: the entry at the selected row of the exact
 /// ids its handoff queued, in the engine's own order. Never a list position of
 /// the main window and never the newest job.
+/// How many of the newest timeline lines the job view's details show.
+const JOB_TIMELINE_LINES: usize = 200;
+
 pub(super) fn job_view_job<'a>(snapshot: &'a AppSnapshot, f: &ProgressFields) -> Option<&'a Job> {
     let id = f.ids.get(f.selected)?;
     snapshot.jobs.iter().find(|job| &job.id == id)
@@ -303,11 +306,7 @@ pub(super) unsafe fn refresh_job_view(
     let mut summary = String::new();
     if f.ids.len() == 1 {
         match job_view_job(snapshot, f) {
-            Some(job) => {
-                summary.push_str(&job.name);
-                summary.push_str(" — ");
-                summary.push_str(&state_label(job));
-            }
+            Some(job) => summary.push_str(&job.name),
             None => summary.push_str(crate::i18n::ui(
                 "İş artık kuyrukta değil",
                 "The job is no longer in the queue",
@@ -332,6 +331,29 @@ pub(super) unsafe fn refresh_job_view(
         }
     }
     set_text(f.summary, &summary);
+    let title = job_view_title(snapshot, &f.ids);
+    if text(hwnd) != title {
+        set_text(hwnd, &title);
+    }
+    let shown = job_view_job(snapshot, f);
+    set_text(f.source, &shown.map(job_source).unwrap_or_default());
+    let facts = shown.map(job_facts).unwrap_or_default();
+    for (value, fact) in f.facts.iter().zip(&facts) {
+        if text(*value) != *fact {
+            set_text(*value, fact);
+        }
+    }
+    let segments = shown.map(segment_view).unwrap_or_default();
+    if segments != f.segments {
+        f.segments = segments;
+        InvalidateRect(f.segment_bar, null(), 0);
+    }
+    // A failure shows its reason, which only the details hold, once.
+    let failed = shown.is_some_and(|job| job.state == JobState::Failed);
+    if failed && !f.failure_shown && !f.details {
+        toggle_job_details(hwnd, f);
+    }
+    f.failure_shown = failed;
 
     let mut detail = String::new();
     let action_label: &str;
@@ -349,20 +371,15 @@ pub(super) unsafe fn refresh_job_view(
             can_open = false;
         }
         Some(job) => {
-            detail.push_str(&crate::i18n::ui_format!(
-                "{0}\r\nDurum: {1}\r\nİlerleme: {2}\r\nHız: {3}\r\nKalan süre: {4}\r\n",
-                "{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n",
-                job.name,
-                state_label(job),
-                format_progress(job),
-                format_speed(job.speed),
-                format_eta(job.eta)
-            ));
-            if !job.phase.trim().is_empty() {
+            // What the facts above do not show: a phase the status leaves out
+            // (why a waiting download waits), the failure, where the file was
+            // saved, and the job's own timeline.
+            let phase = job.phase.trim();
+            if !phase.is_empty() && !state_label(job).ends_with(phase) {
                 detail.push_str(&crate::i18n::ui_format!(
                     "Aşama: {0}\r\n",
                     "Phase: {0}\r\n",
-                    job.phase
+                    phase
                 ));
             }
             if let Some(message) = job.error.as_deref() {
@@ -384,6 +401,22 @@ pub(super) unsafe fn refresh_job_view(
             } else if let Some(total) = job.total.filter(|total| *total > 0) {
                 percent = ((job.downloaded.min(total) as u128 * 1000) / total as u128) as usize;
             }
+            let stamp = crate::logging::job_timeline_stamp(&job.id);
+            if f.timeline_key.0 != job.id || f.timeline_key.1 != stamp {
+                f.timeline = crate::logging::job_timeline(&job.id, JOB_TIMELINE_LINES);
+                f.timeline_key = (job.id.clone(), stamp);
+            }
+            if !detail.is_empty() {
+                detail.push_str("\r\n");
+            }
+            if f.timeline.is_empty() {
+                detail.push_str(crate::i18n::ui(
+                    "Bu indirme için henüz kayıt yok.",
+                    "No entries for this download yet.",
+                ));
+            } else {
+                detail.push_str(&f.timeline.join("\r\n"));
+            }
             processing = job.state == JobState::Processing;
             action_label = match job.state {
                 JobState::Failed => crate::i18n::ui("Yeniden dene", "Retry"),
@@ -401,6 +434,8 @@ pub(super) unsafe fn refresh_job_view(
     let detail = display_text(snapshot.settings.debug_mode, &detail);
     if detail != f.rendered {
         set_text(f.status, &detail);
+        // The newest timeline line is the last one.
+        SendMessageW(f.status, WM_VSCROLL, SB_BOTTOM as usize, 0);
         // Modern shows the status's scroll bar only while the text overflows.
         if modern() {
             sync_edit_scrollbar(f.status);
@@ -428,14 +463,26 @@ pub(super) unsafe fn refresh_job_view(
             SWEEP_FRAME_MS as isize,
         );
     }
+    // A failed or cancelled job's bar is red and full, as in the main list.
+    let stopped = job_view_job(snapshot, f)
+        .is_some_and(|job| matches!(job.state, JobState::Failed | JobState::Cancelled));
     if !processing {
-        SendMessageW(f.progress, PBM_SETPOS, percent, 0);
+        SendMessageW(
+            f.progress,
+            PBM_SETPOS,
+            if stopped { 1000 } else { percent },
+            0,
+        );
     }
-    // Modern's bar is red for a failed or cancelled job, as in the main list.
     if modern() {
-        let stopped = job_view_job(snapshot, f)
-            .is_some_and(|job| matches!(job.state, JobState::Failed | JobState::Cancelled));
         set_progress_stopped(f.progress, stopped);
+    } else {
+        SendMessageW(
+            f.progress,
+            PBM_SETSTATE,
+            if stopped { PBST_ERROR } else { PBST_NORMAL } as usize,
+            0,
+        );
     }
     EnableWindow(f.action, can_control as BOOL);
     EnableWindow(f.cancel, can_cancel as BOOL);
@@ -1620,6 +1667,95 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
     })();
     let _ = std::fs::remove_dir_all(&folder);
     result
+}
+
+/// Where the job view's job comes from: the host of its address.
+pub(super) fn job_source(job: &Job) -> String {
+    let host = url::Url::parse(job.request.url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| job.request.url.trim().to_owned());
+    crate::i18n::ui_format!("Kaynak: {0}", "Source: {0}", host)
+}
+
+/// The values of `JOB_FACTS` for `job`, "—" where it has none.
+pub(super) fn job_facts(job: &Job) -> [String; JOB_FACTS.len()] {
+    let none = || "—".to_string();
+    let downloaded = match job.total.filter(|total| *total > 0) {
+        Some(total) => format!(
+            "{} ({:.1}%)",
+            format_bytes(job.downloaded),
+            job.downloaded.min(total) as f64 * 100.0 / total as f64
+        ),
+        None => format_bytes(job.downloaded),
+    };
+    let resume = match job.resumable {
+        Some(true) => crate::i18n::ui("Evet", "Yes").to_string(),
+        Some(false) => crate::i18n::ui("Hayır", "No").to_string(),
+        None => none(),
+    };
+    // The ranges stay from the last report while a job waits; only a running
+    // transfer has connections.
+    let connections = match (&job.ranges, job.total) {
+        (Some(ranges), Some(total)) if job.state == JobState::Downloading => {
+            unfinished_parts(ranges, total).to_string()
+        }
+        _ => none(),
+    };
+    [
+        state_label(job),
+        job.total.map(format_bytes).unwrap_or_else(none),
+        downloaded,
+        format_speed(job.speed),
+        format_eta(job.eta),
+        resume,
+        connections,
+    ]
+}
+
+/// The parts of a `total`-byte file that the arrived ranges (sorted, apart)
+/// leave open: each is where a connection still has bytes to fetch.
+pub(super) fn unfinished_parts(ranges: &[(u64, u64)], total: u64) -> usize {
+    let mut next = 0;
+    let mut parts = 0;
+    for &(start, end) in ranges {
+        if start > next {
+            parts += 1;
+        }
+        next = next.max(end);
+    }
+    parts + usize::from(next < total)
+}
+
+/// What the segment bar shows for `job`: the ranges a segmented transfer
+/// reported, or one part from the start as far as it has come. A paused job
+/// keeps the ranges of its last report, which are the parts it has kept.
+pub(super) fn segment_view(job: &Job) -> SegmentView {
+    let total = match job.state {
+        JobState::Completed => job.total.unwrap_or(job.downloaded).max(1),
+        _ => job.total.unwrap_or(0),
+    };
+    let parts = match (&job.ranges, job.state) {
+        (_, JobState::Completed | JobState::Failed | JobState::Cancelled) => vec![(0, total)],
+        (Some(ranges), _) => ranges.to_vec(),
+        (None, _) => vec![(0, job.downloaded.min(total))],
+    };
+    SegmentView {
+        parts,
+        total,
+        state: Some(job.state),
+    }
+}
+
+/// Shows or hides the job view's status text and fits the window to it.
+pub(super) unsafe fn toggle_job_details(hwnd: HWND, f: &mut ProgressFields) {
+    f.details = !f.details;
+    set_text(f.details_button, details_label(f.details));
+    ShowWindow(f.status, if f.details { SW_SHOW } else { SW_HIDE });
+    let dlg = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DialogUi;
+    if !dlg.is_null() {
+        fit_job_view(&mut *dlg);
+    }
 }
 
 #[cfg(test)]

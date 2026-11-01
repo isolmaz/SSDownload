@@ -184,6 +184,7 @@ static AR: &[(&str, &str)] = &[
     ("Connection to the app", "الاتصال بالتطبيق"),
     ("Connections per file", "الاتصالات لكل ملف"),
     ("Connections per file (1–16):", "الاتصالات لكل ملف (1–16):"),
+    ("Connections:", "الاتصالات:"),
     ("Continue", "متابعة"),
     ("Continue / Download", "متابعة / تنزيل"),
     ("Continues from the previous session", "سيتابع من الجلسة السابقة"),
@@ -248,6 +249,7 @@ static AR: &[(&str, &str)] = &[
     ("Download stopped", "توقف التنزيل"),
     ("Download the playlist", "تنزيل قائمة التشغيل"),
     ("Download type:", "نوع التنزيل:"),
+    ("Downloaded:", "تم تنزيله:"),
     ("Downloading", "جارٍ التنزيل"),
     ("Downloading media", "جارٍ تنزيل الوسائط"),
     ("Downloading media; the server is limiting requests", "جارٍ تنزيل الوسائط؛ الخادم يحدّ من الطلبات"),
@@ -301,6 +303,7 @@ static AR: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "تنزيلات الملفات معطّلة في الإعدادات."),
     ("File name (optional, for a single URL):", "اسم الملف (اختياري، لعنوان URL واحد):"),
     ("File name:", "اسم الملف:"),
+    ("File size:", "حجم الملف:"),
     ("File — regular file links", "الملفات — روابط الملفات العادية"),
     ("Filter", "عامل التصفية"),
     ("Finish live recordin&g and keep it", "إن&هاء التسجيل المباشر والاحتفاظ به"),
@@ -318,6 +321,7 @@ static AR: &[(&str, &str)] = &[
     ("General", "عام"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "لا يمكن الجمع بين ترجمات مسار HTML وترجمات أداة الاستخراج في طلب واحد"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "تسجيلات الدخول من نوع HTTP Basic المرسلة إلى هذه المضيفات فقط لتنزيلات الملفات:"),
+    ("Hide details", "إخفاء التفاصيل"),
     ("Hold downloads on a metered connection", "إيقاف التنزيلات مؤقتًا على اتصال محدود البيانات"),
     ("Hold downloads while Windows Battery saver is on", "إيقاف التنزيلات مؤقتًا أثناء تشغيل توفير البطارية في Windows"),
     ("Host:", "المضيف:"),
@@ -611,6 +615,7 @@ static AR: &[(&str, &str)] = &[
     ("Restart the download", "إعادة تشغيل التنزيل"),
     ("Resume", "استئناف"),
     ("Resume all", "استئناف الكل"),
+    ("Resume support:", "دعم الاستئناف:"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "استأنف هذه المهمة من النقل عبر المتصفح في علامة التبويب المصدر؛ لم يتغير أسلوب النقل."),
     ("Retries in a row without progress", "عدد إعادات المحاولة المتتالية بلا تقدم"),
     ("Retries in a row without progress:", "إعادات المحاولة المتتالية بلا تقدم:"),
@@ -676,6 +681,7 @@ static AR: &[(&str, &str)] = &[
     ("Settings...", "الإعدادات..."),
     ("Show a notification when a download completes", "عرض إشعار عند اكتمال التنزيل"),
     ("Show an open card at the bottom right when a download completes", "عرض بطاقة فتح في الركن السفلي الأيمن عند اكتمال التنزيل"),
+    ("Show details", "إظهار التفاصيل"),
     ("Show in folder", "إظهار في المجلد"),
     ("Show job log...", "عرض سجل المهمة..."),
     ("Show site download entries in the browser", "عرض عناصر تنزيل المواقع في المتصفح"),
@@ -710,6 +716,7 @@ static AR: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "جارٍ بدء التثبيت؛ سيُعاد فتح التطبيق"),
     ("State", "الحالة"),
     ("States", "الحالات"),
+    ("Status:", "الحالة:"),
     ("Stream integrity could not be verified", "تعذّر التحقق من سلامة البث"),
     ("Subtitle embedding is only supported for video output", "دمج الترجمة مدعوم لمخرجات الفيديو فقط"),
     ("Subtitle language", "لغة الترجمة"),
@@ -1351,6 +1358,7 @@ static AR: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "هذا المصدر غير مدعوم؛ جرّب مصدرًا آخر"),
     ("This source or format is not supported; make a different choice.", "هذا المصدر أو التنسيق غير مدعوم؛ اختر خيارًا آخر."),
     ("This usage mode is disabled", "وضع الاستخدام هذا معطّل"),
+    ("Time left:", "الوقت المتبقي:"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "نوافذ زمنية: الأيام في كل سطر بالصيغة HH:MM-HH:MM · الاثنين=0، الأحد=6 · فارغ: دائمًا"),
     ("Too many HTTP headers", "عدد ترويسات HTTP كبير جدًا"),
     ("Too many HTTP redirects", "عدد كبير جدًا من إعادات توجيه HTTP"),
@@ -1359,6 +1367,7 @@ static AR: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "فشل التحقق من سلامة الأداة"),
     ("Tool verification stopped", "توقّف التحقق من الأداة"),
     ("Total speed", "السرعة الإجمالية"),
+    ("Transfer rate:", "معدل النقل:"),
     ("Try again; refresh the source if the same error persists", "حاول مرة أخرى؛ وإذا استمر الخطأ نفسه فحدّث المصدر"),
     ("Type", "النوع"),
     ("URL", "URL"),
@@ -1656,6 +1665,7 @@ static ES: &[(&str, &str)] = &[
     ("Connection to the app", "Conexión con la aplicación"),
     ("Connections per file", "Conexiones por archivo"),
     ("Connections per file (1–16):", "Conexiones por archivo (1–16):"),
+    ("Connections:", "Conexiones:"),
     ("Continue", "Continuar"),
     ("Continue / Download", "Continuar / Descargar"),
     ("Continues from the previous session", "Continúa desde la sesión anterior"),
@@ -1720,6 +1730,7 @@ static ES: &[(&str, &str)] = &[
     ("Download stopped", "Descarga detenida"),
     ("Download the playlist", "Descargar la lista de reproducción"),
     ("Download type:", "Tipo de descarga:"),
+    ("Downloaded:", "Descargado:"),
     ("Downloading", "Descargando"),
     ("Downloading media", "Descargando contenido multimedia"),
     ("Downloading media; the server is limiting requests", "Descargando contenido multimedia; el servidor está limitando las solicitudes"),
@@ -1773,6 +1784,7 @@ static ES: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "Las descargas de archivos están desactivadas en Configuración."),
     ("File name (optional, for a single URL):", "Nombre de archivo (opcional, para una sola URL):"),
     ("File name:", "Nombre de archivo:"),
+    ("File size:", "Tamaño del archivo:"),
     ("File — regular file links", "Archivo — enlaces de archivos normales"),
     ("Filter", "Filtro"),
     ("Finish live recordin&g and keep it", "Terminar la grabación en directo y &conservarla"),
@@ -1790,6 +1802,7 @@ static ES: &[(&str, &str)] = &[
     ("General", "General"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "Los subtítulos de pista HTML y los del extractor no se pueden mezclar en una misma solicitud"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "Inicios de sesión HTTP Basic que se envían solo a estos hosts para las descargas de archivos:"),
+    ("Hide details", "Ocultar detalles"),
     ("Hold downloads on a metered connection", "Poner en espera las descargas en una conexión medida"),
     ("Hold downloads while Windows Battery saver is on", "Poner en espera las descargas con el Ahorro de batería de Windows activado"),
     ("Host:", "Host:"),
@@ -2083,6 +2096,7 @@ static ES: &[(&str, &str)] = &[
     ("Restart the download", "Reiniciar la descarga"),
     ("Resume", "Reanudar"),
     ("Resume all", "Reanudar todo"),
+    ("Resume support:", "Se puede reanudar:"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Reanudar esta tarea desde la transferencia del navegador en su pestaña de origen; el método de transferencia no se ha modificado."),
     ("Retries in a row without progress", "El número de reintentos seguidos sin progreso"),
     ("Retries in a row without progress:", "Reintentos seguidos sin progreso:"),
@@ -2148,6 +2162,7 @@ static ES: &[(&str, &str)] = &[
     ("Settings...", "Configuración..."),
     ("Show a notification when a download completes", "Mostrar una notificación cuando termine una descarga"),
     ("Show an open card at the bottom right when a download completes", "Mostrar una tarjeta para abrir en la esquina inferior derecha cuando termine una descarga"),
+    ("Show details", "Mostrar detalles"),
     ("Show in folder", "Mostrar en la carpeta"),
     ("Show job log...", "Mostrar el registro de la tarea..."),
     ("Show site download entries in the browser", "Mostrar las entradas de descarga del sitio en el navegador"),
@@ -2182,6 +2197,7 @@ static ES: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Iniciando la instalación; la aplicación se volverá a abrir"),
     ("State", "Estado"),
     ("States", "Estados"),
+    ("Status:", "Estado:"),
     ("Stream integrity could not be verified", "No se pudo verificar la integridad del flujo"),
     ("Subtitle embedding is only supported for video output", "La incrustación de subtítulos solo es compatible con la salida de vídeo"),
     ("Subtitle language", "Idioma de los subtítulos"),
@@ -2823,6 +2839,7 @@ static ES: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "Este origen no se admite; probar con otro origen"),
     ("This source or format is not supported; make a different choice.", "Este origen o formato no se admite; se debe elegir otra opción."),
     ("This usage mode is disabled", "Este modo de uso está desactivado"),
+    ("Time left:", "Tiempo restante:"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "Franjas horarias: días por línea HH:MM-HH:MM · lun=0, dom=6 · vacío: siempre"),
     ("Too many HTTP headers", "Demasiados encabezados HTTP"),
     ("Too many HTTP redirects", "Demasiadas redirecciones HTTP"),
@@ -2831,6 +2848,7 @@ static ES: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "La verificación de integridad de la herramienta ha fallado"),
     ("Tool verification stopped", "La verificación de la herramienta se ha detenido"),
     ("Total speed", "Velocidad total"),
+    ("Transfer rate:", "Velocidad:"),
     ("Try again; refresh the source if the same error persists", "Se puede volver a intentar; si el mismo error persiste, actualizar el origen."),
     ("Type", "Tipo"),
     ("URL", "URL"),
@@ -3128,6 +3146,7 @@ static PT: &[(&str, &str)] = &[
     ("Connection to the app", "Conexão com o aplicativo"),
     ("Connections per file", "Conexões por arquivo"),
     ("Connections per file (1–16):", "Conexões por arquivo (1–16):"),
+    ("Connections:", "Conexões:"),
     ("Continue", "Continuar"),
     ("Continue / Download", "Continuar / Baixar"),
     ("Continues from the previous session", "Continua da sessão anterior"),
@@ -3192,6 +3211,7 @@ static PT: &[(&str, &str)] = &[
     ("Download stopped", "Download interrompido"),
     ("Download the playlist", "Baixar a playlist"),
     ("Download type:", "Tipo de download:"),
+    ("Downloaded:", "Baixado:"),
     ("Downloading", "Baixando"),
     ("Downloading media", "Baixando mídia"),
     ("Downloading media; the server is limiting requests", "Baixando mídia; o servidor está limitando as solicitações"),
@@ -3245,6 +3265,7 @@ static PT: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "Downloads de arquivos estão desativados nas Configurações."),
     ("File name (optional, for a single URL):", "Nome do arquivo (opcional, para uma única URL):"),
     ("File name:", "Nome do arquivo:"),
+    ("File size:", "Tamanho do arquivo:"),
     ("File — regular file links", "Arquivo — links de arquivos comuns"),
     ("Filter", "Filtro"),
     ("Finish live recordin&g and keep it", "&Concluir a gravação ao vivo e mantê-la"),
@@ -3262,6 +3283,7 @@ static PT: &[(&str, &str)] = &[
     ("General", "Geral"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "Legendas de faixa HTML e legendas do extrator não podem ser misturadas em uma mesma solicitação"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "Logins HTTP Basic enviados somente a estes hosts para downloads de arquivos:"),
+    ("Hide details", "Ocultar detalhes"),
     ("Hold downloads on a metered connection", "Suspender downloads em conexão medida"),
     ("Hold downloads while Windows Battery saver is on", "Suspender downloads com a Economia de bateria do Windows ativada"),
     ("Host:", "Host:"),
@@ -3555,6 +3577,7 @@ static PT: &[(&str, &str)] = &[
     ("Restart the download", "Reiniciar o download"),
     ("Resume", "Retomar"),
     ("Resume all", "Retomar tudo"),
+    ("Resume support:", "Pode ser retomado:"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Retome esta tarefa a partir da transferência pelo navegador na aba de origem; o método de transferência não foi alterado."),
     ("Retries in a row without progress", "O número de novas tentativas seguidas sem progresso"),
     ("Retries in a row without progress:", "Tentativas seguidas sem progresso:"),
@@ -3620,6 +3643,7 @@ static PT: &[(&str, &str)] = &[
     ("Settings...", "Configurações..."),
     ("Show a notification when a download completes", "Mostrar uma notificação quando um download for concluído"),
     ("Show an open card at the bottom right when a download completes", "Mostrar um cartão para abrir no canto inferior direito quando um download for concluído"),
+    ("Show details", "Mostrar detalhes"),
     ("Show in folder", "Mostrar na pasta"),
     ("Show job log...", "Mostrar log da tarefa..."),
     ("Show site download entries in the browser", "Mostrar entradas de download do site no navegador"),
@@ -3654,6 +3678,7 @@ static PT: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Iniciando a instalação; o aplicativo será reaberto"),
     ("State", "Estado"),
     ("States", "Estados"),
+    ("Status:", "Estado:"),
     ("Stream integrity could not be verified", "A integridade do fluxo não pôde ser verificada"),
     ("Subtitle embedding is only supported for video output", "A incorporação de legendas só é suportada para saída de vídeo"),
     ("Subtitle language", "Idioma da legenda"),
@@ -4295,6 +4320,7 @@ static PT: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "Esta fonte não é suportada; tente outra fonte"),
     ("This source or format is not supported; make a different choice.", "Esta fonte ou formato não é suportado; faça outra escolha."),
     ("This usage mode is disabled", "Este modo de uso está desativado"),
+    ("Time left:", "Tempo restante:"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "Janelas de horário: dias por linha HH:MM-HH:MM · Seg=0, Dom=6 · vazio: sempre"),
     ("Too many HTTP headers", "Cabeçalhos HTTP demais"),
     ("Too many HTTP redirects", "Redirecionamentos HTTP demais"),
@@ -4303,6 +4329,7 @@ static PT: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "A verificação de integridade da ferramenta falhou"),
     ("Tool verification stopped", "A verificação da ferramenta foi interrompida"),
     ("Total speed", "Velocidade total"),
+    ("Transfer rate:", "Taxa de transferência:"),
     ("Try again; refresh the source if the same error persists", "Tente novamente; atualize a fonte se o mesmo erro persistir"),
     ("Type", "Tipo"),
     ("URL", "URL"),
@@ -4600,6 +4627,7 @@ static FR: &[(&str, &str)] = &[
     ("Connection to the app", "Connexion à l'application"),
     ("Connections per file", "Connexions par fichier"),
     ("Connections per file (1–16):", "Connexions par fichier (1–16) :"),
+    ("Connections:", "Connexions :"),
     ("Continue", "Continuer"),
     ("Continue / Download", "Continuer / Télécharger"),
     ("Continues from the previous session", "Reprend depuis la session précédente"),
@@ -4664,6 +4692,7 @@ static FR: &[(&str, &str)] = &[
     ("Download stopped", "Téléchargement arrêté"),
     ("Download the playlist", "Télécharger la liste de lecture"),
     ("Download type:", "Type de téléchargement :"),
+    ("Downloaded:", "Téléchargé :"),
     ("Downloading", "Téléchargement en cours"),
     ("Downloading media", "Téléchargement du média"),
     ("Downloading media; the server is limiting requests", "Téléchargement du média ; le serveur limite les requêtes"),
@@ -4717,6 +4746,7 @@ static FR: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "Les téléchargements de fichiers sont désactivés dans les paramètres."),
     ("File name (optional, for a single URL):", "Nom de fichier (facultatif, pour une seule URL) :"),
     ("File name:", "Nom du fichier :"),
+    ("File size:", "Taille du fichier :"),
     ("File — regular file links", "Fichier — liens de fichiers classiques"),
     ("Filter", "Filtre"),
     ("Finish live recordin&g and keep it", "Terminer l'enre&gistrement en direct et le conserver"),
@@ -4734,6 +4764,7 @@ static FR: &[(&str, &str)] = &[
     ("General", "Général"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "Les sous-titres de piste HTML et les sous-titres de l'extracteur ne peuvent pas être mélangés dans une même requête"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "Identifiants HTTP Basic envoyés uniquement à ces hôtes pour les téléchargements de fichiers :"),
+    ("Hide details", "Masquer les détails"),
     ("Hold downloads on a metered connection", "Suspendre les téléchargements sur une connexion limitée"),
     ("Hold downloads while Windows Battery saver is on", "Suspendre les téléchargements si l'Économiseur de batterie est actif"),
     ("Host:", "Hôte :"),
@@ -5027,6 +5058,7 @@ static FR: &[(&str, &str)] = &[
     ("Restart the download", "Redémarrer le téléchargement"),
     ("Resume", "Reprendre"),
     ("Resume all", "Tout reprendre"),
+    ("Resume support:", "Reprise possible :"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Reprenez cette tâche à partir du transfert par le navigateur dans son onglet source ; la méthode de transfert n'a pas été modifiée."),
     ("Retries in a row without progress", "Le nombre de réessais d’affilée sans progrès"),
     ("Retries in a row without progress:", "Réessais d’affilée sans progrès :"),
@@ -5092,6 +5124,7 @@ static FR: &[(&str, &str)] = &[
     ("Settings...", "Paramètres..."),
     ("Show a notification when a download completes", "Afficher une notification à la fin d'un téléchargement"),
     ("Show an open card at the bottom right when a download completes", "Afficher une carte d'ouverture en bas à droite à la fin d'un téléchargement"),
+    ("Show details", "Afficher les détails"),
     ("Show in folder", "Afficher dans le dossier"),
     ("Show job log...", "Afficher le journal de la tâche..."),
     ("Show site download entries in the browser", "Afficher les téléchargements du site dans le navigateur"),
@@ -5126,6 +5159,7 @@ static FR: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Lancement de l'installation ; l'application sera rouverte"),
     ("State", "État"),
     ("States", "États"),
+    ("Status:", "État :"),
     ("Stream integrity could not be verified", "L'intégrité du flux n'a pas pu être vérifiée"),
     ("Subtitle embedding is only supported for video output", "L'intégration des sous-titres n'est prise en charge que pour une sortie vidéo"),
     ("Subtitle language", "Langue des sous-titres"),
@@ -5767,6 +5801,7 @@ static FR: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "Cette source n'est pas prise en charge ; essayez une autre source"),
     ("This source or format is not supported; make a different choice.", "Cette source ou ce format n'est pas pris en charge ; faites un autre choix."),
     ("This usage mode is disabled", "Ce mode d'utilisation est désactivé"),
+    ("Time left:", "Temps restant :"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "Plages horaires : jours par ligne HH:MM-HH:MM · lun=0, dim=6 · vide : toujours"),
     ("Too many HTTP headers", "Trop d'en-têtes HTTP"),
     ("Too many HTTP redirects", "Trop de redirections HTTP"),
@@ -5775,6 +5810,7 @@ static FR: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "La vérification d'intégrité de l'outil a échoué"),
     ("Tool verification stopped", "Vérification de l'outil arrêtée"),
     ("Total speed", "Vitesse totale"),
+    ("Transfer rate:", "Débit :"),
     ("Try again; refresh the source if the same error persists", "Réessayez ; actualisez la source si la même erreur persiste"),
     ("Type", "Type"),
     ("URL", "URL"),
@@ -6072,6 +6108,7 @@ static DE: &[(&str, &str)] = &[
     ("Connection to the app", "Verbindung zur App"),
     ("Connections per file", "Verbindungen pro Datei"),
     ("Connections per file (1–16):", "Verbindungen pro Datei (1–16):"),
+    ("Connections:", "Verbindungen:"),
     ("Continue", "Fortfahren"),
     ("Continue / Download", "Fortfahren / Herunterladen"),
     ("Continues from the previous session", "Wird aus der vorherigen Sitzung fortgesetzt"),
@@ -6136,6 +6173,7 @@ static DE: &[(&str, &str)] = &[
     ("Download stopped", "Download gestoppt"),
     ("Download the playlist", "Playlist herunterladen"),
     ("Download type:", "Downloadtyp:"),
+    ("Downloaded:", "Heruntergeladen:"),
     ("Downloading", "Wird heruntergeladen"),
     ("Downloading media", "Medien werden heruntergeladen"),
     ("Downloading media; the server is limiting requests", "Medien werden heruntergeladen; der Server begrenzt die Anfragen"),
@@ -6189,6 +6227,7 @@ static DE: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "Datei-Downloads sind in den Einstellungen deaktiviert."),
     ("File name (optional, for a single URL):", "Dateiname (optional, für eine einzelne URL):"),
     ("File name:", "Dateiname:"),
+    ("File size:", "Dateigröße:"),
     ("File — regular file links", "Datei — normale Dateilinks"),
     ("Filter", "Filter"),
     ("Finish live recordin&g and keep it", "Live-Aufnahme beenden und be&halten"),
@@ -6206,6 +6245,7 @@ static DE: &[(&str, &str)] = &[
     ("General", "Allgemein"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "HTML-Track-Untertitel und Extraktor-Untertitel können nicht in einer Anfrage gemischt werden"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "HTTP-Basic-Anmeldungen, die für Datei-Downloads nur an genau diese Hosts gesendet werden:"),
+    ("Hide details", "Details ausblenden"),
     ("Hold downloads on a metered connection", "Downloads bei getakteter Verbindung zurückhalten"),
     ("Hold downloads while Windows Battery saver is on", "Downloads zurückhalten, wenn der Windows-Energiesparmodus aktiv ist"),
     ("Host:", "Host:"),
@@ -6499,6 +6539,7 @@ static DE: &[(&str, &str)] = &[
     ("Restart the download", "Download neu starten"),
     ("Resume", "Fortsetzen"),
     ("Resume all", "Alle fortsetzen"),
+    ("Resume support:", "Fortsetzbar:"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Setzen Sie diesen Auftrag über die Browser-Übertragung auf dem Quell-Tab fort; die Übertragungsmethode wurde nicht geändert."),
     ("Retries in a row without progress", "Die Anzahl der Wiederholungen ohne Fortschritt in Folge"),
     ("Retries in a row without progress:", "Wdh. in Folge ohne Fortschritt:"),
@@ -6564,6 +6605,7 @@ static DE: &[(&str, &str)] = &[
     ("Settings...", "Einstellungen..."),
     ("Show a notification when a download completes", "Benachrichtigung anzeigen, wenn ein Download abgeschlossen ist"),
     ("Show an open card at the bottom right when a download completes", "Beim Abschluss eines Downloads unten rechts eine Karte zum Öffnen anzeigen"),
+    ("Show details", "Details anzeigen"),
     ("Show in folder", "Im Ordner anzeigen"),
     ("Show job log...", "Auftragsprotokoll anzeigen..."),
     ("Show site download entries in the browser", "Website-Download-Einträge im Browser anzeigen"),
@@ -6598,6 +6640,7 @@ static DE: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Installation wird gestartet; die Anwendung wird wieder geöffnet"),
     ("State", "Status"),
     ("States", "Zustände"),
+    ("Status:", "Status:"),
     ("Stream integrity could not be verified", "Die Integrität des Streams konnte nicht geprüft werden"),
     ("Subtitle embedding is only supported for video output", "Das Einbetten von Untertiteln wird nur für Videoausgabe unterstützt"),
     ("Subtitle language", "Untertitelsprache"),
@@ -7239,6 +7282,7 @@ static DE: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "Diese Quelle wird nicht unterstützt; versuchen Sie eine andere Quelle"),
     ("This source or format is not supported; make a different choice.", "Diese Quelle oder dieses Format wird nicht unterstützt; treffen Sie eine andere Auswahl."),
     ("This usage mode is disabled", "Dieser Verwendungszweck ist deaktiviert"),
+    ("Time left:", "Restzeit:"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "Zeitfenster: Tage pro Zeile HH:MM-HH:MM · Mo=0, So=6 · leer: immer"),
     ("Too many HTTP headers", "Zu viele HTTP-Header"),
     ("Too many HTTP redirects", "Zu viele HTTP-Weiterleitungen"),
@@ -7247,6 +7291,7 @@ static DE: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "Prüfung der Werkzeugintegrität fehlgeschlagen"),
     ("Tool verification stopped", "Werkzeugprüfung gestoppt"),
     ("Total speed", "Gesamtgeschwindigkeit"),
+    ("Transfer rate:", "Übertragungsrate:"),
     ("Try again; refresh the source if the same error persists", "Versuchen Sie es erneut; aktualisieren Sie die Quelle, wenn derselbe Fehler weiterhin auftritt"),
     ("Type", "Typ"),
     ("URL", "URL"),
@@ -7667,6 +7712,9 @@ macro_rules! __ui_template_ar {
     };
     ("Site could not be scanned: {0}") => {
         "تعذّر فحص الموقع: {0}"
+    };
+    ("Source: {0}") => {
+        "المصدر: {0}"
     };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "حد السرعة للتنزيلات المحددة: {0} (KiB/s، 0 = الحد العام):"
@@ -8525,6 +8573,9 @@ macro_rules! __ui_template_es {
     ("Site could not be scanned: {0}") => {
         "No se pudo analizar el sitio: {0}"
     };
+    ("Source: {0}") => {
+        "Origen: {0}"
+    };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "Límite de velocidad para {0} descarga(s) seleccionada(s) (KiB/s, 0 = límite global):"
     };
@@ -9381,6 +9432,9 @@ macro_rules! __ui_template_pt {
     };
     ("Site could not be scanned: {0}") => {
         "Não foi possível varrer o site: {0}"
+    };
+    ("Source: {0}") => {
+        "Origem: {0}"
     };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "Limite de velocidade para o(s) {0} download(s) selecionado(s) (KiB/s, 0 = limite geral):"
@@ -10239,6 +10293,9 @@ macro_rules! __ui_template_fr {
     ("Site could not be scanned: {0}") => {
         "Le site n'a pas pu être analysé : {0}"
     };
+    ("Source: {0}") => {
+        "Source : {0}"
+    };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "Limite de vitesse pour le ou les {0} téléchargement(s) sélectionné(s) (KiB/s, 0 = limite globale) :"
     };
@@ -11095,6 +11152,9 @@ macro_rules! __ui_template_de {
     };
     ("Site could not be scanned: {0}") => {
         "Website konnte nicht durchsucht werden: {0}"
+    };
+    ("Source: {0}") => {
+        "Quelle: {0}"
     };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "Geschwindigkeitslimit für die {0} ausgewählten Downloads (KiB/s, 0 = globales Limit):"
