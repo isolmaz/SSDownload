@@ -7692,6 +7692,9 @@ macro_rules! __ui_template_ar {
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "جارٍ تثبيت SSDownload {0}. سيُعاد تشغيل التطبيق قريبًا. سيُنقل ملف المثبّت إلى مجلد العزل عند إعادة فتح التطبيق."
     };
+    ("Save to: {0}") => {
+        "الحفظ في: {0}"
+    };
     ("Saved: {0}\r\n") => {
         "تم الحفظ: {0}\r\n"
     };
@@ -8548,6 +8551,9 @@ macro_rules! __ui_template_es {
     };
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "Se está instalando SSDownload {0}. La aplicación se reiniciará en breve. El archivo del instalador se moverá a la carpeta de cuarentena cuando la aplicación se vuelva a abrir."
+    };
+    ("Save to: {0}") => {
+        "Guardar en: {0}"
     };
     ("Saved: {0}\r\n") => {
         "Guardado: {0}\r\n"
@@ -9406,6 +9412,9 @@ macro_rules! __ui_template_pt {
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "O SSDownload {0} está sendo instalado. O aplicativo será reiniciado em breve. O arquivo do instalador será movido para a pasta de quarentena quando o aplicativo for reaberto."
     };
+    ("Save to: {0}") => {
+        "Salvar em: {0}"
+    };
     ("Saved: {0}\r\n") => {
         "Salvo: {0}\r\n"
     };
@@ -10263,6 +10272,9 @@ macro_rules! __ui_template_fr {
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "SSDownload {0} est en cours d'installation. L'application redémarrera sous peu. Le fichier d'installation sera déplacé dans le dossier de quarantaine à la réouverture de l'application."
     };
+    ("Save to: {0}") => {
+        "Enregistrer dans : {0}"
+    };
     ("Saved: {0}\r\n") => {
         "Enregistré : {0}\r\n"
     };
@@ -11119,6 +11131,9 @@ macro_rules! __ui_template_de {
     };
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "SSDownload {0} wird installiert. Die Anwendung wird in Kürze neu gestartet. Die Installationsdatei wird beim erneuten Öffnen der Anwendung in den Quarantäne-Ordner verschoben."
+    };
+    ("Save to: {0}") => {
+        "Speichern unter: {0}"
     };
     ("Saved: {0}\r\n") => {
         "Gespeichert: {0}\r\n"

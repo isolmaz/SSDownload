@@ -2470,8 +2470,8 @@ pub(super) unsafe fn modern_list(parent: HWND, font: HFONT, id: i32, style: u32)
 }
 
 /// The download window's progress bar in Modern: a framed track as tall as
-/// the bar with a rounded fill, like its segment bar, in the accent colour or
-/// sweeping while the length is unknown. High contrast keeps the system's bar.
+/// the bar with a rounded fill, like its segment bar, in its job's state colour
+/// or sweeping while the length is unknown. High contrast keeps the system's bar.
 pub(super) unsafe extern "system" fn modern_progress_proc(
     hwnd: HWND,
     msg: u32,
@@ -2496,29 +2496,51 @@ pub(super) unsafe extern "system" fn modern_progress_proc(
         }
     }
     if msg == WM_NCDESTROY {
-        RemovePropW(hwnd, stopped_prop());
+        RemovePropW(hwnd, state_prop());
     }
     call_previous(hwnd, msg, wparam, lparam)
 }
 
-pub(super) fn stopped_prop() -> *const u16 {
+fn state_prop() -> *const u16 {
     static NAME: std::sync::LazyLock<Vec<u16>> =
-        std::sync::LazyLock::new(|| wide("SSDownload.ProgressStopped"));
+        std::sync::LazyLock::new(|| wide("SSDownload.ProgressState"));
     NAME.as_ptr()
 }
 
-/// Paints a Modern progress bar in the critical colour while its job is
-/// failed or cancelled, as the main list does, and in the accent otherwise.
-pub(super) unsafe fn set_progress_stopped(bar: HWND, stopped: bool) {
-    if stopped == !GetPropW(bar, stopped_prop()).is_null() {
+const JOB_STATES: [JobState; 10] = [
+    JobState::Queued,
+    JobState::Scheduled,
+    JobState::Connecting,
+    JobState::Downloading,
+    JobState::Processing,
+    JobState::Paused,
+    JobState::AwaitingSource,
+    JobState::Completed,
+    JobState::Failed,
+    JobState::Cancelled,
+];
+
+/// Paints a Modern progress bar in the colour the main list gives its job's
+/// state (`state_fill`); without a job it takes the accent.
+pub(super) unsafe fn set_progress_state(bar: HWND, state: Option<JobState>) {
+    // The property holds the state's discriminant plus one, so zero is no job.
+    let value = state.map_or(0, |state| state as usize + 1);
+    if GetPropW(bar, state_prop()) as usize == value {
         return;
     }
-    if stopped {
-        SetPropW(bar, stopped_prop(), 1 as HANDLE);
+    if value == 0 {
+        RemovePropW(bar, state_prop());
     } else {
-        RemovePropW(bar, stopped_prop());
+        SetPropW(bar, state_prop(), value as HANDLE);
     }
     InvalidateRect(bar, null(), 0);
+}
+
+pub(super) unsafe fn progress_state(bar: HWND) -> Option<JobState> {
+    let value = GetPropW(bar, state_prop()) as usize;
+    JOB_STATES
+        .into_iter()
+        .find(|state| *state as usize + 1 == value)
 }
 
 unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
@@ -2546,7 +2568,8 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
     let position = SendMessageW(hwnd, PBM_GETPOS, 0, 0) as i32;
     let span = (range.iHigh - range.iLow).max(1);
     let width = inner.right - inner.left;
-    let stopped = !GetPropW(hwnd, stopped_prop()).is_null();
+    let state = progress_state(hwnd);
+    let stopped = matches!(state, Some(JobState::Failed | JobState::Cancelled));
     // A stopped job's bar fills, as the job list's does.
     let (start, end) = if stopped {
         (0, width)
@@ -2564,11 +2587,7 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
             right: inner.left + end,
             ..inner
         };
-        let colour = if stopped {
-            palette.critical
-        } else {
-            palette.accent
-        };
+        let colour = state.map_or(palette.accent, |state| state_fill(&palette, state));
         round_rect(dc, &bar, radius - 1, colour, None);
     }
 }
@@ -4797,7 +4816,7 @@ mod tests {
     }
 
     #[test]
-    fn the_job_view_s_bar_fills_the_height_of_its_track_and_turns_critical_when_stopped() {
+    fn the_job_view_s_bar_fills_the_height_of_its_track_in_the_list_s_state_colour() {
         crate::gui::native::tests::on_private_desktop(|| {
             unsafe {
                 use windows_sys::Win32::UI::Controls::{
@@ -4828,9 +4847,8 @@ mod tests {
                 MoveWindow(bar, 0, 0, width, height, 0);
                 SendMessageW(bar, PBM_SETRANGE32, 0, 1000);
                 SendMessageW(bar, PBM_SETPOS, 500, 0);
-                let palette = main_palette(parent);
-                let painted = |stopped: bool| -> Vec<u32> {
-                    set_progress_stopped(bar, stopped);
+                let painted = |state: Option<JobState>| -> Vec<u32> {
+                    set_progress_state(bar, state);
                     paint_modern_progress(bar, dc);
                     std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
                         .iter()
@@ -4838,9 +4856,9 @@ mod tests {
                         .map(|&p| ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff))
                         .collect()
                 };
-                let normal = painted(false);
-                let failed = painted(true);
-                let track = card_palette(parent).control;
+                let none = painted(None);
+                let shown = JOB_STATES.map(|state| (state, painted(Some(state))));
+                let palette = card_palette(parent);
                 let mut client: RECT = zeroed();
                 GetClientRect(bar, &mut client);
                 SelectObject(dc, previous);
@@ -4848,15 +4866,20 @@ mod tests {
                 DeleteDC(dc);
                 DestroyWindow(parent);
                 let at = |x: i32, y: i32| (y * width + x) as usize;
-                assert!(!normal.contains(&palette.critical));
-                assert!(!failed.contains(&palette.accent));
                 // Half done, the bar fills the left half of its track from its
-                // top to its bottom, and a stopped bar fills to the end.
+                // top to its bottom in the colour the list gives the state, and
+                // a stopped bar fills to the end.
                 let (right, bottom) = (client.right - 12, client.bottom);
                 for y in [2, bottom / 2, bottom - 3] {
-                    assert_eq!(normal[at(width / 4, y)], palette.accent, "row {y}");
-                    assert_eq!(normal[at(right, y)], track, "row {y}");
-                    assert_eq!(failed[at(right, y)], palette.critical, "row {y}");
+                    assert_eq!(none[at(width / 4, y)], palette.accent, "no job, row {y}");
+                    assert_eq!(none[at(right, y)], palette.control, "no job, row {y}");
+                    for (state, pixels) in &shown {
+                        let fill = state_fill(&palette, *state);
+                        assert_eq!(pixels[at(width / 4, y)], fill, "{state:?}, row {y}");
+                        let stopped = matches!(state, JobState::Failed | JobState::Cancelled);
+                        let end = if stopped { fill } else { palette.control };
+                        assert_eq!(pixels[at(right, y)], end, "{state:?}, row {y}");
+                    }
                 }
             }
         });

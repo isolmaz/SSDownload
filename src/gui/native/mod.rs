@@ -7762,10 +7762,6 @@ struct ProgressFields {
     rendered: String,
     /// Last rendered playlist rows, for the same reason.
     rendered_rows: String,
-    /// The shown job's timeline for the details, and the job and the stamp of
-    /// the files it was read from: it is read again only when they change.
-    timeline: Vec<String>,
-    timeline_key: (String, Vec<Option<(u64, std::time::SystemTime)>>),
     /// Last label of the pause/resume/retry button.
     action_label: String,
     /// Whether the status text shows; it opens by itself once for a failure,
@@ -7801,8 +7797,6 @@ impl ProgressFields {
             raised: HashSet::new(),
             rendered: String::new(),
             rendered_rows: String::new(),
-            timeline: Vec::new(),
-            timeline_key: (String::new(), Vec::new()),
             action_label: String::new(),
             details: false,
             failure_shown: false,
@@ -10651,6 +10645,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_job_view_s_status_names_a_phase_that_repeats_the_state_once() {
+        use crate::model::JobState;
+        for language in ["en", "tr", "de", "es", "fr", "pt", "ar"] {
+            crate::i18n::with_language(language, || {
+                let mut job = sample_job("job", JobState::Downloading);
+                job.phase = crate::i18n::ui("Medya indiriliyor", "Downloading media").into();
+                assert_eq!(super::job_status(&job), job.phase, "{language}");
+                // A phase that adds something follows the state, as in the list.
+                job.phase = "MP4".into();
+                assert_eq!(
+                    super::job_status(&job),
+                    format!("{} — MP4", JobState::Downloading.label()),
+                    "{language}"
+                );
+                job.phase = "8 connections".into();
+                assert_eq!(
+                    super::job_status(&job),
+                    super::state_label(&job),
+                    "{language}"
+                );
+                // A short word inside the state's word ("in" in "Downloading") is no repeat.
+                job.phase = "in 8 parts".into();
+                assert_eq!(
+                    super::job_status(&job),
+                    super::state_label(&job),
+                    "{language}"
+                );
+                let mut processing = sample_job("job", JobState::Processing);
+                processing.phase = crate::i18n::ui("Medya indiriliyor", "Downloading media").into();
+                assert_eq!(
+                    super::job_status(&processing),
+                    super::state_label(&processing),
+                    "{language}: another state's phase"
+                );
+                // A waiting job's status is its state; the details hold the phase.
+                let mut queued = sample_job("job", JobState::Queued);
+                queued.phase = JobState::Queued.label().into();
+                assert_eq!(
+                    super::job_status(&queued),
+                    JobState::Queued.label(),
+                    "{language}"
+                );
+            });
+        }
+    }
+
     fn sample_job(name: &str, state: crate::model::JobState) -> crate::model::Job {
         crate::model::Job {
             id: name.into(),
@@ -10996,10 +11037,9 @@ mod tests {
                         DialogKind::Progress(f) => text(f.status),
                         _ => unreachable!(),
                     };
-                    let no_entries = crate::i18n::ui(
-                        "Bu indirme için henüz kayıt yok.",
-                        "No entries for this download yet.",
-                    );
+                    let save_to = |path: &str| {
+                        crate::i18n::ui_format!("Kayıt yeri: {0}", "Save to: {0}", path)
+                    };
                     let mut unnamed = segmented_job(JobState::Downloading);
                     unnamed.name = String::new();
                     show(unnamed);
@@ -11017,27 +11057,42 @@ mod tests {
                         "modern {in_modern}"
                     );
                     // The facts already show the state, size, speed and time left.
-                    assert_eq!(details(), no_entries, "modern {in_modern}");
+                    assert_eq!(details(), save_to("job"), "modern {in_modern}");
                     let mut connecting = segmented_job(JobState::Downloading);
                     connecting.phase = "8 connections".into();
                     show(connecting);
                     assert_eq!(
                         details(),
-                        no_entries,
+                        save_to("job"),
                         "modern {in_modern}: the status shows it"
                     );
+                    let mut media = segmented_job(JobState::Downloading);
+                    media.phase = crate::i18n::ui("Medya indiriliyor", "Downloading media").into();
+                    show(media.clone());
+                    assert_eq!(
+                        details(),
+                        save_to("job"),
+                        "modern {in_modern}: the status shows the phase alone"
+                    );
+                    match &(*raw).kind {
+                        DialogKind::Progress(f) => {
+                            assert_eq!(text(f.facts[0]), media.phase, "modern {in_modern}")
+                        }
+                        _ => unreachable!(),
+                    }
                     let mut held = segmented_job(JobState::Queued);
                     held.phase = "Metered connection: downloads are on hold".into();
                     show(held);
                     assert_eq!(
                         details(),
                         format!(
-                            "{}\r\n{no_entries}",
+                            "{}{}",
                             crate::i18n::ui_format!(
                                 "Aşama: {0}\r\n",
                                 "Phase: {0}\r\n",
                                 "Metered connection: downloads are on hold"
-                            )
+                            ),
+                            save_to("job")
                         ),
                         "modern {in_modern}: why it waits"
                     );
@@ -11047,13 +11102,21 @@ mod tests {
                     assert_eq!(
                         details(),
                         format!(
-                            "{}\r\n{no_entries}",
+                            "{}{}",
                             crate::i18n::ui_format!(
                                 "Hata: {message}\r\n",
                                 "Error: {message}\r\n",
                                 message = "the server closed the connection"
-                            )
+                            ),
+                            save_to("job")
                         ),
+                        "modern {in_modern}"
+                    );
+                    show(segmented_job(JobState::Completed));
+                    assert_eq!(
+                        details(),
+                        crate::i18n::ui_format!("Kayıt: {0}\r\n", "Saved: {0}\r\n", "job")
+                            .trim_end(),
                         "modern {in_modern}"
                     );
                     // The status takes one line like the other facts.
@@ -12138,7 +12201,7 @@ mod tests {
     }
 
     #[test]
-    fn modern_s_job_view_marks_its_bar_stopped_only_for_a_failed_or_cancelled_job() {
+    fn modern_s_job_view_gives_its_bar_the_state_of_its_job() {
         on_private_desktop(|| {
             use super::*;
             use crate::model::JobState;
@@ -12150,7 +12213,7 @@ mod tests {
                 );
                 let mut snapshot = (*raw).app.snapshot();
                 let error = (*raw).error;
-                let mut stopped = Vec::new();
+                let mut shown = Vec::new();
                 for state in [
                     JobState::Downloading,
                     JobState::Failed,
@@ -12161,11 +12224,21 @@ mod tests {
                     snapshot.jobs = std::sync::Arc::new(vec![sample_job("job", state)]);
                     if let DialogKind::Progress(f) = &mut (*raw).kind {
                         refresh_job_view(hwnd, error, f, &snapshot);
-                        stopped.push(!GetPropW(f.progress, stopped_prop()).is_null());
+                        shown.push(progress_state(f.progress));
                     }
                 }
                 close_test_dialog(raw, hwnd, root);
-                assert_eq!(stopped, [false, true, false, true, false]);
+                assert_eq!(
+                    shown,
+                    [
+                        JobState::Downloading,
+                        JobState::Failed,
+                        JobState::Paused,
+                        JobState::Cancelled,
+                        JobState::Completed,
+                    ]
+                    .map(Some)
+                );
             }
         });
     }

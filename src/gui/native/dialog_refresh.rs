@@ -245,9 +245,6 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
 /// The job this window is showing: the entry at the selected row of the exact
 /// ids its handoff queued, in the engine's own order. Never a list position of
 /// the main window and never the newest job.
-/// How many of the newest timeline lines the job view's details show.
-const JOB_TIMELINE_LINES: usize = 200;
-
 pub(super) fn job_view_job<'a>(snapshot: &'a AppSnapshot, f: &ProgressFields) -> Option<&'a Job> {
     let id = f.ids.get(f.selected)?;
     snapshot.jobs.iter().find(|job| &job.id == id)
@@ -372,10 +369,10 @@ pub(super) unsafe fn refresh_job_view(
         }
         Some(job) => {
             // What the facts above do not show: a phase the status leaves out
-            // (why a waiting download waits), the failure, where the file was
-            // saved, and the job's own timeline.
+            // (why a waiting download waits), the failure, and where the file
+            // is saved.
             let phase = job.phase.trim();
-            if !phase.is_empty() && !state_label(job).ends_with(phase) {
+            if !phase.is_empty() && !job_status(job).ends_with(phase) {
                 detail.push_str(&crate::i18n::ui_format!(
                     "Aşama: {0}\r\n",
                     "Phase: {0}\r\n",
@@ -397,25 +394,17 @@ pub(super) unsafe fn refresh_job_view(
                     "Saved: {0}\r\n",
                     job.path.display()
                 ));
+                detail.truncate(detail.trim_end().len());
                 percent = 1000;
-            } else if let Some(total) = job.total.filter(|total| *total > 0) {
-                percent = ((job.downloaded.min(total) as u128 * 1000) / total as u128) as usize;
-            }
-            let stamp = crate::logging::job_timeline_stamp(&job.id);
-            if f.timeline_key.0 != job.id || f.timeline_key.1 != stamp {
-                f.timeline = crate::logging::job_timeline(&job.id, JOB_TIMELINE_LINES);
-                f.timeline_key = (job.id.clone(), stamp);
-            }
-            if !detail.is_empty() {
-                detail.push_str("\r\n");
-            }
-            if f.timeline.is_empty() {
-                detail.push_str(crate::i18n::ui(
-                    "Bu indirme için henüz kayıt yok.",
-                    "No entries for this download yet.",
-                ));
             } else {
-                detail.push_str(&f.timeline.join("\r\n"));
+                detail.push_str(&crate::i18n::ui_format!(
+                    "Kayıt yeri: {0}",
+                    "Save to: {0}",
+                    job.path.display()
+                ));
+                if let Some(total) = job.total.filter(|total| *total > 0) {
+                    percent = ((job.downloaded.min(total) as u128 * 1000) / total as u128) as usize;
+                }
             }
             processing = job.state == JobState::Processing;
             action_label = match job.state {
@@ -434,8 +423,6 @@ pub(super) unsafe fn refresh_job_view(
     let detail = display_text(snapshot.settings.debug_mode, &detail);
     if detail != f.rendered {
         set_text(f.status, &detail);
-        // The newest timeline line is the last one.
-        SendMessageW(f.status, WM_VSCROLL, SB_BOTTOM as usize, 0);
         // Modern shows the status's scroll bar only while the text overflows.
         if modern() {
             sync_edit_scrollbar(f.status);
@@ -475,7 +462,7 @@ pub(super) unsafe fn refresh_job_view(
         );
     }
     if modern() {
-        set_progress_stopped(f.progress, stopped);
+        set_progress_state(f.progress, job_view_job(snapshot, f).map(|job| job.state));
     } else {
         SendMessageW(
             f.progress,
@@ -1703,7 +1690,7 @@ pub(super) fn job_facts(job: &Job) -> [String; JOB_FACTS.len()] {
         _ => none(),
     };
     [
-        state_label(job),
+        job_status(job),
         job.total.map(format_bytes).unwrap_or_else(none),
         downloaded,
         format_speed(job.speed),
@@ -1711,6 +1698,45 @@ pub(super) fn job_facts(job: &Job) -> [String; JOB_FACTS.len()] {
         resume,
         connections,
     ]
+}
+
+/// The job view's status: `state_label`, except that a phase which already
+/// says what the state says ("Downloading media" while downloading) is shown
+/// alone instead of after the state. A phase repeats the state when one of its
+/// words holds the state's longest word, or the other way round. The longest
+/// word is the one naming the action: the others are auxiliaries such as
+/// "Wird" or "جارٍ" that every running state shares. Shorter phase words than
+/// four letters never match.
+pub(super) fn job_status(job: &Job) -> String {
+    let label = state_label(job);
+    let phase = job.phase.trim();
+    if label == job.state.label() {
+        return label;
+    }
+    let words = |text: &str| -> Vec<String> {
+        text.split_whitespace()
+            .map(|word| {
+                word.chars()
+                    .flat_map(char::to_lowercase)
+                    .filter(|c| c.is_alphanumeric())
+                    .collect::<String>()
+            })
+            .collect()
+    };
+    let Some(action) = words(job.state.label())
+        .into_iter()
+        .max_by_key(|word| word.chars().count())
+    else {
+        return label;
+    };
+    let repeats = words(phase).iter().any(|word| {
+        word.chars().count() >= 4 && (word.contains(&action) || action.contains(word.as_str()))
+    });
+    if repeats {
+        phase.to_string()
+    } else {
+        label
+    }
 }
 
 /// The parts of a `total`-byte file that the arrived ranges (sorted, apart)
