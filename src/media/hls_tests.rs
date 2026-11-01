@@ -1098,6 +1098,62 @@ fn a_stream_is_confirmed_by_the_length_its_own_playlist_declares() {
     }
 }
 
+/// A kind can list the lengths of several playlists: a master playlist without `CODECS` leaves the
+/// codecs of its variants unnamed, so the video playlist's length counts for the audio too, and
+/// several audio renditions can be selected. A stream is held to the longest of them, so audio
+/// that stops short of the longest length is not confirmed by a shorter one it happens to end at.
+/// The file has video to 9 s and audio that ends inside a frame at 9 s, 1 s short of a playlist of
+/// 10.04 s and 21 s short of one of 30.04 s.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_stream_is_held_to_the_longest_length_its_kind_declares() {
+    let fixture = EndFixture::new();
+    // Frame 421 starts at 8.98 s: the audio ends inside it, the video where `-t` stops it.
+    let file = fixture.mux("listed.mp4", &fixture.ending_inside(421), &["-t", "9"]);
+    let listed = |duration: Option<f64>, audio: &[f64]| MediaInfo {
+        duration,
+        declared_video_durations: vec![9.04],
+        declared_audio_durations: audio.to_vec(),
+        ..EndFixture::source(10.04, true)
+    };
+    for full in [false, true] {
+        fixture
+            .verify(&file, full, &listed(Some(10.04), &[9.04]))
+            .unwrap_or_else(|error| panic!("the audio playlist of 9.04 s, full {full}: {error:#}"));
+        for (label, info) in [
+            (
+                "audio playlists of 9.04 s and 10.04 s",
+                listed(Some(10.04), &[9.04, 10.04]),
+            ),
+            (
+                "an audio playlist of 10.04 s",
+                listed(Some(10.04), &[10.04]),
+            ),
+            (
+                "audio playlists of 9.04 s and 30.04 s, no duration",
+                listed(None, &[9.04, 30.04]),
+            ),
+        ] {
+            let error = fixture
+                .verify(&file, full, &info)
+                .expect_err(&format!("{label}, full {full}"));
+            assert_eq!(
+                error.to_string(),
+                decode_failure(full),
+                "{label}, full {full}"
+            );
+        }
+        let error = fixture
+            .verify(&file, full, &listed(None, &[30.04]))
+            .expect_err(&format!("an audio playlist of 30.04 s, full {full}"));
+        assert_eq!(
+            crate::error_codes::code_of(&error),
+            Some(crate::error_codes::TRF_012),
+            "full {full}: {error:#}"
+        );
+    }
+}
+
 /// FFmpeg writes the tag `DURATION` of a Matroska stream as the end time of the stream, so audio
 /// that starts a second late and ends in a cut frame at 11 s is confirmed by a source of 11.04 s and
 /// its last frame is left out.

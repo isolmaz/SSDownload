@@ -2427,8 +2427,29 @@ fn a_stream_is_confirmed_by_its_own_end_not_by_the_ends_of_the_others() {
         audio: vec![9.0],
     };
     assert_eq!(stops(video_and_audio, &rounded_audio), [Some(9.5), None]);
-    // The length closest to the end of a stream holds it: a whole-second length near it is not
-    // replaced by a fractional one far away.
+    // The longest length of the kind holds a stream. A kind can list the lengths of several
+    // playlists, and a stream that was cut short is not confirmed by a shorter one of them.
+    let several = SourceLengths {
+        video: vec![9.04],
+        audio: vec![9.04, 10.04],
+    };
+    let cut_short = vec![stream(0, "video", 0.0, 9.0), stream(1, "audio", 0.0, 8.98)];
+    assert_eq!(stops(cut_short.clone(), &several), [Some(8.5), None]);
+    let own_playlist = SourceLengths {
+        video: vec![9.04],
+        audio: vec![9.04],
+    };
+    assert_eq!(stops(cut_short, &own_playlist), [Some(8.5), Some(8.48)]);
+    // A whole-second longest length confirms nothing, a fractional one far from the stream does
+    // not hide anything, and a stream that reaches the longest one is confirmed.
+    let rounded_longest = SourceLengths {
+        video: vec![600.5, 601.0],
+        audio: vec![600.5, 601.0],
+    };
+    assert_eq!(
+        stops(vec![stream(0, "video", 0.0, 600.2)], &rounded_longest),
+        [None]
+    );
     let two = SourceLengths {
         video: vec![10.0, 600.5],
         audio: vec![10.0, 600.5],

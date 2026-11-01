@@ -637,10 +637,13 @@ pub(super) struct DecodedStream {
 
 /// The streams to decode. A stream is confirmed when its end, counted from the earliest audio or
 /// video start, is more than twice the margin and at most `END_MARGIN` before the length the
-/// source gives for it (the one closest to that end), and that length has a fractional part: an
-/// extractor or an old playlist may have cut a length in whole seconds by up to a second, and the
-/// margin could then hide more than `END_MARGIN`. A stream that ends earlier, such as the audio of
-/// a file whose video is complete, may be cut short and is decoded to its end.
+/// source gives for it, and that length has a fractional part: an extractor or an old playlist may
+/// have cut a length in whole seconds by up to a second, and the margin could then hide more than
+/// `END_MARGIN`. A kind can list the lengths of several playlists, one of which may belong to
+/// another stream (a playlist whose codecs are unknown counts for both kinds), so the stream is
+/// held to the longest: a stream cut short is not confirmed by the shorter length it happens to
+/// end at. A stream that ends earlier, such as the audio of a file whose video is complete, may be
+/// cut short and is decoded to its end.
 pub(super) fn decoded_streams(probe: &Value, lengths: &SourceLengths) -> Vec<DecodedStream> {
     let streams = probe["streams"]
         .as_array()
@@ -668,10 +671,7 @@ pub(super) fn decoded_streams(probe: &Value, lengths: &SourceLengths) -> Vec<Dec
         .map(|(index, span, given)| {
             let stop = span.and_then(|(_, end)| {
                 let own = end - first;
-                let length = given
-                    .iter()
-                    .copied()
-                    .min_by(|left, right| (left - own).abs().total_cmp(&(right - own).abs()))?;
+                let length = given.iter().copied().max_by(f64::total_cmp)?;
                 (length.fract() != 0.0 && own > 2.0 * END_MARGIN && own >= length - END_MARGIN)
                     .then_some(end - origin - END_MARGIN)
             });
