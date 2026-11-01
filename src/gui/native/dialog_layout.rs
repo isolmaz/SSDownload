@@ -453,10 +453,10 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row_y += step;
             }
 
-            // Pano and başlangıç share a row in advanced mode. In Classic's simple mode
-            // the clipboard watch is gone, so the two remaining checkboxes take
-            // the row - and the site-entry toggle, whose label is the longest,
-            // gets the wider half of it.
+            // Pano and başlangıç share a row in advanced mode. In simple mode
+            // the clipboard watch is gone; in Classic the two remaining
+            // checkboxes take the row - and the site-entry toggle, whose label
+            // is the longest, gets the wider half of it.
             let clipboard = genel && !simple;
             put(f.clipboard, clipboard, cx, row_y, half, line);
             if clipboard {
@@ -506,8 +506,8 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // The schedule toggle and its two clock fields share one row, and
             // all three are advanced-only.
             let schedule = genel && !simple;
-            // The labels carry the "(SS:DD)" hint, so their slots are sized for
-            // the longest language's text.
+            // The labels carry the "(SS:DD)" hint; Classic sizes their slots for
+            // the longest language's text, Modern measures them.
             let clock_w = hx(56);
             let label_at = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
             // Modern lines the row up from the measured texts; Classic keeps
