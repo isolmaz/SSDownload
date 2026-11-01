@@ -889,6 +889,25 @@ pub(super) unsafe fn combo_face_width(combo: HWND, dpi: u32) -> i32 {
     widest + scale(INPUT_PAD_LEFT, dpi) + scale(COMBO_CHEVRON, dpi)
 }
 
+/// The face width a Modern text field needs to show its whole cue banner: the
+/// text and the frame's padding on both sides.
+pub(super) unsafe fn cue_face_width(edit: HWND, dpi: u32) -> i32 {
+    let mut cue = [0u16; 256];
+    SendMessageW(
+        edit,
+        EM_GETCUEBANNER,
+        cue.as_mut_ptr() as usize,
+        cue.len() as isize,
+    );
+    let length = cue.iter().position(|&c| c == 0).unwrap_or(0);
+    let dc = GetDC(edit);
+    let previous = SelectObject(dc, SendMessageW(edit, WM_GETFONT, 0, 0) as HGDIOBJ);
+    let width = label_width(dc, &String::from_utf16_lossy(&cue[..length]));
+    SelectObject(dc, previous);
+    ReleaseDC(edit, dc);
+    width + scale(INPUT_PAD_LEFT + INPUT_PAD_RIGHT, dpi)
+}
+
 /// Paints a closed drop-down list box as a WinUI ComboBox: the standard
 /// button's surface, states and focus ring, the selection 11 epx in from the
 /// left, and the chevron at the right. The open list stays the system's.
@@ -1015,13 +1034,17 @@ unsafe fn paint_combo(hwnd: HWND, dc: HDC) {
         right: face.right - chevron_w,
         ..face
     };
-    DrawTextW(
-        dc,
-        label.as_mut_ptr(),
-        label.len() as i32,
-        &mut area,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-    );
+    // A box with no selection has no text, and DrawTextW with
+    // DT_END_ELLIPSIS reads its string even for a count of 0.
+    if !label.is_empty() {
+        DrawTextW(
+            dc,
+            label.as_mut_ptr(),
+            label.len() as i32,
+            &mut area,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+    }
     let chevrons = icon_font_px(dpi, 12);
     if !chevrons.is_null() {
         SelectObject(dc, chevrons as HGDIOBJ);
@@ -1429,6 +1452,25 @@ pub(super) unsafe fn place_modern(control: HWND, show: bool, face: RECT, dpi: u3
     let ring = scale(FOCUS_MARGIN, dpi);
     let class = window_class(control).to_ascii_lowercase();
     let rect = match class.as_str() {
+        // A read-only text box `prepare_modern_form` flattened is text on the
+        // card, not a field: it fills its face.
+        "edit"
+            if GetWindowLongW(control, GWL_STYLE) as u32 & (ES_READONLY as u32 | WS_BORDER)
+                == ES_READONLY as u32 =>
+        {
+            MoveWindow(
+                control,
+                face.left,
+                face.top,
+                face.right - face.left,
+                face.bottom - face.top,
+                1,
+            );
+            if is_multiline(control) {
+                sync_edit_scrollbar(control);
+            }
+            return;
+        }
         "edit" => return place_in_frame(control, face, dpi),
         "listbox" => {
             SendMessageW(
@@ -1912,6 +1954,13 @@ pub(super) const QUEUES_WIDTH: i32 = 860;
 pub(super) const QUEUES_HEIGHT: i32 = 630;
 pub(super) const FORM_WIDTH: i32 = 800;
 pub(super) const FORM_HEIGHT: i32 = 540;
+/// The media picker and the job view it turns into: their width, the content
+/// height the picker opens with before it fits its rows, its summary's height
+/// and the job view's content height.
+pub(super) const MEDIA_WIDTH: i32 = 720;
+pub(super) const MEDIA_HEIGHT: i32 = 416;
+pub(super) const MEDIA_SUMMARY: i32 = 64;
+pub(super) const PROGRESS_HEIGHT: i32 = 472;
 /// Space between an input frame and the text field inside it: left, right
 /// (a multiline field keeps its scroll bar inside the frame), and top for a
 /// multiline field; a single line is centred.
@@ -1926,7 +1975,7 @@ pub(super) unsafe fn prepare_modern_form(dlg: &DialogUi) {
     let Some(form) = modern_form(dlg) else {
         return;
     };
-    for edit in form.inputs {
+    for edit in form.inputs.into_iter().chain(form.texts) {
         flatten_edit(edit);
     }
     for label in child_statics(dlg.hwnd, dlg.error) {
@@ -1955,9 +2004,9 @@ unsafe fn flatten_edit(edit: HWND) {
 }
 
 /// A Modern dialog's list box: no border of its own (the dialog paints its
-/// frame) and entries it paints itself, `ROW_HEIGHT` tall. Like the classic
-/// one it sends no selection notifications.
-pub(super) unsafe fn modern_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
+/// frame) and entries it paints itself, `ROW_HEIGHT` tall; `style` adds the
+/// selection and notification styles of the classic list it stands for.
+pub(super) unsafe fn modern_list(parent: HWND, font: HFONT, id: i32, style: u32) -> HWND {
     let list = control(
         parent,
         "LISTBOX",
@@ -1969,12 +2018,89 @@ pub(super) unsafe fn modern_list(parent: HWND, font: HFONT, id: i32, multi: bool
             | LBS_NOINTEGRALHEIGHT as u32
             | LBS_OWNERDRAWFIXED as u32
             | LBS_HASSTRINGS as u32
-            | if multi { LBS_EXTENDEDSEL as u32 } else { 0 },
+            | style,
         0,
         id,
     );
     apply_font(list, font);
     list
+}
+
+/// A Modern dialog's progress bar, painted as the Windows 11 ProgressBar on
+/// the card: a 1 epx track with a 3 epx rounded accent bar, sweeping while the
+/// length is unknown. High contrast keeps the system's bar.
+pub(super) unsafe extern "system" fn modern_progress_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if !high_contrast() {
+        match msg {
+            WM_PAINT => {
+                let mut paint: PAINTSTRUCT = zeroed();
+                let dc = BeginPaint(hwnd, &mut paint);
+                paint_modern_progress(hwnd, dc);
+                EndPaint(hwnd, &paint);
+                return 0;
+            }
+            WM_PRINTCLIENT => {
+                paint_modern_progress(hwnd, wparam as HDC);
+                return 0;
+            }
+            WM_ERASEBKGND => return 1,
+            _ => {}
+        }
+    }
+    call_previous(hwnd, msg, wparam, lparam)
+}
+
+unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
+    let mut client: RECT = zeroed();
+    if GetClientRect(hwnd, &mut client) == 0 {
+        return;
+    }
+    let palette = main_palette(GetParent(hwnd));
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    fill_colour(dc, &client, palette.card);
+    let mut range = PBRANGE {
+        iLow: 0,
+        iHigh: 100,
+    };
+    SendMessageW(hwnd, PBM_GETRANGE, 1, &mut range as *mut _ as isize);
+    let position = SendMessageW(hwnd, PBM_GETPOS, 0, 0) as i32;
+    let span = (range.iHigh - range.iLow).max(1);
+    let width = client.right - client.left;
+    let (start, end) = if GetWindowLongW(hwnd, GWL_STYLE) as u32 & PBS_MARQUEE != 0 {
+        processing_sweep(sweep_clock(), width)
+    } else {
+        (
+            0,
+            ((position - range.iLow).clamp(0, span) as i64 * width as i64 / span as i64) as i32,
+        )
+    };
+    let thickness = scale(3, dpi).max(3);
+    let middle = (client.top + client.bottom) / 2;
+    let line = scale(1, dpi).max(1);
+    fill_colour(
+        dc,
+        &RECT {
+            left: client.left,
+            top: middle - line / 2,
+            right: client.right,
+            bottom: middle - line / 2 + line,
+        },
+        palette.strong_stroke,
+    );
+    if end > start {
+        let bar = RECT {
+            left: client.left + start,
+            top: middle - thickness / 2,
+            right: client.left + end,
+            bottom: middle - thickness / 2 + thickness,
+        };
+        round_rect(dc, &bar, thickness / 2, palette.accent, None);
+    }
 }
 
 /// The frame around a list box placed by `place_modern`: its 1 px stroke.
@@ -2192,12 +2318,14 @@ pub(super) fn login_inputs(f: &LoginFields) -> [HWND; 3] {
     [f.host, f.user, f.pass]
 }
 
-/// What a Modern dialog paints itself: its framed inputs and list boxes, its
+/// What a Modern dialog paints itself: its framed inputs and list boxes, the
+/// read-only text boxes it shows as plain text on the card, its
 /// WinUI buttons with the primary one (0 for none), the buttons that sit on the content
 /// card rather than on the command bar, and a static shown as a secondary hint.
 struct ModernForm {
     inputs: Vec<HWND>,
     lists: Vec<HWND>,
+    texts: Vec<HWND>,
     buttons: &'static [i32],
     primary: i32,
     card_buttons: &'static [i32],
@@ -2209,6 +2337,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Add(f) => Some(ModernForm {
             inputs: add_inputs(f).to_vec(),
             lists: vec![],
+            texts: Vec::new(),
             buttons: &[D_ADD_OK, D_ADVANCED, D_CANCEL, D_BROWSE],
             primary: D_ADD_OK,
             card_buttons: &[D_BROWSE],
@@ -2217,6 +2346,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Settings(f) => Some(ModernForm {
             inputs: settings_inputs(f).to_vec(),
             lists: vec![],
+            texts: Vec::new(),
             buttons: &[
                 S_OK,
                 D_CANCEL,
@@ -2236,6 +2366,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Speed(f) => Some(ModernForm {
             inputs: vec![f.edit],
             lists: vec![],
+            texts: Vec::new(),
             buttons: &[SP_OK, D_CANCEL],
             primary: SP_OK,
             card_buttons: &[],
@@ -2244,6 +2375,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Rename(f) => Some(ModernForm {
             inputs: vec![f.edit],
             lists: vec![],
+            texts: Vec::new(),
             buttons: &[RN_OK, D_CANCEL],
             primary: RN_OK,
             card_buttons: &[],
@@ -2252,6 +2384,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Queues(f) => Some(ModernForm {
             inputs: queue_inputs(f).to_vec(),
             lists: vec![f.list],
+            texts: Vec::new(),
             buttons: &[
                 Q_CREATE,
                 Q_RENAME,
@@ -2275,6 +2408,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Rules(f) => Some(ModernForm {
             inputs: rule_inputs(f).to_vec(),
             lists: vec![f.list],
+            texts: Vec::new(),
             buttons: &[R_NEW, R_SAVE, R_REMOVE, D_CANCEL],
             primary: R_SAVE,
             card_buttons: &[R_NEW, R_SAVE, R_REMOVE],
@@ -2283,6 +2417,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Crawler(f) => Some(ModernForm {
             inputs: crawler_inputs(f).to_vec(),
             lists: vec![f.list],
+            texts: Vec::new(),
             buttons: &[C_SCAN, C_ADD, D_CANCEL],
             primary: C_SCAN,
             card_buttons: &[C_SCAN],
@@ -2291,14 +2426,57 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Synchronization(f) => Some(ModernForm {
             inputs: sync_inputs(f).to_vec(),
             lists: vec![f.list],
+            texts: Vec::new(),
             buttons: &[Y_NEW, Y_SAVE, Y_REMOVE, Y_RUN, D_CANCEL],
             primary: Y_SAVE,
             card_buttons: &[Y_NEW, Y_SAVE, Y_REMOVE, Y_RUN],
             hint: null_mut(),
         }),
+        DialogKind::Media(f) => Some(ModernForm {
+            inputs: vec![
+                f.name,
+                f.external_url,
+                f.external_language,
+                f.external_label,
+                f.playlist_items,
+            ],
+            lists: vec![f.audio_tracks, f.subtitles, f.external_list],
+            texts: vec![f.summary],
+            buttons: &[
+                M_QUEUE,
+                D_CANCEL,
+                D_ADVANCED,
+                M_REPORT,
+                M_MP3,
+                ID_MEDIA_EXTERNAL_ADD,
+                ID_MEDIA_EXTERNAL_REMOVE,
+                M_RENEW,
+            ],
+            primary: M_QUEUE,
+            card_buttons: &[ID_MEDIA_EXTERNAL_ADD, ID_MEDIA_EXTERNAL_REMOVE, M_RENEW],
+            hint: f.size,
+        }),
+        DialogKind::Progress(f) => Some(ModernForm {
+            inputs: Vec::new(),
+            lists: vec![f.list],
+            texts: vec![f.status],
+            buttons: &[
+                P_ACTION,
+                P_CANCEL,
+                P_OPEN_FILE,
+                P_OPEN_FOLDER,
+                P_CLOSE,
+                P_MINI,
+                P_REPORT,
+            ],
+            primary: P_ACTION,
+            card_buttons: &[P_MINI, P_REPORT],
+            hint: f.hint,
+        }),
         DialogKind::Events(f) => Some(ModernForm {
             inputs: Vec::new(),
             lists: vec![f.list],
+            texts: Vec::new(),
             buttons: &[E_OPEN, E_PACKAGE, E_CLOSE],
             primary: 0,
             card_buttons: &[E_OPEN, E_PACKAGE],
@@ -2307,6 +2485,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::JobLog(f) => Some(ModernForm {
             inputs: Vec::new(),
             lists: vec![f.list],
+            texts: Vec::new(),
             buttons: &[J_COPY, J_OPEN, J_CLOSE],
             primary: 0,
             card_buttons: &[J_COPY, J_OPEN],
@@ -2315,6 +2494,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         DialogKind::Logins(f) => Some(ModernForm {
             inputs: login_inputs(f).to_vec(),
             lists: vec![f.list],
+            texts: Vec::new(),
             buttons: &[L_ADD, L_REMOVE, L_SAVE, D_CANCEL],
             primary: L_SAVE,
             card_buttons: &[L_ADD, L_REMOVE],
@@ -2490,6 +2670,7 @@ pub(super) unsafe fn modern_dialog_message(
             // Advanced options shows whether its rows are open.
             let open = match &dlg.kind {
                 DialogKind::Add(f) if id == D_ADVANCED => Some(f.advanced),
+                DialogKind::Media(f) if id == D_ADVANCED => Some(f.advanced),
                 _ => None,
             };
             let chevrons = if open.is_some() {
@@ -3522,6 +3703,74 @@ mod tests {
                 "box {boxed:?} label {label:?}"
             );
             assert!(*boxed.iter().max().unwrap() >= width - 3 - 20 - 1);
+        }
+    }
+
+    #[test]
+    fn a_combo_box_with_no_selection_paints_its_face_without_text() {
+        unsafe {
+            let (width, height) = (200, 38);
+            let screen = GetDC(null_mut());
+            let dc = CreateCompatibleDC(screen);
+            ReleaseDC(null_mut(), screen);
+            let mut info: BITMAPINFO = zeroed();
+            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bits: *mut c_void = null_mut();
+            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            assert!(!bitmap.is_null() && !bits.is_null());
+            let previous = SelectObject(dc, bitmap as HGDIOBJ);
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let font = ramp_font(96, BODY_PX, false);
+            // The text area: right of the left padding, left of the chevron.
+            let text_columns = |selected: bool| -> usize {
+                let combo = control(
+                    parent,
+                    "COMBOBOX",
+                    "",
+                    WS_CHILD | CBS_DROPDOWNLIST as u32,
+                    0,
+                    1,
+                );
+                apply_font(combo, font);
+                MoveWindow(combo, 0, 0, width, 200, 0);
+                combo_add(combo, "WWWW");
+                if selected {
+                    combo_select(combo, 0);
+                }
+                let mut face: RECT = zeroed();
+                GetClientRect(combo, &mut face);
+                let all = RECT {
+                    left: 0,
+                    top: 0,
+                    right: width,
+                    bottom: height,
+                };
+                FillRect(dc, &all, GetStockObject(WHITE_BRUSH) as HBRUSH);
+                paint_combo(combo, dc);
+                DestroyWindow(combo);
+                let pixels =
+                    std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+                let dark = |p: u32| (p & 0xff) + ((p >> 8) & 0xff) + ((p >> 16) & 0xff) < 200;
+                (20..width - 40)
+                    .filter(|&x| {
+                        (0..face.bottom.min(height)).any(|y| dark(pixels[(y * width + x) as usize]))
+                    })
+                    .count()
+            };
+            let empty = text_columns(false);
+            let chosen = text_columns(true);
+            SelectObject(dc, previous);
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteObject(font as HGDIOBJ);
+            DeleteDC(dc);
+            DestroyWindow(parent);
+            assert_eq!(empty, 0, "a box with no selection shows no text");
+            assert!(chosen > 0, "the selected entry is painted");
         }
     }
 }

@@ -8289,6 +8289,15 @@ fn settings_width() -> i32 {
 /// shipped with was a 385 window. A mode's window is its own height plus this,
 /// so neither mode opens with rows it does not have.
 const SETTINGS_FRAME: i32 = 39;
+/// The media picker's and the job view's window height: Modern's content
+/// within its frame, or Classic's window height.
+fn media_window_height(modern_content: i32, classic: i32) -> i32 {
+    if modern() {
+        modern_content + SETTINGS_FRAME + 3
+    } else {
+        classic
+    }
+}
 /// A list and form dialog's window: Modern's content size within its frame,
 /// Classic's fixed size.
 fn form_window(width: i32, height: i32) -> (i32, i32) {
@@ -8426,8 +8435,8 @@ pub(super) unsafe fn open_job_view(owner: HWND, app: App, ids: Vec<String>) {
         app,
         DialogRequest {
             title,
-            width: 640,
-            height: 420,
+            width: if modern() { MEDIA_WIDTH } else { 640 },
+            height: media_window_height(PROGRESS_HEIGHT, 420),
             kind: DialogKind::Progress(Box::new(ProgressFields {
                 ids,
                 selected: 0,
@@ -8703,8 +8712,8 @@ unsafe fn show_media_picker(
         app,
         DialogRequest {
             title: crate::i18n::ui("Biçim ve çözünürlük seç", "Choose format and resolution"),
-            width: 640,
-            height: 420,
+            width: if modern() { MEDIA_WIDTH } else { 640 },
+            height: media_window_height(MEDIA_HEIGHT, 420),
             kind: DialogKind::Media(Box::new(MediaFields {
                 base: base.clone(),
                 subtitle_none,
@@ -9152,7 +9161,12 @@ unsafe fn tab_order(first: HWND, controls: &[HWND]) {
 /// A list and form dialog's list box: Modern paints its own.
 unsafe fn form_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
     if modern() {
-        modern_list(parent, font, id, multi)
+        modern_list(
+            parent,
+            font,
+            id,
+            if multi { LBS_EXTENDEDSEL as u32 } else { 0 },
+        )
     } else {
         dialog_list(parent, font, id, multi)
     }
@@ -9201,6 +9215,8 @@ unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
                 | DialogKind::Logins(_)
                 | DialogKind::Events(_)
                 | DialogKind::JobLog(_)
+                | DialogKind::Media(_)
+                | DialogKind::Progress(_)
         )
     {
         ramp_font(dlg.dpi, BODY_PX, false)
@@ -9230,6 +9246,7 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     if modern() {
         prepare_modern_form(dlg);
         fit_speed_label(dlg);
+        fit_media_picker(dlg);
     }
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
     layout_dialog(dlg);
@@ -9305,7 +9322,7 @@ unsafe fn begin_job_view(dlg: &mut DialogUi, job_ids: Vec<String>) {
     SetWindowTextW(dlg.hwnd, wide(&title).as_ptr());
     // The picker may have been unfolded to its advanced geometry; the job view
     // is one page, so it goes back to the size the window opens with.
-    resize_dialog(dlg.hwnd, dlg.dpi, 420);
+    resize_dialog(dlg.hwnd, dlg.dpi, media_window_height(PROGRESS_HEIGHT, 420));
     rebuild_dialog_controls(dlg);
 }
 

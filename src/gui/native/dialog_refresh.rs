@@ -189,6 +189,7 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                             load_thumbnail(dlg.hwnd, dlg.app.clone(), url);
                         }
                     }
+                    fit_media_picker(dlg);
                     layout_dialog(dlg);
                     if f.auto_queue {
                         // "Bir daha sorma": the remembered choice goes straight to the queue.
@@ -395,6 +396,10 @@ pub(super) unsafe fn refresh_job_view(
     let detail = display_text(snapshot.settings.debug_mode, &detail);
     if detail != f.rendered {
         set_text(f.status, &detail);
+        // Modern shows the status's scroll bar only while the text overflows.
+        if modern() {
+            sync_edit_scrollbar(f.status);
+        }
         f.rendered = detail;
     }
     if action_label != f.action_label {

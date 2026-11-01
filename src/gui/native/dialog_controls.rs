@@ -1734,21 +1734,30 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.audio_tracks = control(
-                dlg.hwnd,
-                "LISTBOX",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | WS_VSCROLL
-                    | LBS_EXTENDEDSEL as u32
-                    | LBS_NOINTEGRALHEIGHT as u32
-                    | LBS_NOTIFY as u32,
-                WS_EX_CLIENTEDGE,
-                ID_MEDIA_AUDIO_TRACKS,
-            );
+            f.audio_tracks = if modern() {
+                modern_list(
+                    dlg.hwnd,
+                    dlg.font,
+                    ID_MEDIA_AUDIO_TRACKS,
+                    (LBS_EXTENDEDSEL | LBS_NOTIFY) as u32,
+                )
+            } else {
+                control(
+                    dlg.hwnd,
+                    "LISTBOX",
+                    "",
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | LBS_EXTENDEDSEL as u32
+                        | LBS_NOINTEGRALHEIGHT as u32
+                        | LBS_NOTIFY as u32,
+                    WS_EX_CLIENTEDGE,
+                    ID_MEDIA_AUDIO_TRACKS,
+                )
+            };
             apply_font(f.audio_tracks, dlg.font);
             dialog_label(
                 dlg.hwnd,
@@ -1759,20 +1768,29 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.subtitles = control(
-                dlg.hwnd,
-                "LISTBOX",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | WS_VSCROLL
-                    | LBS_EXTENDEDSEL as u32
-                    | LBS_NOINTEGRALHEIGHT as u32,
-                WS_EX_CLIENTEDGE,
-                ID_MEDIA_SUBTITLE_TRACKS,
-            );
+            f.subtitles = if modern() {
+                modern_list(
+                    dlg.hwnd,
+                    dlg.font,
+                    ID_MEDIA_SUBTITLE_TRACKS,
+                    LBS_EXTENDEDSEL as u32,
+                )
+            } else {
+                control(
+                    dlg.hwnd,
+                    "LISTBOX",
+                    "",
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | LBS_EXTENDEDSEL as u32
+                        | LBS_NOINTEGRALHEIGHT as u32,
+                    WS_EX_CLIENTEDGE,
+                    ID_MEDIA_SUBTITLE_TRACKS,
+                )
+            };
             apply_font(f.subtitles, dlg.font);
             dialog_label(
                 dlg.hwnd,
@@ -1812,19 +1830,23 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ID_MEDIA_EXTERNAL_ADD,
                 false,
             );
-            f.external_list = control(
-                dlg.hwnd,
-                "LISTBOX",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | WS_VSCROLL
-                    | LBS_NOINTEGRALHEIGHT as u32,
-                WS_EX_CLIENTEDGE,
-                ID_MEDIA_EXTERNAL_LIST,
-            );
+            f.external_list = if modern() {
+                modern_list(dlg.hwnd, dlg.font, ID_MEDIA_EXTERNAL_LIST, 0)
+            } else {
+                control(
+                    dlg.hwnd,
+                    "LISTBOX",
+                    "",
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | LBS_NOINTEGRALHEIGHT as u32,
+                    WS_EX_CLIENTEDGE,
+                    ID_MEDIA_EXTERNAL_LIST,
+                )
+            };
             apply_font(f.external_list, dlg.font);
             dialog_button(
                 dlg.hwnd,
@@ -1965,6 +1987,11 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 D_CANCEL,
                 false,
             );
+            if modern() {
+                for combo in [f.kind, f.format, f.audio, f.external_kind, f.renew_job] {
+                    subclass(combo, combo_proc);
+                }
+            }
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
         DialogKind::Progress(f) => {
@@ -1987,20 +2014,24 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             // at a time, and the detail below always describes the row that is
             // selected rather than an arbitrary first one. The rows report the
             // user's own selection back, which is why they carry LBS_NOTIFY.
-            f.list = control(
-                dlg.hwnd,
-                "LISTBOX",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | WS_VSCROLL
-                    | LBS_NOTIFY as u32
-                    | LBS_NOINTEGRALHEIGHT as u32,
-                WS_EX_CLIENTEDGE,
-                P_LIST,
-            );
+            f.list = if modern() {
+                modern_list(dlg.hwnd, dlg.font, P_LIST, LBS_NOTIFY as u32)
+            } else {
+                control(
+                    dlg.hwnd,
+                    "LISTBOX",
+                    "",
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | LBS_NOTIFY as u32
+                        | LBS_NOINTEGRALHEIGHT as u32,
+                    WS_EX_CLIENTEDGE,
+                    P_LIST,
+                )
+            };
             apply_font(f.list, dlg.font);
             f.status = control(
                 dlg.hwnd,
@@ -2085,6 +2116,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 false,
             );
             ShowWindow(f.report, SW_HIDE);
+            if modern() {
+                subclass(f.progress, modern_progress_proc);
+            }
             EnableWindow(f.open_file, 0);
             EnableWindow(f.open_folder, 0);
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);

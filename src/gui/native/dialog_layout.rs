@@ -33,6 +33,8 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Rename(_) => 110,
         DialogKind::Logins(_) if modern() => FORM_HEIGHT,
         DialogKind::Logins(_) => 425,
+        DialogKind::Media(f) if modern() => media_content_height(dlg, f),
+        DialogKind::Progress(_) if modern() => PROGRESS_HEIGHT,
         DialogKind::Media(f) => {
             if f.advanced {
                 682
@@ -295,9 +297,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 s(ADD_LABEL),
             );
 
-            // Advanced options carries its chevron before the label.
-            let advanced_w = add_button_width(dlg, D_ADVANCED, 120) + s(16 + 8);
-            button(D_ADVANCED, x, h - s(ADD_FOOTER) + s(ADD_PAD), advanced_w);
+            bar_start(dlg, h, &[(D_ADVANCED, advanced_width(dlg))]);
             command_bar(dlg, h, &[(D_ADD_OK, 120), (D_CANCEL, 96)]);
         }
         DialogKind::Settings(f) => {
@@ -1651,6 +1651,156 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row,
             );
         }
+        DialogKind::Media(f) if modern() => {
+            let s = |value: i32| scale(value, dlg.dpi);
+            let x = s(ADD_PAD);
+            let room = w - 2 * x;
+            let audio_only = f
+                .kind_values
+                .get(combo_index(f.kind).max(0) as usize)
+                .map(|(kind, _)| *kind)
+                == Some(DownloadKind::Audio);
+            // A loaded thumbnail takes the right end of the summary row.
+            let thumb_w = if IsWindowVisible(f.thumbnail) != 0 {
+                s(100) + s(ADD_GROUP_GAP)
+            } else {
+                0
+            };
+            let summary_h = s(MEDIA_SUMMARY);
+            MoveWindow(f.summary, x, s(ADD_TOP), room - thumb_w, summary_h, 1);
+            MoveWindow(
+                f.thumbnail,
+                x + room - s(100),
+                s(ADD_TOP),
+                s(100),
+                summary_h,
+                1,
+            );
+            let shown = |open: bool| if open { SW_SHOW } else { SW_HIDE };
+            for &label in media_labels(dlg, f).iter().skip(3) {
+                ShowWindow(label, shown(f.advanced));
+            }
+            for control in [
+                f.audio,
+                f.audio_tracks,
+                f.subtitles,
+                f.external_url,
+                f.external_language,
+                f.external_label,
+                f.external_kind,
+                f.external_default,
+                f.external_list,
+                f.full_verification,
+                f.playlist,
+                f.playlist_items,
+                f.renew_job,
+                f.renew_restart,
+                GetDlgItem(dlg.hwnd, ID_MEDIA_EXTERNAL_ADD),
+                GetDlgItem(dlg.hwnd, ID_MEDIA_EXTERNAL_REMOVE),
+                GetDlgItem(dlg.hwnd, M_RENEW),
+            ] {
+                ShowWindow(control, shown(f.advanced));
+            }
+            ShowWindow(f.from_start, shown(f.from_start_offered));
+            let rows = media_rows(dlg, f);
+            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
+            form_rows_from(dlg, h, media_rows_top(dlg.dpi), &rows, 0);
+            EnableWindow(f.format, (!audio_only) as BOOL);
+            EnableWindow(f.audio, audio_only as BOOL);
+            EnableWindow(f.audio_tracks, 1);
+            for control in [
+                f.subtitles,
+                f.external_url,
+                f.external_language,
+                f.external_label,
+                f.external_kind,
+                f.external_default,
+                f.external_list,
+                GetDlgItem(dlg.hwnd, ID_MEDIA_EXTERNAL_ADD),
+                GetDlgItem(dlg.hwnd, ID_MEDIA_EXTERNAL_REMOVE),
+            ] {
+                EnableWindow(control, (!audio_only) as BOOL);
+            }
+            // The report action and "Download as MP3" take the same place
+            // after Advanced options: only a failed analysis has anything to
+            // report.
+            ShowWindow(GetDlgItem(dlg.hwnd, M_REPORT), shown(f.report_shown));
+            ShowWindow(GetDlgItem(dlg.hwnd, M_MP3), shown(!f.report_shown));
+            bar_start(
+                dlg,
+                h,
+                &[
+                    (D_ADVANCED, advanced_width(dlg)),
+                    (M_REPORT, add_button_width(dlg, M_REPORT, 96)),
+                    (M_MP3, add_button_width(dlg, M_MP3, 96)),
+                ],
+            );
+            command_bar(dlg, h, &[(M_QUEUE, 120), (D_CANCEL, 96)]);
+        }
+        DialogKind::Progress(f) if modern() => {
+            let s = |value: i32| scale(value, dlg.dpi);
+            let x = s(ADD_PAD);
+            let room = w - 2 * x;
+            // A playlist lists its jobs above the detail; a single job gives
+            // that place to the status text.
+            let multi = f.ids.len() > 1;
+            ShowWindow(f.list, multi as BOOL);
+            let line = |control: HWND, height: i32| Cell {
+                label: null_mut(),
+                control,
+                width: Width::Flex,
+                height,
+            };
+            let mut rows: Vec<Vec<Cell>> = vec![
+                vec![
+                    // Two lines: a long name or status wraps beside the buttons.
+                    line(f.summary, s(2 * ADD_LABEL)),
+                    check_cell(dlg, GetDlgItem(dlg.hwnd, P_PIN)),
+                    button_cell(dlg, P_MINI),
+                ],
+                vec![line(f.hint, s(ADD_LABEL))],
+            ];
+            if multi {
+                rows.push(vec![line(f.list, s(4 * ROW_HEIGHT) + 2)]);
+            }
+            rows.push(vec![line(f.status, 0)]);
+            rows.push(vec![line(f.progress, s(16))]);
+            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
+            // The error line shares its row with the report action it belongs
+            // to, centred on the button, with the card's gap below them.
+            let y = form_rows(dlg, h, &rows, s(ADD_FIELD + ADD_GROUP_GAP - ADD_LABEL));
+            let report_w = add_button_width(dlg, P_REPORT, 96);
+            move_id(
+                dlg.hwnd,
+                D_ERROR,
+                x,
+                y + s(ADD_FIELD - ADD_LABEL) / 2,
+                room - report_w - s(DIALOG_GAP),
+                s(ADD_LABEL),
+            );
+            let ring = s(FOCUS_MARGIN);
+            move_id(
+                dlg.hwnd,
+                P_REPORT,
+                x + room - report_w - ring,
+                y - ring,
+                report_w + 2 * ring,
+                s(ADD_FIELD) + 2 * ring,
+            );
+            bar_start(
+                dlg,
+                h,
+                &[
+                    (P_ACTION, add_button_width(dlg, P_ACTION, 96)),
+                    (P_CANCEL, add_button_width(dlg, P_CANCEL, 96)),
+                ],
+            );
+            command_bar(
+                dlg,
+                h,
+                &[(P_OPEN_FILE, 96), (P_OPEN_FOLDER, 96), (P_CLOSE, 96)],
+            );
+        }
         DialogKind::Media(f) => {
             // The thumbnail and the total size are STATICs too, but they are placed on
             // their own below, not as field labels.
@@ -2250,6 +2400,145 @@ unsafe fn layout_list_dialog(dlg: &DialogUi, h: i32, list: HWND, actions: &[i32]
     command_bar(dlg, h, &[(close, 96)]);
 }
 
+/// Advanced options' face width: its label and the chevron before it.
+unsafe fn advanced_width(dlg: &DialogUi) -> i32 {
+    add_button_width(dlg, D_ADVANCED, 120) + scale(16 + 8, dlg.dpi)
+}
+
+/// Puts buttons at the left end of a Modern dialog's command bar, left to
+/// right as listed, each `width` pixels wide; a hidden button takes no place.
+unsafe fn bar_start(dlg: &DialogUi, h: i32, buttons: &[(i32, i32)]) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let ring = s(FOCUS_MARGIN);
+    let by = h - s(ADD_FOOTER) + s(ADD_PAD);
+    let mut left = s(ADD_PAD);
+    for &(id, width) in buttons {
+        let button = GetDlgItem(dlg.hwnd, id);
+        // The style, not IsWindowVisible: the window may not be shown yet.
+        if GetWindowLongW(button, GWL_STYLE) as u32 & WS_VISIBLE == 0 {
+            continue;
+        }
+        MoveWindow(
+            button,
+            left - ring,
+            by - ring,
+            width + 2 * ring,
+            s(ADD_FIELD) + 2 * ring,
+            1,
+        );
+        left += width + s(DIALOG_GAP);
+    }
+}
+
+/// The media picker's field labels, in the order they are created.
+unsafe fn media_labels(dlg: &DialogUi, f: &MediaFields) -> Vec<HWND> {
+    child_statics(dlg.hwnd, dlg.error)
+        .into_iter()
+        .filter(|value| *value != f.thumbnail && *value != f.size)
+        .collect()
+}
+
+/// The Modern media picker's rows under its summary: the choices it always
+/// shows, then its advanced rows while they are open.
+unsafe fn media_rows(dlg: &DialogUi, f: &MediaFields) -> Vec<Vec<Cell>> {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let labels = media_labels(dlg, f);
+    let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+    let bare = |control: HWND, width: Width| field(null_mut(), control, width, dlg.dpi);
+    let combo = |control: HWND| Width::Label(combo_face_width(control, dlg.dpi));
+    let lists = s(2 * ROW_HEIGHT) + 2;
+    let mut rows = vec![
+        vec![field(label(0), f.name, Width::Flex, dlg.dpi)],
+        vec![
+            field(label(1), f.kind, combo(f.kind), dlg.dpi),
+            field(label(2), f.format, Width::Flex, dlg.dpi),
+        ],
+        vec![Cell {
+            height: s(ADD_LABEL),
+            ..bare(f.size, Width::Flex)
+        }],
+        vec![check_cell(dlg, f.remember)],
+    ];
+    if f.from_start_offered {
+        rows.push(vec![check_cell(dlg, f.from_start)]);
+    }
+    if f.advanced {
+        rows.extend([
+            vec![
+                field(label(3), f.audio, combo(f.audio), dlg.dpi),
+                check_cell(dlg, f.playlist),
+                bare(
+                    f.playlist_items,
+                    Width::Fixed(cue_face_width(f.playlist_items, dlg.dpi).max(s(112))),
+                ),
+            ],
+            vec![check_cell(dlg, f.full_verification)],
+            vec![
+                field(label(4), f.audio_tracks, Width::Flex, dlg.dpi).tall(lists),
+                field(label(5), f.subtitles, Width::Flex, dlg.dpi).tall(lists),
+            ],
+            vec![
+                field(label(6), f.external_url, Width::Flex, dlg.dpi),
+                bare(
+                    f.external_kind,
+                    Width::Fixed(combo_face_width(f.external_kind, dlg.dpi)),
+                ),
+            ],
+            vec![
+                field(label(7), f.external_language, Width::Label(s(96)), dlg.dpi),
+                field(label(8), f.external_label, Width::Flex, dlg.dpi),
+                check_cell(dlg, f.external_default),
+                button_cell(dlg, ID_MEDIA_EXTERNAL_ADD),
+            ],
+            vec![
+                bare(f.external_list, Width::Flex).tall(lists),
+                button_cell(dlg, ID_MEDIA_EXTERNAL_REMOVE),
+            ],
+            vec![
+                bare(f.renew_job, Width::Flex),
+                check_cell(dlg, f.renew_restart),
+                button_cell(dlg, M_RENEW),
+            ],
+        ]);
+    }
+    rows
+}
+
+/// Where the Modern media picker's rows start: below its summary.
+fn media_rows_top(dpi: u32) -> i32 {
+    scale(ADD_TOP + MEDIA_SUMMARY + ADD_GROUP_GAP, dpi)
+}
+
+/// The Modern media picker's content height in epx at its window's width:
+/// the summary, the rows it shows now, the error line and the command bar.
+pub(super) unsafe fn media_content_height(dlg: &DialogUi, f: &MediaFields) -> i32 {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(ADD_PAD);
+    let rows: i32 = media_rows(dlg, f)
+        .iter()
+        .map(|row| form_row(dlg, row, x, 0, client.right - 2 * x, 0, false))
+        .sum();
+    let pixels = media_rows_top(dlg.dpi) + rows + s(ADD_LABEL) + s(ADD_FOOTER);
+    (pixels * 96 + dlg.dpi as i32 - 1) / dlg.dpi as i32
+}
+
+/// Sizes the Modern media picker's window to the rows it shows now: once its
+/// controls exist, when its advanced rows open or close and when its choices
+/// arrive.
+pub(super) unsafe fn fit_media_picker(dlg: &DialogUi) {
+    if let DialogKind::Media(f) = &dlg.kind {
+        if modern() {
+            resize_dialog(
+                dlg.hwnd,
+                dlg.dpi,
+                media_window_height(media_content_height(dlg, f), 0),
+            );
+        }
+    }
+}
+
 /// Puts a Modern dialog's command bar buttons at its right end, left to
 /// right as listed, each as wide as its label needs and at least `least` epx.
 unsafe fn command_bar(dlg: &DialogUi, h: i32, buttons: &[(i32, i32)]) {
@@ -2298,6 +2587,10 @@ struct Cell {
 impl Cell {
     fn fill(self) -> Cell {
         Cell { height: 0, ..self }
+    }
+
+    fn tall(self, height: i32) -> Cell {
+        Cell { height, ..self }
     }
 }
 
@@ -2479,6 +2772,11 @@ unsafe fn form_row(
 /// height the card has left, at least two list entries. Returns where the
 /// rows end.
 unsafe fn form_rows(dlg: &DialogUi, h: i32, rows: &[&[Cell]], reserve: i32) -> i32 {
+    form_rows_from(dlg, h, scale(ADD_TOP, dlg.dpi), rows, reserve)
+}
+
+/// `form_rows` from `top` pixels down instead of the card's first row.
+unsafe fn form_rows_from(dlg: &DialogUi, h: i32, top: i32, rows: &[&[Cell]], reserve: i32) -> i32 {
     let s = |value: i32| scale(value, dlg.dpi);
     let mut client: RECT = zeroed();
     GetClientRect(dlg.hwnd, &mut client);
@@ -2489,9 +2787,9 @@ unsafe fn form_rows(dlg: &DialogUi, h: i32, rows: &[&[Cell]], reserve: i32) -> i
         .iter()
         .map(|row| form_row(dlg, row, x, 0, room, least, false))
         .sum();
-    let spare = h - s(ADD_FOOTER) - s(ADD_LABEL) - reserve - s(ADD_TOP) - natural;
+    let spare = h - s(ADD_FOOTER) - s(ADD_LABEL) - reserve - top - natural;
     let fill = least + spare.max(0);
-    let mut y = s(ADD_TOP);
+    let mut y = top;
     for row in rows {
         y += form_row(dlg, row, x, y, room, fill, true);
     }

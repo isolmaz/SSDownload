@@ -1175,7 +1175,11 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
         DialogKind::Media(f) => match id {
             D_ADVANCED => {
                 f.advanced = !f.advanced;
-                resize_dialog(dlg.hwnd, dlg.dpi, if f.advanced { 730 } else { 420 });
+                if modern() {
+                    fit_media_picker(dlg);
+                } else {
+                    resize_dialog(dlg.hwnd, dlg.dpi, if f.advanced { 730 } else { 420 });
+                }
                 layout_dialog(dlg);
             }
             M_REPORT => {
