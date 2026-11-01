@@ -8,7 +8,8 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     let w = r.right;
     let actual_height = r.bottom;
     let logical_height = match &dlg.kind {
-        DialogKind::Wizard(_) => 372,
+        DialogKind::Wizard(f) if modern() => wizard_content_height(f.intro_lines),
+        DialogKind::Wizard(_) => 506,
         DialogKind::Add(f) => add_content_height(f.advanced),
         DialogKind::Settings(f) => {
             settings_logical_height(modern(), UiMode::parse(&f.value.ui_mode).is_simple())
@@ -60,6 +61,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         scale(20, dlg.dpi),
     );
     match &dlg.kind {
+        DialogKind::Wizard(f) if modern() => layout_modern_wizard(dlg, h, f),
         DialogKind::Wizard(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);
             if let Some(label) = labels.first() {
@@ -82,12 +84,31 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 mode_w,
                 card_h,
             );
+            let theme_y = mode_top + card_h + gap;
+            wizard_theme_heading(
+                dlg,
+                f,
+                &labels,
+                m,
+                theme_y + scale(3, dlg.dpi),
+                scale(18, dlg.dpi),
+            );
+            let theme_top = theme_y + scale(22, dlg.dpi);
+            place(f.classic_card, true, m, theme_top, mode_w, card_h);
+            place(
+                f.modern_card,
+                true,
+                m + mode_w + gap,
+                theme_top,
+                mode_w,
+                card_h,
+            );
             // The purpose cards are the advanced answer's detail; a simple
             // choice stays one decision, so they leave the dialog entirely.
-            let heading_y = mode_top + card_h + gap;
+            let heading_y = theme_top + card_h + gap;
             place_static(
                 &labels,
-                1,
+                2,
                 m,
                 heading_y + scale(3, dlg.dpi),
                 w - 2 * m,
@@ -2422,22 +2443,91 @@ fn one_field_rects(width: i32, label_lines: i32, field_w: Option<i32>, dpi: u32)
     [label, field, error]
 }
 
-/// Sizes the speed limit dialog to the lines its label wraps to, once its
-/// controls exist: one in most languages, more where the text is longer.
-pub(super) unsafe fn fit_speed_label(dlg: &mut DialogUi) {
-    if !matches!(dlg.kind, DialogKind::Speed(_)) {
-        return;
-    }
+/// Sizes the speed limit dialog and the setup wizard to the lines their first
+/// label wraps to, once their controls exist: one in most languages, more
+/// where the text is longer.
+pub(super) unsafe fn fit_first_label(dlg: &mut DialogUi) {
     let Some(&label) = child_statics(dlg.hwnd, dlg.error).first() else {
         return;
     };
     let (hwnd, font, dpi) = (dlg.hwnd, dlg.font, dlg.dpi);
-    let DialogKind::Speed(f) = &mut dlg.kind else {
+    let lines = match &mut dlg.kind {
+        DialogKind::Speed(f) => &mut f.label_lines,
+        DialogKind::Wizard(f) => &mut f.intro_lines,
+        _ => return,
+    };
+    let wrapped = fit_label_lines(hwnd, label, font, dpi, *lines);
+    dlg.design.1 += (wrapped - *lines) * ADD_LABEL;
+    *lines = wrapped;
+}
+
+/// The wizard's theme heading at (`x`, `y`) and, beside it, its restart note
+/// when it has one.
+unsafe fn wizard_theme_heading(
+    dlg: &DialogUi,
+    f: &WizardFields,
+    labels: &[HWND],
+    x: i32,
+    y: i32,
+    height: i32,
+) {
+    let Some(&heading) = labels.get(1) else {
         return;
     };
-    let lines = fit_label_lines(hwnd, label, font, dpi, f.label_lines);
-    dlg.design.1 += (lines - f.label_lines) * ADD_LABEL;
-    f.label_lines = lines;
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let width = text_width(heading) + scale(8, dlg.dpi);
+    MoveWindow(heading, x, y, width, height, 1);
+    if !f.note.is_null() {
+        let left = x + width + scale(DIALOG_GAP, dlg.dpi);
+        MoveWindow(f.note, left, y, client.right - x - left, height, 1);
+    }
+}
+
+/// Modern's setup wizard: the introduction, the depth cards, the theme cards
+/// and the purpose cards (the advanced depth's detail) under their headings,
+/// the error line and the command bar.
+unsafe fn layout_modern_wizard(dlg: &DialogUi, h: i32, f: &WizardFields) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let labels = child_statics(dlg.hwnd, dlg.error);
+    let x = s(ADD_PAD);
+    let cw = client.right - 2 * x;
+    let (ring, gap, card) = (s(FOCUS_MARGIN), s(DIALOG_GAP), s(WIZARD_CARD));
+    // A card's window reaches FOCUS_MARGIN past its face for the focus ring.
+    let row = |cards: &[HWND], show: bool, top: i32| {
+        let count = cards.len() as i32;
+        let width = (cw - (count - 1) * gap) / count;
+        for (index, &card_window) in cards.iter().enumerate() {
+            let left = x + index as i32 * (width + gap);
+            place(
+                card_window,
+                show,
+                left - ring,
+                top - ring,
+                width + 2 * ring,
+                card + 2 * ring,
+            );
+        }
+    };
+    let intro = s(ADD_LABEL * f.intro_lines);
+    let mut y = s(ADD_TOP);
+    place_static(&labels, 0, x, y, cw, intro, true);
+    y += intro + s(ADD_LABEL_GAP);
+    row(&[f.simple_card, f.advanced_card], true, y);
+    y += card + gap;
+    wizard_theme_heading(dlg, f, &labels, x, y, s(ADD_LABEL));
+    y += s(ADD_LABEL + ADD_LABEL_GAP);
+    row(&[f.classic_card, f.modern_card], true, y);
+    y += card + gap;
+    let advanced = check(f.advanced_card);
+    place_static(&labels, 2, x, y, cw, s(ADD_LABEL), advanced);
+    y += s(ADD_LABEL + ADD_LABEL_GAP);
+    row(&[f.video, f.file, f.audio], advanced, y);
+    y += card + s(ADD_GROUP_GAP);
+    move_id(dlg.hwnd, D_ERROR, x, y, cw, s(ADD_LABEL));
+    command_bar(dlg, h, &[(ID_WIZARD_START, 120), (D_CANCEL, 96)]);
 }
 
 /// Modern's log windows: the list under its label, the `actions` on the card

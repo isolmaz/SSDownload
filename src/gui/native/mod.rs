@@ -37,7 +37,7 @@ use windows_sys::Win32::{
             DROPEFFECT_COPY, DROPEFFECT_NONE,
         },
         SystemServices::SS_NOPREFIX,
-        Threading::AttachThreadInput,
+        Threading::{AttachThreadInput, GetCurrentProcessId},
     },
     UI::{
         Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
@@ -387,6 +387,8 @@ pub const ID_WIZARD_AUDIO: i32 = 2403;
 pub const ID_WIZARD_START: i32 = 2404;
 pub const ID_WIZARD_SIMPLE: i32 = 2405;
 pub const ID_WIZARD_ADVANCED: i32 = 2406;
+pub const ID_WIZARD_CLASSIC: i32 = 2407;
+pub const ID_WIZARD_MODERN: i32 = 2408;
 pub const ID_SETTINGS_MODE_VIDEO: i32 = 2411;
 pub const ID_SETTINGS_MODE_FILE: i32 = 2412;
 pub const ID_SETTINGS_MODE_AUDIO: i32 = 2413;
@@ -692,6 +694,42 @@ pub fn offer_update(
 /// Başla still records completion, and Settings can reopen the wizard any time.
 fn wizard_auto_open_suppressed() -> bool {
     std::env::var_os("SSDOWNLOAD_SKIP_WIZARD").is_some_and(|value| value == "1")
+}
+
+/// Whether a start opens the first-run wizard before its main window: a
+/// profile that has not finished it, outside developer mode, on a start that
+/// shows the window. A start in the tray opens it when the window first shows.
+fn wizard_opens_first(settings: &Settings, start_hidden: bool, suppressed: bool) -> bool {
+    settings.onboarding_version < ONBOARDING_VERSION
+        && !settings.debug_mode
+        && !start_hidden
+        && !suppressed
+}
+
+/// The settings the wizard's Start saves over `stored`: the surface depth, the
+/// usage purposes (all of them for the simple depth), the theme and the
+/// finished onboarding.
+fn wizard_settings(stored: &Settings, simple: bool, modes: UsageModes, modern: bool) -> Settings {
+    let mut settings = stored.clone();
+    settings.usage_modes = if simple {
+        UsageModes {
+            video: true,
+            file: true,
+            audio: true,
+        }
+    } else {
+        modes
+    };
+    settings.ui_mode = if simple {
+        UiMode::Simple
+    } else {
+        UiMode::Advanced
+    }
+    .as_str()
+    .into();
+    settings.theme = if modern { "modern" } else { "classic" }.into();
+    settings.onboarding_version = ONBOARDING_VERSION;
+    settings
 }
 
 /// Plain informational update message (already up to date, feed errors).
@@ -1167,14 +1205,25 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             .ok()
             .and_then(|result| result.capabilities)
             .is_some_and(|value| value.protocol >= 2 && value.capability_version >= 1);
-        let snapshot = app.snapshot();
-        // The theme is read once, before the first window: a change applies
-        // after a restart.
-        set_modern(snapshot.settings.modern_theme());
+        let mut snapshot = app.snapshot();
         // uxtheme only honours the shell colour scheme when the process asked
         // for it before the first window exists, so the menu bar and the
         // themed controls match the stored setting from the very first frame.
         dark_app_mode(snapshot.settings.dark_mode);
+        // The first-run wizard opens before the main window, so the theme it
+        // picks is the one that window is built in.
+        if wizard_opens_first(
+            &snapshot.settings,
+            start_hidden,
+            wizard_auto_open_suppressed(),
+        ) {
+            set_modern(snapshot.settings.modern_theme());
+            show_usage_wizard(null_mut(), app.clone(), snapshot.settings.clone());
+            snapshot = app.snapshot();
+        }
+        // The theme is read once, before the main window: a change made after
+        // it exists applies after a restart.
+        set_modern(snapshot.settings.modern_theme());
         let state = Box::new(MainUi {
             app,
             hwnd: null_mut(),
@@ -1317,9 +1366,6 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             PostMessageW(hwnd, WM_SHOW_TOUR, 0, 0);
         }
         UpdateWindow(hwnd);
-        if !start_hidden && (*raw).wizard_pending && !wizard_auto_open_suppressed() {
-            PostMessageW(hwnd, WM_SHOW_WIZARD, 0, 0);
-        }
         // Non-blocking scheduled update check (daily-gated, background thread).
         crate::update::startup_check((*raw).app.clone());
         // Policies older versions wrote block the extension; a developer run
@@ -7436,11 +7482,19 @@ struct AddFields {
 struct WizardFields {
     modes: UsageModes,
     simple: bool,
+    modern: bool,
+    /// Lines the introduction wraps to in Modern.
+    intro_lines: i32,
     video: HWND,
     file: HWND,
     audio: HWND,
     simple_card: HWND,
     advanced_card: HWND,
+    classic_card: HWND,
+    modern_card: HWND,
+    /// The restart note beside the theme heading; only a wizard opened while
+    /// the main window exists has one.
+    note: HWND,
     start: HWND,
 }
 struct SettingsFields {
@@ -8140,6 +8194,24 @@ unsafe fn place_window_on(hwnd: HWND, origin: Option<[i32; 4]>) {
         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
     );
 }
+/// This process's main window, if it exists: an instance of another profile
+/// has one of the same class.
+unsafe fn own_main_window() -> HWND {
+    let class = wide(CLASS_MAIN);
+    let mut window = null_mut();
+    loop {
+        window = FindWindowExW(null_mut(), window, class.as_ptr(), null());
+        if window.is_null() {
+            return window;
+        }
+        let mut process = 0;
+        GetWindowThreadProcessId(window, &mut process);
+        if process == GetCurrentProcessId() {
+            return window;
+        }
+    }
+}
+
 unsafe fn center_window(hwnd: HWND, owner: HWND) {
     let mut wr: RECT = zeroed();
     if GetWindowRect(hwnd, &mut wr) == 0 {
@@ -8148,11 +8220,12 @@ unsafe fn center_window(hwnd: HWND, owner: HWND) {
     // An ownerless alert has no rectangle to centre on, and centring on an
     // empty one puts it in the desktop's top-left corner. The application's
     // main window is the surface the user is looking at, so it anchors those
-    // alerts as well as their monitor.
+    // alerts as well as their monitor. Before that window exists (the
+    // first-run wizard) the dialog stays on the monitor it opened on.
     let anchor = if !owner.is_null() && IsWindow(owner) != 0 {
         owner
     } else {
-        FindWindowW(wide(CLASS_MAIN).as_ptr(), null())
+        own_main_window()
     };
     let mut or: RECT = zeroed();
     let anchored = !anchor.is_null() && GetWindowRect(anchor, &mut or) != 0;
@@ -8186,25 +8259,42 @@ unsafe fn center_window(hwnd: HWND, owner: HWND) {
 
 /// First-run wizard: the surface depth is chosen first and the usage purposes
 /// are part of the advanced answer only, so a simple choice never confronts a
-/// new user with the detailed set.
+/// new user with the detailed set. The theme is chosen beside them. With no
+/// `owner` it opens before the main window, on the monitor that window was
+/// last on, if the profile has one.
 unsafe fn show_usage_wizard(owner: HWND, app: App, settings: Settings) {
     let simple = UiMode::parse(&settings.ui_mode).is_simple();
-    run_modal(
+    let (width, height) = if modern() {
+        (WIZARD_WIDTH, wizard_content_height(1) + SETTINGS_FRAME + 3)
+    } else {
+        (576, 546)
+    };
+    let origin = settings
+        .window_placement
+        .filter(|_| owner.is_null())
+        .map(|[left, top, right, bottom, _]| [left, top, right, bottom]);
+    run_modal_at(
         owner,
         app,
         crate::i18n::ui("SSDownload kurulumu", "SSDownload setup"),
-        576,
-        412,
+        width,
+        height,
         DialogKind::Wizard(WizardFields {
             modes: settings.usage_modes,
             simple,
+            modern: settings.modern_theme(),
+            intro_lines: 1,
             video: null_mut(),
             file: null_mut(),
             audio: null_mut(),
             simple_card: null_mut(),
             advanced_card: null_mut(),
+            classic_card: null_mut(),
+            modern_card: null_mut(),
+            note: null_mut(),
             start: null_mut(),
         }),
+        origin,
     );
 }
 
@@ -9251,7 +9341,7 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     create_kind_controls(dlg);
     if modern() {
         prepare_modern_form(dlg);
-        fit_speed_label(dlg);
+        fit_first_label(dlg);
         fit_media_picker(dlg);
     }
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
@@ -10076,6 +10166,61 @@ mod tests {
             language: language.into(),
             automatic,
         }
+    }
+
+    #[test]
+    fn the_wizard_saves_the_theme_it_was_given_with_its_other_answers() {
+        use super::wizard_settings;
+        use crate::model::{Settings, UiMode, UsageModes, ONBOARDING_VERSION};
+        let stored = Settings::first_run();
+        let video_only = UsageModes {
+            video: true,
+            file: false,
+            audio: false,
+        };
+        let modern = wizard_settings(&stored, false, video_only, true);
+        assert!(modern.modern_theme());
+        assert_eq!(modern.usage_modes, video_only);
+        assert_eq!(modern.ui_mode, UiMode::Advanced.as_str());
+        assert_eq!(modern.onboarding_version, ONBOARDING_VERSION);
+        // The saved profile reads the same theme back.
+        let stored_modern: Settings =
+            serde_json::from_str(&serde_json::to_string(&modern).unwrap()).unwrap();
+        assert!(stored_modern.modern_theme());
+
+        let classic = wizard_settings(&stored_modern, true, video_only, false);
+        assert!(!classic.modern_theme());
+        assert_eq!(classic.ui_mode, UiMode::Simple.as_str());
+        assert!(classic.usage_modes.video && classic.usage_modes.file && classic.usage_modes.audio);
+    }
+
+    #[test]
+    fn only_a_visible_first_start_opens_the_wizard_before_the_main_window() {
+        use super::wizard_opens_first;
+        use crate::model::{Settings, ONBOARDING_VERSION};
+        let new = Settings::first_run();
+        assert!(wizard_opens_first(&new, false, false));
+        assert!(
+            !wizard_opens_first(&new, true, false),
+            "a start in the tray"
+        );
+        assert!(
+            !wizard_opens_first(&new, false, true),
+            "the automated opt-out"
+        );
+        let developer = Settings {
+            debug_mode: true,
+            ..Settings::first_run()
+        };
+        assert!(!wizard_opens_first(&developer, false, false));
+        let finished = Settings {
+            onboarding_version: ONBOARDING_VERSION,
+            ..Settings::first_run()
+        };
+        assert!(!wizard_opens_first(&finished, false, false));
+        // A start that skips the wizard builds its windows in the stored
+        // theme, which a new profile has as Classic.
+        assert!(!new.modern_theme());
     }
 
     #[test]

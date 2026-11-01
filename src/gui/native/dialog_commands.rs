@@ -560,37 +560,26 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                     },
                 );
             }
+            ID_WIZARD_CLASSIC | ID_WIZARD_MODERN => {
+                // The two theme cards are one radio group as well.
+                set_check(f.classic_card, id == ID_WIZARD_CLASSIC);
+                set_check(f.modern_card, id == ID_WIZARD_MODERN);
+            }
             ID_WIZARD_START => {
-                let simple = check(f.simple_card);
-                // A simple installation keeps every purpose enabled; the
-                // detailed answer only exists in the advanced choice.
-                let modes = if simple {
-                    UsageModes {
-                        video: true,
-                        file: true,
-                        audio: true,
-                    }
-                } else {
+                let settings = wizard_settings(
+                    &dlg.app.snapshot().settings,
+                    check(f.simple_card),
                     UsageModes {
                         video: check(f.video),
                         file: check(f.file),
                         audio: check(f.audio),
-                    }
-                };
-                if let Err(error) = modes.validate() {
+                    },
+                    check(f.modern_card),
+                );
+                if let Err(error) = settings.usage_modes.validate() {
                     set_dialog_error(dlg.hwnd, dlg.error, error, f.video);
                     return;
                 }
-                let mut settings = dlg.app.snapshot().settings.clone();
-                settings.usage_modes = modes;
-                settings.ui_mode = if simple {
-                    UiMode::Simple
-                } else {
-                    UiMode::Advanced
-                }
-                .as_str()
-                .into();
-                settings.onboarding_version = ONBOARDING_VERSION;
                 match dlg.app.dispatch(Action::SetSettings { settings }) {
                     Ok(()) => {
                         DestroyWindow(dlg.hwnd);
@@ -772,8 +761,8 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                 set_check(f.mode_video, settings.usage_modes.video);
                 set_check(f.mode_file, settings.usage_modes.file);
                 set_check(f.mode_audio, settings.usage_modes.audio);
-                // The wizard answers the same question as the mode selector, so
-                // the dialog follows whatever it decided.
+                // The wizard answers the same questions as the mode and theme
+                // selectors, so the dialog follows whatever it decided.
                 combo_select(
                     f.ui_mode,
                     if UiMode::parse(&settings.ui_mode).is_simple() {
@@ -782,6 +771,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         1
                     },
                 );
+                combo_select(f.theme, settings.modern_theme() as i32);
                 apply_settings_mode(dlg, f);
             }
             S_UI_MODE if _code == CBN_SELCHANGE as u16 => {

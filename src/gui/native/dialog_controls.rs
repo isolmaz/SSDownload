@@ -133,6 +133,25 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 ID_WIZARD_ADVANCED,
             );
+            dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Tema:", "Theme:"), 0);
+            f.classic_card = dialog_card(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui(
+                    "Klasik — sade Windows görünümü",
+                    "Classic — the plain Windows look",
+                ),
+                ID_WIZARD_CLASSIC,
+            );
+            f.modern_card = dialog_card(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui(
+                    "Modern — Windows 11 görünümü",
+                    "Modern — the Windows 11 look",
+                ),
+                ID_WIZARD_MODERN,
+            );
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
@@ -169,8 +188,23 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 ID_WIZARD_AUDIO,
             );
+            // The running windows keep their theme, so a wizard opened from
+            // them says when its choice applies, as Settings does.
+            if !GetWindow(dlg.hwnd, GW_OWNER).is_null() {
+                f.note = dialog_label(
+                    dlg.hwnd,
+                    dlg.font,
+                    crate::i18n::ui(
+                        "Yeniden başlatınca geçerli olur",
+                        "Takes effect after a restart",
+                    ),
+                    0,
+                );
+            }
             set_check(f.simple_card, f.simple);
             set_check(f.advanced_card, !f.simple);
+            set_check(f.classic_card, !f.modern);
+            set_check(f.modern_card, f.modern);
             set_check(f.video, f.modes.video);
             set_check(f.file, f.modes.file);
             set_check(f.audio, f.modes.audio);

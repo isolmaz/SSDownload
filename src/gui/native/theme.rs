@@ -309,7 +309,8 @@ pub(super) unsafe fn card_font(
     SetPropW(hwnd, dpi_prop, dpi as usize as HANDLE);
     font
 }
-/// Vector icon for a card: a play triangle, a folder or a music note. Icon
+/// Vector icon for a card: a play triangle, a folder, a music note, or a
+/// window with square or rounded corners for the two themes. Icon
 /// fonts are not used because a font that is missing or substituted renders the
 /// private-use codepoint as a tofu box, which no size check can tell apart from
 /// a real glyph.
@@ -332,6 +333,25 @@ pub(super) unsafe fn draw_card_glyph(dc: HDC, id: i32, origin: POINT, size: i32,
             Ellipse(dc, x + 2 * unit, y + 8 * unit, x + 8 * unit, y + 13 * unit);
             Rectangle(dc, x + 7 * unit, y + 2 * unit, x + 9 * unit, y + 11 * unit);
             Rectangle(dc, x + 9 * unit, y + 2 * unit, x + 13 * unit, y + 4 * unit);
+        }
+        ID_WIZARD_CLASSIC | ID_WIZARD_MODERN => {
+            // A window outline: a filled title bar and square corners for
+            // Classic, a title line and rounded corners for Modern.
+            let pen = CreatePen(PS_SOLID | PS_INSIDEFRAME, unit, colour);
+            let previous_pen = SelectObject(dc, pen as HGDIOBJ);
+            let hollow = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            let (left, top, right, bottom) = (x + unit, y + 2 * unit, x + 15 * unit, y + 14 * unit);
+            if id == ID_WIZARD_CLASSIC {
+                Rectangle(dc, left, top, right, bottom);
+                SelectObject(dc, brush as HGDIOBJ);
+                Rectangle(dc, left, top, right, top + 3 * unit);
+            } else {
+                RoundRect(dc, left, top, right, bottom, 6 * unit, 6 * unit);
+                Rectangle(dc, left, top + 3 * unit, right, top + 4 * unit);
+            }
+            SelectObject(dc, hollow);
+            SelectObject(dc, previous_pen);
+            DeleteObject(pen as HGDIOBJ);
         }
         _ => {
             let mut triangle = [
@@ -363,6 +383,10 @@ pub(super) fn card_text_parts(text: &str) -> (String, String) {
     }
 }
 pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
+    if modern() {
+        paint_choice_card(hwnd, dc);
+        return;
+    }
     let mut rect: RECT = zeroed();
     GetClientRect(hwnd, &mut rect);
     let dpi = GetDpiForWindow(hwnd).max(96);

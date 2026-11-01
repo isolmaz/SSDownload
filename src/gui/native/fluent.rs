@@ -1357,6 +1357,175 @@ pub(super) unsafe fn paint_button(
     });
 }
 
+/// Modern's choice card (the setup wizard's): a card face FOCUS_MARGIN inside
+/// the control with the focus ring around it, its glyph, title and
+/// explanation, and a mark in the top corner: a radio mark for a card of a
+/// one-of group, a check mark for a usage purpose, of which several can be
+/// chosen. A chosen card takes the accent stroke, a light accent tint and a
+/// filled mark.
+pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
+    let mut rect: RECT = zeroed();
+    GetClientRect(hwnd, &mut rect);
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let s = |value: i32| scale(value, dpi);
+    let palette = card_palette(GetAncestor(hwnd, GA_ROOT));
+    let contrast = high_contrast();
+    let selected = SendMessageW(hwnd, BM_GETCHECK, 0, 0) as u32 == BST_CHECKED;
+    let focused = GetFocus() == hwnd
+        && SendMessageW(hwnd, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0;
+    let (width, height) = (rect.right.max(1), rect.bottom.max(1));
+    let margin = s(FOCUS_MARGIN);
+    let fill = if selected && !contrast {
+        over(with_alpha(palette.accent, 0x14), palette.control)
+    } else {
+        palette.control
+    };
+    let stroke = if selected {
+        palette.accent
+    } else {
+        palette.control_stroke
+    };
+    let surface = ButtonSurface {
+        background: palette.base,
+        fill,
+        stroke,
+        stroke_bottom: if selected {
+            stroke
+        } else {
+            palette.control_stroke_bottom
+        },
+        radius: if contrast { 0.0 } else { s(2 * CORNER) as f32 },
+        focus: focused.then_some((palette.focus_outer, palette.focus_inner)),
+    };
+    let mut pixels = paint_button_surface(width as usize, height as usize, margin as f32, &surface);
+    // The mark: a ring, or an accent disc with a dot when chosen; a check
+    // mark has a rounded square and draws its tick over the fill below.
+    let id = GetDlgCtrlID(hwnd);
+    let check = matches!(id, ID_WIZARD_VIDEO | ID_WIZARD_FILE | ID_WIZARD_AUDIO);
+    let size = s(16) as f32;
+    let right = (width - margin - s(10)) as f32;
+    let top = (margin + s(10)) as f32;
+    let mark = [right - size, top, right, top + size];
+    let corner = if check { s(3) as f32 } else { size / 2.0 };
+    let dot = size * 3.0 / 16.0;
+    let centre = (right - size / 2.0, top + size / 2.0);
+    for y in (top as usize)..((top + size) as usize + 1).min(height as usize) {
+        for x in ((right - size) as usize)..((right as usize) + 1).min(width as usize) {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let outer = rounded_coverage(px, py, mark, corner);
+            let inner_box = [mark[0] + 1.0, mark[1] + 1.0, mark[2] - 1.0, mark[3] - 1.0];
+            let inner = rounded_coverage(px, py, inner_box, corner - 1.0);
+            let pixel = &mut pixels[y * width as usize + x];
+            if selected {
+                *pixel = blend(*pixel, palette.accent, outer);
+            } else {
+                *pixel = blend(*pixel, palette.strong_stroke, outer - inner);
+            }
+            if selected && !check {
+                let core = [
+                    centre.0 - dot,
+                    centre.1 - dot,
+                    centre.0 + dot,
+                    centre.1 + dot,
+                ];
+                *pixel = blend(
+                    *pixel,
+                    palette.on_accent,
+                    rounded_coverage(px, py, core, dot),
+                );
+            }
+        }
+    }
+    let mut buffer = [0u16; 512];
+    let length = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32).max(0) as usize;
+    let (title, description) = card_text_parts(&String::from_utf16_lossy(&buffer[..length]));
+    let language = crate::i18n::language();
+    let title_font = card_font(hwnd, "title-font", 11, 600, ramp_faces(language, false));
+    let text_font = card_font(
+        hwnd,
+        "text-font",
+        9,
+        FW_NORMAL as i32,
+        ramp_faces(language, true),
+    );
+    let tick = if check && selected {
+        icon_font_px(dpi, 12)
+    } else {
+        null_mut()
+    };
+    blit_surface(dc, rect, &pixels, |memory| {
+        if !tick.is_null() {
+            let mut area = RECT {
+                left: mark[0] as i32,
+                top: mark[1] as i32,
+                right: mark[2] as i32,
+                bottom: mark[3] as i32,
+            };
+            SelectObject(memory, tick as HGDIOBJ);
+            SetTextColor(memory, palette.on_accent);
+            DrawTextW(
+                memory,
+                &0xe73eu16,
+                1,
+                &mut area,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+        }
+        let glyph = s(32);
+        let previous_pen = SelectObject(memory, GetStockObject(NULL_PEN));
+        draw_card_glyph(
+            memory,
+            id,
+            POINT {
+                x: (width - glyph) / 2,
+                y: margin + s(6),
+            },
+            glyph,
+            if contrast {
+                palette.text
+            } else {
+                palette.accent
+            },
+        );
+        SelectObject(memory, previous_pen);
+        let mut title_wide = wide(&title);
+        let mut area = RECT {
+            left: margin + s(12),
+            top: margin + s(36),
+            right: width - margin - s(12),
+            bottom: margin + s(56),
+        };
+        SelectObject(memory, title_font as HGDIOBJ);
+        SetTextColor(memory, palette.text);
+        DrawTextW(
+            memory,
+            title_wide.as_mut_ptr(),
+            -1,
+            &mut area,
+            DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        let mut description_wide = wide(&description);
+        let mut area = RECT {
+            left: margin + s(12),
+            top: margin + s(56),
+            right: width - margin - s(12),
+            bottom: height - margin - s(4),
+        };
+        SelectObject(memory, text_font as HGDIOBJ);
+        SetTextColor(memory, palette.secondary);
+        DrawTextW(
+            memory,
+            description_wide.as_mut_ptr(),
+            -1,
+            &mut area,
+            DT_CENTER | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX,
+        );
+    });
+    if !tick.is_null() {
+        DeleteObject(tick as HGDIOBJ);
+    }
+}
+
 /// Copies `pixels` (COLORREFs, row by row) into `rect` of `dc` through a
 /// memory DC, after `draw` has painted over them there with a transparent
 /// background.
@@ -2018,6 +2187,22 @@ pub(super) const MEDIA_WIDTH: i32 = 720;
 pub(super) const MEDIA_HEIGHT: i32 = 416;
 pub(super) const MEDIA_SUMMARY: i32 = 64;
 pub(super) const PROGRESS_HEIGHT: i32 = 472;
+/// The setup wizard's width and the face height of its choice cards.
+pub(super) const WIZARD_WIDTH: i32 = 760;
+pub(super) const WIZARD_CARD: i32 = 92;
+/// The setup wizard's content height with an introduction `intro_lines` tall:
+/// three rows of cards, the two lower ones under a heading, then the error
+/// line and the command bar.
+pub(super) const fn wizard_content_height(intro_lines: i32) -> i32 {
+    ADD_TOP
+        + ADD_LABEL * intro_lines
+        + ADD_LABEL_GAP
+        + WIZARD_CARD
+        + 2 * (DIALOG_GAP + ADD_LABEL + ADD_LABEL_GAP + WIZARD_CARD)
+        + ADD_GROUP_GAP
+        + ADD_LABEL
+        + ADD_FOOTER
+}
 /// Space between an input frame and the text field inside it: left, right
 /// (a multiline field keeps its scroll bar inside the frame), and top for a
 /// multiline field; a single line is centred.
@@ -2573,6 +2758,15 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: L_SAVE,
             card_buttons: &[L_ADD, L_REMOVE],
             hint: null_mut(),
+        }),
+        DialogKind::Wizard(f) => Some(ModernForm {
+            inputs: Vec::new(),
+            lists: vec![],
+            texts: Vec::new(),
+            buttons: &[ID_WIZARD_START, D_CANCEL],
+            primary: ID_WIZARD_START,
+            card_buttons: &[],
+            hint: f.note,
         }),
         _ => None,
     }
