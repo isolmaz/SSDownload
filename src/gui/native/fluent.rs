@@ -1510,8 +1510,6 @@ unsafe fn blit_surface(dc: HDC, rect: RECT, pixels: &[u32], draw: impl FnOnce(HD
     let width = (rect.right - rect.left).max(1);
     let height = (rect.bottom - rect.top).max(1);
     let memory = CreateCompatibleDC(dc);
-    // Drawn through a mirrored DC, the content lands where it does in `dc`.
-    SetLayout(memory, GetLayout(dc));
     let mut info: BITMAPINFO = zeroed();
     info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
     info.bmiHeader.biWidth = width;
