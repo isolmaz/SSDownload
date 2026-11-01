@@ -461,9 +461,13 @@ pub(super) fn paint_button_surface(
         for x in 0..width {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             let mut colour = surface.background;
+            // The rings fill the margin: the outer two thirds of it, then the
+            // inner third, 2 + 1 px at 96 dpi.
             if let Some((outer, inner)) = surface.focus {
-                let ring = rounded_coverage(px, py, grow(3.0), surface.radius + 3.0);
-                let inside_outer = rounded_coverage(px, py, grow(1.0), surface.radius + 1.0);
+                let inner_width = margin / 3.0;
+                let ring = rounded_coverage(px, py, grow(margin), surface.radius + margin);
+                let inside_outer =
+                    rounded_coverage(px, py, grow(inner_width), surface.radius + inner_width);
                 colour = blend(colour, outer, ring - inside_outer);
                 colour = blend(
                     colour,
@@ -2456,5 +2460,26 @@ mod tests {
         assert_eq!(at(&ring, 20, 1), 0xff0000);
         assert_eq!(at(&ring, 20, 2), 0x00ff00);
         assert_eq!(at(&ring, 20, 19), 0xeeeeee);
+    }
+
+    #[test]
+    fn the_focus_rings_grow_with_the_margin_at_a_higher_dpi() {
+        let surface = ButtonSurface {
+            background: 0x111111,
+            fill: 0xeeeeee,
+            stroke: 0x888888,
+            stroke_bottom: 0x444444,
+            radius: 8.0,
+            focus: Some((0xff0000, 0x00ff00)),
+        };
+        // 200%: a 6 px margin holds a 4 px outer and a 2 px inner ring.
+        let width = 80;
+        let pixels = paint_button_surface(width, 76, 6.0, &surface);
+        let at = |y: usize| pixels[y * width + 40];
+        assert_eq!(at(0), 0xff0000);
+        assert_eq!(at(3), 0xff0000);
+        assert_eq!(at(4), 0x00ff00);
+        assert_eq!(at(5), 0x00ff00);
+        assert_eq!(at(6), 0x888888);
     }
 }
