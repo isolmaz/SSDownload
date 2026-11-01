@@ -1519,6 +1519,15 @@ unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
     if !(kind == BS_CHECKBOX || kind == BS_AUTOCHECKBOX) || style & BS_PUSHLIKE as u32 != 0 {
         return None;
     }
+    // The box is drawn at the left edge and a text label follows it at the
+    // left and centred vertically. A label on the other side, aligned or
+    // anchored another way, an icon or a bitmap, and right-to-left reading are
+    // left to the theme. BS_CENTER is BS_RIGHT with BS_LEFT, so it is covered.
+    let placed = (BS_LEFTTEXT | BS_RIGHT | BS_TOP | BS_BOTTOM | BS_ICON | BS_BITMAP) as u32;
+    let read = WS_EX_RIGHT | WS_EX_RTLREADING;
+    if style & placed != 0 || GetWindowLongPtrW(button, GWL_EXSTYLE) as u32 & read != 0 {
+        return None;
+    }
     let theme = OpenThemeData(button, wide("Button").as_ptr());
     if theme == 0 {
         return None;

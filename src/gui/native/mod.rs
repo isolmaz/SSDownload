@@ -11708,15 +11708,62 @@ mod tests {
                     |dialog| unsafe {
                         // The cards of the wizard are push-like check boxes that paint
                         // themselves.
-                        for (what, style) in [
-                            ("a push button", BS_PUSHBUTTON),
-                            ("a default push button", BS_DEFPUSHBUTTON),
-                            ("a push-like check box", BS_AUTOCHECKBOX | BS_PUSHLIKE),
-                            ("a radio button", BS_AUTORADIOBUTTON),
-                            ("a three-state check box", BS_AUTO3STATE),
-                            ("a group box", BS_GROUPBOX),
+                        for (what, style, ex_style) in [
+                            ("a push button", BS_PUSHBUTTON, 0),
+                            ("a default push button", BS_DEFPUSHBUTTON, 0),
+                            ("a push-like check box", BS_AUTOCHECKBOX | BS_PUSHLIKE, 0),
+                            ("a radio button", BS_AUTORADIOBUTTON, 0),
+                            ("a three-state check box", BS_AUTO3STATE, 0),
+                            ("a group box", BS_GROUPBOX, 0),
+                            // The label of a check box that is placed another way.
+                            (
+                                "a check box with its text on the left",
+                                BS_AUTOCHECKBOX | BS_LEFTTEXT,
+                                0,
+                            ),
+                            ("a right-aligned check box", BS_AUTOCHECKBOX | BS_RIGHT, 0),
+                            ("a centred check box", BS_AUTOCHECKBOX | BS_CENTER, 0),
+                            (
+                                "a check box with its text at the top",
+                                BS_AUTOCHECKBOX | BS_TOP,
+                                0,
+                            ),
+                            (
+                                "a check box with its text at the bottom",
+                                BS_AUTOCHECKBOX | BS_BOTTOM,
+                                0,
+                            ),
+                            ("a check box with an icon", BS_AUTOCHECKBOX | BS_ICON, 0),
+                            ("a check box with a bitmap", BS_AUTOCHECKBOX | BS_BITMAP, 0),
+                            (
+                                "a check box with a right-aligned window",
+                                BS_AUTOCHECKBOX,
+                                WS_EX_RIGHT,
+                            ),
+                            (
+                                "a check box that reads right to left",
+                                BS_AUTOCHECKBOX,
+                                WS_EX_RTLREADING,
+                            ),
                         ] {
-                            let button = add_button(dialog, what, style, 0, dark);
+                            let button = add_button(dialog, what, style, ex_style, dark);
+                            // The system can drop an extended style at creation, so
+                            // it is set again, and every case must carry its bits.
+                            SetWindowLongPtrW(
+                                button,
+                                GWL_EXSTYLE,
+                                GetWindowLongPtrW(button, GWL_EXSTYLE) | ex_style as isize,
+                            );
+                            assert_eq!(
+                                GetWindowLongPtrW(button, GWL_STYLE) as u32 & style as u32,
+                                style as u32,
+                                "dark {dark}: {what} has its style"
+                            );
+                            assert_eq!(
+                                GetWindowLongPtrW(button, GWL_EXSTYLE) as u32 & ex_style,
+                                ex_style,
+                                "dark {dark}: {what} has its extended style"
+                            );
                             assert_eq!(
                                 custom_draw_answer(dialog.hwnd, button),
                                 CDRF_DODEFAULT as isize,
@@ -11915,6 +11962,31 @@ mod tests {
             );
         }
 
+        /// The box around the label of an "&Open it" check box with the keyboard
+        /// cues shown, without the focus and with it, in the dark scheme or in the
+        /// light one that the theme draws alone.
+        fn label_and_focus_ink(dark: bool) -> ([i32; 4], [i32; 4]) {
+            with_styled_dialog(
+                dark,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let button = add_button(dialog, "&Open it", BS_AUTOCHECKBOX, 0, dark);
+                    let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                    SetFocus(null_mut());
+                    keyboard_cues(dialog.hwnd, true);
+                    let label = paint(button, 0);
+                    SetFocus(button);
+                    let focused = paint(button, 0);
+                    (
+                        label.ink(edge, label.width).unwrap(),
+                        focused.ink(edge, focused.width).unwrap(),
+                    )
+                },
+            )
+        }
+
         #[test]
         fn dark_check_boxes_show_the_focus_rectangle_and_the_underline_only_with_keyboard_cues() {
             with_styled_dialog(
@@ -11957,6 +12029,20 @@ mod tests {
                             && outline[2] > text[2]
                             && outline[3] > text[3],
                         "the focus rectangle {outline:?} surrounds the label {text:?}"
+                    );
+                    // Where the theme puts it for the same button: close around the
+                    // label, not stretched to the edge of the control.
+                    let (light_text, light_outline) = label_and_focus_ink(false);
+                    assert!(
+                        light_outline[0] < light_text[0]
+                            && light_outline[1] < light_text[1]
+                            && light_outline[2] > light_text[2]
+                            && light_outline[3] > light_text[3],
+                        "the theme draws a focus rectangle {light_outline:?} around the label {light_text:?}"
+                    );
+                    assert_eq!(
+                        outline, light_outline,
+                        "the focus rectangle lies where the theme draws it"
                     );
                 },
             );
