@@ -29,8 +29,10 @@ const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 /// How long a lease has to flow before its rate is taken for the rate it keeps. The bytes of the
 /// first moments of a transfer come unevenly (a new connection ramps up, writes arrive in
-/// bursts), and a lease cut on a rate seen over less than this is cut on noise. Waiting for it
-/// delays a cut by this long and the end of the download by about half as much.
+/// bursts), and a lease cut on a rate seen over less than this is cut on noise. It is longer
+/// than the 200 ms between two looks of the scheduler at its leases, so that a rate spans more
+/// than one look. Waiting for it delays a cut by this long and the end of the download by about
+/// half as much.
 const MIN_RATE_SAMPLE: Duration = Duration::from_millis(250);
 /// How often a worker that waits for a renewal looks at a stop request.
 const RENEWAL_POLL: Duration = Duration::from_millis(100);
@@ -1973,13 +1975,17 @@ impl Standing {
 /// counts as claimed, and it never writes beyond the size at the moment it claims. The high
 /// half of the word is the bytes claimed, the low half the size; both count from the start of
 /// the lease. Beside the word it holds how long the first byte of the lease took to come, from
-/// which the scheduler tells how fast the lease runs once its bytes flow, and whether the
-/// request for the lease opened a connection.
+/// which the scheduler tells how fast the lease runs once its bytes flow, how much of that wait
+/// passed before the request that brought the byte was sent, and whether that request opened a
+/// connection.
 struct Allowance {
     word: AtomicU64,
     /// How long the worker waited for the first byte of the lease, in nanoseconds plus one; 0
     /// until that byte comes.
     first_byte: AtomicU64,
+    /// How long after the worker was handed the lease the request that brought its first byte
+    /// was sent, in nanoseconds.
+    sent: AtomicU64,
     /// Whether the request for the lease opened a connection instead of reusing one.
     connected: AtomicBool,
 }
@@ -1989,6 +1995,7 @@ impl Allowance {
         Self {
             word: AtomicU64::new(0),
             first_byte: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
             connected: AtomicBool::new(false),
         }
     }
@@ -2001,6 +2008,7 @@ impl Allowance {
             size: u64::from(size),
         };
         self.first_byte.store(0, Ordering::Release);
+        self.sent.store(0, Ordering::Release);
         self.connected.store(false, Ordering::Release);
         self.word.store(standing.pack(), Ordering::Release);
     }
@@ -2023,6 +2031,20 @@ impl Allowance {
             0 => None,
             stored => Some(Duration::from_nanos(stored - 1)),
         }
+    }
+
+    /// Notes that the request that brought the first byte of the lease was sent `after` the
+    /// worker was handed the lease. The worker calls it before `note_first_byte`.
+    fn note_request(&self, after: Duration) {
+        let nanos = u64::try_from(after.as_nanos()).unwrap_or(u64::MAX);
+        self.sent.store(nanos, Ordering::Release);
+    }
+
+    /// How long the request itself took to get the first byte, out of the `wait` since the
+    /// lease was handed over. What passed before the request was sent (a worker that starts
+    /// late, an expired address that is renewed) is not part of what another request waits for.
+    fn answer_wait(&self, wait: Duration) -> Duration {
+        wait.saturating_sub(Duration::from_nanos(self.sent.load(Ordering::Acquire)))
     }
 
     /// Notes that the request for the lease opened a connection.
@@ -2071,8 +2093,8 @@ impl Allowance {
 }
 
 /// How a worker received the last range of at least `MIN_SEGMENT_SIZE` it finished: how long
-/// it waited for the first byte, and the bytes per second from that byte on. A shorter range
-/// can arrive in one burst, which shows a rate that no lasting transfer has.
+/// its request took to get the first byte, and the bytes per second from that byte on. A
+/// shorter range can arrive in one burst, which shows a rate that no lasting transfer has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Delivery {
     wait: Duration,
@@ -2244,14 +2266,14 @@ impl Checkpoints {
     /// Cuts the back half off a running lease for the `idle` worker that fetched its last range
     /// fastest, takes that worker out of `idle` and returns it with the range cut off. A lease
     /// is cut only when it has flowed for `MIN_RATE_SAMPLE` since its first byte, so that its
-    /// rate is known, and the idle worker
-    /// is expected to have the back half before the lease's own worker would reach the end of
-    /// its range: the idle worker waits for its first byte as long as it did for its last range
-    /// and then fetches the half at the rate of that range, while the lease's worker fetches the
-    /// whole remainder at the rate the lease has had since its first byte. An idle worker that
-    /// finished its last range `RANGE_WORKER_IDLE_TIMEOUT` ago or earlier has closed its socket
-    /// and has to open a connection for the half, so it waits at least as long as the latest
-    /// range that opened one. Of the leases that qualify, the one with the most bytes still to
+    /// rate is known, and the idle worker is expected to have the back half before the lease's
+    /// own worker would reach the end of its range: the idle worker waits for its first byte as
+    /// long as its request for its last range took and then fetches the half at the rate of
+    /// that range, while the lease's worker fetches the whole remainder at the rate the lease
+    /// has had since its first byte. An idle worker that finished its last range
+    /// `RANGE_WORKER_IDLE_TIMEOUT` ago or earlier has closed its socket and has to open a
+    /// connection for the half, so it waits at least as long as the request of the latest range
+    /// that opened one took. Of the leases that qualify, the one with the most bytes still to
     /// come is cut; none is when none has at least twice `MIN_SEGMENT_SIZE` to come, or no idle
     /// worker has finished a range of that size yet, and `idle` is left as it is. The lease
     /// keeps the front: its worker writes no byte beyond the cut, however many are already in
@@ -2352,13 +2374,14 @@ impl Checkpoints {
         };
         self.idle_since[worker] = Some(now);
         if let Some(wait) = self.allowances[worker].first_byte_wait() {
+            let answer = self.allowances[worker].answer_wait(wait);
             if self.allowances[worker].opened_connection() {
-                self.connection_wait = Some(wait);
+                self.connection_wait = Some(answer);
             }
             let length = lease.range.len();
             if length >= MIN_SEGMENT_SIZE {
                 if let Some(rate) = bytes_per_second(length, lease.flowing(wait, now)) {
-                    self.deliveries[worker] = Some(Delivery { wait, rate });
+                    self.deliveries[worker] = Some(Delivery { wait: answer, rate });
                 }
             }
         }
@@ -3133,7 +3156,9 @@ impl DynamicRangeWorker<'_> {
     /// `handed` is when the scheduler handed the range to the worker, the moment the lease counts
     /// its wait for the first byte from. The time a worker takes to start is part of that wait:
     /// counted from the request, it would be taken for time in which the lease was flowing, and
-    /// the lease would look slow.
+    /// the lease would look slow. When the request was sent is noted apart
+    /// (`Allowance::note_request`), because a worker that is expected to make a request of its
+    /// own does not wait for the time before it.
     fn request_range(
         &mut self,
         range: ByteRange,
@@ -3178,6 +3203,7 @@ impl DynamicRangeWorker<'_> {
         )?)
         .map_err(anyhow::Error::from)?;
 
+        let sent = handed.elapsed();
         let response = Rc::new(RefCell::new(ResponseHeaders::default()));
         let callback_response = response.clone();
         let write_response = response.clone();
@@ -3214,6 +3240,7 @@ impl DynamicRangeWorker<'_> {
                         return Ok(0);
                     }
                     if written == 0 {
+                        allowance.note_request(sent);
                         allowance.note_first_byte(handed.elapsed());
                     }
                     // The bytes are claimed before they are written: a cut of the lease then
@@ -8170,6 +8197,40 @@ mod tests {
             None
         );
         assert!(stolen(&mut ledger, &[1], start + Duration::from_secs(6)).is_some());
+    }
+
+    #[test]
+    fn a_finished_lease_sets_the_wait_of_its_worker_from_the_request_that_brought_the_first_byte() {
+        let directory = TestDirectory::new("split-finish-request");
+        let start = Instant::now();
+        let mut ledger = ledger_over(&directory, 2, 16 * MIB);
+        // The worker was handed the lease and sent its request three seconds later, say after
+        // it renewed an expired address; the first byte came a second after that. The lease flowed
+        // for the two seconds from the first byte to the end, at 4 MiB/s. A request of the worker
+        // for another lease waits a second for its first byte, not four.
+        ledger.assign(0, work(0, 8 * MIB), start);
+        let allowance = ledger.allowance(0);
+        allowance.note_connection();
+        allowance.note_request(Duration::from_secs(3));
+        allowance.note_first_byte(Duration::from_secs(4));
+        ledger.finish(0, start + Duration::from_secs(6));
+        assert_eq!(
+            ledger.deliveries[0],
+            Some(Delivery {
+                wait: Duration::from_secs(1),
+                rate: 4 * MIB
+            })
+        );
+        assert_eq!(ledger.connection_wait, Some(Duration::from_secs(1)));
+
+        // A lease that is opened again forgets when its last request was sent.
+        let allowance = Allowance::new();
+        allowance.note_request(Duration::from_secs(3));
+        allowance.open(8 * MIB);
+        assert_eq!(
+            allowance.answer_wait(Duration::from_secs(4)),
+            Duration::from_secs(4)
+        );
     }
 
     #[test]

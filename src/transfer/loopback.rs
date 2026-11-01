@@ -2440,6 +2440,20 @@ fn assert_a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range
 
 #[test]
 fn a_short_wait_for_the_first_byte_still_lets_an_idle_worker_take_the_back_of_a_range() {
+    assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range();
+}
+
+#[test]
+fn the_time_before_a_request_is_sent_is_not_a_wait_for_its_first_byte() {
+    // The workers send their requests 1.2 s after the ranges are handed to them, as if each had
+    // to renew an expired address first. The wait that an idle worker is expected to have for its
+    // own request is the 0.1 s that the request took, not the 1.3 s since the hand-over, which
+    // would keep it from taking the back half it is quicker with.
+    delay_range_starts_by(Duration::from_millis(1200));
+    assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range();
+}
+
+fn assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range() {
     // Three leases of 8 MiB over 2 connections at 4 MiB/s, every ranged response a tenth of a
     // second late. The worker that finishes first takes the last lease, the other is idle. The
     // last lease needs 2 s for its 8 MiB; the back half takes the idle worker 1 s at the rate of
