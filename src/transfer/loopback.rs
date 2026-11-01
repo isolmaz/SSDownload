@@ -1778,9 +1778,11 @@ fn a_segmented_download_survives_periodic_checkpoints_that_fail() {
     survives_periodic_checkpoints_that_fail(2, 24 * MIB);
 }
 
-/// Runs a one-connection download while the record cannot be replaced from the first byte until
-/// `fetch` returns, and no periodic cycle runs: only the cycle at the end could write it.
+/// Runs a download over `connections` connections while the record cannot be replaced from the
+/// first byte until `fetch` returns, and no periodic cycle runs: only the cycle at the end could
+/// write it.
 fn fetch_with_a_record_that_cannot_be_written(
+    connections: u8,
     config: Config,
 ) -> (TempDir, PathBuf, Result<TransferResult>) {
     let server = Server::start(config);
@@ -1793,8 +1795,8 @@ fn fetch_with_a_record_that_cannot_be_written(
         &request_for(&server),
         &output,
         &TransferControl::default(),
-        1,
-        1,
+        connections,
+        connections,
         &mut |progress| {
             if held.is_none() && progress.downloaded > 0 {
                 held = Some(hold_against_replacement(&state_file));
@@ -1809,29 +1811,56 @@ fn fetch_with_a_record_that_cannot_be_written(
 #[test]
 fn a_one_connection_download_completes_when_only_the_final_record_cannot_be_written() {
     let size = 6 * MIB;
-    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(Config {
-        size,
-        throttle: Some(4 * MIB),
-        ..Config::default()
-    });
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        1,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            ..Config::default()
+        },
+    );
     let result = result.unwrap_or_else(|error| panic!("{error:#}"));
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     assert!(!part_path(&output).exists());
 }
 
 #[test]
+fn a_segmented_download_completes_when_only_the_final_record_cannot_be_written() {
+    let size = 12 * MIB;
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        2,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            ..Config::default()
+        },
+    );
+    let result = result.unwrap_or_else(|error| panic!("{error:#}"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert!(!part_path(&output).exists());
+    // The only cycle is the one at the end: it flushed through its own handle and both writers,
+    // tried the record and could not write it.
+    let mut tried = cycle_of(2, false);
+    tried.push("failed");
+    assert_eq!(cycles(), [tried], "{:?}", steps());
+}
+
+#[test]
 fn a_transport_error_stays_a_transport_error_when_the_record_cannot_be_written() {
     let size = 6 * MIB;
     let cut = 3 * MIB;
-    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(Config {
-        size,
-        throttle: Some(4 * MIB),
-        cut_body: Some(CutBody {
-            after_bytes: cut,
-            responses: 1,
-        }),
-        ..Config::default()
-    });
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        1,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            cut_body: Some(CutBody {
+                after_bytes: cut,
+                responses: 1,
+            }),
+            ..Config::default()
+        },
+    );
     let error = result.expect_err("the body was cut");
     // The engine retries what carries a libcurl transport error and not a disk error.
     let chain = error.chain().collect::<Vec<_>>();

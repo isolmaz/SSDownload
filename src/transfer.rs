@@ -2155,7 +2155,8 @@ struct Checkpoints {
     /// The record's identity; `completed` is filled in at each write.
     state: ResumeState,
     total: u64,
-    /// Recorded ranges, sorted and merged.
+    /// Ranges made durable by a cycle, sorted and merged. The record lists all of them except
+    /// those of an end cycle whose record could not be written; the previous record stays then.
     completed: Vec<ByteRange>,
     /// Ranges that are written but in no cycle yet: finished leases and the written part of
     /// leases that dropped.
@@ -2444,16 +2445,16 @@ impl Checkpoints {
         }
     }
 
-    /// Makes everything written so far durable and recorded, after any cycle in progress. No
-    /// worker may be writing.
-    fn checkpoint(&mut self) -> std::result::Result<(), AttemptFailure> {
+    /// Makes everything written so far durable, after any cycle in progress, and records it as
+    /// `record` says. No worker may be writing.
+    fn checkpoint(&mut self, record: Record) -> std::result::Result<(), AttemptFailure> {
         if let Some(ended) = self.cycle.wait() {
             let _ = self.absorb(ended);
         }
-        let Some((record, snapshot)) = self.snapshot()? else {
+        let Some((state, snapshot)) = self.snapshot()? else {
             return Ok(());
         };
-        let result = self.cycle.run(&record, Record::Required).map(|_| ());
+        let result = self.cycle.run(&state, record).map(|_| ());
         self.absorb((snapshot, result))
             .map_err(AttemptFailure::Other)
     }
@@ -2869,15 +2870,19 @@ fn download_segmented(
         }
     }
     // Every writer has stopped, so the counts are final. A pause, a stop or a failure keeps
-    // what was written; a source that rejected a range, ignored ranges or changed is about to
-    // be discarded, and only what earlier checkpoints recorded stands.
+    // what was written, and the record is what lets a resume use it; a source that rejected a
+    // range, ignored ranges or changed is about to be discarded, and only what earlier
+    // checkpoints recorded stands. The end of the download tries the record, so that a stop
+    // before the file is published keeps what was received, and goes on without it: the record
+    // is deleted when the file is published.
     let settled = match &outcome {
         Err(
             AttemptFailure::RangeRejected
             | AttemptFailure::RangeIgnored
             | AttemptFailure::ResourceChanged,
         ) => Ok(()),
-        _ => ledger.checkpoint(),
+        Ok(()) => ledger.checkpoint(Record::Attempted),
+        Err(_) => ledger.checkpoint(Record::Required),
     };
     if let Err(failure) = outcome {
         return Err(match (failure, settled) {
