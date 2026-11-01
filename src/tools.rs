@@ -35,6 +35,14 @@ pub(crate) const USER_AGENT: &str = concat!(
 const MAX_API_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ARCHIVE_EXPANDED: u64 = 3 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
+/// The BtbN build of this FFmpeg release branch (`ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip`)
+/// is installed; a release branch changes in bug fixes only, a master snapshot in anything.
+const FFMPEG_BRANCH: (u32, u32) = (9, 0);
+/// Deno stays on this major version. A new major version is a deliberate change here.
+const DENO_MAJOR: u64 = 2;
+/// How many of the newest Deno releases are read: the most GitHub returns in one page. Once the
+/// pinned major version is older than this many releases, the install says so.
+const DENO_RELEASE_LIST: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallManifest {
@@ -72,6 +80,10 @@ struct GithubRelease {
     tag_name: String,
     html_url: String,
     published_at: Option<String>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
     assets: Vec<GithubAsset>,
 }
 
@@ -227,7 +239,7 @@ pub(crate) fn ensure(
         0,
         None,
     );
-    let yt_release = github_release(
+    let yt_release: GithubRelease = github_json(
         "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
         control,
         network,
@@ -236,8 +248,10 @@ pub(crate) fn ensure(
         "yt-dlp sürüm bilgisi alınamadı",
         "The yt-dlp version information could not be retrieved",
     ))?;
-    let deno_release = github_release(
-        "https://api.github.com/repos/denoland/deno/releases/latest",
+    let deno_releases: Vec<GithubRelease> = github_json(
+        &format!(
+            "https://api.github.com/repos/denoland/deno/releases?per_page={DENO_RELEASE_LIST}"
+        ),
         control,
         network,
     )
@@ -245,7 +259,8 @@ pub(crate) fn ensure(
         "Deno sürüm bilgisi alınamadı",
         "The Deno version information could not be retrieved",
     ))?;
-    let ffmpeg_release = github_release(
+    let deno_release = newest_deno_release(deno_releases)?;
+    let ffmpeg_release: GithubRelease = github_json(
         "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest",
         control,
         network,
@@ -260,6 +275,11 @@ pub(crate) fn ensure(
     let deno_asset = exact_asset(&deno_release, "deno-x86_64-pc-windows-msvc.zip")?;
     let deno_sums = exact_asset(&deno_release, "deno-x86_64-pc-windows-msvc.zip.sha256sum")?;
     let ffmpeg_asset = choose_ffmpeg_asset(&ffmpeg_release)?;
+    if let Some(notice) = ffmpeg_fallback_notice(&ffmpeg_asset.name) {
+        crate::logging::record(
+            crate::logging::Event::warn("tools.ffmpeg_branch_fallback").detail(notice),
+        );
+    }
     let ffmpeg_sums = ffmpeg_release
         .assets
         .iter()
@@ -724,11 +744,11 @@ fn component(
     }
 }
 
-fn github_release(
+fn github_json<T: serde::de::DeserializeOwned>(
     url: &str,
     control: &TransferControl,
     network: &NetworkGovernor,
-) -> Result<GithubRelease> {
+) -> Result<T> {
     let bytes = fetch_bytes(url, MAX_API_BYTES, None, control, network)?;
     serde_json::from_slice(&bytes).map_err(|error| {
         let body = String::from_utf8_lossy(&bytes);
@@ -763,33 +783,115 @@ fn exact_asset(release: &GithubRelease, name: &str) -> Result<GithubAsset> {
         })
 }
 
+/// The newest stable release of the pinned Deno major version. The list is in publication order,
+/// which also holds the patch releases of older major versions, so the version decides.
+fn newest_deno_release(releases: Vec<GithubRelease>) -> Result<GithubRelease> {
+    let list_was_full = releases.len() >= DENO_RELEASE_LIST;
+    releases
+        .into_iter()
+        .filter(|release| !release.draft && !release.prerelease)
+        .filter_map(|release| Some((stable_version(&release.tag_name)?, release)))
+        .filter(|(version, _)| version.0 == DENO_MAJOR)
+        .max_by_key(|(version, _)| *version)
+        .map(|(_, release)| release)
+        .ok_or_else(|| {
+            if list_was_full {
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui_format!(
+                        "Deno {0}. sürüm serisinden kararlı bir yayın son {1} Deno yayını arasında yok; uygulamanın bu sürümü çok eski bir Deno sürümüne bağlı",
+                        "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old",
+                        DENO_MAJOR,
+                        DENO_RELEASE_LIST
+                    )
+                )
+            } else {
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui_format!(
+                        "Deno {0}. sürüm serisinde kararlı bir yayın bulunamadı",
+                        "No stable release of Deno {0}.x was found",
+                        DENO_MAJOR
+                    )
+                )
+            }
+        })
+}
+
+/// `v2.9.8` as `(2, 9, 8)`; a tag with a suffix such as `v2.10.0-rc.1` is not a stable version.
+fn stable_version(tag: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = tag.strip_prefix('v')?.split('.');
+    let version = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(version)
+}
+
+/// The LGPL build of the pinned FFmpeg release branch, the shared one when both are published.
+/// While the pinned branch is not published, the newest release branch that is published is
+/// taken. The master snapshots in the same release are never used.
 fn choose_ffmpeg_asset(release: &GithubRelease) -> Result<GithubAsset> {
-    const PREFERRED: &[&str] = &[
-        "ffmpeg-master-latest-win64-lgpl-shared.zip",
-        "ffmpeg-master-latest-win64-lgpl.zip",
-    ];
-    for name in PREFERRED {
-        if let Some(asset) = release.assets.iter().find(|a| a.name == *name) {
-            return Ok(asset.clone());
-        }
-    }
-    release
+    choose_ffmpeg_branch_asset(release, FFMPEG_BRANCH)
+}
+
+fn choose_ffmpeg_branch_asset(release: &GithubRelease, pinned: (u32, u32)) -> Result<GithubAsset> {
+    let builds = release
         .assets
         .iter()
-        .filter(|a| {
-            a.name.starts_with("ffmpeg-master-latest-win64-lgpl") && a.name.ends_with(".zip")
+        .filter_map(|asset| {
+            let (branch, shared) = ffmpeg_branch(&asset.name)?;
+            Some((branch, shared, asset))
         })
-        .min_by_key(|a| if a.name.contains("shared") { 0 } else { 1 })
-        .cloned()
+        .collect::<Vec<_>>();
+    builds
+        .iter()
+        .filter(|(branch, ..)| *branch == pinned)
+        .max_by_key(|(_, shared, _)| *shared)
+        .or_else(|| {
+            builds
+                .iter()
+                .max_by_key(|(branch, shared, _)| (*branch, *shared))
+        })
+        .map(|(.., asset)| (*asset).clone())
         .ok_or_else(|| {
             anyhow!(
                 "{}",
                 crate::i18n::ui(
-                    "BtbN latest yayınında Windows x64 LGPL FFmpeg ZIP varlığı bulunamadı",
-                    "No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release"
+                    "BtbN latest yayınında Windows x64 LGPL FFmpeg sürüm dalı ZIP varlığı bulunamadı",
+                    "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release"
                 )
             )
         })
+}
+
+/// The log text for an asset of another release branch than the pinned one, `None` for the
+/// pinned branch.
+fn ffmpeg_fallback_notice(asset_name: &str) -> Option<String> {
+    (ffmpeg_branch(asset_name).map(|(branch, _)| branch) != Some(FFMPEG_BRANCH)).then(|| {
+        format!(
+            "FFmpeg {}.{} is not published; installing {asset_name}",
+            FFMPEG_BRANCH.0, FFMPEG_BRANCH.1
+        )
+    })
+}
+
+/// The release branch and whether the build is the shared one, for a BtbN asset name such as
+/// `ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip`. Master snapshots, GPL builds, other platforms
+/// and names whose version differs from their branch give `None`.
+fn ffmpeg_branch(name: &str) -> Option<((u32, u32), bool)> {
+    let rest = name.strip_prefix("ffmpeg-n")?.strip_suffix(".zip")?;
+    let (branch, rest) = rest.split_once("-latest-win64-lgpl")?;
+    let (shared, version) = match rest.strip_prefix("-shared-") {
+        Some(version) => (true, version),
+        None => (false, rest.strip_prefix('-')?),
+    };
+    if version != branch {
+        return None;
+    }
+    let (major, minor) = branch.split_once('.')?;
+    Some(((major.parse().ok()?, minor.parse().ok()?), shared))
 }
 
 fn fetch_text(
@@ -1849,6 +1951,286 @@ mod tests {
             zip.write_all(bytes).unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    fn release_from(tag: &str, draft: bool, prerelease: bool, assets: &[String]) -> GithubRelease {
+        let assets = assets
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                serde_json::json!({
+                    "url": format!("https://api.github.com/repos/o/r/releases/assets/{index}"),
+                    "id": index,
+                    "name": name,
+                    "content_type": "application/zip",
+                    "state": "uploaded",
+                    "size": 1024,
+                    "browser_download_url": format!("https://github.com/o/r/releases/download/{tag}/{name}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({
+            "url": "https://api.github.com/repos/o/r/releases/7",
+            "id": 7,
+            "tag_name": tag,
+            "draft": draft,
+            "prerelease": prerelease,
+            "published_at": "2026-10-31T13:20:35Z",
+            "html_url": format!("https://github.com/o/r/releases/tag/{tag}"),
+            "assets": assets,
+        }))
+        .unwrap()
+    }
+
+    /// The assets of a BtbN `latest` release: the master snapshot and each branch in `branches`,
+    /// in the GPL and LGPL, static and shared flavours, next to other platforms.
+    fn btbn_assets(branches: &[&str], master: bool) -> Vec<String> {
+        let mut names = vec!["checksums.sha256".to_owned()];
+        if master {
+            for flavour in ["gpl", "gpl-shared", "lgpl", "lgpl-shared"] {
+                names.push(format!("ffmpeg-master-latest-win64-{flavour}.zip"));
+            }
+            names.push("ffmpeg-master-latest-linux64-lgpl-shared.tar.xz".into());
+        }
+        for branch in branches {
+            for license in ["gpl", "lgpl"] {
+                names.push(format!(
+                    "ffmpeg-n{branch}-latest-win64-{license}-{branch}.zip"
+                ));
+                names.push(format!(
+                    "ffmpeg-n{branch}-latest-win64-{license}-shared-{branch}.zip"
+                ));
+            }
+            names.push(format!(
+                "ffmpeg-n{branch}-latest-winarm64-lgpl-shared-{branch}.zip"
+            ));
+            names.push(format!(
+                "ffmpeg-n{branch}-latest-linux64-lgpl-shared-{branch}.tar.xz"
+            ));
+        }
+        names
+    }
+
+    fn chosen(names: &[String], pinned: (u32, u32)) -> Result<String> {
+        let release = release_from("latest", false, false, names);
+        choose_ffmpeg_branch_asset(&release, pinned).map(|asset| asset.name)
+    }
+
+    fn owned(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn ffmpeg_comes_from_the_pinned_branch_and_not_from_a_newer_branch_or_master() {
+        let names = btbn_assets(&["8.1", "9.0"], true);
+        let release = release_from("latest", false, false, &names);
+        let asset = choose_ffmpeg_branch_asset(&release, (8, 1)).unwrap();
+        assert_eq!(asset.name, "ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip");
+        assert_eq!(
+            asset.browser_download_url,
+            "https://github.com/o/r/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip"
+        );
+        assert_eq!(
+            chosen(&names, (9, 0)).unwrap(),
+            "ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip"
+        );
+    }
+
+    #[test]
+    fn the_static_build_of_the_pinned_branch_is_used_when_no_shared_build_is_published() {
+        let names = owned(&[
+            "ffmpeg-master-latest-win64-lgpl-shared.zip",
+            "ffmpeg-n8.1-latest-win64-lgpl-8.1.zip",
+            "ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip",
+        ]);
+        assert_eq!(
+            chosen(&names, (8, 1)).unwrap(),
+            "ffmpeg-n8.1-latest-win64-lgpl-8.1.zip"
+        );
+    }
+
+    #[test]
+    fn a_missing_pinned_branch_gives_way_to_the_newest_release_branch_that_is_published() {
+        let names = btbn_assets(&["8.0", "9.0"], true);
+        assert_eq!(
+            chosen(&names, (8, 1)).unwrap(),
+            "ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip"
+        );
+        let names = btbn_assets(&["7.1", "8.0"], true);
+        assert_eq!(
+            chosen(&names, (8, 1)).unwrap(),
+            "ffmpeg-n8.0-latest-win64-lgpl-shared-8.0.zip"
+        );
+        // Branches are ordered by number, not as text.
+        let names = btbn_assets(&["9.0", "10.0"], false);
+        assert_eq!(
+            chosen(&names, (8, 1)).unwrap(),
+            "ffmpeg-n10.0-latest-win64-lgpl-shared-10.0.zip"
+        );
+    }
+
+    #[test]
+    fn the_fallback_branch_still_prefers_its_shared_build() {
+        let names = owned(&[
+            "ffmpeg-n9.0-latest-win64-lgpl-9.0.zip",
+            "ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip",
+            "ffmpeg-n8.0-latest-win64-lgpl-shared-8.0.zip",
+        ]);
+        assert_eq!(
+            chosen(&names, (8, 1)).unwrap(),
+            "ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip"
+        );
+    }
+
+    #[test]
+    fn a_release_with_only_master_snapshots_installs_nothing() {
+        assert!(chosen(&btbn_assets(&[], true), (8, 1)).is_err());
+        assert!(chosen(&owned(&["checksums.sha256"]), (8, 1)).is_err());
+    }
+
+    #[test]
+    fn gpl_other_platform_and_inconsistent_names_are_never_chosen() {
+        let names = owned(&[
+            "ffmpeg-master-latest-win64-lgpl-shared.zip",
+            "ffmpeg-n8.1-latest-win64-gpl-8.1.zip",
+            "ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip",
+            "ffmpeg-n8.1-latest-winarm64-lgpl-shared-8.1.zip",
+            "ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz",
+            "ffmpeg-n8.1-latest-win64-lgpl-shared-8.0.zip",
+            "ffmpeg-n8-latest-win64-lgpl-shared-8.zip",
+            "ffmpeg-n8.1.2-latest-win64-lgpl-shared-8.1.2.zip",
+        ]);
+        assert!(chosen(&names, (8, 1)).is_err());
+    }
+
+    #[test]
+    fn the_pin_decides_which_branch_the_installer_takes() {
+        let pinned = format!("{}.{}", FFMPEG_BRANCH.0, FFMPEG_BRANCH.1);
+        let names = btbn_assets(&[&pinned, "99.0", "0.1"], true);
+        let asset = choose_ffmpeg_asset(&release_from("latest", false, false, &names)).unwrap();
+        assert_eq!(
+            asset.name,
+            format!("ffmpeg-n{pinned}-latest-win64-lgpl-shared-{pinned}.zip")
+        );
+    }
+
+    #[test]
+    fn only_a_build_of_another_branch_than_the_pin_counts_as_a_fallback() {
+        let pinned = format!("{}.{}", FFMPEG_BRANCH.0, FFMPEG_BRANCH.1);
+        let older = format!("{}.1", FFMPEG_BRANCH.0 - 1);
+        let newer = format!("{}.0", FFMPEG_BRANCH.0 + 1);
+        let installed = |branches: &[&str]| {
+            let names = btbn_assets(branches, true);
+            choose_ffmpeg_asset(&release_from("latest", false, false, &names))
+                .unwrap()
+                .name
+        };
+
+        assert_eq!(ffmpeg_fallback_notice(&installed(&[&pinned])), None);
+        assert_eq!(
+            ffmpeg_fallback_notice(&installed(&[&older, &pinned, &newer])),
+            None
+        );
+        for branches in [vec![older.as_str(), newer.as_str()], vec![older.as_str()]] {
+            let name = installed(&branches);
+            let notice = ffmpeg_fallback_notice(&name).expect("a fallback is noted");
+            assert!(
+                notice.contains(&name) && notice.contains(&pinned),
+                "{notice}"
+            );
+        }
+    }
+
+    fn newest_deno(releases: &[(&str, bool, bool)]) -> Result<String> {
+        let assets = owned(&[
+            "deno-x86_64-pc-windows-msvc.zip",
+            "deno-x86_64-pc-windows-msvc.zip.sha256sum",
+        ]);
+        let releases = releases
+            .iter()
+            .map(|(tag, draft, prerelease)| release_from(tag, *draft, *prerelease, &assets))
+            .collect();
+        newest_deno_release(releases).map(|release| release.tag_name)
+    }
+
+    #[test]
+    fn deno_stays_on_its_major_version_whatever_newer_majors_and_prereleases_exist() {
+        let tag = newest_deno(&[
+            ("v3.0.1", false, false),
+            ("v3.0.0", false, false),
+            ("v2.10.0-rc.2", false, true),
+            ("v2.9.8", false, false),
+            ("v2.9.7", false, false),
+            ("v1.46.3", false, false),
+        ])
+        .unwrap();
+        assert_eq!(tag, "v2.9.8");
+    }
+
+    #[test]
+    fn a_prerelease_flag_excludes_a_release_with_a_plain_tag() {
+        let tag = newest_deno(&[("v2.9.9", false, true), ("v2.9.8", false, false)]).unwrap();
+        assert_eq!(tag, "v2.9.8");
+    }
+
+    #[test]
+    fn a_draft_is_never_installed() {
+        let tag = newest_deno(&[("v2.9.9", true, false), ("v2.9.8", false, false)]).unwrap();
+        assert_eq!(tag, "v2.9.8");
+    }
+
+    #[test]
+    fn a_suffixed_tag_is_not_a_stable_release_even_when_it_is_not_flagged() {
+        let tag = newest_deno(&[("v2.9.9-rc.1", false, false), ("v2.9.8", false, false)]).unwrap();
+        assert_eq!(tag, "v2.9.8");
+    }
+
+    #[test]
+    fn the_highest_version_wins_whatever_the_order_of_the_list() {
+        let tag = newest_deno(&[
+            ("v2.8.4", false, false),
+            ("v2.9.8", false, false),
+            ("v2.9.7", false, false),
+        ])
+        .unwrap();
+        assert_eq!(tag, "v2.9.8");
+        // Versions compare as numbers: 2.10.0 is newer than 2.9.8.
+        let tag = newest_deno(&[("v2.9.8", false, false), ("v2.10.0", false, false)]).unwrap();
+        assert_eq!(tag, "v2.10.0");
+    }
+
+    #[test]
+    fn only_the_pinned_major_version_is_taken() {
+        assert_eq!(
+            newest_deno(&[("v3.1.0", false, false), ("v2.0.0", false, false)]).unwrap(),
+            "v2.0.0"
+        );
+        assert!(newest_deno(&[
+            ("v20.1.0", false, false),
+            ("v3.1.0", false, false),
+            ("v1.9.9", false, false),
+        ])
+        .is_err());
+        assert!(newest_deno(&[]).is_err());
+    }
+
+    #[test]
+    fn a_full_list_without_the_pinned_major_version_names_the_cause() {
+        let tags: Vec<String> = (0..DENO_RELEASE_LIST)
+            .map(|patch| format!("v{}.0.{patch}", DENO_MAJOR + 1))
+            .collect();
+        let list: Vec<_> = tags
+            .iter()
+            .map(|tag| (tag.as_str(), false, false))
+            .collect();
+
+        let full = format!("{:#}", newest_deno(&list).unwrap_err());
+        let short = format!("{:#}", newest_deno(&list[..3]).unwrap_err());
+
+        let limit = DENO_RELEASE_LIST.to_string();
+        assert!(full.contains(&limit), "{full}");
+        assert!(!short.contains(&limit), "{short}");
+        assert_ne!(full, short);
     }
 
     #[test]

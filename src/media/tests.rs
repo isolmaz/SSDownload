@@ -2168,3 +2168,30 @@ fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
         ]
     );
 }
+
+#[test]
+fn an_evidence_request_is_sent_only_with_a_millisecond_or_more_left() {
+    let now = Instant::now();
+    let mut budget = EvidenceBudget {
+        deadline: now + Duration::from_micros(500),
+        requests: 0,
+        bytes: 0,
+    };
+    assert_eq!(budget.request_timeout_at(now), None);
+    assert_eq!(
+        budget.requests, 0,
+        "a request that is not sent is not counted"
+    );
+    budget.deadline = now + Duration::from_millis(3);
+    assert_eq!(
+        budget.request_timeout_at(now),
+        Some(Duration::from_millis(3))
+    );
+    assert_eq!(budget.requests, 1);
+    budget.deadline = now + Duration::from_secs(15);
+    assert_eq!(
+        budget.request_timeout_at(now),
+        Some(SOURCE_EVIDENCE_REQUEST_TIMEOUT),
+        "a request is never given more than its own limit"
+    );
+}
