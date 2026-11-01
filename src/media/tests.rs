@@ -1959,3 +1959,52 @@ fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
         ]
     );
 }
+
+#[test]
+fn verification_sections_stop_half_a_second_before_the_end_of_the_file() {
+    // (start, length) of each section on the file's own timeline.
+    let sections = |duration: f64| {
+        sample_windows(Some(duration))
+            .into_iter()
+            .map(|(offset, length)| match offset {
+                None => (0.0, length),
+                Some(from) if from < 0.0 => (duration + from, length),
+                Some(from) => (from, length),
+            })
+            .collect::<Vec<_>>()
+    };
+    for duration in [0.6, 1.0, 1.5, 2.0, 2.2, 5.0, 6.5, 7.0, 10.0, 5790.98] {
+        for (start, length) in sections(duration) {
+            assert!(length > 0.0 && length <= 2.0, "{duration}: {length}");
+            assert!(
+                start + length <= duration - 0.5 + 1e-9,
+                "{duration}: {start} + {length}"
+            );
+        }
+    }
+
+    // The last section still ends close to the end of the file, and every other section keeps
+    // its two seconds.
+    let long = sections(5790.98);
+    assert_eq!(long.len(), 4);
+    assert!(
+        long[..3].iter().all(|(_, length)| *length == 2.0),
+        "{long:?}"
+    );
+    let (start, length) = long[3];
+    assert!((start - 5788.98).abs() < 1e-6, "{long:?}");
+    assert!((start + length - 5790.48).abs() < 1e-6, "{long:?}");
+    // Up to two seconds a file has only the start section, up to six seconds no middle ones.
+    assert_eq!(sections(1.5).len(), 1);
+    assert_eq!(sections(2.0).len(), 1);
+    assert_eq!(sections(2.2).len(), 2);
+    assert_eq!(sections(6.0).len(), 2);
+    assert_eq!(sections(6.5).len(), 4);
+}
+
+#[test]
+fn a_file_without_a_duration_is_sampled_from_the_start_and_the_end() {
+    assert_eq!(sample_windows(None), [(None, 2.0), (Some(-2.0), 1.5)]);
+    // Too short to leave half a second: the start section is not cut.
+    assert_eq!(sample_windows(Some(0.5)), [(None, 2.0)]);
+}

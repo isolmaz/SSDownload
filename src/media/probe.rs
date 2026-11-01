@@ -535,6 +535,34 @@ fn decode_errors(stderr: &str) -> bool {
         })
 }
 
+/// A download whose last segment ends inside a frame plays, but that frame cannot be decoded.
+/// Decoding stops this long before the end of the file, so the decoder never reaches it; damage
+/// anywhere in front of it still fails.
+const END_MARGIN: f64 = 0.5;
+
+fn decode_end(duration: Option<f64>) -> Option<f64> {
+    duration
+        .map(|seconds| seconds - END_MARGIN)
+        .filter(|end| *end > 0.0)
+}
+
+/// The start, two bounded middle positions and the end of a file as (seek, seconds): a negative
+/// seek counts from the end. None of them runs into the last `END_MARGIN` seconds.
+pub(super) fn sample_windows(duration: Option<f64>) -> Vec<(Option<f64>, f64)> {
+    let end = decode_end(duration);
+    let window = |from: f64| end.map_or(2.0, |end| (end - from).min(2.0));
+    let mut samples = vec![(None, window(0.0))];
+    if let Some(duration) = duration.filter(|seconds| *seconds > 6.0) {
+        for from in [duration / 3.0, duration * 2.0 / 3.0] {
+            samples.push((Some(from), window(from)));
+        }
+    }
+    if duration.is_none_or(|seconds| seconds > 2.0) {
+        samples.push((Some(-2.0), 2.0 - END_MARGIN));
+    }
+    samples
+}
+
 pub(super) fn verify_media_output(
     path: &Path,
     request: &AddRequest,
@@ -568,14 +596,32 @@ pub(super) fn verify_media_output(
     let probe: Value = serde_json::from_slice(&result.stdout)?;
     validate_probe(&probe, request, info)?;
 
+    let duration = format_time_span(&probe["format"])
+        .map(|(start, end)| end - start)
+        .or_else(|| {
+            probe["streams"]
+                .as_array()?
+                .iter()
+                .filter_map(stream_time_span)
+                .map(|(start, end)| end - start)
+                .reduce(f64::max)
+        });
     if request.full_verification {
-        let args = vec![
-            "-v".into(),
-            "error".into(),
-            "-xerror".into(),
-            "-nostdin".into(),
-            "-protocol_whitelist".into(),
-            "file,pipe".into(),
+        let mut args: Vec<String> = [
+            "-v",
+            "error",
+            "-xerror",
+            "-nostdin",
+            "-protocol_whitelist",
+            "file,pipe",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        if let Some(end) = decode_end(duration) {
+            args.extend(["-t".into(), format!("{end:.3}")]);
+        }
+        args.extend([
             "-i".into(),
             path.to_string_lossy().into_owned(),
             "-map".into(),
@@ -585,7 +631,7 @@ pub(super) fn verify_media_output(
             "-f".into(),
             "null".into(),
             "-".into(),
-        ];
+        ]);
         let decoded = run_capture(
             &tools.ffmpeg,
             &args,
@@ -604,25 +650,7 @@ pub(super) fn verify_media_output(
 
     // Start, two bounded middle positions and end are decoded. This deliberately
     // reports bounded sampling rather than claiming a full-file integrity pass.
-    let duration = format_time_span(&probe["format"])
-        .map(|(start, end)| end - start)
-        .or_else(|| {
-            probe["streams"]
-                .as_array()?
-                .iter()
-                .filter_map(stream_time_span)
-                .map(|(start, end)| end - start)
-                .reduce(f64::max)
-        });
-    let mut samples = vec![None];
-    if let Some(duration) = duration.filter(|seconds| *seconds > 6.0) {
-        samples.push(Some(duration / 3.0));
-        samples.push(Some(duration * 2.0 / 3.0));
-    }
-    if duration.is_none_or(|seconds| seconds > 2.0) {
-        samples.push(Some(-2.0));
-    }
-    for offset in samples {
+    for (offset, length) in sample_windows(duration) {
         let mut args: Vec<String> = ["-v", "error", "-xerror", "-nostdin"]
             .into_iter()
             .map(str::to_string)
@@ -640,7 +668,7 @@ pub(super) fn verify_media_output(
             "-i".into(),
             path.to_string_lossy().into_owned(),
             "-t".into(),
-            "2".into(),
+            format!("{length:.3}"),
             "-map".into(),
             "0:v?".into(),
             "-map".into(),

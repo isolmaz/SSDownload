@@ -523,6 +523,241 @@ fn a_repeated_last_frame_timestamp_passes_verification_but_a_damaged_frame_does_
     );
 }
 
+fn run_ffmpeg(tools: &tools::VerifiedTools, root: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(&tools.ffmpeg)
+        .args(["-v", "error", "-y", "-nostdin"])
+        .args(args)
+        .current_dir(root)
+        .output()
+        .unwrap()
+}
+
+/// A 10 s H.264 video and a 10 s AAC track from the real FFmpeg. The track's ADTS frames are
+/// changed before they are muxed into an MP4, so a test decides what the audio looks like.
+struct EndFixture {
+    root: PathBuf,
+    tools: Arc<tools::VerifiedTools>,
+    audio: Vec<u8>,
+    /// Byte offset of each ADTS frame, then the length of the track.
+    frames: Vec<usize>,
+}
+
+impl EndFixture {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!("ssdownload-end-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+            .expect("the installed media tools");
+        let encodes: [&[&str]; 2] = [
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=320x180:rate=25:duration=10",
+                "-c:v",
+                "libopenh264",
+                "-g",
+                "50",
+                "video.mp4",
+            ],
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=10",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+                "audio.aac",
+            ],
+        ];
+        for args in encodes {
+            assert!(run_ffmpeg(&tools, &root, args).status.success(), "{args:?}");
+        }
+        let audio = fs::read(root.join("audio.aac")).unwrap();
+        let mut frames = Vec::new();
+        let mut at = 0;
+        while at + 7 <= audio.len() {
+            frames.push(at);
+            // The 13-bit frame length spans bytes 3 to 5 of the ADTS header.
+            at += (usize::from(audio[at + 3] & 3) << 11)
+                | (usize::from(audio[at + 4]) << 3)
+                | (usize::from(audio[at + 5]) >> 5);
+        }
+        frames.push(audio.len());
+        Self {
+            root,
+            tools,
+            audio,
+            frames,
+        }
+    }
+
+    fn last_frame(&self) -> usize {
+        self.frames.len() - 2
+    }
+
+    /// The track up to the first 33 payload bytes of frame `index`, as a download that ends
+    /// inside that frame has it.
+    fn ending_inside(&self, index: usize) -> Vec<u8> {
+        self.audio[..self.frames[index] + 40].to_vec()
+    }
+
+    /// Replaces the payload of `frames` with noise. Their headers stay, so the track still parses.
+    fn add_noise(&self, audio: &mut [u8], frames: std::ops::Range<usize>) {
+        let mut state = 0x9e37_79b9_u32;
+        for index in frames {
+            for byte in &mut audio[self.frames[index] + 7..self.frames[index + 1]] {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                *byte = state as u8;
+            }
+        }
+    }
+
+    /// The video muxed with `audio` in place of the generated track.
+    fn mux(&self, name: &str, audio: &[u8], extra: &[&str]) -> PathBuf {
+        let (input, output) = (format!("{name}.aac"), format!("{name}.mp4"));
+        fs::write(self.root.join(&input), audio).unwrap();
+        let mut args = vec![
+            "-i",
+            "video.mp4",
+            "-i",
+            &input,
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c",
+            "copy",
+        ];
+        args.extend_from_slice(extra);
+        args.push(&output);
+        let muxed = run_ffmpeg(&self.tools, &self.root, &args);
+        assert!(
+            muxed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&muxed.stderr)
+        );
+        self.root.join(output)
+    }
+
+    fn verify(&self, file: &Path, full: bool, duration: Option<f64>) -> Result<()> {
+        let request = AddRequest {
+            kind: DownloadKind::Video,
+            container: Some("mp4".into()),
+            full_verification: full,
+            ..AddRequest::default()
+        };
+        let info = MediaInfo {
+            duration,
+            ..MediaInfo::default()
+        };
+        verify_media_output(
+            file,
+            &request,
+            &info,
+            &self.tools,
+            &TransferControl::default(),
+        )
+    }
+}
+
+impl Drop for EndFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+/// A download whose last segment ends inside an AAC frame plays in full, but decoding that frame
+/// reports an error. The decoded sections stop half a second before the end of the file, so that
+/// frame is not judged.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_download_that_ends_inside_its_last_audio_frame_passes_verification() {
+    let fixture = EndFixture::new();
+    let whole = fixture.mux("whole", &fixture.audio, &[]);
+    let cut = fixture.mux("cut", &fixture.ending_inside(fixture.last_frame()), &[]);
+
+    let decoded = run_ffmpeg(
+        &fixture.tools,
+        &fixture.root,
+        &[
+            "-xerror", "-sseof", "-2", "-i", "cut.mp4", "-map", "0:a", "-f", "null", "-",
+        ],
+    );
+    assert!(
+        !decoded.status.success(),
+        "the cut frame is a decode error to FFmpeg itself"
+    );
+    for full in [false, true] {
+        fixture
+            .verify(&whole, full, Some(10.0))
+            .unwrap_or_else(|error| panic!("the intact file, full {full}: {error:#}"));
+        fixture
+            .verify(&cut, full, Some(10.0))
+            .unwrap_or_else(|error| panic!("the cut frame, full {full}: {error:#}"));
+    }
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn damage_in_front_of_the_last_audio_frame_still_fails_verification() {
+    let fixture = EndFixture::new();
+    let last = fixture.last_frame();
+    // Frames 180-199 are at 3.8-4.3 s, frames 424-428 at 9.1-9.2 s, 0.8 s before the end.
+    let mut middle = fixture.audio.clone();
+    fixture.add_noise(&mut middle, 180..200);
+    let mut tail = fixture.audio.clone();
+    fixture.add_noise(&mut tail, last - 45..last - 40);
+    let mut tail_and_cut = fixture.ending_inside(last);
+    fixture.add_noise(&mut tail_and_cut, last - 45..last - 40);
+
+    for (name, audio) in [
+        ("middle", middle),
+        ("tail", tail),
+        ("tail_and_cut", tail_and_cut),
+    ] {
+        let file = fixture.mux(name, &audio, &[]);
+        for full in [false, true] {
+            let error = fixture
+                .verify(&file, full, Some(10.0))
+                .expect_err(&format!("{name}, full {full}"));
+            assert!(
+                error
+                    .to_string()
+                    .contains(crate::i18n::ui("çözülemedi", "could not be decoded")),
+                "{name}, full {full}: {error}"
+            );
+        }
+    }
+}
+
+/// A download cut short inside a frame is a short file, and the comparison with the source's
+/// duration reports it: the end of the decoded sections is not what notices a missing tail.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_download_cut_short_inside_a_frame_still_fails_on_its_duration() {
+    let fixture = EndFixture::new();
+    // Frame 421 starts at 8.98 s: the audio ends inside it, the video where `-t` stops it.
+    let short = fixture.mux("short", &fixture.ending_inside(421), &["-t", "9"]);
+
+    let error = fixture
+        .verify(&short, false, Some(10.0))
+        .expect_err("a file a second shorter than its source");
+    assert!(
+        !error
+            .to_string()
+            .contains(crate::i18n::ui("çözülemedi", "could not be decoded")),
+        "the duration, not a decode error, rejects the file: {error}"
+    );
+    fixture
+        .verify(&short, false, Some(9.0))
+        .expect("the same file when its source ends there");
+}
+
 /// Speech-recognition captions can hold cues that end where they start and two cues that start
 /// together; they still reach the MP4 as one subtitle track, also when the request names no
 /// container and the source's MP4 is kept.
