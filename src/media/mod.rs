@@ -520,7 +520,7 @@ pub(crate) fn download(
         "--newline".into(),
         "--progress".into(),
         "--progress-template".into(),
-        format!("download:{PROGRESS_PREFIX}%(progress.status)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes,progress.total_bytes_estimate)s\t%(progress.speed)s\t%(progress.eta)s"),
+        format!("download:{PROGRESS_PREFIX}%(progress.status)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes,progress.total_bytes_estimate)s"),
         "--progress-template".into(),
         format!("postprocess:{POSTPROCESS_PREFIX}%(progress.status)s"),
         "--print".into(),
