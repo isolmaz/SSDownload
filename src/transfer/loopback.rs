@@ -1718,23 +1718,26 @@ fn hold_against_replacement(path: &Path) -> File {
 }
 
 /// The record cannot be replaced for as long as the first periodic cycle takes to give up, then
-/// it can again; the download has to finish all the same.
+/// it can again; the download has to finish all the same. The download is held at 2 MiB/s until
+/// that cycle has failed and the record is free, however long the cycle takes to flush the part
+/// file: a segmented download that ended first would have its last record refused as well.
 fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
     let server = Server::start(Config {
         size,
-        throttle: Some(2 * MIB),
         ..Config::default()
     });
     checkpoint_every(Duration::from_secs(1), u64::MAX);
     let directory = TempDir::new("failing-checkpoint");
     let output = directory.0.join("payload.bin");
     let state_file = state_path(&output);
+    let control = TransferControl::default();
+    control.set_speed_limit(2 * MIB);
     let mut held = None;
     let mut acquired = false;
     let result = fetch(
         &request_for(&server),
         &output,
-        &TransferControl::default(),
+        &control,
         connections,
         connections,
         &mut |progress| {
@@ -1744,6 +1747,7 @@ fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
             }
             if failed_cycles() > 0 {
                 held = None;
+                control.set_speed_limit(0);
             }
         },
     );
@@ -1845,19 +1849,26 @@ fn flushes_before_it_records(connections: u8) {
     let size = 12 * MIB;
     let server = Server::start(Config {
         size,
-        throttle: Some(4 * MIB),
         ..Config::default()
     });
     checkpoint_every(Duration::from_millis(100), u64::MAX);
     let directory = TempDir::new("cycle-order");
     let output = directory.0.join("payload.bin");
+    // The download is held at 1 MiB/s until two periodic cycles have recorded, however long the
+    // disk takes to flush; the rest then arrives, and a cycle at the end covers it.
+    let control = TransferControl::default();
+    control.set_speed_limit(MIB);
     let result = fetch(
         &request_for(&server),
         &output,
-        &TransferControl::default(),
+        &control,
         connections,
         connections,
-        &mut |_| {},
+        &mut |_| {
+            if checkpoint_cycles() >= 2 {
+                control.set_speed_limit(0);
+            }
+        },
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
