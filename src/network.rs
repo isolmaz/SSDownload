@@ -1130,6 +1130,14 @@ impl CurlSocketState {
     }
 }
 
+/// The time from `now` to `deadline` as a curl timeout, or `None` when less than a millisecond
+/// is left. The curl crate hands libcurl whole milliseconds and libcurl reads 0 as "no timeout",
+/// so a shorter remainder would let the request run without a limit instead of expiring.
+pub(crate) fn time_left(deadline: Instant, now: Instant) -> Option<Duration> {
+    let left = deadline.saturating_duration_since(now);
+    (left >= Duration::from_millis(1)).then_some(left)
+}
+
 /// A private loopback HTTP CONNECT proxy for one child process. It does not
 /// decrypt TLS and only creates an outbound socket after authenticating the
 /// capability passed to that child. Every outbound socket owns a governor lease.
@@ -2693,5 +2701,28 @@ mod tests {
         for invalid in ["", ".", "a b", "a/b"] {
             assert_eq!(super::canonical_host_name(invalid), None, "{invalid:?}");
         }
+    }
+
+    #[test]
+    fn less_than_a_millisecond_left_is_no_time_left() {
+        let now = Instant::now();
+        let left = |left: Duration| super::time_left(now + left, now);
+        assert_eq!(left(Duration::ZERO), None);
+        assert_eq!(left(Duration::from_nanos(1)), None);
+        assert_eq!(left(Duration::from_micros(999)), None);
+        assert_eq!(
+            left(Duration::from_millis(1)),
+            Some(Duration::from_millis(1))
+        );
+        assert_eq!(
+            left(Duration::from_micros(1500)),
+            Some(Duration::from_micros(1500))
+        );
+        assert_eq!(left(Duration::from_secs(30)), Some(Duration::from_secs(30)));
+        assert_eq!(
+            super::time_left(now, now + Duration::from_secs(1)),
+            None,
+            "a deadline in the past"
+        );
     }
 }
