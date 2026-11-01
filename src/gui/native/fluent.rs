@@ -1989,7 +1989,7 @@ pub(super) const fn one_field_height(label_lines: i32) -> i32 {
 /// 1366×768 screen at 125 % and of a 1080p screen at 175 %; the queue manager
 /// scrolls there.
 pub(super) const QUEUES_WIDTH: i32 = 860;
-pub(super) const QUEUES_HEIGHT: i32 = 630;
+pub(super) const QUEUES_HEIGHT: i32 = 640;
 pub(super) const FORM_WIDTH: i32 = 800;
 pub(super) const FORM_HEIGHT: i32 = 528;
 /// The media picker and the job view it turns into: their width, the content
