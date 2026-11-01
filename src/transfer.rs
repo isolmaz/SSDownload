@@ -27,6 +27,11 @@ const MAX_SEGMENT_SIZE: u64 = 8 * 1024 * 1024;
 const MIN_SPLIT_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
+/// How long a lease has to flow before its rate is taken for the rate it keeps. The bytes of the
+/// first moments of a transfer come unevenly (a new connection ramps up, writes arrive in
+/// bursts), and a lease cut on a rate seen over less than this is cut on noise. Waiting for it
+/// delays a cut by this long and the end of the download by about half as much.
+const MIN_RATE_SAMPLE: Duration = Duration::from_millis(250);
 /// How often a worker that waits for a renewal looks at a stop request.
 const RENEWAL_POLL: Duration = Duration::from_millis(100);
 const IO_BUFFER: usize = 1024 * 1024;
@@ -2238,7 +2243,8 @@ impl Checkpoints {
 
     /// Cuts the back half off a running lease for the `idle` worker that fetched its last range
     /// fastest, takes that worker out of `idle` and returns it with the range cut off. A lease
-    /// is cut only when its first byte has come, so that its rate is known, and the idle worker
+    /// is cut only when it has flowed for `MIN_RATE_SAMPLE` since its first byte, so that its
+    /// rate is known, and the idle worker
     /// is expected to have the back half before the lease's own worker would reach the end of
     /// its range: the idle worker waits for its first byte as long as it did for its last range
     /// and then fetches the half at the rate of that range, while the lease's worker fetches the
@@ -2274,7 +2280,11 @@ impl Checkpoints {
                     let seen = self.allowances[worker].view();
                     let size = seen.cut_size()?;
                     let wait = self.allowances[worker].first_byte_wait()?;
-                    let rate = bytes_per_second(seen.claimed, lease.flowing(wait, now))?;
+                    let flowed = lease.flowing(wait, now);
+                    if flowed < MIN_RATE_SAMPLE {
+                        return None;
+                    }
+                    let rate = bytes_per_second(seen.claimed, flowed)?;
                     delivery
                         .gets_the_back_half_sooner(seen, rate)
                         .then_some((worker, seen, size))
@@ -8244,6 +8254,32 @@ mod tests {
             Some((2, range(12 * MIB + MIB / 2, 15 * MIB), 0))
         );
         assert_eq!(ledger.allowance(0).view().size, 9 * MIB);
+    }
+
+    #[test]
+    fn a_lease_is_cut_only_once_it_has_flowed_long_enough_for_its_rate_to_count() {
+        let directory = TestDirectory::new("split-sample");
+        let start = Instant::now();
+        // The first byte comes after a second, and 64 KiB of the lease come in the first moments
+        // after it: a rate of 0.25 MiB/s, which a worker that fetched its last range at 64 MiB/s
+        // beats by far. The time that counts is the time since the first byte.
+        let wait = Duration::from_secs(1);
+        for (flowed, cuts) in [
+            (Duration::ZERO, false),
+            (MIN_RATE_SAMPLE - Duration::from_nanos(1), false),
+            (MIN_RATE_SAMPLE, true),
+        ] {
+            let mut ledger = ledger_over(&directory, 2, 8 * MIB);
+            ledger.deliveries[1] = without_wait(64 * MIB);
+            ledger.assign(0, work(0, 8 * MIB), start);
+            ledger.allowance(0).note_first_byte(wait);
+            assert_eq!(ledger.allowance(0).take(64 * 1024), 64 * 1024);
+            assert_eq!(
+                stolen(&mut ledger, &[1], start + wait + flowed).is_some(),
+                cuts,
+                "a lease that has flowed for {flowed:?}"
+            );
+        }
     }
 
     #[test]
