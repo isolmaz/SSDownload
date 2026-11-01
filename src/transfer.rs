@@ -182,6 +182,9 @@ thread_local! {
     /// How long the cycles of the downloads that the current test thread starts wait between
     /// their flush and their record.
     static TEST_PAUSE: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+    /// How long the range workers of the downloads that the current test thread starts wait,
+    /// after they receive a range, before they request it.
+    static TEST_START_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
     /// The sources of the digests that verified the files the current test thread finished.
     static TEST_VERIFIED: RefCell<Vec<digest::Source>> = const { RefCell::new(Vec::new()) };
 }
@@ -1895,7 +1898,9 @@ struct RangeWork {
 }
 
 enum RangeCommand {
-    Download(RangeWork),
+    /// A range for the worker, and the moment the scheduler handed it over, from which the wait
+    /// for its first byte counts.
+    Download(RangeWork, Instant),
     Stop,
 }
 
@@ -2558,6 +2563,8 @@ fn download_segmented(
     let mut senders = Vec::with_capacity(worker_count);
     let mut handles = Vec::with_capacity(worker_count);
     let writes = Writes::current();
+    #[cfg(test)]
+    let start_delay = TEST_START_DELAY.with(std::cell::Cell::get);
     let target = Arc::new(Target::new(
         validate_source_url(&request.url)
             .ok()
@@ -2606,10 +2613,12 @@ fn download_segmented(
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
-                let RangeCommand::Download(work) = command else {
+                let RangeCommand::Download(work, handed) = command else {
                     break;
                 };
-                let result = downloader.download(work.range);
+                #[cfg(test)]
+                thread::sleep(start_delay);
+                let result = downloader.download(work.range, handed);
                 if events
                     .send(RangeEvent::Complete {
                         worker,
@@ -2675,7 +2684,10 @@ fn download_segmented(
             };
             ledger.assign(worker, work, now);
             busy.fetch_add(1, Ordering::AcqRel);
-            if senders[worker].send(RangeCommand::Download(work)).is_err() {
+            if senders[worker]
+                .send(RangeCommand::Download(work, now))
+                .is_err()
+            {
                 break 'scheduler Err(AttemptFailure::Other(anyhow!(
                     "{}",
                     crate::i18n::ui(
@@ -3077,10 +3089,14 @@ struct DynamicRangeWorker<'a> {
 }
 
 impl DynamicRangeWorker<'_> {
-    fn download(&mut self, range: ByteRange) -> std::result::Result<(), AttemptFailure> {
+    fn download(
+        &mut self,
+        range: ByteRange,
+        handed: Instant,
+    ) -> std::result::Result<(), AttemptFailure> {
         loop {
             let (url, generation) = self.target.current();
-            let error = match self.request_range(range, &url, generation) {
+            let error = match self.request_range(range, &url, generation, handed) {
                 Err(AttemptFailure::Other(error)) if lost_to_expiry(&error) => error,
                 other => return other,
             };
@@ -3104,13 +3120,17 @@ impl DynamicRangeWorker<'_> {
         }
     }
 
+    /// `handed` is when the scheduler handed the range to the worker, the moment the lease counts
+    /// its wait for the first byte from. The time a worker takes to start is part of that wait:
+    /// counted from the request, it would be taken for time in which the lease was flowing, and
+    /// the lease would look slow.
     fn request_range(
         &mut self,
         range: ByteRange,
         url: &Url,
         generation: u32,
+        handed: Instant,
     ) -> std::result::Result<(), AttemptFailure> {
-        let requested = Instant::now();
         let abort = self.abort;
         if abort.load(Ordering::Acquire) {
             return Err(AttemptFailure::Interrupted);
@@ -3184,7 +3204,7 @@ impl DynamicRangeWorker<'_> {
                         return Ok(0);
                     }
                     if written == 0 {
-                        allowance.note_first_byte(requested.elapsed());
+                        allowance.note_first_byte(handed.elapsed());
                     }
                     // The bytes are claimed before they are written: a cut of the lease then
                     // leaves them to this worker, and what lies beyond the cut is not written.
