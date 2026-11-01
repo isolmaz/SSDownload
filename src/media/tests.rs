@@ -393,6 +393,140 @@ fn yt_dlp_policy_disables_user_configuration_and_plugins() {
 }
 
 #[test]
+fn yt_dlp_is_not_started_when_it_cannot_start_ffmpeg_ffprobe_or_deno() {
+    // The paths are canonical and reach yt-dlp as they are, so the verbatim prefix counts toward
+    // the 259 UTF-16 units a program may start from.
+    let path = |units: usize, name: &str| {
+        let folder = units - r"\\?\C:\".len() - 1 - name.len();
+        PathBuf::from(format!(r"\\?\C:\{}\{name}", "t".repeat(folder)))
+    };
+    let start = |deno: &Path, ffmpeg: &Path, ffprobe: &Path| {
+        ensure_helpers_startable(deno, ffmpeg, ffprobe)
+            .map_err(|error| crate::error_codes::code_of(&error).map(|code| code.to_string()))
+    };
+    let refused = Err(Some("SSD-TOL-005".to_string()));
+    let at = |units: [usize; 3]| {
+        start(
+            &path(units[0], "deno.exe"),
+            &path(units[1], "ffmpeg.exe"),
+            &path(units[2], "ffprobe.exe"),
+        )
+    };
+    assert_eq!(at([259, 259, 259]), Ok(()));
+    assert_eq!(at([260, 259, 259]), refused);
+    assert_eq!(at([259, 260, 259]), refused);
+    assert_eq!(at([259, 259, 260]), refused);
+
+    // A character outside the Basic Multilingual Plane is two units.
+    let astral =
+        |path: PathBuf| PathBuf::from(path.to_string_lossy().replacen('t', "\u{1D11E}", 1));
+    assert_eq!(
+        start(
+            &path(259, "deno.exe"),
+            &path(259, "ffmpeg.exe"),
+            &astral(path(259, "ffprobe.exe")),
+        ),
+        refused
+    );
+}
+
+#[test]
+fn a_file_must_hold_the_container_its_extension_names() {
+    // The format names are what ffprobe reports for these containers.
+    const MP4_FAMILY: &str = "mov,mp4,m4a,3gp,3g2,mj2";
+    let check = |format_name: &str, file: &str| {
+        validate_container(
+            &json!({"format": {"format_name": format_name}}),
+            Path::new(file),
+        )
+    };
+    for (format_name, file) in [
+        (MP4_FAMILY, "media.mp4"),
+        (MP4_FAMILY, "media.M4A"),
+        (MP4_FAMILY, "media.mov"),
+        ("matroska,webm", "media.mkv"),
+        ("matroska,webm", "media.webm"),
+        ("mpegts", "media.ts"),
+        ("mp3", "song.mp3"),
+        ("ogg", "song.opus"),
+        ("flac", "song.flac"),
+        // An extension the app does not write is not judged.
+        ("mpegts", "media.bin"),
+        ("mpegts", "media"),
+    ] {
+        check(format_name, file).unwrap_or_else(|error| panic!("{format_name} in {file}: {error}"));
+    }
+    for (format_name, file) in [
+        ("mpegts", "media.mp4"),
+        ("mpegts", "media.m4a"),
+        ("matroska,webm", "media.mp4"),
+        (MP4_FAMILY, "media.mkv"),
+        (MP4_FAMILY, "media.webm"),
+        ("mp3", "media.mp4"),
+    ] {
+        let error = check(format_name, file).expect_err(&format!("{format_name} in {file}"));
+        let message = error.to_string();
+        assert!(
+            message.contains(format_name)
+                && message.contains(&format!(".{}", file.rsplit('.').next().unwrap())),
+            "{message}"
+        );
+    }
+    // Without a format name there is nothing to judge.
+    validate_container(&json!({"format": {}}), Path::new("media.mp4")).unwrap();
+}
+
+#[test]
+fn a_relayed_raw_file_is_placed_without_the_media_tools() {
+    let root = std::env::temp_dir().join(format!("ssdownload-placed-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    // The tools folder is empty: the profile has no media components.
+    let paths = AppPaths {
+        base_dir: root.clone(),
+        database: root.join("queue.sqlite3"),
+        tools_dir: root.join("tools"),
+        download_dir: root.join("Downloads"),
+    };
+    let request = |kind| AddRequest {
+        kind,
+        ..AddRequest::default()
+    };
+    let control = TransferControl::default();
+    let source = root.join("stream-0");
+    let relayed = b"bytes the page served".to_vec();
+
+    fs::write(&source, &relayed).unwrap();
+    let output = root.join("archive.zip");
+    place_browser_file(
+        &paths,
+        &request(DownloadKind::File),
+        &source,
+        &output,
+        &control,
+    )
+    .unwrap();
+    assert_eq!(fs::read(&output).unwrap(), relayed);
+    assert!(!source.exists());
+
+    // A media job needs ffprobe to read the container of what was relayed.
+    fs::write(&source, &relayed).unwrap();
+    let error = place_browser_file(
+        &paths,
+        &request(DownloadKind::Video),
+        &source,
+        &root.join("clip.mp4"),
+        &control,
+    )
+    .unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::TOL_001)
+    );
+    assert!(source.exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn media_publication_moves_only_the_final_file_out_of_private_workspace() {
     let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();

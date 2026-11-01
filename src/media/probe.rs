@@ -444,6 +444,45 @@ fn output_time_span(probe: &Value) -> Option<(f64, f64)> {
     })
 }
 
+/// Whether ffprobe's `format_name` (the demuxer's comma-separated aliases) is the container the
+/// extension promises. An extension the app does not write is not judged.
+pub(super) fn container_matches_extension(format_name: &str, extension: &str) -> bool {
+    let expected: &[&str] = match extension.to_ascii_lowercase().as_str() {
+        "mp4" | "m4v" | "m4a" | "mov" | "3gp" => &["mp4"],
+        "mkv" | "mka" | "webm" => &["matroska", "webm"],
+        "ts" => &["mpegts"],
+        "mp3" => &["mp3"],
+        "aac" => &["aac"],
+        "flac" => &["flac"],
+        "wav" => &["wav"],
+        "ogg" | "oga" | "opus" => &["ogg"],
+        "avi" => &["avi"],
+        _ => return true,
+    };
+    format_name.split(',').any(|name| expected.contains(&name))
+}
+
+pub(super) fn validate_container(probe: &Value, path: &Path) -> Result<()> {
+    let (Some(format_name), Some(extension)) = (
+        probe["format"]["format_name"].as_str(),
+        path.extension().and_then(|extension| extension.to_str()),
+    ) else {
+        return Ok(());
+    };
+    if !container_matches_extension(format_name, extension) {
+        bail!(
+            "{}",
+            crate::i18n::ui_format!(
+                "Medya doğrulaması: dosyanın içeriği ({0}) .{1} uzantısıyla eşleşmiyor",
+                "Media verification: the file's content ({0}) does not match its .{1} extension",
+                format_name,
+                extension
+            )
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn rational_value(value: &Value) -> Option<f64> {
     if let Some(number) = value.as_f64() {
         return number.is_finite().then_some(number);
@@ -713,6 +752,7 @@ pub(super) fn verify_media_output(
     }
     let probe: Value = serde_json::from_slice(&result.stdout)?;
     validate_probe(&probe, request, info)?;
+    validate_container(&probe, path)?;
 
     let span = output_time_span(&probe);
     let duration = span.map(|(start, end)| end - start);
