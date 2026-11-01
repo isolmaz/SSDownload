@@ -863,6 +863,7 @@ static AR: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "توقّف عامل التنزيل بشكل غير متوقع"),
     ("The downloaded installer is not a valid Windows installer package.", "ملف المثبّت المُنزَّل ليس حزمة مثبّت صالحة لـ Windows."),
     ("The downloaded installer's SHA-256 does not match", "لا يتطابق SHA-256 لملف المثبّت المُنزَّل"),
+    ("The downloaded stream has no readable audio", "لا يحتوي البث الذي تم تنزيله على صوت قابل للقراءة"),
     ("The dropped text files exceed the combined 1 MiB limit.", "تتجاوز ملفات النص المُفلتة الحد الإجمالي البالغ 1 MiB."),
     ("The embedded public key is invalid", "المفتاح العام المضمَّن غير صالح"),
     ("The embedded public key is not 32 bytes", "المفتاح العام المضمَّن ليس 32 بايت"),
@@ -2299,6 +2300,7 @@ static ES: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "El trabajador de descarga se detuvo inesperadamente"),
     ("The downloaded installer is not a valid Windows installer package.", "El instalador descargado no es un paquete de instalación de Windows válido."),
     ("The downloaded installer's SHA-256 does not match", "El SHA-256 del instalador descargado no coincide"),
+    ("The downloaded stream has no readable audio", "El flujo descargado no tiene audio legible"),
     ("The dropped text files exceed the combined 1 MiB limit.", "Los archivos de texto arrastrados superan el límite combinado de 1 MiB."),
     ("The embedded public key is invalid", "La clave pública incrustada no es válida"),
     ("The embedded public key is not 32 bytes", "La clave pública incrustada no tiene 32 bytes"),
@@ -3735,6 +3737,7 @@ static PT: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "O trabalhador de download parou inesperadamente"),
     ("The downloaded installer is not a valid Windows installer package.", "O instalador baixado não é um pacote de instalação do Windows válido."),
     ("The downloaded installer's SHA-256 does not match", "O SHA-256 do instalador baixado não corresponde"),
+    ("The downloaded stream has no readable audio", "O fluxo baixado não tem áudio legível"),
     ("The dropped text files exceed the combined 1 MiB limit.", "Os arquivos de texto soltos excedem o limite combinado de 1 MiB."),
     ("The embedded public key is invalid", "A chave pública incorporada é inválida"),
     ("The embedded public key is not 32 bytes", "A chave pública incorporada não tem 32 bytes"),
@@ -5171,6 +5174,7 @@ static FR: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "Le processus de téléchargement s'est arrêté de manière inattendue"),
     ("The downloaded installer is not a valid Windows installer package.", "Le programme d'installation téléchargé n'est pas un paquet d'installation Windows valide."),
     ("The downloaded installer's SHA-256 does not match", "Le SHA-256 du programme d'installation téléchargé ne correspond pas"),
+    ("The downloaded stream has no readable audio", "Le flux téléchargé ne contient pas d'audio lisible"),
     ("The dropped text files exceed the combined 1 MiB limit.", "Les fichiers texte déposés dépassent la limite combinée de 1 MiB."),
     ("The embedded public key is invalid", "La clé publique intégrée est invalide"),
     ("The embedded public key is not 32 bytes", "La clé publique intégrée ne fait pas 32 octets"),
@@ -6607,6 +6611,7 @@ static DE: &[(&str, &str)] = &[
     ("The download worker stopped unexpectedly", "Der Download-Worker wurde unerwartet gestoppt"),
     ("The downloaded installer is not a valid Windows installer package.", "Die heruntergeladene Installationsdatei ist kein gültiges Windows-Installationspaket."),
     ("The downloaded installer's SHA-256 does not match", "Die SHA-256-Prüfsumme der heruntergeladenen Installationsdatei stimmt nicht überein"),
+    ("The downloaded stream has no readable audio", "Der heruntergeladene Stream enthält kein lesbares Audio"),
     ("The dropped text files exceed the combined 1 MiB limit.", "Die abgelegten Textdateien überschreiten das gemeinsame Limit von 1 MiB."),
     ("The embedded public key is invalid", "Der eingebettete öffentliche Schlüssel ist ungültig"),
     ("The embedded public key is not 32 bytes", "Der eingebettete öffentliche Schlüssel ist nicht 32 Byte lang"),
@@ -7263,6 +7268,12 @@ macro_rules! __ui_template_ar {
     ("Completed · {0}") => {
         "مكتمل · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "جارٍ تحويل الصوت إلى {0}: {1}%"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "جارٍ نسخ الصوت إلى ملف {0}: {1}%"
+    };
     ("Copying to quarantine failed: {0}") => {
         "فشل النسخ إلى العزل: {0}"
     };
@@ -7517,6 +7528,12 @@ macro_rules! __ui_template_ar {
     };
     ("The archived work data could not be restored: {0}") => {
         "تعذّرت استعادة بيانات العمل المؤرشفة: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "لم يكتمل تحويل الصوت خلال {0} ث"
+    };
+    ("The audio could not be converted: {0}") => {
+        "تعذّر تحويل الصوت: {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "تعذّر التراجع عن إعداد التشغيل التلقائي: {rollback:#}"
@@ -8105,6 +8122,12 @@ macro_rules! __ui_template_es {
     ("Completed · {0}") => {
         "Completada · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "Convirtiendo el audio a {0}: {1} %"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "Copiando el audio a un archivo {0}: {1} %"
+    };
     ("Copying to quarantine failed: {0}") => {
         "Error al copiar en cuarentena: {0}"
     };
@@ -8359,6 +8382,12 @@ macro_rules! __ui_template_es {
     };
     ("The archived work data could not be restored: {0}") => {
         "No se pudieron restaurar los datos de trabajo archivados: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "La conversión del audio no terminó en {0} segundos"
+    };
+    ("The audio could not be converted: {0}") => {
+        "No se ha podido convertir el audio: {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "No se pudo revertir la configuración de inicio automático: {rollback:#}"
@@ -8947,6 +8976,12 @@ macro_rules! __ui_template_pt {
     ("Completed · {0}") => {
         "Concluído · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "Convertendo o áudio para {0}: {1}%"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "Copiando o áudio para um arquivo {0}: {1}%"
+    };
     ("Copying to quarantine failed: {0}") => {
         "Falha ao copiar para a quarentena: {0}"
     };
@@ -9201,6 +9236,12 @@ macro_rules! __ui_template_pt {
     };
     ("The archived work data could not be restored: {0}") => {
         "Não foi possível restaurar os dados de trabalho arquivados: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "A conversão do áudio não terminou em {0} segundos"
+    };
+    ("The audio could not be converted: {0}") => {
+        "Não foi possível converter o áudio: {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "Não foi possível reverter a configuração de início automático: {rollback:#}"
@@ -9789,6 +9830,12 @@ macro_rules! __ui_template_fr {
     ("Completed · {0}") => {
         "Terminé · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "Conversion de l'audio en {0} : {1} %"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "Copie de l'audio dans un fichier {0} : {1} %"
+    };
     ("Copying to quarantine failed: {0}") => {
         "La copie en quarantaine a échoué : {0}"
     };
@@ -10043,6 +10090,12 @@ macro_rules! __ui_template_fr {
     };
     ("The archived work data could not be restored: {0}") => {
         "Les données de travail archivées n'ont pas pu être restaurées : {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "La conversion de l'audio ne s'est pas terminée dans les {0} secondes"
+    };
+    ("The audio could not be converted: {0}") => {
+        "L'audio n'a pas pu être converti : {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "Le paramètre de démarrage automatique n'a pas pu être annulé : {rollback:#}"
@@ -10631,6 +10684,12 @@ macro_rules! __ui_template_de {
     ("Completed · {0}") => {
         "Abgeschlossen · {0}"
     };
+    ("Converting the audio to {0}: {1}%") => {
+        "Audio wird in {0} umgewandelt: {1} %"
+    };
+    ("Copying the audio into {0}: {1}%") => {
+        "Audio wird in eine {0}-Datei kopiert: {1} %"
+    };
     ("Copying to quarantine failed: {0}") => {
         "Kopieren in die Quarantäne fehlgeschlagen: {0}"
     };
@@ -10885,6 +10944,12 @@ macro_rules! __ui_template_de {
     };
     ("The archived work data could not be restored: {0}") => {
         "Die archivierten Arbeitsdaten konnten nicht wiederhergestellt werden: {0}"
+    };
+    ("The audio conversion did not finish within {0} seconds") => {
+        "Die Umwandlung des Audios wurde nicht innerhalb von {0} Sekunden abgeschlossen"
+    };
+    ("The audio could not be converted: {0}") => {
+        "Das Audio konnte nicht umgewandelt werden: {0}"
     };
     ("The autostart setting could not be rolled back: {rollback:#}") => {
         "Die Autostart-Einstellung konnte nicht zurückgesetzt werden: {rollback:#}"
