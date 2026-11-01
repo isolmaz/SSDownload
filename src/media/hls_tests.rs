@@ -23,6 +23,9 @@ struct Source {
     /// The video and the audio of `video_seconds` in one playlist, the only one the master
     /// playlist offers.
     muxed: bool,
+    /// Segments of this many seconds instead of 2, each listed as lasting exactly that long, the
+    /// shorter last one too.
+    listed_seconds: Option<u32>,
 }
 
 struct Server {
@@ -61,8 +64,8 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
-    /// Encodes the video and audio playlists in 2 s segments and serves them with a master
-    /// playlist that offers the audio as a separate rendition.
+    /// Encodes the video and audio playlists in 2 s segments, or in those of `listed_seconds`,
+    /// and serves them with a master playlist that offers the audio as a separate rendition.
     fn new(source: Source) -> Self {
         let root = std::env::temp_dir().join(format!("ssdownload-hls-{}", uuid::Uuid::new_v4()));
         let site = root.join("site");
@@ -70,11 +73,13 @@ impl Fixture {
         let paths = shared_profile();
         let tools = tools::verified_toolchain(&paths, &TransferControl::default())
             .expect("the installed media tools");
+        let segment_seconds = source.listed_seconds.unwrap_or(2).to_string();
         let encode = |input: &str, codec: &[&str], playlist: &str, segment: &str| {
             let status = std::process::Command::new(&tools.ffmpeg)
                 .args(["-v", "error", "-f", "lavfi", "-i", input])
                 .args(codec)
-                .args(["-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod"])
+                .args(["-f", "hls", "-hls_time", segment_seconds.as_str()])
+                .args(["-hls_playlist_type", "vod"])
                 .arg("-hls_segment_filename")
                 .arg(site.join(segment))
                 .arg(site.join(playlist))
@@ -89,6 +94,18 @@ impl Fixture {
                     body.replacen("#EXTM3U\n", &format!("#EXTM3U\n{tag}\n"), 1),
                 )
                 .unwrap();
+            }
+            if let Some(seconds) = source.listed_seconds {
+                let path = site.join(playlist);
+                let listed = fs::read_to_string(&path)
+                    .unwrap()
+                    .lines()
+                    .map(|line| match line.starts_with("#EXTINF:") {
+                        true => format!("#EXTINF:{seconds},\n"),
+                        false => format!("{line}\n"),
+                    })
+                    .collect::<String>();
+                fs::write(&path, listed).unwrap();
             }
         };
         let master = if source.muxed {
@@ -890,6 +907,54 @@ fn an_audio_download_converts_in_the_app_as_yt_dlp_converts_it() {
                 "{case}"
             );
         }
+    }
+}
+
+/// An audio playlist that lists every segment at the target duration, the shorter last one too,
+/// lists more than its audio lasts. Without a video playlist the audio is not held to that
+/// length, so the download passes its verification in the app and through yt-dlp alike.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn an_audio_download_passes_when_its_lone_playlist_lists_every_segment_at_the_target_duration() {
+    let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    for playlist_tag in [
+        None,
+        Some("#EXT-X-DATERANGE:ID=\"intro\",START-DATE=\"2026-01-01T00:00:00Z\""),
+    ] {
+        // 59 segments of 10 s and one of 3 s, each listed as 10 s.
+        let fixture = Fixture::new(Source {
+            video_seconds: 2,
+            audio_seconds: 593,
+            listed_seconds: Some(10),
+            playlist_tag,
+            ..Source::default()
+        });
+        let listed = fs::read_to_string(fixture.server.site.join("audio.m3u8")).unwrap();
+        assert_eq!(listed.matches("#EXTINF:10,").count(), 60, "{listed}");
+        let (output, updates) = fixture.download_audio("mp3");
+        // The app converts the audio of the plain playlist and leaves the tagged one to yt-dlp.
+        let converted_in_app = updates
+            .iter()
+            .any(|update| update.phase.starts_with("Ses MP3 biçimine dönüştürülüyor"));
+        assert_eq!(converted_in_app, playlist_tag.is_none());
+        let probe = std::process::Command::new(&tools.ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(&output)
+            .output()
+            .unwrap();
+        let seconds: f64 = String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse()
+            .unwrap();
+        assert!((seconds - 593.0).abs() < 0.5, "{seconds}");
     }
 }
 

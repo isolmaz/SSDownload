@@ -3112,12 +3112,13 @@ segment.ts
     }
 
     #[test]
-    fn an_audio_only_output_is_held_to_its_own_playlist() {
+    fn a_lone_audio_playlist_does_not_hold_the_audio_to_its_length() {
         let request = AddRequest {
             kind: DownloadKind::Audio,
             ..Default::default()
         };
-        // An hour of 6.006 s segments in an audio playlist; no playlist declares a video.
+        // An audio playlist that lists each of its 60 segments as 10 s, the last one of 3 s too;
+        // no playlist declares a video.
         let source = PinnedMediaSource {
             inspection: json!({"formats": [
                 {"format_id": "audio", "url": "pinned-0", "vcodec": "none", "acodec": "mp4a.40.2"}
@@ -3125,14 +3126,14 @@ segment.ts
             manifests: vec![PinnedManifest {
                 marker: "pinned-0".into(),
                 body: format!(
-                    "#EXTM3U\n#EXT-X-TARGETDURATION:7\n{}#EXT-X-ENDLIST\n",
-                    "#EXTINF:6.006,\nsegment.ts\n".repeat(600)
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:10\n{}#EXT-X-ENDLIST\n",
+                    "#EXTINF:10,\nsegment.ts\n".repeat(60)
                 ),
             }],
             dash_formats: Vec::new(),
         };
         let mut info = MediaInfo {
-            duration: Some(3603.6),
+            duration: Some(600.0),
             duration_tolerance: pinned_hls_duration_tolerance(&source),
             ..Default::default()
         };
@@ -3144,15 +3145,10 @@ segment.ts
                 {"codec_type":"audio","codec_name":"mp3","start_time":"0","duration":duration}
             ],"format":{"start_time":"0","duration":duration}})
         };
-        assert!(validate_probe(&probe("3603.6"), &request, &info).is_ok());
-        // The source's duration allows a segment's length either way; its playlist does not.
-        let error = validate_probe(&probe("3597.6"), &request, &info)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("ses akışı 3597.6 sn, kaynak listesi 3603.6 sn"),
-            "{error}"
-        );
+        // The source's duration, here the playlist's, allows a segment's length either way: the
+        // 593 s of audio pass, and without one of their segments they do not.
+        assert!(validate_probe(&probe("593.0"), &request, &info).is_ok());
+        assert!(validate_probe(&probe("583.0"), &request, &info).is_err());
     }
 
     #[test]
@@ -3192,8 +3188,7 @@ segment.ts
             ],"format":{"start_time":"0","duration":video}})
         };
         // The audio is held to the video, and both to the source's duration, which allows a
-        // segment's length either way. Only the audio of an audio download is held to a playlist
-        // without a counterpart.
+        // segment's length either way.
         assert!(validate_probe(&probe("3603.6", "3603.6"), &request, &info).is_ok());
         assert!(validate_probe(&probe("3603.6", "3590.0"), &request, &info).is_err());
         assert!(validate_probe(&probe("3597.6", "3597.6"), &request, &info).is_ok());
