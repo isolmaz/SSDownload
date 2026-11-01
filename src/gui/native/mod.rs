@@ -9105,6 +9105,9 @@ unsafe fn dialog_check(parent: HWND, font: HFONT, label: &str, id: i32) -> HWND 
         0,
         id,
     );
+    if modern() {
+        hold_check_box(h);
+    }
     apply_font(h, font);
     h
 }
@@ -9119,6 +9122,9 @@ unsafe fn dialog_check_wrapped(parent: HWND, font: HFONT, label: &str, id: i32) 
         0,
         id,
     );
+    if modern() {
+        hold_check_box(h);
+    }
     apply_font(h, font);
     h
 }

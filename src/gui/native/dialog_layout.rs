@@ -2645,10 +2645,9 @@ unsafe fn wrapped_height(label: HWND, font: HFONT, dpi: u32, width: i32) -> i32 
         right: width,
         ..zeroed()
     };
-    DrawTextW(
+    draw_text(
         dc,
-        value.as_mut_ptr(),
-        value.len() as i32,
+        &mut value,
         &mut all,
         DT_CALCRECT | DT_WORDBREAK | DT_EXPANDTABS | DT_NOPREFIX,
     );

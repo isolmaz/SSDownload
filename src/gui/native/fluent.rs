@@ -1069,17 +1069,12 @@ unsafe fn paint_combo(hwnd: HWND, dc: HDC) {
         right: face.right - chevron_w,
         ..face
     };
-    // A box with no selection has no text, and DrawTextW with
-    // DT_END_ELLIPSIS reads its string even for a count of 0.
-    if !label.is_empty() {
-        DrawTextW(
-            dc,
-            label.as_mut_ptr(),
-            label.len() as i32,
-            &mut area,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-        );
-    }
+    draw_text(
+        dc,
+        &mut label,
+        &mut area,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+    );
     let chevrons = icon_font_px(dpi, 12);
     if !chevrons.is_null() {
         SelectObject(dc, chevrons as HGDIOBJ);
@@ -1212,14 +1207,22 @@ pub(super) unsafe fn button_widths(ui: &MainUi, labels: bool) -> [i32; 5] {
 pub(super) unsafe fn label_width(dc: HDC, label: &str) -> i32 {
     let mut label: Vec<u16> = label.encode_utf16().collect();
     let mut area: RECT = zeroed();
-    DrawTextW(
-        dc,
-        label.as_mut_ptr(),
-        label.len() as i32,
-        &mut area,
-        DT_CALCRECT | DT_SINGLELINE,
-    );
+    draw_text(dc, &mut label, &mut area, DT_CALCRECT | DT_SINGLELINE);
     area.right - area.left
+}
+
+/// DrawTextW over `text`. DrawTextW reads its string even for a count of 0,
+/// and an empty slice's pointer points at nothing, so empty text is passed as
+/// a real empty string.
+pub(super) unsafe fn draw_text(dc: HDC, text: &mut [u16], area: &mut RECT, format: u32) -> i32 {
+    let count = text.len() as i32;
+    let mut empty = [0u16];
+    let chars = if text.is_empty() {
+        &mut empty[..]
+    } else {
+        text
+    };
+    DrawTextW(dc, chars.as_mut_ptr(), count, area, format)
 }
 
 /// A button's state for painting.
@@ -1463,6 +1466,24 @@ unsafe fn draw_button_content(
 /// The WinUI CheckBox's box and the space between it and the label, in epx.
 const CHECK_BOX: i32 = 20;
 const CHECK_GAP: i32 = 8;
+
+/// Gives a new check box room for its box and focus ring. A window that is
+/// already shown can paint its controls before the layout sizes them.
+pub(super) unsafe fn hold_check_box(control: HWND) {
+    let side = scale(
+        CHECK_BOX + 2 * FOCUS_MARGIN,
+        GetDpiForWindow(control).max(96),
+    );
+    SetWindowPos(
+        control,
+        null_mut(),
+        0,
+        0,
+        side,
+        side,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
 /// Where a check box's text starts, from the left of its face, in pixels:
 /// the sum `paint_check_box` takes.
 pub(super) fn check_text_inset(dpi: u32) -> i32 {
@@ -1635,7 +1656,7 @@ pub(super) unsafe fn paint_check_box(
     for y in 0..size {
         for x in 0..size {
             let (tx, ty) = (pixel_x + x, box_y + y);
-            if tx < width && ty < height {
+            if (0..width).contains(&tx) && ty < height {
                 pixels[(ty * width + tx) as usize] = face[(y * size + x) as usize];
             }
         }
@@ -1683,26 +1704,23 @@ pub(super) unsafe fn paint_check_box(
         };
         if multiline {
             let mut measured = area;
-            DrawTextW(
+            draw_text(
                 memory,
-                label.as_mut_ptr(),
-                label.len() as i32,
+                &mut label,
                 &mut measured,
                 DT_LEFT | DT_WORDBREAK | DT_CALCRECT | prefix,
             );
             area.top = ((height - (measured.bottom - measured.top)) / 2).max(0);
-            DrawTextW(
+            draw_text(
                 memory,
-                label.as_mut_ptr(),
-                label.len() as i32,
+                &mut label,
                 &mut area,
                 DT_LEFT | DT_WORDBREAK | prefix,
             );
         } else {
-            DrawTextW(
+            draw_text(
                 memory,
-                label.as_mut_ptr(),
-                label.len() as i32,
+                &mut label,
                 &mut area,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | prefix,
             );
@@ -1889,10 +1907,9 @@ pub(super) unsafe fn draw_filter_item(ui: &MainUi, item: &DRAWITEMSTRUCT) {
     let previous = SelectObject(dc, ui.font as HGDIOBJ);
     SetBkMode(dc, TRANSPARENT as i32);
     SetTextColor(dc, text_colour);
-    DrawTextW(
+    draw_text(
         dc,
-        label.as_mut_ptr(),
-        label.len() as i32,
+        &mut label,
         &mut area,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
     );
@@ -3682,80 +3699,95 @@ mod tests {
         assert_eq!(at(6), 0x888888);
     }
 
+    /// A checked check box labelled `label`, painted at `width` x `height` into
+    /// a right-to-left DIB, as 0x00BBGGRR colours, with the palette it used.
+    unsafe fn rtl_check_box_colours(
+        width: i32,
+        height: i32,
+        label: &str,
+    ) -> (Vec<u32>, MainPalette) {
+        let screen = GetDC(null_mut());
+        let dc = CreateCompatibleDC(screen);
+        ReleaseDC(null_mut(), screen);
+        let mut info: BITMAPINFO = zeroed();
+        info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        let mut bits: *mut c_void = null_mut();
+        let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        assert!(!bitmap.is_null() && !bits.is_null());
+        let previous = SelectObject(dc, bitmap as HGDIOBJ);
+        SetLayout(dc, LAYOUT_RTL);
+        let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+        let check = control(
+            parent,
+            "BUTTON",
+            label,
+            WS_CHILD | BS_AUTOCHECKBOX as u32,
+            0,
+            1,
+        );
+        SendMessageW(check, BM_SETCHECK, BST_CHECKED as usize, 0);
+        let font = ramp_font(96, BODY_PX, false);
+        let palette = fluent_palette(false, BLUE);
+        let look = ButtonState {
+            primary: false,
+            disabled: false,
+            pressed: false,
+            hot: false,
+            focused: false,
+            underline: false,
+        };
+        paint_check_box(
+            dc,
+            RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            },
+            96,
+            &palette,
+            false,
+            font,
+            check,
+            look,
+        );
+        let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
+            .iter()
+            // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+            .map(|&pixel| ((pixel & 0xff) << 16) | (pixel & 0xff00) | ((pixel >> 16) & 0xff))
+            .collect();
+        SelectObject(dc, previous);
+        DeleteObject(bitmap as HGDIOBJ);
+        DeleteObject(font as HGDIOBJ);
+        DeleteDC(dc);
+        DestroyWindow(parent);
+        (pixels, palette)
+    }
+
+    /// The columns of a `width` wide picture holding a colour `wanted` accepts.
+    fn columns_with(colours: &[u32], width: i32, wanted: &dyn Fn(u32) -> bool) -> Vec<i32> {
+        let height = colours.len() as i32 / width;
+        (0..width)
+            .filter(|&x| (0..height).any(|y| wanted(colours[(y * width + x) as usize])))
+            .collect()
+    }
+
+    fn dark(c: u32) -> bool {
+        (c & 0xff) + ((c >> 8) & 0xff) + ((c >> 16) & 0xff) < 200
+    }
+
     #[test]
     fn a_right_to_left_check_box_draws_its_box_beside_its_label() {
         unsafe {
-            let (width, height) = (200, 32);
-            let screen = GetDC(null_mut());
-            let dc = CreateCompatibleDC(screen);
-            ReleaseDC(null_mut(), screen);
-            let mut info: BITMAPINFO = zeroed();
-            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-            info.bmiHeader.biWidth = width;
-            info.bmiHeader.biHeight = -height;
-            info.bmiHeader.biPlanes = 1;
-            info.bmiHeader.biBitCount = 32;
-            info.bmiHeader.biCompression = BI_RGB;
-            let mut bits: *mut c_void = null_mut();
-            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-            assert!(!bitmap.is_null() && !bits.is_null());
-            let previous = SelectObject(dc, bitmap as HGDIOBJ);
-            SetLayout(dc, LAYOUT_RTL);
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            let check = control(
-                parent,
-                "BUTTON",
-                "WWWW",
-                WS_CHILD | BS_AUTOCHECKBOX as u32,
-                0,
-                1,
-            );
-            SendMessageW(check, BM_SETCHECK, BST_CHECKED as usize, 0);
-            let font = ramp_font(96, BODY_PX, false);
-            let palette = fluent_palette(false, BLUE);
-            let look = ButtonState {
-                primary: false,
-                disabled: false,
-                pressed: false,
-                hot: false,
-                focused: false,
-                underline: false,
-            };
-            paint_check_box(
-                dc,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: width,
-                    bottom: height,
-                },
-                96,
-                &palette,
-                false,
-                font,
-                check,
-                look,
-            );
-            let pixels =
-                std::slice::from_raw_parts(bits as *const u32, (width * height) as usize).to_vec();
-            SelectObject(dc, previous);
-            DeleteObject(bitmap as HGDIOBJ);
-            DeleteObject(font as HGDIOBJ);
-            DeleteDC(dc);
-            DestroyWindow(parent);
-            // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
-            let colour =
-                |pixel: u32| ((pixel & 0xff) << 16) | (pixel & 0xff00) | ((pixel >> 16) & 0xff);
-            let columns = |wanted: &dyn Fn(u32) -> bool| -> Vec<i32> {
-                (0..width)
-                    .filter(|&x| {
-                        (0..height).any(|y| wanted(colour(pixels[(y * width + x) as usize])))
-                    })
-                    .collect()
-            };
-            let dark = |c: u32| (c & 0xff) + ((c >> 8) & 0xff) + ((c >> 16) & 0xff) < 200;
-            let boxed = columns(&|c| c == palette.accent);
-            let label = columns(&dark);
+            let width = 200;
+            let (colours, palette) = rtl_check_box_colours(width, 32, "WWWW");
+            let boxed = columns_with(&colours, width, &|c| c == palette.accent);
+            let label = columns_with(&colours, width, &dark);
             assert!(
                 !boxed.is_empty(),
                 "the checked box is painted in the accent"
@@ -3768,6 +3800,69 @@ mod tests {
                 "box {boxed:?} label {label:?}"
             );
             assert!(*boxed.iter().max().unwrap() >= width - 3 - 20 - 1);
+        }
+    }
+
+    #[test]
+    fn a_right_to_left_check_box_narrower_than_its_box_paints_what_fits() {
+        unsafe {
+            // A check box at the size it is created at, before the layout.
+            let (colours, palette) = rtl_check_box_colours(10, 10, "Keep on top");
+            assert!(colours.contains(&palette.accent));
+        }
+    }
+
+    #[test]
+    fn a_check_box_with_no_label_paints_only_its_box() {
+        unsafe {
+            let width = 200;
+            let (colours, palette) = rtl_check_box_colours(width, 32, "");
+            assert!(colours.contains(&palette.accent));
+            assert!(columns_with(&colours, width, &dark).is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_text_measures_and_draws_nothing() {
+        unsafe {
+            let screen = GetDC(null_mut());
+            let dc = CreateCompatibleDC(screen);
+            ReleaseDC(null_mut(), screen);
+            assert_eq!(label_width(dc, ""), 0);
+            let mut area = RECT {
+                right: 100,
+                bottom: 20,
+                ..zeroed()
+            };
+            for format in [
+                DT_CALCRECT | DT_WORDBREAK | DT_EXPANDTABS | DT_NOPREFIX,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            ] {
+                draw_text(dc, &mut [], &mut area, format);
+            }
+            DeleteDC(dc);
+        }
+    }
+
+    #[test]
+    fn a_new_check_box_holds_its_box_and_focus_ring() {
+        unsafe {
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let check = control(
+                parent,
+                "BUTTON",
+                "Keep on top",
+                WS_CHILD | BS_AUTOCHECKBOX as u32,
+                0,
+                1,
+            );
+            hold_check_box(check);
+            let mut rect: RECT = zeroed();
+            GetClientRect(check, &mut rect);
+            let dpi = GetDpiForWindow(check).max(96);
+            DestroyWindow(parent);
+            let side = scale(CHECK_BOX + 2 * FOCUS_MARGIN, dpi);
+            assert_eq!((rect.right, rect.bottom), (side, side));
         }
     }
 
