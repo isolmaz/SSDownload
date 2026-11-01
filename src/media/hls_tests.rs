@@ -259,6 +259,78 @@ impl Server {
     }
 }
 
+/// The check a downloaded tool set passes before it replaces the active one also passes with the
+/// installed tools, and takes seconds.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn the_installed_tools_pass_the_self_test() {
+    let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    let scratch =
+        std::env::temp_dir().join(format!("ssdownload-selftest-{}", uuid::Uuid::new_v4()));
+    let started = Instant::now();
+    let result = self_test(&tools, &scratch, &TransferControl::default());
+    let elapsed = started.elapsed();
+    let _ = fs::remove_dir_all(&scratch);
+
+    result.expect("the self-test of the installed tools");
+    assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
+}
+
+/// A tool set that has just been through the self-test, whether it passed or failed, and its
+/// scratch folder can be deleted at once: none of the check's processes keeps a file open.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_tool_set_can_be_deleted_right_after_its_self_test() {
+    let installed = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    let ffmpeg_dir = installed.ffmpeg.parent().unwrap();
+
+    // The second set has a tool that cannot do yt-dlp's work, so its self-test fails.
+    for (broken, yt_dlp) in [(false, &installed.yt_dlp), (true, &installed.ffprobe)] {
+        let root = std::env::temp_dir().join(format!("ssdownload-staged-{}", uuid::Uuid::new_v4()));
+        let scratch = root.with_file_name(format!(
+            "{}-selftest",
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        let stage = |source: &Path, target: PathBuf| {
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(source, &target).unwrap();
+            target
+        };
+        let staged = tools::VerifiedTools::staged(
+            stage(yt_dlp, root.join("yt-dlp").join("yt-dlp.exe")),
+            stage(&installed.deno, root.join("deno").join("deno.exe")),
+            stage(
+                &installed.ffmpeg,
+                root.join("ffmpeg").join("bin").join("ffmpeg.exe"),
+            ),
+            stage(
+                &installed.ffprobe,
+                root.join("ffmpeg").join("bin").join("ffprobe.exe"),
+            ),
+        );
+        for entry in fs::read_dir(ffmpeg_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "dll") {
+                stage(
+                    &path,
+                    root.join("ffmpeg")
+                        .join("bin")
+                        .join(path.file_name().unwrap()),
+                );
+            }
+        }
+
+        let result = self_test(&staged, &scratch, &TransferControl::default());
+        assert_eq!(result.is_err(), broken, "{result:?}");
+        let removed = fs::remove_dir_all(&root).and(fs::remove_dir_all(&scratch));
+
+        removed.expect("the folders of the checked set could not be deleted");
+        assert!(!root.exists() && !scratch.exists());
+    }
+}
+
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
 fn a_source_with_a_longer_audio_playlist_downloads_both_streams_at_once() {
