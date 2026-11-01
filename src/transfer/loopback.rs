@@ -1784,9 +1784,11 @@ fn a_segmented_download_survives_periodic_checkpoints_that_fail() {
     survives_periodic_checkpoints_that_fail(2, 24 * MIB);
 }
 
-/// Runs a one-connection download while the record cannot be replaced from the first byte until
-/// `fetch` returns, and no periodic cycle runs: only the cycle at the end could write it.
+/// Runs a download over `connections` connections while the record cannot be replaced from the
+/// first byte until `fetch` returns, and no periodic cycle runs: only the cycle at the end could
+/// write it.
 fn fetch_with_a_record_that_cannot_be_written(
+    connections: u8,
     config: Config,
 ) -> (TempDir, PathBuf, Result<TransferResult>) {
     let server = Server::start(config);
@@ -1799,8 +1801,8 @@ fn fetch_with_a_record_that_cannot_be_written(
         &request_for(&server),
         &output,
         &TransferControl::default(),
-        1,
-        1,
+        connections,
+        connections,
         &mut |progress| {
             if held.is_none() && progress.downloaded > 0 {
                 held = Some(hold_against_replacement(&state_file));
@@ -1815,29 +1817,124 @@ fn fetch_with_a_record_that_cannot_be_written(
 #[test]
 fn a_one_connection_download_completes_when_only_the_final_record_cannot_be_written() {
     let size = 6 * MIB;
-    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(Config {
-        size,
-        throttle: Some(4 * MIB),
-        ..Config::default()
-    });
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        1,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            ..Config::default()
+        },
+    );
     let result = result.unwrap_or_else(|error| panic!("{error:#}"));
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     assert!(!part_path(&output).exists());
 }
 
 #[test]
+fn a_segmented_download_completes_when_only_the_final_record_cannot_be_written() {
+    let size = 12 * MIB;
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        2,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            ..Config::default()
+        },
+    );
+    let result = result.unwrap_or_else(|error| panic!("{error:#}"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert!(!part_path(&output).exists());
+    // The only cycle is the one at the end: it flushed through its own handle and both writers,
+    // tried the record and could not write it.
+    let mut tried = cycle_of(2, false);
+    tried.push("failed");
+    assert_eq!(cycles(), [tried], "{:?}", steps());
+}
+
+#[test]
+fn a_segmented_download_stopped_after_its_final_record_failed_resumes_from_the_previous_record() {
+    let size = 12 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(4 * MIB),
+        ..Config::default()
+    });
+    // One periodic cycle records, and the record is held from then on: the cycle at the end
+    // cannot write it. The download is stopped by the report that comes right before the file is
+    // published.
+    checkpoint_every(NEVER, 4 * MIB);
+    let directory = TempDir::new("stopped-after-final-record");
+    let output = directory.0.join("payload.bin");
+    let state_file = state_path(&output);
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let mut held = None;
+    let mut observed = None;
+    let completing = crate::i18n::ui("Tamamlanıyor", "Completing");
+    let first = fetch(
+        &request_for(&server),
+        &output,
+        &control,
+        2,
+        2,
+        &mut |progress| {
+            if held.is_none() && checkpoint_cycles() > 0 {
+                held = Some(hold_against_replacement(&state_file));
+                // The record that stays, read with the part file as it is while it is held.
+                observed = read_state(&state_file).zip(fs::read(part_path(&output)).ok());
+            }
+            if progress.phase == completing {
+                cancel.cancel();
+            }
+        },
+    );
+    assert!(held.is_some(), "the record was never held");
+    drop(held);
+    first.expect_err("the download was stopped before it was published");
+
+    // The record is the one of the periodic cycle, as it was when it was held: every byte it
+    // claims was in the part file then, and it does not claim them all.
+    let (observed, part_then) = observed.expect("the record was never read");
+    let claimed = assert_claims_are_exact(&observed, &part_then, &pattern(1, size));
+    assert!(claimed > 0 && claimed < size, "{claimed} of {size} bytes");
+    let state = read_state(&state_file).expect("the previous record stays");
+    assert_eq!(state.completed, observed.completed);
+
+    server.wait_idle();
+    let first_attempt = server.log().len();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert!(!part_path(&output).exists() && !state_path(&output).exists());
+    server.wait_idle();
+    let mut requested = delivered(&server.log()[first_attempt..], size);
+    requested.extend(state.completed.iter().map(|range| (range.start, range.end)));
+    assert_tiles(requested, size);
+}
+
+#[test]
 fn a_transport_error_stays_a_transport_error_when_the_record_cannot_be_written() {
     let size = 6 * MIB;
     let cut = 3 * MIB;
-    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(Config {
-        size,
-        throttle: Some(4 * MIB),
-        cut_body: Some(CutBody {
-            after_bytes: cut,
-            responses: 1,
-        }),
-        ..Config::default()
-    });
+    let (_directory, output, result) = fetch_with_a_record_that_cannot_be_written(
+        1,
+        Config {
+            size,
+            throttle: Some(4 * MIB),
+            cut_body: Some(CutBody {
+                after_bytes: cut,
+                responses: 1,
+            }),
+            ..Config::default()
+        },
+    );
     let error = result.expect_err("the body was cut");
     // The engine retries what carries a libcurl transport error and not a disk error.
     let chain = error.chain().collect::<Vec<_>>();
