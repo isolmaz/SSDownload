@@ -853,7 +853,7 @@ fn damage_in_front_of_the_last_audio_frame_still_fails_verification() {
         let file = fixture.mux(&format!("{name}.mp4"), &audio, &[]);
         for full in [false, true] {
             let error = fixture
-                .verify(&file, full, &EndFixture::source(10.0, true))
+                .verify(&file, full, &EndFixture::source(10.04, true))
                 .expect_err(&format!("{name}, full {full}"));
             assert_eq!(
                 error.to_string(),
@@ -911,7 +911,7 @@ fn a_stream_cut_short_in_an_otherwise_complete_download_is_refused() {
         let file = fixture.mux(&format!("cut.{extension}"), &audio, &[]);
         for full in [false, true] {
             let error = fixture
-                .verify(&file, full, &EndFixture::source(10.0, true))
+                .verify(&file, full, &EndFixture::source(10.04, true))
                 .expect_err(&format!("{extension}, full {full}"));
             assert_eq!(
                 error.to_string(),
@@ -922,28 +922,92 @@ fn a_stream_cut_short_in_an_otherwise_complete_download_is_refused() {
     }
 }
 
-/// An extractor may report a source of 10.9 s as 10, so a whole-second duration without fragment
-/// timing confirms nothing: a file of 9.6 s that ends in a cut frame is decoded to its end. With
-/// a duration of 10.04 s the same file is within half a second of its source.
+/// An extractor may report a source of 10.9 s as 10, and an old playlist may list whole-second
+/// segments, so only a length with a fractional part confirms the end of a file. The tolerance the
+/// source has says how far the streams may differ from a length, not that the length is exact: a
+/// file of 9.6 s that ends in a cut frame is decoded to its end against a duration of 10 s with the
+/// tolerance of an HLS source, with or without playlists that declare 10.9 s or 10 s. Against a
+/// duration of 10.04 s, or playlists that declare 9.64 s and 9.62 s, the same file is within half
+/// a second of its source.
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
-fn a_whole_second_source_duration_does_not_confirm_the_end_of_a_file() {
+fn only_a_length_with_a_fraction_confirms_the_end_of_a_file() {
     let fixture = EndFixture::new();
     // Frame 448 starts at 9.56 s: the audio ends inside it, the video where `-t` stops it.
     let file = fixture.mux("rounded.mp4", &fixture.ending_inside(448), &["-t", "9.6"]);
+    let declared = |duration: f64, video: f64, audio: f64| MediaInfo {
+        declared_video_durations: vec![video],
+        declared_audio_durations: vec![audio],
+        ..EndFixture::source(duration, true)
+    };
     for full in [false, true] {
-        let error = fixture
-            .verify(&file, full, &EndFixture::source(10.0, false))
-            .expect_err(&format!("a source of 10 s, full {full}"));
-        assert_eq!(error.to_string(), decode_failure(full), "full {full}");
-        fixture
-            .verify(&file, full, &EndFixture::source(10.04, false))
-            .unwrap_or_else(|error| panic!("a source of 10.04 s, full {full}: {error:#}"));
+        for (label, info) in [
+            ("10 s", EndFixture::source(10.0, false)),
+            ("10 s and a tolerance", EndFixture::source(10.0, true)),
+            ("10 s and playlists of 10.9 s", declared(10.0, 10.9, 10.9)),
+            ("10 s and playlists of 10 s", declared(10.0, 10.0, 10.0)),
+            (
+                "10.04 s and playlists of 10.9 s",
+                declared(10.04, 10.9, 10.9),
+            ),
+        ] {
+            let error = fixture
+                .verify(&file, full, &info)
+                .expect_err(&format!("{label}, full {full}"));
+            assert_eq!(
+                error.to_string(),
+                decode_failure(full),
+                "{label}, full {full}"
+            );
+        }
+        for (label, info) in [
+            ("10.04 s", EndFixture::source(10.04, false)),
+            ("10.04 s and a tolerance", EndFixture::source(10.04, true)),
+            ("10 s and playlists of 9.64 s", declared(10.0, 9.64, 9.62)),
+        ] {
+            fixture
+                .verify(&file, full, &info)
+                .unwrap_or_else(|error| panic!("{label}, full {full}: {error:#}"));
+        }
+    }
+}
+
+/// The video and the audio of an HLS source can come from playlists of different lengths. A stream
+/// is confirmed by the length of its own playlist: audio that ends inside a frame at 9.3 s is
+/// complete where its playlist declares 9.34 s, and cut short where the playlist declares 10.04 s.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_stream_is_confirmed_by_the_length_its_own_playlist_declares() {
+    let fixture = EndFixture::new();
+    // Frame 436 starts at 9.3 s: the audio ends inside it, the video runs to 10 s.
+    let audio = fixture.ending_inside(436);
+    let declared = |audio: f64| MediaInfo {
+        declared_video_durations: vec![10.04],
+        declared_audio_durations: vec![audio],
+        ..EndFixture::source(10.04, true)
+    };
+    for extension in ["mp4", "ts"] {
+        let file = fixture.mux(&format!("playlists.{extension}"), &audio, &[]);
+        for full in [false, true] {
+            fixture
+                .verify(&file, full, &declared(9.34))
+                .unwrap_or_else(|error| panic!("{extension}, full {full}: {error:#}"));
+            let error = fixture
+                .verify(&file, full, &declared(10.04))
+                .expect_err(&format!(
+                    "{extension}, full {full}, a longer audio playlist"
+                ));
+            assert_eq!(
+                error.to_string(),
+                decode_failure(full),
+                "{extension}, full {full}"
+            );
+        }
     }
 }
 
 /// FFmpeg writes the tag `DURATION` of a Matroska stream as the end time of the stream, so audio
-/// that starts a second late and ends in a cut frame at 11 s is confirmed by a source of 11 s and
+/// that starts a second late and ends in a cut frame at 11 s is confirmed by a source of 11.04 s and
 /// its last frame is left out.
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
@@ -998,8 +1062,105 @@ fn a_matroska_stream_that_starts_late_is_bounded_by_its_end_time() {
 
     for full in [false, true] {
         fixture
-            .verify(&file, full, &EndFixture::source(11.0, true))
+            .verify(&file, full, &EndFixture::source(11.04, true))
             .unwrap_or_else(|error| panic!("full {full}: {error:#}"));
+    }
+}
+
+/// FFmpeg counts a decode run from the start of the container, which a subtitle that starts a
+/// little before the audio and video puts earlier than both. Here the video and audio start at
+/// 0.8 s and a cue at 0 sets the start of the container, so a stop half a second before the end of
+/// a stream is 0.5 s before it on that timeline. Damage in the audio 0.7 s before its end is
+/// decoded and the cut last frame is not.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn decoding_stops_half_a_second_before_the_end_counted_from_the_container_start() {
+    let fixture = EndFixture::new();
+    fs::write(
+        fixture.root.join("cue.srt"),
+        "1\n00:00:00,000 --> 00:00:00,500\nhello\n",
+    )
+    .unwrap();
+    // Frames 418-421 start at 8.92-8.98 s of the audio, which is 9.72-9.78 s in the file.
+    let clean = fixture.ending_inside(fixture.last_frame());
+    let mut damaged = clean.clone();
+    fixture.add_noise(&mut damaged, 418..422);
+    let mut files = Vec::new();
+    for (name, audio) in [("clean", &clean), ("damaged", &damaged)] {
+        let input = format!("{name}.aac");
+        let output = format!("{name}.mkv");
+        fs::write(fixture.root.join(&input), audio).unwrap();
+        let muxed = run_ffmpeg(
+            &fixture.tools,
+            &fixture.root,
+            &[
+                "-itsoffset",
+                "0.8",
+                "-i",
+                "video.mp4",
+                "-itsoffset",
+                "0.8",
+                "-i",
+                &input,
+                "-i",
+                "cue.srt",
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-map",
+                "2:s",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-c:s",
+                "srt",
+                &output,
+            ],
+        );
+        assert!(
+            muxed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&muxed.stderr)
+        );
+        files.push(fixture.root.join(output));
+    }
+    let probe = std::process::Command::new(&fixture.tools.ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+        ])
+        .arg(&files[0])
+        .output()
+        .unwrap();
+    let probe: Value = serde_json::from_slice(&probe.stdout).unwrap();
+    let start = |value: &Value| numeric_seconds(&value["start_time"]).unwrap();
+    let video = probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stream| stream["codec_type"] == "video")
+        .unwrap();
+    assert!(
+        start(&probe["format"]) < 0.1 && start(video) > 0.7,
+        "the container starts at {}, the video at {}",
+        start(&probe["format"]),
+        start(video)
+    );
+
+    for full in [false, true] {
+        fixture
+            .verify(&files[0], full, &EndFixture::source(10.04, true))
+            .unwrap_or_else(|error| panic!("the clean file, full {full}: {error:#}"));
+        let error = fixture
+            .verify(&files[1], full, &EndFixture::source(10.04, true))
+            .expect_err(&format!("the damaged file, full {full}"));
+        assert_eq!(error.to_string(), decode_failure(full), "full {full}");
     }
 }
 
@@ -1021,7 +1182,7 @@ fn a_download_cut_short_inside_a_frame_is_refused_unless_the_source_confirms_it(
     };
     let live = MediaInfo {
         is_live: true,
-        ..EndFixture::source(10.0, true)
+        ..EndFixture::source(10.04, true)
     };
 
     // The default tolerance of half a second sees a second missing on its own.
@@ -1038,7 +1199,7 @@ fn a_download_cut_short_inside_a_frame_is_refused_unless_the_source_confirms_it(
         assert_eq!(error.to_string(), missing, "full {full}");
 
         for (label, info) in [
-            ("an HLS source's tolerance", EndFixture::source(10.0, true)),
+            ("an HLS source's tolerance", EndFixture::source(10.04, true)),
             ("no source duration", MediaInfo::default()),
             ("a live recording", live.clone()),
         ] {
@@ -1058,7 +1219,7 @@ fn a_download_cut_short_inside_a_frame_is_refused_unless_the_source_confirms_it(
                     full_verification: full,
                     ..playlist.clone()
                 },
-                &EndFixture::source(10.0, true),
+                &EndFixture::source(10.04, true),
             )
             .expect_err("a playlist");
         assert_eq!(

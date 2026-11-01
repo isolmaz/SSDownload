@@ -2170,29 +2170,46 @@ fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
 }
 
 #[test]
-fn the_source_confirms_a_stream_only_where_it_knows_the_length_to_the_decimal() {
-    let confirming = |source: Option<f64>, edit: &dyn Fn(&mut MediaInfo)| {
+fn the_source_gives_the_lengths_that_can_confirm_a_stream() {
+    let lengths = |edit: &dyn Fn(&mut MediaInfo)| {
         let mut info = MediaInfo {
-            duration: source,
+            duration: Some(10.04),
             ..MediaInfo::default()
         };
         edit(&mut info);
-        confirming_duration(&AddRequest::default(), &info)
+        source_lengths(&AddRequest::default(), &info)
     };
-    let plain = |_: &mut MediaInfo| {};
+    let both = |video: &[f64], audio: &[f64]| SourceLengths {
+        video: video.to_vec(),
+        audio: audio.to_vec(),
+    };
 
-    assert_eq!(confirming(Some(10.04), &plain), Some(10.04));
-    // An extractor may have cut a whole-second duration, so the real length can be a second
-    // more, unless fragment timing says otherwise.
-    assert_eq!(confirming(Some(10.0), &plain), None);
+    assert_eq!(lengths(&|_| {}), both(&[10.04], &[10.04]));
+    // A source duration without playlist lengths, or with an unusable one, gives none.
+    assert_eq!(lengths(&|info| info.duration = None), both(&[], &[]));
+    assert_eq!(lengths(&|info| info.duration = Some(0.0)), both(&[], &[]));
     assert_eq!(
-        confirming(Some(10.0), &|info| info.duration_tolerance = Some(2.25)),
-        Some(10.0)
+        lengths(&|info| info.duration = Some(f64::NAN)),
+        both(&[], &[])
     );
-    assert_eq!(confirming(None, &plain), None);
-    assert_eq!(confirming(Some(0.0), &plain), None);
-    assert_eq!(confirming(Some(f64::NAN), &plain), None);
-    assert_eq!(confirming(Some(10.04), &|info| info.is_live = true), None);
+    // The playlists' lengths are given for their own kind and replace the duration there, the
+    // tolerance the source has is no length.
+    assert_eq!(
+        lengths(&|info| {
+            info.duration_tolerance = Some(2.25);
+            info.declared_video_durations = vec![10.54];
+            info.declared_audio_durations = vec![10.0, 0.0, f64::NAN, 9.34];
+        }),
+        both(&[10.54], &[10.0, 9.34])
+    );
+    assert_eq!(
+        lengths(&|info| info.declared_video_durations = vec![10.54]),
+        both(&[10.54], &[10.04])
+    );
+    assert_eq!(
+        lengths(&|info| info.is_live = true),
+        SourceLengths::default()
+    );
     let playlist = AddRequest {
         playlist: true,
         ..AddRequest::default()
@@ -2201,7 +2218,7 @@ fn the_source_confirms_a_stream_only_where_it_knows_the_length_to_the_decimal() 
         duration: Some(10.04),
         ..MediaInfo::default()
     };
-    assert_eq!(confirming_duration(&playlist, &info), None);
+    assert_eq!(source_lengths(&playlist, &info), SourceLengths::default());
 }
 
 #[test]
@@ -2214,30 +2231,67 @@ fn a_stream_is_confirmed_by_its_own_end_not_by_the_ends_of_the_others() {
             "duration": format!("{duration:.6}"),
         })
     };
-    let stops = |streams: Vec<Value>, confirmed: Option<f64>| -> Vec<Option<f64>> {
-        decoded_streams(&json!({ "streams": streams }), confirmed)
+    let rounded = |stop: Option<f64>| stop.map(|stop| (stop * 1000.0).round() / 1000.0);
+    let stops_in = |probe: Value, lengths: &SourceLengths| -> Vec<Option<f64>> {
+        decoded_streams(&probe, lengths)
             .iter()
-            .map(|stream| stream.stop.map(|stop| (stop * 1000.0).round() / 1000.0))
+            .map(|stream| rounded(stream.stop))
             .collect()
+    };
+    let same = |length: f64| SourceLengths {
+        video: vec![length],
+        audio: vec![length],
+    };
+    let stops = |streams: Vec<Value>, lengths: &SourceLengths| {
+        stops_in(json!({ "streams": streams }), lengths)
     };
 
     // The video is complete; the audio ends 0.7 s before it, which can be a truncated download.
     let video_and_audio = vec![stream(0, "video", 0.0, 10.0), stream(1, "audio", 0.0, 9.3)];
     assert_eq!(
-        stops(video_and_audio.clone(), Some(10.04)),
+        stops(video_and_audio.clone(), &same(10.04)),
         [Some(9.5), None]
     );
     // Within half a second of the source's length, the audio is complete as well.
     assert_eq!(
         stops(
             vec![stream(0, "video", 0.0, 10.0), stream(1, "audio", 0.0, 9.6)],
-            Some(10.04)
+            &same(10.04)
         ),
         [Some(9.5), Some(9.1)]
     );
-    // Nothing is left out where the source confirms nothing.
-    assert_eq!(stops(video_and_audio, None), [None, None]);
-    // Ends count from the earliest start; subtitles and data are not decoded.
+    // Nothing is left out where the source gives no length.
+    assert_eq!(
+        stops(video_and_audio.clone(), &SourceLengths::default()),
+        [None, None]
+    );
+    // A length in whole seconds confirms nothing, however close the stream ends to it.
+    assert_eq!(stops(video_and_audio.clone(), &same(10.0)), [None, None]);
+    // Each kind is held to its own playlist: the audio playlist declares 9.34 s.
+    let own = SourceLengths {
+        video: vec![10.04],
+        audio: vec![9.34],
+    };
+    assert_eq!(stops(video_and_audio.clone(), &own), [Some(9.5), Some(8.8)]);
+    // Whole seconds declared for the audio confirm nothing, and the video's length is not the
+    // audio's.
+    let rounded_audio = SourceLengths {
+        video: vec![10.04],
+        audio: vec![9.0],
+    };
+    assert_eq!(stops(video_and_audio, &rounded_audio), [Some(9.5), None]);
+    // The length closest to the end of a stream holds it: a whole-second length near it is not
+    // replaced by a fractional one far away.
+    let two = SourceLengths {
+        video: vec![10.0, 600.5],
+        audio: vec![10.0, 600.5],
+    };
+    assert_eq!(stops(vec![stream(0, "video", 0.0, 9.9)], &two), [None]);
+    assert_eq!(
+        stops(vec![stream(0, "video", 0.0, 600.2)], &two),
+        [Some(599.7)]
+    );
+    // Ends count from the earliest audio or video start; subtitles and data are not decoded.
     assert_eq!(
         stops(
             vec![
@@ -2245,24 +2299,51 @@ fn a_stream_is_confirmed_by_its_own_end_not_by_the_ends_of_the_others() {
                 stream(1, "audio", 2.4, 8.896),
                 stream(2, "subtitle", 1.4, 10.0),
             ],
-            Some(10.04)
+            &same(10.04)
         ),
         [Some(9.5), Some(9.396)]
     );
+    // Decoding is counted from the start of the container. A subtitle that starts before the
+    // video and audio puts that start before them, and every stop lies that much later.
+    assert_eq!(
+        stops_in(
+            json!({
+                "format": { "start_time": "0.000000" },
+                "streams": [
+                    stream(0, "video", 0.8, 10.0),
+                    stream(1, "audio", 0.8, 9.9),
+                    stream(2, "subtitle", 0.0, 0.5),
+                ],
+            }),
+            &same(10.04)
+        ),
+        [Some(10.3), Some(10.2)]
+    );
+    // A container start after the first stream is not used.
+    assert_eq!(
+        stops_in(
+            json!({
+                "format": { "start_time": "1.000000" },
+                "streams": [stream(0, "video", 0.5, 10.0)],
+            }),
+            &same(10.04)
+        ),
+        [Some(9.5)]
+    );
     // A stream of a second or less is decoded in full; one just over it is not.
     assert_eq!(
-        stops(vec![stream(0, "video", 0.0, 1.0)], Some(1.04)),
+        stops(vec![stream(0, "video", 0.0, 1.0)], &same(1.04)),
         [None]
     );
     assert_eq!(
-        stops(vec![stream(0, "video", 0.0, 1.2)], Some(1.54)),
+        stops(vec![stream(0, "video", 0.0, 1.2)], &same(1.54)),
         [Some(0.7)]
     );
     // A stream without a length is decoded in full.
     assert_eq!(
         stops(
             vec![json!({ "index": 0, "codec_type": "audio" })],
-            Some(10.04)
+            &same(10.04)
         ),
         [None]
     );
