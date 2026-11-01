@@ -8543,8 +8543,16 @@ mod tests {
                 }
                 drop(Box::from_raw(self.raw));
             }
-            self.app = None;
-            let _ = std::fs::remove_dir_all(&self.root);
+            // The engine keeps the database and the logs open until it has stopped.
+            if let Some(app) = self.app.take() {
+                app.shutdown();
+            }
+            for _ in 0..10 {
+                if std::fs::remove_dir_all(&self.root).is_ok() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
     }
 
