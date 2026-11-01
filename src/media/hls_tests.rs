@@ -743,7 +743,7 @@ fn a_download_that_ends_inside_its_last_audio_frame_passes_verification() {
             assert!(start > 1.0, "the file starts at {start} s");
         }
         for full in [false, true] {
-            let source = EndFixture::source(10.0, false);
+            let source = EndFixture::source(10.04, false);
             fixture
                 .verify(&whole, full, &source)
                 .unwrap_or_else(|error| {
@@ -768,8 +768,8 @@ fn damage_in_front_of_the_last_audio_frame_still_fails_verification() {
     fixture.add_noise(&mut tail, last - 45..last - 40);
     let mut tail_and_cut = fixture.ending_inside(last);
     fixture.add_noise(&mut tail_and_cut, last - 45..last - 40);
-    // The audio ends inside frame 436, at 9.3 s, with noise in frames 400-404 (8.5 s) in front.
-    let mut early_end = fixture.ending_inside(436);
+    // The audio ends inside frame 450, at 9.6 s, with noise in frames 400-404 (8.5 s) in front.
+    let mut early_end = fixture.ending_inside(450);
     fixture.add_noise(&mut early_end, 400..405);
 
     for (name, audio) in [
@@ -792,24 +792,27 @@ fn damage_in_front_of_the_last_audio_frame_still_fails_verification() {
     }
 }
 
-/// The audio of an HLS source can end up to two seconds before its video, and the source's
-/// tolerance lets that pass. The cut frame of such an audio stream is still not judged, while the
-/// same file without a confirming duration is decoded to its end and fails.
+/// The audio of an HLS source can end before its video, and the source's tolerance lets that pass.
+/// Where the source's length is within half a second of the audio's own end, the cut frame of
+/// that audio is not judged; the same file without a confirming duration is decoded to its end
+/// and fails.
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
 fn a_stream_that_ends_before_the_others_is_bounded_by_its_own_end() {
     let fixture = EndFixture::new();
-    // Frame 436 starts at 9.3 s: the audio ends inside it, the video runs to 10 s.
+    // Frame 436 starts at 9.3 s: the audio ends inside it, the video runs to 10 s. The source is
+    // 9.6 s, so each stream ends within half a second of it, and a stop 0.5 s before the
+    // video's end would reach the cut frame.
     let audio = fixture.ending_inside(436);
     for extension in ["mp4", "ts"] {
         let file = fixture.mux(&format!("early.{extension}"), &audio, &[]);
         for full in [false, true] {
             fixture
-                .verify(&file, full, &EndFixture::source(10.0, true))
+                .verify(&file, full, &EndFixture::source(9.6, true))
                 .unwrap_or_else(|error| panic!("{extension}, full {full}: {error:#}"));
             let unconfirmed = MediaInfo {
                 duration: None,
-                ..EndFixture::source(10.0, true)
+                ..EndFixture::source(9.6, true)
             };
             let error = fixture
                 .verify(&file, full, &unconfirmed)
@@ -823,10 +826,116 @@ fn a_stream_that_ends_before_the_others_is_bounded_by_its_own_end() {
     }
 }
 
+/// One stream cut short in a download whose other stream is complete is not a complete download,
+/// although the source's tolerance accepts the file: the cut stream ends more than half a second
+/// before the source's length, so it is decoded to its end and the cut frame fails.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_stream_cut_short_in_an_otherwise_complete_download_is_refused() {
+    let fixture = EndFixture::new();
+    // Frame 390 starts at 8.3 s: the audio ends inside it, 1.7 s before the video.
+    let audio = fixture.ending_inside(390);
+    for extension in ["mp4", "ts"] {
+        let file = fixture.mux(&format!("cut.{extension}"), &audio, &[]);
+        for full in [false, true] {
+            let error = fixture
+                .verify(&file, full, &EndFixture::source(10.0, true))
+                .expect_err(&format!("{extension}, full {full}"));
+            assert_eq!(
+                error.to_string(),
+                decode_failure(full),
+                "{extension}, full {full}"
+            );
+        }
+    }
+}
+
+/// An extractor may report a source of 10.9 s as 10, so a whole-second duration without fragment
+/// timing confirms nothing: a file of 9.6 s that ends in a cut frame is decoded to its end. With
+/// a duration of 10.04 s the same file is within half a second of its source.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_whole_second_source_duration_does_not_confirm_the_end_of_a_file() {
+    let fixture = EndFixture::new();
+    // Frame 448 starts at 9.56 s: the audio ends inside it, the video where `-t` stops it.
+    let file = fixture.mux("rounded.mp4", &fixture.ending_inside(448), &["-t", "9.6"]);
+    for full in [false, true] {
+        let error = fixture
+            .verify(&file, full, &EndFixture::source(10.0, false))
+            .expect_err(&format!("a source of 10 s, full {full}"));
+        assert_eq!(error.to_string(), decode_failure(full), "full {full}");
+        fixture
+            .verify(&file, full, &EndFixture::source(10.04, false))
+            .unwrap_or_else(|error| panic!("a source of 10.04 s, full {full}: {error:#}"));
+    }
+}
+
+/// FFmpeg writes the tag `DURATION` of a Matroska stream as the end time of the stream, so audio
+/// that starts a second late and ends in a cut frame at 11 s is confirmed by a source of 11 s and
+/// its last frame is left out.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_matroska_stream_that_starts_late_is_bounded_by_its_end_time() {
+    let fixture = EndFixture::new();
+    fs::write(
+        fixture.root.join("late.aac"),
+        fixture.ending_inside(fixture.last_frame()),
+    )
+    .unwrap();
+    let muxed = run_ffmpeg(
+        &fixture.tools,
+        &fixture.root,
+        &[
+            "-i",
+            "video.mp4",
+            "-itsoffset",
+            "1",
+            "-i",
+            "late.aac",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c",
+            "copy",
+            "late.mkv",
+        ],
+    );
+    assert!(
+        muxed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&muxed.stderr)
+    );
+    let file = fixture.root.join("late.mkv");
+    let probe = std::process::Command::new(&fixture.tools.ffprobe)
+        .args(["-v", "error", "-show_streams", "-of", "json"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    let probe: Value = serde_json::from_slice(&probe.stdout).unwrap();
+    let audio = probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stream| stream["codec_type"] == "audio")
+        .unwrap();
+    assert!(
+        audio["duration"].is_null() && audio["tags"]["DURATION"].is_string(),
+        "the audio has only the tag: {audio}"
+    );
+
+    for full in [false, true] {
+        fixture
+            .verify(&file, full, &EndFixture::source(11.0, true))
+            .unwrap_or_else(|error| panic!("full {full}: {error:#}"));
+    }
+}
+
 /// A download that is cut short ends inside a frame, and so does a source whose last segment
 /// does. Only the source's duration tells them apart, so the end is decoded wherever that does
 /// not confirm the file to within half a second: whatever the source's tolerance, for a playlist,
-/// a live recording and a source without a duration.
+/// a live recording and a source without a duration. The source of 9.04 s confirms the file that
+/// ends at 9 s.
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
 fn a_download_cut_short_inside_a_frame_is_refused_unless_the_source_confirms_it() {
@@ -887,7 +996,7 @@ fn a_download_cut_short_inside_a_frame_is_refused_unless_the_source_confirms_it(
         );
 
         fixture
-            .verify(&short, full, &EndFixture::source(9.0, false))
+            .verify(&short, full, &EndFixture::source(9.04, false))
             .unwrap_or_else(|error| panic!("the same file when its source ends there: {error:#}"));
     }
 }

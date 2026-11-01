@@ -2170,94 +2170,193 @@ fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
 }
 
 #[test]
-fn the_end_of_a_file_is_left_out_only_where_the_source_confirms_its_length() {
-    let margin = |source: Option<f64>, output: Option<f64>, edit: &dyn Fn(&mut MediaInfo)| {
+fn the_source_confirms_a_stream_only_where_it_knows_the_length_to_the_decimal() {
+    let confirming = |source: Option<f64>, edit: &dyn Fn(&mut MediaInfo)| {
         let mut info = MediaInfo {
             duration: source,
             ..MediaInfo::default()
         };
         edit(&mut info);
-        end_margin(&AddRequest::default(), &info, output)
+        confirming_duration(&AddRequest::default(), &info)
     };
     let plain = |_: &mut MediaInfo| {};
 
-    assert_eq!(margin(Some(10.0), Some(10.0), &plain), 0.5);
-    // Up to half a second shorter than the source, or longer than it, counts as complete.
-    assert_eq!(margin(Some(10.0), Some(9.5), &plain), 0.5);
-    assert_eq!(margin(Some(10.0), Some(10.4), &plain), 0.5);
-    // More than that is not, whatever tolerance the source has: a cut file ends in a frame
-    // that cannot be decoded, and only the decode can tell that from a source's own last frame.
-    assert_eq!(margin(Some(10.0), Some(9.4), &plain), 0.0);
+    assert_eq!(confirming(Some(10.04), &plain), Some(10.04));
+    // An extractor may have cut a whole-second duration, so the real length can be a second
+    // more, unless fragment timing says otherwise.
+    assert_eq!(confirming(Some(10.0), &plain), None);
     assert_eq!(
-        margin(Some(10.0), Some(9.0), &|info| info.duration_tolerance =
-            Some(6.25)),
-        0.0
+        confirming(Some(10.0), &|info| info.duration_tolerance = Some(2.25)),
+        Some(10.0)
     );
-    assert_eq!(margin(None, Some(10.0), &plain), 0.0);
-    assert_eq!(margin(Some(10.0), None, &plain), 0.0);
-    assert_eq!(
-        margin(Some(10.0), Some(10.0), &|info| info.is_live = true),
-        0.0
-    );
+    assert_eq!(confirming(None, &plain), None);
+    assert_eq!(confirming(Some(0.0), &plain), None);
+    assert_eq!(confirming(Some(f64::NAN), &plain), None);
+    assert_eq!(confirming(Some(10.04), &|info| info.is_live = true), None);
     let playlist = AddRequest {
         playlist: true,
         ..AddRequest::default()
     };
     let info = MediaInfo {
-        duration: Some(10.0),
+        duration: Some(10.04),
         ..MediaInfo::default()
     };
-    assert_eq!(end_margin(&playlist, &info, Some(10.0)), 0.0);
-    // A file of a second or less is decoded in full.
-    assert_eq!(margin(Some(1.0), Some(1.0), &plain), 0.0);
-    assert_eq!(margin(Some(1.2), Some(1.2), &plain), 0.5);
+    assert_eq!(confirming_duration(&playlist, &info), None);
+}
+
+#[test]
+fn a_stream_is_confirmed_by_its_own_end_not_by_the_ends_of_the_others() {
+    let stream = |index: u64, kind: &str, start: f64, duration: f64| {
+        json!({
+            "index": index,
+            "codec_type": kind,
+            "start_time": format!("{start:.6}"),
+            "duration": format!("{duration:.6}"),
+        })
+    };
+    let stops = |streams: Vec<Value>, confirmed: Option<f64>| -> Vec<Option<f64>> {
+        decoded_streams(&json!({ "streams": streams }), confirmed)
+            .iter()
+            .map(|stream| stream.stop.map(|stop| (stop * 1000.0).round() / 1000.0))
+            .collect()
+    };
+
+    // The video is complete; the audio ends 0.7 s before it, which can be a truncated download.
+    let video_and_audio = vec![stream(0, "video", 0.0, 10.0), stream(1, "audio", 0.0, 9.3)];
+    assert_eq!(
+        stops(video_and_audio.clone(), Some(10.04)),
+        [Some(9.5), None]
+    );
+    // Within half a second of the source's length, the audio is complete as well.
+    assert_eq!(
+        stops(
+            vec![stream(0, "video", 0.0, 10.0), stream(1, "audio", 0.0, 9.6)],
+            Some(10.04)
+        ),
+        [Some(9.5), Some(9.1)]
+    );
+    // Nothing is left out where the source confirms nothing.
+    assert_eq!(stops(video_and_audio, None), [None, None]);
+    // Ends count from the earliest start; subtitles and data are not decoded.
+    assert_eq!(
+        stops(
+            vec![
+                stream(0, "video", 1.4, 10.0),
+                stream(1, "audio", 2.4, 8.896),
+                stream(2, "subtitle", 1.4, 10.0),
+            ],
+            Some(10.04)
+        ),
+        [Some(9.5), Some(9.396)]
+    );
+    // A stream of a second or less is decoded in full; one just over it is not.
+    assert_eq!(
+        stops(vec![stream(0, "video", 0.0, 1.0)], Some(1.04)),
+        [None]
+    );
+    assert_eq!(
+        stops(vec![stream(0, "video", 0.0, 1.2)], Some(1.54)),
+        [Some(0.7)]
+    );
+    // A stream without a length is decoded in full.
+    assert_eq!(
+        stops(
+            vec![json!({ "index": 0, "codec_type": "audio" })],
+            Some(10.04)
+        ),
+        [None]
+    );
+}
+
+#[test]
+fn a_matroska_stream_tag_is_the_end_of_the_stream_not_its_length() {
+    let tagged = |start: &str, tag: &str| {
+        stream_time_span(&json!({
+            "start_time": start,
+            "tags": { "DURATION": tag },
+        }))
+    };
+
+    // Audio that starts 1 s late and ends at 11 s in a file whose video runs from 0 to 11 s.
+    assert_eq!(tagged("1.000000", "00:00:11.000000000"), Some((1.0, 11.0)));
+    assert_eq!(tagged("0.000000", "00:00:11.000000000"), Some((0.0, 11.0)));
+    assert_eq!(tagged("11.000000", "00:00:11.000000000"), None);
+    // A duration the stream carries itself is a length and wins over the tag.
+    assert_eq!(
+        stream_time_span(&json!({
+            "start_time": "1.000000",
+            "duration": "9.000000",
+            "tags": { "DURATION": "00:00:11.000000000" },
+        })),
+        Some((1.0, 10.0))
+    );
 }
 
 #[test]
 fn every_stream_is_decoded_up_to_half_a_second_before_its_own_end() {
-    let stream = |index, end| DecodedStream { index, end };
-    let args = |streams: &[DecodedStream], from: f64, window: Option<f64>, margin: f64| {
-        decode_outputs(streams, from, window, margin).join(" ")
+    let stream = |index, stop| DecodedStream { index, stop };
+    let args = |streams: &[DecodedStream], from: f64, window: Option<f64>| {
+        decode_outputs(streams, from, window).join(" ")
     };
 
-    // No margin: one output for all audio and video, as long as the section.
-    let both = [stream(0, Some(10.0)), stream(1, Some(9.3))];
+    // No stream is confirmed: one output for all audio and video, as long as the section.
+    let unconfirmed = [stream(0, None), stream(1, None)];
     assert_eq!(
-        args(&both, 8.0, Some(2.0), 0.0),
+        args(&unconfirmed, 8.0, Some(2.0)),
         "-t 2.000 -map 0:v? -map 0:a? -f null -"
     );
-    assert_eq!(args(&both, 0.0, None, 0.0), "-map 0:v? -map 0:a? -f null -");
-
-    // The video ends at 10 s and the audio at 9.3 s: each stops half a second before its own end.
     assert_eq!(
-        args(&both, 8.0, Some(2.0), 0.5),
+        args(&unconfirmed, 0.0, None),
+        "-map 0:v? -map 0:a? -f null -"
+    );
+
+    // Both are confirmed: the video stops at 9.5 s and the audio at 8.8 s.
+    let both = [stream(0, Some(9.5)), stream(1, Some(8.8))];
+    assert_eq!(
+        args(&both, 8.0, Some(2.0)),
         "-t 1.500 -map 0:0 -f null - -t 0.800 -map 0:1 -f null -"
     );
     assert_eq!(
-        args(&both, 0.0, Some(2.0), 0.5),
+        args(&both, 0.0, Some(2.0)),
         "-t 2.000 -map 0:0 -f null - -t 2.000 -map 0:1 -f null -"
     );
     assert_eq!(
-        args(&both, 0.0, None, 0.5),
+        args(&both, 0.0, None),
         "-t 9.500 -map 0:0 -f null - -t 8.800 -map 0:1 -f null -"
     );
-    // A stream that has ended before the section starts, or has less than 0.1 s left in it, is
-    // not decoded in it; one whose end is not known is decoded for the whole section.
-    let ended = [stream(0, Some(10.0)), stream(1, Some(8.3)), stream(2, None)];
+    // Only the video is confirmed: the audio is decoded to its end.
+    let video_only = [stream(0, Some(9.5)), stream(1, None)];
     assert_eq!(
-        args(&ended, 8.0, Some(2.0), 0.5),
+        args(&video_only, 8.0, Some(2.0)),
+        "-t 1.500 -map 0:0 -f null - -t 2.000 -map 0:1 -f null -"
+    );
+    assert_eq!(
+        args(&video_only, 0.0, None),
+        "-t 9.500 -map 0:0 -f null - -map 0:1 -f null -"
+    );
+    // A stream that has ended before the section starts, or has less than 0.1 s left in it, is
+    // not decoded in it; one that is decoded to its end is decoded for the whole section.
+    let ended = [stream(0, Some(9.5)), stream(1, Some(7.8)), stream(2, None)];
+    assert_eq!(
+        args(&ended, 8.0, Some(2.0)),
         "-t 1.500 -map 0:0 -f null - -t 2.000 -map 0:2 -f null -"
     );
     let short = [
-        stream(0, Some(0.7)),
-        stream(1, Some(0.62)),
-        stream(2, Some(0.55)),
+        stream(0, Some(0.2)),
+        stream(1, Some(0.12)),
+        stream(2, Some(0.05)),
     ];
     assert_eq!(
-        args(&short, 0.0, Some(2.0), 0.5),
+        args(&short, 0.0, Some(2.0)),
         "-t 0.200 -map 0:0 -f null - -t 0.120 -map 0:1 -f null -"
     );
-    assert_eq!(args(&[stream(0, Some(0.55))], 0.0, Some(2.0), 0.5), "");
+    assert_eq!(args(&[stream(0, Some(0.05))], 0.0, Some(2.0)), "");
+    // A confirmed stream always has something to decode from the start, so a full verification
+    // never ends up with nothing to run.
+    assert_eq!(
+        args(&[stream(0, Some(0.55))], 0.0, None),
+        "-t 0.550 -map 0:0 -f null -"
+    );
 }
 
 #[test]
