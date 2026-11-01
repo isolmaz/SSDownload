@@ -34,6 +34,7 @@ mod postprocess;
 mod probe;
 mod process;
 mod selection;
+mod selftest;
 mod session;
 mod workspace;
 use evidence::*;
@@ -44,6 +45,9 @@ use probe::*;
 use process::*;
 pub(crate) use selection::selected_formats;
 use selection::*;
+pub(crate) use selftest::self_test;
+#[cfg(test)]
+pub(crate) use selftest::stubs;
 use session::*;
 pub(crate) use session::{scoped_cookie_applies, sweep_stale_cookie_jars};
 use workspace::*;
@@ -518,16 +522,13 @@ pub(crate) fn download(
         "3".into(),
         "--windows-filenames".into(),
         "--no-allow-unplayable-formats".into(),
-        "--newline".into(),
-        "--progress".into(),
-        "--progress-template".into(),
-        format!("download:{PROGRESS_PREFIX}%(progress.status)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes,progress.total_bytes_estimate)s"),
-        "--progress-template".into(),
-        format!("postprocess:{POSTPROCESS_PREFIX}%(progress.status)s"),
-        "--print".into(),
-        format!("after_move:{FILE_PREFIX}%(filepath)j"),
-        "--format".into(), selector,
-        "--output".into(), output_plan.template.to_string_lossy().into_owned(),
+    ]);
+    base_args.extend(marker_args());
+    base_args.extend([
+        "--format".into(),
+        selector,
+        "--output".into(),
+        output_plan.template.to_string_lossy().into_owned(),
     ]);
 
     // Fragment connections beyond the governor's per-host bound only churn
@@ -1533,6 +1534,21 @@ fn ensure_helpers_startable(deno: &Path, ffmpeg: &Path, ffprobe: &Path) -> Resul
         crate::bail_code!(crate::error_codes::TOL_005);
     }
     Ok(())
+}
+
+/// The arguments that make yt-dlp report its progress, its post-processors and the finished
+/// file as the marker lines the download monitor reads.
+fn marker_args() -> Vec<String> {
+    vec![
+        "--newline".into(),
+        "--progress".into(),
+        "--progress-template".into(),
+        format!("download:{PROGRESS_PREFIX}%(progress.status)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes,progress.total_bytes_estimate)s"),
+        "--progress-template".into(),
+        format!("postprocess:{POSTPROCESS_PREFIX}%(progress.status)s"),
+        "--print".into(),
+        format!("after_move:{FILE_PREFIX}%(filepath)j"),
+    ]
 }
 
 fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {

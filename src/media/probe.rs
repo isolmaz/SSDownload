@@ -574,6 +574,20 @@ fn decode_errors(stderr: &str) -> bool {
         })
 }
 
+pub(super) fn probe_args(path: &Path) -> Vec<String> {
+    vec![
+        "-v".into(),
+        "error".into(),
+        "-protocol_whitelist".into(),
+        "file,pipe".into(),
+        "-show_streams".into(),
+        "-show_format".into(),
+        "-of".into(),
+        "json".into(),
+        path.to_string_lossy().into_owned(),
+    ]
+}
+
 pub(super) fn verify_media_output(
     path: &Path,
     request: &AddRequest,
@@ -583,17 +597,7 @@ pub(super) fn verify_media_output(
 ) -> Result<()> {
     let result = run_capture(
         &tools.ffprobe,
-        &[
-            "-v".into(),
-            "error".into(),
-            "-protocol_whitelist".into(),
-            "file,pipe".into(),
-            "-show_streams".into(),
-            "-show_format".into(),
-            "-of".into(),
-            "json".into(),
-            path.to_string_lossy().into_owned(),
-        ],
+        &probe_args(path),
         b"",
         Duration::from_secs(60),
         control,
