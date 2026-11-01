@@ -1512,9 +1512,24 @@ fn download_http_single(
         file.sync_all()?;
     }
 
-    write_state(&state_path, &single_state(request, remote, offset))?;
-    // A resumed request that is answered at all continues where the part file ends.
-    let shown = if resumable { Some(true) } else { range_support };
+    let state = single_state(request, remote, offset);
+    write_state(&state_path, &state)?;
+    // The next attempt keeps these bytes only when it can prove the source is the same
+    // one; a resumed request that is answered at all continues where the part file ends.
+    let kept = state_matches(
+        &state,
+        remote,
+        false,
+        1,
+        normalized_checksum(request.checksum.as_deref()).as_deref(),
+    );
+    let shown = if !kept {
+        Some(false)
+    } else if resumable {
+        Some(true)
+    } else {
+        range_support
+    };
     let progress = &mut |value: TransferProgress| {
         progress(TransferProgress {
             resumable: shown,
@@ -7440,6 +7455,39 @@ mod tests {
         assert!(!events.is_empty());
         for event in &events {
             assert!(event.ranges.is_none(), "{event:?}");
+            assert_eq!(event.resumable, Some(false), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn a_source_with_ranges_but_no_identity_reports_that_its_bytes_are_not_kept() {
+        // Ranges, but only a weak ETag and no Last-Modified: a later attempt cannot prove
+        // that the part file still belongs to this source, so it starts over.
+        let payload = patterned(MIN_SEGMENT_SIZE * 2);
+        let server = PayloadServer::start(payload.clone(), "W/\"weak-v1\"");
+        let directory = TestDirectory::new("ranges-no-identity");
+        let output = directory.0.join("weak.bin");
+        let mut events = Vec::new();
+        let result = download(
+            &local_request(server.url()),
+            &output,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            4,
+            None,
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+        assert_eq!(fs::read(result.path).unwrap(), payload);
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|request| request.to_ascii_lowercase().contains("range: bytes=")),
+            "the server was asked for a range"
+        );
+        assert!(!events.is_empty());
+        for event in &events {
             assert_eq!(event.resumable, Some(false), "{event:?}");
         }
     }

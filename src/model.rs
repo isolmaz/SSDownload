@@ -1009,8 +1009,10 @@ pub struct TransferProgress {
     /// written since. `None` for a transfer that is not split into ranges. Never stored.
     #[serde(skip)]
     pub ranges: Option<Arc<[(u64, u64)]>>,
-    /// Whether the source lets a download continue where it stopped; `None` while unknown.
-    /// Never stored.
+    /// Whether a later attempt keeps the bytes written so far: `Some(true)` when the
+    /// engine's resume rule holds for them (the server answers ranges and the source has an
+    /// identity the next attempt can check), `Some(false)` when that attempt starts over,
+    /// `None` while unknown. Never stored.
     #[serde(skip)]
     pub resumable: Option<bool>,
 }
