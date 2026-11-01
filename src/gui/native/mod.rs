@@ -6991,9 +6991,32 @@ unsafe fn open_media_launch(ui: &mut MainUi, launch: &MediaLaunch) {
     );
 }
 
+/// The button of the small form the focus is in, when a dialog holds one next to
+/// its own OK: the external subtitle fields of the media picker add the
+/// subtitle, they do not start the download.
+unsafe fn form_default_id(dlg: &DialogUi) -> Option<i32> {
+    if !matches!(dlg.kind, DialogKind::Media(_)) {
+        return None;
+    }
+    let focus = GetFocus();
+    if focus.is_null() || GetParent(focus) != dlg.hwnd {
+        return None;
+    }
+    matches!(
+        GetDlgCtrlID(focus),
+        ID_MEDIA_EXTERNAL_URL
+            | ID_MEDIA_EXTERNAL_LANGUAGE
+            | ID_MEDIA_EXTERNAL_LABEL
+            | ID_MEDIA_EXTERNAL_KIND
+            | ID_MEDIA_EXTERNAL_DEFAULT
+    )
+    .then_some(ID_MEDIA_EXTERNAL_ADD)
+}
+
 /// The button Enter presses in a dialog: the push button that has the focus,
-/// otherwise the one that carries `BS_DEFPUSHBUTTON`.
-unsafe fn default_button_id(dialog: HWND) -> Option<i32> {
+/// then the button of the form around the focus, otherwise the one that carries
+/// `BS_DEFPUSHBUTTON`.
+unsafe fn default_button_id(dialog: HWND, form_default: Option<i32>) -> Option<i32> {
     let button_type = |window: HWND| {
         window_class(window)
             .eq_ignore_ascii_case("Button")
@@ -7004,6 +7027,9 @@ unsafe fn default_button_id(dialog: HWND) -> Option<i32> {
         if let Some(BS_PUSHBUTTON_TYPE | BS_DEFPUSHBUTTON_TYPE) = button_type(focus) {
             return Some(GetDlgCtrlID(focus));
         }
+    }
+    if form_default.is_some() {
+        return form_default;
     }
     let mut child = GetWindow(dialog, GW_CHILD);
     while !child.is_null() {
@@ -7079,7 +7105,7 @@ unsafe extern "system" fn dialog_proc(
         }
         // The dialog manager asks which button Enter presses; without an answer
         // it sends IDOK, which no dialog has.
-        DM_GETDEFID => match default_button_id(hwnd) {
+        DM_GETDEFID => match default_button_id(hwnd, form_default_id(dlg)) {
             Some(id) => ((DC_HASDEFID << 16) | id as u32) as LRESULT,
             None => 0,
         },
@@ -8528,8 +8554,16 @@ mod tests {
                 }
                 drop(Box::from_raw(self.raw));
             }
-            self.app = None;
-            let _ = std::fs::remove_dir_all(&self.root);
+            // The engine keeps the database and the logs open until it has stopped.
+            if let Some(app) = self.app.take() {
+                app.shutdown();
+            }
+            for _ in 0..10 {
+                if std::fs::remove_dir_all(&self.root).is_ok() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
     }
 
@@ -8722,6 +8756,244 @@ mod tests {
                 "Rename ran and refused the empty name"
             );
             assert!(dialog.is_open());
+        });
+    }
+
+    fn logins_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Logins(super::LoginFields {
+            logins: Vec::new(),
+            list: null_mut(),
+            host: null_mut(),
+            user: null_mut(),
+            pass: null_mut(),
+            allow_http: null_mut(),
+        })
+    }
+
+    fn tools_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Tools(super::ToolsFields {
+            status: null_mut(),
+            progress: null_mut(),
+            install: null_mut(),
+            update: null_mut(),
+            last_render: String::new(),
+        })
+    }
+
+    fn progress_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Progress(Box::new(super::ProgressFields {
+            ids: Vec::new(),
+            selected: 0,
+            raised: std::collections::HashSet::new(),
+            rendered: String::new(),
+            rendered_rows: String::new(),
+            action_label: String::new(),
+            summary: null_mut(),
+            list: null_mut(),
+            status: null_mut(),
+            progress: null_mut(),
+            action: null_mut(),
+            cancel: null_mut(),
+            open_file: null_mut(),
+            open_folder: null_mut(),
+            close: null_mut(),
+            hint: null_mut(),
+            report: null_mut(),
+        }))
+    }
+
+    fn media_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Media(Box::new(super::MediaFields {
+            base: crate::model::AddRequest::default(),
+            subtitle_none: false,
+            session_consent: None,
+            summary: null_mut(),
+            name: null_mut(),
+            kind: null_mut(),
+            kind_values: Vec::new(),
+            format: null_mut(),
+            audio: null_mut(),
+            audio_tracks: null_mut(),
+            subtitles: null_mut(),
+            external_url: null_mut(),
+            external_language: null_mut(),
+            external_label: null_mut(),
+            external_kind: null_mut(),
+            external_default: null_mut(),
+            external_list: null_mut(),
+            full_verification: null_mut(),
+            playlist: null_mut(),
+            renew_job: null_mut(),
+            renew_restart: null_mut(),
+            renew_ids: Vec::new(),
+            video_formats: Vec::new(),
+            audio_values: Vec::new(),
+            info: crate::model::MediaInfo::default(),
+            size: null_mut(),
+            subtitle_values: Vec::new(),
+            external_values: Vec::new(),
+            loaded_title: String::new(),
+            populated: false,
+            inspect_generation: 0,
+            advanced: false,
+            report_shown: false,
+            report_error: None,
+            host: String::new(),
+            auto_queue: false,
+            remember: null_mut(),
+            from_start: null_mut(),
+            from_start_offered: false,
+            playlist_items: null_mut(),
+            thumbnail: null_mut(),
+            thumbnail_requested: false,
+        }))
+    }
+
+    /// What the dialog manager is told Enter presses: the button id, or zero
+    /// when the dialog has no default button.
+    fn default_id(dialog: &HiddenDialog) -> u32 {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, DM_GETDEFID};
+        unsafe { SendMessageW(dialog.hwnd, DM_GETDEFID, 0, 0) as u32 & 0xffff }
+    }
+
+    #[test]
+    fn enter_in_the_site_logins_form_adds_the_login_it_holds() {
+        use super::{set_text, text, DialogKind, L_SAVE};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_RETURN};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, LB_GETCOUNT, WM_COMMAND};
+
+        with_dialog(logins_kind, 560, 420, |dialog| {
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (host, user, pass) = (f.host, f.user, f.pass);
+            let password = uuid::Uuid::new_v4().to_string();
+            unsafe {
+                set_text(host, "Files.Example.test");
+                set_text(user, "reader");
+                set_text(pass, &password);
+                SetFocus(pass);
+            }
+            assert!(press_in(dialog, pass, VK_RETURN));
+            assert!(dialog.is_open(), "Enter did not close the dialog");
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_eq!(f.logins.len(), 1, "the typed login was added");
+            assert_eq!(f.logins[0].host, "files.example.test");
+            assert_eq!(f.logins[0].username, "reader");
+            assert!(!f.logins[0].password.is_empty(), "the password was sealed");
+            assert_eq!(unsafe { SendMessageW(f.list, LB_GETCOUNT, 0, 0) }, 1);
+            assert!(
+                unsafe { text(pass) }.is_empty(),
+                "the password field was cleared"
+            );
+            assert!(
+                dialog.app().snapshot().settings.site_logins.is_empty(),
+                "nothing is stored before Save"
+            );
+            // The login is not lost on the way to Save.
+            unsafe { SendMessageW(dialog.hwnd, WM_COMMAND, L_SAVE as usize, 0) };
+            assert!(!dialog.is_open(), "Save closed the dialog");
+            let stored = dialog.app().snapshot().settings.site_logins;
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].host, "files.example.test");
+        });
+    }
+
+    #[test]
+    fn enter_in_the_media_tools_dialog_installs_nothing() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
+
+        with_dialog(tools_kind, 700, 470, |dialog| {
+            assert_eq!(default_id(dialog), 0, "no button is the default");
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            assert!(dialog.is_open());
+            assert!(
+                dialog.app().snapshot().tool_progress.is_none(),
+                "no install was started"
+            );
+            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
+            assert!(!dialog.is_open(), "Escape still closes the dialog");
+        });
+    }
+
+    #[test]
+    fn enter_in_the_job_view_does_not_pause_the_download() {
+        use super::{DialogKind, JobState, P_ACTION};
+        use crate::model::{Action, AddRequest};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            IsWindowEnabled, VK_ESCAPE, VK_RETURN,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+
+        with_dialog(progress_kind, 640, 420, |dialog| {
+            // Scheduled for later, so the engine does no network I/O for it.
+            let added = dialog
+                .app()
+                .dispatch_result(Action::Add {
+                    request: AddRequest {
+                        url: "https://example.invalid/file.bin".into(),
+                        start_at: Some(chrono::Utc::now().timestamp() + 3_600),
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
+            unsafe {
+                if let DialogKind::Progress(f) = &mut (*dialog.raw).kind {
+                    f.ids = added.job_ids.clone();
+                }
+                super::dialog_timer(&mut *dialog.raw);
+                assert_ne!(
+                    IsWindowEnabled(GetDlgItem(dialog.hwnd, P_ACTION)),
+                    0,
+                    "Pause is available for the job"
+                );
+            }
+            assert_eq!(default_id(dialog), 0, "no button is the default");
+            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
+            let snapshot = dialog.app().snapshot();
+            let job = snapshot.jobs.iter().find(|job| job.id == added.job_ids[0]);
+            assert_eq!(
+                job.map(|job| job.state),
+                Some(JobState::Scheduled),
+                "Enter did not pause the job"
+            );
+            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
+            assert!(!dialog.is_open(), "Escape still closes the dialog");
+        });
+    }
+
+    #[test]
+    fn enter_in_the_external_subtitle_fields_adds_the_subtitle() {
+        use super::{set_text, DialogKind};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_RETURN};
+
+        with_dialog(media_kind, 640, 420, |dialog| {
+            let DialogKind::Media(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (url, language) = (f.external_url, f.external_language);
+            for (round, field) in [url, language].into_iter().enumerate() {
+                unsafe {
+                    set_text(url, "https://subs.example.test/en.vtt");
+                    set_text(language, "en");
+                    SetFocus(field);
+                }
+                assert!(press_in(dialog, field, VK_RETURN));
+                let DialogKind::Media(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    f.external_values.len(),
+                    round + 1,
+                    "Enter in the field added a subtitle"
+                );
+            }
         });
     }
 
