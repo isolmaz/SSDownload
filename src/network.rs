@@ -1131,8 +1131,8 @@ impl CurlSocketState {
 }
 
 /// The time from `now` to `deadline` as a curl timeout, or `None` when less than a millisecond
-/// is left. The curl crate hands libcurl whole milliseconds and libcurl reads 0 as "no timeout",
-/// so a shorter remainder would let the request run without a limit instead of expiring.
+/// is left. The curl crate hands libcurl whole milliseconds and libcurl reads 0 as no total limit
+/// (and as its 300 s default for the connect limit), so a shorter remainder would not expire.
 pub(crate) fn time_left(deadline: Instant, now: Instant) -> Option<Duration> {
     let left = deadline.saturating_duration_since(now);
     (left >= Duration::from_millis(1)).then_some(left)
