@@ -1,7 +1,9 @@
 //! Startup update check against the GitHub Releases feed.
 //!
 //! Feed contract (`<release-base>/version.json`):
-//! `{"version":"1.4.1","url":"<Setup.exe URL>","sha256":"<hex>","notes":"<short text>"}`
+//! `{"version":"1.4.1","url":"<Setup.exe URL>","sha256":"<hex>"}`
+//! The feed also carries a `notes` text for older clients; this client ignores it, and the
+//! update offer links to the release page instead.
 //! The base URL is overridable for staging tests through `SSDOWNLOAD_UPDATE_FEED`.
 //!
 //! NO-DELETE POLICY: this module never deletes a file. Every artifact that a
@@ -50,8 +52,6 @@ pub struct UpdateManifest {
     pub version: String,
     pub url: String,
     pub sha256: String,
-    #[serde(default)]
-    pub notes: String,
 }
 
 /// Live state of the running update attempt. The attempt runs on its own
@@ -976,6 +976,11 @@ pub(crate) fn open_in_browser(url: &str) -> bool {
     result as isize > 32
 }
 
+/// Follows a message when the release page could not be opened: the address to paste into a browser.
+pub(crate) fn page_not_opened_notice(page: &str) -> String {
+    crate::i18n::ui_format!("\n\nSürüm sayfası açılamadı; bu adresi tarayıcıya yapıştırın:\n{RELEASES_PAGE}", "\n\nThe release page could not be opened; paste this address into your browser:\n{RELEASES_PAGE}", RELEASES_PAGE = page)
+}
+
 /// What a portable copy gets instead of the silent Setup: the release page, where the new
 /// portable ZIP is. Marked `dry_run` so the caller does not quit the application: nothing
 /// was installed.
@@ -983,9 +988,13 @@ fn portable_update_outcome(manifest: &UpdateManifest) -> UpdateOutcome {
     let opened = open_in_browser(RELEASES_PAGE);
     let mut message = crate::i18n::ui_format!("Bu kopya kurulu bir sürüm değil (taşınabilir). Taşınabilir kopya, yeni taşınabilir ZIP dosyası indirilerek güncellenir: SSDownload {0} paketini sürüm sayfasından indirip bu klasörün üzerine çıkarın.", "This copy is portable, not installed. A portable copy is updated by downloading the new portable ZIP: download the SSDownload {0} package from the release page and extract it over this folder.", manifest.version);
     message.push_str(&if opened {
-        crate::i18n::ui_format!("\n\nSürüm sayfası tarayıcıda açıldı:\n{RELEASES_PAGE}", "\n\nThe release page was opened in your browser:\n{RELEASES_PAGE}", RELEASES_PAGE = RELEASES_PAGE)
+        crate::i18n::ui_format!(
+            "\n\nSürüm sayfası tarayıcıda açıldı:\n{RELEASES_PAGE}",
+            "\n\nThe release page was opened in your browser:\n{RELEASES_PAGE}",
+            RELEASES_PAGE = RELEASES_PAGE
+        )
     } else {
-        crate::i18n::ui_format!("\n\nSürüm sayfası açılamadı; bu adresi tarayıcıya yapıştırın:\n{RELEASES_PAGE}", "\n\nThe release page could not be opened; paste this address into your browser:\n{RELEASES_PAGE}", RELEASES_PAGE = RELEASES_PAGE)
+        page_not_opened_notice(RELEASES_PAGE)
     });
     UpdateOutcome {
         success: true,
@@ -1868,7 +1877,6 @@ mod tests {
             version: "1.0.0".into(),
             url: "https://example.test/Setup.exe".into(),
             sha256: "0".repeat(64),
-            notes: String::new(),
         };
         assert!(feed_answered(&Ok(manifest)));
         assert!(feed_answered(&Err(crate::error_codes::coded_default(
@@ -1928,7 +1936,6 @@ mod tests {
             version: "9.9.9".into(),
             url,
             sha256: "0".repeat(64),
-            notes: String::new(),
         };
         let governor = NetworkGovernor::new(4);
         let error = download_setup(
@@ -1981,7 +1988,6 @@ mod tests {
             version: "9.9.9".into(),
             url,
             sha256: "0".repeat(64),
-            notes: String::new(),
         };
         let governor = NetworkGovernor::new(4);
         let outcome = run_update(

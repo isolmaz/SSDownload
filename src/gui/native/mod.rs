@@ -609,6 +609,7 @@ fn offer_update_with(
         ),
         target: release_page.to_string(),
         open,
+        failure: crate::update::page_not_opened_notice(release_page),
     };
     let title = format!(
         "SSDownload {} {}",
@@ -5611,6 +5612,8 @@ const DARK_SELECTION: u32 = 0x6f4f2f; // COLORREF: renders RGB(47,79,111)
 /// this renders RGB(31,42,51)).
 const DARK_SELECTION_DIM: u32 = 0x332a1f;
 const DARK_ACCENT: u32 = 0xa86e2f; // COLORREF: renders RGB(47,110,168)
+/// Link text; lighter than the accent so it reads on the dark surface.
+const DARK_LINK: u32 = 0xffcd60; // COLORREF: renders RGB(96,205,255)
 /// Tab strip of the settings dialog.
 const S_TABS: i32 = 2100;
 const S_DIR: i32 = 2101;
@@ -11118,7 +11121,6 @@ mod tests {
                         version: "9.9.9".into(),
                         url: "https://update.example/setup.exe".into(),
                         sha256: String::new(),
-                        notes: "A release note.".into(),
                     },
                     "9.9.8",
                     true,
@@ -11245,20 +11247,85 @@ mod tests {
         panic!("timed out waiting until {what}");
     }
 
+    /// The window that has the keyboard focus in the thread that owns `alert`.
+    fn focused_window(alert: usize) -> usize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+        };
+
+        unsafe {
+            let mut info: GUITHREADINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+            GetGUIThreadInfo(
+                GetWindowThreadProcessId(alert as _, std::ptr::null_mut()),
+                &mut info,
+            );
+            info.hwndFocus as usize
+        }
+    }
+
+    /// Posts a key press to `window`. A real key goes to the window that has the focus.
+    fn post_key(window: usize, key: u16) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN};
+
+        unsafe { PostMessageW(window as _, WM_KEYDOWN, key as usize, 0) };
+    }
+
+    fn is_topmost(window: usize) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOPMOST,
+        };
+
+        unsafe { GetWindowLongPtrW(window as _, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 }
+    }
+
+    /// The update offer of the tests in English (offered 9.9.9, running 1.2.3) whose link
+    /// opens `page` through `open`.
+    fn english_offer(
+        page: &'static str,
+        open: fn(&str) -> bool,
+    ) -> Option<crate::update::UpdateDecision> {
+        with_common_controls_6(|| {
+            crate::i18n::with_language("en", || {
+                super::offer_update_with(
+                    &crate::update::UpdateManifest {
+                        version: "9.9.9".into(),
+                        url: "https://update.example/setup.exe".into(),
+                        sha256: String::new(),
+                    },
+                    "1.2.3",
+                    true,
+                    page,
+                    open,
+                )
+            })
+        })
+    }
+
+    /// Presses Tab on the offer until the link has the focus, and returns the link.
+    fn tab_to_the_link(alert: usize) -> usize {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_TAB;
+
+        let link = alert_children(alert)
+            .into_iter()
+            .find(|child| child.1 == "SysLink")
+            .expect("the offer has a link")
+            .0;
+        post_key(alert, VK_TAB);
+        wait_until("Tab reaches the link first", || {
+            focused_window(alert) == link
+        });
+        link
+    }
+
     #[test]
-    fn the_update_offer_names_both_versions_and_shows_none_of_the_release_notes() {
+    fn the_update_offer_names_both_versions_and_is_as_tall_as_its_text() {
         use crate::update::UpdateManifest;
         use windows_sys::Win32::UI::{
             HiDpi::GetDpiForWindow,
             WindowsAndMessaging::{GetDlgCtrlID, SendMessageW, WM_GETFONT},
         };
 
-        let notes = "**Languages**\n\
-            - The app, the browser extension and the installer speak Arabic, Spanish and German.\n\
-            - In Arabic every window is laid out right to left.\n\n\
-            **Video and audio**\n\
-            - Videos whose picture and sound come as separate streams download both at once.\n\
-            - Live recordings stay playable after they finish.";
         for info in crate::i18n::LANGUAGES.iter() {
             let code = info.code;
             let offer = || {
@@ -11269,7 +11336,6 @@ mod tests {
                                 version: "9.9.9".into(),
                                 url: "https://update.example/setup.exe".into(),
                                 sha256: String::new(),
-                                notes: notes.into(),
                             },
                             "1.2.3",
                             true,
@@ -11290,22 +11356,9 @@ mod tests {
                     .find(|child| child.1 == "SysLink")
                     .unwrap_or_else(|| panic!("{code}: the offer has a link"));
 
-                let mut everything = vec![super::text(alert as _)];
-                everything.extend(children.iter().map(|child| child.2.clone()));
-                let everything = everything.join("\n");
-                for line in notes.lines().filter(|line| !line.is_empty()) {
-                    assert!(
-                        !everything.contains(line),
-                        "{code}: the offer repeats the release note {line:?}"
-                    );
-                }
-                assert!(
-                    !everything.contains("**"),
-                    "{code}: Markdown shows in {everything:?}"
-                );
                 assert!(
                     children.iter().all(|child| child.1 != "Edit"),
-                    "{code}: the notes would need a scrolling box"
+                    "{code}: the body would need a scrolling box"
                 );
                 for (what, text) in [("body", &body.2), ("link", &link.2)] {
                     assert!(
@@ -11396,14 +11449,10 @@ mod tests {
 
     #[test]
     fn the_release_page_link_takes_tab_focus_and_opens_the_page_it_was_given() {
-        use crate::update::UpdateManifest;
         use std::sync::Mutex;
         use windows_sys::Win32::UI::{
-            Input::KeyboardAndMouse::{VK_RETURN, VK_SPACE, VK_TAB},
-            WindowsAndMessaging::{
-                GetGUIThreadInfo, GetWindowThreadProcessId, PostMessageW, GUITHREADINFO, IDYES,
-                WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-            },
+            Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB},
+            WindowsAndMessaging::{PostMessageW, IDYES, WM_LBUTTONDOWN, WM_LBUTTONUP},
         };
 
         static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -11414,70 +11463,264 @@ mod tests {
         let opened = || OPENED.lock().unwrap().clone();
         let page = "https://releases.example/v9.9.9";
 
-        let offer = || {
-            with_common_controls_6(|| {
-                super::offer_update_with(
-                    &UpdateManifest {
-                        version: "9.9.9".into(),
-                        url: "https://update.example/setup.exe".into(),
-                        sha256: String::new(),
-                        notes: String::new(),
-                    },
-                    "1.2.3",
-                    true,
-                    page,
-                    record,
-                )
-            })
-        };
-        answer_alert(offer, |alert, buttons| unsafe {
-            let link = alert_children(alert)
-                .into_iter()
-                .find(|child| child.1 == "SysLink")
-                .expect("the offer has a link")
-                .0;
-            let focus = || {
-                let mut info: GUITHREADINFO = std::mem::zeroed();
-                info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
-                GetGUIThreadInfo(
-                    GetWindowThreadProcessId(alert as _, std::ptr::null_mut()),
-                    &mut info,
+        answer_alert(
+            || english_offer(page, record),
+            |alert, buttons| unsafe {
+                let link = tab_to_the_link(alert);
+                assert!(opened().is_empty(), "moving the focus opens nothing");
+
+                post_key(link, VK_RETURN);
+                wait_until("Enter opens the page", || opened().len() == 1);
+                post_key(link, VK_SPACE);
+                wait_until("Space opens the page", || opened().len() == 2);
+                PostMessageW(link as _, WM_LBUTTONDOWN, 1, 3 | (3 << 16));
+                PostMessageW(link as _, WM_LBUTTONUP, 0, 3 | (3 << 16));
+                wait_until("a click opens the page", || opened().len() == 3);
+                assert_eq!(
+                    opened(),
+                    [page, page, page],
+                    "every way in opens the given page"
                 );
-                info.hwndFocus as usize
-            };
-            let key = |window: usize, code: u16| {
-                PostMessageW(window as _, WM_KEYDOWN, code as usize, 0);
-            };
 
-            key(alert, VK_TAB);
-            wait_until("Tab reaches the link first", || focus() == link);
-            assert!(opened().is_empty(), "moving the focus opens nothing");
+                let install = buttons
+                    .iter()
+                    .find(|button| button.id == IDYES)
+                    .unwrap()
+                    .handle;
+                post_key(focused_window(alert), VK_TAB);
+                wait_until("one Tab leaves the link for Install", || {
+                    focused_window(alert) == install
+                });
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
 
-            key(link, VK_RETURN);
-            wait_until("Enter opens the page", || opened().len() == 1);
-            key(link, VK_SPACE);
-            wait_until("Space opens the page", || opened().len() == 2);
-            PostMessageW(link as _, WM_LBUTTONDOWN, 1, 3 | (3 << 16));
-            PostMessageW(link as _, WM_LBUTTONUP, 0, 3 | (3 << 16));
-            wait_until("a click opens the page", || opened().len() == 3);
-            assert_eq!(
-                opened(),
-                [page, page, page],
-                "every way in opens the given page"
+    #[test]
+    fn the_offer_steps_back_from_the_top_once_its_link_has_opened_the_page() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
+
+        answer_alert(
+            || english_offer("https://releases.example/v9.9.9", |_| true),
+            |alert, _| {
+                assert!(
+                    is_topmost(alert),
+                    "the offer opens on top of the other windows"
+                );
+                let link = tab_to_the_link(alert);
+                assert!(is_topmost(alert), "moving the focus keeps it there");
+                post_key(link, VK_RETURN);
+                wait_until("the offer steps back from the top", || !is_topmost(alert));
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    #[test]
+    fn a_page_that_cannot_be_opened_is_named_in_a_notice_and_the_offer_stays_on_top() {
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN},
+            WindowsAndMessaging::{FindWindowExW, GetDlgCtrlID, IsWindow, IsWindowVisible},
+        };
+
+        let page = "https://releases.example/v9.9.9";
+        answer_alert(
+            || english_offer(page, |_| false),
+            |alert, _| unsafe {
+                let link = tab_to_the_link(alert);
+                post_key(link, VK_RETURN);
+
+                let class = super::wide(super::CLASS_ALERT);
+                let find_notice = || {
+                    let mut found = FindWindowExW(
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        class.as_ptr(),
+                        std::ptr::null(),
+                    );
+                    while !found.is_null()
+                        && (found as usize == alert || IsWindowVisible(found) == 0)
+                    {
+                        found = FindWindowExW(
+                            std::ptr::null_mut(),
+                            found,
+                            class.as_ptr(),
+                            std::ptr::null(),
+                        );
+                    }
+                    found as usize
+                };
+                let mut notice = 0;
+                wait_until("a notice opens over the offer", || {
+                    notice = find_notice();
+                    notice != 0
+                });
+                let body = alert_children(notice)
+                    .into_iter()
+                    .find(|child| GetDlgCtrlID(child.0 as _) == super::ALERT_BODY_ID)
+                    .expect("the notice has a body")
+                    .2;
+                assert_eq!(
+                    body,
+                    format!(
+                        "The release page could not be opened; paste this address into your browser:\n{page}"
+                    )
+                );
+                assert!(
+                    is_topmost(alert),
+                    "the offer stays on top while the notice shows"
+                );
+
+                post_key(notice, VK_ESCAPE);
+                wait_until("the notice closes", || IsWindow(notice as _) == 0);
+                assert!(is_topmost(alert), "the offer stays on top: no page is open");
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    /// How many pixels of `window` inside the screen rectangle of `area` are exactly `rgb`,
+    /// as the window draws itself.
+    fn pixels_of(window: usize, area: usize, rgb: [u8; 3]) -> usize {
+        use windows_sys::Win32::{
+            Graphics::Gdi::{
+                CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+                GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
+            },
+            Storage::Xps::PrintWindow,
+        };
+
+        unsafe {
+            let frame = screen_rect(window);
+            let (width, height) = (frame.right - frame.left, frame.bottom - frame.top);
+            let screen = GetDC(std::ptr::null_mut());
+            let memory = CreateCompatibleDC(screen);
+            let bitmap = CreateCompatibleBitmap(screen, width, height);
+            let previous = SelectObject(memory, bitmap as _);
+            // 2 is PW_RENDERFULLCONTENT.
+            PrintWindow(window as _, memory, 2);
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            let mut pixels = vec![0u8; (width * height * 4) as usize];
+            GetDIBits(
+                memory,
+                bitmap,
+                0,
+                height as u32,
+                pixels.as_mut_ptr().cast(),
+                &mut info,
+                DIB_RGB_COLORS,
             );
+            SelectObject(memory, previous);
+            DeleteObject(bitmap as _);
+            DeleteDC(memory);
+            ReleaseDC(std::ptr::null_mut(), screen);
 
-            let install = buttons
-                .iter()
-                .find(|button| button.id == IDYES)
-                .unwrap()
-                .handle;
-            wait_until("Tab leaves the link for Install", || {
-                // A key goes to the window that has the focus.
-                key(focus(), VK_TAB);
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                focus() == install
+            let area = screen_rect(area);
+            let mut count = 0;
+            for y in (area.top - frame.top).max(0)..(area.bottom - frame.top).min(height) {
+                for x in (area.left - frame.left).max(0)..(area.right - frame.left).min(width) {
+                    let at = ((y * width + x) * 4) as usize;
+                    if pixels[at..at + 3] == [rgb[2], rgb[1], rgb[0]] {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+    }
+
+    #[test]
+    fn the_link_is_drawn_in_the_dark_link_colour_on_the_dark_scheme_and_in_the_system_colour_otherwise(
+    ) {
+        use windows_sys::Win32::{
+            Graphics::Gdi::{GetSysColor, COLOR_HOTLIGHT},
+            UI::{
+                Input::KeyboardAndMouse::VK_ESCAPE,
+                WindowsAndMessaging::{
+                    DestroyWindow, SetPropW, IDNO, IDYES, MB_ICONQUESTION, WS_POPUP,
+                },
+            },
+        };
+
+        // RGB(96, 205, 255), the colour of DARK_LINK.
+        let dark_link = [0x60, 0xcd, 0xff];
+        let hotlight = unsafe { GetSysColor(COLOR_HOTLIGHT) };
+        let system_link = [
+            hotlight as u8,
+            (hotlight >> 8) as u8,
+            (hotlight >> 16) as u8,
+        ];
+        for dark in [true, false] {
+            let offer = || {
+                with_common_controls_6(|| unsafe {
+                    // The scheme of an alert is the one of its owner.
+                    let owner = super::control(std::ptr::null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    if dark {
+                        SetPropW(owner, super::dark_prop(), 1usize as _);
+                    }
+                    let answer = super::run_alert_linked(
+                        owner,
+                        "Update now?",
+                        "Update",
+                        MB_ICONQUESTION,
+                        Some(&[(IDYES, "Yes"), (IDNO, "No")]),
+                        Some(super::AlertLink {
+                            label: "What's new in 9.9.9".into(),
+                            target: "https://releases.example/v9.9.9".into(),
+                            open: |_| true,
+                            failure: String::new(),
+                        }),
+                    );
+                    DestroyWindow(owner);
+                    answer
+                })
+            };
+            answer_alert(offer, |alert, _| {
+                let link = alert_children(alert)
+                    .into_iter()
+                    .find(|child| child.1 == "SysLink")
+                    .expect("the alert has a link")
+                    .0;
+                // The link underlines its whole text, so a link of this length has well over
+                // 40 pixels of its colour once it is drawn.
+                let mut drawn = (0, 0);
+                for _ in 0..40 {
+                    drawn = (
+                        pixels_of(alert, link, dark_link),
+                        pixels_of(alert, link, system_link),
+                    );
+                    if (if dark { drawn.0 } else { drawn.1 }) >= 40 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                if dark {
+                    assert!(
+                        drawn.0 >= 40,
+                        "the dark scheme draws the link in its own colour: {drawn:?}"
+                    );
+                    assert_eq!(
+                        drawn.1, 0,
+                        "no system link blue is left on the dark surface: {drawn:?}"
+                    );
+                } else {
+                    assert!(
+                        drawn.1 >= 40,
+                        "the light scheme draws the link in the system colour: {drawn:?}"
+                    );
+                    assert_eq!(
+                        drawn.0, 0,
+                        "the dark link colour does not reach the light scheme: {drawn:?}"
+                    );
+                }
+                post_key(alert, VK_ESCAPE);
             });
-        });
+        }
     }
 
     #[test]

@@ -3,11 +3,12 @@
 use super::*;
 
 /// A link under the body of an alert: `label` is what the user reads, activating it
-/// passes `target` to `open`.
+/// passes `target` to `open`; when that fails the alert shows `failure`.
 pub(super) struct AlertLink {
     pub(super) label: String,
     pub(super) target: String,
     pub(super) open: fn(&str) -> bool,
+    pub(super) failure: String,
 }
 /// One button of a themed alert, carrying the id MessageBoxW would return.
 pub(super) struct AlertButton {
@@ -22,8 +23,6 @@ pub(super) struct AlertButton {
 /// automation harness and screen readers all reach the text through it.
 pub(super) const ALERT_BODY_ID: i32 = 0xFFFF;
 const ALERT_LINK_ID: i32 = 0xFFFE;
-/// Link text on the dark surface; COLORREF, renders RGB(96, 205, 255).
-const DARK_LINK: u32 = 0xffcd60;
 pub(super) struct AlertUi {
     pub(super) hwnd: HWND,
     pub(super) font: HFONT,
@@ -398,17 +397,25 @@ pub(super) unsafe extern "system" fn alert_proc(
                 && (header.code == NM_CLICK || header.code == NM_RETURN)
             {
                 if let Some(link) = &ui.link {
-                    (link.open)(&link.target);
-                    // The page opens in front of the offer instead of behind a topmost box.
-                    SetWindowPos(
-                        hwnd,
-                        HWND_NOTOPMOST,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                    );
+                    if (link.open)(&link.target) {
+                        // The page opens in front of the offer instead of behind a topmost box.
+                        SetWindowPos(
+                            hwnd,
+                            HWND_NOTOPMOST,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                    } else {
+                        message(
+                            hwnd,
+                            link.failure.trim_start(),
+                            crate::i18n::ui("SSDownload güncellemesi", "SSDownload update"),
+                            MB_OK | MB_ICONWARNING,
+                        );
+                    }
                 }
             }
             0
