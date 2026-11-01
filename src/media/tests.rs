@@ -1176,6 +1176,18 @@ fn a_restarted_fragmented_download_starts_its_fragments_again() {
 }
 
 #[test]
+fn retained_bytes_are_unknown_while_the_folder_of_the_download_cannot_be_found() {
+    // A folder that does not exist stands in for a drive or share that is gone.
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-retained-test-{}", uuid::Uuid::new_v4()));
+    let output = root.join("stream.mp4");
+    assert_eq!(retained_bytes(&output), None);
+    fs::create_dir_all(&root).unwrap();
+    assert_eq!(retained_bytes(&output), Some(0));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn only_a_pinned_source_enables_file_urls() {
     let info = Path::new(r"C:\lease\source.info.json");
     let pinned = load_info_args(info, true);

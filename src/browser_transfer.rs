@@ -228,12 +228,25 @@ struct State {
     version: u32,
     job_id: String,
     token: String,
+    /// The engine's generation of the transfer whose begin issued `token`.
+    #[serde(default)]
+    generation: u64,
     source: String,
     cancelled: bool,
     streams: BTreeMap<u32, StreamState>,
 }
 fn source_key(request: &AddRequest) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(request)?)))
+}
+fn committed_bytes(state: &State) -> Result<u64> {
+    state
+        .streams
+        .values()
+        .try_fold(0u64, |sum, s| sum.checked_add(s.offset))
+        .context(crate::i18n::ui(
+            "Toplam aktarım boyutu taştı",
+            "The total transfer size overflowed",
+        ))
 }
 fn checked_path(path: &Path) -> Result<()> {
     if path.exists() && fs::symlink_metadata(path)?.file_attributes() & 0x400 != 0 {
@@ -391,8 +404,9 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
         Command::Begin {
             sender_pid: Some(pid),
             sender_started_at: Some(started_at),
+            restart,
             ..
-        } => Some((*pid, *started_at)),
+        } => Some((*pid, *started_at, *restart)),
         Command::Begin { .. } => bail!(
             "{}",
             crate::i18n::ui(
@@ -403,8 +417,8 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
         _ => None,
     };
     let is_begin = sender.is_some();
-    let (job, generation) = if let Some((sender_pid, sender_started_at)) = sender {
-        engine.begin_browser_transfer(command.id(), sender_pid, sender_started_at)?
+    let (job, generation) = if let Some((sender_pid, sender_started_at, restart)) = sender {
+        engine.begin_browser_transfer(command.id(), sender_pid, sender_started_at, restart)?
     } else {
         engine.browser_transfer_job(command.id())?
     };
@@ -498,6 +512,7 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     version: STATE_VERSION,
                     job_id: job.id.clone(),
                     token: String::new(),
+                    generation: 0,
                     source: fingerprint,
                     cancelled: false,
                     streams,
@@ -508,15 +523,20 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 uuid::Uuid::new_v4().simple(),
                 uuid::Uuid::new_v4().simple()
             );
+            state.generation = generation;
             save(&root, &state)?;
+            engine.browser_transfer_prepared(&job.id, generation, committed_bytes(&state)?)?;
             let mut result = response(&state, Some(Box::new(relay_request(&job.request))));
             result.sender_generation = Some(generation);
             return Ok(result);
         }
         let mut state = load(&root)?;
+        // The token of a transfer that ended stays here until the next begin replaces it; a
+        // command that carries it belongs to that transfer, not to the one the engine runs now.
         if state.job_id != job.id
             || state.cancelled
             || command.token() != Some(state.token.as_str())
+            || state.generation != generation
             || state.source != source_key(&job.request)?
         {
             bail!(
@@ -727,20 +747,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 stream.last_hash = sha256;
                 stream.client_checkpoint = client_checkpoint;
                 save(&root, &state)?;
-                let committed = state
-                    .streams
-                    .values()
-                    .try_fold(0u64, |sum, s| sum.checked_add(s.offset))
-                    .context(crate::i18n::ui(
-                        "Toplam aktarım boyutu taştı",
-                        "The total transfer size overflowed",
-                    ))?;
+                let committed = committed_bytes(&state)?;
                 let total = state
                     .streams
                     .values()
                     .filter(|s| s.offset > 0 || s.total.is_some())
                     .try_fold(0u64, |sum, s| sum.checked_add(s.total?));
-                engine.browser_transfer_progress(&job.id, committed, total)?;
+                engine.browser_transfer_progress(&job.id, generation, committed, total)?;
             }
             Command::SealStream {
                 stream_id, sha256, ..
