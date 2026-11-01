@@ -312,6 +312,10 @@ pub struct Logged {
     pub headers: Vec<(String, String)>,
     pub status: u16,
     pub body_cut: bool,
+    /// When the request arrived, and when its answer went out, after every delay the
+    /// configuration adds; `None` until then.
+    pub arrived: Instant,
+    pub answered: Option<Instant>,
 }
 
 impl Logged {
@@ -1229,6 +1233,7 @@ fn answer(
     over_limit: bool,
     place: &mut Option<Option<usize>>,
 ) -> bool {
+    let arrived = Instant::now();
     let config = &shared.config;
     let index = shared.requests.fetch_add(1, Ordering::AcqRel);
     let limit = config.limit.as_ref().filter(|_| !over_limit);
@@ -1287,6 +1292,8 @@ fn answer(
             .collect(),
         status: reply.status,
         body_cut: cut_after.is_some(),
+        arrived,
+        answered: None,
     });
     drop(log);
 
@@ -1304,6 +1311,8 @@ fn answer(
     if let Some(delay) = config.lookup_delay.filter(|_| is_lookup(&request.path)) {
         thread::sleep(delay);
     }
+    // Noted before the answer goes out, so that a client that has its answer finds it logged.
+    shared.log.lock().unwrap()[position].answered = Some(Instant::now());
     let mut head = format!("HTTP/1.1 {} {}\r\n", reply.status, reason(reply.status));
     for header in &reply.headers {
         head.push_str(header);
@@ -1952,6 +1961,10 @@ mod tests {
             let began = Instant::now();
             assert_eq!(request(&mut connection, "GET", "/", &[]).status, 200);
             assert!(began.elapsed() >= delay);
+        }
+        // The log tells when each request came and when its answer went out.
+        for entry in server.log() {
+            assert!(entry.answered.expect("the answer went out") - entry.arrived >= delay);
         }
     }
 
