@@ -9055,17 +9055,6 @@ mod tests {
         })
     }
 
-    fn tools_kind() -> super::DialogKind {
-        use std::ptr::null_mut;
-        super::DialogKind::Tools(super::ToolsFields {
-            status: null_mut(),
-            progress: null_mut(),
-            install: null_mut(),
-            update: null_mut(),
-            last_render: String::new(),
-        })
-    }
-
     /// Every multi-line edit control of the dialog.
     fn multiline_edits(dialog: &HiddenDialog) -> Vec<super::HWND> {
         use super::{window_class, BOOL, HWND, LPARAM};
@@ -9087,9 +9076,35 @@ mod tests {
         found
     }
 
-    /// Tab typed into `edit` moves the focus to the next control of the dialog
-    /// and leaves the text of the box alone.
-    fn assert_tab_leaves(dialog: &HiddenDialog, edit: super::HWND, what: &str) {
+    /// Shift held down in the key state of this thread, which is where
+    /// `GetKeyState` reads it, until the value is dropped. No input is sent.
+    struct ShiftHeld([u8; 256]);
+
+    impl ShiftHeld {
+        fn new() -> Self {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+                GetKeyboardState, SetKeyboardState, VK_SHIFT,
+            };
+            let mut state = [0u8; 256];
+            unsafe { GetKeyboardState(state.as_mut_ptr()) };
+            let before = state;
+            state[VK_SHIFT as usize] = 0x80;
+            unsafe { SetKeyboardState(state.as_ptr()) };
+            Self(before)
+        }
+    }
+
+    impl Drop for ShiftHeld {
+        fn drop(&mut self) {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetKeyboardState;
+            unsafe { SetKeyboardState(self.0.as_ptr()) };
+        }
+    }
+
+    /// Tab, or Shift+Tab when `backwards`, typed into `edit` moves the focus to
+    /// the next, or previous, control of the dialog and leaves the text of the
+    /// box alone.
+    fn assert_tab_leaves(dialog: &HiddenDialog, edit: super::HWND, what: &str, backwards: bool) {
         use super::text;
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_TAB};
         use windows_sys::Win32::UI::WindowsAndMessaging::GetNextDlgTabItem;
@@ -9098,12 +9113,17 @@ mod tests {
             let before = text(edit);
             SetFocus(edit);
             assert_eq!(GetFocus(), edit, "{what} has the focus");
-            let next = GetNextDlgTabItem(dialog.hwnd, edit, 0);
-            assert!(!next.is_null() && next != edit, "{what} has a next control");
+            let next = GetNextDlgTabItem(dialog.hwnd, edit, backwards.into());
+            assert!(!next.is_null() && next != edit, "{what} has a target");
+            let _shift = backwards.then(ShiftHeld::new);
             assert!(press_in(dialog, edit, VK_TAB), "{what}: Tab is handled");
             pump_messages();
             assert_eq!(text(edit), before, "{what}: Tab typed nothing");
-            assert_eq!(GetFocus(), next, "{what}: Tab moved the focus on");
+            assert_eq!(
+                GetFocus(),
+                next,
+                "{what}: Tab moved the focus (backwards: {backwards})"
+            );
         }
     }
 
@@ -9115,7 +9135,19 @@ mod tests {
             let DialogKind::Add(f) = dialog.kind() else {
                 unreachable!()
             };
-            assert_tab_leaves(dialog, f.urls, "the links box");
+            assert_tab_leaves(dialog, f.urls, "the links box", false);
+        });
+    }
+
+    #[test]
+    fn shift_tab_leaves_the_links_box_backwards() {
+        use super::DialogKind;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_tab_leaves(dialog, f.urls, "the links box", true);
         });
     }
 
@@ -9127,8 +9159,8 @@ mod tests {
             let DialogKind::Queues(f) = dialog.kind() else {
                 unreachable!()
             };
-            assert_tab_leaves(dialog, f.windows, "the time windows box");
-            assert_tab_leaves(dialog, f.arguments, "the program arguments box");
+            assert_tab_leaves(dialog, f.windows, "the time windows box", false);
+            assert_tab_leaves(dialog, f.arguments, "the program arguments box", false);
         });
     }
 
@@ -9140,7 +9172,7 @@ mod tests {
             let DialogKind::Tools(f) = dialog.kind() else {
                 unreachable!()
             };
-            assert_tab_leaves(dialog, f.status, "the status box");
+            assert_tab_leaves(dialog, f.status, "the status box", false);
         });
     }
 
@@ -9157,7 +9189,8 @@ mod tests {
                 let edits = multiline_edits(dialog);
                 assert_eq!(edits.len(), boxes, "{name}: multi-line edits found");
                 for edit in edits {
-                    assert_tab_leaves(dialog, edit, name);
+                    assert_tab_leaves(dialog, edit, name, false);
+                    assert_tab_leaves(dialog, edit, name, true);
                 }
             });
         }
