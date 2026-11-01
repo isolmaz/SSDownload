@@ -3357,6 +3357,30 @@ mod tests {
                 disabled,
                 check_box_colours(&p, dark, false, look(true, false, false))
             );
+            // A disabled checked box fills with AccentFillColorDisabled, the
+            // same colour as the disabled stroke, and the light theme's mark
+            // stays white.
+            let (fill, stroke, mark) = check_box_colours(&p, dark, true, look(true, false, false));
+            assert_eq!((fill, stroke), (disabled.1, disabled.1));
+            assert_ne!(fill, p.accent);
+            if dark {
+                assert_ne!(mark, 0xffffff);
+                assert_ne!(mark, fill);
+            } else {
+                assert_eq!(mark, 0xffffff);
+            }
+            // A clear box under the pointer keeps its strong stroke on a
+            // stronger fill; pressed, the fill deepens again and the stroke
+            // fades to the disabled one.
+            let (rest_fill, ..) = check_box_colours(&p, dark, false, rest);
+            let hot = check_box_colours(&p, dark, false, look(false, false, true));
+            assert_eq!((hot.1, hot.2), (p.strong_stroke, p.card));
+            assert_ne!(hot.0, rest_fill);
+            assert_ne!(hot.0, p.card);
+            let pressed = check_box_colours(&p, dark, false, look(false, true, true));
+            assert_eq!((pressed.1, pressed.2), (disabled.1, p.card));
+            assert_ne!(pressed.0, hot.0);
+            assert_ne!(pressed.0, rest_fill);
         }
     }
 
@@ -3394,5 +3418,94 @@ mod tests {
         assert_eq!(at(4), 0x00ff00);
         assert_eq!(at(5), 0x00ff00);
         assert_eq!(at(6), 0x888888);
+    }
+
+    #[test]
+    fn a_right_to_left_check_box_draws_its_box_beside_its_label() {
+        unsafe {
+            let (width, height) = (200, 32);
+            let screen = GetDC(null_mut());
+            let dc = CreateCompatibleDC(screen);
+            ReleaseDC(null_mut(), screen);
+            let mut info: BITMAPINFO = zeroed();
+            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bits: *mut c_void = null_mut();
+            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            assert!(!bitmap.is_null() && !bits.is_null());
+            let previous = SelectObject(dc, bitmap as HGDIOBJ);
+            SetLayout(dc, LAYOUT_RTL);
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let check = control(
+                parent,
+                "BUTTON",
+                "WWWW",
+                WS_CHILD | BS_AUTOCHECKBOX as u32,
+                0,
+                1,
+            );
+            SendMessageW(check, BM_SETCHECK, BST_CHECKED as usize, 0);
+            let font = ramp_font(96, BODY_PX, false);
+            let palette = fluent_palette(false, BLUE);
+            let look = ButtonState {
+                primary: false,
+                disabled: false,
+                pressed: false,
+                hot: false,
+                focused: false,
+                underline: false,
+            };
+            paint_check_box(
+                dc,
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: width,
+                    bottom: height,
+                },
+                96,
+                &palette,
+                false,
+                font,
+                check,
+                look,
+            );
+            let pixels =
+                std::slice::from_raw_parts(bits as *const u32, (width * height) as usize).to_vec();
+            SelectObject(dc, previous);
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteObject(font as HGDIOBJ);
+            DeleteDC(dc);
+            DestroyWindow(parent);
+            // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+            let colour =
+                |pixel: u32| ((pixel & 0xff) << 16) | (pixel & 0xff00) | ((pixel >> 16) & 0xff);
+            let columns = |wanted: &dyn Fn(u32) -> bool| -> Vec<i32> {
+                (0..width)
+                    .filter(|&x| {
+                        (0..height).any(|y| wanted(colour(pixels[(y * width + x) as usize])))
+                    })
+                    .collect()
+            };
+            let dark = |c: u32| (c & 0xff) + ((c >> 8) & 0xff) + ((c >> 16) & 0xff) < 200;
+            let boxed = columns(&|c| c == palette.accent);
+            let label = columns(&dark);
+            assert!(
+                !boxed.is_empty(),
+                "the checked box is painted in the accent"
+            );
+            assert!(!label.is_empty(), "the label is painted");
+            // Mirrored, the label runs left of the box, which keeps the focus
+            // margin on the right.
+            assert!(
+                label.iter().max() < boxed.iter().min(),
+                "box {boxed:?} label {label:?}"
+            );
+            assert!(*boxed.iter().max().unwrap() >= width - 3 - 20 - 1);
+        }
     }
 }
