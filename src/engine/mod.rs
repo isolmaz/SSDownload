@@ -93,9 +93,9 @@ enum Command {
     CancelCompletionAction(String, Reply<()>),
     RunSynchronization(String, Reply<()>),
     BeginBrowserTransfer(String, u32, u64, bool, Reply<(Job, u64)>),
-    BrowserTransferPrepared(String, u64, bool, Reply<()>),
+    BrowserTransferPrepared(String, u64, u64, Reply<()>),
     BrowserTransferJob(String, Reply<(Job, u64)>),
-    BrowserTransferProgress(String, u64, Option<u64>, Reply<()>),
+    BrowserTransferProgress(String, u64, u64, Option<u64>, Reply<()>),
     TryBeginBrowserRequest(String, u64, String, Reply<bool>),
     EndBrowserRequest(String, u64, String, Reply<()>),
     PauseBrowserTransfer(String, u64, Reply<()>),
@@ -308,11 +308,9 @@ struct BrowserTransferLease {
     requests: BTreeMap<String, ConnectionLease>,
     ended_requests: VecDeque<String>,
     sender_exited: bool,
-    /// The user started the download over: a restart, or a transfer of a job that was not
-    /// authorized for one, such as a download the app's own downloader had begun.
-    started_over: bool,
-    /// The transfer's last report, which the next one may not go below.
-    reported: Option<u64>,
+    /// The job was not authorized for a transfer to the browser, such as a download the app's
+    /// own downloader had begun: sending it to the browser starts the download over.
+    handed_over: bool,
 }
 
 fn process_started_at(handle: HANDLE) -> Result<u64> {
@@ -747,16 +745,16 @@ impl Engine {
             Command::BeginBrowserTransfer(id.into(), sender_pid, sender_started_at, restart, reply)
         })
     }
-    /// The receiver has the transfer's work ready: `resumed` when it goes on from the bytes the
-    /// job's transfer committed before, otherwise the transfer starts from the first byte.
+    /// The receiver has the transfer's work ready and goes on from the `committed` bytes it
+    /// holds of it.
     pub fn browser_transfer_prepared(
         &self,
         id: &str,
         generation: u64,
-        resumed: bool,
+        committed: u64,
     ) -> Result<()> {
         self.request(|reply| {
-            Command::BrowserTransferPrepared(id.into(), generation, resumed, reply)
+            Command::BrowserTransferPrepared(id.into(), generation, committed, reply)
         })
     }
     pub fn browser_transfer_job(&self, id: &str) -> Result<(Job, u64)> {
@@ -765,10 +763,13 @@ impl Engine {
     pub fn browser_transfer_progress(
         &self,
         id: &str,
+        generation: u64,
         downloaded: u64,
         total: Option<u64>,
     ) -> Result<()> {
-        self.request(|reply| Command::BrowserTransferProgress(id.into(), downloaded, total, reply))
+        self.request(|reply| {
+            Command::BrowserTransferProgress(id.into(), generation, downloaded, total, reply)
+        })
     }
     pub(crate) fn try_begin_browser_request(
         &self,
@@ -972,16 +973,16 @@ impl Actor {
                     self.begin_browser_transfer(&id, sender_pid, sender_started_at, restart),
                 )
             }
-            Command::BrowserTransferPrepared(id, generation, resumed, reply) => respond(
+            Command::BrowserTransferPrepared(id, generation, committed, reply) => respond(
                 reply,
-                self.browser_transfer_prepared(&id, generation, resumed),
+                self.browser_transfer_prepared(&id, generation, committed),
             ),
             Command::BrowserTransferJob(id, reply) => {
                 respond(reply, self.browser_transfer_job(&id))
             }
-            Command::BrowserTransferProgress(id, downloaded, total, reply) => respond(
+            Command::BrowserTransferProgress(id, generation, downloaded, total, reply) => respond(
                 reply,
-                self.browser_transfer_progress(&id, downloaded, total),
+                self.browser_transfer_progress(&id, generation, downloaded, total),
             ),
             Command::TryBeginBrowserRequest(id, generation, request_id, reply) => respond(
                 reply,
@@ -2617,10 +2618,15 @@ impl Actor {
             );
         }
         let sender = BrowserTransferSender::open(sender_pid, sender_started_at)?;
-        // The size and the count stay as they are until the receiver says where the transfer
-        // starts, so a begin that ends early leaves the bytes committed before counted.
-        let started_over = restart || !job.browser_transfer_authorized;
-        job.browser_transfer_authorized = true;
+        // The user starts the download over with a restart, or by sending a job that was not
+        // authorized for a transfer to the browser. That outlasts a begin that ends before the
+        // receiver is ready, in this session or after the app closed: a restart sets the size and
+        // the count to 0 now, and a job is authorized, and its grant used up, only once the
+        // receiver is ready. Any other begin leaves them as they are.
+        let handed_over = !job.browser_transfer_authorized;
+        if restart {
+            job.downloaded = 0;
+        }
         job.state = JobState::Downloading;
         job.phase = crate::i18n::ui(
             "Yetkili tarayıcı aktarımı bekleniyor",
@@ -2630,9 +2636,11 @@ impl Actor {
         job.error = None;
         job.updated_at = Utc::now().timestamp();
         self.store.save_job(&job)?;
+        if restart {
+            self.quota_accounted.insert(id.into(), 0);
+        }
         self.jobs.insert(id.into(), job.clone());
         self.cancel_source_refresh_workers(id);
-        self.source_refresh.remove(id);
         let generation = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1).max(1);
         self.browser_transfers.insert(
@@ -2643,8 +2651,7 @@ impl Actor {
                 requests: BTreeMap::new(),
                 ended_requests: VecDeque::new(),
                 sender_exited: false,
-                started_over,
-                reported: None,
+                handed_over,
             },
         );
         self.completion_armed.insert(queue_id);
@@ -2656,13 +2663,13 @@ impl Actor {
         &mut self,
         id: &str,
         generation: u64,
-        resumed: bool,
+        committed: u64,
     ) -> Result<()> {
-        let Some(started_over) = self
+        let Some(handed_over) = self
             .browser_transfers
             .get(id)
             .filter(|transfer| transfer.generation == generation)
-            .map(|transfer| transfer.started_over)
+            .map(|transfer| transfer.handed_over)
         else {
             bail!(
                 "{}",
@@ -2672,19 +2679,33 @@ impl Actor {
                 )
             );
         };
-        // A transfer the user started over that downloads from the first byte is a new download,
-        // which its queue's quota counts again. Any other goes on from the job's count.
-        if started_over && !resumed {
-            let job = self
-                .jobs
-                .get_mut(id)
-                .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
-            job.downloaded = 0;
-            job.updated_at = Utc::now().timestamp();
-            self.store.save_job(job)?;
-            self.quota_accounted.insert(id.into(), 0);
-            self.publish();
-        }
+        let mut job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
+        let accounted = self
+            .quota_accounted
+            .get(id)
+            .copied()
+            .unwrap_or(job.downloaded);
+        job.browser_transfer_authorized = true;
+        job.downloaded = committed;
+        job.updated_at = Utc::now().timestamp();
+        self.store.save_job(&job)?;
+        self.jobs.insert(id.into(), job);
+        // The bytes the receiver goes on from were counted when they came. A job sent to the
+        // browser whose transfer starts from the first byte is a new download, which its queue's
+        // quota counts again, as a restart does from its begin; any other transfer goes on from
+        // the most the job counted.
+        let counted = if handed_over && committed == 0 {
+            0
+        } else {
+            accounted.max(committed)
+        };
+        self.quota_accounted.insert(id.into(), counted);
+        self.source_refresh.remove(id);
+        self.publish();
         Ok(())
     }
 
@@ -2828,14 +2849,16 @@ impl Actor {
     fn browser_transfer_progress(
         &mut self,
         id: &str,
+        generation: u64,
         downloaded: u64,
         total: Option<u64>,
     ) -> Result<()> {
-        let Some(reported) = self
+        // A chunk of an earlier transfer can still report after the next one began.
+        if self
             .browser_transfers
             .get(id)
-            .map(|transfer| transfer.reported)
-        else {
+            .is_none_or(|transfer| transfer.generation != generation)
+        {
             bail!(
                 "{}",
                 crate::i18n::ui(
@@ -2843,15 +2866,13 @@ impl Actor {
                     "There is no active browser transfer for this job."
                 )
             );
-        };
+        }
         let mut job = self
             .jobs
             .get(id)
             .cloned()
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
-        if total.is_some_and(|total| downloaded > total)
-            || reported.is_some_and(|reported| downloaded < reported)
-        {
+        if total.is_some_and(|total| downloaded > total) || downloaded < job.downloaded {
             bail!(
                 "{}",
                 crate::i18n::ui(
@@ -2923,9 +2944,6 @@ impl Actor {
         // most it has reached.
         self.quota_accounted
             .insert(id.into(), downloaded.max(accounted));
-        if let Some(transfer) = self.browser_transfers.get_mut(id) {
-            transfer.reported = Some(downloaded);
-        }
         self.jobs.insert(id.into(), job);
         if !accepts_more {
             self.remove_browser_transfer(id);

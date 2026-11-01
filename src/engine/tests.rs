@@ -715,7 +715,9 @@ fn browser_policy_stop_persists_scheduled_state_before_releasing_generation() {
     let (_, generation) = engine
         .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
-    assert!(engine.browser_transfer_progress(&id, 1, Some(2)).is_err());
+    assert!(engine
+        .browser_transfer_progress(&id, generation, 1, Some(2))
+        .is_err());
     let snapshot = engine.snapshot();
     let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
     assert_eq!(job.state, JobState::Scheduled);
@@ -911,10 +913,10 @@ fn a_restarted_browser_transfer_counts_its_bytes_again_and_a_resumed_one_does_no
         .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
     engine
-        .browser_transfer_prepared(&id, generation, true)
+        .browser_transfer_prepared(&id, generation, 1_000_000)
         .unwrap();
     engine
-        .browser_transfer_progress(&id, 1_300_000, total)
+        .browser_transfer_progress(&id, generation, 1_300_000, total)
         .unwrap();
     assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
     engine.release_browser_transfer(&id, generation).unwrap();
@@ -924,12 +926,190 @@ fn a_restarted_browser_transfer_counts_its_bytes_again_and_a_resumed_one_does_no
         .begin_browser_transfer(&id, std::process::id(), sender_started_at, true)
         .unwrap();
     engine
-        .browser_transfer_prepared(&id, generation, false)
+        .browser_transfer_prepared(&id, generation, 0)
         .unwrap();
     engine
-        .browser_transfer_progress(&id, 200_000, total)
+        .browser_transfer_progress(&id, generation, 200_000, total)
         .unwrap();
     assert_eq!(consumed_quota_bytes(&engine, &queue), 500_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Adds a job, sets it up in the store as `set_up` says while the engine is closed, and opens
+/// the engine again with browser transfers on and a quota on the default queue.
+fn browser_quota_job(name: &str, set_up: impl FnOnce(&mut Job)) -> (PathBuf, AppPaths, String) {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-{name}-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let engine = Engine::open(paths.clone()).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(AddRequest {
+            url: format!("https://example.test/{name}.bin"),
+            filename: Some(format!("{name}.bin")),
+            page_url: Some(format!("https://example.test/watch/{name}")),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..Default::default()
+        })
+        .unwrap()
+        .remove(0);
+    engine.shutdown();
+    let mut store = Store::open(&paths.database).unwrap();
+    let mut job = store
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap();
+    job.request.start_at = None;
+    job.state = JobState::Paused;
+    set_up(&mut job);
+    store.save_job(&job).unwrap();
+    (root, paths, id)
+}
+
+fn begin_as_this_process(engine: &Engine, id: &str, restart: bool) -> u64 {
+    let started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    engine
+        .begin_browser_transfer(id, std::process::id(), started_at, restart)
+        .unwrap()
+        .1
+}
+
+#[test]
+fn a_transfer_goes_on_from_the_count_after_a_begin_that_ended_early() {
+    // A browser transfer of the job had committed and counted 1 MB.
+    let (root, paths, id) = browser_quota_job("browser-early", |job| {
+        job.browser_transfer_authorized = true;
+        job.downloaded = 1_000_000;
+    });
+    let engine = Engine::open(paths.clone()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    // The app closes before the receiver is ready, and the receiver of the next session has lost
+    // the bytes: they come again and are not counted again.
+    begin_as_this_process(&engine, &id, false);
+    engine.shutdown();
+    let engine = Engine::open(paths).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, generation, 0)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 1_200_000, Some(4_000_000))
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 200_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_sent_to_the_browser_counts_again_after_a_begin_that_ended_early() {
+    // The app's own downloader had counted 1 MB.
+    let (root, paths, id) = browser_quota_job("browser-handover", |job| {
+        job.downloaded = 1_000_000;
+    });
+    let engine = Engine::open(paths).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    engine.begin_source_refresh(&id).unwrap();
+    // The receiver fails before it is ready, which pauses the transfer; a state it saved by
+    // then holds no byte.
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine.pause_browser_transfer(&id, generation).unwrap();
+
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, generation, 0)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 300_000, Some(4_000_000))
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_restart_counts_again_after_a_begin_that_ended_early() {
+    // A browser transfer of the job had committed and counted 1 MB.
+    let (root, paths, id) = browser_quota_job("browser-restart", |job| {
+        job.browser_transfer_authorized = true;
+        job.downloaded = 1_000_000;
+    });
+    let engine = Engine::open(paths.clone()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    let total = Some(4_000_000);
+    // A restart whose receiver fails before it is ready, and the begin after it, whose receiver
+    // goes on from `committed` bytes and reports `downloaded`.
+    let restart_then_begin = |engine: &Engine, committed: u64, downloaded: u64| {
+        let generation = begin_as_this_process(engine, &id, true);
+        engine.pause_browser_transfer(&id, generation).unwrap();
+        let generation = begin_as_this_process(engine, &id, false);
+        engine
+            .browser_transfer_prepared(&id, generation, committed)
+            .unwrap();
+        engine
+            .browser_transfer_progress(&id, generation, downloaded, total)
+            .unwrap();
+        engine.release_browser_transfer(&id, generation).unwrap();
+    };
+
+    // The receiver fails before it moves the committed bytes aside, and the next begin goes on
+    // from them.
+    restart_then_begin(&engine, 1_000_000, 1_100_000);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 100_000);
+
+    // It fails once it has moved them aside, and the next begin starts from the first byte.
+    restart_then_begin(&engine, 0, 200_000);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+
+    // The app closes once the receiver has moved them aside, and the begin in the next session
+    // starts from the first byte.
+    begin_as_this_process(&engine, &id, true);
+    engine.shutdown();
+    let engine = Engine::open(paths).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, generation, 0)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 400_000, total)
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 700_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_report_of_an_earlier_browser_transfer_is_refused() {
+    let (root, paths, id) = browser_quota_job("browser-late", |job| {
+        job.browser_transfer_authorized = true;
+        job.downloaded = 1_000_000;
+    });
+    let engine = Engine::open(paths).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    let total = Some(4_000_000);
+    let earlier = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, earlier, 1_000_000)
+        .unwrap();
+    engine.release_browser_transfer(&id, earlier).unwrap();
+
+    // A chunk of the earlier transfer that the receiver still held reports after the restart
+    // began; the restart's own first report follows it.
+    let restarted = begin_as_this_process(&engine, &id, true);
+    assert!(engine
+        .browser_transfer_progress(&id, earlier, 1_100_000, total)
+        .is_err());
+    engine.browser_transfer_prepared(&id, restarted, 0).unwrap();
+    engine
+        .browser_transfer_progress(&id, restarted, 200_000, total)
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 200_000);
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
 }
@@ -1068,6 +1248,11 @@ fn a_browser_transfer_counts_its_bytes_once_until_the_user_starts_it_over() {
         .clone()
         .unwrap();
     fs::remove_dir_all(work.join("browser-transfer")).unwrap();
+    // A begin that ends before its first chunk leaves the job with the bytes the receiver has.
+    transfer(&engine, false, &[]);
+    let snapshot = engine.snapshot();
+    let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+    assert_eq!((job.state, job.downloaded), (JobState::Paused, 0));
     transfer(&engine, false, &[300_000, 300_000]);
     assert_eq!(consumed_quota_bytes(&engine, &queue), 600_000);
 

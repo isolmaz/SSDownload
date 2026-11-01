@@ -235,6 +235,16 @@ struct State {
 fn source_key(request: &AddRequest) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(request)?)))
 }
+fn committed_bytes(state: &State) -> Result<u64> {
+    state
+        .streams
+        .values()
+        .try_fold(0u64, |sum, s| sum.checked_add(s.offset))
+        .context(crate::i18n::ui(
+            "Toplam aktarım boyutu taştı",
+            "The total transfer size overflowed",
+        ))
+}
 fn checked_path(path: &Path) -> Result<()> {
     if path.exists() && fs::symlink_metadata(path)?.file_attributes() & 0x400 != 0 {
         bail!(
@@ -428,8 +438,7 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
         } = &command
         {
             let fingerprint = source_key(&job.request)?;
-            let resumed = state_path(&root).exists() && !restart;
-            let mut state = if resumed {
+            let mut state = if state_path(&root).exists() && !restart {
                 let value = load(&root)?;
                 if value.job_id != job.id || value.source != fingerprint {
                     bail!(
@@ -511,7 +520,7 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 uuid::Uuid::new_v4().simple()
             );
             save(&root, &state)?;
-            engine.browser_transfer_prepared(&job.id, generation, resumed)?;
+            engine.browser_transfer_prepared(&job.id, generation, committed_bytes(&state)?)?;
             let mut result = response(&state, Some(Box::new(relay_request(&job.request))));
             result.sender_generation = Some(generation);
             return Ok(result);
@@ -730,20 +739,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 stream.last_hash = sha256;
                 stream.client_checkpoint = client_checkpoint;
                 save(&root, &state)?;
-                let committed = state
-                    .streams
-                    .values()
-                    .try_fold(0u64, |sum, s| sum.checked_add(s.offset))
-                    .context(crate::i18n::ui(
-                        "Toplam aktarım boyutu taştı",
-                        "The total transfer size overflowed",
-                    ))?;
+                let committed = committed_bytes(&state)?;
                 let total = state
                     .streams
                     .values()
                     .filter(|s| s.offset > 0 || s.total.is_some())
                     .try_fold(0u64, |sum, s| sum.checked_add(s.total?));
-                engine.browser_transfer_progress(&job.id, committed, total)?;
+                engine.browser_transfer_progress(&job.id, generation, committed, total)?;
             }
             Command::SealStream {
                 stream_id, sha256, ..
