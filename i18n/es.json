@@ -1689,13 +1689,6 @@
   "Name from the server": "Nombre del servidor",
   "Right away when empty": "De inmediato si está vacío",
   "Search": "Buscar",
-  "URL links (one link per line)": "Enlaces URL (un enlace por línea)",
-  "Target folder": "Carpeta de destino",
-  "File name (optional, for a single URL)": "Nombre de archivo (opcional, para una sola URL)",
-  "Download type": "Tipo de descarga",
-  "Connection count (empty = type default)": "Número de conexiones (vacío = predeterminado del tipo)",
-  "SHA-256 (optional, 64 hexadecimal characters)": "SHA-256 (opcional, 64 caracteres hexadecimales)",
-  "Earliest start (local time, YYYY-MM-DD HH:MM)": "Inicio más temprano (hora local, AAAA-MM-DD HH:MM)",
   "&View": "&Ver",
   "&Columns": "&Columnas",
   "&Sort by": "&Ordenar por",
@@ -1729,5 +1722,6 @@
   "Takes effect after a restart": "Se aplica al reiniciar",
   "Classic": "Clásico",
   "Theme:": "Tema:",
-  "Modern": "Moderno"
+  "Modern": "Moderno",
+  "Found candidates": "Candidatos encontrados"
 }

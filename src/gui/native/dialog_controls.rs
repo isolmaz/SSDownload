@@ -195,17 +195,10 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                if modern() {
-                    crate::i18n::ui(
-                        "URL bağlantıları (her satıra bir bağlantı)",
-                        "URL links (one link per line)",
-                    )
-                } else {
-                    crate::i18n::ui(
-                        "URL bağlantıları (her satıra bir bağlantı):",
-                        "URL links (one link per line):",
-                    )
-                },
+                crate::i18n::ui(
+                    "URL bağlantıları (her satıra bir bağlantı):",
+                    "URL links (one link per line):",
+                ),
                 0,
             );
             f.urls = dialog_edit(dlg.hwnd, dlg.font, D_URLS, true, false);
@@ -214,11 +207,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                if modern() {
-                    crate::i18n::ui("Hedef klasör", "Target folder")
-                } else {
-                    crate::i18n::ui("Hedef klasör:", "Target folder:")
-                },
+                crate::i18n::ui("Hedef klasör:", "Target folder:"),
                 0,
             );
             f.dir = dialog_edit(dlg.hwnd, dlg.font, D_DIR, false, false);
@@ -236,28 +225,17 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                if modern() {
-                    crate::i18n::ui(
-                        "Dosya adı (isteğe bağlı, tek URL için)",
-                        "File name (optional, for a single URL)",
-                    )
-                } else {
-                    crate::i18n::ui(
-                        "Dosya adı (isteğe bağlı, tek URL için):",
-                        "File name (optional, for a single URL):",
-                    )
-                },
+                crate::i18n::ui(
+                    "Dosya adı (isteğe bağlı, tek URL için):",
+                    "File name (optional, for a single URL):",
+                ),
                 0,
             );
             f.filename = dialog_edit(dlg.hwnd, dlg.font, D_FILENAME, false, false);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                if modern() {
-                    crate::i18n::ui("İndirme türü", "Download type")
-                } else {
-                    crate::i18n::ui("İndirme türü:", "Download type:")
-                },
+                crate::i18n::ui("İndirme türü:", "Download type:"),
                 0,
             );
             f.kind = dialog_combo(dlg.hwnd, dlg.font, D_KIND);
@@ -289,51 +267,30 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                if modern() {
-                    crate::i18n::ui(
-                        "Bağlantı sayısı (boş = tür ayarı)",
-                        "Connection count (empty = type default)",
-                    )
-                } else {
-                    crate::i18n::ui(
-                        "Bağlantı sayısı (boş = tür ayarı):",
-                        "Connection count (empty = type default):",
-                    )
-                },
+                crate::i18n::ui(
+                    "Bağlantı sayısı (boş = tür ayarı):",
+                    "Connection count (empty = type default):",
+                ),
                 0,
             );
             f.connections = dialog_edit(dlg.hwnd, dlg.font, D_CONNECTIONS, false, true);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                if modern() {
-                    crate::i18n::ui(
-                        "SHA-256 (isteğe bağlı, 64 onaltılık karakter)",
-                        "SHA-256 (optional, 64 hexadecimal characters)",
-                    )
-                } else {
-                    crate::i18n::ui(
-                        "SHA-256 (isteğe bağlı, 64 onaltılık karakter):",
-                        "SHA-256 (optional, 64 hexadecimal characters):",
-                    )
-                },
+                crate::i18n::ui(
+                    "SHA-256 (isteğe bağlı, 64 onaltılık karakter):",
+                    "SHA-256 (optional, 64 hexadecimal characters):",
+                ),
                 0,
             );
             f.checksum = dialog_edit(dlg.hwnd, dlg.font, D_CHECKSUM, false, false);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
-                if modern() {
-                    crate::i18n::ui(
-                        "En erken başlama (yerel saat, YYYY-AA-GG SS:DD)",
-                        "Earliest start (local time, YYYY-MM-DD HH:MM)",
-                    )
-                } else {
-                    crate::i18n::ui(
-                        "En erken başlama (yerel saat, YYYY-AA-GG SS:DD):",
-                        "Earliest start (local time, YYYY-MM-DD HH:MM):",
-                    )
-                },
+                crate::i18n::ui(
+                    "En erken başlama (yerel saat, YYYY-AA-GG SS:DD):",
+                    "Earliest start (local time, YYYY-MM-DD HH:MM):",
+                ),
                 0,
             );
             f.schedule = dialog_edit(dlg.hwnd, dlg.font, D_SCHEDULE, false, false);
@@ -1330,6 +1287,15 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 C_SCAN,
                 true,
             );
+            // Modern's card names the result list; Classic keeps its layout.
+            if modern() {
+                dialog_label(
+                    dlg.hwnd,
+                    dlg.font,
+                    crate::i18n::ui("Bulunan adaylar", "Found candidates"),
+                    0,
+                );
+            }
             f.list = form_list(dlg.hwnd, dlg.font, C_LIST, true);
             dialog_button(
                 dlg.hwnd,

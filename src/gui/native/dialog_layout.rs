@@ -1027,7 +1027,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                         field(label(3), f.candidates, number, dlg.dpi),
                         button_cell(dlg, C_SCAN),
                     ],
-                    &[field(null_mut(), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[field(label(4), f.list, Width::Flex, dlg.dpi).fill()],
                 ],
                 0,
             );

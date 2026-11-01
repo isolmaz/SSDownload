@@ -1689,13 +1689,6 @@
   "Name from the server": "الاسم من الخادم",
   "Right away when empty": "فورًا إذا تُرك فارغًا",
   "Search": "بحث",
-  "URL links (one link per line)": "روابط URL (رابط واحد في كل سطر)",
-  "Target folder": "المجلد المستهدف",
-  "File name (optional, for a single URL)": "اسم الملف (اختياري، لعنوان URL واحد)",
-  "Download type": "نوع التنزيل",
-  "Connection count (empty = type default)": "عدد الاتصالات (فارغ = الافتراضي حسب النوع)",
-  "SHA-256 (optional, 64 hexadecimal characters)": "SHA-256 (اختياري، 64 حرفًا سداسي عشريًا)",
-  "Earliest start (local time, YYYY-MM-DD HH:MM)": "أقرب وقت بدء (بالتوقيت المحلي، YYYY-MM-DD HH:MM)",
   "&View": "&عرض",
   "&Columns": "الأ&عمدة",
   "&Sort by": "&ترتيب حسب",
@@ -1729,5 +1722,6 @@
   "Takes effect after a restart": "يسري بعد إعادة التشغيل",
   "Classic": "كلاسيكي",
   "Theme:": "السمة:",
-  "Modern": "حديث"
+  "Modern": "حديث",
+  "Found candidates": "المرشحون الذين عُثر عليهم"
 }
