@@ -815,7 +815,13 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     })
                     .collect();
                 if streams.len() == 1 && streams[0].1.role == "file" {
-                    fs::rename(stream_path(&root, *streams[0].0), &scratch)?;
+                    crate::media::place_browser_file(
+                        paths,
+                        &job.request,
+                        &stream_path(&root, *streams[0].0),
+                        &scratch,
+                        &TransferControl::default(),
+                    )?;
                 } else {
                     if job.request.kind == DownloadKind::File {
                         bail!(

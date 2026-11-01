@@ -998,6 +998,7 @@ static AR: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "إصدار سجل هوية مصدر الوسائط أو المقطع غير مدعوم"),
     ("The media tool installation lock is corrupted", "قفل تثبيت أداة الوسائط تالف"),
     ("The media tool returned an output outside the expected folder", "أعادت أداة الوسائط مخرجات خارج المجلد المتوقع"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "مسار أدوات الوسائط أطول من 259 حرفًا، وهو الحد الذي يسمح به Windows للبرامج؛ انقل الملف الشخصي إلى مجلد أقصر وشغّل SSDownload مع --data-dir يشير إلى ذلك المجلد"),
     ("The media working folder is missing", "مجلد عمل الوسائط مفقود"),
     ("The named pipe client could not be verified", "تعذّر التحقق من عميل الأنبوب المسمّى"),
     ("The named pipe client does not belong to the current user", "عميل الأنبوب المسمّى لا يتبع المستخدم الحالي"),
@@ -2437,6 +2438,7 @@ static ES: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "La versión del registro de identidad del origen o segmento multimedia no es compatible"),
     ("The media tool installation lock is corrupted", "El bloqueo de la instalación de la herramienta multimedia está dañado"),
     ("The media tool returned an output outside the expected folder", "La herramienta multimedia ha devuelto una salida fuera de la carpeta esperada"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "La ruta de las herramientas multimedia supera los 259 caracteres que Windows permite para los programas; mueva el perfil a una carpeta más corta e inicie SSDownload con --data-dir apuntando a ella"),
     ("The media working folder is missing", "Falta la carpeta de trabajo multimedia"),
     ("The named pipe client could not be verified", "No se pudo verificar el cliente de named pipe"),
     ("The named pipe client does not belong to the current user", "El cliente de named pipe no pertenece al usuario actual"),
@@ -3876,6 +3878,7 @@ static PT: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "A versão do registro de identidade da fonte/segmento de mídia não é suportada"),
     ("The media tool installation lock is corrupted", "O bloqueio de instalação das ferramentas de mídia está corrompido"),
     ("The media tool returned an output outside the expected folder", "A ferramenta de mídia retornou uma saída fora da pasta esperada"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "O caminho das ferramentas de mídia excede os 259 caracteres que o Windows permite para programas; mova o perfil para uma pasta mais curta e inicie o SSDownload com --data-dir apontando para ela"),
     ("The media working folder is missing", "A pasta de trabalho de mídia está ausente"),
     ("The named pipe client could not be verified", "Não foi possível verificar o cliente do named pipe"),
     ("The named pipe client does not belong to the current user", "O cliente do named pipe não pertence ao usuário atual"),
@@ -5315,6 +5318,7 @@ static FR: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "La version de l'enregistrement d'identité de la source ou du segment média n'est pas prise en charge"),
     ("The media tool installation lock is corrupted", "Le verrou d'installation des outils média est corrompu"),
     ("The media tool returned an output outside the expected folder", "L'outil média a renvoyé une sortie en dehors du dossier attendu"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "Le chemin des outils multimédias dépasse les 259 caractères que Windows autorise pour les programmes ; déplacez le profil dans un dossier plus court et lancez SSDownload avec --data-dir pointant vers ce dossier"),
     ("The media working folder is missing", "Le dossier de travail média est manquant"),
     ("The named pipe client could not be verified", "Le client du tube nommé n'a pas pu être vérifié"),
     ("The named pipe client does not belong to the current user", "Le client du tube nommé n'appartient pas à l'utilisateur actuel"),
@@ -6754,6 +6758,7 @@ static DE: &[(&str, &str)] = &[
     ("The media source/segment identity record version is not supported", "Die Version des Identitätsdatensatzes der Medienquelle oder des Segments wird nicht unterstützt"),
     ("The media tool installation lock is corrupted", "Die Sperre der Medienwerkzeug-Installation ist beschädigt"),
     ("The media tool returned an output outside the expected folder", "Das Medienwerkzeug hat eine Ausgabe außerhalb des erwarteten Ordners zurückgegeben"),
+    ("The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "Der Pfad der Medienwerkzeuge ist länger als die 259 Zeichen, die Windows für Programme erlaubt; verschieben Sie das Profil in einen kürzeren Ordner und starten Sie SSDownload mit --data-dir, das auf diesen Ordner zeigt"),
     ("The media working folder is missing", "Der Medien-Arbeitsordner fehlt"),
     ("The named pipe client could not be verified", "Der Named-Pipe-Client konnte nicht geprüft werden"),
     ("The named pipe client does not belong to the current user", "Der Named-Pipe-Client gehört nicht zum aktuellen Benutzer"),
@@ -7382,6 +7387,9 @@ macro_rules! __ui_template_ar {
     };
     ("Media found: {0}") => {
         "تم العثور على وسائط: {0}"
+    };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "التحقق من الوسائط: محتوى الملف ({0}) لا يطابق امتداده .{1}"
     };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "التحقق من الوسائط: مدة المخرجات لا تطابق المصدر (هامش النهاية المبكرة {tolerance:.3} ث؛ النهاية المتأخرة {0:.3} ث)"
@@ -8237,6 +8245,9 @@ macro_rules! __ui_template_es {
     ("Media found: {0}") => {
         "Contenido multimedia encontrado: {0}"
     };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "Verificación de medios: el contenido del archivo ({0}) no coincide con su extensión .{1}"
+    };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "Verificación de medios: la duración de la salida no coincide con el origen (tolerancia de final anticipado {tolerance:.3} s; final tardío {0:.3} s)"
     };
@@ -9090,6 +9101,9 @@ macro_rules! __ui_template_pt {
     };
     ("Media found: {0}") => {
         "Mídia encontrada: {0}"
+    };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "Verificação de mídia: o conteúdo do arquivo ({0}) não corresponde à extensão .{1}"
     };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "Verificação de mídia: a duração da saída não corresponde à fonte (tolerância de término antecipado {tolerance:.3} s; término tardio {0:.3} s)"
@@ -9945,6 +9959,9 @@ macro_rules! __ui_template_fr {
     ("Media found: {0}") => {
         "Média trouvé : {0}"
     };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "Vérification du média : le contenu du fichier ({0}) ne correspond pas à son extension .{1}"
+    };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "Vérification du média : la durée de la sortie ne correspond pas à la source (tolérance de fin anticipée {tolerance:.3} s ; fin tardive {0:.3} s)"
     };
@@ -10798,6 +10815,9 @@ macro_rules! __ui_template_de {
     };
     ("Media found: {0}") => {
         "Medien gefunden: {0}"
+    };
+    ("Media verification: the file's content ({0}) does not match its .{1} extension") => {
+        "Medienprüfung: Der Inhalt der Datei ({0}) passt nicht zur Dateiendung .{1}"
     };
     ("Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)") => {
         "Medienprüfung: Die Ausgabedauer stimmt nicht mit der Quelle überein (Toleranz für frühes Ende {tolerance:.3} s; spätes Ende {0:.3} s)"

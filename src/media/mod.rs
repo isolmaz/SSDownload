@@ -121,6 +121,7 @@ fn inspect_document_with_tools(
         request.page_url.as_deref(),
         &request.session_cookies,
     )?;
+    ensure_helpers_startable(deno, ffmpeg, &toolchain.ffprobe)?;
     let args = common_args(deno, ffmpeg, request.playlist);
     let mut command_args = args;
     command_args.extend([
@@ -640,7 +641,10 @@ pub(crate) fn download(
                 progress,
             )?)
         }
-        None => None,
+        None => {
+            ensure_helpers_startable(deno, ffmpeg, &toolchain.ffprobe)?;
+            None
+        }
     };
     let mut completed_files = HashSet::new();
     let mut last_path = None;
@@ -1105,6 +1109,101 @@ pub(crate) fn mux_browser_streams(
     Ok(())
 }
 
+/// Moves the one file the browser relayed to `output`. A media job's file holds what the page
+/// served, such as the MPEG-TS segments of an HLS playlist, whatever container the job's name
+/// promises, so it is copied into that container without re-encoding where it differs. A raw file
+/// job keeps its bytes.
+pub(crate) fn place_browser_file(
+    paths: &AppPaths,
+    request: &AddRequest,
+    source: &Path,
+    output: &Path,
+    control: &TransferControl,
+) -> Result<()> {
+    let extension = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|_| matches!(request.kind, DownloadKind::Video | DownloadKind::Audio));
+    let Some(extension) = extension else {
+        fs::rename(source, output)?;
+        return Ok(());
+    };
+    let tools = tools::verified_toolchain(paths, control)?;
+    let probed = run_capture(
+        &tools.ffprobe,
+        &[
+            "-v".into(),
+            "error".into(),
+            "-protocol_whitelist".into(),
+            "file,pipe".into(),
+            "-show_entries".into(),
+            "format=format_name".into(),
+            "-of".into(),
+            "default=nw=1:nk=1".into(),
+            source.to_string_lossy().into_owned(),
+        ],
+        b"",
+        Duration::from_secs(60),
+        control,
+    )?;
+    let format_name = String::from_utf8_lossy(&probed.stdout);
+    // A file ffprobe cannot read is left for the verification to report.
+    if !probed.status.success() || container_matches_extension(format_name.trim(), extension) {
+        fs::rename(source, output)?;
+        return Ok(());
+    }
+    let parent = output.parent().context(crate::i18n::ui(
+        "Tarayıcı medya hedef klasörü eksik",
+        "The browser media target folder is missing",
+    ))?;
+    // The extension picks the muxer.
+    let staged = parent.join(format!(".browser-mux-{}.{extension}", uuid::Uuid::new_v4()));
+    // No `-xerror`: segments muxed one by one restart the transport stream's continuity counters,
+    // FFmpeg flags the packets at each join as corrupt, and `-xerror` stops at the first.
+    let result = run_capture(
+        &tools.ffmpeg,
+        &[
+            "-v".into(),
+            "error".into(),
+            "-nostdin".into(),
+            "-protocol_whitelist".into(),
+            "file,crypto,data".into(),
+            "-i".into(),
+            source.to_string_lossy().into_owned(),
+            "-map".into(),
+            "0:v?".into(),
+            "-map".into(),
+            "0:a?".into(),
+            "-c".into(),
+            "copy".into(),
+            staged.to_string_lossy().into_owned(),
+        ],
+        b"",
+        Duration::from_secs(10 * 60),
+        control,
+    )?;
+    if !result.status.success() || !result.stderr.trim().is_empty() {
+        let _ = fs::remove_file(&staged);
+        bail!(
+            "{}",
+            crate::i18n::ui_format!(
+                "Tarayıcı medya akışları kayıpsız birleştirilemedi: {0}",
+                "The browser media streams could not be merged losslessly: {0}",
+                bounded_tail(&result.stderr, 4096)
+            )
+        );
+    }
+    if let Err(error) = fs::rename(&staged, output) {
+        let _ = fs::remove_file(&staged);
+        return Err(error).context(crate::i18n::ui(
+            "Tarayıcı medya çıktısı hedefe alınamadı",
+            "Could not move the browser media output to its target",
+        ));
+    }
+    let _ = fs::remove_file(source);
+    Ok(())
+}
+
 /// FFmpeg arguments that copy the browser's stream files into one container.
 fn browser_mux_args(
     request: &AddRequest,
@@ -1423,6 +1522,18 @@ fn load_info_args(info_path: &Path, pinned: bool) -> Vec<String> {
         info_path.to_string_lossy().into_owned(),
     ]);
     args
+}
+
+/// yt-dlp starts FFmpeg, FFprobe and Deno from the paths it is given, and a program starts only
+/// from a path of at most 259 UTF-16 units; the verbatim prefix of a canonical path counts.
+/// Past that yt-dlp treats the tool as not installed, warns and carries on, which leaves streams
+/// unmerged or in the wrong container and still exits successfully.
+fn ensure_helpers_startable(deno: &Path, ffmpeg: &Path, ffprobe: &Path) -> Result<()> {
+    let startable = |path: &Path| path.to_string_lossy().encode_utf16().count() <= 259;
+    if ![deno, ffmpeg, ffprobe].into_iter().all(startable) {
+        crate::bail_code!(crate::error_codes::TOL_005);
+    }
+    Ok(())
 }
 
 /// The arguments that make yt-dlp report its progress, its post-processors and the finished
