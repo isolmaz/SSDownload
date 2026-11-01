@@ -92,7 +92,7 @@ enum Command {
     UpdateQueuePolicy(QueuePolicy, Reply<()>),
     CancelCompletionAction(String, Reply<()>),
     RunSynchronization(String, Reply<()>),
-    BeginBrowserTransfer(String, u32, u64, Reply<(Job, u64)>),
+    BeginBrowserTransfer(String, u32, u64, bool, Reply<(Job, u64)>),
     BrowserTransferJob(String, Reply<(Job, u64)>),
     BrowserTransferProgress(String, u64, Option<u64>, Reply<()>),
     TryBeginBrowserRequest(String, u64, String, Reply<bool>),
@@ -735,9 +735,10 @@ impl Engine {
         id: &str,
         sender_pid: u32,
         sender_started_at: u64,
+        restart: bool,
     ) -> Result<(Job, u64)> {
         self.request(|reply| {
-            Command::BeginBrowserTransfer(id.into(), sender_pid, sender_started_at, reply)
+            Command::BeginBrowserTransfer(id.into(), sender_pid, sender_started_at, restart, reply)
         })
     }
     pub fn browser_transfer_job(&self, id: &str) -> Result<(Job, u64)> {
@@ -947,10 +948,12 @@ impl Actor {
                 respond(reply, self.cancel_completion_action(&queue_id))
             }
             Command::RunSynchronization(id, reply) => respond(reply, self.run_synchronization(&id)),
-            Command::BeginBrowserTransfer(id, sender_pid, sender_started_at, reply) => respond(
-                reply,
-                self.begin_browser_transfer(&id, sender_pid, sender_started_at),
-            ),
+            Command::BeginBrowserTransfer(id, sender_pid, sender_started_at, restart, reply) => {
+                respond(
+                    reply,
+                    self.begin_browser_transfer(&id, sender_pid, sender_started_at, restart),
+                )
+            }
             Command::BrowserTransferJob(id, reply) => {
                 respond(reply, self.browser_transfer_job(&id))
             }
@@ -2484,6 +2487,7 @@ impl Actor {
         id: &str,
         sender_pid: u32,
         sender_started_at: u64,
+        restart: bool,
     ) -> Result<(Job, u64)> {
         // These refusals carry SSD-TRF-014, which tells the extension in any interface
         // language to stop resuming the job.
@@ -2581,7 +2585,9 @@ impl Actor {
             );
         }
         let sender = BrowserTransferSender::open(sender_pid, sender_started_at)?;
-        let acknowledged = if job.browser_transfer_authorized {
+        // A resumed transfer reports the bytes it committed before again; a restart is a new
+        // download, which its queue's quota counts again.
+        let acknowledged = if job.browser_transfer_authorized && !restart {
             job.downloaded
         } else {
             0
@@ -3287,7 +3293,10 @@ impl Actor {
                     JobState::Downloading
                 };
                 job.updated_at = Utc::now().timestamp();
-                self.quota_accounted.insert(id.clone(), value.downloaded);
+                // A downloader that starts again reports from the bytes it kept, fewer than this job
+                // may have counted; the count goes on from the most it has reached.
+                self.quota_accounted
+                    .insert(id.clone(), value.downloaded.max(accounted));
                 consume_queue_bytes(&mut self.settings, &queue_id, delta);
                 // Progress (and the quota bytes it consumed) is persisted at most once a
                 // second per job: a crash can forget at most that last second, while every
@@ -3342,6 +3351,7 @@ impl Actor {
                         uncapped.direct.max(uncapped.media_fragments).max(1)
                     });
                 let progressed = attempt_progressed(&mut self.retained_high, &id, &active.control);
+                let kept_nothing = matches!(active.control.retained(), Some((_, 0)));
                 if result.is_ok() || matches!(active.desired, DesiredStop::Remove { .. }) {
                     self.forget_retry_state(&id);
                 }
@@ -3385,6 +3395,7 @@ impl Actor {
                     DesiredStop::None => {
                         if let Err(failure) = &mut result {
                             failure.progressed = progressed;
+                            failure.kept_nothing = kept_nothing;
                         }
                         self.update_retry_connection_cap(
                             &id,
@@ -3649,6 +3660,12 @@ impl Actor {
                     job.phase = crate::i18n::ui("Başarısız", "Failed").into();
                     self.retry_at.remove(id);
                     crate::logging::record_job(id, failure_event(&job, &message));
+                }
+                // Only the user starts a failed job again, and with nothing kept it downloads from
+                // the beginning: a new download, which its queue's quota counts again.
+                if job.state == JobState::Failed && failure.kept_nothing {
+                    job.downloaded = 0;
+                    self.quota_accounted.insert(id.into(), 0);
                 }
             }
         }
@@ -5017,6 +5034,9 @@ struct TransferFailure {
     /// The attempt ended above the most the job had retained before; the engine judges it when
     /// the attempt ends.
     progressed: bool,
+    /// The attempt left nothing on disk for a later one to continue from; the engine measures
+    /// it when the attempt ends.
+    kept_nothing: bool,
     /// The server answered 429 or 503.
     throttled: bool,
 }
@@ -5029,6 +5049,7 @@ fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailu
         source_refresh: source_refresh_needed(request, &error),
         message: safe_error(request, &detail),
         progressed: false,
+        kept_nothing: false,
         throttled: transfer::http_status(&error)
             .or_else(|| http_status_in_text(&detail.to_lowercase()))
             .is_some_and(|status| matches!(status, 429 | 503)),

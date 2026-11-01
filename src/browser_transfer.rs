@@ -391,8 +391,9 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
         Command::Begin {
             sender_pid: Some(pid),
             sender_started_at: Some(started_at),
+            restart,
             ..
-        } => Some((*pid, *started_at)),
+        } => Some((*pid, *started_at, *restart)),
         Command::Begin { .. } => bail!(
             "{}",
             crate::i18n::ui(
@@ -403,8 +404,8 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
         _ => None,
     };
     let is_begin = sender.is_some();
-    let (job, generation) = if let Some((sender_pid, sender_started_at)) = sender {
-        engine.begin_browser_transfer(command.id(), sender_pid, sender_started_at)?
+    let (job, generation) = if let Some((sender_pid, sender_started_at, restart)) = sender {
+        engine.begin_browser_transfer(command.id(), sender_pid, sender_started_at, restart)?
     } else {
         engine.browser_transfer_job(command.id())?
     };

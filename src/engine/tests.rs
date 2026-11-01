@@ -713,7 +713,7 @@ fn browser_policy_stop_persists_scheduled_state_before_releasing_generation() {
         process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .unwrap();
     let (_, generation) = engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
     assert!(engine.browser_transfer_progress(&id, 1, Some(2)).is_err());
     let snapshot = engine.snapshot();
@@ -759,7 +759,7 @@ fn browser_transfer_refusals_carry_their_code() {
             .unwrap();
     let refusal = |id: &str| {
         engine
-            .begin_browser_transfer(id, std::process::id(), sender_started_at)
+            .begin_browser_transfer(id, std::process::id(), sender_started_at, false)
             .map(|_| ())
             .unwrap_err()
     };
@@ -825,7 +825,7 @@ fn disconnected_sender_releases_only_its_generation() {
         process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .unwrap();
     let (_, first_generation) = engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
     engine
         .release_browser_transfer(&id, first_generation)
@@ -836,7 +836,7 @@ fn disconnected_sender_releases_only_its_generation() {
     assert!(job.phase.contains("bağlantısı koptu"));
 
     let (_, current_generation) = engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
     assert_ne!(first_generation, current_generation);
     engine
@@ -859,6 +859,71 @@ fn disconnected_sender_releases_only_its_generation() {
             .state,
         JobState::Paused
     );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_restarted_browser_transfer_counts_its_bytes_again_and_a_resumed_one_does_not() {
+    let root = std::env::temp_dir().join(format!(
+        "ssdownload-engine-browser-quota-{}",
+        Uuid::new_v4()
+    ));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let engine = Engine::open(paths.clone()).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(AddRequest {
+            url: "https://example.test/browser-quota.bin".into(),
+            filename: Some("browser-quota.bin".into()),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..Default::default()
+        })
+        .unwrap()
+        .remove(0);
+    engine.shutdown();
+
+    // A browser transfer of the job had committed 1 MB when it was paused.
+    let mut store = Store::open(&paths.database).unwrap();
+    let mut job = store
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap();
+    job.request.start_at = None;
+    job.state = JobState::Paused;
+    job.browser_transfer_authorized = true;
+    job.downloaded = 1_000_000;
+    store.save_job(&job).unwrap();
+    drop(store);
+
+    let engine = Engine::open(paths).unwrap();
+    let sender_started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    let total = Some(4_000_000);
+    // Resumed, the transfer reports the bytes it committed before and those it adds.
+    let (_, generation) = engine
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, 1_300_000, total)
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+    engine.release_browser_transfer(&id, generation).unwrap();
+
+    // Restarted, it downloads the file again from the first byte.
+    engine
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, true)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, 200_000, total)
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 500_000);
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
 }
@@ -919,7 +984,7 @@ fn exited_native_sender_pauses_without_an_idle_timeout() {
 
     let engine = Engine::open(paths).unwrap();
     let (_, generation) = engine
-        .begin_browser_transfer(&id, sender.id(), sender_started_at)
+        .begin_browser_transfer(&id, sender.id(), sender_started_at, false)
         .unwrap();
     sender.kill().unwrap();
     sender.wait().unwrap();
@@ -1831,6 +1896,37 @@ fn a_job_that_did_not_report_everything_gets_the_rest_of_its_result_added() {
     );
 }
 
+fn downloaded(bytes: &[u64]) -> Vec<TransferProgress> {
+    bytes
+        .iter()
+        .map(|&downloaded| TransferProgress {
+            downloaded,
+            ..TransferProgress::default()
+        })
+        .collect()
+}
+
+#[test]
+fn bytes_a_job_reports_again_after_its_count_fell_are_counted_once() {
+    assert_eq!(
+        quota_consumed_by_a_job_that_reports(&downloaded(&[600_000, 400_000, 700_000]), 700_000),
+        700_000
+    );
+}
+
+#[test]
+fn a_media_run_that_starts_again_counts_only_the_bytes_beyond_where_the_last_run_got() {
+    // yt-dlp, started again (a new speed limit, a stall, a lost fragment), first reports the files
+    // it has finished, then the partial file it resumes, then what it fetches on.
+    let first_run: [u64; 3] = [200_000, 350_000, 500_000];
+    let second_run: [u64; 4] = [200_000, 500_000, 650_000, 800_000];
+    let reports = downloaded(&[&first_run[..], &second_run[..]].concat());
+    assert_eq!(
+        quota_consumed_by_a_job_that_reports(&reports, 800_000),
+        800_000
+    );
+}
+
 fn shutdown_when_done(queue: &QueuePolicy) -> QueuePolicy {
     QueuePolicy {
         // The countdown is far longer than any test, and the tests cancel it, so
@@ -2302,7 +2398,7 @@ fn pausing_a_browser_transfer_releases_the_permits_of_its_open_requests() {
         process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .unwrap();
     let (_, generation) = engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
     let limit = usize::from(engine.snapshot().settings.per_host_limit);
     for index in 0..limit {
@@ -2932,6 +3028,130 @@ mod retry_budget {
             })
             .unwrap_or_default();
         assert!(left.is_empty(), "partial files left behind: {left:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_retry_that_reports_less_than_the_attempt_before_it_counts_only_the_bytes_beyond_it() {
+        // The reports are those of the app's HLS downloader: a failed attempt has reported its
+        // stored segments and the part of a segment still coming, and the next attempt starts
+        // from the stored segments. The server holds every answer back for two seconds, so each
+        // attempt waits while its reports go in, and answers the first attempt's probe with 500.
+        let server = Server::start(Config {
+            size: 64 * 1024,
+            scripted: vec![Scripted {
+                status: 500,
+                retry_after: None,
+            }],
+            latency: Some(Duration::from_secs(2)),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-quota-once");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        let queue = give_the_default_queue_a_quota(&engine);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+        // A worker's generation is not visible, so every message goes out for each generation the
+        // job can have; the engine ignores the ones that are not its worker's.
+        let send = |event: &dyn Fn(u64) -> WorkerEvent| {
+            for generation in 1..=8 {
+                engine
+                    .inner
+                    .sender
+                    .send(Message::Worker(event(generation)))
+                    .unwrap();
+            }
+        };
+        let report = |bytes: &[u64]| {
+            for value in downloaded(bytes) {
+                send(&|generation| WorkerEvent::Progress {
+                    id: id.clone(),
+                    generation,
+                    value: value.clone(),
+                });
+            }
+        };
+
+        wait_until("the first attempt", || attempts_made(&server) == 1);
+        report(&[400_000, 1_100_000]);
+        wait_until("the retry", || attempts_made(&server) == 2);
+        report(&[1_000_000, 1_200_000, 1_500_000]);
+        let path = engine
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|job| job.id == id)
+            .unwrap()
+            .path
+            .clone();
+        send(&|generation| WorkerEvent::Finished {
+            id: id.clone(),
+            generation,
+            result: Ok(TransferResult {
+                path: path.clone(),
+                bytes: 1_500_000,
+                warning: None,
+            }),
+        });
+        wait_until("the job", || job_state(&engine, &id) == JobState::Completed);
+
+        assert_eq!(consumed_quota_bytes(&engine, &queue), 1_500_000);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn retrying_a_download_that_failed_and_kept_nothing_counts_its_bytes_again() {
+        // A SHA-256 that does not match deletes the file, so each retry, which only the user
+        // starts, downloads it again from the beginning.
+        let size = MIB;
+        let server = Server::start(Config {
+            size,
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-quota-again");
+        let engine = engine_with_retry_limit(&root.0, 1);
+        let queue = give_the_default_queue_a_quota(&engine);
+        let id = add_download(&engine, &server, &root.0.join("out"), Some(&"0".repeat(64)));
+        assert_eq!(finished_job(&engine, &id).state, JobState::Failed);
+        assert_eq!(consumed_quota_bytes(&engine, &queue), size);
+
+        engine.retry_failed().unwrap();
+        assert_eq!(finished_job(&engine, &id).state, JobState::Failed);
+        assert_eq!(consumed_quota_bytes(&engine, &queue), 2 * size);
+
+        // So does a retry after the app was closed in between.
+        engine.shutdown();
+        let engine = Engine::open(AppPaths::new(root.0.clone()).unwrap()).unwrap();
+        engine.retry_failed().unwrap();
+        assert_eq!(finished_job(&engine, &id).state, JobState::Failed);
+        assert_eq!(consumed_quota_bytes(&engine, &queue), 3 * size);
+        assert_eq!(server.body_bytes_sent(), 3 * size);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn retrying_a_download_that_failed_and_kept_bytes_does_not_count_them_again() {
+        // Slow enough for the attempt to report bytes before its connection is cut.
+        let size = MIB;
+        let server = Server::start(Config {
+            size,
+            throttle: Some(512 * 1024),
+            cut_body: Some(CutBody {
+                after_bytes: 300 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-quota-kept");
+        let engine = engine_with_retry_limit(&root.0, 0);
+        let queue = give_the_default_queue_a_quota(&engine);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+        assert_eq!(finished_job(&engine, &id).state, JobState::Failed);
+        assert!(consumed_quota_bytes(&engine, &queue) > 0);
+
+        engine.retry_failed().unwrap();
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(consumed_quota_bytes(&engine, &queue), size);
         engine.shutdown();
     }
 
