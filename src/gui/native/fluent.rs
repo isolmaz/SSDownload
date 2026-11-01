@@ -2076,20 +2076,52 @@ unsafe fn footer_top(dlg: &DialogUi, client: &RECT) -> i32 {
     }
 }
 
-/// The Windows 11 surfaces and controls of the New download and Settings
-/// dialogs: the content card, the command bar with its top stroke, flat input
-/// frames with an accent line under the focused field, WinUI buttons with the
-/// primary action as the accent button, WinUI check boxes, and the label and
-/// field colours. Every other dialog keeps its own painting.
+/// The Windows 11 surfaces and controls of Modern's converted dialogs: the
+/// content card, the command bar with its top stroke, flat input frames with
+/// an accent line under the focused field that take a click anywhere on them,
+/// WinUI buttons with the primary action as the accent button, WinUI check
+/// boxes, and the label and field colours. Every other dialog keeps its own
+/// painting.
 pub(super) unsafe fn modern_dialog_message(
     dlg: &DialogUi,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<LRESULT> {
+    if !matches!(
+        msg,
+        WM_ERASEBKGND
+            | WM_CTLCOLORSTATIC
+            | WM_CTLCOLOREDIT
+            | WM_COMMAND
+            | WM_NOTIFY
+            | WM_LBUTTONDOWN
+    ) {
+        return None;
+    }
     let form = modern_form(dlg)?;
     let palette = main_palette(dlg.hwnd);
     match msg {
+        // The frame's padding belongs to its field: a click there goes to the
+        // field at the nearest point inside it.
+        WM_LBUTTONDOWN => {
+            let point = POINT {
+                x: loword(lparam as usize) as i16 as i32,
+                y: hiword(lparam as usize) as i16 as i32,
+            };
+            let field = form.inputs.iter().copied().find(|&control| {
+                IsWindowVisible(control) != 0
+                    && PtInRect(&input_frame(dlg.hwnd, control, dlg.dpi), point) != 0
+            })?;
+            let area = child_rect(dlg.hwnd, field);
+            let x = point.x.clamp(area.left, area.right - 1) - area.left;
+            let y = point.y.clamp(area.top, area.bottom - 1) - area.top;
+            let at = ((y as u32 & 0xffff) << 16 | (x as u32 & 0xffff)) as isize;
+            SetFocus(field);
+            SendMessageW(field, WM_LBUTTONDOWN, wparam, at);
+            SendMessageW(field, WM_LBUTTONUP, 0, at);
+            Some(0)
+        }
         WM_ERASEBKGND => {
             paint_modern_surfaces(dlg, &form, wparam as HDC, &palette);
             Some(1)
