@@ -35,6 +35,15 @@ pub(crate) const USER_AGENT: &str = concat!(
 const MAX_API_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ARCHIVE_EXPANDED: u64 = 3 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
+/// An install or refresh the application starts itself takes only a yt-dlp release that has been
+/// published for this long, so a release that is withdrawn or replaced soon after publication is
+/// not installed on its own.
+const YT_DLP_MIN_AGE: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+/// After an automatic install or refresh fails its self-test while a working set is installed, the
+/// next automatic attempt waits this long, so a failure that stays does not download the whole
+/// set again at every start. The time of the failure is kept in this file of the tools folder.
+const SELF_TEST_RETRY_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+const SELF_TEST_FAILED_FILE: &str = "selftest-failed";
 /// The BtbN build of this FFmpeg release branch (`ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip`)
 /// is installed; a release branch changes in bug fixes only, a master snapshot in anything.
 const FFMPEG_BRANCH: (u32, u32) = (9, 0);
@@ -180,6 +189,7 @@ pub fn install_missing(paths: &AppPaths) -> Result<()> {
     ensure(
         paths,
         false,
+        true,
         &network,
         &TransferControl::default(),
         &mut |_| {},
@@ -188,10 +198,12 @@ pub fn install_missing(paths: &AppPaths) -> Result<()> {
 }
 
 /// Installs a complete, verified private toolchain. The active manifest is switched only after
-/// every download, extraction and executable validation has succeeded.
+/// every download, extraction and executable validation has succeeded and the new tools have
+/// passed the self-test. `automatic` marks an install the application starts itself.
 pub(crate) fn ensure(
     paths: &AppPaths,
     force_update: bool,
+    automatic: bool,
     network: &NetworkGovernor,
     control: &TransferControl,
     progress: &mut dyn FnMut(ToolProgress),
@@ -229,25 +241,34 @@ pub(crate) fn ensure(
         return Ok(existing);
     }
 
-    emit(
-        progress,
-        crate::i18n::ui("Medya bileşenleri", "Media components"),
-        crate::i18n::ui(
-            "Güncel sürüm bilgileri alınıyor",
-            "Fetching current version information",
-        ),
-        0,
-        None,
-    );
-    let yt_release: GithubRelease = github_json(
-        "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
-        control,
-        network,
-    )
-    .context(crate::i18n::ui(
-        "yt-dlp sürüm bilgisi alınamadı",
-        "The yt-dlp version information could not be retrieved",
-    ))?;
+    let Some(Plan {
+        yt_release,
+        previous,
+    }) = plan(paths, &existing, automatic, unix_seconds(), || {
+        emit(
+            progress,
+            crate::i18n::ui("Medya bileşenleri", "Media components"),
+            crate::i18n::ui(
+                "Güncel sürüm bilgileri alınıyor",
+                "Fetching current version information",
+            ),
+            0,
+            None,
+        );
+        github_json(
+            "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=10",
+            control,
+            network,
+        )
+        .context(crate::i18n::ui(
+            "yt-dlp sürüm bilgisi alınamadı",
+            "The yt-dlp version information could not be retrieved",
+        ))
+    })?
+    else {
+        crate::logging::record(crate::logging::Event::info("tools.refresh_deferred"));
+        return Ok(existing);
+    };
     let deno_releases: Vec<GithubRelease> = github_json(
         &format!(
             "https://api.github.com/repos/denoland/deno/releases?per_page={DENO_RELEASE_LIST}"
@@ -300,7 +321,7 @@ pub(crate) fn ensure(
 
     let install_id = format!("{}-{}", unix_seconds(), Uuid::new_v4().simple());
     let staging = paths.tools_dir.join(format!(".staging-{install_id}"));
-    let mut cleanup = CleanupDir::new(staging.clone());
+    let cleanup = CleanupDir::new(staging.clone());
     fs::create_dir_all(&staging).context(crate::i18n::ui(
         "Geçici araç kurulum klasörü oluşturulamadı",
         "The temporary tool installation folder could not be created",
@@ -440,16 +461,17 @@ pub(crate) fn ensure(
     let deno_version = validate_version(&deno_path, &["--version"], "Deno")?;
     let ffmpeg_version = validate_version(&ffmpeg_path, &["-version"], "FFmpeg")?;
     let ffprobe_version = validate_version(&ffprobe_path, &["-version"], "ffprobe")?;
-
-    let version_root = paths.tools_dir.join("versions");
-    fs::create_dir_all(&version_root)?;
-    let final_dir = version_root.join(&install_id);
-    fs::rename(&staging, &final_dir).context(crate::i18n::ui(
-        "Doğrulanmış araç kurulumu etkinleştirme alanına taşınamadı",
-        "The verified tool installation could not be moved to the activation area",
-    ))?;
-    cleanup.disarm();
-    let mut final_cleanup = CleanupDir::new(final_dir.clone());
+    let check = run_self_test(
+        paths,
+        &install_id,
+        &VerifiedTools::staged(
+            yt_path.clone(),
+            deno_path.clone(),
+            ffmpeg_path.clone(),
+            ffprobe_path.clone(),
+        ),
+        control,
+    );
 
     let rel = |path: &Path| -> Result<PathBuf> {
         let inner = path.strip_prefix(&staging).context(crate::i18n::ui(
@@ -503,6 +525,156 @@ pub(crate) fn ensure(
         ],
     };
 
+    install_candidate(paths, cleanup, manifest, check, previous, control, progress)
+}
+
+/// What the installed set means for a new one that fails its self-test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Previous {
+    /// No working set is installed, so the failure is the failure of the install.
+    Missing,
+    /// A working set is installed and stays active; an automatic install, so the failure is
+    /// logged and held against the next automatic attempt.
+    Kept,
+    /// A working set is installed and stays active; the user who asked for the install is told.
+    KeptReported,
+}
+
+fn previous_set(installed: &[ToolInfo], automatic: bool) -> Previous {
+    match (installed.iter().all(|tool| tool.installed), automatic) {
+        (false, _) => Previous::Missing,
+        (true, true) => Previous::Kept,
+        (true, false) => Previous::KeptReported,
+    }
+}
+
+/// An explicit request takes the newest yt-dlp release; an automatic one waits for it to age.
+fn yt_dlp_min_age(automatic: bool) -> Duration {
+    if automatic {
+        YT_DLP_MIN_AGE
+    } else {
+        Duration::ZERO
+    }
+}
+
+/// The yt-dlp release an install takes and what the installed set means for its self-test.
+struct Plan {
+    yt_release: GithubRelease,
+    previous: Previous,
+}
+
+/// Decides an install or refresh from the installed set, whether the application started it
+/// itself and the clock. `None` means nothing is done now: an automatic refresh of a working set
+/// waits `SELF_TEST_RETRY_AFTER` after the failed self-test that `paths` remembers. `releases`
+/// fetches the yt-dlp release list and is not called then.
+fn plan(
+    paths: &AppPaths,
+    existing: &[ToolInfo],
+    automatic: bool,
+    now: i64,
+    releases: impl FnOnce() -> Result<Vec<GithubRelease>>,
+) -> Result<Option<Plan>> {
+    let previous = previous_set(existing, automatic);
+    if previous == Previous::Kept && retry_deferred(self_test_failed_at(paths), now) {
+        return Ok(None);
+    }
+    let yt_release = yt_dlp_release(releases()?, now, yt_dlp_min_age(automatic))?;
+    Ok(Some(Plan {
+        yt_release,
+        previous,
+    }))
+}
+
+/// Whether a failure at `last_failure` (Unix seconds) is recent enough to hold back an
+/// automatic attempt. A time in the future, from a clock that was set back, holds nothing back.
+fn retry_deferred(last_failure: Option<i64>, now: i64) -> bool {
+    last_failure.is_some_and(|failed| {
+        (0..SELF_TEST_RETRY_AFTER.as_secs() as i64).contains(&now.saturating_sub(failed))
+    })
+}
+
+/// When the self-test of an automatically installed set last failed.
+fn self_test_failed_at(paths: &AppPaths) -> Option<i64> {
+    fs::read_to_string(paths.tools_dir.join(SELF_TEST_FAILED_FILE))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn remember_self_test_failure(paths: &AppPaths, at: i64) {
+    let _ = crate::recovery::atomic_write(
+        &paths.tools_dir.join(SELF_TEST_FAILED_FILE),
+        at.to_string().as_bytes(),
+    );
+}
+
+/// Runs the self-test of the staged set in a scratch folder next to it.
+fn run_self_test(
+    paths: &AppPaths,
+    install_id: &str,
+    tools: &VerifiedTools,
+    control: &TransferControl,
+) -> Result<()> {
+    let scratch = CleanupDir::new(
+        paths
+            .tools_dir
+            .join(format!(".staging-{install_id}-selftest")),
+    );
+    crate::media::self_test(tools, &scratch.path, control)
+}
+
+/// Makes the staged set the active one once its self-test has passed. A set that fails the
+/// self-test is removed and `current.json` is not touched. A self-test that ends because the
+/// install was stopped is a stop, not a failure of the set.
+fn install_candidate(
+    paths: &AppPaths,
+    mut cleanup: CleanupDir,
+    manifest: InstallManifest,
+    check: Result<()>,
+    previous: Previous,
+    control: &TransferControl,
+    progress: &mut dyn FnMut(ToolProgress),
+) -> Result<Vec<ToolInfo>> {
+    match check {
+        Ok(()) => crate::logging::record(
+            crate::logging::Event::info("tools.selftest").detail(manifest.install_id.as_str()),
+        ),
+        Err(_) if control.stop_requested() => {
+            crate::logging::record(
+                crate::logging::Event::info("tools.selftest_stopped")
+                    .detail(manifest.install_id.as_str()),
+            );
+            bail!("{}", tools_stopped());
+        }
+        Err(error) => {
+            crate::logging::record(
+                crate::logging::Event::warn("tools.selftest_failed")
+                    .detail(format!("{}: {error:#}; {previous:?}", manifest.install_id)),
+            );
+            if previous == Previous::Kept {
+                remember_self_test_failure(paths, unix_seconds());
+            }
+            return match previous {
+                Previous::Missing => Err(error),
+                Previous::Kept => Ok(status(paths)),
+                Previous::KeptReported => Err(error).context(crate::i18n::ui(
+                    "Yeni araç kurulumu etkinleştirilemedi; önceki kurulum korundu",
+                    "The new tool installation could not be activated; the previous installation was kept",
+                )),
+            };
+        }
+    }
+    let version_root = paths.tools_dir.join("versions");
+    fs::create_dir_all(&version_root)?;
+    let final_dir = version_root.join(&manifest.install_id);
+    fs::rename(&cleanup.path, &final_dir).context(crate::i18n::ui(
+        "Doğrulanmış araç kurulumu etkinleştirme alanına taşınamadı",
+        "The verified tool installation could not be moved to the activation area",
+    ))?;
+    cleanup.disarm();
+    let mut final_cleanup = CleanupDir::new(final_dir.clone());
+
     let inventory = serde_json::json!({"bomFormat":"CycloneDX","specVersion":"1.6","version":1,"metadata":{"properties":[{"name":"ssdownload:inventory-scope","value":"Downloaded release assets; embedded transitive binary dependencies are governed by the upstream archive notices."}]},"components":manifest.components.iter().map(|component|serde_json::json!({"type":"application","name":component.name,"version":component.version,"hashes":[{"alg":"SHA-256","content":component.asset_sha256}],"externalReferences":[{"type":"distribution","url":component.asset_url},{"type":"vcs","url":component.source_url}],"properties":[{"name":"upstream-license-notice","value":component.license}]})).collect::<Vec<_>>()});
     crate::recovery::atomic_write(
         &final_dir.join("sbom.cdx.json"),
@@ -521,6 +693,7 @@ pub(crate) fn ensure(
         ));
     }
     final_cleanup.disarm();
+    let _ = fs::remove_file(paths.tools_dir.join(SELF_TEST_FAILED_FILE));
     if let Err(error) = cleanup_versions(paths) {
         emit(
             progress,
@@ -552,6 +725,24 @@ pub(crate) struct VerifiedTools {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
     _files: Vec<File>,
+}
+
+impl VerifiedTools {
+    /// A set that is not installed yet, so its files are not locked.
+    pub(crate) fn staged(
+        yt_dlp: PathBuf,
+        deno: PathBuf,
+        ffmpeg: PathBuf,
+        ffprobe: PathBuf,
+    ) -> Self {
+        Self {
+            yt_dlp,
+            deno,
+            ffmpeg,
+            ffprobe,
+            _files: Vec::new(),
+        }
+    }
 }
 
 type ToolchainCache = HashMap<PathBuf, (String, Arc<VerifiedTools>)>;
@@ -1819,6 +2010,36 @@ fn unix_seconds() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
+
+/// The newest stable yt-dlp release that has been published for at least `min_age` at `now`
+/// (Unix seconds). With a zero `min_age` it is the newest stable release.
+fn yt_dlp_release(
+    releases: Vec<GithubRelease>,
+    now: i64,
+    min_age: Duration,
+) -> Result<GithubRelease> {
+    releases
+        .into_iter()
+        .filter(|release| !release.draft && !release.prerelease)
+        .filter_map(|release| {
+            let published = chrono::DateTime::parse_from_rfc3339(release.published_at.as_deref()?)
+                .ok()?
+                .timestamp();
+            (min_age.is_zero() || now.saturating_sub(published) >= min_age.as_secs() as i64)
+                .then_some((published, release))
+        })
+        .max_by_key(|(published, _)| *published)
+        .map(|(_, release)| release)
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::i18n::ui(
+                    "Uygun kararlı bir yt-dlp yayını bulunamadı",
+                    "No suitable stable yt-dlp release was found"
+                )
+            )
+        })
+}
 fn bounded(value: &str, max: usize) -> String {
     if value.len() <= max {
         return value.to_string();
@@ -1942,6 +2163,7 @@ fn cleanup_versions(paths: &AppPaths) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::stubs::{outcome, Fault};
 
     fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
         let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
@@ -1951,6 +2173,656 @@ mod tests {
             zip.write_all(bytes).unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    fn yt_dlp_releases(releases: &[(&str, Option<&str>, bool, bool)]) -> Vec<GithubRelease> {
+        releases
+            .iter()
+            .map(|(tag, published, draft, prerelease)| {
+                let assets = ["yt-dlp.exe", "SHA2-256SUMS"].map(|name| {
+                    serde_json::json!({
+                        "url": "https://api.github.com/repos/o/r/releases/assets/1",
+                        "id": 1,
+                        "name": name,
+                        "content_type": "application/octet-stream",
+                        "state": "uploaded",
+                        "size": 1024,
+                        "browser_download_url": format!("https://github.com/o/r/releases/download/{tag}/{name}"),
+                    })
+                });
+                serde_json::from_value(serde_json::json!({
+                    "url": "https://api.github.com/repos/o/r/releases/7",
+                    "id": 7,
+                    "tag_name": tag,
+                    "draft": draft,
+                    "prerelease": prerelease,
+                    "published_at": published,
+                    "html_url": format!("https://github.com/o/r/releases/tag/{tag}"),
+                    "assets": assets,
+                }))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn at(time: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(time)
+            .unwrap()
+            .timestamp()
+    }
+
+    const NOW: &str = "2026-10-31T12:00:00Z";
+    const THREE_DAYS: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+
+    fn yt_dlp_tag(
+        releases: &[(&str, Option<&str>, bool, bool)],
+        now: &str,
+        min_age: Duration,
+    ) -> Result<String> {
+        yt_dlp_release(yt_dlp_releases(releases), at(now), min_age).map(|release| release.tag_name)
+    }
+
+    #[test]
+    fn an_automatic_install_takes_the_newest_release_that_is_old_enough() {
+        let releases = [
+            ("2026.10.30", Some("2026-10-30T20:00:00Z"), false, false),
+            ("2026.10.29", Some("2026-10-29T10:00:00Z"), false, false),
+            ("2026.10.26", Some("2026-10-26T22:25:26Z"), false, false),
+            ("2026.10.12", Some("2026-10-12T22:25:26Z"), false, false),
+        ];
+        assert_eq!(
+            yt_dlp_tag(&releases, NOW, THREE_DAYS).unwrap(),
+            "2026.10.26"
+        );
+    }
+
+    #[test]
+    fn a_release_must_be_three_days_old_to_the_second() {
+        let old = ("2026.10.20", Some("2026-10-20T12:00:00Z"), false, false);
+        let exactly = ("2026.10.28", Some("2026-10-28T12:00:00Z"), false, false);
+        let almost = ("2026.10.28", Some("2026-10-28T12:00:01Z"), false, false);
+        assert_eq!(
+            yt_dlp_tag(&[exactly, old], NOW, THREE_DAYS).unwrap(),
+            "2026.10.28"
+        );
+        assert_eq!(
+            yt_dlp_tag(&[almost, old], NOW, THREE_DAYS).unwrap(),
+            "2026.10.20"
+        );
+    }
+
+    #[test]
+    fn an_explicit_request_takes_the_newest_release_whatever_its_age() {
+        let releases = [
+            ("2026.10.31", Some("2026-10-31T11:59:00Z"), false, false),
+            ("2026.10.26", Some("2026-10-26T22:25:26Z"), false, false),
+        ];
+        assert_eq!(
+            yt_dlp_tag(&releases, NOW, yt_dlp_min_age(false)).unwrap(),
+            "2026.10.31"
+        );
+        assert_eq!(
+            yt_dlp_tag(&releases, NOW, yt_dlp_min_age(true)).unwrap(),
+            "2026.10.26"
+        );
+        // A clock that runs behind the publication time does not hide the newest release.
+        assert_eq!(
+            yt_dlp_tag(&releases, "2026-10-31T11:00:00Z", yt_dlp_min_age(false)).unwrap(),
+            "2026.10.31"
+        );
+    }
+
+    #[test]
+    fn the_waiting_period_of_an_automatic_install_is_three_days() {
+        assert_eq!(yt_dlp_min_age(true), THREE_DAYS);
+        assert!(yt_dlp_min_age(false).is_zero());
+    }
+
+    #[test]
+    fn drafts_and_prereleases_are_never_taken_however_old() {
+        let releases = [
+            (
+                "2026.10.25.123456",
+                Some("2026-10-25T01:00:00Z"),
+                false,
+                true,
+            ),
+            ("2026.10.24", Some("2026-10-24T01:00:00Z"), true, false),
+            ("2026.10.23", Some("2026-10-23T01:00:00Z"), false, false),
+        ];
+        for min_age in [THREE_DAYS, Duration::ZERO] {
+            assert_eq!(yt_dlp_tag(&releases, NOW, min_age).unwrap(), "2026.10.23");
+        }
+    }
+
+    #[test]
+    fn the_publication_time_decides_not_the_order_of_the_list() {
+        let releases = [
+            ("2026.10.12", Some("2026-10-12T22:25:26Z"), false, false),
+            ("2026.10.26", Some("2026-10-26T22:25:26Z"), false, false),
+            ("2026.10.20", Some("2026-10-20T22:25:26Z"), false, false),
+        ];
+        assert_eq!(
+            yt_dlp_tag(&releases, NOW, THREE_DAYS).unwrap(),
+            "2026.10.26"
+        );
+    }
+
+    #[test]
+    fn a_release_without_a_readable_publication_time_is_skipped() {
+        let releases = [
+            ("2026.10.27", None, false, false),
+            ("2026.10.26", Some("yesterday"), false, false),
+            ("2026.10.20", Some("2026-10-20T22:25:26Z"), false, false),
+        ];
+        assert_eq!(
+            yt_dlp_tag(&releases, NOW, THREE_DAYS).unwrap(),
+            "2026.10.20"
+        );
+        assert!(yt_dlp_tag(&releases[..2], NOW, THREE_DAYS).is_err());
+        assert!(yt_dlp_tag(&releases[..2], NOW, Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn no_release_old_enough_is_an_error_for_an_automatic_install_only() {
+        let releases = [("2026.10.31", Some("2026-10-31T01:00:00Z"), false, false)];
+        assert!(yt_dlp_tag(&releases, NOW, THREE_DAYS).is_err());
+        assert_eq!(
+            yt_dlp_tag(&releases, NOW, Duration::ZERO).unwrap(),
+            "2026.10.31"
+        );
+        assert!(yt_dlp_tag(&[], NOW, Duration::ZERO).is_err());
+    }
+
+    /// A temporary profile that is deleted when the test ends. `status` verifies the installed
+    /// set and keeps its files open in the process-wide toolchain cache, which blocks the
+    /// deletion, so the profile lets that entry go first.
+    struct TestProfile(AppPaths);
+
+    impl std::ops::Deref for TestProfile {
+        type Target = AppPaths;
+
+        fn deref(&self) -> &AppPaths {
+            &self.0
+        }
+    }
+
+    impl Drop for TestProfile {
+        fn drop(&mut self) {
+            TOOLCHAIN_CACHE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.0.tools_dir);
+            let removed = fs::remove_dir_all(&self.0.base_dir);
+            if !std::thread::panicking() {
+                removed.expect("the test profile could not be deleted");
+            }
+        }
+    }
+
+    fn test_paths() -> TestProfile {
+        TestProfile(
+            AppPaths::new(
+                std::env::temp_dir().join(format!("ssdownload-tools-test-{}", Uuid::new_v4())),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Writes the four tool files of a set under `root` and describes them as a manifest.
+    fn fake_set(install_id: &str, installed_at: i64, root: &Path) -> InstallManifest {
+        let mut files = Vec::new();
+        let mut components = Vec::new();
+        for (name, file) in [
+            ("yt-dlp", "yt-dlp/yt-dlp.exe"),
+            ("Deno", "deno/deno.exe"),
+            ("FFmpeg", "ffmpeg/bin/ffmpeg.exe"),
+            ("ffprobe", "ffmpeg/bin/ffprobe.exe"),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let bytes = format!("{install_id} {name}");
+            fs::write(&path, &bytes).unwrap();
+            let path = PathBuf::from("versions").join(install_id).join(file);
+            files.push(InstalledFile {
+                path: path.clone(),
+                sha256: hex::encode(Sha256::digest(bytes.as_bytes())),
+            });
+            components.push(ComponentManifest {
+                name: name.into(),
+                version: bytes,
+                release_tag: "test".into(),
+                release_id: 1,
+                published_at: String::new(),
+                source_url: "https://example.invalid/".into(),
+                upstream_project: String::new(),
+                asset_url: "https://example.invalid/asset".into(),
+                asset_sha256: "0".repeat(64),
+                license: "test".into(),
+                path,
+            });
+        }
+        InstallManifest {
+            schema: 2,
+            install_id: install_id.into(),
+            installed_at,
+            components,
+            files,
+        }
+    }
+
+    /// An installed, active set.
+    fn install_active(paths: &AppPaths, install_id: &str, installed_at: i64) {
+        let root = paths.tools_dir.join("versions").join(install_id);
+        let manifest = fake_set(install_id, installed_at, &root);
+        write_manifest_file(&root.join("install-manifest.json"), &manifest).unwrap();
+        activate_manifest(paths, &manifest).unwrap();
+    }
+
+    /// A set that is downloaded and verified but not moved into place.
+    fn stage_candidate(paths: &AppPaths, install_id: &str) -> (CleanupDir, InstallManifest) {
+        let staging = paths.tools_dir.join(format!(".staging-{install_id}"));
+        let manifest = fake_set(install_id, 2_000, &staging);
+        (CleanupDir::new(staging), manifest)
+    }
+
+    fn active_id(paths: &AppPaths) -> String {
+        read_manifest(&paths.tools_dir.join(MANIFEST_FILE))
+            .unwrap()
+            .install_id
+    }
+
+    #[test]
+    fn a_set_that_passes_the_self_test_becomes_the_active_one() {
+        let paths = test_paths();
+        install_active(&paths, "old", 1_000);
+        let (cleanup, manifest) = stage_candidate(&paths, "new");
+        let staging = cleanup.path.clone();
+
+        let installed = install_candidate(
+            &paths,
+            cleanup,
+            manifest,
+            outcome(Fault::None),
+            Previous::Kept,
+            &TransferControl::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert!(installed.iter().all(|tool| tool.installed));
+        assert!(installed
+            .iter()
+            .all(|tool| tool.version.starts_with("new ")));
+        assert_eq!(active_id(&paths), "new");
+        assert!(paths.tools_dir.join("versions").join("new").is_dir());
+        assert!(paths.tools_dir.join("versions").join("old").is_dir());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn a_set_that_fails_the_self_test_in_any_way_leaves_the_active_set_in_use() {
+        for fault in Fault::FAILING {
+            let paths = test_paths();
+            install_active(&paths, "old", 1_000);
+            let current = paths.tools_dir.join(MANIFEST_FILE);
+            let before = fs::read(&current).unwrap();
+            let (cleanup, manifest) = stage_candidate(&paths, "new");
+            let staging = cleanup.path.clone();
+            let check = outcome(fault);
+            assert!(check.is_err(), "{fault:?} passed the self-test");
+
+            let installed = install_candidate(
+                &paths,
+                cleanup,
+                manifest,
+                check,
+                Previous::Kept,
+                &TransferControl::default(),
+                &mut |_| {},
+            )
+            .unwrap();
+
+            assert!(installed.iter().all(|tool| tool.installed), "{fault:?}");
+            assert!(
+                installed
+                    .iter()
+                    .all(|tool| tool.version.starts_with("old ")),
+                "{fault:?}"
+            );
+            assert_eq!(fs::read(&current).unwrap(), before, "{fault:?}");
+            assert_eq!(active_id(&paths), "old", "{fault:?}");
+            assert!(
+                !paths.tools_dir.join("versions").join("new").exists(),
+                "{fault:?}"
+            );
+            assert!(
+                paths.tools_dir.join("versions").join("old").is_dir(),
+                "{fault:?}"
+            );
+            assert!(!staging.exists(), "{fault:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_self_test_of_an_explicit_request_is_reported_and_the_active_set_stays() {
+        let paths = test_paths();
+        install_active(&paths, "old", 1_000);
+        let (cleanup, manifest) = stage_candidate(&paths, "new");
+
+        let error = crate::i18n::with_language("en", || {
+            install_candidate(
+                &paths,
+                cleanup,
+                manifest,
+                outcome(Fault::NoFileLine),
+                Previous::KeptReported,
+                &TransferControl::default(),
+                &mut |_| {},
+            )
+            .unwrap_err()
+        });
+
+        let text = format!("{error:#}");
+        assert!(text.contains("no output file line"), "{text}");
+        assert!(
+            text.contains("The new tool installation could not be activated; the previous installation was kept"),
+            "{text}"
+        );
+        assert_eq!(active_id(&paths), "old");
+        assert!(!paths.tools_dir.join("versions").join("new").exists());
+    }
+
+    #[test]
+    fn a_first_install_whose_self_test_fails_is_not_activated_and_reports_the_failure() {
+        let paths = test_paths();
+        let (cleanup, manifest) = stage_candidate(&paths, "new");
+        let staging = cleanup.path.clone();
+
+        let check = crate::i18n::with_language("en", || outcome(Fault::DownloadExitsWithError));
+
+        let error = install_candidate(
+            &paths,
+            cleanup,
+            manifest,
+            check,
+            Previous::Missing,
+            &TransferControl::default(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("yt-dlp failed"), "{error:#}");
+        assert!(!paths.tools_dir.join(MANIFEST_FILE).exists());
+        assert!(!paths.tools_dir.join("versions").join("new").exists());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn tools_that_cannot_run_fail_the_self_test_without_leaving_a_scratch_folder() {
+        let paths = test_paths();
+        fs::create_dir_all(&paths.tools_dir).unwrap();
+
+        let result = run_self_test(
+            &paths,
+            "new",
+            &crate::media::stubs::fake_tools(),
+            &TransferControl::default(),
+        );
+
+        assert!(result.is_err());
+        assert!(!paths.tools_dir.join(".staging-new-selftest").exists());
+    }
+
+    #[test]
+    fn what_the_installed_set_means_for_a_failed_self_test() {
+        let tool = |installed| ToolInfo {
+            name: "yt-dlp".into(),
+            installed,
+            version: String::new(),
+            path: PathBuf::new(),
+        };
+        let working = [tool(true), tool(true)];
+        let broken = [tool(true), tool(false)];
+        assert_eq!(previous_set(&working, true), Previous::Kept);
+        assert_eq!(previous_set(&working, false), Previous::KeptReported);
+        assert_eq!(previous_set(&broken, true), Previous::Missing);
+        assert_eq!(previous_set(&broken, false), Previous::Missing);
+    }
+
+    fn installed_tools(working: bool) -> Vec<ToolInfo> {
+        ["yt-dlp", "Deno", "FFmpeg", "ffprobe"]
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ToolInfo {
+                name: (*name).into(),
+                installed: working || index > 0,
+                version: String::new(),
+                path: PathBuf::new(),
+            })
+            .collect()
+    }
+
+    fn two_releases() -> Result<Vec<GithubRelease>> {
+        Ok(yt_dlp_releases(&[
+            ("2026.10.31", Some("2026-10-31T01:00:00Z"), false, false),
+            ("2026.10.20", Some("2026-10-20T22:25:26Z"), false, false),
+        ]))
+    }
+
+    #[test]
+    fn a_plan_takes_a_settled_release_for_an_automatic_install_and_the_newest_for_an_explicit_one()
+    {
+        let paths = test_paths();
+        let working = installed_tools(true);
+        let tag = |automatic| {
+            plan(&paths, &working, automatic, at(NOW), two_releases)
+                .unwrap()
+                .unwrap()
+                .yt_release
+                .tag_name
+        };
+
+        assert_eq!(tag(true), "2026.10.20");
+        assert_eq!(tag(false), "2026.10.31");
+    }
+
+    #[test]
+    fn a_plan_tells_what_a_failed_self_test_means_for_the_installed_set() {
+        let paths = test_paths();
+        let previous = |working, automatic| {
+            plan(
+                &paths,
+                &installed_tools(working),
+                automatic,
+                at(NOW),
+                two_releases,
+            )
+            .unwrap()
+            .unwrap()
+            .previous
+        };
+
+        assert_eq!(previous(true, true), Previous::Kept);
+        assert_eq!(previous(true, false), Previous::KeptReported);
+        assert_eq!(previous(false, true), Previous::Missing);
+        assert_eq!(previous(false, false), Previous::Missing);
+    }
+
+    #[test]
+    fn an_automatic_refresh_of_a_working_set_waits_a_day_after_a_failed_self_test() {
+        let paths = test_paths();
+        fs::create_dir_all(&paths.tools_dir).unwrap();
+        let (working, broken) = (installed_tools(true), installed_tools(false));
+        let now = at(NOW);
+        let day = SELF_TEST_RETRY_AFTER.as_secs() as i64;
+        let never_fetched = || -> Result<Vec<GithubRelease>> {
+            panic!("the release list was fetched although the refresh waits")
+        };
+        // The self-test failed at the given time; `None`: no failure is remembered.
+        let failed_at = |time: Option<i64>| match time {
+            Some(time) => remember_self_test_failure(&paths, time),
+            None => {
+                let _ = fs::remove_file(paths.tools_dir.join(SELF_TEST_FAILED_FILE));
+            }
+        };
+
+        assert_eq!(day, 24 * 60 * 60);
+        failed_at(Some(now - 3_600));
+        assert!(plan(&paths, &working, true, now, never_fetched)
+            .unwrap()
+            .is_none());
+        failed_at(Some(now - day + 1));
+        assert!(plan(&paths, &working, true, now, never_fetched)
+            .unwrap()
+            .is_none());
+        failed_at(Some(now - day));
+        assert!(plan(&paths, &working, true, now, two_releases)
+            .unwrap()
+            .is_some());
+        failed_at(None);
+        assert!(plan(&paths, &working, true, now, two_releases)
+            .unwrap()
+            .is_some());
+        // An explicit request, a set that is not installed and a time in the future (a clock
+        // that was set back) are not held back.
+        failed_at(Some(now - 3_600));
+        assert!(plan(&paths, &working, false, now, two_releases)
+            .unwrap()
+            .is_some());
+        assert!(plan(&paths, &broken, true, now, two_releases)
+            .unwrap()
+            .is_some());
+        failed_at(Some(now + 3_600));
+        assert!(plan(&paths, &working, true, now, two_releases)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_failed_automatic_self_test_is_remembered_and_an_activated_set_forgets_it() {
+        let paths = test_paths();
+        install_active(&paths, "old", 1_000);
+        assert_eq!(self_test_failed_at(&paths), None);
+        let before = unix_seconds();
+        let (cleanup, manifest) = stage_candidate(&paths, "bad");
+        install_candidate(
+            &paths,
+            cleanup,
+            manifest,
+            outcome(Fault::NoFileLine),
+            Previous::Kept,
+            &TransferControl::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        let failed_at = self_test_failed_at(&paths).expect("the failure is remembered");
+        assert!((before..=unix_seconds()).contains(&failed_at));
+
+        let (cleanup, manifest) = stage_candidate(&paths, "good");
+        install_candidate(
+            &paths,
+            cleanup,
+            manifest,
+            outcome(Fault::None),
+            Previous::KeptReported,
+            &TransferControl::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(active_id(&paths), "good");
+        assert_eq!(self_test_failed_at(&paths), None);
+    }
+
+    #[test]
+    fn only_a_failed_automatic_self_test_with_a_working_set_is_remembered() {
+        for previous in [Previous::KeptReported, Previous::Missing] {
+            let paths = test_paths();
+            if previous != Previous::Missing {
+                install_active(&paths, "old", 1_000);
+            }
+            let (cleanup, manifest) = stage_candidate(&paths, "bad");
+
+            let result = install_candidate(
+                &paths,
+                cleanup,
+                manifest,
+                outcome(Fault::NoFileLine),
+                previous,
+                &TransferControl::default(),
+                &mut |_| {},
+            );
+
+            assert!(result.is_err(), "{previous:?}");
+            assert_eq!(self_test_failed_at(&paths), None, "{previous:?}");
+        }
+    }
+
+    #[test]
+    fn the_time_of_a_failed_self_test_is_read_from_its_file_only_when_it_is_a_number() {
+        let paths = test_paths();
+        fs::create_dir_all(&paths.tools_dir).unwrap();
+        let file = paths.tools_dir.join(SELF_TEST_FAILED_FILE);
+
+        fs::write(&file, " 1793000000\r\n").unwrap();
+        assert_eq!(self_test_failed_at(&paths), Some(1_793_000_000));
+        for unreadable in ["", "yesterday", "12:30"] {
+            fs::write(&file, unreadable).unwrap();
+            assert_eq!(self_test_failed_at(&paths), None, "{unreadable:?}");
+        }
+    }
+
+    #[test]
+    fn a_self_test_that_ends_because_the_install_was_stopped_is_a_stop_and_not_a_failure() {
+        let paths = test_paths();
+        install_active(&paths, "old", 1_000);
+        let (cleanup, manifest) = stage_candidate(&paths, "new");
+        let staging = cleanup.path.clone();
+        let control = TransferControl::default();
+        control.cancel();
+
+        let (error, stopped) = crate::i18n::with_language("en", || {
+            let error = install_candidate(
+                &paths,
+                cleanup,
+                manifest,
+                outcome(Fault::ClipFailsToRun),
+                Previous::Kept,
+                &control,
+                &mut |_| {},
+            )
+            .unwrap_err();
+            (format!("{error:#}"), tools_stopped())
+        });
+
+        assert_eq!(error, stopped);
+        assert_eq!(self_test_failed_at(&paths), None);
+        assert_eq!(active_id(&paths), "old");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn pruning_keeps_the_active_set_however_many_newer_sets_exist() {
+        let paths = test_paths();
+        for (id, installed_at) in [("a", 2_000), ("b", 3_000), ("c", 4_000)] {
+            let root = paths.tools_dir.join("versions").join(id);
+            let manifest = fake_set(id, installed_at, &root);
+            write_manifest_file(&root.join("install-manifest.json"), &manifest).unwrap();
+        }
+        install_active(&paths, "old", 1_000);
+        let staging = paths.tools_dir.join(".staging-trial");
+        fs::create_dir_all(&staging).unwrap();
+
+        cleanup_versions(&paths).unwrap();
+
+        let versions = paths.tools_dir.join("versions");
+        assert!(versions.join("old").is_dir(), "the active set was pruned");
+        assert!(versions.join("c").is_dir() && versions.join("b").is_dir());
+        assert!(!versions.join("a").exists());
+        assert!(staging.is_dir(), "a set being tried was pruned");
+        assert_eq!(active_id(&paths), "old");
     }
 
     fn release_from(tag: &str, draft: bool, prerelease: bool, assets: &[String]) -> GithubRelease {

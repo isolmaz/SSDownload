@@ -920,6 +920,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                 if let Err(e) = dlg.app.dispatch(Action::InstallTools {
                     request_id: None,
                     force_update: false,
+                    automatic: false,
                 }) {
                     set_dialog_error(
                         dlg.hwnd,
@@ -936,6 +937,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
             T_UPDATE => {
                 if let Err(e) = dlg.app.dispatch(Action::InstallTools {
                     force_update: true,
+                    automatic: false,
                     request_id: None,
                 }) {
                     set_dialog_error(

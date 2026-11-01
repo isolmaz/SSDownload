@@ -504,6 +504,7 @@ fn parse_action(args: &[String]) -> Result<Option<Action>> {
         Some(Action::InstallTools {
             request_id: Some(uuid::Uuid::new_v4().to_string()),
             force_update: has(args, "--update-tools"),
+            automatic: false,
         })
     } else if has(args, "--browser-setup") {
         Some(Action::BrowserSetup)
