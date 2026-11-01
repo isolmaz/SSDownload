@@ -445,7 +445,7 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
 
 /// Whether ffprobe's `format_name` (the demuxer's comma-separated aliases) is the container the
 /// extension promises. An extension the app does not write is not judged.
-fn container_matches_extension(format_name: &str, extension: &str) -> bool {
+pub(super) fn container_matches_extension(format_name: &str, extension: &str) -> bool {
     let expected: &[&str] = match extension.to_ascii_lowercase().as_str() {
         "mp4" | "m4v" | "m4a" | "mov" | "3gp" => &["mp4"],
         "mkv" | "mka" | "webm" => &["matroska", "webm"],

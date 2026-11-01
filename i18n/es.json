@@ -1416,7 +1416,7 @@
   "The tool operation is running in the background; you can leave this window open or close it.": "La operación de la herramienta se ejecuta en segundo plano; se puede dejar esta ventana abierta o cerrarla.",
   "The tool path is outside the installation folder": "La ruta de la herramienta está fuera de la carpeta de instalación",
   "The tool version is not supported": "La versión de la herramienta no está admitida",
-  "The media tools' path is longer than the 259 characters Windows allows for programs; start SSDownload with a shorter --data-dir": "La ruta de las herramientas multimedia supera los 259 caracteres que Windows permite para los programas; inicie SSDownload con un --data-dir más corto",
+  "The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it": "La ruta de las herramientas multimedia supera los 259 caracteres que Windows permite para los programas; mueva el perfil a una carpeta más corta e inicie SSDownload con --data-dir apuntando a ella",
   "The tools operation ID is missing": "Falta el ID de la operación de herramientas",
   "The tools operation changed": "La operación de herramientas ha cambiado",
   "The total transfer size overflowed": "El tamaño total de la transferencia se ha desbordado",

@@ -1416,7 +1416,7 @@
   "The tool operation is running in the background; you can leave this window open or close it.": "عملية الأداة تعمل في الخلفية؛ يمكنك إبقاء هذه النافذة مفتوحة أو إغلاقها.",
   "The tool path is outside the installation folder": "مسار الأداة خارج مجلد التثبيت",
   "The tool version is not supported": "إصدار الأداة غير مدعوم",
-  "The media tools' path is longer than the 259 characters Windows allows for programs; start SSDownload with a shorter --data-dir": "مسار أدوات الوسائط أطول من 259 حرفًا، وهو الحد الذي يسمح به Windows للبرامج؛ شغّل SSDownload باستخدام --data-dir أقصر",
+  "The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it": "مسار أدوات الوسائط أطول من 259 حرفًا، وهو الحد الذي يسمح به Windows للبرامج؛ انقل الملف الشخصي إلى مجلد أقصر وشغّل SSDownload مع --data-dir يشير إلى ذلك المجلد",
   "The tools operation ID is missing": "معرّف عملية الأدوات مفقود",
   "The tools operation changed": "تغيّرت عملية الأدوات",
   "The total transfer size overflowed": "تجاوز الحجم الإجمالي للنقل الحد",

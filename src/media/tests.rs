@@ -379,8 +379,7 @@ fn yt_dlp_policy_disables_user_configuration_and_plugins() {
         Path::new(r"C:\tools\deno.exe"),
         Path::new(r"C:\tools\ffmpeg.exe"),
         false,
-    )
-    .unwrap();
+    );
     assert!(arguments
         .windows(2)
         .any(|pair| pair == ["--ignore-config", "--no-plugin-dirs"]));
@@ -394,28 +393,40 @@ fn yt_dlp_policy_disables_user_configuration_and_plugins() {
 }
 
 #[test]
-fn yt_dlp_is_not_started_when_it_cannot_start_ffmpeg_or_deno() {
-    // The paths are canonical, so they carry the verbatim prefix, which does not count.
-    let path = |length: usize, name: &str| {
-        let folder = length - name.len() - 1 - r"C:\".len();
+fn yt_dlp_is_not_started_when_it_cannot_start_ffmpeg_ffprobe_or_deno() {
+    // The paths are canonical and reach yt-dlp as they are, so the verbatim prefix counts toward
+    // the 259 UTF-16 units a program may start from.
+    let path = |units: usize, name: &str| {
+        let folder = units - r"\\?\C:\".len() - 1 - name.len();
         PathBuf::from(format!(r"\\?\C:\{}\{name}", "t".repeat(folder)))
     };
-    let start = |deno: &Path, ffmpeg: &Path| {
-        common_args(deno, ffmpeg, false)
-            .map(|_| ())
+    let start = |deno: &Path, ffmpeg: &Path, ffprobe: &Path| {
+        ensure_helpers_startable(deno, ffmpeg, ffprobe)
             .map_err(|error| crate::error_codes::code_of(&error).map(|code| code.to_string()))
     };
-    let (deno, ffmpeg) = (path(200, "deno.exe"), path(258, "ffmpeg.exe"));
-    assert_eq!(start(&deno, &ffmpeg), Ok(()));
-    // ffprobe.exe is one character longer than ffmpeg.exe.
+    let refused = Err(Some("SSD-TOL-005".to_string()));
+    let at = |units: [usize; 3]| {
+        start(
+            &path(units[0], "deno.exe"),
+            &path(units[1], "ffmpeg.exe"),
+            &path(units[2], "ffprobe.exe"),
+        )
+    };
+    assert_eq!(at([259, 259, 259]), Ok(()));
+    assert_eq!(at([260, 259, 259]), refused);
+    assert_eq!(at([259, 260, 259]), refused);
+    assert_eq!(at([259, 259, 260]), refused);
+
+    // A character outside the Basic Multilingual Plane is two units.
+    let astral =
+        |path: PathBuf| PathBuf::from(path.to_string_lossy().replacen('t', "\u{1D11E}", 1));
     assert_eq!(
-        start(&deno, &path(259, "ffmpeg.exe")),
-        Err(Some("SSD-TOL-005".into()))
-    );
-    assert_eq!(start(&path(259, "deno.exe"), &ffmpeg), Ok(()));
-    assert_eq!(
-        start(&path(260, "deno.exe"), &ffmpeg),
-        Err(Some("SSD-TOL-005".into()))
+        start(
+            &path(259, "deno.exe"),
+            &path(259, "ffmpeg.exe"),
+            &astral(path(259, "ffprobe.exe")),
+        ),
+        refused
     );
 }
 
