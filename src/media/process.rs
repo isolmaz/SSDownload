@@ -170,6 +170,9 @@ pub(super) struct RunningDownload {
     /// Last time the child said anything on stderr, shared with the stall watchdog.
     pub(super) stderr_alive: Arc<std::sync::atomic::AtomicU64>,
     pub(super) stderr_thread: Option<thread::JoinHandle<()>>,
+    /// How long the tool may stay silent while it transfers, and while a post-processor works.
+    pub(super) stall_limit: Duration,
+    pub(super) postprocess_stall_limit: Duration,
     // Drops after the owned process job and child so its loopback sockets remain
     // governed until every owned descendant has stopped.
     pub(super) _proxy: Option<ExternalProxy>,
@@ -232,6 +235,7 @@ impl RunningDownload {
             ))
         })?;
         let (sender, lines) = mpsc::sync_channel(256);
+        let marker_sender = sender.clone();
         let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_overflow = overflow.clone();
         let stdout_thread = thread::spawn(move || {
@@ -269,6 +273,10 @@ impl RunningDownload {
                     crate::network::now_epoch_ms(),
                     std::sync::atomic::Ordering::Release,
                 );
+                // With --print holding stdout, yt-dlp writes the post-processor markers here.
+                if line.starts_with(POSTPROCESS_PREFIX) {
+                    let _ = marker_sender.try_send(line.clone());
+                }
                 let mut log = stderr_for_thread.lock().unwrap_or_else(|e| e.into_inner());
                 log.push(line);
             }
@@ -284,6 +292,8 @@ impl RunningDownload {
             stderr,
             stderr_alive,
             stderr_thread: Some(stderr_thread),
+            stall_limit: STALL_LIMIT,
+            postprocess_stall_limit: POSTPROCESS_STALL_LIMIT,
             _proxy: proxy,
         })
     }
@@ -333,6 +343,7 @@ impl Drop for RunningDownload {
 pub(super) struct ActivityWatch {
     pub(super) last: Instant,
     pub(super) limit: Duration,
+    pub(super) postprocess_limit: Duration,
     pub(super) pings: Vec<Arc<std::sync::atomic::AtomicU64>>,
     /// A yt-dlp post-processor (FFmpeg merge, remux or audio conversion) is running.
     pub(super) postprocessing: bool,
@@ -343,6 +354,7 @@ impl ActivityWatch {
         Self {
             last: Instant::now(),
             limit,
+            postprocess_limit: POSTPROCESS_STALL_LIMIT,
             pings,
             postprocessing: false,
         }
@@ -363,7 +375,7 @@ impl ActivityWatch {
 
     pub(super) fn stalled(&self) -> bool {
         let limit = if self.postprocessing {
-            POSTPROCESS_STALL_LIMIT
+            self.postprocess_limit
         } else {
             self.limit
         };
@@ -462,11 +474,19 @@ fn part_file_bytes(directory: &Path) -> u64 {
 /// The tool's own figures cover the last 3 s and read 0 and unknown after any 3 s without a
 /// byte, which is what a source that answers 429 and makes the tool wait out its retries
 /// does to every fragment download.
+///
+/// The count it reports is the whole job's: the files finished before the run, the streams the
+/// run has finished and the stream it is downloading, which only ever rises unless a stream
+/// starts over. The tool counts each stream from zero and its threads report out of order.
 pub(super) struct DownloadGauge {
+    /// The size of the files finished before this run of the tool.
+    base: u64,
+    /// The bytes of the streams this run has finished.
+    done: u64,
     /// When the total grew after at least 250 ms without an entry, and the total then, oldest
     /// first.
     steps: VecDeque<(Instant, u64)>,
-    /// The highest total reported and when it was reached.
+    /// The highest total of the current stream reported and when it was reached.
     newest: u64,
     newest_at: Instant,
     /// The last report of a running download, repeated while the tool is silent.
@@ -488,8 +508,10 @@ impl DownloadGauge {
     const RESTART_DROP: u64 = 1 << 20;
     const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
-    pub(super) fn new() -> Self {
+    pub(super) fn new(base: u64) -> Self {
         Self {
+            base,
+            done: 0,
             steps: VecDeque::new(),
             newest: 0,
             newest_at: Instant::now(),
@@ -554,18 +576,26 @@ impl DownloadGauge {
         (self.newest.saturating_sub(base) as f64 / span.as_secs_f64()) as u64
     }
 
-    /// `current` is the byte count of the stream the tool is downloading; `base` is the size of
-    /// the files finished before it.
+    /// The bytes of the job the tool has counted: the files and streams finished before the
+    /// stream it is downloading, and the highest count of that one.
+    pub(super) fn count(&self) -> u64 {
+        self.base
+            .saturating_add(self.done)
+            .saturating_add(self.newest)
+    }
+
+    /// `current` and `total` are the byte count and the size of the stream the tool is
+    /// downloading.
     fn report(
         &mut self,
-        base: u64,
         current: u64,
         total: Option<u64>,
         processing: bool,
         now: Instant,
     ) -> TransferProgress {
-        let downloaded = base.saturating_add(current);
         self.record(current, now);
+        let downloaded = self.count();
+        let total = total.map(|total| total.saturating_add(self.base).saturating_add(self.done));
         let speed = self.speed(now);
         let update = TransferProgress {
             downloaded,
@@ -584,6 +614,7 @@ impl DownloadGauge {
         self.reported_at = now;
         // A finished stream is followed by the next one, which counts from zero.
         if processing {
+            self.done = self.done.saturating_add(self.newest);
             self.steps.clear();
             self.newest = 0;
         }
@@ -630,12 +661,13 @@ pub(super) fn monitor_download(
     mut live: Option<&mut LiveRecordingGauge>,
 ) -> Result<MonitorOutcome> {
     let mut pending_limit: Option<(u64, Instant)> = None;
-    let mut gauge = DownloadGauge::new();
+    let mut gauge = DownloadGauge::new(completed_file_bytes(completed_files));
     let mut pings = vec![Arc::clone(&running.stderr_alive)];
     if let Some(proxy) = running._proxy.as_ref() {
         pings.push(proxy.outbound_ping());
     }
-    let mut activity = ActivityWatch::new(STALL_LIMIT, pings);
+    let mut activity = ActivityWatch::new(running.stall_limit, pings);
+    activity.postprocess_limit = running.postprocess_stall_limit;
     let mut live_bytes = None;
     // A live recording's size comes from the recording gauge alone; the tool's own counter
     // covers one stream and would alternate with it.
@@ -664,7 +696,9 @@ pub(super) fn monitor_download(
         if let Some(update) = gauge.repeat(Instant::now()) {
             progress(update);
         }
-        if let Some(recording) = live.as_deref_mut() {
+        // Once the tool post-processes the recording it no longer grows, and the markers report it
+        // as processing.
+        if let Some(recording) = live.as_deref_mut().filter(|_| !activity.postprocessing) {
             if let Some(update) =
                 recording.sample(completed_file_bytes(completed_files), Instant::now())
             {
@@ -776,15 +810,14 @@ pub(super) fn handle_machine_line(
     if let Some(fields) = line.strip_prefix(PROGRESS_PREFIX) {
         let values: Vec<_> = fields.split('\t').collect();
         if values.len() >= 3 {
-            let base = completed_file_bytes(completed_files);
             let current = parse_number(values[1]).unwrap_or(0);
-            let total = parse_number(values[2]).map(|v| base.saturating_add(v));
-            progress(gauge.report(base, current, total, values[0] == "finished", now));
+            let total = parse_number(values[2]);
+            progress(gauge.report(current, total, values[0] == "finished", now));
         }
     } else if line.starts_with(POSTPROCESS_PREFIX) {
         gauge.latest = None;
         progress(TransferProgress {
-            downloaded: completed_file_bytes(completed_files),
+            downloaded: gauge.count(),
             total: None,
             speed: 0,
             eta: None,

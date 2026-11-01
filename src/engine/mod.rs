@@ -3523,7 +3523,7 @@ impl Actor {
                 consume_queue_bytes(
                     &mut self.settings,
                     &queue_id,
-                    result.bytes.saturating_sub(accounted),
+                    uncounted_result_bytes(job.state, accounted, result.bytes),
                 );
                 self.quota_accounted.insert(id.into(), result.bytes);
                 job.path = result.path;
