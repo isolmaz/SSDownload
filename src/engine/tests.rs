@@ -1203,42 +1203,97 @@ fn after_a_restart(
     (job, asked)
 }
 
+/// Sends a job that waits for a new source after an error to the browser, lets `change` change the
+/// job before the receiver is ready and closes the app. Returns the job as it was saved before the
+/// begin, the job once the app is open again (see `after_a_restart`) and whether its file was
+/// asked for.
+fn changed_before_the_receiver_is_ready(
+    name: &str,
+    change: impl FnOnce(&Engine, &str),
+) -> (Job, Job, bool) {
+    let path = format!("/{name}.bin");
+    let server = FileServer::start(vec![
+        (path.clone(), vec![6; 4096], false),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) = browser_quota_job(name, server.url(&path), |job| {
+        job.downloaded = 1_000_000;
+        job.error = Some("The signed address expired.".into());
+    });
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    let before = Store::open(&paths.database)
+        .unwrap()
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap();
+    begin_as_this_process(&engine, &id, false);
+    change(&engine, &id);
+    engine.shutdown();
+
+    let (after, asked) = after_a_restart(paths, &root, &server, &id, &path);
+    fs::remove_dir_all(root).unwrap();
+    (before, after, asked)
+}
+
 #[test]
 fn a_job_sent_to_the_browser_and_moved_up_stays_as_it_was_when_the_app_closes_before_the_receiver_is_ready(
 ) {
-    let server = FileServer::start(vec![
-        ("/browser-moved.bin".into(), vec![6; 4096], false),
-        ("/other.bin".into(), vec![7; 4096], false),
-    ]);
-    let (root, paths, id) =
-        browser_quota_job("browser-moved", server.url("/browser-moved.bin"), |job| {
-            job.downloaded = 1_000_000
-        });
-    let engine = Engine::open(paths.clone()).unwrap();
-    let priority = engine
-        .snapshot()
-        .jobs
-        .iter()
-        .find(|job| job.id == id)
-        .unwrap()
-        .priority;
-    engine.begin_source_refresh(&id).unwrap();
-    begin_as_this_process(&engine, &id, false);
     // The user moves the job to the top of the list before the receiver is ready.
-    engine.reorder(vec![id.clone()], true).unwrap();
-    engine.shutdown();
-
-    let (job, asked) = after_a_restart(paths, &root, &server, &id, "/browser-moved.bin");
-    fs::remove_dir_all(root).unwrap();
+    let (before, after, asked) =
+        changed_before_the_receiver_is_ready("browser-moved", |engine, id| {
+            engine.reorder(vec![id.into()], true).unwrap()
+        });
     assert_eq!(
         (
-            job.state,
-            job.browser_transfer_authorized,
-            job.downloaded,
-            job.priority > priority,
+            after.state,
+            after.phase,
+            after.error,
+            after.browser_transfer_authorized,
+            after.downloaded,
+            after.priority > before.priority,
             asked
         ),
-        (JobState::AwaitingSource, false, 1_000_000, true, false)
+        (
+            JobState::AwaitingSource,
+            before.phase,
+            before.error,
+            false,
+            1_000_000,
+            true,
+            false
+        )
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_and_set_to_open_when_done_stays_as_it_was_when_the_app_closes_before_the_receiver_is_ready(
+) {
+    let (before, after, asked) =
+        changed_before_the_receiver_is_ready("browser-open", |engine, id| {
+            engine.set_open_when_done(id, true).unwrap()
+        });
+    assert_eq!(
+        (
+            after.state,
+            after.phase,
+            after.error,
+            after.browser_transfer_authorized,
+            after.downloaded,
+            (before.open_when_done, after.open_when_done),
+            asked
+        ),
+        (
+            JobState::AwaitingSource,
+            before.phase,
+            before.error,
+            false,
+            1_000_000,
+            (false, true),
+            false
+        )
     );
 }
 
