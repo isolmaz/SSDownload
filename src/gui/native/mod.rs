@@ -9050,6 +9050,16 @@ mod tests {
             );
         });
     }
+    #[test]
+    fn escape_cancels_a_dialog() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+
+        with_dialog(speed_kind, 420, 150, |dialog| {
+            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
+            assert!(!dialog.is_open());
+        });
+    }
+
     /// The ids of the visible controls whose rectangle overlaps the dialog's
     /// error line.
     fn controls_over_the_error_line(dialog: &HiddenDialog) -> Vec<i32> {
@@ -9440,15 +9450,5 @@ mod tests {
             crowded.is_empty(),
             "settings tabs with controls (by id) over the error line: {crowded:?}"
         );
-    }
-
-    #[test]
-    fn escape_cancels_a_dialog() {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
-
-        with_dialog(speed_kind, 420, 150, |dialog| {
-            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
-            assert!(!dialog.is_open());
-        });
     }
 }
