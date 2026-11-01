@@ -1906,8 +1906,6 @@ pub(super) const fn one_field_height(label_lines: i32) -> i32 {
         + ADD_LABEL
         + ADD_FOOTER
 }
-/// The speed limit's label takes two lines in the longer languages.
-pub(super) const SPEED_LABEL_LINES: i32 = 2;
 /// The list and form dialogs' content sizes: the queue manager, and the rule,
 /// scan, sync and login dialogs.
 pub(super) const QUEUES_WIDTH: i32 = 860;

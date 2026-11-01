@@ -26,7 +26,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Synchronization(_) => 425,
         DialogKind::Events(_) => 425,
         DialogKind::JobLog(_) => 425,
-        DialogKind::Speed(_) if modern() => one_field_height(SPEED_LABEL_LINES),
+        DialogKind::Speed(f) if modern() => one_field_height(f.label_lines),
         DialogKind::Rename(_) if modern() => one_field_height(1),
         DialogKind::Speed(_) => 110,
         DialogKind::Rename(_) => 110,
@@ -1485,7 +1485,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
         }
         DialogKind::Speed(f) if modern() => {
-            layout_one_field(dlg, h, f.edit, SP_OK, SPEED_LABEL_LINES, Some(140));
+            layout_one_field(dlg, h, f.edit, SP_OK, f.label_lines, Some(140));
         }
         DialogKind::Rename(f) if modern() => {
             layout_one_field(dlg, h, f.edit, RN_OK, 1, None);
@@ -2140,32 +2140,90 @@ unsafe fn layout_one_field(
     label_lines: i32,
     field_w: Option<i32>,
 ) {
-    let s = |value: i32| scale(value, dlg.dpi);
     let mut client: RECT = zeroed();
     GetClientRect(dlg.hwnd, &mut client);
-    let x = s(ADD_PAD);
-    let cw = client.right - 2 * x;
-    let labels = child_statics(dlg.hwnd, dlg.error);
-    if let Some(&label) = labels.first() {
-        MoveWindow(label, x, s(ADD_TOP), cw, s(ADD_LABEL * label_lines), 1);
+    let [label, field, error] = one_field_rects(client.right, label_lines, field_w, dlg.dpi);
+    let move_to = |control: HWND, rect: RECT| {
+        MoveWindow(
+            control,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            1,
+        );
+    };
+    if let Some(&control) = child_statics(dlg.hwnd, dlg.error).first() {
+        move_to(control, label);
     }
-    let top = s(ADD_TOP + ADD_LABEL * label_lines + ADD_LABEL_GAP);
+    place_in_frame(edit, field, dlg.dpi);
+    move_to(GetDlgItem(dlg.hwnd, D_ERROR), error);
+    command_bar(dlg, h, &[(ok, 120), (D_CANCEL, 96)]);
+}
+
+/// Where a Modern one-field dialog `width` pixels wide puts its label
+/// (`label_lines` lines tall), its field (`field_w` epx wide or the full
+/// width) and the error line under it.
+fn one_field_rects(width: i32, label_lines: i32, field_w: Option<i32>, dpi: u32) -> [RECT; 3] {
+    let s = |value: i32| scale(value, dpi);
+    let x = s(ADD_PAD);
+    let right = width - x;
+    let label = RECT {
+        left: x,
+        top: s(ADD_TOP),
+        right,
+        bottom: s(ADD_TOP) + s(ADD_LABEL * label_lines),
+    };
+    let top = label.bottom + s(ADD_LABEL_GAP);
     let field = RECT {
         left: x,
         top,
-        right: x + field_w.map_or(cw, s),
+        right: field_w.map_or(right, |value| x + s(value)),
         bottom: top + s(ADD_FIELD),
     };
-    place_in_frame(edit, field, dlg.dpi);
-    move_id(
+    let error_top = field.bottom + s(ADD_GROUP_GAP);
+    let error = RECT {
+        left: x,
+        top: error_top,
+        right,
+        bottom: error_top + s(ADD_LABEL),
+    };
+    [label, field, error]
+}
+
+/// Sizes the speed limit dialog to the lines its label wraps to, once its
+/// controls exist: one in most languages, more where the text is longer.
+pub(super) unsafe fn fit_speed_label(dlg: &mut DialogUi) {
+    if !matches!(dlg.kind, DialogKind::Speed(_)) {
+        return;
+    }
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let Some(&label) = child_statics(dlg.hwnd, dlg.error).first() else {
+        return;
+    };
+    let room = client.right - 2 * scale(ADD_PAD, dlg.dpi);
+    let lines = label_height(dlg, label, room) / scale(ADD_LABEL, dlg.dpi);
+    let DialogKind::Speed(f) = &mut dlg.kind else {
+        return;
+    };
+    let extra = lines - f.label_lines;
+    if extra == 0 {
+        return;
+    }
+    f.label_lines = lines;
+    dlg.design.1 += extra * ADD_LABEL;
+    let mut window: RECT = zeroed();
+    GetWindowRect(dlg.hwnd, &mut window);
+    SetWindowPos(
         dlg.hwnd,
-        D_ERROR,
-        x,
-        field.bottom + s(ADD_GROUP_GAP),
-        cw,
-        s(ADD_LABEL),
+        null_mut(),
+        0,
+        0,
+        window.right - window.left,
+        window.bottom - window.top + scale(extra * ADD_LABEL, dlg.dpi),
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
     );
-    command_bar(dlg, h, &[(ok, 120), (D_CANCEL, 96)]);
 }
 
 /// Puts a Modern dialog's command bar buttons at its right end, left to
@@ -2420,6 +2478,36 @@ unsafe fn form_rows(dlg: &DialogUi, h: i32, rows: &[&[Cell]], reserve: i32) -> i
 #[cfg(test)]
 mod tests {
     use super::{share_row, Width};
+
+    #[test]
+    fn a_one_field_dialog_keeps_the_rhythm_and_ends_its_error_line_at_the_bar() {
+        use super::{one_field_height, one_field_rects, scale, ADD_FOOTER, RECT};
+        for dpi in [96, 120, 144] {
+            let s = |value: i32| scale(value, dpi);
+            for (lines, field_w) in [(1, None), (2, Some(140))] {
+                let width = s(480);
+                let [label, field, error] = one_field_rects(width, lines, field_w, dpi);
+                let height = |rect: RECT| rect.bottom - rect.top;
+                assert_eq!((label.left, label.top), (s(24), s(20)));
+                assert_eq!(height(label), s(20) * lines);
+                assert_eq!(field.top - label.bottom, s(8));
+                assert_eq!(height(field), s(32));
+                assert_eq!(
+                    field.right - field.left,
+                    field_w.map_or(width - 2 * s(24), s)
+                );
+                assert_eq!(error.top - field.bottom, s(12));
+                assert_eq!((label.right, error.right), (width - s(24), width - s(24)));
+                // The content height leaves the error line ending where the
+                // command bar starts.
+                assert_eq!(
+                    error.bottom,
+                    s(one_field_height(lines)) - s(ADD_FOOTER),
+                    "{dpi} dpi, {lines} lines"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_short_row_narrows_its_widest_labels_first_and_shares_the_rest() {

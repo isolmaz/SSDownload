@@ -7530,6 +7530,8 @@ struct SpeedFields {
     ids: Vec<String>,
     initial: u64,
     edit: HWND,
+    /// The lines Modern gives the label: one until it is measured.
+    label_lines: i32,
 }
 struct RenameFields {
     id: String,
@@ -8382,7 +8384,7 @@ unsafe fn show_speed_limit(owner: HWND, app: App, ids: Vec<String>, initial: u64
         crate::i18n::ui("İndirme hız sınırı", "Download speed limit"),
         if modern() { 480 } else { 420 },
         if modern() {
-            one_field_height(SPEED_LABEL_LINES) + SETTINGS_FRAME + 3
+            one_field_height(1) + SETTINGS_FRAME + 3
         } else {
             150
         },
@@ -8390,6 +8392,7 @@ unsafe fn show_speed_limit(owner: HWND, app: App, ids: Vec<String>, initial: u64
             ids,
             initial,
             edit: null_mut(),
+            label_lines: 1,
         }),
     );
 }
@@ -9205,6 +9208,7 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     create_kind_controls(dlg);
     if modern() {
         prepare_modern_form(dlg);
+        fit_speed_label(dlg);
     }
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
     layout_dialog(dlg);
