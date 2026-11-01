@@ -1495,8 +1495,124 @@ pub(super) unsafe fn paint_theme(
             SetBkColor(wparam as HDC, DARK_BACKGROUND);
             Some(brush as LRESULT)
         }
+        WM_NOTIFY => paint_button_label(lparam),
         _ => None,
     }
+}
+/// A check box or radio button in the dark scheme. The themed button draws its
+/// label in the theme's own text colour, which ignores WM_CTLCOLORBTN and is
+/// dark on some Windows 11 builds, so uxtheme draws the box and the label is
+/// drawn here in the scheme's colours. This answers the button's NM_CUSTOMDRAW;
+/// any other notification is left to the window.
+unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
+    if (*(lparam as *const NMHDR)).code != NM_CUSTOMDRAW {
+        return None;
+    }
+    let draw = &*(lparam as *const NMCUSTOMDRAW);
+    let button = draw.hdr.hwndFrom;
+    if draw.dwDrawStage != CDDS_PREPAINT || !window_class(button).eq_ignore_ascii_case("Button") {
+        return None;
+    }
+    let style = GetWindowLongPtrW(button, GWL_STYLE) as u32;
+    let radio = match (style & BS_TYPEMASK as u32) as i32 {
+        BS_CHECKBOX | BS_AUTOCHECKBOX | BS_3STATE | BS_AUTO3STATE => false,
+        BS_RADIOBUTTON | BS_AUTORADIOBUTTON => true,
+        _ => return None,
+    };
+    // A push-like check box looks like a button; the wizard's cards paint themselves.
+    if style & BS_PUSHLIKE as u32 != 0 {
+        return None;
+    }
+    let theme = OpenThemeData(button, wide("Button").as_ptr());
+    if theme == 0 {
+        return None;
+    }
+    let part = if radio { BP_RADIOBUTTON } else { BP_CHECKBOX };
+    let enabled = IsWindowEnabled(button) != 0;
+    let held = SendMessageW(button, BM_GETSTATE, 0, 0) as u32;
+    let mark = match SendMessageW(button, BM_GETCHECK, 0, 0) as u32 {
+        BST_CHECKED => CBS_CHECKEDNORMAL,
+        BST_INDETERMINATE => CBS_MIXEDNORMAL,
+        _ => CBS_UNCHECKEDNORMAL,
+    };
+    // Normal, hot, pressed and disabled follow each other in every group of
+    // states, and radio buttons number theirs the way check boxes do.
+    let state = mark
+        + if !enabled {
+            CBS_UNCHECKEDDISABLED - CBS_UNCHECKEDNORMAL
+        } else if held & BST_PUSHED != 0 {
+            CBS_UNCHECKEDPRESSED - CBS_UNCHECKEDNORMAL
+        } else if draw.uItemState & CDIS_HOT != 0 {
+            CBS_UNCHECKEDHOT - CBS_UNCHECKEDNORMAL
+        } else {
+            0
+        };
+    let dc = draw.hdc;
+    let mut glyph: SIZE = zeroed();
+    if GetThemePartSize(theme, dc, part, state, null(), TS_DRAW, &mut glyph) < 0 {
+        CloseThemeData(theme);
+        return None;
+    }
+    let area = draw.rc;
+    let dpi = GetDpiForWindow(button).max(96);
+    let saved = SaveDC(dc);
+    FillRect(dc, &area, dark_surface_brush());
+    let top = area.top + (area.bottom - area.top - glyph.cy) / 2;
+    let box_rect = RECT {
+        left: area.left,
+        top,
+        right: area.left + glyph.cx,
+        bottom: top + glyph.cy,
+    };
+    DrawThemeBackground(theme, dc, part, state, &box_rect, null());
+    CloseThemeData(theme);
+
+    let font = SendMessageW(button, WM_GETFONT, 0, 0);
+    if font != 0 {
+        SelectObject(dc, font as HGDIOBJ);
+    }
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, if enabled { DARK_TEXT } else { DARK_MUTED });
+    let mut text = vec![0u16; GetWindowTextLengthW(button).max(0) as usize + 1];
+    let length = GetWindowTextW(button, text.as_mut_ptr(), text.len() as i32).max(0);
+    let cues = SendMessageW(button, WM_QUERYUISTATE, 0, 0) as u32;
+    let mut flags = DT_LEFT;
+    flags |= if style & BS_MULTILINE as u32 != 0 {
+        DT_WORDBREAK
+    } else {
+        DT_SINGLELINE
+    };
+    if cues & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    // The label is centred on the box's row, one line or a wrapped block.
+    let mut label = RECT {
+        left: area.left + glyph.cx + scale(3, dpi),
+        ..area
+    };
+    let mut measured = label;
+    DrawTextW(
+        dc,
+        text.as_mut_ptr(),
+        length,
+        &mut measured,
+        flags | DT_CALCRECT,
+    );
+    let height = measured.bottom - measured.top;
+    label.top += (area.bottom - area.top - height) / 2;
+    label.bottom = label.top + height;
+    DrawTextW(dc, text.as_mut_ptr(), length, &mut label, flags);
+    if held & BST_FOCUS != 0 && cues & UISF_HIDEFOCUS == 0 {
+        let focus = RECT {
+            left: label.left - 1,
+            top: label.top - 1,
+            right: label.left + (measured.right - measured.left) + 1,
+            bottom: label.bottom + 1,
+        };
+        DrawFocusRect(dc, &focus);
+    }
+    RestoreDC(dc, saved);
+    Some(CDRF_SKIPDEFAULT as LRESULT)
 }
 pub(super) unsafe fn high_contrast() -> bool {
     let mut value: HIGHCONTRASTW = zeroed();
