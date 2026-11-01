@@ -3935,7 +3935,7 @@ mod tests {
             DeleteObject(font as HGDIOBJ);
             DeleteDC(dc);
             DestroyWindow(parent);
-            let has = |pixels: &[u32], wanted: u32| pixels.iter().any(|&pixel| pixel == wanted);
+            let has = |pixels: &[u32], wanted: u32| pixels.contains(&wanted);
             assert!(has(&selected, palette.row_selected), "the selection plate");
             assert!(has(&selected, palette.accent), "the selection mark");
             assert!(!has(&plain, palette.row_selected));
