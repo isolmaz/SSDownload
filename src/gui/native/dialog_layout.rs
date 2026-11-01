@@ -105,7 +105,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             }
             MoveWindow(
                 f.start,
-                w - m - scale(110, dlg.dpi),
+                w - m - scale(210, dlg.dpi),
                 by,
                 scale(110, dlg.dpi),
                 row,
@@ -114,7 +114,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(210, dlg.dpi),
+                w - m - scale(92, dlg.dpi),
                 by,
                 scale(92, dlg.dpi),
                 row,

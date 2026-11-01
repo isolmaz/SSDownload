@@ -591,13 +591,13 @@ pub fn offer_update(
         // release page, so the offer must not promise an install.
         if installed {
             crate::i18n::ui(
-                "Kur: indir, doğrula ve kur. Daha sonra: sonra hatırlat. Atla: bu sürümü bir daha sorma.",
-                "Install: download, verify and install. Later: remind me later. Skip: do not ask about this version again.",
+                "Kur: indir, doğrula ve kur. Atla: bu sürümü bir daha sorma. Daha sonra: sonra hatırlat.",
+                "Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.",
             )
         } else {
             crate::i18n::ui(
-                "Sayfayı aç: indirme sayfasını aç. Daha sonra: sonra hatırlat. Atla: bu sürümü bir daha sorma.",
-                "Open page: open the download page. Later: remind me later. Skip: do not ask about this version again.",
+                "Sayfayı aç: indirme sayfasını aç. Atla: bu sürümü bir daha sorma. Daha sonra: sonra hatırlat.",
+                "Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.",
             )
         },
     );
@@ -618,8 +618,8 @@ pub fn offer_update(
                 crate::i18n::ui("Sayfayı aç", "Open page")
             },
         ),
-        (IDNO, crate::i18n::ui("Daha sonra", "Later")),
         (SKIP, crate::i18n::ui("Bu sürümü atla", "Skip this version")),
+        (IDNO, crate::i18n::ui("Daha sonra", "Later")),
     ];
     let answer = unsafe {
         run_alert_buttons(
@@ -3395,6 +3395,25 @@ unsafe fn show_tour(ui: &mut MainUi, replay: bool) {
     }
 }
 
+const ABOUT_COPY: i32 = 100;
+const ABOUT_NOTES: i32 = 101;
+/// OK, the plain close, is the third button and stays the default.
+const ABOUT_FLAGS: MESSAGEBOX_STYLE = MB_ICONINFORMATION | MB_DEFBUTTON3;
+
+/// The About box's buttons, left to right. Every one of them closes the box
+/// (Copy and Release notes act once it is closed), so OK, which only closes it,
+/// is rightmost.
+fn about_buttons() -> [(i32, &'static str); 3] {
+    [
+        (ABOUT_COPY, crate::i18n::ui("Kopyala", "Copy")),
+        (
+            ABOUT_NOTES,
+            crate::i18n::ui("Sürüm notları", "Release notes"),
+        ),
+        (IDOK, crate::i18n::ui("Tamam", "OK")),
+    ]
+}
+
 /// About: version, the media components' versions, copy and release notes.
 unsafe fn show_about(ui: &MainUi) {
     let snapshot = ui.app.snapshot();
@@ -3427,24 +3446,17 @@ unsafe fn show_about(ui: &MainUi) {
             "DRM-protected content is not supported.",
         ),
     );
-    const COPY: i32 = 100;
-    const NOTES: i32 = 101;
-    let buttons = [
-        (IDOK, crate::i18n::ui("Tamam", "OK")),
-        (COPY, crate::i18n::ui("Kopyala", "Copy")),
-        (NOTES, crate::i18n::ui("Sürüm notları", "Release notes")),
-    ];
     match run_alert_buttons(
         ui.hwnd,
         &body,
         crate::i18n::ui("SSDownload hakkında", "About SSDownload"),
-        MB_ICONINFORMATION,
-        Some(&buttons),
+        ABOUT_FLAGS,
+        Some(&about_buttons()),
     ) {
-        Some(COPY) => {
+        Some(ABOUT_COPY) => {
             set_clipboard_text(&body);
         }
-        Some(NOTES) => {
+        Some(ABOUT_NOTES) => {
             ShellExecuteW(
                 ui.hwnd,
                 wide("open").as_ptr(),
@@ -8511,6 +8523,12 @@ mod tests {
         );
     }
 
+    /// Registers the window classes once for the whole test process.
+    fn register_test_classes() {
+        static CLASSES: std::sync::Once = std::sync::Once::new();
+        CLASSES.call_once(|| unsafe { super::register_classes().unwrap() });
+    }
+
     /// A dialog window created the way `run_modal` creates it, on an app with a
     /// temporary data directory, and never shown. It lives on the thread that
     /// created it, so it is only built and dropped inside `with_dialog`.
@@ -8533,14 +8551,13 @@ mod tests {
             use super::{create_dialog, DialogRequest};
             use std::ptr::null_mut;
 
-            static CLASSES: std::sync::Once = std::sync::Once::new();
             let root =
                 std::env::temp_dir().join(format!("ssdownload-dialog-{}", uuid::Uuid::new_v4()));
             let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
             let app = crate::app::App::open(paths).unwrap();
             seed(&app);
             unsafe {
-                CLASSES.call_once(|| super::register_classes().unwrap());
+                register_test_classes();
                 let (raw, hwnd) = create_dialog(
                     null_mut(),
                     app.clone(),
@@ -9505,6 +9522,24 @@ mod tests {
         })
     }
 
+    fn wizard_kind(simple: bool) -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Wizard(super::WizardFields {
+            modes: super::UsageModes {
+                video: true,
+                file: true,
+                audio: true,
+            },
+            simple,
+            video: null_mut(),
+            file: null_mut(),
+            audio: null_mut(),
+            simple_card: null_mut(),
+            advanced_card: null_mut(),
+            start: null_mut(),
+        })
+    }
+
     fn crawler_kind() -> super::DialogKind {
         use std::ptr::null_mut;
         super::DialogKind::Crawler(super::CrawlerFields {
@@ -9973,29 +10008,12 @@ mod tests {
     fn the_error_line_of_every_dialog_has_its_own_space() {
         use super::{
             CrawlerFields, DialogKind, EventFields, JobLogFields, LoginFields, MediaFields,
-            ProgressFields, QueueFields, RuleFields, SyncFields, ToolsFields, UsageModes,
-            WizardFields, ADD_DIALOG_HEIGHT, RENAME_LOGICAL_HEIGHT, SETTINGS_FRAME,
-            SPEED_LOGICAL_HEIGHT,
+            ProgressFields, QueueFields, RuleFields, SyncFields, ToolsFields, ADD_DIALOG_HEIGHT,
+            RENAME_LOGICAL_HEIGHT, SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT,
         };
         use crate::model::{AddRequest, MediaInfo};
         use std::{collections::HashSet, ptr::null_mut};
 
-        fn wizard(simple: bool) -> DialogKind {
-            DialogKind::Wizard(WizardFields {
-                modes: UsageModes {
-                    video: true,
-                    file: true,
-                    audio: true,
-                },
-                simple,
-                video: null_mut(),
-                file: null_mut(),
-                audio: null_mut(),
-                simple_card: null_mut(),
-                advanced_card: null_mut(),
-                start: null_mut(),
-            })
-        }
         fn add(advanced: bool) -> DialogKind {
             match add_kind() {
                 DialogKind::Add(mut f) => {
@@ -10058,8 +10076,13 @@ mod tests {
             i32,
         );
         let cases: Vec<Case> = vec![
-            ("wizard, simple", Box::new(|| wizard(true)), 576, 412),
-            ("wizard, advanced", Box::new(|| wizard(false)), 576, 412),
+            ("wizard, simple", Box::new(|| wizard_kind(true)), 576, 412),
+            (
+                "wizard, advanced",
+                Box::new(|| wizard_kind(false)),
+                576,
+                412,
+            ),
             (
                 "new download",
                 Box::new(|| add(false)),
@@ -10666,14 +10689,13 @@ mod tests {
         problems
     }
 
-    /// The first-run wizard and the job view are not in this table: their rows
-    /// are not laid out in the Windows order.
+    /// The job view is not in this table: its command row is not a commit row.
     #[test]
     fn the_commit_row_of_every_dialog_follows_the_windows_order() {
         use super::{
             settings_logical_height, DialogKind, ADD_DIALOG_HEIGHT, C_SCAN, D_ADD_OK, D_CANCEL,
-            E_CLOSE, J_CLOSE, L_ADD, L_SAVE, M_QUEUE, RENAME_LOGICAL_HEIGHT, RN_OK, R_SAVE,
-            SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT, SP_OK, S_OK, Y_SAVE,
+            E_CLOSE, ID_WIZARD_START, J_CLOSE, L_ADD, L_SAVE, M_QUEUE, RENAME_LOGICAL_HEIGHT,
+            RN_OK, R_SAVE, SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT, SP_OK, S_OK, Y_SAVE,
         };
         use crate::model::UiMode;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -10729,6 +10751,22 @@ mod tests {
             }
         }
         let cases = [
+            case(
+                "wizard, basic",
+                || wizard_kind(true),
+                (576, 412),
+                (Some(ID_WIZARD_START), D_CANCEL),
+                Some(ID_WIZARD_START),
+                nothing,
+            ),
+            case(
+                "wizard, advanced",
+                || wizard_kind(false),
+                (576, 412),
+                (Some(ID_WIZARD_START), D_CANCEL),
+                Some(ID_WIZARD_START),
+                nothing,
+            ),
             case(
                 "new download",
                 add_kind,
@@ -10915,5 +10953,188 @@ mod tests {
             wrong.is_empty(),
             "dialogs whose commit row is not in the Windows order: {wrong:#?}"
         );
+    }
+
+    /// A button of an open alert.
+    struct AlertButton {
+        handle: usize,
+        id: i32,
+        left: i32,
+        default: bool,
+    }
+
+    /// Opens an alert with `open` on a private desktop, reads its buttons in
+    /// tab order from a second thread, lets `act` answer the alert, and returns
+    /// what `open` returned with the buttons that were read.
+    fn answer_alert<T: Send>(
+        open: impl FnOnce() -> T + Send,
+        act: impl FnOnce(usize, &[AlertButton]) + Send,
+    ) -> (T, Vec<AlertButton>) {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::System::StationsAndDesktops::{GetThreadDesktop, SetThreadDesktop};
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect, IsWindow,
+            PostMessageW, BS_DEFPUSHBUTTON, BS_TYPEMASK, GWL_STYLE, GW_CHILD, GW_HWNDNEXT,
+            WM_CLOSE,
+        };
+
+        on_private_desktop(|| unsafe {
+            register_test_classes();
+            let desktop = GetThreadDesktop(GetCurrentThreadId()) as usize;
+            std::thread::scope(|scope| {
+                let watcher = scope.spawn(move || {
+                    assert_ne!(SetThreadDesktop(desktop as _), 0, "the thread moves over");
+                    let class = super::wide(super::CLASS_ALERT);
+                    let mut alert = 0usize;
+                    for _ in 0..200 {
+                        alert = FindWindowW(class.as_ptr(), std::ptr::null()) as usize;
+                        if alert != 0 {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    let mut buttons = Vec::new();
+                    if alert == 0 {
+                        return buttons;
+                    }
+                    let mut child = GetWindow(alert as _, GW_CHILD);
+                    while !child.is_null() {
+                        if super::window_class(child).eq_ignore_ascii_case("Button") {
+                            let mut rect: RECT = std::mem::zeroed();
+                            GetWindowRect(child, &mut rect);
+                            let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+                            buttons.push(AlertButton {
+                                handle: child as usize,
+                                id: GetDlgCtrlID(child),
+                                left: rect.left,
+                                default: style & BS_TYPEMASK as u32 == BS_DEFPUSHBUTTON as u32,
+                            });
+                        }
+                        child = GetWindow(child, GW_HWNDNEXT);
+                    }
+                    act(alert, &buttons);
+                    for _ in 0..100 {
+                        if IsWindow(alert as _) == 0 {
+                            return buttons;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    // Never leaves the alert open: the test thread would wait for it for good.
+                    PostMessageW(alert as _, WM_CLOSE, 0, 0);
+                    buttons
+                });
+                let result = open();
+                (result, watcher.join().unwrap())
+            })
+        })
+    }
+
+    fn press_escape(alert: usize, _: &[AlertButton]) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN};
+        unsafe { PostMessageW(alert as _, WM_KEYDOWN, 0x1B, 0) };
+    }
+
+    /// Answers the alert with its `index`-th button from the left.
+    fn click_button(index: usize) -> impl FnOnce(usize, &[AlertButton]) + Send {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, BM_CLICK};
+        move |_, buttons| {
+            let mut by_position: Vec<_> = buttons.iter().collect();
+            by_position.sort_by_key(|button| button.left);
+            unsafe { PostMessageW(by_position[index].handle as _, BM_CLICK, 0, 0) };
+        }
+    }
+
+    /// The button ids from the left, and the same ids in tab order.
+    fn alert_order(buttons: &[AlertButton]) -> (Vec<i32>, Vec<i32>) {
+        let mut by_position: Vec<_> = buttons.iter().collect();
+        by_position.sort_by_key(|button| button.left);
+        (
+            by_position.iter().map(|button| button.id).collect(),
+            buttons.iter().map(|button| button.id).collect(),
+        )
+    }
+
+    #[test]
+    fn the_update_offer_reads_install_skip_this_version_later_and_escape_means_later() {
+        use crate::update::{UpdateDecision, UpdateManifest};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES};
+
+        let offer = || {
+            super::offer_update(&UpdateManifest {
+                version: "9.9.9".into(),
+                url: "https://update.example/setup.exe".into(),
+                sha256: String::new(),
+                notes: "A release note.".into(),
+            })
+        };
+        let name = |decision: Option<UpdateDecision>| match decision {
+            Some(UpdateDecision::Install) => "install",
+            Some(UpdateDecision::Skip) => "skip",
+            Some(UpdateDecision::Later) => "later",
+            None => "none",
+        };
+
+        let (decision, buttons) = answer_alert(offer, press_escape);
+        assert_eq!(name(decision), "later", "Escape postpones the offer");
+        let (from_the_left, tab_order) = alert_order(&buttons);
+        assert_eq!(from_the_left.len(), 3);
+        assert_eq!(
+            (from_the_left[0], from_the_left[2]),
+            (IDYES, IDNO),
+            "Install first, Later last"
+        );
+        assert_eq!(tab_order, from_the_left, "Tab follows the buttons");
+        assert_eq!(
+            buttons
+                .iter()
+                .filter(|button| button.default)
+                .map(|button| button.id)
+                .collect::<Vec<_>>(),
+            [IDYES],
+            "Install is the default button"
+        );
+        for (index, expected) in ["install", "skip", "later"].into_iter().enumerate() {
+            let (decision, _) = answer_alert(offer, click_button(index));
+            assert_eq!(name(decision), expected, "button {index} from the left");
+        }
+    }
+
+    #[test]
+    fn the_about_box_ends_with_ok_which_is_the_default_and_the_answer_to_escape() {
+        use super::{about_buttons, run_alert_buttons, ABOUT_COPY, ABOUT_FLAGS, ABOUT_NOTES};
+        use windows_sys::Win32::UI::WindowsAndMessaging::IDOK;
+
+        let about = || unsafe {
+            run_alert_buttons(
+                std::ptr::null_mut(),
+                "SSDownload 9.9.9",
+                "About SSDownload",
+                ABOUT_FLAGS,
+                Some(&about_buttons()),
+            )
+        };
+        let (answer, buttons) = answer_alert(about, press_escape);
+        assert_eq!(answer, Some(IDOK), "Escape answers OK");
+        let (from_the_left, tab_order) = alert_order(&buttons);
+        assert_eq!(from_the_left, [ABOUT_COPY, ABOUT_NOTES, IDOK]);
+        assert_eq!(tab_order, from_the_left, "Tab follows the buttons");
+        assert_eq!(
+            buttons
+                .iter()
+                .filter(|button| button.default)
+                .map(|button| button.id)
+                .collect::<Vec<_>>(),
+            [IDOK],
+            "OK is the default button"
+        );
+        for (index, expected) in [ABOUT_COPY, ABOUT_NOTES, IDOK].into_iter().enumerate() {
+            let (answer, _) = answer_alert(about, click_button(index));
+            assert_eq!(
+                answer,
+                Some(expected),
+                "button {index} from the left closes the box"
+            );
+        }
     }
 }
