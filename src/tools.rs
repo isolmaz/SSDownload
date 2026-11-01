@@ -40,6 +40,9 @@ const MAX_ARCHIVE_ENTRIES: usize = 20_000;
 const FFMPEG_BRANCH: (u32, u32) = (9, 0);
 /// Deno stays on this major version. A new major version is a deliberate change here.
 const DENO_MAJOR: u64 = 2;
+/// How many of the newest Deno releases are read: the most GitHub returns in one page. Once the
+/// pinned major version is older than this many releases, the install says so.
+const DENO_RELEASE_LIST: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallManifest {
@@ -246,7 +249,9 @@ pub(crate) fn ensure(
         "The yt-dlp version information could not be retrieved",
     ))?;
     let deno_releases: Vec<GithubRelease> = github_json(
-        "https://api.github.com/repos/denoland/deno/releases?per_page=30",
+        &format!(
+            "https://api.github.com/repos/denoland/deno/releases?per_page={DENO_RELEASE_LIST}"
+        ),
         control,
         network,
     )
@@ -270,12 +275,9 @@ pub(crate) fn ensure(
     let deno_asset = exact_asset(&deno_release, "deno-x86_64-pc-windows-msvc.zip")?;
     let deno_sums = exact_asset(&deno_release, "deno-x86_64-pc-windows-msvc.zip.sha256sum")?;
     let ffmpeg_asset = choose_ffmpeg_asset(&ffmpeg_release)?;
-    if ffmpeg_branch(&ffmpeg_asset.name).map(|(branch, _)| branch) != Some(FFMPEG_BRANCH) {
+    if let Some(notice) = ffmpeg_fallback_notice(&ffmpeg_asset.name) {
         crate::logging::record(
-            crate::logging::Event::warn("tools.ffmpeg_branch_fallback").detail(format!(
-                "FFmpeg {}.{} is not published; installing {}",
-                FFMPEG_BRANCH.0, FFMPEG_BRANCH.1, ffmpeg_asset.name
-            )),
+            crate::logging::Event::warn("tools.ffmpeg_branch_fallback").detail(notice),
         );
     }
     let ffmpeg_sums = ffmpeg_release
@@ -784,6 +786,7 @@ fn exact_asset(release: &GithubRelease, name: &str) -> Result<GithubAsset> {
 /// The newest stable release of the pinned Deno major version. The list is in publication order,
 /// which also holds the patch releases of older major versions, so the version decides.
 fn newest_deno_release(releases: Vec<GithubRelease>) -> Result<GithubRelease> {
+    let list_was_full = releases.len() >= DENO_RELEASE_LIST;
     releases
         .into_iter()
         .filter(|release| !release.draft && !release.prerelease)
@@ -792,14 +795,26 @@ fn newest_deno_release(releases: Vec<GithubRelease>) -> Result<GithubRelease> {
         .max_by_key(|(version, _)| *version)
         .map(|(_, release)| release)
         .ok_or_else(|| {
-            anyhow!(
-                "{}",
-                crate::i18n::ui_format!(
-                    "Deno {0}. sürüm serisinde kararlı bir yayın bulunamadı",
-                    "No stable release of Deno {0}.x was found",
-                    DENO_MAJOR
+            if list_was_full {
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui_format!(
+                        "Deno {0}. sürüm serisinden kararlı bir yayın son {1} Deno yayını arasında yok; uygulamanın bu sürümü çok eski bir Deno sürümüne bağlı",
+                        "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old",
+                        DENO_MAJOR,
+                        DENO_RELEASE_LIST
+                    )
                 )
-            )
+            } else {
+                anyhow!(
+                    "{}",
+                    crate::i18n::ui_format!(
+                        "Deno {0}. sürüm serisinde kararlı bir yayın bulunamadı",
+                        "No stable release of Deno {0}.x was found",
+                        DENO_MAJOR
+                    )
+                )
+            }
         })
 }
 
@@ -849,6 +864,17 @@ fn choose_ffmpeg_branch_asset(release: &GithubRelease, pinned: (u32, u32)) -> Re
                 )
             )
         })
+}
+
+/// The log text for an asset of another release branch than the pinned one, `None` for the
+/// pinned branch.
+fn ffmpeg_fallback_notice(asset_name: &str) -> Option<String> {
+    (ffmpeg_branch(asset_name).map(|(branch, _)| branch) != Some(FFMPEG_BRANCH)).then(|| {
+        format!(
+            "FFmpeg {}.{} is not published; installing {asset_name}",
+            FFMPEG_BRANCH.0, FFMPEG_BRANCH.1
+        )
+    })
 }
 
 /// The release branch and whether the build is the shared one, for a BtbN asset name such as
@@ -2088,6 +2114,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_a_build_of_another_branch_than_the_pin_counts_as_a_fallback() {
+        let pinned = format!("{}.{}", FFMPEG_BRANCH.0, FFMPEG_BRANCH.1);
+        let older = format!("{}.1", FFMPEG_BRANCH.0 - 1);
+        let newer = format!("{}.0", FFMPEG_BRANCH.0 + 1);
+        let installed = |branches: &[&str]| {
+            let names = btbn_assets(branches, true);
+            choose_ffmpeg_asset(&release_from("latest", false, false, &names))
+                .unwrap()
+                .name
+        };
+
+        assert_eq!(ffmpeg_fallback_notice(&installed(&[&pinned])), None);
+        assert_eq!(
+            ffmpeg_fallback_notice(&installed(&[&older, &pinned, &newer])),
+            None
+        );
+        for branches in [vec![older.as_str(), newer.as_str()], vec![older.as_str()]] {
+            let name = installed(&branches);
+            let notice = ffmpeg_fallback_notice(&name).expect("a fallback is noted");
+            assert!(
+                notice.contains(&name) && notice.contains(&pinned),
+                "{notice}"
+            );
+        }
+    }
+
     fn newest_deno(releases: &[(&str, bool, bool)]) -> Result<String> {
         let assets = owned(&[
             "deno-x86_64-pc-windows-msvc.zip",
@@ -2159,6 +2212,25 @@ mod tests {
         ])
         .is_err());
         assert!(newest_deno(&[]).is_err());
+    }
+
+    #[test]
+    fn a_full_list_without_the_pinned_major_version_names_the_cause() {
+        let tags: Vec<String> = (0..DENO_RELEASE_LIST)
+            .map(|patch| format!("v{}.0.{patch}", DENO_MAJOR + 1))
+            .collect();
+        let list: Vec<_> = tags
+            .iter()
+            .map(|tag| (tag.as_str(), false, false))
+            .collect();
+
+        let full = format!("{:#}", newest_deno(&list).unwrap_err());
+        let short = format!("{:#}", newest_deno(&list[..3]).unwrap_err());
+
+        let limit = DENO_RELEASE_LIST.to_string();
+        assert!(full.contains(&limit), "{full}");
+        assert!(!short.contains(&limit), "{short}");
+        assert_ne!(full, short);
     }
 
     #[test]

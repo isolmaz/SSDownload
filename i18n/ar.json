@@ -1696,5 +1696,6 @@
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "لا يتطابق الملف مع ملخّص SHA-256 الذي ينشره مصدره ({0})، وأعطى تنزيلان بيانات مختلفة؛ تم حذف الملف الجزئي، وسيُنزَّل الملف من جديد عند إعادة المحاولة",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "تم حفظ الملف، لكنه لا يتطابق مع ملخّص SHA-256 الذي ينشره مصدره ({0})؛ أعطى تنزيلان البيانات نفسها",
   "No capacity for the network connection became free in time": "لم تتوفر سعة للاتصال بالشبكة في الوقت المناسب",
+  "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old": "لا يوجد إصدار مستقر من Deno {0}.x ضمن أحدث {1} إصدارًا من Deno؛ هذا الإصدار من التطبيق مرتبط بإصدار Deno قديم جدًا",
   "No stable release of Deno {0}.x was found": "لم يُعثر على إصدار مستقر من Deno {0}.x"
 }

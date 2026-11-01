@@ -7352,6 +7352,9 @@ macro_rules! __ui_template_ar {
     ("Missing value for {flag}") => {
         "القيمة مفقودة لـ {flag}"
     };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "لا يوجد إصدار مستقر من Deno {0}.x ضمن أحدث {1} إصدارًا من Deno؛ هذا الإصدار من التطبيق مرتبط بإصدار Deno قديم جدًا"
+    };
     ("No stable release of Deno {0}.x was found") => {
         "لم يُعثر على إصدار مستقر من Deno {0}.x"
     };
@@ -8169,6 +8172,9 @@ macro_rules! __ui_template_es {
     };
     ("Missing value for {flag}") => {
         "Falta el valor de {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Ninguna versión estable de Deno {0}.x figura entre las {1} versiones más recientes de Deno; esta versión de la aplicación está vinculada a una versión de Deno demasiado antigua"
     };
     ("No stable release of Deno {0}.x was found") => {
         "No se encontró ninguna versión estable de Deno {0}.x"
@@ -8988,6 +8994,9 @@ macro_rules! __ui_template_pt {
     ("Missing value for {flag}") => {
         "Valor ausente para {flag}"
     };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Nenhuma versão estável do Deno {0}.x está entre as {1} versões mais recentes do Deno; esta versão do aplicativo está vinculada a uma versão do Deno muito antiga"
+    };
     ("No stable release of Deno {0}.x was found") => {
         "Nenhuma versão estável do Deno {0}.x foi encontrada"
     };
@@ -9806,6 +9815,9 @@ macro_rules! __ui_template_fr {
     ("Missing value for {flag}") => {
         "Valeur manquante pour {flag}"
     };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Aucune version stable de Deno {0}.x ne figure parmi les {1} versions les plus récentes de Deno ; cette version de l'application est liée à une version de Deno trop ancienne"
+    };
     ("No stable release of Deno {0}.x was found") => {
         "Aucune version stable de Deno {0}.x n'a été trouvée"
     };
@@ -10623,6 +10635,9 @@ macro_rules! __ui_template_de {
     };
     ("Missing value for {flag}") => {
         "Fehlender Wert für {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Unter den neuesten {1} Deno-Releases ist kein stabiles Release von Deno {0}.x; diese Version der Anwendung ist an eine zu alte Deno-Version gebunden"
     };
     ("No stable release of Deno {0}.x was found") => {
         "Es wurde kein stabiles Release von Deno {0}.x gefunden"

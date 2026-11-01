@@ -1696,5 +1696,6 @@
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "Le fichier ne correspond pas au condensat SHA-256 publié par sa source ({0}) et deux téléchargements ont donné des octets différents ; le fichier partiel a été supprimé et la nouvelle tentative le téléchargera à nouveau",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "Le fichier a été enregistré, mais ne correspond pas au condensat SHA-256 publié par sa source ({0}) ; deux téléchargements ont donné les mêmes octets",
   "No capacity for the network connection became free in time": "Aucune capacité n'a été libérée à temps pour la connexion réseau",
+  "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old": "Aucune version stable de Deno {0}.x ne figure parmi les {1} versions les plus récentes de Deno ; cette version de l'application est liée à une version de Deno trop ancienne",
   "No stable release of Deno {0}.x was found": "Aucune version stable de Deno {0}.x n'a été trouvée"
 }
