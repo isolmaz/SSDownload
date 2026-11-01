@@ -379,7 +379,8 @@ pub(super) unsafe fn run_alert(
     run_alert_buttons(owner, body, title, flags, None)
 }
 /// The themed alert with its own button captions: `buttons` lists `(result id, label)`
-/// in display order; the first is the default and `IDCANCEL`, when listed, answers Escape.
+/// in display order; the button `flags` name with `MB_DEFBUTTON1..4` (the first one without
+/// it) is the default and `IDCANCEL`, when listed, answers Escape.
 pub(super) unsafe fn run_alert_buttons(
     owner: HWND,
     body: &str,
@@ -389,7 +390,7 @@ pub(super) unsafe fn run_alert_buttons(
 ) -> Option<i32> {
     let (plan, default, escape) = match buttons {
         Some(custom) if !custom.is_empty() => {
-            let default = custom[0].0;
+            let default = custom[(((flags & MB_DEFMASK) >> 8) as usize).min(custom.len() - 1)].0;
             let escape = alert_escape(custom, default);
             (custom.to_vec(), default, escape)
         }
