@@ -1946,6 +1946,19 @@ fn a_failure_is_classified_alike_in_every_interface_language() {
 }
 
 #[test]
+fn an_ffmpeg_progress_report_gives_the_output_time_of_its_out_time_us_lines() {
+    // A block of FFmpeg 8.1's `-progress pipe:1` report; `out_time_ms` is in microseconds too.
+    let block = "bitrate= 152.5kbits/s\ntotal_size=572688\nout_time_us=30037333\n\
+                 out_time_ms=30037333\nout_time=00:00:30.037333\ndup_frames=0\n\
+                 drop_frames=0\nspeed= 132x\nprogress=end";
+    let times = block.lines().filter_map(reported_time).collect::<Vec<_>>();
+    assert_eq!(times, [Duration::from_micros(30_037_333)]);
+    // Before the first output, and while the first timestamps lie before zero.
+    assert_eq!(reported_time("out_time_us=N/A"), None);
+    assert_eq!(reported_time("out_time_us=-23220"), None);
+}
+
+#[test]
 fn a_line_cut_at_the_limit_is_flagged_by_the_reader_not_by_its_marker_text() {
     let lines: Vec<_> = process::cut_lines("short\nabcdefghij\nlast".as_bytes(), 6)
         .map(Result::unwrap)

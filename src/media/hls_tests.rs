@@ -20,6 +20,9 @@ struct Source {
     segment_delay: Duration,
     /// A tag added to both media playlists.
     playlist_tag: Option<&'static str>,
+    /// The video and the audio of `video_seconds` in one playlist, the only one the master
+    /// playlist offers.
+    muxed: bool,
 }
 
 struct Server {
@@ -88,32 +91,54 @@ impl Fixture {
                 .unwrap();
             }
         };
-        encode(
-            &format!(
-                "testsrc=size=320x180:rate=25:duration={}",
-                source.video_seconds
-            ),
-            &["-c:v", "libopenh264", "-g", "50"],
-            "video.m3u8",
-            "v%d.ts",
-        );
-        encode(
-            &format!(
-                "sine=frequency=440:sample_rate=48000:duration={}",
-                source.audio_seconds
-            ),
-            &["-c:a", "aac", "-b:a", "64k"],
-            "audio.m3u8",
-            "a%d.ts",
-        );
-        fs::write(
-            site.join("master.m3u8"),
+        let master = if source.muxed {
+            encode(
+                &format!(
+                    "testsrc=size=320x180:rate=25:duration={0} [out0]; \
+                     sine=frequency=440:sample_rate=48000:duration={0} [out1]",
+                    source.video_seconds
+                ),
+                &[
+                    "-c:v",
+                    "libopenh264",
+                    "-g",
+                    "50",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "64k",
+                ],
+                "muxed.m3u8",
+                "m%d.ts",
+            );
+            "#EXTM3U\n#EXT-X-VERSION:3\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=320x180,CODECS=\"avc1.42c00d,mp4a.40.2\"\n\
+             muxed.m3u8\n"
+        } else {
+            encode(
+                &format!(
+                    "testsrc=size=320x180:rate=25:duration={}",
+                    source.video_seconds
+                ),
+                &["-c:v", "libopenh264", "-g", "50"],
+                "video.m3u8",
+                "v%d.ts",
+            );
+            encode(
+                &format!(
+                    "sine=frequency=440:sample_rate=48000:duration={}",
+                    source.audio_seconds
+                ),
+                &["-c:a", "aac", "-b:a", "64k"],
+                "audio.m3u8",
+                "a%d.ts",
+            );
             "#EXTM3U\n#EXT-X-VERSION:3\n\
              #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"Turkish\",LANGUAGE=\"tr\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\"\n\
              #EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=320x180,CODECS=\"avc1.42c00d,mp4a.40.2\",AUDIO=\"aud\"\n\
-             video.m3u8\n",
-        )
-        .unwrap();
+             video.m3u8\n"
+        };
+        fs::write(site.join("master.m3u8"), master).unwrap();
         let server = Arc::new(Server {
             site,
             requests: Mutex::new(Vec::new()),
@@ -157,6 +182,30 @@ impl Fixture {
             "hls-end-to-end",
         )?;
         Ok(output)
+    }
+
+    /// Downloads the best audio as `format` (`original` for the source's own), with every status
+    /// the download reported.
+    fn download_audio(&self, format: &str) -> (PathBuf, Vec<TransferProgress>) {
+        let request = AddRequest {
+            url: self.master.clone(),
+            kind: DownloadKind::Audio,
+            audio_format: Some(format.into()),
+            connections: Some(4),
+            ..AddRequest::default()
+        };
+        let mut updates = Vec::new();
+        let result = download(
+            &self.paths,
+            &request,
+            &self.root.join("song"),
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+            &mut |update| updates.push(update),
+            "hls-audio",
+        )
+        .unwrap_or_else(|error| panic!("{format}: {error:#}"));
+        (result.path, updates)
     }
 
     /// How often each segment the encoder wrote for `prefix` was requested, in playlist order.
@@ -755,4 +804,128 @@ fn the_audio_of_a_combined_stream_is_muxed_and_verified_as_an_audio_only_output(
             "{label}: the output holds the audio alone"
         );
     }
+}
+
+/// An audio download of an audio rendition, or of a playlist that holds the video too, runs in
+/// the app and gives what yt-dlp gives for the same media: the same file type and the very same
+/// audio packets, as MP3 and as the source's own AAC.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn an_audio_download_converts_in_the_app_as_yt_dlp_converts_it() {
+    let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    let packets = |path: &Path| {
+        let digest = std::process::Command::new(&tools.ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args(["-map", "0:a", "-c", "copy", "-f", "md5", "-"])
+            .output()
+            .unwrap();
+        assert!(digest.status.success(), "{}", path.display());
+        String::from_utf8_lossy(&digest.stdout).trim().to_owned()
+    };
+    for muxed in [false, true] {
+        for (format, extension, phase) in [
+            ("mp3", "mp3", "Ses MP3 biçimine dönüştürülüyor"),
+            ("original", "m4a", "Ses M4A dosyasına kopyalanıyor"),
+        ] {
+            let case = format!("{format}, muxed: {muxed}");
+            let source = |playlist_tag| Source {
+                video_seconds: 12,
+                audio_seconds: 12,
+                muxed,
+                playlist_tag,
+                ..Source::default()
+            };
+            let native = Fixture::new(source(None));
+            let (converted, updates) = native.download_audio(format);
+            let reference = Fixture::new(source(Some(
+                "#EXT-X-DATERANGE:ID=\"intro\",START-DATE=\"2026-01-01T00:00:00Z\"",
+            )));
+            let (expected, reference_updates) = reference.download_audio(format);
+
+            for output in [&converted, &expected] {
+                assert_eq!(
+                    output.extension().and_then(|value| value.to_str()),
+                    Some(extension),
+                    "{case}"
+                );
+            }
+            assert_eq!(packets(&converted), packets(&expected), "{case}");
+            // The app fetched every segment of the one playlist once, and none of the video's.
+            let (taken, left) = if muxed { ("m", None) } else { ("a", Some("v")) };
+            assert!(
+                native.requests(taken).iter().all(|count| *count == 1),
+                "{case}"
+            );
+            if let Some(left) = left {
+                assert!(
+                    native.requests(left).iter().all(|count| *count == 0),
+                    "{case}"
+                );
+            }
+            // The app converted the first download itself and left the second to yt-dlp.
+            assert!(
+                updates
+                    .iter()
+                    .any(|update| update.processing && update.phase.starts_with(phase)),
+                "{case}"
+            );
+            assert!(
+                !reference_updates
+                    .iter()
+                    .any(|update| update.phase.starts_with(phase)),
+                "{case}"
+            );
+        }
+    }
+}
+
+/// FFmpeg's progress report reaches the caller while FFmpeg runs, not only at its end.
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn ffmpeg_reports_its_output_time_while_it_converts() {
+    let tools = tools::verified_toolchain(&shared_profile(), &TransferControl::default())
+        .expect("the installed media tools");
+    // The input is read at five times its speed: 15 s of audio take about 3 s, and FFmpeg
+    // reports every half second.
+    let args = [
+        "-v",
+        "error",
+        "-nostdin",
+        "-readrate",
+        "5",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=duration=15",
+        "-acodec",
+        "libmp3lame",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+        "-f",
+        "null",
+        "-",
+    ]
+    .map(String::from);
+    let started = Instant::now();
+    let mut reports = Vec::new();
+    let result = run_ffmpeg_reporting(
+        &tools.ffmpeg,
+        &args,
+        Duration::from_secs(60),
+        &TransferControl::default(),
+        &mut |written| reports.push((started.elapsed(), written)),
+    )
+    .unwrap();
+    assert!(result.status.success(), "{}", result.stderr);
+    assert!(reports.len() >= 3, "{reports:?}");
+    assert!(
+        reports.windows(2).all(|pair| pair[0].1 <= pair[1].1),
+        "{reports:?}"
+    );
+    let (first, last) = (reports[0], reports[reports.len() - 1]);
+    assert!(last.1 >= Duration::from_secs(14), "{reports:?}");
+    assert!(last.0 - first.0 >= Duration::from_secs(1), "{reports:?}");
 }

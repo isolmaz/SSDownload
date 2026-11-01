@@ -1693,5 +1693,9 @@
   "The digest did not match; downloading the file again": "لم يتطابق الملخّص؛ جارٍ تنزيل الملف من جديد",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "لا يتطابق الملف مع ملخّص SHA-256 الذي ينشره مصدره ({0})، وأعطى تنزيلان بيانات مختلفة؛ تم حذف الملف الجزئي، وسيُنزَّل الملف من جديد عند إعادة المحاولة",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "تم حفظ الملف، لكنه لا يتطابق مع ملخّص SHA-256 الذي ينشره مصدره ({0})؛ أعطى تنزيلان البيانات نفسها",
-  "No capacity for the network connection became free in time": "لم تتوفر سعة للاتصال بالشبكة في الوقت المناسب"
+  "No capacity for the network connection became free in time": "لم تتوفر سعة للاتصال بالشبكة في الوقت المناسب",
+  "Converting the audio to {0}: {1}%": "جارٍ تحويل الصوت إلى {0}: {1}%",
+  "Copying the audio into {0}: {1}%": "جارٍ نسخ الصوت إلى ملف {0}: {1}%",
+  "The downloaded stream has no readable audio": "لا يحتوي البث الذي تم تنزيله على صوت قابل للقراءة",
+  "The audio could not be converted: {0}": "تعذّر تحويل الصوت: {0}"
 }

@@ -228,7 +228,7 @@ pub(super) struct PinnedMediaSource {
 
 /// Fragment durations of a finished HLS media playlist; `None` for an unfinished one or one
 /// with an unreadable duration.
-fn finished_hls_fragments(body: &str) -> Option<Vec<f64>> {
+pub(super) fn finished_hls_fragments(body: &str) -> Option<Vec<f64>> {
     let mut finite = false;
     let mut fragments = Vec::new();
     for line in body.lines().map(str::trim) {

@@ -14,7 +14,28 @@ pub(super) fn run_capture(
     timeout: Duration,
     control: &TransferControl,
 ) -> Result<Captured> {
-    run_capture_with_proxy(executable, args, input, timeout, control, None)
+    run_capture_with_proxy(executable, args, input, timeout, control, None, None)
+}
+
+/// `run_capture` for FFmpeg started with `-progress pipe:1`, whose stdout then carries only that
+/// report: `progress` gets each output time FFmpeg reports, while it runs.
+pub(super) fn run_ffmpeg_reporting(
+    ffmpeg: &Path,
+    args: &[String],
+    timeout: Duration,
+    control: &TransferControl,
+    progress: &mut dyn FnMut(Duration),
+) -> Result<Captured> {
+    run_capture_with_proxy(ffmpeg, args, b"", timeout, control, None, Some(progress))
+}
+
+/// The output time of one line of FFmpeg's `-progress` report.
+pub(super) fn reported_time(line: &str) -> Option<Duration> {
+    line.strip_prefix("out_time_us=")?
+        .trim()
+        .parse()
+        .ok()
+        .map(Duration::from_micros)
 }
 
 pub(super) fn run_ytdlp_capture(
@@ -34,7 +55,15 @@ pub(super) fn run_ytdlp_capture(
         input.truncate(input_len);
         return Err(error);
     }
-    let result = run_capture_with_proxy(executable, args, input, timeout, control, Some(&proxy));
+    let result = run_capture_with_proxy(
+        executable,
+        args,
+        input,
+        timeout,
+        control,
+        Some(&proxy),
+        None,
+    );
     input.truncate(input_len);
     result
 }
@@ -73,6 +102,7 @@ pub(super) fn run_capture_with_proxy(
     timeout: Duration,
     control: &TransferControl,
     proxy: Option<&ExternalProxy>,
+    mut progress: Option<&mut dyn FnMut(Duration)>,
 ) -> Result<Captured> {
     let mut command = Command::new(executable);
     if let Some(proxy) = proxy.as_ref() {
@@ -98,19 +128,41 @@ pub(super) fn run_capture_with_proxy(
             "Could not capture yt-dlp stderr"
         ))
     })?;
+    // The latest reported output time in microseconds, `u64::MAX` once it has been passed on.
+    let reported = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let latest = Arc::clone(&reported);
+    let reporting = progress.is_some();
     let out_thread = thread::spawn(move || {
         let mut bytes = Vec::new();
-        let _ = stdout
-            .take((MAX_INSPECT_OUTPUT + 1) as u64)
-            .read_to_end(&mut bytes);
+        if reporting {
+            for (line, _) in cut_lines(stdout, MAX_ERROR_BYTES).map_while(Result::ok) {
+                if let Some(time) = reported_time(&line) {
+                    latest.store(
+                        time.as_micros() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            }
+        } else {
+            let _ = stdout
+                .take((MAX_INSPECT_OUTPUT + 1) as u64)
+                .read_to_end(&mut bytes);
+        }
         bytes
     });
     let err_thread = thread::spawn(move || read_bounded(&mut stderr, MAX_ERROR_BYTES));
+    let mut pass_on = || {
+        let time = reported.swap(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+        if let Some(report) = progress.as_mut().filter(|_| time != u64::MAX) {
+            report(Duration::from_micros(time));
+        }
+    };
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
+        pass_on();
         if started.elapsed() >= timeout || control.stop_requested() {
             job.terminate();
             let _ = child.wait();
@@ -150,6 +202,7 @@ pub(super) fn run_capture_with_proxy(
         ))?;
     }
     let stdout = out_thread.join().unwrap_or_default();
+    pass_on();
     let stderr = err_thread.join().unwrap_or_default();
     Ok(Captured {
         status,

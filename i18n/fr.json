@@ -1693,5 +1693,9 @@
   "The digest did not match; downloading the file again": "Le condensat ne correspond pas ; le fichier est téléchargé de nouveau",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "Le fichier ne correspond pas au condensat SHA-256 publié par sa source ({0}) et deux téléchargements ont donné des octets différents ; le fichier partiel a été supprimé et la nouvelle tentative le téléchargera à nouveau",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "Le fichier a été enregistré, mais ne correspond pas au condensat SHA-256 publié par sa source ({0}) ; deux téléchargements ont donné les mêmes octets",
-  "No capacity for the network connection became free in time": "Aucune capacité n'a été libérée à temps pour la connexion réseau"
+  "No capacity for the network connection became free in time": "Aucune capacité n'a été libérée à temps pour la connexion réseau",
+  "Converting the audio to {0}: {1}%": "Conversion de l'audio en {0} : {1} %",
+  "Copying the audio into {0}: {1}%": "Copie de l'audio dans un fichier {0} : {1} %",
+  "The downloaded stream has no readable audio": "Le flux téléchargé ne contient pas d'audio lisible",
+  "The audio could not be converted: {0}": "L'audio n'a pas pu être converti : {0}"
 }

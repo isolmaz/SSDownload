@@ -1,8 +1,9 @@
-//! App-native download of a pinned, finished HLS source with separate video and audio
-//! playlists. Both streams' segments are fetched at once over connections kept from one segment
-//! to the next, each segment is retried on its own, the requests to a host that answers 429 or
-//! 503 are paced, and the joined streams are copied into one container. Every other source shape
-//! stays with yt-dlp.
+//! App-native download of a pinned, finished HLS source: separate video and audio playlists, or
+//! the one playlist of an audio download. The segments are fetched at once over connections kept
+//! from one segment to the next, each segment is retried on its own, the requests to a host that
+//! answers 429 or 503 are paced, and the joined streams are copied into one container, or the
+//! audio is converted as yt-dlp's audio extraction converts it. Every other source shape stays
+//! with yt-dlp.
 
 use super::*;
 use std::{
@@ -30,6 +31,8 @@ pub(super) struct NativeStream {
     language: Option<String>,
     headers: Vec<(String, String)>,
     segments: Vec<Url>,
+    /// Seconds the playlist declares, when every segment's length is readable.
+    length: Option<f64>,
 }
 
 impl NativeStream {
@@ -39,21 +42,33 @@ impl NativeStream {
     }
 }
 
-/// The pinned source as native streams: exactly one video-only and one audio-only finished
-/// playlist, for a single-video request whose tracks need no per-track selection. `None`
-/// leaves the download to yt-dlp.
+/// File types whose download yt-dlp's audio extraction keeps as it comes when the audio already
+/// fits the asked format (its `COMMON_AUDIO_EXTS`). The app does not copy that, so an audio
+/// download of a format of such a type stays with yt-dlp.
+const AUDIO_FILE_TYPES: &[&str] = &[
+    "aiff", "alac", "flac", "m4a", "mka", "mp3", "ogg", "opus", "wav", "wma",
+];
+
+/// The pinned source as native streams, for a single download whose tracks need no per-track
+/// selection: for a video, exactly one video-only and one audio-only finished playlist; for an
+/// audio download, one finished playlist of known length that carries audio, alone or with video
+/// the conversion drops. `None` leaves the download to yt-dlp.
 pub(super) fn native_streams(
     pinned: &PinnedMediaSource,
     request: &AddRequest,
 ) -> Option<Vec<NativeStream>> {
+    let playlists = match request.kind {
+        DownloadKind::Video => 2,
+        DownloadKind::Audio => 1,
+        _ => return None,
+    };
     if request.playlist
-        || request.kind != DownloadKind::Video
         || request.live_from_start
         || !request.audio_tracks.is_empty()
         || !request.subtitle_tracks.is_empty()
         || !request.subtitle_languages.is_empty()
         || !pinned.dash_formats.is_empty()
-        || pinned.manifests.len() != 2
+        || pinned.manifests.len() != playlists
     {
         return None;
     }
@@ -66,9 +81,13 @@ pub(super) fn native_streams(
             let role = match (codec("vcodec"), codec("acodec")) {
                 (video, Some("none")) if video != Some("none") => "video",
                 (Some("none"), audio) if audio != Some("none") => "audio",
+                (_, audio) if playlists == 1 && audio != Some("none") => "audio",
                 _ => return None,
             };
-            if !extractor_cookies_are_known(format, request) {
+            if !extractor_cookies_are_known(format, request)
+                || (playlists == 1
+                    && codec("ext").is_some_and(|ext| AUDIO_FILE_TYPES.contains(&ext)))
+            {
                 return None;
             }
             Some(NativeStream {
@@ -77,9 +96,13 @@ pub(super) fn native_streams(
                 language: codec("language").map(str::to_owned),
                 headers: stream_headers(format, request)?,
                 segments: plain_segments(&manifest.body)?,
+                length: finished_hls_fragments(&manifest.body).map(|lengths| lengths.iter().sum()),
             })
         })
         .collect::<Option<Vec<_>>>()?;
+    if playlists == 1 {
+        return (streams[0].role == "audio" && streams[0].length.is_some()).then_some(streams);
+    }
     streams.sort_by_key(|stream| stream.role != "video");
     (streams[0].role == "video" && streams[1].role == "audio").then_some(streams)
 }
@@ -183,7 +206,8 @@ fn web_url(value: &str) -> Option<Url> {
         .filter(|url| matches!(url.scheme(), "http" | "https") && url.username().is_empty())
 }
 
-/// Downloads the streams into the workspace and copies them into `media.<container>`.
+/// Downloads the streams into the workspace and copies them into `media.<container>`, or, for an
+/// audio download, converts the audio into `media.<extension of the audio format>`.
 pub(super) fn download_streams(
     streams: &[NativeStream],
     workspace: &Path,
@@ -194,6 +218,17 @@ pub(super) fn download_streams(
     progress: &mut dyn FnMut(TransferProgress),
 ) -> Result<PathBuf> {
     let joins = fetch_segments(streams, workspace, request, control, network, progress)?;
+    if request.kind == DownloadKind::Audio {
+        return extract_audio(
+            &streams[0],
+            &joins[0],
+            workspace,
+            request,
+            tools,
+            control,
+            progress,
+        );
+    }
     let received = joins.iter().map(Join::stored_bytes).sum::<u64>();
     progress(TransferProgress {
         downloaded: received,
@@ -297,6 +332,211 @@ fn merge(
     }
     fs::rename(&staged, &output)?;
     Ok(output)
+}
+
+/// What yt-dlp's audio extraction makes of audio in one codec: the output's file type, FFmpeg's
+/// codec options, and whether they encode the audio again or copy it.
+#[derive(Debug, PartialEq)]
+struct AudioOutput {
+    extension: &'static str,
+    label: &'static str,
+    codec: &'static [&'static str],
+    encodes: bool,
+}
+
+/// The output yt-dlp's `--extract-audio` picks for audio in `codec` (as ffprobe names it) asked
+/// as `conversion`, `None` for the best audio: the codec's own file type where one takes it
+/// unchanged, MP3 otherwise. The quality is the one the app asks yt-dlp for: VBR 0 for MP3,
+/// yt-dlp's default (5 of 10) for the rest.
+fn audio_output(conversion: Option<&str>, codec: &str) -> AudioOutput {
+    let output = |extension, label, codec, encodes| AudioOutput {
+        extension,
+        label,
+        codec,
+        encodes,
+    };
+    let own = match codec {
+        "aac" => Some(output(
+            "m4a",
+            "M4A",
+            &["-acodec", "copy", "-bsf:a", "aac_adtstoasc"],
+            false,
+        )),
+        "mp3" => Some(output("mp3", "MP3", &["-acodec", "copy"], false)),
+        "opus" => Some(output("opus", "Opus", &["-acodec", "copy"], false)),
+        "vorbis" => Some(output("ogg", "Ogg", &["-acodec", "copy"], false)),
+        "flac" => Some(output("flac", "FLAC", &["-acodec", "copy"], false)),
+        "alac" => Some(output("m4a", "M4A", &["-acodec", "alac"], true)),
+        _ => None,
+    };
+    match (conversion, own) {
+        (None, Some(own)) => own,
+        (Some(target), Some(own)) if target == codec || (target, codec) == ("m4a", "aac") => own,
+        (None, None) => output(
+            "mp3",
+            "MP3",
+            &["-acodec", "libmp3lame", "-q:a", "5.0"],
+            true,
+        ),
+        (Some("m4a"), _) => output("m4a", "M4A", &["-acodec", "aac", "-q:a", "2.05"], true),
+        (Some("opus"), _) => output("opus", "Opus", &["-acodec", "libopus"], true),
+        (Some("flac"), _) => output("flac", "FLAC", &["-acodec", "flac"], true),
+        // MP3, the one format left, which the app asks yt-dlp for at VBR 0.
+        (Some(_), _) => output(
+            "mp3",
+            "MP3",
+            &["-acodec", "libmp3lame", "-q:a", "0.0"],
+            true,
+        ),
+    }
+}
+
+/// The codec of the first audio stream of `path`, as ffprobe names it.
+fn audio_codec(
+    path: &Path,
+    tools: &tools::VerifiedTools,
+    control: &TransferControl,
+) -> Result<String> {
+    let mut args = [
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=codec_name",
+        "-of",
+        "json",
+    ]
+    .map(String::from)
+    .to_vec();
+    args.push(path.to_string_lossy().into_owned());
+    let probe = run_capture(&tools.ffprobe, &args, b"", Duration::from_secs(60), control)?;
+    let value = serde_json::from_slice::<Value>(&probe.stdout).unwrap_or_default();
+    value["streams"][0]["codec_name"]
+        .as_str()
+        .filter(|_| probe.status.success())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            anyhow!(crate::i18n::ui(
+                "İndirilen akışta okunabilir ses yok",
+                "The downloaded stream has no readable audio"
+            ))
+        })
+}
+
+/// Converts the joined stream's audio into `media.<extension>` as yt-dlp's audio extraction
+/// converts it, dropping any video, and reports how much of the playlist's length FFmpeg has
+/// written.
+fn extract_audio(
+    stream: &NativeStream,
+    join: &Join,
+    workspace: &Path,
+    request: &AddRequest,
+    tools: &tools::VerifiedTools,
+    control: &TransferControl,
+    progress: &mut dyn FnMut(TransferProgress),
+) -> Result<PathBuf> {
+    let received = join.stored_bytes();
+    let length = stream.length.unwrap_or_default();
+    let output = audio_output(
+        audio_conversion(request)?,
+        &audio_codec(&join.joined, tools, control)?,
+    );
+    let staged = workspace.join(format!("media.native.temp.{}", output.extension));
+    let _ = fs::remove_file(&staged);
+    let mut args = [
+        "-v",
+        "error",
+        "-nostdin",
+        "-protocol_whitelist",
+        "file",
+        "-i",
+    ]
+    .map(String::from)
+    .to_vec();
+    args.push(join.joined.to_string_lossy().into_owned());
+    args.push("-vn".into());
+    args.extend(output.codec.iter().map(|arg| arg.to_string()));
+    args.extend(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats"].map(String::from));
+    args.push(staged.to_string_lossy().into_owned());
+    progress(conversion_progress(
+        &output,
+        received,
+        Duration::ZERO,
+        length,
+        Duration::ZERO,
+    ));
+    let started = Instant::now();
+    // At least ten minutes, and as long as the audio plays: an encoder runs many times faster.
+    let result = run_ffmpeg_reporting(
+        &tools.ffmpeg,
+        &args,
+        Duration::from_secs_f64(length.max(10.0 * 60.0)),
+        control,
+        &mut |written| {
+            progress(conversion_progress(
+                &output,
+                received,
+                written,
+                length,
+                started.elapsed(),
+            ))
+        },
+    )?;
+    if !result.status.success() {
+        let _ = fs::remove_file(&staged);
+        bail!(
+            "{}",
+            crate::i18n::ui_format!(
+                "Ses dönüştürülemedi: {0}",
+                "The audio could not be converted: {0}",
+                bounded_tail(&result.stderr, 4096)
+            )
+        );
+    }
+    let converted = workspace.join(format!("media.{}", output.extension));
+    fs::rename(&staged, &converted)?;
+    Ok(converted)
+}
+
+/// The status of a conversion that has written `written` of `length` seconds of audio, `elapsed`
+/// after it started. The bytes stay the downloaded ones: a queue's data limit counts every byte
+/// added to them, and the conversion downloads nothing. The time left follows from the share
+/// written so far, once a second has passed.
+fn conversion_progress(
+    output: &AudioOutput,
+    received: u64,
+    written: Duration,
+    length: f64,
+    elapsed: Duration,
+) -> TransferProgress {
+    let share = (written.as_secs_f64() / length).min(1.0);
+    let percent = (share * 100.0) as u32;
+    TransferProgress {
+        processing: true,
+        downloaded: received,
+        total: Some(received),
+        speed: 0,
+        eta: (share > 0.0 && elapsed >= Duration::from_secs(1))
+            .then(|| (elapsed.as_secs_f64() * (1.0 - share) / share).round() as u64),
+        phase: if output.encodes {
+            crate::i18n::ui_format!(
+                "Ses {0} biçimine dönüştürülüyor: %{1}",
+                "Converting the audio to {0}: {1}%",
+                output.label,
+                percent
+            )
+        } else {
+            crate::i18n::ui_format!(
+                "Ses {0} dosyasına kopyalanıyor: %{1}",
+                "Copying the audio into {0}: {1}%",
+                output.label,
+                percent
+            )
+        },
+    }
 }
 
 /// One stream's segments joined in playlist order. `<joined>.next` records how many segments
@@ -1356,6 +1596,166 @@ mod tests {
         assert!(!declined(&separate(), &video));
     }
 
+    fn single(format: Value) -> PinnedMediaSource {
+        PinnedMediaSource {
+            inspection: json!({ "formats": [format] }),
+            manifests: vec![PinnedManifest {
+                marker: "pinned-0".into(),
+                body: PLAIN.into(),
+            }],
+            dash_formats: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_audio_download_takes_the_one_playlist_that_carries_audio() {
+        let audio = AddRequest {
+            kind: DownloadKind::Audio,
+            audio_format: Some("mp3".into()),
+            ..AddRequest::default()
+        };
+        let rendition = json!({"format_id": "aud", "url": "pinned-0", "ext": "mp4",
+                               "vcodec": "none", "acodec": null});
+        let muxed = json!({"format_id": "720", "url": "pinned-0", "ext": "mp4",
+                           "vcodec": "avc1", "acodec": "mp4a"});
+        let taken = |source: &PinnedMediaSource, request: &AddRequest| {
+            native_streams(source, request).map(|streams| {
+                streams
+                    .iter()
+                    .map(|stream| (stream.role, stream.length))
+                    .collect::<Vec<_>>()
+            })
+        };
+        // An audio rendition, and a playlist that holds the video too, which the conversion
+        // drops; both with the length the playlist declares.
+        assert_eq!(
+            taken(&single(rendition.clone()), &audio),
+            Some(vec![("audio", Some(10.0))])
+        );
+        assert_eq!(
+            taken(&single(muxed.clone()), &audio),
+            Some(vec![("audio", Some(10.0))])
+        );
+
+        // A playlist without audio stays with yt-dlp, as does a format of a file type yt-dlp
+        // keeps as it comes when the audio fits, and a playlist whose length cannot be read.
+        let mut silent = muxed.clone();
+        silent["acodec"] = json!("none");
+        assert_eq!(taken(&single(silent), &audio), None);
+        let mut kept = rendition.clone();
+        kept["ext"] = json!("m4a");
+        assert_eq!(taken(&single(kept), &audio), None);
+        let mut unreadable = single(rendition.clone());
+        unreadable.manifests[0].body = PLAIN.replace("#EXTINF:4.0,", "#EXTINF:four,");
+        assert_eq!(taken(&unreadable, &audio), None);
+        // So does an audio download of two playlists, a video download of one, and a download
+        // whose kind is decided when it starts.
+        assert_eq!(taken(&separate(), &audio), None);
+        let video = AddRequest {
+            kind: DownloadKind::Video,
+            ..AddRequest::default()
+        };
+        assert_eq!(taken(&single(muxed.clone()), &video), None);
+        let automatic = AddRequest {
+            kind: DownloadKind::Auto,
+            ..AddRequest::default()
+        };
+        assert_eq!(taken(&single(rendition), &automatic), None);
+        assert_eq!(taken(&separate(), &automatic), None);
+    }
+
+    #[test]
+    fn the_audio_is_converted_as_yt_dlp_converts_it() {
+        let options = |conversion: Option<&str>, codec: &str| {
+            let output = audio_output(conversion, codec);
+            (output.extension, output.codec.join(" "), output.encodes)
+        };
+        // The options yt-dlp 2026.10.26 ran for an AAC source (`--verbose`, the app's arguments).
+        assert_eq!(
+            options(Some("mp3"), "aac"),
+            ("mp3", "-acodec libmp3lame -q:a 0.0".into(), true)
+        );
+        for conversion in [None, Some("m4a")] {
+            assert_eq!(
+                options(conversion, "aac"),
+                ("m4a", "-acodec copy -bsf:a aac_adtstoasc".into(), false)
+            );
+        }
+        assert_eq!(
+            options(Some("opus"), "aac"),
+            ("opus", "-acodec libopus".into(), true)
+        );
+        assert_eq!(
+            options(Some("flac"), "aac"),
+            ("flac", "-acodec flac".into(), true)
+        );
+        // Its `FFmpegExtractAudioPP` for other codecs: a codec its own file type takes is copied
+        // for the best audio and for a conversion to that codec; another is encoded, AAC at
+        // quality 5 of 10, and the best audio of a codec without a file type becomes MP3 at 5.
+        assert_eq!(
+            options(None, "opus"),
+            ("opus", "-acodec copy".into(), false)
+        );
+        assert_eq!(
+            options(None, "vorbis"),
+            ("ogg", "-acodec copy".into(), false)
+        );
+        assert_eq!(
+            options(Some("mp3"), "mp3"),
+            ("mp3", "-acodec copy".into(), false)
+        );
+        assert_eq!(
+            options(Some("m4a"), "opus"),
+            ("m4a", "-acodec aac -q:a 2.05".into(), true)
+        );
+        assert_eq!(
+            options(Some("m4a"), "alac"),
+            ("m4a", "-acodec aac -q:a 2.05".into(), true)
+        );
+        assert_eq!(
+            options(None, "ac3"),
+            ("mp3", "-acodec libmp3lame -q:a 5.0".into(), true)
+        );
+    }
+
+    #[test]
+    fn a_conversion_reports_the_share_written_and_the_time_left_but_not_more_bytes() {
+        let mp3 = audio_output(Some("mp3"), "aac");
+        let report = |written: f64, elapsed: f64| {
+            conversion_progress(
+                &mp3,
+                1000,
+                Duration::from_secs_f64(written),
+                200.0,
+                Duration::from_secs_f64(elapsed),
+            )
+        };
+        let start = report(0.0, 0.0);
+        assert_eq!(
+            (start.downloaded, start.total, start.speed, start.eta),
+            (1000, Some(1000), 0, None)
+        );
+        assert!(start.processing);
+        assert_eq!(start.phase, "Ses MP3 biçimine dönüştürülüyor: %0");
+        // A quarter written in 4 s leaves 12 s; under a second in, the rate says too little.
+        let quarter = report(50.0, 4.0);
+        assert_eq!(quarter.phase, "Ses MP3 biçimine dönüştürülüyor: %25");
+        assert_eq!(quarter.eta, Some(12));
+        assert_eq!(report(50.0, 0.5).eta, None);
+        // FFmpeg's last report can run past the playlist's length.
+        let end = report(200.04, 16.0);
+        assert_eq!(end.phase, "Ses MP3 biçimine dönüştürülüyor: %100");
+        assert_eq!((end.downloaded, end.eta), (1000, Some(0)));
+        let copy = conversion_progress(
+            &audio_output(None, "aac"),
+            1000,
+            Duration::from_secs(100),
+            200.0,
+            Duration::from_secs(1),
+        );
+        assert_eq!(copy.phase, "Ses M4A dosyasına kopyalanıyor: %50");
+    }
+
     /// The segment `next_task` hands to a worker that keeps a connection to `kept`.
     fn task_for(shared: &Shared, streams: &[NativeStream], kept: Option<usize>) -> Task {
         match next_for(shared, streams, kept) {
@@ -1384,6 +1784,7 @@ mod tests {
             segments: (0..segments)
                 .map(|index| Url::parse(&format!("https://cdn.example/{index}.ts")).unwrap())
                 .collect(),
+            length: None,
         }
     }
 
