@@ -47,10 +47,10 @@ use windows_sys::Win32::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
         Input::KeyboardAndMouse::{
-            EnableWindow, GetActiveWindow, GetFocus, GetKeyState, IsWindowEnabled, RegisterHotKey,
-            ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL,
-            MOD_NOREPEAT, MOD_SHIFT, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN,
-            VK_END, VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_TAB, VK_UP,
+            EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, RegisterHotKey, ReleaseCapture,
+            SetCapture, SetFocus, TrackMouseEvent, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT,
+            MOD_SHIFT, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DELETE, VK_DOWN, VK_END,
+            VK_F5, VK_HOME, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_TAB, VK_UP,
         },
         Shell::*,
         WindowsAndMessaging::*,
@@ -11192,11 +11192,13 @@ mod tests {
 
         thread_local! {
             static SEEN: RefCell<Vec<(u32, usize)>> = const { RefCell::new(Vec::new()) };
+            static STORED: RefCell<Vec<Option<i32>>> = const { RefCell::new(Vec::new()) };
             static ORIGINAL: Cell<isize> = const { Cell::new(0) };
         }
 
         /// Passes everything on to the window's own procedure and notes the
-        /// activation messages on the way.
+        /// activation messages on the way, and the title bar setting the window
+        /// holds when it is told to draw its title bar.
         unsafe extern "system" fn record(
             hwnd: native::HWND,
             msg: u32,
@@ -11209,17 +11211,23 @@ mod tests {
             ) {
                 SEEN.with(|seen| seen.borrow_mut().push((msg, wparam)));
             }
+            if msg == WM_NCACTIVATE {
+                STORED.with(|held| held.borrow_mut().push(stored(hwnd)));
+            }
             let original = std::mem::transmute::<isize, WNDPROC>(ORIGINAL.get());
             CallWindowProcW(original, hwnd, msg, wparam, lparam)
         }
 
-        /// What the window is sent while the scheme is applied to it, and the
-        /// active window and the focus before and after. `shown` and `active`
-        /// set the state it is in.
+        /// What the window is sent while the scheme is applied to it, the title
+        /// bar setting it holds at each `WM_NCACTIVATE`, the active window and the
+        /// focus before and after, and whether its frame is drawn active before
+        /// and after. `shown` and `active` set the state it is in.
         struct Switch {
             seen: Vec<(u32, usize)>,
+            stored: Vec<Option<i32>>,
             before: (usize, usize),
             after: (usize, usize),
+            frame: (bool, bool),
         }
 
         fn switch(shown: bool, active: bool) -> Switch {
@@ -11243,15 +11251,21 @@ mod tests {
                     record as *const () as isize,
                 ));
                 SEEN.with(|seen| seen.borrow_mut().clear());
+                STORED.with(|held| held.borrow_mut().clear());
                 let before = (GetActiveWindow() as usize, GetFocus() as usize);
+                let frame_before = frame_is_active(hwnd);
                 native::apply_dark_mode(hwnd, true);
                 let after = (GetActiveWindow() as usize, GetFocus() as usize);
+                let frame_after = frame_is_active(hwnd);
                 let seen = SEEN.with(|seen| seen.borrow().clone());
+                let stored = STORED.with(|held| held.borrow().clone());
                 DestroyWindow(other);
                 Switch {
                     seen,
+                    stored,
                     before,
                     after,
+                    frame: (frame_before, frame_after),
                 }
             })
         }
@@ -11268,6 +11282,16 @@ mod tests {
                 switch.before, switch.after,
                 "the active window and the focus stay"
             );
+            assert_eq!(switch.frame, (true, true), "the frame stays active");
+        }
+
+        #[test]
+        fn the_title_bar_setting_is_in_place_before_the_title_bar_is_drawn() {
+            assert_eq!(
+                switch(true, true).stored,
+                [Some(1), Some(1)],
+                "both repaints find the new setting"
+            );
         }
 
         #[test]
@@ -11282,11 +11306,39 @@ mod tests {
                 switch.before, switch.after,
                 "the active window and the focus stay"
             );
+            assert_eq!(switch.frame, (false, false), "the frame stays inactive");
+        }
+
+        #[test]
+        fn a_frame_drawn_inactive_stays_inactive_while_the_thread_has_the_window_active() {
+            // The state of a window behind another application's window:
+            // GetActiveWindow still names it, and its frame is drawn inactive.
+            with_dialog(rename_kind, 460, 150, |dialog| unsafe {
+                let hwnd = dialog.hwnd;
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                SetActiveWindow(hwnd);
+                SendMessageW(hwnd, WM_NCACTIVATE, 0, 0);
+                assert!(
+                    GetActiveWindow() == hwnd && !frame_is_active(hwnd),
+                    "the window is the thread's active window with an inactive frame"
+                );
+                native::apply_dark_mode(hwnd, true);
+                assert!(!frame_is_active(hwnd), "the frame is still inactive");
+                assert_eq!(GetActiveWindow(), hwnd, "the activation is untouched");
+            });
         }
 
         #[test]
         fn a_window_that_is_not_shown_has_no_title_bar_to_draw() {
             assert_eq!(switch(false, false).seen, []);
+        }
+
+        /// Whether the frame of `hwnd` is drawn as the active one.
+        unsafe fn frame_is_active(hwnd: native::HWND) -> bool {
+            let mut info: WINDOWINFO = std::mem::zeroed();
+            info.cbSize = size_of::<WINDOWINFO>() as u32;
+            GetWindowInfo(hwnd, &mut info);
+            info.dwWindowStatus & WS_ACTIVECAPTION != 0
         }
 
         /// The title bar setting the window stores.

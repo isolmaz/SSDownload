@@ -1576,20 +1576,32 @@ pub(super) unsafe fn set_dark_caption(hwnd: HWND, dark: bool) -> windows_sys::co
         DwmSetWindowAttribute(hwnd, attribute, value, size_of::<BOOL>() as u32)
     })
 }
+/// Whether the frame of `hwnd` is drawn as the active one. That is the
+/// frame's own state: GetActiveWindow still names a window whose frame is drawn
+/// inactive while another thread or process has the foreground.
+unsafe fn frame_is_active(hwnd: HWND) -> bool {
+    let mut info: WINDOWINFO = zeroed();
+    info.cbSize = size_of::<WINDOWINFO>() as u32;
+    GetWindowInfo(hwnd, &mut info) != 0 && info.dwWindowStatus & WS_ACTIVECAPTION != 0
+}
 /// Some builds repaint the title bar after a colour change only when the
 /// activation state changes. Telling the window that it was deactivated and
 /// activated again (or the other way round) makes the default window
 /// procedure draw the title bar anew while the real activation and the focus
-/// stay where they are. A window that is not shown has no title bar to draw.
-unsafe fn redraw_caption(hwnd: HWND) {
+/// stay where they are. `active` is the state the frame had before the colour
+/// change, which is the one it ends in. A window that is not shown has no
+/// title bar to draw.
+unsafe fn redraw_caption(hwnd: HWND, active: bool) {
     if IsWindowVisible(hwnd) == 0 {
         return;
     }
-    let active = (GetActiveWindow() == hwnd) as WPARAM;
-    SendMessageW(hwnd, WM_NCACTIVATE, active ^ 1, 0);
-    SendMessageW(hwnd, WM_NCACTIVATE, active, 0);
+    SendMessageW(hwnd, WM_NCACTIVATE, !active as WPARAM, 0);
+    SendMessageW(hwnd, WM_NCACTIVATE, active as WPARAM, 0);
 }
 pub(super) unsafe fn apply_dark_mode(hwnd: HWND, enabled: bool) {
+    // SetWindowTheme can draw the frame active again, so the state to keep is
+    // read before it.
+    let framed = frame_is_active(hwnd);
     let enabled = enabled && !high_contrast();
     dark_app_mode(enabled);
     if let Some(allow) = allow_dark_mode_for_window() {
@@ -1644,7 +1656,7 @@ pub(super) unsafe fn apply_dark_mode(hwnd: HWND, enabled: bool) {
         std::ptr::null_mut(),
         RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
     );
-    redraw_caption(hwnd);
+    redraw_caption(hwnd, framed);
 }
 /// Applies the colour scheme to every descendant, including the list header
 /// which is nested inside the list view rather than owned by the window.
