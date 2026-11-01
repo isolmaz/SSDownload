@@ -643,7 +643,11 @@ pub fn job_timeline_stamp(job_id: &str) -> Vec<Option<(u64, std::time::SystemTim
     let Some(writer) = WRITER.get() else {
         return Vec::new();
     };
-    timeline_files(&writer.logs.join("jobs"), job_id)
+    timeline_stamp(&writer.logs.join("jobs"), job_id)
+}
+
+fn timeline_stamp(dir: &Path, job_id: &str) -> Vec<Option<(u64, std::time::SystemTime)>> {
+    timeline_files(dir, job_id)
         .iter()
         .map(|file| {
             let metadata = fs::metadata(file).ok()?;
@@ -1302,6 +1306,31 @@ mod tests {
             std::env::temp_dir().join(format!("ssdownload-log-{name}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_job_timeline_stamp_changes_when_either_of_its_files_does() {
+        let dir = temp_dir("job-stamp");
+        let empty = timeline_stamp(&dir, "abc");
+        assert_eq!(empty, [None, None]);
+        fs::write(dir.join("job-abc.jsonl"), "one\n").unwrap();
+        let written = timeline_stamp(&dir, "abc");
+        assert_ne!(written, empty);
+        assert_eq!(timeline_stamp(&dir, "abc"), written);
+        // Another job's file leaves the stamp alone.
+        fs::write(dir.join("job-other.jsonl"), "x\n").unwrap();
+        assert_eq!(timeline_stamp(&dir, "abc"), written);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("job-abc.jsonl"))
+            .unwrap()
+            .write_all(b"two\n")
+            .unwrap();
+        let appended = timeline_stamp(&dir, "abc");
+        assert_ne!(appended, written);
+        fs::write(dir.join("job-abc.1.jsonl"), "rotated\n").unwrap();
+        assert_ne!(timeline_stamp(&dir, "abc"), appended);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

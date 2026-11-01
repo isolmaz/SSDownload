@@ -2295,26 +2295,29 @@ unsafe fn pause_access_key(main: HWND, key: WPARAM) -> bool {
     {
         return false;
     }
-    let Some(typed) = char::from_u32(key as u32).map(|c| c.to_lowercase().to_string()) else {
+    let Some(typed) = char::from_u32(key as u32) else {
         return false;
     };
+    let labels = PAUSE_VERBS.map(pause_button_label);
+    if pause_key_clicks(&text(button), &labels, typed) {
+        SendMessageW(button, BM_CLICK, 0, 0);
+        return true;
+    }
+    false
+}
+/// Whether `typed` is the access key of one of `labels` other than the
+/// `shown` one, which is the dialog manager's to handle.
+fn pause_key_clicks(shown: &str, labels: &[&str], typed: char) -> bool {
+    let typed = typed.to_lowercase().to_string();
     let access = |label: &str| {
         let (title, at) = split_mnemonic(label);
         at.and_then(|at| title.chars().nth(at))
             .map(|c| c.to_lowercase().to_string())
     };
-    // The label shown now is the dialog manager's to handle.
-    if access(&text(button)).as_ref() == Some(&typed) {
-        return false;
-    }
-    if PAUSE_VERBS
-        .iter()
-        .any(|&verb| access(pause_button_label(verb)).as_ref() == Some(&typed))
-    {
-        SendMessageW(button, BM_CLICK, 0, 0);
-        return true;
-    }
-    false
+    access(shown).as_ref() != Some(&typed)
+        && labels
+            .iter()
+            .any(|label| access(label).as_ref() == Some(&typed))
 }
 
 /// The pages under the list, in order: details, the job's own log, its error.
@@ -10229,6 +10232,24 @@ mod tests {
         )]));
         assert!(!add_opens_picker(&[page, file]));
         assert!(!add_opens_picker(&[]));
+    }
+
+    #[test]
+    fn the_pause_button_answers_to_the_keys_of_its_other_labels() {
+        use super::pause_key_clicks;
+        let tr = ["Durakla&t", "&Sürdür", "Durakla&t / Sürdür"];
+        // Showing Resume: T (Pause) clicks; S is the dialog manager's.
+        assert!(pause_key_clicks("&Sürdür", &tr, 't'));
+        assert!(pause_key_clicks("&Sürdür", &tr, 'T'));
+        assert!(!pause_key_clicks("&Sürdür", &tr, 's'));
+        // Showing Pause: S (Resume) clicks, T does not.
+        assert!(pause_key_clicks("Durakla&t", &tr, 'S'));
+        assert!(!pause_key_clicks("Durakla&t", &tr, 't'));
+        assert!(!pause_key_clicks("Durakla&t", &tr, 'k'));
+        let en = ["&Pause", "&Resume", "&Pause / Resume"];
+        assert!(pause_key_clicks("&Pause / Resume", &en, 'r'));
+        assert!(!pause_key_clicks("&Pause / Resume", &en, 'p'));
+        assert!(!pause_key_clicks("&Resume", &en, 'x'));
     }
 
     #[test]
