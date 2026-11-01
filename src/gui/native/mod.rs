@@ -9629,20 +9629,37 @@ fn valid_clock(value: &str) -> bool {
 fn add_opens_picker(requests: &[AddRequest]) -> bool {
     matches!(requests, [request] if !direct_file_request(request))
 }
-/// Modern's label for New download's OK: the verb of what it does with the
-/// fields as they are.
+/// Modern's label for New download's OK: the verb of what OK does once the
+/// other fields pass their checks. Only the links and the type decide it.
 unsafe fn add_ok_label(f: &AddFields) -> &'static str {
-    if collect_add(f, false).is_ok_and(|requests| add_opens_picker(&requests)) {
+    if add_links_open_picker(&text(f.urls), add_kind(f)) {
         crate::i18n::ui("Devam", "Continue")
     } else {
         crate::i18n::ui("İndir", "Download")
     }
 }
-unsafe fn collect_add(
-    f: &AddFields,
-    single_required: bool,
-) -> std::result::Result<Vec<AddRequest>, (String, HWND)> {
-    let raw = text(f.urls);
+fn add_links_open_picker(raw: &str, kind: DownloadKind) -> bool {
+    add_urls(raw).is_ok_and(|urls| {
+        let requests: Vec<AddRequest> = urls
+            .into_iter()
+            .map(|url| AddRequest {
+                url,
+                kind,
+                ..Default::default()
+            })
+            .collect();
+        add_opens_picker(&requests)
+    })
+}
+unsafe fn add_kind(f: &AddFields) -> DownloadKind {
+    f.kind_values
+        .get(combo_index(f.kind).max(0) as usize)
+        .copied()
+        .unwrap_or(DownloadKind::Auto)
+}
+/// The addresses in New download's links box: batch ranges expanded, each
+/// address once, in the order they appear.
+fn add_urls(raw: &str) -> std::result::Result<Vec<String>, String> {
     let mut urls = Vec::new();
     for line in raw.lines() {
         let line = line.trim();
@@ -9660,7 +9677,7 @@ unsafe fn collect_add(
                 continue;
             }
             Ok(None) => {}
-            Err(error) => return Err((error.to_string(), f.urls)),
+            Err(error) => return Err(error.to_string()),
         }
         if crate::validation::validate_url(line, false).is_ok() {
             urls.push(line.to_string());
@@ -9671,15 +9688,19 @@ unsafe fn collect_add(
     let mut seen = std::collections::HashSet::new();
     urls.retain(|url| seen.insert(url.clone()));
     if urls.is_empty() {
-        return Err((
-            crate::i18n::ui(
-                "En az bir geçerli HTTP/HTTPS/FTP URL girin.",
-                "Enter at least one valid HTTP/HTTPS/FTP URL.",
-            )
-            .to_string(),
-            f.urls,
-        ));
+        return Err(crate::i18n::ui(
+            "En az bir geçerli HTTP/HTTPS/FTP URL girin.",
+            "Enter at least one valid HTTP/HTTPS/FTP URL.",
+        )
+        .to_string());
     }
+    Ok(urls)
+}
+unsafe fn collect_add(
+    f: &AddFields,
+    single_required: bool,
+) -> std::result::Result<Vec<AddRequest>, (String, HWND)> {
+    let urls = add_urls(&text(f.urls)).map_err(|error| (error, f.urls))?;
     if single_required && urls.len() != 1 {
         return Err((
             crate::i18n::ui(
@@ -9764,11 +9785,7 @@ unsafe fn collect_add(
                 .timestamp(),
         )
     };
-    let kind = f
-        .kind_values
-        .get(combo_index(f.kind).max(0) as usize)
-        .copied()
-        .unwrap_or(DownloadKind::Auto);
+    let kind = add_kind(f);
     let dir = text(f.dir).trim().to_string();
     Ok(urls
         .into_iter()
@@ -10212,6 +10229,36 @@ mod tests {
         )]));
         assert!(!add_opens_picker(&[page, file]));
         assert!(!add_opens_picker(&[]));
+    }
+
+    #[test]
+    fn new_downloads_ok_label_reads_the_links_box_as_ok_does() {
+        use super::add_links_open_picker;
+        use crate::model::DownloadKind::{Auto, File, Video};
+        let page = "https://example.com/watch?v=1";
+        assert!(add_links_open_picker(page, Auto));
+        // The same address twice is one download.
+        assert!(add_links_open_picker(
+            &format!("{page}\r\n\r\n {page} "),
+            Auto
+        ));
+        // An address inside other text is found, as OK finds it.
+        assert!(add_links_open_picker(&format!("see {page} here"), Auto));
+        assert!(!add_links_open_picker(page, File));
+        assert!(add_links_open_picker(
+            "https://example.com/setup.zip",
+            Video
+        ));
+        assert!(!add_links_open_picker(
+            "https://example.com/setup.zip",
+            Auto
+        ));
+        assert!(!add_links_open_picker(
+            &format!("{page}\r\nhttps://example.com/watch?v=2"),
+            Auto
+        ));
+        assert!(!add_links_open_picker("not a link", Auto));
+        assert!(!add_links_open_picker("", Auto));
     }
 
     #[test]

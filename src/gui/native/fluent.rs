@@ -2051,17 +2051,10 @@ pub(super) unsafe fn modern_dialog_message(
                 if code == EN_CHANGE && control == f.urls {
                     sync_edit_scrollbar(f.urls);
                 }
-                // OK names what it does: the links and the type decide it.
                 if (code == EN_CHANGE && control == f.urls)
                     || (code == CBN_SELCHANGE && control == f.kind)
                 {
-                    let ok = GetDlgItem(dlg.hwnd, D_ADD_OK);
-                    let label = add_ok_label(f);
-                    if super::text(ok) != label {
-                        set_text(ok, label);
-                        layout_dialog(dlg);
-                        InvalidateRect(ok, null(), 0);
-                    }
+                    refresh_add_ok(dlg, f);
                 }
             }
             None
@@ -2143,6 +2136,19 @@ pub(super) unsafe fn modern_dialog_message(
             Some(CDRF_SKIPDEFAULT as LRESULT)
         }
         _ => None,
+    }
+}
+
+/// Names on New download's OK what it does with the links and type as they
+/// are now. A multiline edit sends no EN_CHANGE for WM_SETTEXT, so a caller
+/// that writes the links calls this itself.
+pub(super) unsafe fn refresh_add_ok(dlg: &DialogUi, f: &AddFields) {
+    let ok = GetDlgItem(dlg.hwnd, D_ADD_OK);
+    let label = add_ok_label(f);
+    if super::text(ok) != label {
+        set_text(ok, label);
+        layout_dialog(dlg);
+        InvalidateRect(ok, null(), 0);
     }
 }
 

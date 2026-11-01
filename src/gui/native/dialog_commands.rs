@@ -690,6 +690,9 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                                     .collect::<Vec<_>>()
                                     .join("\r\n");
                                 set_text(f.urls, &pending);
+                                if modern() {
+                                    refresh_add_ok(dlg, f);
+                                }
                                 set_dialog_error(
                                     dlg.hwnd,
                                     dlg.error,
