@@ -1534,8 +1534,6 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
         }
         return;
     }
-    // A mirrored window context needs a mirrored source, or the copy flips it.
-    SetLayout(memory, GetLayout(dc));
     let previous = SelectObject(memory, bitmap as HGDIOBJ);
     fill_menu_bar(memory, &strip, ui.hwnd);
     draw_strip_items(ui, memory, menu, count, &strip);

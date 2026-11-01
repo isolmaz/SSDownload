@@ -2050,7 +2050,6 @@ pub(super) unsafe fn paint_shapes(
         return;
     }
     let memory = CreateCompatibleDC(dc);
-    SetLayout(memory, GetLayout(dc));
     let mut info: BITMAPINFO = zeroed();
     info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
     info.bmiHeader.biWidth = size;
