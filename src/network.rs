@@ -47,6 +47,10 @@ const IDLE_SLOT_RELEASE_AFTER: Duration = Duration::from_secs(1);
 const RELAY_BUFFER: usize = 64 * 1024;
 const RELAY_POLL: Duration = Duration::from_millis(250);
 const ACQUIRE_POLL: Duration = Duration::from_millis(50);
+/// A request refused without waiting counts as waiting this long after the refusal. Such a
+/// requester asks again on its own: a browser transfer asks for its permit again at most a
+/// second later.
+const REFUSAL_WAITS_FOR: Duration = Duration::from_secs(2);
 const DEFAULT_CURL_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const PROXY_HEAD_LIMIT: usize = 16 * 1024;
 const PROXY_CLIENT_LIMIT: usize = 64;
@@ -69,6 +73,38 @@ struct GovernorState {
     active: usize,
     hosts: HashMap<String, usize>,
     wildcards: usize,
+    /// Requesters waiting for a slot of each host, and for a wildcard slot, which waits on
+    /// every host.
+    waiting: HashMap<String, usize>,
+    waiting_wildcards: usize,
+    /// The last refusal of a request that does not wait, for each host and for a wildcard
+    /// slot. A refusal drops the hosts refused longer than `REFUSAL_WAITS_FOR` ago.
+    refused: HashMap<String, Instant>,
+    refused_wildcard: Option<Instant>,
+}
+
+/// Counts a requester as waiting for its scope until it is dropped.
+struct Waiter<'a> {
+    governor: &'a NetworkGovernor,
+    /// `None` for a wildcard.
+    host: Option<String>,
+}
+
+impl Drop for Waiter<'_> {
+    fn drop(&mut self) {
+        let mut state = self.governor.lock_state();
+        match self.host.take() {
+            Some(host) => {
+                if let Some(count) = state.waiting.get_mut(&host) {
+                    *count -= 1;
+                    if *count == 0 {
+                        state.waiting.remove(&host);
+                    }
+                }
+            }
+            None => state.waiting_wildcards -= 1,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -108,6 +144,10 @@ impl NetworkGovernor {
                     active: 0,
                     hosts: HashMap::new(),
                     wildcards: 0,
+                    waiting: HashMap::new(),
+                    waiting_wildcards: 0,
+                    refused: HashMap::new(),
+                    refused_wildcard: None,
                 }),
                 available: Condvar::new(),
             }),
@@ -143,6 +183,42 @@ impl NetworkGovernor {
         self.try_acquire(LeaseScope::Host(host), 1)
     }
 
+    /// Whether a requester waits for a slot of `host`, or was refused one without waiting in
+    /// the last `REFUSAL_WAITS_FOR`: a connection kept open between requests to it should then
+    /// give its slot up. A requester counts for every host when it is after a wildcard slot,
+    /// and while the global budget has no room for the largest request (an FTP reservation of
+    /// two slots).
+    pub(crate) fn host_has_waiters(&self, host: &str) -> bool {
+        let state = self.lock_state();
+        let now = Instant::now();
+        let recent = |at: &Instant| now.saturating_duration_since(*at) < REFUSAL_WAITS_FOR;
+        let wildcard =
+            state.waiting_wildcards > 0 || state.refused_wildcard.as_ref().is_some_and(recent);
+        let anyone = !state.waiting.is_empty() || state.refused.values().any(recent);
+        wildcard
+            || state.waiting.contains_key(host)
+            || state.refused.get(host).is_some_and(recent)
+            || (anyone && state.active + 2 > GLOBAL_CONNECTION_BUDGET)
+    }
+
+    /// Counts a requester of `scope` as waiting, while the caller holds the state lock.
+    fn waiter(&self, state: &mut GovernorState, scope: &LeaseScope) -> Waiter<'_> {
+        let host = match scope {
+            LeaseScope::Host(host) => {
+                *state.waiting.entry(host.clone()).or_insert(0) += 1;
+                Some(host.clone())
+            }
+            LeaseScope::Wildcard => {
+                state.waiting_wildcards += 1;
+                None
+            }
+        };
+        Waiter {
+            governor: self,
+            host,
+        }
+    }
+
     /// Admission for one proxy tunnel: wait briefly for a finished fragment to release its slot
     /// before answering the client with a retryable 503. The wait is bounded, so a child that
     /// holds every slot of a host still gets its refusal instead of deadlocking the proxy.
@@ -153,6 +229,7 @@ impl NetworkGovernor {
         headroom: usize,
     ) -> Option<ConnectionLease> {
         let deadline = Instant::now() + timeout;
+        let mut waiter = None;
         loop {
             if let Some(lease) = self.try_acquire_host_with_headroom(host.clone(), headroom) {
                 return Some(lease);
@@ -160,7 +237,8 @@ impl NetworkGovernor {
             if Instant::now() >= deadline {
                 return None;
             }
-            let state = self.lock_state();
+            let mut state = self.lock_state();
+            waiter.get_or_insert_with(|| self.waiter(&mut state, &LeaseScope::Host(host.clone())));
             let (next, _) = self
                 .inner
                 .available
@@ -228,6 +306,7 @@ impl NetworkGovernor {
         control: &TransferControl,
         deadline: Option<Instant>,
     ) -> Result<ConnectionLease> {
+        let mut waiter = None;
         loop {
             if control.stop_requested() {
                 bail!(
@@ -256,6 +335,7 @@ impl NetworkGovernor {
                     )
                 );
             }
+            waiter.get_or_insert_with(|| self.waiter(&mut state, &scope));
             let (next, _) = self
                 .inner
                 .available
@@ -274,6 +354,7 @@ impl NetworkGovernor {
         host: String,
         control: &TransferControl,
     ) -> Result<ConnectionLease> {
+        let mut waiter = None;
         loop {
             if control.stop_requested() {
                 bail!(
@@ -303,6 +384,7 @@ impl NetworkGovernor {
                     units: 2,
                 });
             }
+            waiter.get_or_insert_with(|| self.waiter(&mut state, &scope));
             let (next, _) = self
                 .inner
                 .available
@@ -378,6 +460,16 @@ impl NetworkGovernor {
     fn try_acquire(&self, scope: LeaseScope, units: usize) -> Option<ConnectionLease> {
         let mut state = self.lock_state();
         if !can_acquire(&state, &scope, units) {
+            let now = Instant::now();
+            state
+                .refused
+                .retain(|_, at| now.saturating_duration_since(*at) < REFUSAL_WAITS_FOR);
+            match scope {
+                LeaseScope::Host(host) => {
+                    state.refused.insert(host, now);
+                }
+                LeaseScope::Wildcard => state.refused_wildcard = Some(now),
+            }
             return None;
         }
         grant(&mut state, &scope, units);
@@ -2041,7 +2133,7 @@ fn capability_matches(shared: &ProxyShared, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExternalProxy, NetworkGovernor};
+    use super::{ExternalProxy, NetworkGovernor, GLOBAL_CONNECTION_BUDGET, REFUSAL_WAITS_FOR};
     use crate::model::TransferControl;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use std::{
@@ -2441,6 +2533,96 @@ mod tests {
         assert!(limited
             .acquire_host_for_tunnel("example.test".into(), Duration::from_millis(500), 0)
             .is_some());
+    }
+
+    #[test]
+    fn a_requester_counts_as_waiting_for_its_host_until_it_has_a_slot_or_gives_up() {
+        let governor = NetworkGovernor::new(1);
+        let held = governor
+            .try_acquire_host("example.test".into())
+            .expect("first slot");
+        let control = TransferControl::default();
+        thread::scope(|scope| {
+            let tunnel = scope.spawn(|| {
+                governor.acquire_host_for_tunnel("example.test".into(), Duration::from_secs(5), 0)
+            });
+            assert!(eventually(|| governor.host_has_waiters("example.test")));
+            assert!(!governor.host_has_waiters("other.test"));
+            drop(held);
+            let lease = tunnel.join().unwrap().expect("the freed slot");
+            assert!(!governor.host_has_waiters("example.test"));
+
+            // A wildcard waits on every host, a requester that gives up stops waiting.
+            let wildcard = scope.spawn(|| governor.acquire_wildcard(&control));
+            assert!(eventually(|| governor.host_has_waiters("other.test")));
+            control.cancel();
+            assert!(wildcard.join().unwrap().is_err());
+            assert!(!governor.host_has_waiters("other.test"));
+            drop(lease);
+        });
+    }
+
+    #[test]
+    fn a_request_refused_without_waiting_counts_as_waiting_for_a_while() {
+        let governor = NetworkGovernor::new(1);
+        let _held = governor
+            .try_acquire_host("example.test".into())
+            .expect("first slot");
+        assert!(!governor.host_has_waiters("example.test"));
+
+        // A refused host slot counts for its host; a refused wildcard slot, a browser
+        // transfer's permit, for every host.
+        assert!(governor.try_acquire_host("example.test".into()).is_none());
+        assert!(governor.host_has_waiters("example.test"));
+        assert!(!governor.host_has_waiters("other.test"));
+        assert!(governor.try_acquire_wildcard().is_none());
+        assert!(governor.host_has_waiters("other.test"));
+
+        let long_ago = Instant::now().checked_sub(REFUSAL_WAITS_FOR).unwrap();
+        {
+            let mut state = governor.lock_state();
+            state.refused.values_mut().for_each(|at| *at = long_ago);
+            state.refused_wildcard = Some(long_ago);
+        }
+        assert!(!governor.host_has_waiters("example.test"));
+        assert!(!governor.host_has_waiters("other.test"));
+    }
+
+    #[test]
+    fn a_requester_held_back_by_the_global_budget_counts_for_every_host() {
+        let governor = NetworkGovernor::new(16);
+        let held = ["a.test", "b.test"]
+            .into_iter()
+            .flat_map(|host| (0..16).map(move |_| host))
+            .map(|host| governor.try_acquire_host(host.into()).expect("a slot"))
+            .collect::<Vec<_>>();
+        assert_eq!(held.len(), GLOBAL_CONNECTION_BUDGET);
+        assert!(!governor.host_has_waiters("a.test"));
+        thread::scope(|scope| {
+            let tunnel = scope.spawn(|| {
+                governor.acquire_host_for_tunnel("c.test".into(), Duration::from_secs(5), 0)
+            });
+            assert!(eventually(|| governor.host_has_waiters("a.test")));
+            drop(held);
+            assert!(tunnel.join().unwrap().is_some());
+        });
+        assert!(!governor.host_has_waiters("a.test"));
+    }
+
+    #[test]
+    fn an_ftp_reservation_counts_as_waiting_for_its_host_until_it_has_both_slots() {
+        let governor = NetworkGovernor::new(2);
+        let held = governor
+            .try_acquire_host("ftp.test".into())
+            .expect("one slot");
+        let control = TransferControl::default();
+        thread::scope(|scope| {
+            let reservation = scope.spawn(|| governor.reserve_ftp("ftp.test".into(), &control));
+            assert!(eventually(|| governor.host_has_waiters("ftp.test")));
+            drop(held);
+            assert!(reservation.join().unwrap().is_ok());
+        });
+        assert!(!governor.host_has_waiters("ftp.test"));
     }
 
     #[test]
