@@ -616,6 +616,8 @@ pub(super) const CORNER: i32 = 4;
 pub(super) const ROW_TOP: i32 = 16;
 pub(super) const ROW_HEIGHT: i32 = 32;
 pub(super) const ROW_BELOW: i32 = 16;
+/// A log window's list entry: compact, so more of the log shows.
+pub(super) const COMPACT_ROW: i32 = 24;
 /// The split between the list card and the tab strip, which also drags it.
 pub(super) const SPLIT_GAP: i32 = 8;
 pub(super) const TABS_HEIGHT: i32 = 40;
@@ -2112,7 +2114,30 @@ pub(super) unsafe extern "system" fn modern_progress_proc(
             _ => {}
         }
     }
+    if msg == WM_NCDESTROY {
+        RemovePropW(hwnd, stopped_prop());
+    }
     call_previous(hwnd, msg, wparam, lparam)
+}
+
+fn stopped_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.ProgressStopped"));
+    NAME.as_ptr()
+}
+
+/// Paints a Modern progress bar in the critical colour while its job is
+/// failed or cancelled, as the main list does, and in the accent otherwise.
+pub(super) unsafe fn set_progress_stopped(bar: HWND, stopped: bool) {
+    if stopped == !GetPropW(bar, stopped_prop()).is_null() {
+        return;
+    }
+    if stopped {
+        SetPropW(bar, stopped_prop(), 1 as HANDLE);
+    } else {
+        RemovePropW(bar, stopped_prop());
+    }
+    InvalidateRect(bar, null(), 0);
 }
 
 unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
@@ -2159,7 +2184,12 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
             right: client.left + end,
             bottom: middle - thickness / 2 + thickness,
         };
-        round_rect(dc, &bar, thickness / 2, palette.accent, None);
+        let colour = if !GetPropW(hwnd, stopped_prop()).is_null() {
+            palette.critical
+        } else {
+            palette.accent
+        };
+        round_rect(dc, &bar, thickness / 2, colour, None);
     }
 }
 
@@ -4075,6 +4105,60 @@ mod tests {
                 "the error line is left alone"
             );
             DestroyWindow(parent);
+        }
+    }
+
+    #[test]
+    fn a_stopped_job_s_progress_bar_fills_in_the_critical_colour() {
+        unsafe {
+            use windows_sys::Win32::UI::Controls::{
+                InitCommonControlsEx, ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX,
+            };
+            let common = INITCOMMONCONTROLSEX {
+                dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_PROGRESS_CLASS,
+            };
+            assert_ne!(InitCommonControlsEx(&common), 0);
+            let (width, height) = (120, 12);
+            let screen = GetDC(null_mut());
+            let dc = CreateCompatibleDC(screen);
+            ReleaseDC(null_mut(), screen);
+            let mut info: BITMAPINFO = zeroed();
+            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bits: *mut c_void = null_mut();
+            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            assert!(!bitmap.is_null() && !bits.is_null());
+            let previous = SelectObject(dc, bitmap as HGDIOBJ);
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let bar = control(parent, "msctls_progress32", "", WS_CHILD, 0, 1);
+            MoveWindow(bar, 0, 0, width, height, 0);
+            SendMessageW(bar, PBM_SETRANGE32, 0, 1000);
+            SendMessageW(bar, PBM_SETPOS, 500, 0);
+            let palette = main_palette(parent);
+            let painted = |stopped: bool| -> Vec<u32> {
+                set_progress_stopped(bar, stopped);
+                paint_modern_progress(bar, dc);
+                std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
+                    .iter()
+                    // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+                    .map(|&p| ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff))
+                    .collect()
+            };
+            let normal = painted(false);
+            let failed = painted(true);
+            SelectObject(dc, previous);
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteDC(dc);
+            DestroyWindow(parent);
+            assert!(normal.contains(&palette.accent));
+            assert!(!normal.contains(&palette.critical));
+            assert!(failed.contains(&palette.critical));
+            assert!(!failed.contains(&palette.accent));
         }
     }
 }

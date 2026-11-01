@@ -426,6 +426,12 @@ pub(super) unsafe fn refresh_job_view(
     if !processing {
         SendMessageW(f.progress, PBM_SETPOS, percent, 0);
     }
+    // Modern's bar is red for a failed or cancelled job, as in the main list.
+    if modern() {
+        let stopped = job_view_job(snapshot, f)
+            .is_some_and(|job| matches!(job.state, JobState::Failed | JobState::Cancelled));
+        set_progress_stopped(f.progress, stopped);
+    }
     EnableWindow(f.action, can_control as BOOL);
     EnableWindow(f.cancel, can_cancel as BOOL);
     EnableWindow(f.open_file, can_open as BOOL);

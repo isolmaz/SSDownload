@@ -1557,9 +1557,9 @@ pub(super) unsafe fn collect_settings(
     value.notify_completion = check(f.notify);
     value.dark_mode = check(f.dark);
     value.theme = if combo_index(f.theme) == 1 {
-        "classic".into()
-    } else {
         "modern".into()
+    } else {
+        "classic".into()
     };
     value.update_check_enabled = check(f.update_check);
     // Both modes show these two rows (on the general page in the simple one),

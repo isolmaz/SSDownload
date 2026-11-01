@@ -10671,4 +10671,243 @@ mod tests {
             assert!(!button_keeps, "a button leaves the arrows to the page");
         }
     }
+
+    /// A dialog of `kind` created the way the app creates one, in Modern and
+    /// hidden, for a profile of its own. `close_test_dialog` releases it.
+    unsafe fn modern_test_dialog(
+        kind: super::DialogKind,
+        width: i32,
+        height: i32,
+    ) -> (*mut super::DialogUi, super::HWND, std::path::PathBuf) {
+        use super::*;
+        set_modern(true);
+        register_classes().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-gui-test-{}", uuid::Uuid::new_v4()));
+        let app = App::open(crate::paths::AppPaths::new(root.clone()).unwrap()).unwrap();
+        let (raw, hwnd) = create_dialog(
+            null_mut(),
+            app,
+            DialogRequest {
+                title: "test",
+                width,
+                height,
+                kind,
+                origin: None,
+                launch: None,
+                modeless: false,
+            },
+        )
+        .unwrap();
+        (raw, hwnd, root)
+    }
+
+    unsafe fn close_test_dialog(
+        raw: *mut super::DialogUi,
+        hwnd: super::HWND,
+        root: std::path::PathBuf,
+    ) {
+        super::DestroyWindow(hwnd);
+        drop(Box::from_raw(raw));
+        for _ in 0..10 {
+            if std::fs::remove_dir_all(&root).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// The ids of a window's shown tab stops in the order Tab walks them.
+    unsafe fn tab_walk(window: super::HWND) -> Vec<i32> {
+        use super::*;
+        let mut ids = Vec::new();
+        let mut child = GetWindow(window, GW_CHILD);
+        while !child.is_null() {
+            let style = GetWindowLongW(child, GWL_STYLE) as u32;
+            if style & WS_TABSTOP != 0 && style & WS_VISIBLE != 0 {
+                ids.push(GetDlgCtrlID(child));
+            }
+            child = GetWindow(child, GW_HWNDNEXT);
+        }
+        ids
+    }
+
+    unsafe fn window_height(window: super::HWND) -> i32 {
+        let mut frame: super::RECT = std::mem::zeroed();
+        super::GetWindowRect(window, &mut frame);
+        frame.bottom - frame.top
+    }
+
+    #[test]
+    fn modern_s_speed_limit_grows_by_the_lines_its_label_wraps_to() {
+        use super::*;
+        unsafe {
+            // Narrow enough that the label wraps in every language.
+            let height = one_field_height(1) + SETTINGS_FRAME + 3;
+            let (raw, hwnd, root) = modern_test_dialog(
+                DialogKind::Speed(SpeedFields {
+                    ids: Vec::new(),
+                    initial: 0,
+                    edit: null_mut(),
+                    label_lines: 1,
+                }),
+                240,
+                height,
+            );
+            let lines = match &(*raw).kind {
+                DialogKind::Speed(f) => f.label_lines,
+                _ => 0,
+            };
+            let (outer, design) = (window_height(hwnd), (*raw).design.1);
+            close_test_dialog(raw, hwnd, root);
+            assert!(lines > 1, "{lines} lines");
+            assert_eq!(outer, height + (lines - 1) * ADD_LABEL);
+            assert_eq!(design, height + (lines - 1) * ADD_LABEL);
+        }
+    }
+
+    #[test]
+    fn modern_s_picker_fits_its_window_to_its_rows_and_tabs_in_their_order() {
+        use super::*;
+        unsafe {
+            // The window size below is the Modern one.
+            set_modern(true);
+            let (raw, hwnd, root) = modern_test_dialog(
+                DialogKind::Media(Box::new(MediaFields {
+                    base: AddRequest::default(),
+                    subtitle_none: false,
+                    session_consent: None,
+                    summary: null_mut(),
+                    name: null_mut(),
+                    kind: null_mut(),
+                    kind_values: Vec::new(),
+                    format: null_mut(),
+                    audio: null_mut(),
+                    audio_tracks: null_mut(),
+                    subtitles: null_mut(),
+                    external_url: null_mut(),
+                    external_language: null_mut(),
+                    external_label: null_mut(),
+                    external_kind: null_mut(),
+                    external_default: null_mut(),
+                    external_list: null_mut(),
+                    full_verification: null_mut(),
+                    playlist: null_mut(),
+                    renew_job: null_mut(),
+                    renew_restart: null_mut(),
+                    renew_ids: Vec::new(),
+                    video_formats: Vec::new(),
+                    audio_values: Vec::new(),
+                    info: MediaInfo::default(),
+                    size: null_mut(),
+                    subtitle_values: Vec::new(),
+                    external_values: Vec::new(),
+                    loaded_title: String::new(),
+                    populated: false,
+                    inspect_generation: 0,
+                    advanced: false,
+                    report_shown: false,
+                    report_error: None,
+                    host: String::new(),
+                    auto_queue: false,
+                    remember: null_mut(),
+                    from_start: null_mut(),
+                    from_start_offered: false,
+                    playlist_items: null_mut(),
+                    thumbnail: null_mut(),
+                    thumbnail_requested: false,
+                })),
+                MEDIA_WIDTH,
+                media_window_height(MEDIA_HEIGHT, 420),
+            );
+            let closed = window_height(hwnd);
+            SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+            let open = window_height(hwnd);
+            let scrolls = (*raw).scroll_range.get();
+            let mut work: RECT = zeroed();
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut work as *mut RECT).cast(), 0);
+            let walk = tab_walk(hwnd);
+            SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+            let closed_again = window_height(hwnd);
+            close_test_dialog(raw, hwnd, root);
+            assert!(
+                open > closed,
+                "the advanced rows grow the window: {closed} -> {open}"
+            );
+            assert_eq!(closed_again, closed);
+            assert!(
+                scrolls == 0 || open >= work.bottom - work.top,
+                "the open picker scrolls {scrolls} px in a {open} px window"
+            );
+            let at = |id: i32| walk.iter().position(|&walked| walked == id);
+            let before = |a: i32, b: i32| matches!((at(a), at(b)), (Some(a), Some(b)) if a < b);
+            // The playlist row sits above the verification row, and Advanced
+            // options at the start of the command bar.
+            assert!(before(M_PLAYLIST, ID_MEDIA_FULL_VERIFICATION), "{walk:?}");
+            assert!(before(D_ADVANCED, M_QUEUE), "{walk:?}");
+            assert!(before(M_QUEUE, D_CANCEL), "{walk:?}");
+        }
+    }
+
+    #[test]
+    fn modern_s_queue_manager_tabs_through_its_rows() {
+        use super::*;
+        unsafe {
+            set_modern(true);
+            let (width, height) = form_window(QUEUES_WIDTH, QUEUES_HEIGHT);
+            let (raw, hwnd, root) = modern_test_dialog(
+                DialogKind::Queues(QueueFields {
+                    list: null_mut(),
+                    ids: Vec::new(),
+                    name: null_mut(),
+                    concurrency: null_mut(),
+                    completion: null_mut(),
+                    countdown: null_mut(),
+                    enabled: null_mut(),
+                    windows: null_mut(),
+                    quota: null_mut(),
+                    program: null_mut(),
+                    arguments: null_mut(),
+                    delay: null_mut(),
+                    job_id: None,
+                }),
+                width,
+                height,
+            );
+            let walk = tab_walk(hwnd);
+            close_test_dialog(raw, hwnd, root);
+            // The list; the name and its buttons; the policy row; the
+            // completion row; the program row; Close.
+            let rows = [
+                2501, 2502, Q_CREATE, Q_RENAME, Q_DELETE, 2503, 2514, 2517, 2512, 2504, Q_UPDATE,
+                Q_MOVE_JOB, 2515, 2516, 2513, D_CANCEL,
+            ];
+            let walked: Vec<i32> = walk
+                .iter()
+                .copied()
+                .filter(|id| rows.contains(id))
+                .collect();
+            assert_eq!(walked, rows, "{walk:?}");
+        }
+    }
+
+    #[test]
+    fn modern_s_event_log_lists_its_lines_in_compact_rows() {
+        use super::*;
+        unsafe {
+            set_modern(true);
+            let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
+            let (raw, hwnd, root) = modern_test_dialog(
+                DialogKind::Events(EventFields {
+                    list: null_mut(),
+                    rendered: Vec::new(),
+                }),
+                width,
+                height,
+            );
+            let row = SendMessageW(GetDlgItem(hwnd, E_LIST), LB_GETITEMHEIGHT, 0, 0) as i32;
+            close_test_dialog(raw, hwnd, root);
+            assert_eq!(row, COMPACT_ROW);
+        }
+    }
 }

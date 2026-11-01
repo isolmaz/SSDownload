@@ -2239,6 +2239,11 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
         }
     }
+    // Modern moves controls into new rows, so Tab follows where they are.
+    // Settings and the queue manager set their own order.
+    if modern() && !matches!(dlg.kind, DialogKind::Settings(_) | DialogKind::Queues(_)) {
+        tab_in_reading_order(dlg.hwnd);
+    }
     let offset = dlg.scroll_y.get().clamp(0, (h - actual_height).max(0));
     dlg.scroll_y.set(offset);
     let info = SCROLLINFO {
@@ -2297,6 +2302,62 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             child = GetWindow(child, GW_HWNDNEXT);
         }
     }
+}
+
+/// The reading order of `rects`, as indexes: row by row from the top, and from
+/// the start side within a row. A rectangle joins the row of the topmost one
+/// it overlaps vertically.
+fn reading_order(rects: &[RECT]) -> Vec<usize> {
+    let mut by_top: Vec<usize> = (0..rects.len()).collect();
+    by_top.sort_by_key(|&i| (rects[i].top, rects[i].left));
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    for i in by_top {
+        match rows.last_mut() {
+            Some(row) if rects[i].top < rects[row[0]].bottom => row.push(i),
+            _ => rows.push(vec![i]),
+        }
+    }
+    rows.into_iter()
+        .flat_map(|mut row| {
+            row.sort_by_key(|&i| (rects[i].left, rects[i].top));
+            row
+        })
+        .collect()
+}
+
+/// Puts a window's tab stops in z-order, which Tab walks, in their reading
+/// order. In a right-to-left window the client coordinates are mirrored, so
+/// the start side is still the left.
+pub(super) unsafe fn tab_in_reading_order(window: HWND) {
+    let mut stops = Vec::new();
+    let mut rects = Vec::new();
+    let mut child = GetWindow(window, GW_CHILD);
+    while !child.is_null() {
+        if GetWindowLongW(child, GWL_STYLE) as u32 & WS_TABSTOP != 0 {
+            let mut rect: RECT = zeroed();
+            GetWindowRect(child, &mut rect);
+            MapWindowPoints(null_mut(), window, (&mut rect as *mut RECT).cast(), 2);
+            stops.push(child);
+            rects.push(rect);
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    let order = reading_order(&rects);
+    if order.iter().enumerate().all(|(place, &i)| place == i) {
+        return;
+    }
+    let ordered: Vec<HWND> = order.iter().map(|&i| stops[i]).collect();
+    // Null, when the first tab stop is the first child, is HWND_TOP.
+    SetWindowPos(
+        ordered[0],
+        GetWindow(stops[0], GW_HWNDPREV),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    );
+    tab_order(ordered[0], &ordered[1..]);
 }
 
 /// Modern's one-field dialogs: the label above the field (`label_lines` lines
@@ -2392,6 +2453,13 @@ unsafe fn layout_list_dialog(dlg: &DialogUi, h: i32, list: HWND, actions: &[i32]
         h,
         &[&[field(label, list, Width::Flex, dlg.dpi).fill()], &buttons],
         0,
+    );
+    // A log shows more of its lines in compact rows.
+    SendMessageW(
+        list,
+        LB_SETITEMHEIGHT,
+        0,
+        scale(COMPACT_ROW, dlg.dpi) as isize,
     );
     command_bar(dlg, h, &[(close, 96)]);
 }
@@ -2917,6 +2985,80 @@ mod tests {
                     s(one_field_height(lines)) - s(ADD_FOOTER),
                     "{dpi} dpi, {lines} lines"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn reading_order_goes_row_by_row_from_the_start_side() {
+        use super::{reading_order, RECT};
+        let rect = |left, top, width, height| RECT {
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+        };
+        let rects = [
+            // An edit's text area and the taller button beside it.
+            rect(35, 158, 433, 19),
+            rect(481, 149, 102, 38),
+            // A check box under them.
+            rect(21, 272, 368, 32),
+            // The command bar, its start-side button last.
+            rect(195, 360, 150, 38),
+            rect(453, 360, 126, 38),
+            rect(21, 360, 172, 38),
+            rect(581, 360, 102, 38),
+        ];
+        assert_eq!(reading_order(&rects), vec![0, 1, 2, 5, 3, 4, 6]);
+    }
+
+    #[test]
+    fn tab_follows_the_reading_order_and_leaves_the_labels() {
+        use super::*;
+        unsafe {
+            for ex in [0, WS_EX_LAYOUTRTL] {
+                let window = control(null_mut(), "STATIC", "", WS_POPUP, ex, 0);
+                SetWindowPos(
+                    window,
+                    null_mut(),
+                    0,
+                    0,
+                    400,
+                    200,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                let mut made = Vec::new();
+                // Created out of order: (left, top) in client coordinates.
+                for (id, left, top) in [(3, 0, 100), (2, 200, 0), (9, 0, 70), (1, 0, 0)] {
+                    let style = if id == 9 {
+                        WS_CHILD
+                    } else {
+                        WS_CHILD | WS_TABSTOP
+                    };
+                    let child = control(window, "BUTTON", "", style, 0, id);
+                    SetWindowPos(
+                        child,
+                        null_mut(),
+                        left,
+                        top,
+                        80,
+                        30,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    made.push(child);
+                }
+                tab_in_reading_order(window);
+                let mut walk = Vec::new();
+                let mut child = GetWindow(window, GW_CHILD);
+                while !child.is_null() {
+                    walk.push(GetDlgCtrlID(child));
+                    child = GetWindow(child, GW_HWNDNEXT);
+                }
+                DestroyWindow(window);
+                let stops: Vec<i32> = walk.iter().copied().filter(|&id| id != 9).collect();
+                assert_eq!(stops, vec![1, 2, 3], "layout {ex:#x}: {walk:?}");
+                assert!(walk.contains(&9));
             }
         }
     }

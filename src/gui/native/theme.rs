@@ -4,13 +4,30 @@ use super::*;
 
 /// The theme the app paints with, read once from the settings at startup: a
 /// change in Settings applies after a restart.
+#[cfg(not(test))]
 static MODERN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(not(test))]
 pub(super) fn set_modern(on: bool) {
     MODERN.store(on, Ordering::Relaxed);
 }
 /// True for the Modern theme, false for Classic.
+#[cfg(not(test))]
 pub(super) fn modern() -> bool {
     MODERN.load(Ordering::Relaxed)
+}
+// Tests run on parallel threads, each building its own windows: a test that
+// sets Modern sets it for its own thread only.
+#[cfg(test)]
+thread_local! {
+    static MODERN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(test)]
+pub(super) fn set_modern(on: bool) {
+    MODERN.with(|modern| modern.set(on));
+}
+#[cfg(test)]
+pub(super) fn modern() -> bool {
+    MODERN.with(std::cell::Cell::get)
 }
 
 /// The window property `apply_dark_mode` stamps on the window that owns a
