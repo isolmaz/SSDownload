@@ -2530,9 +2530,18 @@ pub(super) unsafe fn cell_tip(ui: &MainUi, tip: &mut NMLVGETINFOTIPW) {
     if tip.dwFlags & LVGIT_UNFOLDED == 0 || tip.pszText.is_null() || tip.cchTextMax < 2 {
         return;
     }
-    let (Ok(view), Ok(row)) = (usize::try_from(tip.iSubItem), usize::try_from(tip.iItem)) else {
+    // The notification names the row only; the column is the one under the
+    // pointer.
+    let mut hit: LVHITTESTINFO = zeroed();
+    GetCursorPos(&mut hit.pt);
+    ScreenToClient(ui.list, &mut hit.pt);
+    SendMessageW(ui.list, LVM_SUBITEMHITTEST, 0, &mut hit as *mut _ as isize);
+    let (Ok(view), Ok(row)) = (usize::try_from(hit.iSubItem), usize::try_from(tip.iItem)) else {
         return;
     };
+    if hit.iItem != tip.iItem {
+        return;
+    }
     let Some(&column) = ui.columns.get(view) else {
         return;
     };
