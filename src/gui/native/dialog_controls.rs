@@ -253,7 +253,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 f.kind_values.push(DownloadKind::File);
             }
             if modes.video {
-                combo_add(f.kind, "Video");
+                combo_add(f.kind, crate::i18n::ui("Video", "Video"));
                 f.kind_values.push(DownloadKind::Video);
             }
             if modes.audio {
@@ -362,7 +362,12 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Kullanım amacı:", "Usage mode:"),
                 0,
             );
-            f.mode_video = dialog_check(dlg.hwnd, dlg.font, "Video", ID_SETTINGS_MODE_VIDEO);
+            f.mode_video = dialog_check(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Video", "Video"),
+                ID_SETTINGS_MODE_VIDEO,
+            );
             f.mode_file = dialog_check(
                 dlg.hwnd,
                 dlg.font,
@@ -1159,7 +1164,12 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 R_SUBDOMAINS,
             );
             f.file = dialog_check(dlg.hwnd, dlg.font, crate::i18n::ui("Dosya", "File"), R_FILE);
-            f.video = dialog_check(dlg.hwnd, dlg.font, "Video", R_VIDEO);
+            f.video = dialog_check(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Video", "Video"),
+                R_VIDEO,
+            );
             f.audio = dialog_check(dlg.hwnd, dlg.font, crate::i18n::ui("Ses", "Audio"), R_AUDIO);
             dialog_button(
                 dlg.hwnd,
@@ -1566,10 +1576,10 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             f.kind = dialog_combo(dlg.hwnd, dlg.font, M_KIND);
             let modes = dlg.app.snapshot().settings.usage_modes;
             if modes.video {
-                combo_add(f.kind, "MP4 video");
+                combo_add(f.kind, crate::i18n::ui("MP4 video", "MP4 video"));
                 f.kind_values
                     .push((DownloadKind::Video, Some("mp4".into())));
-                combo_add(f.kind, "MKV video");
+                combo_add(f.kind, crate::i18n::ui("MKV video", "MKV video"));
                 f.kind_values
                     .push((DownloadKind::Video, Some("mkv".into())));
             }
