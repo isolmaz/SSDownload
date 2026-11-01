@@ -1406,7 +1406,7 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
     let (title, description) = card_text_parts(&super::text(hwnd));
     let (title_font, text_font) = (card_title_font(hwnd), card_text_font(hwnd));
     let lines = card_text_lines(hwnd, width);
-    let (mut title_area, mut text_area) = card_text_areas(width, height, dpi, true, lines);
+    let (mut title_area, mut text_area) = card_text_areas(width, dpi, true, lines);
     // The mark sits at the end of the title's line.
     let size = s(16) as f32;
     let end = (width - margin - s(12)) as f32;
@@ -1480,7 +1480,7 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
             id,
             POINT {
                 x: margin + s(12),
-                y: (height - glyph) / 2,
+                y: title_area.top + (s(CARD_TITLE) - glyph) / 2,
             },
             glyph,
             if contrast {
@@ -4019,7 +4019,7 @@ mod tests {
             let right = width as usize - inset - s(16)..width as usize - inset;
             // The mark is centred on the title's line.
             let dpi = GetDpiForWindow(card).max(96);
-            let (title, _) = card_text_areas(width, 54, dpi, true, 1);
+            let (title, _) = card_text_areas(width, dpi, true, 1);
             let middle = (title.top + scale(CARD_TITLE, dpi) / 2) as usize;
             let ring_in = |rtl: bool| -> [bool; 2] {
                 let pixels = on_white(width, |dc| {
@@ -4072,7 +4072,7 @@ mod tests {
                 let height =
                     scale(WIZARD_CARD, dpi) + (lines - 1) * scale(CARD_LINE, dpi) + 2 * ring;
                 MoveWindow(card, 0, 0, width, height, 0);
-                let (_, text) = card_text_areas(width, height, dpi, in_modern, lines);
+                let (_, text) = card_text_areas(width, dpi, in_modern, lines);
                 let pixels = on_white(width, |dc| draw_card(card, dc));
                 DestroyWindow(parent);
                 // The explanation's last line has text on it.

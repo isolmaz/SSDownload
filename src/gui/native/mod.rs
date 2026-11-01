@@ -11135,8 +11135,9 @@ mod tests {
             ID_WIZARD_FILE,
             ID_WIZARD_AUDIO,
         ];
+        // English has rows whose explanations wrap to different lengths.
         for modern in [false, true] {
-            unsafe {
+            crate::i18n::with_language("en", || unsafe {
                 let (raw, hwnd, root) = advanced_wizard(modern);
                 let walk = tab_walk(hwnd);
                 let mut client: RECT = zeroed();
@@ -11145,6 +11146,10 @@ mod tests {
                     .iter()
                     .chain(&[D_CANCEL, ID_WIZARD_START])
                     .map(|&id| child_rect(hwnd, GetDlgItem(hwnd, id)))
+                    .collect();
+                let titles: Vec<i32> = cards
+                    .iter()
+                    .map(|&id| title_top(GetDlgItem(hwnd, id), modern))
                     .collect();
                 close_test_dialog(raw, hwnd, root);
                 // Row by row, then the buttons left to right: Modern's command bar
@@ -11193,8 +11198,40 @@ mod tests {
                         .iter()
                         .all(|r| r.bottom - r.top == row[0].bottom - row[0].top));
                 }
-            }
+                // The titles of a row start on one line, whatever their
+                // explanations' length; a round letter may reach a pixel above
+                // a flat one.
+                for row in [&titles[0..2], &titles[2..4], &titles[4..7]] {
+                    let (high, low) = (row.iter().min().unwrap(), row.iter().max().unwrap());
+                    assert!(*high > 0 && low - high <= 1, "modern {modern}: {titles:?}");
+                }
+            });
         }
+    }
+
+    /// The first pixel row of `card` with title ink: dark text in the column
+    /// where its title starts, beside the glyph, below the focus cues.
+    unsafe fn title_top(card: super::HWND, in_modern: bool) -> i32 {
+        use super::*;
+        let mut rect: RECT = zeroed();
+        GetClientRect(card, &mut rect);
+        let dpi = GetDpiForWindow(card).max(96);
+        let s = |value: i32| scale(value, dpi);
+        let left = if in_modern {
+            s(FOCUS_MARGIN) + s(12) + s(20) + s(12)
+        } else {
+            1 + s(10) + s(20) + s(10)
+        };
+        let size = rect.right.max(rect.bottom);
+        let pixels = on_white(size, |dc| draw_card(card, dc));
+        let dark = |pixel: u32| {
+            [pixel >> 16, pixel >> 8, pixel]
+                .iter()
+                .all(|c| c & 0xff < 0x80)
+        };
+        (s(5)..rect.bottom)
+            .find(|&y| (left..left + s(24)).any(|x| dark(pixels[(y * size + x) as usize])))
+            .unwrap_or(-1)
     }
 
     #[test]

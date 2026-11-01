@@ -382,18 +382,13 @@ pub(super) unsafe fn card_text_font(hwnd: HWND) -> HFONT {
     let (points, weight, faces) = card_font_spec(false, modern());
     card_font(hwnd, "text-font", points, weight, faces)
 }
-/// Where a card `width` x `height` pixels puts its title and, below it, an
-/// explanation `lines` lines tall: beside the glyph, centred on the face.
+/// Where a card `width` pixels wide puts its title and, below it, an
+/// explanation `lines` lines tall: beside the glyph, from the top of the
+/// face, so the titles of a row line up whatever their explanations' length.
 /// Modern's face sits FOCUS_MARGIN inside the card and its title stops before
 /// the mark at the end of its line; Classic's face sits inside a one-pixel
 /// frame.
-pub(super) fn card_text_areas(
-    width: i32,
-    height: i32,
-    dpi: u32,
-    modern: bool,
-    lines: i32,
-) -> (RECT, RECT) {
+pub(super) fn card_text_areas(width: i32, dpi: u32, modern: bool, lines: i32) -> (RECT, RECT) {
     let s = |value: i32| scale(value, dpi);
     let (face, pad, mark) = if modern {
         (s(FOCUS_MARGIN), s(12), s(16) + s(8))
@@ -402,7 +397,7 @@ pub(super) fn card_text_areas(
     };
     let left = face + pad + s(20) + pad;
     let right = width - face - pad;
-    let top = (height - s(CARD_TITLE) - lines * s(CARD_LINE)) / 2;
+    let top = if modern { face } else { 0 } + s(CARD_PAD);
     let title = RECT {
         left,
         top,
@@ -421,7 +416,7 @@ pub(super) fn card_text_areas(
 /// wide.
 pub(super) unsafe fn card_text_lines(card: HWND, width: i32) -> i32 {
     let dpi = GetDpiForWindow(card).max(96);
-    let (_, area) = card_text_areas(width, 0, dpi, modern(), 1);
+    let (_, area) = card_text_areas(width, dpi, modern(), 1);
     let (_, text) = card_text_parts(&super::text(card));
     let mut text: Vec<u16> = text.encode_utf16().collect();
     let dc = GetDC(card);
@@ -471,22 +466,22 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     SelectObject(dc, pen);
     SelectObject(dc, fill);
     SetBkMode(dc, TRANSPARENT as i32);
-    // The glyph at the start, then the title over the explanation.
+    // The glyph at the start of the title's line, then the title over the
+    // explanation.
+    let (title, description) = card_text_parts(&super::text(hwnd));
+    let lines = card_text_lines(hwnd, rect.right);
+    let (mut title_area, mut description_area) = card_text_areas(rect.right, dpi, false, lines);
     let glyph_size = scale(20, dpi);
     draw_card_glyph(
         dc,
         GetDlgCtrlID(hwnd),
         POINT {
             x: padded.left + scale(10, dpi),
-            y: (padded.top + padded.bottom - glyph_size) / 2,
+            y: title_area.top + (scale(CARD_TITLE, dpi) - glyph_size) / 2,
         },
         glyph_size,
         face.glyph,
     );
-    let (title, description) = card_text_parts(&super::text(hwnd));
-    let lines = card_text_lines(hwnd, rect.right);
-    let (mut title_area, mut description_area) =
-        card_text_areas(rect.right, rect.bottom, dpi, false, lines);
     let previous = SelectObject(dc, card_title_font(hwnd) as HGDIOBJ);
     SetTextColor(dc, face.title);
     let mut title: Vec<u16> = title.encode_utf16().collect();
