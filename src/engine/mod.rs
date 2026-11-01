@@ -2618,13 +2618,14 @@ impl Actor {
             );
         }
         let sender = BrowserTransferSender::open(sender_pid, sender_started_at)?;
-        // The user starts the download over with a restart, or by sending a job that was not
-        // authorized for a transfer to the browser. That outlasts a begin that ends before the
-        // receiver is ready, in this session or after the app closed: a restart sets the size and
-        // the count to 0 now, and a job is authorized, and its grant used up, only once the
-        // receiver is ready. Any other begin leaves them as they are.
+        // A restart of a job authorized for a transfer starts the download over at once: its size
+        // and count go to 0. Sending a job that is not authorized to the browser starts it over
+        // as well, once the receiver is ready, which authorizes the job and uses up its grant.
+        // Until then nothing of that begin is saved: after a begin that ends early, also when the
+        // app closes, the job is as it was, and the next start does not run it on its own.
         let handed_over = !job.browser_transfer_authorized;
-        if restart {
+        let restarted = restart && !handed_over;
+        if restarted {
             job.downloaded = 0;
         }
         job.state = JobState::Downloading;
@@ -2635,8 +2636,10 @@ impl Actor {
         .into();
         job.error = None;
         job.updated_at = Utc::now().timestamp();
-        self.store.save_job(&job)?;
-        if restart {
+        if !handed_over {
+            self.store.save_job(&job)?;
+        }
+        if restarted {
             self.quota_accounted.insert(id.into(), 0);
         }
         self.jobs.insert(id.into(), job.clone());
@@ -2695,11 +2698,10 @@ impl Actor {
         self.store.save_job(&job)?;
         self.jobs.insert(id.into(), job);
         // The bytes the receiver goes on from were counted when they came. A job sent to the
-        // browser whose transfer starts from the first byte is a new download, which its queue's
-        // quota counts again, as a restart does from its begin; any other transfer goes on from
-        // the most the job counted.
-        let counted = if handed_over && committed == 0 {
-            0
+        // browser starts its download over, so every byte the transfer fetches beyond them counts
+        // again; any other transfer goes on from the most the job counted.
+        let counted = if handed_over {
+            committed
         } else {
             accounted.max(committed)
         };

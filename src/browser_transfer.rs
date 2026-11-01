@@ -228,6 +228,9 @@ struct State {
     version: u32,
     job_id: String,
     token: String,
+    /// The engine's generation of the transfer whose begin issued `token`.
+    #[serde(default)]
+    generation: u64,
     source: String,
     cancelled: bool,
     streams: BTreeMap<u32, StreamState>,
@@ -509,6 +512,7 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                     version: STATE_VERSION,
                     job_id: job.id.clone(),
                     token: String::new(),
+                    generation: 0,
                     source: fingerprint,
                     cancelled: false,
                     streams,
@@ -519,6 +523,7 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
                 uuid::Uuid::new_v4().simple(),
                 uuid::Uuid::new_v4().simple()
             );
+            state.generation = generation;
             save(&root, &state)?;
             engine.browser_transfer_prepared(&job.id, generation, committed_bytes(&state)?)?;
             let mut result = response(&state, Some(Box::new(relay_request(&job.request))));
@@ -526,9 +531,12 @@ pub fn dispatch(paths: &AppPaths, engine: &Engine, command: Command) -> Result<R
             return Ok(result);
         }
         let mut state = load(&root)?;
+        // The token of a transfer that ended stays here until the next begin replaces it; a
+        // command that carries it belongs to that transfer, not to the one the engine runs now.
         if state.job_id != job.id
             || state.cancelled
             || command.token() != Some(state.token.as_str())
+            || state.generation != generation
             || state.source != source_key(&job.request)?
         {
             bail!(
