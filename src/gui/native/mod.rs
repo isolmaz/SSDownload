@@ -8511,12 +8511,13 @@ unsafe fn show_queue_manager(owner: HWND, app: App, job_id: Option<String>) {
     );
 }
 unsafe fn show_event_log(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Olay günlüğü", "Event log"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Events(EventFields {
             list: null_mut(),
             rendered: Vec::new(),
@@ -8529,12 +8530,13 @@ unsafe fn show_job_log(owner: HWND, app: App, job: &str, name: &str) {
     } else {
         crate::i18n::ui_format!("İş günlüğü - {name}", "Job log - {name}", name = name)
     };
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         &title,
-        700,
-        470,
+        width,
+        height,
         DialogKind::JobLog(JobLogFields {
             job: job.to_owned(),
             list: null_mut(),
@@ -9197,6 +9199,8 @@ unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
                 | DialogKind::Crawler(_)
                 | DialogKind::Synchronization(_)
                 | DialogKind::Logins(_)
+                | DialogKind::Events(_)
+                | DialogKind::JobLog(_)
         )
     {
         ramp_font(dlg.dpi, BODY_PX, false)

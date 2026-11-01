@@ -1437,7 +1437,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, E_LIST, false);
+            f.list = form_list(dlg.hwnd, dlg.font, E_LIST, false);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1616,7 +1616,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, J_LIST, false);
+            f.list = form_list(dlg.hwnd, dlg.font, J_LIST, false);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,

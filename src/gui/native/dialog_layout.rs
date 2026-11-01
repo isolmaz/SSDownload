@@ -24,6 +24,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Rules(_) => 425,
         DialogKind::Crawler(_) => 425,
         DialogKind::Synchronization(_) => 425,
+        DialogKind::Events(_) | DialogKind::JobLog(_) if modern() => FORM_HEIGHT,
         DialogKind::Events(_) => 425,
         DialogKind::JobLog(_) => 425,
         DialogKind::Speed(f) if modern() => one_field_height(f.label_lines),
@@ -1452,6 +1453,12 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row,
             );
         }
+        DialogKind::Events(f) if modern() => {
+            layout_list_dialog(dlg, h, f.list, &[E_OPEN, E_PACKAGE], E_CLOSE);
+        }
+        DialogKind::JobLog(f) if modern() => {
+            layout_list_dialog(dlg, h, f.list, &[J_COPY, J_OPEN], J_CLOSE);
+        }
         DialogKind::Events(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);
             if let Some(&c) = labels.first() {
@@ -2224,6 +2231,23 @@ pub(super) unsafe fn fit_speed_label(dlg: &mut DialogUi) {
         window.bottom - window.top + scale(extra * ADD_LABEL, dlg.dpi),
         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
     );
+}
+
+/// Modern's log windows: the list under its label, the `actions` on the card
+/// below it and `close` on the command bar.
+unsafe fn layout_list_dialog(dlg: &DialogUi, h: i32, list: HWND, actions: &[i32], close: i32) {
+    let label = child_statics(dlg.hwnd, dlg.error)
+        .first()
+        .copied()
+        .unwrap_or(null_mut());
+    let buttons: Vec<Cell> = actions.iter().map(|&id| button_cell(dlg, id)).collect();
+    form_rows(
+        dlg,
+        h,
+        &[&[field(label, list, Width::Flex, dlg.dpi).fill()], &buttons],
+        0,
+    );
+    command_bar(dlg, h, &[(close, 96)]);
 }
 
 /// Puts a Modern dialog's command bar buttons at its right end, left to

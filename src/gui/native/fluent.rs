@@ -2193,7 +2193,7 @@ pub(super) fn login_inputs(f: &LoginFields) -> [HWND; 3] {
 }
 
 /// What a Modern dialog paints itself: its framed inputs and list boxes, its
-/// WinUI buttons with the primary one, the buttons that sit on the content
+/// WinUI buttons with the primary one (0 for none), the buttons that sit on the content
 /// card rather than on the command bar, and a static shown as a secondary hint.
 struct ModernForm {
     inputs: Vec<HWND>,
@@ -2294,6 +2294,22 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
             buttons: &[Y_NEW, Y_SAVE, Y_REMOVE, Y_RUN, D_CANCEL],
             primary: Y_SAVE,
             card_buttons: &[Y_NEW, Y_SAVE, Y_REMOVE, Y_RUN],
+            hint: null_mut(),
+        }),
+        DialogKind::Events(f) => Some(ModernForm {
+            inputs: Vec::new(),
+            lists: vec![f.list],
+            buttons: &[E_OPEN, E_PACKAGE, E_CLOSE],
+            primary: 0,
+            card_buttons: &[E_OPEN, E_PACKAGE],
+            hint: null_mut(),
+        }),
+        DialogKind::JobLog(f) => Some(ModernForm {
+            inputs: Vec::new(),
+            lists: vec![f.list],
+            buttons: &[J_COPY, J_OPEN, J_CLOSE],
+            primary: 0,
+            card_buttons: &[J_COPY, J_OPEN],
             hint: null_mut(),
         }),
         DialogKind::Logins(f) => Some(ModernForm {
