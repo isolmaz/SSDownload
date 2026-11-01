@@ -9149,8 +9149,6 @@ mod tests {
                     "saving the selected rule unchanged writes nothing else"
                 );
 
-                // Saving rebuilds the list without a selection.
-                click_row(f.list, 1);
                 set_text(f.dir, &scratch("moved").to_string_lossy());
                 command(dialog, R_SAVE);
             }
@@ -9216,7 +9214,6 @@ mod tests {
                     "saving the selected record unchanged writes nothing else"
                 );
 
-                click_row(f.list, 1);
                 set_text(f.interval, "15");
                 command(dialog, Y_SAVE);
             }
@@ -9225,6 +9222,230 @@ mod tests {
             assert_eq!(policies[1].interval_minutes, 15);
             assert_eq!(policies[1].url, before[1].url);
             assert_eq!(policies.len(), 2);
+        });
+    }
+
+    fn sync_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Synchronization(super::SyncFields {
+            list: null_mut(),
+            ids: Vec::new(),
+            url: null_mut(),
+            dir: null_mut(),
+            interval: null_mut(),
+            overwrite: null_mut(),
+            enabled: null_mut(),
+        })
+    }
+
+    /// Answers the "Delete ...?" box of the dialogs on this thread.
+    fn answer_removal(yes: bool) {
+        super::dialog_commands::TEST_REMOVAL_ANSWER.with(|answer| answer.set(Some(yes)));
+    }
+
+    #[test]
+    fn saving_a_new_rule_twice_keeps_one_rule() {
+        use super::{set_check, set_text, DialogKind, R_SAVE};
+
+        with_dialog(rules_kind, 700, 470, |dialog| {
+            let DialogKind::Rules(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (host, dir, priority, video) = (f.host, f.dir, f.priority, f.video);
+            let rules = || dialog.app().snapshot().settings.folder_rules;
+            unsafe {
+                set_text(host, "new.example");
+                set_text(dir, &scratch("new.example").to_string_lossy());
+                set_text(priority, "3");
+                set_check(video, true);
+            }
+            command(dialog, R_SAVE);
+            assert_eq!(rules().len(), 1, "the rule was added");
+            let id = rules()[0].id.clone();
+
+            command(dialog, R_SAVE);
+            assert_eq!(rules().len(), 1, "saving again updates the rule");
+            assert_eq!(rules()[0].id, id);
+
+            unsafe { set_text(priority, "5") };
+            command(dialog, R_SAVE);
+            assert_eq!(rules().len(), 1);
+            assert_eq!((rules()[0].id.clone(), rules()[0].priority), (id, 5));
+        });
+    }
+
+    #[test]
+    fn saving_a_new_sync_record_twice_keeps_one_record() {
+        use super::{set_check, set_text, DialogKind, Y_SAVE};
+
+        with_dialog(sync_kind, 700, 470, |dialog| {
+            let DialogKind::Synchronization(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (url, dir, interval, enabled) = (f.url, f.dir, f.interval, f.enabled);
+            let records = || dialog.app().snapshot().settings.synchronization_policies;
+            unsafe {
+                set_text(url, "https://new.example/file.txt");
+                set_text(dir, &scratch("new").to_string_lossy());
+                set_text(interval, "30");
+                // A disabled record is never checked, so no request is sent.
+                set_check(enabled, false);
+            }
+            command(dialog, Y_SAVE);
+            assert_eq!(records().len(), 1, "the record was added");
+            let id = records()[0].id.clone();
+
+            command(dialog, Y_SAVE);
+            assert_eq!(records().len(), 1, "saving again updates the record");
+            assert_eq!(records()[0].id, id);
+
+            unsafe { set_text(interval, "45") };
+            command(dialog, Y_SAVE);
+            assert_eq!(records().len(), 1);
+            assert_eq!(
+                (records()[0].id.clone(), records()[0].interval_minutes),
+                (id, 45)
+            );
+        });
+    }
+
+    #[test]
+    fn removing_a_rule_empties_the_form_so_save_cannot_bring_it_back() {
+        use super::{text, DialogKind, R_REMOVE, R_SAVE};
+        use crate::model::{Action, DownloadKind, FolderRule};
+
+        let rule = |host: &str| FolderRule {
+            id: uuid::Uuid::new_v4().to_string(),
+            host: host.into(),
+            include_subdomains: true,
+            kinds: vec![DownloadKind::File],
+            destination: scratch(host),
+            priority: 1,
+            enabled: true,
+        };
+        let seed = |app: &crate::app::App| {
+            let mut settings = app.snapshot().settings;
+            settings.folder_rules = vec![rule("first.example"), rule("second.example")];
+            app.dispatch(Action::SetSettings { settings }).unwrap();
+        };
+        with_seeded_dialog(seed, rules_kind, 700, 470, |dialog| {
+            let DialogKind::Rules(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (host, dir, list) = (f.host, f.dir, f.list);
+            let rules = || dialog.app().snapshot().settings.folder_rules;
+            answer_removal(true);
+            click_row(list, 0);
+            command(dialog, R_REMOVE);
+            assert_eq!(rules().len(), 1, "the rule was removed");
+            assert_eq!(rules()[0].host, "second.example");
+            unsafe {
+                assert!(
+                    text(host).is_empty() && text(dir).is_empty(),
+                    "the form is empty"
+                );
+            }
+            command(dialog, R_SAVE);
+            assert_eq!(rules().len(), 1, "Save did not bring the removed rule back");
+            assert_eq!(rules()[0].host, "second.example");
+        });
+    }
+
+    #[test]
+    fn removing_a_sync_record_empties_the_form_so_save_cannot_bring_it_back() {
+        use super::{text, DialogKind, Y_REMOVE, Y_SAVE};
+        use crate::model::{Action, SyncPolicy};
+
+        let policy = |name: &str| SyncPolicy {
+            id: uuid::Uuid::new_v4().to_string(),
+            url: format!("https://{name}.example/file.txt"),
+            destination: scratch(name),
+            enabled: false,
+            interval_minutes: 30,
+            ..SyncPolicy::default()
+        };
+        let seed = |app: &crate::app::App| {
+            let mut settings = app.snapshot().settings;
+            settings.synchronization_policies = vec![policy("first"), policy("second")];
+            app.dispatch(Action::SetSettings { settings }).unwrap();
+        };
+        with_seeded_dialog(seed, sync_kind, 700, 470, |dialog| {
+            let DialogKind::Synchronization(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (url, list) = (f.url, f.list);
+            let records = || dialog.app().snapshot().settings.synchronization_policies;
+            answer_removal(true);
+            click_row(list, 0);
+            command(dialog, Y_REMOVE);
+            assert_eq!(records().len(), 1, "the record was removed");
+            assert_eq!(records()[0].url, "https://second.example/file.txt");
+            assert!(unsafe { text(url) }.is_empty(), "the form is empty");
+            command(dialog, Y_SAVE);
+            assert_eq!(
+                records().len(),
+                1,
+                "Save did not bring the removed record back"
+            );
+            assert_eq!(records()[0].url, "https://second.example/file.txt");
+        });
+    }
+
+    #[test]
+    fn removing_a_site_login_empties_the_form_so_enter_cannot_bring_it_back() {
+        use super::{text, DialogKind, LoginFields, L_REMOVE};
+        use crate::model::SiteLogin;
+        use std::ptr::null_mut;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+        let login = |host: &str, user: &str| SiteLogin {
+            host: host.into(),
+            username: user.into(),
+            password: crate::secure::seal(uuid::Uuid::new_v4().to_string()).unwrap(),
+            allow_http: false,
+        };
+        let kind = move || {
+            DialogKind::Logins(LoginFields {
+                logins: vec![
+                    login("files.example", "alice"),
+                    login("other.example", "bob"),
+                ],
+                list: null_mut(),
+                host: null_mut(),
+                user: null_mut(),
+                pass: null_mut(),
+                allow_http: null_mut(),
+            })
+        };
+        with_dialog(kind, 700, 470, |dialog| {
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (host, user, list) = (f.host, f.user, f.list);
+            answer_removal(true);
+            click_row(list, 0);
+            command(dialog, L_REMOVE);
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_eq!(f.logins.len(), 1, "the login was removed");
+            assert_eq!(f.logins[0].host, "other.example");
+            unsafe {
+                assert!(
+                    text(host).is_empty() && text(user).is_empty(),
+                    "the form is empty"
+                );
+            }
+            // Enter presses Add / update, which must not bring the login back.
+            assert!(press(dialog, VK_RETURN));
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_eq!(
+                f.logins.len(),
+                1,
+                "Enter did not bring the removed login back"
+            );
         });
     }
 
