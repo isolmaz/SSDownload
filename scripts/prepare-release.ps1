@@ -93,7 +93,8 @@ foreach ($input in $Inputs) {
     Copy-Item -LiteralPath $input.Source -Destination (Join-Path $Dist $input.Name)
 }
 
-# Update feed: the app checks <feed>/version.json for version/notes. The app
+# Update feed: the app checks <feed>/version.json for the version, the Setup URL and
+# its checksum; `notes` is written for older clients, which show it. The app
 # reads the newest release's copy of the feed, while the Setup URL must stay
 # resolvable after a later release becomes "latest", so the two bases differ:
 # the feed is read from /latest/download and the asset is pinned to its tag.

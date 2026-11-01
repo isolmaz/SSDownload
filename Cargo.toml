@@ -51,6 +51,10 @@ windows-sys = { version = "0.59", features = [
 [build-dependencies]
 embed-resource = "3.0"
 
+[dev-dependencies]
+# The GUI tests activate comctl32 version 6 and capture a window with PrintWindow.
+windows-sys = { version = "0.59", features = ["Win32_Storage_Xps", "Win32_System_ApplicationInstallationAndServicing"] }
+
 [profile.release]
 opt-level = "s"
 lto = true
