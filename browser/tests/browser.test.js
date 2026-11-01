@@ -204,7 +204,9 @@ function hlsChildren(text, base) { return hlsRelations(text,base).filter(item=>i
     const id = Number(tabId);
     return JSON.parse(await vm.runInContext(`(async () => { await sessionReady; await pruneFrames(${id}); await Promise.all([...manifestTasks].filter(([key]) => key.startsWith("${id}\\n")).map(([, task]) => task)); return JSON.stringify(publicState(${id})); })()`, context));
   }
+  let linkClicks = 0;
   async function menu(menuItemId, info = {}) {
+    if (menuItemId === "ssdownload-link") linkClicks += 1;
     const tab = info.tab || { id: 7, url: "https://site.example/watch" };
     events.menu.listeners.at(-1)({ menuItemId, pageUrl: tab.url, ...info.info }, tab);
     await settle();
@@ -245,7 +247,7 @@ function hlsChildren(text, base) { return hlsRelations(text,base).filter(item=>i
       await new Promise(resolve => setImmediate(resolve));
     }
   }
-  return { events, storage, content, menu, state, waitFor, context, logs, timers, runTimers, settle, addsFinished, actionCalls, menuEntries, nativeRequests, alarmCreates, alarmClears, alarmStore, tabMessages, downloadItems, downloadCalls, trackedAtCall, failures, tabCreates, action: browser.action };
+  return { events, storage, content, menu, state, waitFor, context, logs, timers, runTimers, settle, linkClicks: () => linkClicks, addsFinished, actionCalls, menuEntries, nativeRequests, alarmCreates, alarmClears, alarmStore, tabMessages, downloadItems, downloadCalls, trackedAtCall, failures, tabCreates, action: browser.action };
 }
 
 // The toolbar icon opens popup.html; its switch sends this message to the worker.
@@ -802,14 +804,24 @@ test("the relay starts only from the explicit context entry for an authorized jo
   assert.equal(JSON.parse(vm.runInContext("JSON.stringify(globalThis.__relayCalls[1])", h.context)).restart, true);
 });
 
+// Clicks the link entry and waits until the worker has finished with every click made so far, this one included: each
+// click ends in one finished add, whether it sent a request or recognised a repeat. The duplicate check hashes on another
+// thread and reads its window when the hashes finish, so no fixed number of turns covers it, and a test that ages the
+// records or changes the cookies earlier changes what the click finds.
+async function clickUntilDecided(h, click) {
+  await click();
+  const clicks = h.linkClicks();
+  await h.waitFor(() => h.addsFinished() >= clicks, 5000);
+}
+
 test("the switch clears discoveries and de-duplicates context submissions across a worker restart", async () => {
   const h = backgroundHarness();
+  const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/one.pdf" } });
   await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: "https://files.example/one.pdf", kind: "file" }] });
   assert.equal((await h.state(7)).items.length, 1);
-  await h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/one.pdf" } });
-  await h.waitFor(() => h.nativeRequests.some(request => request?.action?.type === "add"));
+  await clickUntilDecided(h, addLink);
   assert.equal(h.nativeRequests.filter(request => request?.action?.type === "add").length, 1);
-  await h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/one.pdf" } });
+  await clickUntilDecided(h, addLink);
   assert.equal(h.nativeRequests.filter(request => request?.action?.type === "add").length, 1, "a repeated click must not queue the same job twice");
   await popupToggle(h);
   await h.settle();
@@ -822,15 +834,6 @@ test("the switch clears discoveries and de-duplicates context submissions across
 // The records of the right-click adds `ms` older, as if that much time had passed (a negative `ms` puts them in the future,
 // as if the clock had gone back).
 const ageTickets = (h, ms = 60000) => vm.runInContext(`for (const ticket of tickets.values()) ticket.at -= ${ms}`, h.context);
-// Clicks the link entry and waits until the worker has finished with that click: it sent a request or recognised a repeat.
-// The duplicate check hashes on another thread and reads its window when the hashes finish, so no fixed number of turns
-// covers it, and a test that ages the records or changes the cookies earlier changes what the click finds.
-async function clickUntilDecided(h, click) {
-  const before = h.addsFinished();
-  await click();
-  await h.waitFor(() => h.addsFinished() > before, 5000);
-}
-
 test("a link added again from the same tab once the site's cookies are allowed or changed is sent, a plain repeat is not", async () => {
   const h = backgroundHarness();
   const link = "https://files.example/one.pdf";
@@ -838,27 +841,25 @@ test("a link added again from the same tab once the site's cookies are allowed o
   const addLink = () => h.menu("ssdownload-link", { info: { linkUrl: link } });
   const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "sid", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
   await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: link, kind: "file" }] });
-  await addLink();
-  await h.waitFor(() => adds().length === 1);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 1);
   assert.equal(adds()[0].session_cookies, undefined, "no consent yet, so no cookies");
-  await addLink();
-  await h.settle();
+  await clickUntilDecided(h, addLink);
   assert.equal(adds().length, 1, "a double add without any change is a duplicate");
 
   await h.menu("ssdownload-session-grant");
   jar("first");
-  await addLink();
-  await h.waitFor(() => adds().length === 2);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 2);
   assert.deepEqual(plain(adds()[1].session_cookies.map(cookie => [cookie.name, cookie.value])), [["sid", "first"]]);
   assert.notEqual(adds()[1].request_id, adds()[0].request_id, "the app receives it as a new request");
-  await addLink();
-  await h.settle();
+  await clickUntilDecided(h, addLink);
   assert.equal(adds().length, 2, "the same cookies again is a duplicate");
 
   ageTickets(h);
   jar("second");
-  await addLink();
-  await h.waitFor(() => adds().length === 3);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 3);
   assert.deepEqual(plain(adds()[2].session_cookies.map(cookie => cookie.value)), ["second"], "a signed-in-again session is another request");
 });
 
@@ -878,14 +879,14 @@ test("a second click within seconds is a repeat even when the site's cookies cha
     await clickUntilDecided(h, addLink);
   }
   assert.equal(adds().length, 1, "cookies that rotate on every response do not make a quick second click another download");
-  await h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/two.pdf" } });
-  await h.waitFor(() => adds().length === 2);
+  await clickUntilDecided(h, () => h.menu("ssdownload-link", { info: { linkUrl: "https://files.example/two.pdf" } }));
+  assert.equal(adds().length, 2);
   assert.equal(adds()[1].url, "https://files.example/two.pdf", "another link inside the window is its own request");
 
   ageTickets(h);
   jar("d");
-  await addLink();
-  await h.waitFor(() => adds().length === 3);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 3);
   assert.deepEqual(plain(adds()[2].session_cookies.map(cookie => cookie.value)), ["d"], "after the window the cookies decide");
   await clickUntilDecided(h, addLink);
   assert.equal(adds().length, 3, "the same cookies again is still a repeat");
@@ -924,12 +925,12 @@ test("an add stamped in the future, the clock having gone back, does not make a 
   const jar = value => vm.runInContext(`browser.cookies.getAll = async () => [{ name: "sid", value: "${value}", domain: "files.example", path: "/", storeId: "0", secure: true }]`, h.context);
   await h.menu("ssdownload-session-grant");
   jar("first");
-  await addLink();
-  await h.waitFor(() => adds().length === 1);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 1);
   ageTickets(h, -3600000);
   jar("second");
-  await addLink();
-  await h.waitFor(() => adds().length === 2);
+  await clickUntilDecided(h, addLink);
+  assert.equal(adds().length, 2);
   assert.deepEqual(plain(adds()[1].session_cookies.map(cookie => cookie.value)), ["second"], "signed in again after the clock went back by an hour");
 });
 
