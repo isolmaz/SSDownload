@@ -1720,9 +1720,15 @@ unsafe extern "system" fn main_proc(
                 };
                 // Over an item the shell has just painted its own light box, so
                 // the strip lands on top of it even when the item did not
-                // change. The empty part of the bar gets no box, so there, as
-                // everywhere else, only a changed highlight needs a repaint.
-                if (over_bar && hot >= 0) || hot != ui.menu_hot {
+                // change. In Modern the empty part of the bar gets no box, so
+                // there, as everywhere else, only a changed highlight needs a
+                // repaint; Classic repaints anywhere over the bar.
+                let repaint = if modern() {
+                    over_bar && hot >= 0
+                } else {
+                    over_bar
+                };
+                if repaint || hot != ui.menu_hot {
                     ui.menu_hot = hot;
                     paint_menu_strip(ui);
                 }
