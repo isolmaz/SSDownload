@@ -212,9 +212,9 @@ const withAudioVariants = {
     ...variantLine('BANDWIDTH=128000,CODECS="mp4a.40.2"', "a128")),
   ...segmentsOf("v720", "v4k", "vbare", "a64", "a128")
 };
-// Variants without an audio group, with the ids yt-dlp gives them: "63" (AVERAGE-BANDWIDTH 63600, truncated), "64-0" and
-// "64-1" (the same id twice), "127" (BANDWIDTH 127900, truncated), "Low__360p_" (NAME), "Angle_One" (the NAME of the first
-// rendition of its VIDEO group), "nogroup" (a VIDEO group that is not in the playlist) and "2400".
+// Variants without an audio group, with the ids yt-dlp gives them: "63" (AVERAGE-BANDWIDTH 63600, truncated), "64" twice
+// (yt-dlp numbers those "64-0" and "64-1"), "127" (BANDWIDTH 127900, truncated), "Low__360p_" (NAME), "Angle_One" (the
+// NAME of the first rendition of its VIDEO group), "nogroup" (a VIDEO group that is not in the playlist) and "2400".
 const withNamedVariants = {
   [MASTER]: hlsMaster(
     ...variantLine('BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"', "v720"),
@@ -228,15 +228,36 @@ const withNamedVariants = {
     ...variantLine('BANDWIDTH=800000,VIDEO="nogroup",CODECS="avc1.4d401e,mp4a.40.2"', "nogroup")),
   ...segmentsOf("v720", "alc", "ahe", "a127", "a63", "low", "angle", "nogroup")
 };
-// Two renditions whose names are the same once spelled the yt-dlp way ("x-a_b-0" and "x-a_b-1") in the group of the best
-// variant, and a lower variant without a group that could be taken for either.
+// Formats that yt-dlp gives one id and numbers in an order of its own, not the order of the playlist. Two renditions of one
+// group that spell alike ("x-a_b-0" is the alternate track, "x-a_b-1" the main one); ...
 const withTwinRenditions = {
   [MASTER]: hlsMaster(
-    audioLine('GROUP-ID="x",NAME="a b",LANGUAGE="en",DEFAULT=YES', "audio-first"),
-    audioLine('GROUP-ID="x",NAME="a_b",LANGUAGE="de"', "audio-second"),
-    ...variantLine('BANDWIDTH=4000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",AUDIO="x"', "v1080"),
-    ...variantLine('BANDWIDTH=1500000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"', "v720")),
-  ...segmentsOf("v1080", "v720", "audio-first", "audio-second")
+    audioLine('GROUP-ID="x",NAME="a_b",LANGUAGE="en",DEFAULT=YES', "x_ab"),
+    audioLine('GROUP-ID="x",NAME="a b",LANGUAGE="en",DEFAULT=NO', "x_a_sp_b"),
+    ...variantLine('BANDWIDTH=4000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",AUDIO="x"', "v1080")),
+  ...segmentsOf("v1080", "x_ab", "x_a_sp_b")
+};
+// ... audio-only variants of one bandwidth ("64-0" is the E-AC-3 one, which sorts below AAC); ...
+const withTwinCodecs = {
+  [MASTER]: hlsMaster(
+    ...variantLine('BANDWIDTH=64000,CODECS="mp4a.40.2"', "alc"),
+    ...variantLine('BANDWIDTH=64000,CODECS="ec-3"', "aec3")),
+  ...segmentsOf("alc", "aec3")
+};
+// ... and audio-only variants whose bandwidths truncate to the same kbit/s ("63-0" is the one of 63.6 kbit/s).
+const withTwinBandwidths = {
+  [MASTER]: hlsMaster(
+    ...variantLine('BANDWIDTH=63999,CODECS="mp4a.40.5"', "a63b"),
+    ...variantLine('BANDWIDTH=127900,AVERAGE-BANDWIDTH=63600,CODECS="mp4a.40.2"', "a63")),
+  ...segmentsOf("a63b", "a63")
+};
+// Renditions whose names carry every character that yt-dlp turns into "_" in an id.
+const withOddNames = {
+  [MASTER]: hlsMaster(
+    audioLine('GROUP-ID="aud",NAME="Audio [HQ], 2.0 (st)",LANGUAGE="en",DEFAULT=YES', "audio-hq"),
+    audioLine('GROUP-ID="aud",NAME="Français/FR+",LANGUAGE="fr"', "audio-fr"),
+    ...variantLine('BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2",AUDIO="aud"', "v720")),
+  ...segmentsOf("v720", "audio-hq", "audio-fr")
 };
 // Groups whose ids end alike: "hls-a-hi-English" ends with the id of both.
 const withHyphenGroups = {
@@ -298,6 +319,7 @@ test("an audio-only HLS request takes the rendition its id names, never one of t
   assert.deepEqual(requested(h), ["master.m3u8"], "an id that names no rendition transfers nothing");
   assert.equal(wrote(h), false);
   assert.match(h.commands.at(-1).error, /audio rendition does not match exactly one/);
+  await assertRefused({ audio_format_id: "hls-hi-English", audio_language: "de" }, withSeparateAudio);
 });
 
 test("an audio-only HLS request ranks the audio groups by channels before the video tier of their variants", async () => {
@@ -356,27 +378,41 @@ test("an audio-only HLS request takes the audio-only variant its id names", asyn
 });
 
 test("an audio-only HLS request takes a variant without an audio group by the id yt-dlp gives it, and by no other", async () => {
-  const ids = [["64-0", "alc"], ["hls-64-1", "ahe"], ["hls-63", "a63"], ["127", "a127"], ["hls-Low__360p_", "low"], ["Angle_One", "angle"], ["hls-nogroup", "nogroup"], ["2400", "v720"]];
+  const ids = [["hls-63", "a63"], ["127", "a127"], ["hls-Low__360p_", "low"], ["Angle_One", "angle"], ["hls-nogroup", "nogroup"], ["2400", "v720"]];
   for (const [id, name] of ids) {
     const h = await hlsRun({ kind: "audio", audio_format_id: id }, withNamedVariants);
     assert.deepEqual(opened(h), [["audio", id]], id);
     assert.deepEqual(requested(h), ["master.m3u8", `${name}.m3u8`, `${name}-0.bin`], id);
   }
-  // Two variants share "64", so neither is "64"; 0 and 1 are positions; 128 is 127.9 rounded; 999 is a BANDWIDTH that an
-  // AVERAGE-BANDWIDTH overrides; a name or an address is no id.
-  for (const id of ["64", "hls-64", "0", "1", "hls-128", "hls-999", "hls-64000", "hls-Low (360p)", "hls-Low", "hls-vg", "hls-vg-Angle_One", "alc.m3u8", `${HOST}alc.m3u8`]) {
+  // Two variants share "64", which yt-dlp numbers "64-0" and "64-1" in an order of its own, so none of the three names a
+  // track; 0 and 1 are positions; 128 is 127.9 rounded; 999 is a BANDWIDTH that an AVERAGE-BANDWIDTH overrides; a name or
+  // an address is no id.
+  for (const id of ["64", "hls-64", "64-0", "hls-64-1", "0", "1", "hls-128", "hls-999", "hls-64000", "hls-Low (360p)", "hls-Low", "hls-vg", "hls-vg-Angle_One", "alc.m3u8", `${HOST}alc.m3u8`]) {
     await assertRefused({ audio_format_id: id }, withNamedVariants);
   }
 });
 
-test("an audio-only HLS request keeps apart renditions that yt-dlp numbers because their names read alike", async () => {
-  const first = await hlsRun({ kind: "audio", audio_format_id: "hls-x-a_b-0", audio_language: "en" }, withTwinRenditions);
-  assert.deepEqual(opened(first), [["audio", "hls-x-a_b-0"]]);
-  assert.deepEqual(requested(first), ["master.m3u8", "audio-first.m3u8", "audio-first-0.bin"], "not the variant below it");
-  const second = await hlsRun({ kind: "audio", audio_format_id: "x-a_b-1", audio_language: "de" }, withTwinRenditions);
-  assert.deepEqual(requested(second), ["master.m3u8", "audio-second.m3u8", "audio-second-0.bin"]);
-  for (const request of [{ audio_format_id: "x-a_b-0", audio_language: "de" }, { audio_format_id: "hls-x-a_b" }, { audio_format_id: "hls-x-a b-0", audio_language: "en" }]) {
-    await assertRefused(request, withTwinRenditions);
+test("an audio-only HLS request refuses an id that two formats have, since yt-dlp numbers them in an order of its own", async () => {
+  const cases = [
+    [withTwinRenditions, "x-a_b", { audio_language: "en" }],
+    [withTwinCodecs, "64", {}],
+    [withTwinBandwidths, "63", {}]
+  ];
+  for (const [files, shared, extra] of cases) {
+    const request = { kind: "audio", expected_audio: true };
+    const control = await hlsRun(request, files);
+    assert.equal(control.names().at(-1), "finish", `${shared}: without an id the playlist is served`);
+    for (const id of [shared, `${shared}-0`, `${shared}-1`]) {
+      for (const spelled of [id, `hls-${id}`]) await assertRefused({ audio_format_id: spelled, ...extra }, files);
+    }
+  }
+});
+
+test("an audio-only HLS request spells every character that yt-dlp turns into an underscore", async () => {
+  for (const [id, name, language] of [["aud-Audio__HQ___2.0__st_", "audio-hq", "en"], ["hls-aud-Français_FR_", "audio-fr", "fr"]]) {
+    const h = await hlsRun({ kind: "audio", audio_format_id: id, audio_language: language }, withOddNames);
+    assert.deepEqual(opened(h), [["audio", id]], id);
+    assert.deepEqual(requested(h), ["master.m3u8", `${name}.m3u8`, `${name}-0.bin`], id);
   }
 });
 
@@ -386,6 +422,8 @@ test("an audio-only HLS request names a rendition by its whole id when the id of
     assert.deepEqual(opened(h), [["audio", id]], id);
     assert.deepEqual(requested(h), ["master.m3u8", `audio-${group}.m3u8`, `audio-${group}-0.bin`], id);
   }
+  // An id ends with the id of a format only at a "-": "xhi-English" is not in the group "hi".
+  for (const id of ["ahi-English", "hls-xhi-English"]) await assertRefused({ audio_format_id: id, audio_language: "en" }, withHyphenGroups);
 });
 
 test("an audio-only HLS request prefers a variant that carries audio only to taking the audio out of a combined one", async () => {

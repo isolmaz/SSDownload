@@ -187,8 +187,9 @@
   // The ids yt-dlp gives the formats of a master playlist, without the prefix an extractor may put before them. A
   // rendition is "<GROUP-ID>-<NAME>". A variant is its NAME, else the NAME of the first rendition of its VIDEO group, else
   // the id of that group, else its bandwidth in whole kbit/s (AVERAGE-BANDWIDTH before BANDWIDTH, truncated). Whitespace
-  // and , / + [ ] ( ) become "_", and formats left with the same id are numbered from 0 ("64-0", "64-1"). A rendition
-  // without URI is no format of yt-dlp's; it keeps the id it would have had.
+  // and , / + [ ] ( ) become "_". yt-dlp numbers formats left with the same id ("64-0", "64-1") in the order of its own
+  // sort by codec, bitrate and more, which the playlist does not give: such formats keep the id they share, and an id that
+  // two formats have names none of them. A rendition without URI is no format of yt-dlp's; it keeps the id it would have had.
   function hlsFormatIds(media, variants) {
     const groups = new Map(), formats = [];
     for (const item of media) {
@@ -204,10 +205,7 @@
       formats.push([variant, NAME || (VIDEO ? groups.get(VIDEO)?.[0].attributes.NAME || VIDEO : "") || (kbit > 0 ? String(kbit) : "")]);
     }
     const clean = id => id.replace(/[\s,/+\[\]()]/g,"_");
-    const spelled = formats.filter(([, id])=>id).map(([item, id])=>[item, clean(id)]);
-    const total = new Map(), seen = new Map();
-    for (const [, id] of spelled) total.set(id, (total.get(id)||0)+1);
-    const ids = new Map(spelled.map(([item, id])=>{ const count = seen.get(id)||0; seen.set(id, count+1); return [item, total.get(id)>1 ? `${id}-${count}` : id]; }));
+    const ids = new Map(formats.filter(([, id])=>id).map(([item, id])=>[item, clean(id)]));
     for (const item of media) {
       const {TYPE, NAME, "GROUP-ID": group} = item.attributes;
       if (TYPE==="AUDIO" && !item.uri && NAME && group) ids.set(item, clean(`${group}-${NAME}`));
@@ -232,15 +230,14 @@
     const used = Array.from(new Set(ranked.map(item=>item.attributes.AUDIO).filter(item=>groups.has(item))));
     const alone = ranked.filter(item=>!groups.has(item.attributes.AUDIO) && !hlsVideoOnly(item));
     // An extractor's own prefix is unknown, so an id may end with the ids of several formats (the groups "a-hi" and "hi",
-    // both with "English"): the longest is the exact one, whatever the format, and it has to be a track to take.
-    const tracks = [...audio.filter(item=>used.includes(item.attributes["GROUP-ID"])), ...alone].filter(item=>ids.has(item));
-    const trackNamed = id => {
+    // both with "English"): the longest is the exact one, whatever the format, and two formats with that id name none.
+    const formatNamed = id => {
       const found = Array.from(ids.keys()).filter(item=>namedBy(id,ids.get(item)));
       const longest = Math.max(...found.map(item=>ids.get(item).length));
       const exact = found.filter(item=>ids.get(item).length===longest);
-      return exact.length===1 && tracks.includes(exact[0]) ? exact[0] : null;
+      return exact.length===1 ? exact[0] : null;
     };
-    const named = selections.map(selection=>selection.id ? trackNamed(selection.id) : undefined);
+    const named = selections.map(selection=>selection.id ? formatNamed(selection.id) : undefined);
     const pick = (group, selection, track) => {
       if (selection.id) return group.includes(track) && (!selection.language || track.attributes.LANGUAGE===selection.language) ? track : null;
       const matches = group.filter(item=>!selection.language || item.attributes.LANGUAGE===selection.language);

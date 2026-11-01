@@ -712,12 +712,27 @@ fn the_audio_of_a_combined_stream_is_muxed_and_verified_as_an_audio_only_output(
             .unwrap_or_else(|error| panic!("{label}: {error:#}"));
         verify_external_result(&paths, &request, &output, &streams, Some(4.0), true)
             .unwrap_or_else(|error| panic!("{label}: {error:#}"));
-        for role in ["video", "file"] {
+        for (role, refusal) in [
+            (
+                "video",
+                crate::i18n::ui(
+                    "Tarayıcı yalnız ses aktarımında görüntü akışı gönderdi",
+                    "The browser sent a video stream in an audio-only transfer",
+                ),
+            ),
+            (
+                "file",
+                crate::i18n::ui(
+                    "Tarayıcı bilinmeyen bir medya akışı rolü gönderdi",
+                    "The browser sent an unknown media stream role",
+                ),
+            ),
+        ] {
             let refused = root.join(format!("{role}.mkv"));
-            assert!(
-                mux_browser_streams(&paths, &request, &[stream(role)], &refused, &control).is_err(),
-                "{label}: the same stream sent as {role} is refused"
-            );
+            let error = mux_browser_streams(&paths, &request, &[stream(role)], &refused, &control)
+                .err()
+                .unwrap_or_else(|| panic!("{label}: the same stream sent as {role} is accepted"));
+            assert_eq!(error.to_string(), refusal, "{label}: {role}");
         }
 
         let probe = std::process::Command::new(&tools.ffprobe)
