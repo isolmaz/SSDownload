@@ -1761,7 +1761,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 vec![line(f.hint, s(ADD_LABEL))],
             ];
             if multi {
-                rows.push(vec![line(f.list, s(4 * ROW_HEIGHT) + 2)]);
+                rows.push(vec![line(f.list, list_height(4, dlg.dpi))]);
             }
             rows.push(vec![line(f.status, 0)]);
             rows.push(vec![line(f.progress, s(16))]);
@@ -2354,33 +2354,16 @@ pub(super) unsafe fn fit_speed_label(dlg: &mut DialogUi) {
     if !matches!(dlg.kind, DialogKind::Speed(_)) {
         return;
     }
-    let mut client: RECT = zeroed();
-    GetClientRect(dlg.hwnd, &mut client);
     let Some(&label) = child_statics(dlg.hwnd, dlg.error).first() else {
         return;
     };
-    let room = client.right - 2 * scale(ADD_PAD, dlg.dpi);
-    let lines = label_height(dlg, label, room) / scale(ADD_LABEL, dlg.dpi);
+    let (hwnd, font, dpi) = (dlg.hwnd, dlg.font, dlg.dpi);
     let DialogKind::Speed(f) = &mut dlg.kind else {
         return;
     };
-    let extra = lines - f.label_lines;
-    if extra == 0 {
-        return;
-    }
+    let lines = fit_label_lines(hwnd, label, font, dpi, f.label_lines);
+    dlg.design.1 += (lines - f.label_lines) * ADD_LABEL;
     f.label_lines = lines;
-    dlg.design.1 += extra * ADD_LABEL;
-    let mut window: RECT = zeroed();
-    GetWindowRect(dlg.hwnd, &mut window);
-    SetWindowPos(
-        dlg.hwnd,
-        null_mut(),
-        0,
-        0,
-        window.right - window.left,
-        window.bottom - window.top + scale(extra * ADD_LABEL, dlg.dpi),
-        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-    );
 }
 
 /// Modern's log windows: the list under its label, the `actions` on the card
@@ -2446,7 +2429,7 @@ unsafe fn media_rows(dlg: &DialogUi, f: &MediaFields) -> Vec<Vec<Cell>> {
     let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
     let bare = |control: HWND, width: Width| field(null_mut(), control, width, dlg.dpi);
     let combo = |control: HWND| Width::Label(combo_face_width(control, dlg.dpi));
-    let lists = s(2 * ROW_HEIGHT) + 2;
+    let lists = list_height(2, dlg.dpi);
     let mut rows = vec![
         vec![field(label(0), f.name, Width::Flex, dlg.dpi)],
         vec![
@@ -2625,9 +2608,14 @@ unsafe fn check_cell(dlg: &DialogUi, control: HWND) -> Cell {
 
 /// The height a label needs at `width`: its wrapped lines, ADD_LABEL each.
 unsafe fn label_height(dlg: &DialogUi, label: HWND, width: i32) -> i32 {
+    wrapped_height(label, dlg.font, dlg.dpi, width)
+}
+
+/// `label_height` in `font` at `dpi`.
+unsafe fn wrapped_height(label: HWND, font: HFONT, dpi: u32, width: i32) -> i32 {
     let mut value: Vec<u16> = text(label).encode_utf16().collect();
     let dc = GetDC(label);
-    let previous = SelectObject(dc, dlg.font as HGDIOBJ);
+    let previous = SelectObject(dc, font as HGDIOBJ);
     let mut line = RECT {
         right: width,
         ..zeroed()
@@ -2654,7 +2642,7 @@ unsafe fn label_height(dlg: &DialogUi, label: HWND, width: i32) -> i32 {
     SelectObject(dc, previous);
     ReleaseDC(label, dc);
     let line = line.bottom.max(1);
-    ((all.bottom + line - 1) / line).max(1) * scale(ADD_LABEL, dlg.dpi)
+    ((all.bottom + line - 1) / line).max(1) * scale(ADD_LABEL, dpi)
 }
 
 /// The space before a cell: 8 epx before a push button, 12 before the rest.
@@ -2782,13 +2770,11 @@ unsafe fn form_rows_from(dlg: &DialogUi, h: i32, top: i32, rows: &[&[Cell]], res
     GetClientRect(dlg.hwnd, &mut client);
     let x = s(ADD_PAD);
     let room = client.right - 2 * x;
-    let least = s(2 * ROW_HEIGHT) + 2;
     let natural: i32 = rows
         .iter()
-        .map(|row| form_row(dlg, row, x, 0, room, least, false))
+        .map(|row| form_row(dlg, row, x, 0, room, least_fill(dlg.dpi), false))
         .sum();
-    let spare = h - s(ADD_FOOTER) - s(ADD_LABEL) - reserve - top - natural;
-    let fill = least + spare.max(0);
+    let fill = fill_height(h, top, natural, reserve, dlg.dpi);
     let mut y = top;
     for row in rows {
         y += form_row(dlg, row, x, y, room, fill, true);
@@ -2797,9 +2783,101 @@ unsafe fn form_rows_from(dlg: &DialogUi, h: i32, top: i32, rows: &[&[Cell]], res
     y
 }
 
+/// The height of a Modern list's face that shows `rows` whole entries inside
+/// its frame.
+fn list_height(rows: i32, dpi: u32) -> i32 {
+    rows * scale(ROW_HEIGHT, dpi) + 2 * scale(LIST_INSET, dpi)
+}
+
+/// The least height of a form's fill cell: two list entries in their frame.
+fn least_fill(dpi: u32) -> i32 {
+    list_height(2, dpi)
+}
+
+/// The height of a form's fill cell: its least, and what a card `h` pixels
+/// tall leaves below the rows' `natural` height (measured with the least),
+/// starting at `top`, with the error line `reserve` pixels below them.
+fn fill_height(h: i32, top: i32, natural: i32, reserve: i32, dpi: u32) -> i32 {
+    let spare = h - scale(ADD_FOOTER, dpi) - scale(ADD_LABEL, dpi) - reserve - top - natural;
+    least_fill(dpi) + spare.max(0)
+}
+
+/// Grows `window` by the lines `label` wraps to beyond `lines` at the card's
+/// width, ADD_LABEL each, and returns the lines it wraps to.
+unsafe fn fit_label_lines(window: HWND, label: HWND, font: HFONT, dpi: u32, lines: i32) -> i32 {
+    let mut client: RECT = zeroed();
+    GetClientRect(window, &mut client);
+    let room = client.right - 2 * scale(ADD_PAD, dpi);
+    let wrapped = wrapped_height(label, font, dpi, room) / scale(ADD_LABEL, dpi);
+    let extra = wrapped - lines;
+    if extra != 0 {
+        let mut frame: RECT = zeroed();
+        GetWindowRect(window, &mut frame);
+        SetWindowPos(
+            window,
+            null_mut(),
+            0,
+            0,
+            frame.right - frame.left,
+            frame.bottom - frame.top + scale(extra * ADD_LABEL, dpi),
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    wrapped
+}
+
 #[cfg(test)]
 mod tests {
     use super::{share_row, Width};
+
+    #[test]
+    fn a_form_s_fill_cell_keeps_two_list_entries_and_takes_what_is_left() {
+        use super::{fill_height, scale, ADD_FOOTER, ADD_LABEL, LIST_INSET, ROW_HEIGHT};
+        for dpi in [96, 120, 144, 168] {
+            let s = |value: i32| scale(value, dpi);
+            // Rows taller than the card: the cell keeps its least, and the
+            // list placed inside its frame still shows two whole entries.
+            let least = fill_height(s(300), s(20), s(600), 0, dpi);
+            assert!(least - 2 * s(LIST_INSET) >= 2 * s(ROW_HEIGHT), "{dpi} dpi");
+            // Room to spare: the cell takes all of it.
+            let h = s(500);
+            let (top, natural, reserve) = (s(20), s(200), s(12));
+            let spare = h - s(ADD_FOOTER) - s(ADD_LABEL) - reserve - top - natural;
+            assert!(spare > 0);
+            assert_eq!(fill_height(h, top, natural, reserve, dpi), least + spare);
+        }
+    }
+
+    #[test]
+    fn a_label_that_wraps_grows_its_window_by_its_extra_lines() {
+        use super::*;
+        unsafe {
+            let font = ramp_font(96, BODY_PX, false);
+            for (value, wraps) in [
+                ("Speed limit", false),
+                (
+                    "The limit applies to each selected download separately, in kilobytes per second",
+                    true,
+                ),
+            ] {
+                let window = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                SetWindowPos(window, null_mut(), 0, 0, 300, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+                let label = control(window, "STATIC", value, WS_CHILD, 0, 1);
+                apply_font(label, font);
+                let lines = fit_label_lines(window, label, font, 96, 1);
+                assert_eq!(lines > 1, wraps, "{value}: {lines} lines");
+                let mut frame: RECT = zeroed();
+                GetWindowRect(window, &mut frame);
+                assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
+                // Measured again at its lines, the window stays as it is.
+                assert_eq!(fit_label_lines(window, label, font, 96, lines), lines);
+                GetWindowRect(window, &mut frame);
+                assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
+                DestroyWindow(window);
+            }
+            DeleteObject(font as HGDIOBJ);
+        }
+    }
 
     #[test]
     fn a_one_field_dialog_keeps_the_rhythm_and_ends_its_error_line_at_the_bar() {

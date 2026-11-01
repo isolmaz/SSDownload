@@ -1479,7 +1479,8 @@ pub(super) unsafe fn place_modern(control: HWND, show: bool, face: RECT, dpi: u3
                 0,
                 scale(ROW_HEIGHT, dpi) as isize,
             );
-            inflate(face, -1, -1)
+            let inset = scale(LIST_INSET, dpi);
+            inflate(face, -inset, -inset)
         }
         "combobox" => return place_combo(control, inflate(face, ring, ring), dpi),
         "button" if is_check_box(control) => inflate(face, ring, 0),
@@ -1974,13 +1975,18 @@ const INPUT_PAD_TOP: i32 = 6;
 /// sunken border (the dialog paints their frames) and its field labels their
 /// trailing colon, as Fluent writes them.
 pub(super) unsafe fn prepare_modern_form(dlg: &DialogUi) {
-    let Some(form) = modern_form(dlg) else {
+    let Some(form) = modern_form(&dlg.kind) else {
         return;
     };
     for edit in form.inputs.into_iter().chain(form.texts) {
         flatten_edit(edit);
     }
-    for label in child_statics(dlg.hwnd, dlg.error) {
+    strip_label_colons(dlg.hwnd, dlg.error);
+}
+
+/// Drops the trailing colon from the labels of `parent`, all but its error line.
+unsafe fn strip_label_colons(parent: HWND, error: HWND) {
+    for label in child_statics(parent, error) {
         let value = super::text(label);
         let bare = field_label(&value);
         if bare != value {
@@ -2105,9 +2111,10 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
     }
 }
 
-/// The frame around a list box placed by `place_modern`: its 1 px stroke.
-unsafe fn list_frame(parent: HWND, list: HWND) -> RECT {
-    inflate(child_rect(parent, list), 1, 1)
+/// The frame around a list box placed by `place_modern`.
+unsafe fn list_frame(parent: HWND, list: HWND, dpi: u32) -> RECT {
+    let inset = scale(LIST_INSET, dpi);
+    inflate(child_rect(parent, list), inset, inset)
 }
 
 /// One entry of a Modern dialog's list box, painted like a job list row: the
@@ -2334,8 +2341,8 @@ struct ModernForm {
     hint: HWND,
 }
 
-unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
-    match &dlg.kind {
+unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
+    match kind {
         DialogKind::Add(f) => Some(ModernForm {
             inputs: add_inputs(f).to_vec(),
             lists: vec![],
@@ -2542,7 +2549,7 @@ pub(super) unsafe fn modern_dialog_message(
     ) {
         return None;
     }
-    let form = modern_form(dlg)?;
+    let form = modern_form(&dlg.kind)?;
     let palette = main_palette(dlg.hwnd);
     match msg {
         // The frame's padding belongs to its field: a click there goes to the
@@ -2762,7 +2769,7 @@ unsafe fn paint_modern_surfaces(dlg: &DialogUi, form: &ModernForm, dc: HDC, pale
         if list.is_null() || IsWindowVisible(list) == 0 {
             continue;
         }
-        let frame = list_frame(dlg.hwnd, list);
+        let frame = list_frame(dlg.hwnd, list, dlg.dpi);
         round_rect(
             dc,
             &frame,
@@ -3773,6 +3780,150 @@ mod tests {
             DestroyWindow(parent);
             assert_eq!(empty, 0, "a box with no selection shows no text");
             assert!(chosen > 0, "the selected entry is painted");
+        }
+    }
+
+    #[test]
+    fn a_modern_list_keeps_its_texts_and_sits_inside_its_frame() {
+        unsafe {
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let font = ramp_font(96, BODY_PX, false);
+            for (style, notifies) in [(0, false), (LBS_NOTIFY as u32, true)] {
+                let list = modern_list(parent, font, 1, style);
+                let bits = GetWindowLongW(list, GWL_STYLE) as u32;
+                let owner_drawn = (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS) as u32;
+                assert_eq!(bits & owner_drawn, owner_drawn);
+                assert_eq!(bits & LBS_NOTIFY as u32 != 0, notifies);
+                assert_eq!(bits & WS_BORDER, 0, "the dialog paints the frame");
+                // An owner-drawn list keeps its entries' texts only with
+                // LBS_HASSTRINGS, and type-ahead and LB_GETTEXT need them.
+                let entry = wide("Night");
+                SendMessageW(list, LB_ADDSTRING, 0, entry.as_ptr() as isize);
+                let mut read = [0u16; 16];
+                let length = SendMessageW(list, LB_GETTEXT, 0, read.as_mut_ptr() as isize);
+                assert_eq!(
+                    String::from_utf16_lossy(&read[..length.max(0) as usize]),
+                    "Night"
+                );
+                let face = RECT {
+                    left: 10,
+                    top: 20,
+                    right: 210,
+                    bottom: 120,
+                };
+                place_modern(list, true, face, 96);
+                let edges = |r: RECT| (r.left, r.top, r.right, r.bottom);
+                assert_eq!(edges(child_rect(parent, list)), (12, 22, 208, 118));
+                assert_eq!(edges(list_frame(parent, list, 96)), edges(face));
+                DestroyWindow(list);
+            }
+            DeleteObject(font as HGDIOBJ);
+            DestroyWindow(parent);
+        }
+    }
+
+    #[test]
+    fn a_selected_list_entry_gets_the_tinted_plate_and_the_accent_mark() {
+        unsafe {
+            let (width, height) = (200, 32);
+            let screen = GetDC(null_mut());
+            let dc = CreateCompatibleDC(screen);
+            ReleaseDC(null_mut(), screen);
+            let mut info: BITMAPINFO = zeroed();
+            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bits: *mut c_void = null_mut();
+            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            assert!(!bitmap.is_null() && !bits.is_null());
+            let previous = SelectObject(dc, bitmap as HGDIOBJ);
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let font = ramp_font(96, BODY_PX, false);
+            let list = modern_list(parent, font, 1, 0);
+            let entry = wide("Night");
+            SendMessageW(list, LB_ADDSTRING, 0, entry.as_ptr() as isize);
+            let palette = fluent_palette(false, BLUE);
+            // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+            let colour =
+                |pixel: u32| ((pixel & 0xff) << 16) | (pixel & 0xff00) | ((pixel >> 16) & 0xff);
+            let paint = |selected: bool| -> Vec<u32> {
+                let item = DRAWITEMSTRUCT {
+                    CtlType: ODT_LISTBOX,
+                    CtlID: 1,
+                    itemID: 0,
+                    itemAction: ODA_DRAWENTIRE,
+                    itemState: if selected { ODS_SELECTED } else { 0 },
+                    hwndItem: list,
+                    hDC: dc,
+                    rcItem: RECT {
+                        left: 0,
+                        top: 0,
+                        right: width,
+                        bottom: height,
+                    },
+                    itemData: 0,
+                };
+                paint_list_item(&item, 96, &palette, font);
+                std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
+                    .iter()
+                    .map(|&pixel| colour(pixel))
+                    .collect()
+            };
+            let selected = paint(true);
+            let plain = paint(false);
+            SelectObject(dc, previous);
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteObject(font as HGDIOBJ);
+            DeleteDC(dc);
+            DestroyWindow(parent);
+            let has = |pixels: &[u32], wanted: u32| pixels.iter().any(|&pixel| pixel == wanted);
+            assert!(has(&selected, palette.row_selected), "the selection plate");
+            assert!(has(&selected, palette.accent), "the selection mark");
+            assert!(!has(&plain, palette.row_selected));
+            assert!(!has(&plain, palette.accent));
+        }
+    }
+
+    #[test]
+    fn only_the_dialogs_modern_lays_out_lose_their_label_colons() {
+        unsafe {
+            let tools = DialogKind::Tools(ToolsFields {
+                status: null_mut(),
+                progress: null_mut(),
+                install: null_mut(),
+                update: null_mut(),
+                last_render: String::new(),
+            });
+            let rules = DialogKind::Rules(RuleFields {
+                list: null_mut(),
+                ids: Vec::new(),
+                host: null_mut(),
+                dir: null_mut(),
+                subdomains: null_mut(),
+                file: null_mut(),
+                video: null_mut(),
+                audio: null_mut(),
+                priority: null_mut(),
+            });
+            assert!(
+                modern_form(&tools).is_none(),
+                "the media tools keep Classic's form"
+            );
+            assert!(modern_form(&rules).is_some());
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let label = control(parent, "STATIC", "Host:", WS_CHILD, 0, 1);
+            let error = control(parent, "STATIC", "Failed:", WS_CHILD, 0, 2);
+            strip_label_colons(parent, error);
+            assert_eq!(super::super::text(label), "Host");
+            assert_eq!(
+                super::super::text(error),
+                "Failed:",
+                "the error line is left alone"
+            );
+            DestroyWindow(parent);
         }
     }
 }
