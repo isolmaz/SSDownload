@@ -3060,33 +3060,35 @@ mod tests {
 
     #[test]
     fn a_label_that_wraps_grows_its_window_by_its_extra_lines() {
-        use super::*;
-        unsafe {
-            let font = ramp_font(96, BODY_PX, false);
-            for (value, wraps) in [
-                ("Speed limit", false),
-                (
-                    "The limit applies to each selected download separately, in kilobytes per second",
-                    true,
-                ),
-            ] {
-                let window = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-                SetWindowPos(window, null_mut(), 0, 0, 300, 200, SWP_NOZORDER | SWP_NOACTIVATE);
-                let label = control(window, "STATIC", value, WS_CHILD, 0, 1);
-                apply_font(label, font);
-                let lines = fit_label_lines(window, label, font, 96, 1, ADD_PAD);
-                assert_eq!(lines > 1, wraps, "{value}: {lines} lines");
-                let mut frame: RECT = zeroed();
-                GetWindowRect(window, &mut frame);
-                assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
-                // Measured again at its lines, the window stays as it is.
-                assert_eq!(fit_label_lines(window, label, font, 96, lines, ADD_PAD), lines);
-                GetWindowRect(window, &mut frame);
-                assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
-                DestroyWindow(window);
+        crate::gui::native::tests::on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let font = ramp_font(96, BODY_PX, false);
+                for (value, wraps) in [
+                    ("Speed limit", false),
+                    (
+                        "The limit applies to each selected download separately, in kilobytes per second",
+                        true,
+                    ),
+                ] {
+                    let window = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    SetWindowPos(window, null_mut(), 0, 0, 300, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+                    let label = control(window, "STATIC", value, WS_CHILD, 0, 1);
+                    apply_font(label, font);
+                    let lines = fit_label_lines(window, label, font, 96, 1, ADD_PAD);
+                    assert_eq!(lines > 1, wraps, "{value}: {lines} lines");
+                    let mut frame: RECT = zeroed();
+                    GetWindowRect(window, &mut frame);
+                    assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
+                    // Measured again at its lines, the window stays as it is.
+                    assert_eq!(fit_label_lines(window, label, font, 96, lines, ADD_PAD), lines);
+                    GetWindowRect(window, &mut frame);
+                    assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
+                    DestroyWindow(window);
+                }
+                DeleteObject(font as HGDIOBJ);
             }
-            DeleteObject(font as HGDIOBJ);
-        }
+        });
     }
 
     #[test]
@@ -3145,52 +3147,54 @@ mod tests {
 
     #[test]
     fn tab_follows_the_reading_order_and_leaves_the_labels() {
-        use super::*;
-        unsafe {
-            for ex in [0, WS_EX_LAYOUTRTL] {
-                let window = control(null_mut(), "STATIC", "", WS_POPUP, ex, 0);
-                SetWindowPos(
-                    window,
-                    null_mut(),
-                    0,
-                    0,
-                    400,
-                    200,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-                let mut made = Vec::new();
-                // Created out of order: (left, top) in client coordinates.
-                for (id, left, top) in [(3, 0, 100), (2, 200, 0), (9, 0, 70), (1, 0, 0)] {
-                    let style = if id == 9 {
-                        WS_CHILD
-                    } else {
-                        WS_CHILD | WS_TABSTOP
-                    };
-                    let child = control(window, "BUTTON", "", style, 0, id);
+        crate::gui::native::tests::on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                for ex in [0, WS_EX_LAYOUTRTL] {
+                    let window = control(null_mut(), "STATIC", "", WS_POPUP, ex, 0);
                     SetWindowPos(
-                        child,
+                        window,
                         null_mut(),
-                        left,
-                        top,
-                        80,
-                        30,
+                        0,
+                        0,
+                        400,
+                        200,
                         SWP_NOZORDER | SWP_NOACTIVATE,
                     );
-                    made.push(child);
+                    let mut made = Vec::new();
+                    // Created out of order: (left, top) in client coordinates.
+                    for (id, left, top) in [(3, 0, 100), (2, 200, 0), (9, 0, 70), (1, 0, 0)] {
+                        let style = if id == 9 {
+                            WS_CHILD
+                        } else {
+                            WS_CHILD | WS_TABSTOP
+                        };
+                        let child = control(window, "BUTTON", "", style, 0, id);
+                        SetWindowPos(
+                            child,
+                            null_mut(),
+                            left,
+                            top,
+                            80,
+                            30,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                        made.push(child);
+                    }
+                    tab_in_reading_order(window);
+                    let mut walk = Vec::new();
+                    let mut child = GetWindow(window, GW_CHILD);
+                    while !child.is_null() {
+                        walk.push(GetDlgCtrlID(child));
+                        child = GetWindow(child, GW_HWNDNEXT);
+                    }
+                    DestroyWindow(window);
+                    let stops: Vec<i32> = walk.iter().copied().filter(|&id| id != 9).collect();
+                    assert_eq!(stops, vec![1, 2, 3], "layout {ex:#x}: {walk:?}");
+                    assert!(walk.contains(&9));
                 }
-                tab_in_reading_order(window);
-                let mut walk = Vec::new();
-                let mut child = GetWindow(window, GW_CHILD);
-                while !child.is_null() {
-                    walk.push(GetDlgCtrlID(child));
-                    child = GetWindow(child, GW_HWNDNEXT);
-                }
-                DestroyWindow(window);
-                let stops: Vec<i32> = walk.iter().copied().filter(|&id| id != 9).collect();
-                assert_eq!(stops, vec![1, 2, 3], "layout {ex:#x}: {walk:?}");
-                assert!(walk.contains(&9));
             }
-        }
+        });
     }
 
     #[test]

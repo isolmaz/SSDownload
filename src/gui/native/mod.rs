@@ -10989,72 +10989,76 @@ mod tests {
 
     #[test]
     fn dialog_labels_draw_an_ampersand_as_text() {
-        use super::{control, dialog_label, SS_NOPREFIX};
-        use std::ptr::null_mut;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DestroyWindow, GetWindowLongPtrW, GWL_STYLE, WS_POPUP,
-        };
+        on_private_desktop(|| {
+            use super::{control, dialog_label, SS_NOPREFIX};
+            use std::ptr::null_mut;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                DestroyWindow, GetWindowLongPtrW, GWL_STYLE, WS_POPUP,
+            };
 
-        unsafe {
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            assert!(!parent.is_null(), "the hidden parent window is created");
-            let label = dialog_label(parent, null_mut(), "Tom & Jerry.mp4", 7);
-            let style = GetWindowLongPtrW(label, GWL_STYLE) as u32;
-            DestroyWindow(parent);
-            assert_ne!(
-                style & SS_NOPREFIX,
-                0,
-                "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
-            );
-        }
+            unsafe {
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                assert!(!parent.is_null(), "the hidden parent window is created");
+                let label = dialog_label(parent, null_mut(), "Tom & Jerry.mp4", 7);
+                let style = GetWindowLongPtrW(label, GWL_STYLE) as u32;
+                DestroyWindow(parent);
+                assert_ne!(
+                    style & SS_NOPREFIX,
+                    0,
+                    "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
+                );
+            }
+        });
     }
 
     #[test]
     fn the_scroll_keys_reach_the_page_unless_a_field_uses_the_arrows() {
-        use super::{control, wants_arrows, BS_PUSHBUTTON, VK_DOWN};
-        use std::ptr::null_mut;
-        use windows_sys::Win32::UI::Controls::{
-            InitCommonControlsEx, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
-        };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DestroyWindow, MSG, WM_KEYDOWN, WS_CHILD, WS_POPUP,
-        };
+        on_private_desktop(|| {
+            use super::{control, wants_arrows, BS_PUSHBUTTON, VK_DOWN};
+            use std::ptr::null_mut;
+            use windows_sys::Win32::UI::Controls::{
+                InitCommonControlsEx, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
+            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                DestroyWindow, MSG, WM_KEYDOWN, WS_CHILD, WS_POPUP,
+            };
 
-        unsafe {
-            let common = INITCOMMONCONTROLSEX {
-                dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_TAB_CLASSES,
-            };
-            assert_ne!(InitCommonControlsEx(&common), 0);
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            let edit = control(parent, "EDIT", "", WS_CHILD, 0, 1);
-            let tabs = control(parent, "SysTabControl32", "", WS_CHILD, 0, 2);
-            assert!(!tabs.is_null(), "the tab strip is created");
-            let button = control(
-                parent,
-                "BUTTON",
-                "OK",
-                WS_CHILD | BS_PUSHBUTTON as u32,
-                0,
-                3,
-            );
-            let down = |hwnd| MSG {
-                hwnd,
-                message: WM_KEYDOWN,
-                wParam: VK_DOWN as usize,
-                lParam: 1,
-                ..std::mem::zeroed()
-            };
-            let (edit_keeps, tabs_keep, button_keeps) = (
-                wants_arrows(&down(edit)),
-                wants_arrows(&down(tabs)),
-                wants_arrows(&down(button)),
-            );
-            DestroyWindow(parent);
-            assert!(edit_keeps, "a text field moves its caret with the arrows");
-            assert!(!tabs_keep, "the tab strip leaves the arrows to the page");
-            assert!(!button_keeps, "a button leaves the arrows to the page");
-        }
+            unsafe {
+                let common = INITCOMMONCONTROLSEX {
+                    dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+                    dwICC: ICC_TAB_CLASSES,
+                };
+                assert_ne!(InitCommonControlsEx(&common), 0);
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                let edit = control(parent, "EDIT", "", WS_CHILD, 0, 1);
+                let tabs = control(parent, "SysTabControl32", "", WS_CHILD, 0, 2);
+                assert!(!tabs.is_null(), "the tab strip is created");
+                let button = control(
+                    parent,
+                    "BUTTON",
+                    "OK",
+                    WS_CHILD | BS_PUSHBUTTON as u32,
+                    0,
+                    3,
+                );
+                let down = |hwnd| MSG {
+                    hwnd,
+                    message: WM_KEYDOWN,
+                    wParam: VK_DOWN as usize,
+                    lParam: 1,
+                    ..std::mem::zeroed()
+                };
+                let (edit_keeps, tabs_keep, button_keeps) = (
+                    wants_arrows(&down(edit)),
+                    wants_arrows(&down(tabs)),
+                    wants_arrows(&down(button)),
+                );
+                DestroyWindow(parent);
+                assert!(edit_keeps, "a text field moves its caret with the arrows");
+                assert!(!tabs_keep, "the tab strip leaves the arrows to the page");
+                assert!(!button_keeps, "a button leaves the arrows to the page");
+            }
+        });
     }
 
     /// A dialog of `kind` created the way the app creates one, in Modern and
@@ -11068,6 +11072,8 @@ mod tests {
     }
 
     /// `modern_test_dialog` in Modern when `in_modern` is true, else in Classic.
+    /// Only on a private desktop (`on_private_desktop`): a refresh can show
+    /// the dialog, and it must never reach the user's screen or keys.
     unsafe fn theme_test_dialog(
         in_modern: bool,
         kind: super::DialogKind,
@@ -11075,6 +11081,10 @@ mod tests {
         height: i32,
     ) -> (*mut super::DialogUi, super::HWND, std::path::PathBuf) {
         use super::*;
+        assert!(
+            current_desktop_name().starts_with("ssdownload-test-"),
+            "test dialogs are created on a private desktop"
+        );
         set_modern(in_modern);
         register_classes().unwrap();
         let root =
@@ -11135,30 +11145,32 @@ mod tests {
 
     #[test]
     fn modern_s_speed_limit_grows_by_the_lines_its_label_wraps_to() {
-        use super::*;
-        unsafe {
-            // Narrow enough that the label wraps in every language.
-            let height = one_field_height(1) + SETTINGS_FRAME + 3;
-            let (raw, hwnd, root) = modern_test_dialog(
-                DialogKind::Speed(SpeedFields {
-                    ids: Vec::new(),
-                    initial: 0,
-                    edit: null_mut(),
-                    label_lines: 1,
-                }),
-                240,
-                height,
-            );
-            let lines = match &(*raw).kind {
-                DialogKind::Speed(f) => f.label_lines,
-                _ => 0,
-            };
-            let (outer, design) = (window_height(hwnd), (*raw).design.1);
-            close_test_dialog(raw, hwnd, root);
-            assert!(lines > 1, "{lines} lines");
-            assert_eq!(outer, height + (lines - 1) * ADD_LABEL);
-            assert_eq!(design, height + (lines - 1) * ADD_LABEL);
-        }
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                // Narrow enough that the label wraps in every language.
+                let height = one_field_height(1) + SETTINGS_FRAME + 3;
+                let (raw, hwnd, root) = modern_test_dialog(
+                    DialogKind::Speed(SpeedFields {
+                        ids: Vec::new(),
+                        initial: 0,
+                        edit: null_mut(),
+                        label_lines: 1,
+                    }),
+                    240,
+                    height,
+                );
+                let lines = match &(*raw).kind {
+                    DialogKind::Speed(f) => f.label_lines,
+                    _ => 0,
+                };
+                let (outer, design) = (window_height(hwnd), (*raw).design.1);
+                close_test_dialog(raw, hwnd, root);
+                assert!(lines > 1, "{lines} lines");
+                assert_eq!(outer, height + (lines - 1) * ADD_LABEL);
+                assert_eq!(design, height + (lines - 1) * ADD_LABEL);
+            }
+        });
     }
 
     /// A media picker that has not inspected its page yet.
@@ -11212,107 +11224,113 @@ mod tests {
 
     #[test]
     fn modern_s_picker_fits_its_window_to_its_rows_and_tabs_in_their_order() {
-        use super::*;
-        unsafe {
-            // The window size below is the Modern one.
-            set_modern(true);
-            let (raw, hwnd, root) = modern_test_dialog(
-                blank_picker(),
-                MEDIA_WIDTH,
-                media_window_height(MEDIA_HEIGHT, 420),
-            );
-            let closed = window_height(hwnd);
-            SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
-            let open = window_height(hwnd);
-            let scrolls = (*raw).scroll_range.get();
-            let mut work: RECT = zeroed();
-            SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut work as *mut RECT).cast(), 0);
-            let walk = tab_walk(hwnd);
-            SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
-            let closed_again = window_height(hwnd);
-            let cue = playlist_field_proc(raw);
-            close_test_dialog(raw, hwnd, root);
-            // Modern draws the playlist field's hint itself.
-            assert_eq!(cue, cue_proc as *const () as isize);
-            assert!(
-                open > closed,
-                "the advanced rows grow the window: {closed} -> {open}"
-            );
-            assert_eq!(closed_again, closed);
-            assert!(
-                scrolls == 0 || open >= work.bottom - work.top,
-                "the open picker scrolls {scrolls} px in a {open} px window"
-            );
-            let at = |id: i32| walk.iter().position(|&walked| walked == id);
-            let before = |a: i32, b: i32| matches!((at(a), at(b)), (Some(a), Some(b)) if a < b);
-            // The playlist row sits above the verification row, and Advanced
-            // options at the start of the command bar.
-            assert!(before(M_PLAYLIST, ID_MEDIA_FULL_VERIFICATION), "{walk:?}");
-            assert!(before(D_ADVANCED, M_QUEUE), "{walk:?}");
-            assert!(before(M_QUEUE, D_CANCEL), "{walk:?}");
-        }
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                // The window size below is the Modern one.
+                set_modern(true);
+                let (raw, hwnd, root) = modern_test_dialog(
+                    blank_picker(),
+                    MEDIA_WIDTH,
+                    media_window_height(MEDIA_HEIGHT, 420),
+                );
+                let closed = window_height(hwnd);
+                SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+                let open = window_height(hwnd);
+                let scrolls = (*raw).scroll_range.get();
+                let mut work: RECT = zeroed();
+                SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut work as *mut RECT).cast(), 0);
+                let walk = tab_walk(hwnd);
+                SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+                let closed_again = window_height(hwnd);
+                let cue = playlist_field_proc(raw);
+                close_test_dialog(raw, hwnd, root);
+                // Modern draws the playlist field's hint itself.
+                assert_eq!(cue, cue_proc as *const () as isize);
+                assert!(
+                    open > closed,
+                    "the advanced rows grow the window: {closed} -> {open}"
+                );
+                assert_eq!(closed_again, closed);
+                assert!(
+                    scrolls == 0 || open >= work.bottom - work.top,
+                    "the open picker scrolls {scrolls} px in a {open} px window"
+                );
+                let at = |id: i32| walk.iter().position(|&walked| walked == id);
+                let before = |a: i32, b: i32| matches!((at(a), at(b)), (Some(a), Some(b)) if a < b);
+                // The playlist row sits above the verification row, and Advanced
+                // options at the start of the command bar.
+                assert!(before(M_PLAYLIST, ID_MEDIA_FULL_VERIFICATION), "{walk:?}");
+                assert!(before(D_ADVANCED, M_QUEUE), "{walk:?}");
+                assert!(before(M_QUEUE, D_CANCEL), "{walk:?}");
+            }
+        });
     }
 
     #[test]
     fn modern_s_queue_manager_tabs_through_its_rows() {
-        use super::*;
-        unsafe {
-            set_modern(true);
-            let (width, height) = form_window(QUEUES_WIDTH, QUEUES_HEIGHT);
-            let (raw, hwnd, root) = modern_test_dialog(
-                DialogKind::Queues(QueueFields {
-                    list: null_mut(),
-                    ids: Vec::new(),
-                    name: null_mut(),
-                    concurrency: null_mut(),
-                    completion: null_mut(),
-                    countdown: null_mut(),
-                    enabled: null_mut(),
-                    windows: null_mut(),
-                    quota: null_mut(),
-                    program: null_mut(),
-                    arguments: null_mut(),
-                    delay: null_mut(),
-                    job_id: None,
-                }),
-                width,
-                height,
-            );
-            let walk = tab_walk(hwnd);
-            close_test_dialog(raw, hwnd, root);
-            // The list; the name and its buttons; the policy row; the
-            // completion row; the program row; Close.
-            let rows = [
-                2501, 2502, Q_CREATE, Q_RENAME, Q_DELETE, 2503, 2514, 2517, 2512, 2504, Q_UPDATE,
-                Q_MOVE_JOB, 2515, 2516, 2513, D_CANCEL,
-            ];
-            let walked: Vec<i32> = walk
-                .iter()
-                .copied()
-                .filter(|id| rows.contains(id))
-                .collect();
-            assert_eq!(walked, rows, "{walk:?}");
-        }
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                set_modern(true);
+                let (width, height) = form_window(QUEUES_WIDTH, QUEUES_HEIGHT);
+                let (raw, hwnd, root) = modern_test_dialog(
+                    DialogKind::Queues(QueueFields {
+                        list: null_mut(),
+                        ids: Vec::new(),
+                        name: null_mut(),
+                        concurrency: null_mut(),
+                        completion: null_mut(),
+                        countdown: null_mut(),
+                        enabled: null_mut(),
+                        windows: null_mut(),
+                        quota: null_mut(),
+                        program: null_mut(),
+                        arguments: null_mut(),
+                        delay: null_mut(),
+                        job_id: None,
+                    }),
+                    width,
+                    height,
+                );
+                let walk = tab_walk(hwnd);
+                close_test_dialog(raw, hwnd, root);
+                // The list; the name and its buttons; the policy row; the
+                // completion row; the program row; Close.
+                let rows = [
+                    2501, 2502, Q_CREATE, Q_RENAME, Q_DELETE, 2503, 2514, 2517, 2512, 2504,
+                    Q_UPDATE, Q_MOVE_JOB, 2515, 2516, 2513, D_CANCEL,
+                ];
+                let walked: Vec<i32> = walk
+                    .iter()
+                    .copied()
+                    .filter(|id| rows.contains(id))
+                    .collect();
+                assert_eq!(walked, rows, "{walk:?}");
+            }
+        });
     }
 
     #[test]
     fn modern_s_event_log_lists_its_lines_in_compact_rows() {
-        use super::*;
-        unsafe {
-            set_modern(true);
-            let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
-            let (raw, hwnd, root) = modern_test_dialog(
-                DialogKind::Events(EventFields {
-                    list: null_mut(),
-                    rendered: Vec::new(),
-                }),
-                width,
-                height,
-            );
-            let row = SendMessageW(GetDlgItem(hwnd, E_LIST), LB_GETITEMHEIGHT, 0, 0) as i32;
-            close_test_dialog(raw, hwnd, root);
-            assert_eq!(row, COMPACT_ROW);
-        }
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                set_modern(true);
+                let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
+                let (raw, hwnd, root) = modern_test_dialog(
+                    DialogKind::Events(EventFields {
+                        list: null_mut(),
+                        rendered: Vec::new(),
+                    }),
+                    width,
+                    height,
+                );
+                let row = SendMessageW(GetDlgItem(hwnd, E_LIST), LB_GETITEMHEIGHT, 0, 0) as i32;
+                close_test_dialog(raw, hwnd, root);
+                assert_eq!(row, COMPACT_ROW);
+            }
+        });
     }
 
     /// The window procedure of a picker's playlist field.
@@ -11355,88 +11373,90 @@ mod tests {
 
     #[test]
     fn the_wizard_lays_its_cards_out_in_rows_and_tabs_through_them_in_both_themes() {
-        use super::*;
-        let cards = [
-            ID_WIZARD_SIMPLE,
-            ID_WIZARD_ADVANCED,
-            ID_WIZARD_CLASSIC,
-            ID_WIZARD_MODERN,
-            ID_WIZARD_VIDEO,
-            ID_WIZARD_FILE,
-            ID_WIZARD_AUDIO,
-        ];
-        // English has rows whose explanations wrap to different lengths.
-        for modern in [false, true] {
-            crate::i18n::with_language("en", || unsafe {
-                let (raw, hwnd, root) = advanced_wizard(modern);
-                let walk = tab_walk(hwnd);
-                let mut client: RECT = zeroed();
-                GetClientRect(hwnd, &mut client);
-                let rects: Vec<RECT> = cards
-                    .iter()
-                    .chain(&[D_CANCEL, ID_WIZARD_START])
-                    .map(|&id| child_rect(hwnd, GetDlgItem(hwnd, id)))
-                    .collect();
-                let titles: Vec<i32> = cards
-                    .iter()
-                    .map(|&id| title_top(GetDlgItem(hwnd, id), modern))
-                    .collect();
-                close_test_dialog(raw, hwnd, root);
-                // Row by row, then the buttons left to right: Modern's command bar
-                // has Start first, Classic's button row Cancel.
-                let mut order = cards.to_vec();
-                order.extend(if modern {
-                    [ID_WIZARD_START, D_CANCEL]
-                } else {
-                    [D_CANCEL, ID_WIZARD_START]
-                });
-                assert_eq!(walk, order, "modern {modern}");
-                let ring = if modern { FOCUS_MARGIN } else { 0 };
-                for (index, rect) in rects.iter().enumerate() {
-                    assert!(
-                        rect.left >= 0
-                            && rect.top >= 0
-                            && rect.right <= client.right
-                            && rect.bottom <= client.bottom,
-                        "modern {modern}: {index} at {:?} outside {:?}",
-                        (rect.left, rect.top, rect.right, rect.bottom),
-                        (client.right, client.bottom)
-                    );
-                    if index < cards.len() {
-                        // One explanation line and whole further ones.
-                        let beyond = rect.bottom - rect.top - WIZARD_CARD - 2 * ring;
-                        assert!(beyond >= 0 && beyond % CARD_LINE == 0, "{index}: {beyond}");
-                    }
-                    for other in &rects[index + 1..] {
-                        let apart = rect.right <= other.left
-                            || other.right <= rect.left
-                            || rect.bottom <= other.top
-                            || other.bottom <= rect.top;
-                        // Modern's focus margins may touch, never its faces.
-                        let faces_apart = rect.right - ring <= other.left + ring
-                            || other.right - ring <= rect.left + ring
-                            || rect.bottom - ring <= other.top + ring
-                            || other.bottom - ring <= rect.top + ring;
-                        assert!(apart || faces_apart, "modern {modern}: {index} overlaps");
-                    }
-                }
-                // The depth, theme and purpose rows, one under the other, each
-                // card as tall as the others of its row.
-                assert!(rects[0].bottom <= rects[2].top && rects[2].bottom <= rects[4].top);
-                for row in [&rects[0..2], &rects[2..4], &rects[4..7]] {
-                    assert!(row
+        on_private_desktop(|| {
+            use super::*;
+            let cards = [
+                ID_WIZARD_SIMPLE,
+                ID_WIZARD_ADVANCED,
+                ID_WIZARD_CLASSIC,
+                ID_WIZARD_MODERN,
+                ID_WIZARD_VIDEO,
+                ID_WIZARD_FILE,
+                ID_WIZARD_AUDIO,
+            ];
+            // English has rows whose explanations wrap to different lengths.
+            for modern in [false, true] {
+                crate::i18n::with_language("en", || unsafe {
+                    let (raw, hwnd, root) = advanced_wizard(modern);
+                    let walk = tab_walk(hwnd);
+                    let mut client: RECT = zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let rects: Vec<RECT> = cards
                         .iter()
-                        .all(|r| r.bottom - r.top == row[0].bottom - row[0].top));
-                }
-                // The titles of a row start on one line, whatever their
-                // explanations' length; a round letter may reach a pixel above
-                // a flat one.
-                for row in [&titles[0..2], &titles[2..4], &titles[4..7]] {
-                    let (high, low) = (row.iter().min().unwrap(), row.iter().max().unwrap());
-                    assert!(*high > 0 && low - high <= 1, "modern {modern}: {titles:?}");
-                }
-            });
-        }
+                        .chain(&[D_CANCEL, ID_WIZARD_START])
+                        .map(|&id| child_rect(hwnd, GetDlgItem(hwnd, id)))
+                        .collect();
+                    let titles: Vec<i32> = cards
+                        .iter()
+                        .map(|&id| title_top(GetDlgItem(hwnd, id), modern))
+                        .collect();
+                    close_test_dialog(raw, hwnd, root);
+                    // Row by row, then the buttons left to right: Modern's command bar
+                    // has Start first, Classic's button row Cancel.
+                    let mut order = cards.to_vec();
+                    order.extend(if modern {
+                        [ID_WIZARD_START, D_CANCEL]
+                    } else {
+                        [D_CANCEL, ID_WIZARD_START]
+                    });
+                    assert_eq!(walk, order, "modern {modern}");
+                    let ring = if modern { FOCUS_MARGIN } else { 0 };
+                    for (index, rect) in rects.iter().enumerate() {
+                        assert!(
+                            rect.left >= 0
+                                && rect.top >= 0
+                                && rect.right <= client.right
+                                && rect.bottom <= client.bottom,
+                            "modern {modern}: {index} at {:?} outside {:?}",
+                            (rect.left, rect.top, rect.right, rect.bottom),
+                            (client.right, client.bottom)
+                        );
+                        if index < cards.len() {
+                            // One explanation line and whole further ones.
+                            let beyond = rect.bottom - rect.top - WIZARD_CARD - 2 * ring;
+                            assert!(beyond >= 0 && beyond % CARD_LINE == 0, "{index}: {beyond}");
+                        }
+                        for other in &rects[index + 1..] {
+                            let apart = rect.right <= other.left
+                                || other.right <= rect.left
+                                || rect.bottom <= other.top
+                                || other.bottom <= rect.top;
+                            // Modern's focus margins may touch, never its faces.
+                            let faces_apart = rect.right - ring <= other.left + ring
+                                || other.right - ring <= rect.left + ring
+                                || rect.bottom - ring <= other.top + ring
+                                || other.bottom - ring <= rect.top + ring;
+                            assert!(apart || faces_apart, "modern {modern}: {index} overlaps");
+                        }
+                    }
+                    // The depth, theme and purpose rows, one under the other, each
+                    // card as tall as the others of its row.
+                    assert!(rects[0].bottom <= rects[2].top && rects[2].bottom <= rects[4].top);
+                    for row in [&rects[0..2], &rects[2..4], &rects[4..7]] {
+                        assert!(row
+                            .iter()
+                            .all(|r| r.bottom - r.top == row[0].bottom - row[0].top));
+                    }
+                    // The titles of a row start on one line, whatever their
+                    // explanations' length; a round letter may reach a pixel above
+                    // a flat one.
+                    for row in [&titles[0..2], &titles[2..4], &titles[4..7]] {
+                        let (high, low) = (row.iter().min().unwrap(), row.iter().max().unwrap());
+                        assert!(*high > 0 && low - high <= 1, "modern {modern}: {titles:?}");
+                    }
+                });
+            }
+        });
     }
 
     /// The first pixel row of `card` with title ink: dark text in the column
@@ -11466,230 +11486,238 @@ mod tests {
 
     #[test]
     fn the_wizard_s_cards_show_their_whole_text_in_every_language_at_96_and_144_dpi() {
-        use super::*;
-        let ids = [
-            ID_WIZARD_SIMPLE,
-            ID_WIZARD_ADVANCED,
-            ID_WIZARD_CLASSIC,
-            ID_WIZARD_MODERN,
-            ID_WIZARD_VIDEO,
-            ID_WIZARD_FILE,
-            ID_WIZARD_AUDIO,
-        ];
-        // The width `text` takes on one line, or its size wrapped at `width`.
-        let measure = |font: HFONT, text: &str, width: i32| unsafe {
-            let dc = GetDC(null_mut());
-            let previous = SelectObject(dc, font as HGDIOBJ);
-            let mut text: Vec<u16> = text.encode_utf16().collect();
-            let mut area = RECT {
-                right: width,
-                ..zeroed()
+        on_private_desktop(|| {
+            use super::*;
+            let ids = [
+                ID_WIZARD_SIMPLE,
+                ID_WIZARD_ADVANCED,
+                ID_WIZARD_CLASSIC,
+                ID_WIZARD_MODERN,
+                ID_WIZARD_VIDEO,
+                ID_WIZARD_FILE,
+                ID_WIZARD_AUDIO,
+            ];
+            // The width `text` takes on one line, or its size wrapped at `width`.
+            let measure = |font: HFONT, text: &str, width: i32| unsafe {
+                let dc = GetDC(null_mut());
+                let previous = SelectObject(dc, font as HGDIOBJ);
+                let mut text: Vec<u16> = text.encode_utf16().collect();
+                let mut area = RECT {
+                    right: width,
+                    ..zeroed()
+                };
+                let format = if width == 0 {
+                    DT_SINGLELINE
+                } else {
+                    DT_WORDBREAK
+                };
+                draw_text(dc, &mut text, &mut area, format | DT_NOPREFIX | DT_CALCRECT);
+                SelectObject(dc, previous);
+                ReleaseDC(null_mut(), dc);
+                (area.right, area.bottom)
             };
-            let format = if width == 0 {
-                DT_SINGLELINE
-            } else {
-                DT_WORDBREAK
-            };
-            draw_text(dc, &mut text, &mut area, format | DT_NOPREFIX | DT_CALCRECT);
-            SelectObject(dc, previous);
-            ReleaseDC(null_mut(), dc);
-            (area.right, area.bottom)
-        };
-        let mut cut = Vec::new();
-        for code in ["tr", "en", "ar", "de", "es", "fr", "pt"] {
-            for modern in [false, true] {
-                crate::i18n::with_language(code, || unsafe {
-                    let (raw, hwnd, root) = advanced_wizard(modern);
-                    let system = GetDpiForWindow(hwnd).max(96);
-                    let mut client: RECT = zeroed();
-                    GetClientRect(hwnd, &mut client);
-                    let error = child_rect(hwnd, GetDlgItem(hwnd, D_ERROR));
-                    // Modern's command bar, or Classic's button row.
-                    let buttons = if modern {
-                        client.bottom - scale(ADD_FOOTER, system)
-                    } else {
-                        child_rect(hwnd, GetDlgItem(hwnd, D_CANCEL)).top
-                    };
-                    let cards: Vec<(String, RECT)> = ids
-                        .iter()
-                        .map(|&id| {
-                            let card = GetDlgItem(hwnd, id);
-                            (text(card), child_rect(hwnd, card))
-                        })
-                        .collect();
-                    close_test_dialog(raw, hwnd, root);
-                    // The window grew for the rows: they end, focus margin and all,
-                    // above the error line, and the error line above the buttons.
-                    if cards[6].1.bottom > error.top || error.bottom > buttons {
-                        cut.push(format!(
-                            "{code} modern {modern}: cards end at {}, the error line takes {}-{}, \
-                             the buttons start at {buttons}",
-                            cards[6].1.bottom, error.top, error.bottom
-                        ));
-                    }
-                    let mut dpis = vec![system, 96, 144];
-                    dpis.sort();
-                    dpis.dedup();
-                    for dpi in dpis {
-                        let s = |value: i32| scale(value, dpi);
-                        // Modern's face sits inside the focus margin and keeps the
-                        // mark at the end of the title's line; Classic's sits
-                        // inside a one-pixel frame. The glyph is 20 epx between
-                        // two pads.
-                        let (face, pad, mark) = if modern {
-                            (s(FOCUS_MARGIN), s(12), s(16) + s(8))
+            let mut cut = Vec::new();
+            for code in ["tr", "en", "ar", "de", "es", "fr", "pt"] {
+                for modern in [false, true] {
+                    crate::i18n::with_language(code, || unsafe {
+                        let (raw, hwnd, root) = advanced_wizard(modern);
+                        let system = GetDpiForWindow(hwnd).max(96);
+                        let mut client: RECT = zeroed();
+                        GetClientRect(hwnd, &mut client);
+                        let error = child_rect(hwnd, GetDlgItem(hwnd, D_ERROR));
+                        // Modern's command bar, or Classic's button row.
+                        let buttons = if modern {
+                            client.bottom - scale(ADD_FOOTER, system)
                         } else {
-                            (1, s(10), 0)
+                            child_rect(hwnd, GetDlgItem(hwnd, D_CANCEL)).top
                         };
-                        let font = |title: bool| {
-                            let (points, weight, faces) = card_font_spec(title, modern);
-                            make_face_font(dpi, points, weight, faces)
-                        };
-                        let (title_font, text_font) = (font(true), font(false));
-                        for (whole, rect) in &cards {
-                            // Cards laid out at another DPI are as wide in epx.
-                            let width = (rect.right - rect.left) * dpi as i32 / system as i32;
-                            let room = width - 2 * face - 3 * pad - s(20);
-                            let (title, caption) = card_text_parts(whole);
-                            let (title_width, _) = measure(title_font, &title, 0);
-                            let (caption_width, caption_height) =
-                                measure(text_font, &caption, room);
-                            let lines = (caption_height + s(CARD_LINE) - 1) / s(CARD_LINE);
-                            // At the window's own DPI the card is as tall as its text.
-                            let fits = dpi != system
-                                || 2 * s(CARD_PAD) + s(CARD_TITLE) + caption_height
-                                    <= rect.bottom - rect.top - 2 * face;
-                            if title_width > room - mark
-                                || caption_width > room
-                                || lines > 2
-                                || !fits
-                            {
-                                cut.push(format!(
-                                    "{code} modern {modern} {dpi} dpi: {whole:?} in {room} px: \
-                                     title {title_width}, explanation {caption_width}x{caption_height}"
-                                ));
-                            }
+                        let cards: Vec<(String, RECT)> = ids
+                            .iter()
+                            .map(|&id| {
+                                let card = GetDlgItem(hwnd, id);
+                                (text(card), child_rect(hwnd, card))
+                            })
+                            .collect();
+                        close_test_dialog(raw, hwnd, root);
+                        // The window grew for the rows: they end, focus margin and all,
+                        // above the error line, and the error line above the buttons.
+                        if cards[6].1.bottom > error.top || error.bottom > buttons {
+                            cut.push(format!(
+                                "{code} modern {modern}: cards end at {}, the error line takes {}-{}, \
+                                 the buttons start at {buttons}",
+                                cards[6].1.bottom, error.top, error.bottom
+                            ));
                         }
-                        DeleteObject(title_font as HGDIOBJ);
-                        DeleteObject(text_font as HGDIOBJ);
-                    }
-                });
+                        let mut dpis = vec![system, 96, 144];
+                        dpis.sort();
+                        dpis.dedup();
+                        for dpi in dpis {
+                            let s = |value: i32| scale(value, dpi);
+                            // Modern's face sits inside the focus margin and keeps the
+                            // mark at the end of the title's line; Classic's sits
+                            // inside a one-pixel frame. The glyph is 20 epx between
+                            // two pads.
+                            let (face, pad, mark) = if modern {
+                                (s(FOCUS_MARGIN), s(12), s(16) + s(8))
+                            } else {
+                                (1, s(10), 0)
+                            };
+                            let font = |title: bool| {
+                                let (points, weight, faces) = card_font_spec(title, modern);
+                                make_face_font(dpi, points, weight, faces)
+                            };
+                            let (title_font, text_font) = (font(true), font(false));
+                            for (whole, rect) in &cards {
+                                // Cards laid out at another DPI are as wide in epx.
+                                let width = (rect.right - rect.left) * dpi as i32 / system as i32;
+                                let room = width - 2 * face - 3 * pad - s(20);
+                                let (title, caption) = card_text_parts(whole);
+                                let (title_width, _) = measure(title_font, &title, 0);
+                                let (caption_width, caption_height) =
+                                    measure(text_font, &caption, room);
+                                let lines = (caption_height + s(CARD_LINE) - 1) / s(CARD_LINE);
+                                // At the window's own DPI the card is as tall as its text.
+                                let fits = dpi != system
+                                    || 2 * s(CARD_PAD) + s(CARD_TITLE) + caption_height
+                                        <= rect.bottom - rect.top - 2 * face;
+                                if title_width > room - mark
+                                    || caption_width > room
+                                    || lines > 2
+                                    || !fits
+                                {
+                                    cut.push(format!(
+                                        "{code} modern {modern} {dpi} dpi: {whole:?} in {room} px: \
+                                         title {title_width}, explanation {caption_width}x{caption_height}"
+                                    ));
+                                }
+                            }
+                            DeleteObject(title_font as HGDIOBJ);
+                            DeleteObject(text_font as HGDIOBJ);
+                        }
+                    });
+                }
             }
-        }
-        assert!(cut.is_empty(), "{cut:#?}");
+            assert!(cut.is_empty(), "{cut:#?}");
+        });
     }
 
     #[test]
     fn classic_s_picker_keeps_its_creation_order_and_its_plain_playlist_field() {
-        use super::*;
-        unsafe {
-            let (raw, hwnd, root) = theme_test_dialog(false, blank_picker(), 640, 420);
-            SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
-            let walk = tab_walk(hwnd);
-            let field = playlist_field_proc(raw);
-            close_test_dialog(raw, hwnd, root);
-            let at = |id: i32| walk.iter().position(|&walked| walked == id);
-            // Created after the queue box; Modern's reading order puts it first.
-            assert!(
-                matches!((at(M_QUEUE), at(D_ADVANCED)), (Some(a), Some(b)) if a < b),
-                "{walk:?}"
-            );
-            assert_ne!(field, cue_proc as *const () as isize);
-        }
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let (raw, hwnd, root) = theme_test_dialog(false, blank_picker(), 640, 420);
+                SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+                let walk = tab_walk(hwnd);
+                let field = playlist_field_proc(raw);
+                close_test_dialog(raw, hwnd, root);
+                let at = |id: i32| walk.iter().position(|&walked| walked == id);
+                // Created after the queue box; Modern's reading order puts it first.
+                assert!(
+                    matches!((at(M_QUEUE), at(D_ADVANCED)), (Some(a), Some(b)) if a < b),
+                    "{walk:?}"
+                );
+                assert_ne!(field, cue_proc as *const () as isize);
+            }
+        });
     }
 
     #[test]
     fn the_settings_theme_box_reads_and_stores_classic_first_then_modern() {
-        use super::*;
-        for modern in [false, true] {
-            for (stored, shown) in [("classic", 0), ("modern", 1), ("", 0)] {
-                unsafe {
-                    let value = Settings {
-                        theme: stored.into(),
-                        download_dir: std::env::temp_dir(),
-                        ..Settings::default()
-                    };
-                    let simple = UiMode::parse(&value.ui_mode).is_simple();
-                    let (raw, hwnd, root) = theme_test_dialog(
-                        modern,
-                        DialogKind::Settings(Box::new(settings_fields(value))),
-                        settings_width(),
-                        settings_logical_height(modern, simple) + SETTINGS_FRAME,
-                    );
-                    let mut saved = Vec::new();
-                    let mut opened = -1;
-                    if let DialogKind::Settings(f) = &(*raw).kind {
-                        opened = combo_index(f.theme);
-                        for pick in [0, 1] {
-                            combo_select(f.theme, pick);
-                            saved.push(collect_settings(f).map(|value| value.theme).ok());
+        on_private_desktop(|| {
+            use super::*;
+            for modern in [false, true] {
+                for (stored, shown) in [("classic", 0), ("modern", 1), ("", 0)] {
+                    unsafe {
+                        let value = Settings {
+                            theme: stored.into(),
+                            download_dir: std::env::temp_dir(),
+                            ..Settings::default()
+                        };
+                        let simple = UiMode::parse(&value.ui_mode).is_simple();
+                        let (raw, hwnd, root) = theme_test_dialog(
+                            modern,
+                            DialogKind::Settings(Box::new(settings_fields(value))),
+                            settings_width(),
+                            settings_logical_height(modern, simple) + SETTINGS_FRAME,
+                        );
+                        let mut saved = Vec::new();
+                        let mut opened = -1;
+                        if let DialogKind::Settings(f) = &(*raw).kind {
+                            opened = combo_index(f.theme);
+                            for pick in [0, 1] {
+                                combo_select(f.theme, pick);
+                                saved.push(collect_settings(f).map(|value| value.theme).ok());
+                            }
                         }
+                        close_test_dialog(raw, hwnd, root);
+                        assert_eq!(opened, shown, "modern {modern}, stored {stored:?}");
+                        assert_eq!(
+                            saved,
+                            [Some("classic".to_string()), Some("modern".to_string())]
+                        );
                     }
-                    close_test_dialog(raw, hwnd, root);
-                    assert_eq!(opened, shown, "modern {modern}, stored {stored:?}");
-                    assert_eq!(
-                        saved,
-                        [Some("classic".to_string()), Some("modern".to_string())]
-                    );
                 }
             }
-        }
+        });
     }
 
     #[test]
     fn modern_s_job_view_marks_its_bar_stopped_only_for_a_failed_or_cancelled_job() {
-        use super::*;
-        use crate::model::JobState;
-        unsafe {
-            let (raw, hwnd, root) = modern_test_dialog(
-                DialogKind::Progress(Box::new(ProgressFields {
-                    ids: vec!["job".into()],
-                    selected: 0,
-                    raised: HashSet::new(),
-                    rendered: String::new(),
-                    rendered_rows: String::new(),
-                    action_label: String::new(),
-                    summary: null_mut(),
-                    list: null_mut(),
-                    status: null_mut(),
-                    progress: null_mut(),
-                    action: null_mut(),
-                    cancel: null_mut(),
-                    open_file: null_mut(),
-                    open_folder: null_mut(),
-                    close: null_mut(),
-                    hint: null_mut(),
-                    report: null_mut(),
-                })),
-                MEDIA_WIDTH,
-                media_window_height(PROGRESS_HEIGHT, 420),
-            );
-            let mut snapshot = (*raw).app.snapshot();
-            let error = (*raw).error;
-            let mut stopped = Vec::new();
-            for state in [
-                JobState::Downloading,
-                JobState::Failed,
-                JobState::Paused,
-                JobState::Cancelled,
-                JobState::Completed,
-            ] {
-                snapshot.jobs = std::sync::Arc::new(vec![sample_job("job", state)]);
-                if let DialogKind::Progress(f) = &mut (*raw).kind {
-                    refresh_job_view(hwnd, error, f, &snapshot);
-                    stopped.push(!GetPropW(f.progress, stopped_prop()).is_null());
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            unsafe {
+                let (raw, hwnd, root) = modern_test_dialog(
+                    DialogKind::Progress(Box::new(ProgressFields {
+                        ids: vec!["job".into()],
+                        selected: 0,
+                        raised: HashSet::new(),
+                        rendered: String::new(),
+                        rendered_rows: String::new(),
+                        action_label: String::new(),
+                        summary: null_mut(),
+                        list: null_mut(),
+                        status: null_mut(),
+                        progress: null_mut(),
+                        action: null_mut(),
+                        cancel: null_mut(),
+                        open_file: null_mut(),
+                        open_folder: null_mut(),
+                        close: null_mut(),
+                        hint: null_mut(),
+                        report: null_mut(),
+                    })),
+                    MEDIA_WIDTH,
+                    media_window_height(PROGRESS_HEIGHT, 420),
+                );
+                let mut snapshot = (*raw).app.snapshot();
+                let error = (*raw).error;
+                let mut stopped = Vec::new();
+                for state in [
+                    JobState::Downloading,
+                    JobState::Failed,
+                    JobState::Paused,
+                    JobState::Cancelled,
+                    JobState::Completed,
+                ] {
+                    snapshot.jobs = std::sync::Arc::new(vec![sample_job("job", state)]);
+                    if let DialogKind::Progress(f) = &mut (*raw).kind {
+                        refresh_job_view(hwnd, error, f, &snapshot);
+                        stopped.push(!GetPropW(f.progress, stopped_prop()).is_null());
+                    }
                 }
+                close_test_dialog(raw, hwnd, root);
+                assert_eq!(stopped, [false, true, false, true, false]);
             }
-            close_test_dialog(raw, hwnd, root);
-            assert_eq!(stopped, [false, true, false, true, false]);
-        }
+        });
     }
 
     /// Runs `body` on a fresh thread attached to a private desktop. A dialog's
     /// controls take the focus when they are created, which makes the dialog the
     /// foreground window of the process; on a private desktop that never
     /// reaches the keys the user is typing.
-    fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+    pub(super) fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
         use std::ptr::null;
         use windows_sys::Win32::Foundation::{GetLastError, GENERIC_ALL};
         use windows_sys::Win32::System::StationsAndDesktops::{

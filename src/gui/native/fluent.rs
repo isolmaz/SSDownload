@@ -3983,102 +3983,107 @@ mod tests {
 
     #[test]
     fn a_card_has_its_mark_at_its_end_in_either_direction() {
-        unsafe {
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            let card = control(
-                parent,
-                "BUTTON",
-                "Basic — downloads",
-                WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
-                0,
-                ID_WIZARD_SIMPLE,
-            );
-            let width = 200;
-            MoveWindow(card, 0, 0, width, 54, 0);
-            let s = |value: i32| scale(value, GetDpiForWindow(card).max(96)) as usize;
-            // An unchosen mark is a ring in the strong stroke colour, nearly
-            // whole where it crosses its middle row.
-            let stroke = card_palette(parent).strong_stroke;
-            let near = |pixel: u32| {
-                // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
-                [
-                    (pixel >> 16, stroke),
-                    (pixel >> 8, stroke >> 8),
-                    (pixel, stroke >> 16),
-                ]
-                .iter()
-                .all(|&(a, b)| (a & 0xff).abs_diff(b & 0xff) <= 8)
-            };
-            // The ring's 16 epx sit 12 epx inside the face, which starts
-            // FOCUS_MARGIN inside the card; the glyph is at the other side.
-            let inset = s(FOCUS_MARGIN) + s(12);
-            let left = inset..inset + s(16);
-            let right = width as usize - inset - s(16)..width as usize - inset;
-            // The mark is centred on the title's line.
-            let dpi = GetDpiForWindow(card).max(96);
-            let (title, _) = card_text_areas(width, dpi, true, 1);
-            let middle = (title.top + scale(CARD_TITLE, dpi) / 2) as usize;
-            let ring_in = |rtl: bool| -> [bool; 2] {
-                let pixels = on_white(width, |dc| {
-                    if rtl {
-                        SetLayout(dc, LAYOUT_RTL);
-                    }
-                    paint_choice_card(card, dc);
-                });
-                let row = middle * width as usize;
-                let row = &pixels[row..row + width as usize];
-                [left.clone(), right.clone()].map(|side| row[side].iter().any(|&p| near(p)))
-            };
-            let (ltr, rtl) = (ring_in(false), ring_in(true));
-            DestroyWindow(parent);
-            assert_eq!(
-                ltr,
-                [false, true],
-                "left to right: ring on the left, on the right"
-            );
-            assert_eq!(
-                rtl,
-                [true, false],
-                "right to left: ring on the left, on the right"
-            );
-        }
-    }
-
-    #[test]
-    fn a_card_wraps_its_explanation_instead_of_shortening_it_in_both_themes() {
-        for in_modern in [false, true] {
+        crate::gui::native::tests::on_private_desktop(|| {
             unsafe {
-                set_modern(in_modern);
                 let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
                 let card = control(
                     parent,
                     "BUTTON",
-                    "Advanced — queues, rules, crawler, sync, logs",
+                    "Basic — downloads",
                     WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
                     0,
-                    ID_WIZARD_ADVANCED,
+                    ID_WIZARD_SIMPLE,
                 );
-                let dpi = GetDpiForWindow(card).max(96);
-                let width = 160;
-                let lines = card_text_lines(card, width);
-                let ring = if in_modern {
-                    scale(FOCUS_MARGIN, dpi)
-                } else {
-                    0
+                let width = 200;
+                MoveWindow(card, 0, 0, width, 54, 0);
+                let s = |value: i32| scale(value, GetDpiForWindow(card).max(96)) as usize;
+                // An unchosen mark is a ring in the strong stroke colour, nearly
+                // whole where it crosses its middle row.
+                let stroke = card_palette(parent).strong_stroke;
+                let near = |pixel: u32| {
+                    // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+                    [
+                        (pixel >> 16, stroke),
+                        (pixel >> 8, stroke >> 8),
+                        (pixel, stroke >> 16),
+                    ]
+                    .iter()
+                    .all(|&(a, b)| (a & 0xff).abs_diff(b & 0xff) <= 8)
                 };
-                let height =
-                    scale(WIZARD_CARD, dpi) + (lines - 1) * scale(CARD_LINE, dpi) + 2 * ring;
-                MoveWindow(card, 0, 0, width, height, 0);
-                let (_, text) = card_text_areas(width, dpi, in_modern, lines);
-                let pixels = on_white(width, |dc| draw_card(card, dc));
+                // The ring's 16 epx sit 12 epx inside the face, which starts
+                // FOCUS_MARGIN inside the card; the glyph is at the other side.
+                let inset = s(FOCUS_MARGIN) + s(12);
+                let left = inset..inset + s(16);
+                let right = width as usize - inset - s(16)..width as usize - inset;
+                // The mark is centred on the title's line.
+                let dpi = GetDpiForWindow(card).max(96);
+                let (title, _) = card_text_areas(width, dpi, true, 1);
+                let middle = (title.top + scale(CARD_TITLE, dpi) / 2) as usize;
+                let ring_in = |rtl: bool| -> [bool; 2] {
+                    let pixels = on_white(width, |dc| {
+                        if rtl {
+                            SetLayout(dc, LAYOUT_RTL);
+                        }
+                        paint_choice_card(card, dc);
+                    });
+                    let row = middle * width as usize;
+                    let row = &pixels[row..row + width as usize];
+                    [left.clone(), right.clone()].map(|side| row[side].iter().any(|&p| near(p)))
+                };
+                let (ltr, rtl) = (ring_in(false), ring_in(true));
                 DestroyWindow(parent);
-                // The explanation's last line has text on it.
-                let inked = (text.bottom - scale(CARD_LINE, dpi)..text.bottom).any(|y| {
-                    (text.left..text.right).any(|x| pixels[(y * width + x) as usize] & 0xff < 0xa0)
-                });
-                assert!(lines >= 2 && inked, "modern {in_modern}: {lines} lines");
+                assert_eq!(
+                    ltr,
+                    [false, true],
+                    "left to right: ring on the left, on the right"
+                );
+                assert_eq!(
+                    rtl,
+                    [true, false],
+                    "right to left: ring on the left, on the right"
+                );
             }
-        }
+        });
+    }
+
+    #[test]
+    fn a_card_wraps_its_explanation_instead_of_shortening_it_in_both_themes() {
+        crate::gui::native::tests::on_private_desktop(|| {
+            for in_modern in [false, true] {
+                unsafe {
+                    set_modern(in_modern);
+                    let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    let card = control(
+                        parent,
+                        "BUTTON",
+                        "Advanced — queues, rules, crawler, sync, logs",
+                        WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
+                        0,
+                        ID_WIZARD_ADVANCED,
+                    );
+                    let dpi = GetDpiForWindow(card).max(96);
+                    let width = 160;
+                    let lines = card_text_lines(card, width);
+                    let ring = if in_modern {
+                        scale(FOCUS_MARGIN, dpi)
+                    } else {
+                        0
+                    };
+                    let height =
+                        scale(WIZARD_CARD, dpi) + (lines - 1) * scale(CARD_LINE, dpi) + 2 * ring;
+                    MoveWindow(card, 0, 0, width, height, 0);
+                    let (_, text) = card_text_areas(width, dpi, in_modern, lines);
+                    let pixels = on_white(width, |dc| draw_card(card, dc));
+                    DestroyWindow(parent);
+                    // The explanation's last line has text on it.
+                    let inked = (text.bottom - scale(CARD_LINE, dpi)..text.bottom).any(|y| {
+                        (text.left..text.right)
+                            .any(|x| pixels[(y * width + x) as usize] & 0xff < 0xa0)
+                    });
+                    assert!(lines >= 2 && inked, "modern {in_modern}: {lines} lines");
+                }
+            }
+        });
     }
 
     #[test]
@@ -4377,43 +4382,47 @@ mod tests {
 
     #[test]
     fn a_right_to_left_check_box_draws_its_box_beside_its_label() {
-        unsafe {
-            let width = 200;
-            let (colours, palette) = rtl_check_box_colours(width, 32, "WWWW");
-            let boxed = columns_with(&colours, width, &|c| c == palette.accent);
-            let label = columns_with(&colours, width, &dark);
-            assert!(
-                !boxed.is_empty(),
-                "the checked box is painted in the accent"
-            );
-            assert!(!label.is_empty(), "the label is painted");
-            // Mirrored, the label runs left of the box, which keeps the focus
-            // margin on the right.
-            assert!(
-                label.iter().max() < boxed.iter().min(),
-                "box {boxed:?} label {label:?}"
-            );
-            assert!(*boxed.iter().max().unwrap() >= width - 3 - 20 - 1);
-        }
+        crate::gui::native::tests::on_private_desktop(|| {
+            unsafe {
+                let width = 200;
+                let (colours, palette) = rtl_check_box_colours(width, 32, "WWWW");
+                let boxed = columns_with(&colours, width, &|c| c == palette.accent);
+                let label = columns_with(&colours, width, &dark);
+                assert!(
+                    !boxed.is_empty(),
+                    "the checked box is painted in the accent"
+                );
+                assert!(!label.is_empty(), "the label is painted");
+                // Mirrored, the label runs left of the box, which keeps the focus
+                // margin on the right.
+                assert!(
+                    label.iter().max() < boxed.iter().min(),
+                    "box {boxed:?} label {label:?}"
+                );
+                assert!(*boxed.iter().max().unwrap() >= width - 3 - 20 - 1);
+            }
+        });
     }
 
     #[test]
     fn a_right_to_left_check_box_narrower_than_its_box_paints_what_fits() {
-        unsafe {
-            // A check box at the size it is created at, before the layout.
-            let (colours, palette) = rtl_check_box_colours(10, 10, "Keep on top");
-            assert!(colours.contains(&palette.accent));
-        }
+        crate::gui::native::tests::on_private_desktop(|| {
+            unsafe {
+                // A check box at the size it is created at, before the layout.
+                let (colours, palette) = rtl_check_box_colours(10, 10, "Keep on top");
+                assert!(colours.contains(&palette.accent));
+            }
+        });
     }
 
     #[test]
     fn a_check_box_with_no_label_paints_only_its_box() {
-        unsafe {
+        crate::gui::native::tests::on_private_desktop(|| unsafe {
             let width = 200;
             let (colours, palette) = rtl_check_box_colours(width, 32, "");
             assert!(colours.contains(&palette.accent));
             assert!(columns_with(&colours, width, &dark).is_empty());
-        }
+        });
     }
 
     #[test]
@@ -4440,7 +4449,7 @@ mod tests {
 
     #[test]
     fn a_new_check_box_holds_its_box_and_focus_ring() {
-        unsafe {
+        crate::gui::native::tests::on_private_desktop(|| unsafe {
             let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
             let check = control(
                 parent,
@@ -4457,184 +4466,191 @@ mod tests {
             DestroyWindow(parent);
             let side = scale(CHECK_BOX + 2 * FOCUS_MARGIN, dpi);
             assert_eq!((rect.right, rect.bottom), (side, side));
-        }
+        });
     }
 
     #[test]
     fn a_combo_box_with_no_selection_paints_its_face_without_text() {
-        unsafe {
-            let (width, height) = (200, 38);
-            let screen = GetDC(null_mut());
-            let dc = CreateCompatibleDC(screen);
-            ReleaseDC(null_mut(), screen);
-            let mut info: BITMAPINFO = zeroed();
-            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-            info.bmiHeader.biWidth = width;
-            info.bmiHeader.biHeight = -height;
-            info.bmiHeader.biPlanes = 1;
-            info.bmiHeader.biBitCount = 32;
-            info.bmiHeader.biCompression = BI_RGB;
-            let mut bits: *mut c_void = null_mut();
-            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-            assert!(!bitmap.is_null() && !bits.is_null());
-            let previous = SelectObject(dc, bitmap as HGDIOBJ);
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            let font = ramp_font(96, BODY_PX, false);
-            // The text area: right of the left padding, left of the chevron.
-            let text_columns = |selected: bool| -> usize {
-                let combo = control(
-                    parent,
-                    "COMBOBOX",
-                    "",
-                    WS_CHILD | CBS_DROPDOWNLIST as u32,
-                    0,
-                    1,
-                );
-                apply_font(combo, font);
-                MoveWindow(combo, 0, 0, width, 200, 0);
-                combo_add(combo, "WWWW");
-                if selected {
-                    combo_select(combo, 0);
-                }
-                let mut face: RECT = zeroed();
-                GetClientRect(combo, &mut face);
-                let all = RECT {
-                    left: 0,
-                    top: 0,
-                    right: width,
-                    bottom: height,
-                };
-                FillRect(dc, &all, GetStockObject(WHITE_BRUSH) as HBRUSH);
-                paint_combo(combo, dc);
-                DestroyWindow(combo);
-                let pixels =
-                    std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
-                let dark = |p: u32| (p & 0xff) + ((p >> 8) & 0xff) + ((p >> 16) & 0xff) < 200;
-                (20..width - 40)
-                    .filter(|&x| {
-                        (0..face.bottom.min(height)).any(|y| dark(pixels[(y * width + x) as usize]))
-                    })
-                    .count()
-            };
-            let empty = text_columns(false);
-            let chosen = text_columns(true);
-            SelectObject(dc, previous);
-            DeleteObject(bitmap as HGDIOBJ);
-            DeleteObject(font as HGDIOBJ);
-            DeleteDC(dc);
-            DestroyWindow(parent);
-            assert_eq!(empty, 0, "a box with no selection shows no text");
-            assert!(chosen > 0, "the selected entry is painted");
-        }
-    }
-
-    #[test]
-    fn a_modern_list_keeps_its_texts_and_sits_inside_its_frame() {
-        unsafe {
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            let font = ramp_font(96, BODY_PX, false);
-            for (style, notifies) in [(0, false), (LBS_NOTIFY as u32, true)] {
-                let list = modern_list(parent, font, 1, style);
-                let bits = GetWindowLongW(list, GWL_STYLE) as u32;
-                let owner_drawn = (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS) as u32;
-                assert_eq!(bits & owner_drawn, owner_drawn);
-                assert_eq!(bits & LBS_NOTIFY as u32 != 0, notifies);
-                assert_eq!(bits & WS_BORDER, 0, "the dialog paints the frame");
-                // An owner-drawn list keeps its entries' texts only with
-                // LBS_HASSTRINGS, and type-ahead and LB_GETTEXT need them.
-                let entry = wide("Night");
-                SendMessageW(list, LB_ADDSTRING, 0, entry.as_ptr() as isize);
-                let mut read = [0u16; 16];
-                let length = SendMessageW(list, LB_GETTEXT, 0, read.as_mut_ptr() as isize);
-                assert_eq!(
-                    String::from_utf16_lossy(&read[..length.max(0) as usize]),
-                    "Night"
-                );
-                let face = RECT {
-                    left: 10,
-                    top: 20,
-                    right: 210,
-                    bottom: 120,
-                };
-                place_modern(list, true, face, 96);
-                let edges = |r: RECT| (r.left, r.top, r.right, r.bottom);
-                assert_eq!(edges(child_rect(parent, list)), (12, 22, 208, 118));
-                assert_eq!(edges(list_frame(parent, list, 96)), edges(face));
-                DestroyWindow(list);
-            }
-            DeleteObject(font as HGDIOBJ);
-            DestroyWindow(parent);
-        }
-    }
-
-    #[test]
-    fn a_selected_list_entry_gets_the_tinted_plate_and_the_accent_mark() {
-        unsafe {
-            let (width, height) = (200, 32);
-            let screen = GetDC(null_mut());
-            let dc = CreateCompatibleDC(screen);
-            ReleaseDC(null_mut(), screen);
-            let mut info: BITMAPINFO = zeroed();
-            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-            info.bmiHeader.biWidth = width;
-            info.bmiHeader.biHeight = -height;
-            info.bmiHeader.biPlanes = 1;
-            info.bmiHeader.biBitCount = 32;
-            info.bmiHeader.biCompression = BI_RGB;
-            let mut bits: *mut c_void = null_mut();
-            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-            assert!(!bitmap.is_null() && !bits.is_null());
-            let previous = SelectObject(dc, bitmap as HGDIOBJ);
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            let font = ramp_font(96, BODY_PX, false);
-            let list = modern_list(parent, font, 1, 0);
-            let entry = wide("Night");
-            SendMessageW(list, LB_ADDSTRING, 0, entry.as_ptr() as isize);
-            let palette = fluent_palette(false, BLUE);
-            // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
-            let colour =
-                |pixel: u32| ((pixel & 0xff) << 16) | (pixel & 0xff00) | ((pixel >> 16) & 0xff);
-            let paint = |selected: bool| -> Vec<u32> {
-                let item = DRAWITEMSTRUCT {
-                    CtlType: ODT_LISTBOX,
-                    CtlID: 1,
-                    itemID: 0,
-                    itemAction: ODA_DRAWENTIRE,
-                    itemState: if selected { ODS_SELECTED } else { 0 },
-                    hwndItem: list,
-                    hDC: dc,
-                    rcItem: RECT {
+        crate::gui::native::tests::on_private_desktop(|| {
+            unsafe {
+                let (width, height) = (200, 38);
+                let screen = GetDC(null_mut());
+                let dc = CreateCompatibleDC(screen);
+                ReleaseDC(null_mut(), screen);
+                let mut info: BITMAPINFO = zeroed();
+                info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                info.bmiHeader.biWidth = width;
+                info.bmiHeader.biHeight = -height;
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = BI_RGB;
+                let mut bits: *mut c_void = null_mut();
+                let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+                assert!(!bitmap.is_null() && !bits.is_null());
+                let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                let font = ramp_font(96, BODY_PX, false);
+                // The text area: right of the left padding, left of the chevron.
+                let text_columns = |selected: bool| -> usize {
+                    let combo = control(
+                        parent,
+                        "COMBOBOX",
+                        "",
+                        WS_CHILD | CBS_DROPDOWNLIST as u32,
+                        0,
+                        1,
+                    );
+                    apply_font(combo, font);
+                    MoveWindow(combo, 0, 0, width, 200, 0);
+                    combo_add(combo, "WWWW");
+                    if selected {
+                        combo_select(combo, 0);
+                    }
+                    let mut face: RECT = zeroed();
+                    GetClientRect(combo, &mut face);
+                    let all = RECT {
                         left: 0,
                         top: 0,
                         right: width,
                         bottom: height,
-                    },
-                    itemData: 0,
+                    };
+                    FillRect(dc, &all, GetStockObject(WHITE_BRUSH) as HBRUSH);
+                    paint_combo(combo, dc);
+                    DestroyWindow(combo);
+                    let pixels =
+                        std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+                    let dark = |p: u32| (p & 0xff) + ((p >> 8) & 0xff) + ((p >> 16) & 0xff) < 200;
+                    (20..width - 40)
+                        .filter(|&x| {
+                            (0..face.bottom.min(height))
+                                .any(|y| dark(pixels[(y * width + x) as usize]))
+                        })
+                        .count()
                 };
-                paint_list_item(&item, 96, &palette, font);
-                std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
-                    .iter()
-                    .map(|&pixel| colour(pixel))
-                    .collect()
-            };
-            let selected = paint(true);
-            let plain = paint(false);
-            SelectObject(dc, previous);
-            DeleteObject(bitmap as HGDIOBJ);
-            DeleteObject(font as HGDIOBJ);
-            DeleteDC(dc);
-            DestroyWindow(parent);
-            let has = |pixels: &[u32], wanted: u32| pixels.contains(&wanted);
-            assert!(has(&selected, palette.row_selected), "the selection plate");
-            assert!(has(&selected, palette.accent), "the selection mark");
-            assert!(!has(&plain, palette.row_selected));
-            assert!(!has(&plain, palette.accent));
-        }
+                let empty = text_columns(false);
+                let chosen = text_columns(true);
+                SelectObject(dc, previous);
+                DeleteObject(bitmap as HGDIOBJ);
+                DeleteObject(font as HGDIOBJ);
+                DeleteDC(dc);
+                DestroyWindow(parent);
+                assert_eq!(empty, 0, "a box with no selection shows no text");
+                assert!(chosen > 0, "the selected entry is painted");
+            }
+        });
+    }
+
+    #[test]
+    fn a_modern_list_keeps_its_texts_and_sits_inside_its_frame() {
+        crate::gui::native::tests::on_private_desktop(|| {
+            unsafe {
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                let font = ramp_font(96, BODY_PX, false);
+                for (style, notifies) in [(0, false), (LBS_NOTIFY as u32, true)] {
+                    let list = modern_list(parent, font, 1, style);
+                    let bits = GetWindowLongW(list, GWL_STYLE) as u32;
+                    let owner_drawn = (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS) as u32;
+                    assert_eq!(bits & owner_drawn, owner_drawn);
+                    assert_eq!(bits & LBS_NOTIFY as u32 != 0, notifies);
+                    assert_eq!(bits & WS_BORDER, 0, "the dialog paints the frame");
+                    // An owner-drawn list keeps its entries' texts only with
+                    // LBS_HASSTRINGS, and type-ahead and LB_GETTEXT need them.
+                    let entry = wide("Night");
+                    SendMessageW(list, LB_ADDSTRING, 0, entry.as_ptr() as isize);
+                    let mut read = [0u16; 16];
+                    let length = SendMessageW(list, LB_GETTEXT, 0, read.as_mut_ptr() as isize);
+                    assert_eq!(
+                        String::from_utf16_lossy(&read[..length.max(0) as usize]),
+                        "Night"
+                    );
+                    let face = RECT {
+                        left: 10,
+                        top: 20,
+                        right: 210,
+                        bottom: 120,
+                    };
+                    place_modern(list, true, face, 96);
+                    let edges = |r: RECT| (r.left, r.top, r.right, r.bottom);
+                    assert_eq!(edges(child_rect(parent, list)), (12, 22, 208, 118));
+                    assert_eq!(edges(list_frame(parent, list, 96)), edges(face));
+                    DestroyWindow(list);
+                }
+                DeleteObject(font as HGDIOBJ);
+                DestroyWindow(parent);
+            }
+        });
+    }
+
+    #[test]
+    fn a_selected_list_entry_gets_the_tinted_plate_and_the_accent_mark() {
+        crate::gui::native::tests::on_private_desktop(|| {
+            unsafe {
+                let (width, height) = (200, 32);
+                let screen = GetDC(null_mut());
+                let dc = CreateCompatibleDC(screen);
+                ReleaseDC(null_mut(), screen);
+                let mut info: BITMAPINFO = zeroed();
+                info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                info.bmiHeader.biWidth = width;
+                info.bmiHeader.biHeight = -height;
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = BI_RGB;
+                let mut bits: *mut c_void = null_mut();
+                let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+                assert!(!bitmap.is_null() && !bits.is_null());
+                let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                let font = ramp_font(96, BODY_PX, false);
+                let list = modern_list(parent, font, 1, 0);
+                let entry = wide("Night");
+                SendMessageW(list, LB_ADDSTRING, 0, entry.as_ptr() as isize);
+                let palette = fluent_palette(false, BLUE);
+                // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+                let colour =
+                    |pixel: u32| ((pixel & 0xff) << 16) | (pixel & 0xff00) | ((pixel >> 16) & 0xff);
+                let paint = |selected: bool| -> Vec<u32> {
+                    let item = DRAWITEMSTRUCT {
+                        CtlType: ODT_LISTBOX,
+                        CtlID: 1,
+                        itemID: 0,
+                        itemAction: ODA_DRAWENTIRE,
+                        itemState: if selected { ODS_SELECTED } else { 0 },
+                        hwndItem: list,
+                        hDC: dc,
+                        rcItem: RECT {
+                            left: 0,
+                            top: 0,
+                            right: width,
+                            bottom: height,
+                        },
+                        itemData: 0,
+                    };
+                    paint_list_item(&item, 96, &palette, font);
+                    std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
+                        .iter()
+                        .map(|&pixel| colour(pixel))
+                        .collect()
+                };
+                let selected = paint(true);
+                let plain = paint(false);
+                SelectObject(dc, previous);
+                DeleteObject(bitmap as HGDIOBJ);
+                DeleteObject(font as HGDIOBJ);
+                DeleteDC(dc);
+                DestroyWindow(parent);
+                let has = |pixels: &[u32], wanted: u32| pixels.contains(&wanted);
+                assert!(has(&selected, palette.row_selected), "the selection plate");
+                assert!(has(&selected, palette.accent), "the selection mark");
+                assert!(!has(&plain, palette.row_selected));
+                assert!(!has(&plain, palette.accent));
+            }
+        });
     }
 
     #[test]
     fn only_the_dialogs_modern_lays_out_lose_their_label_colons() {
-        unsafe {
+        crate::gui::native::tests::on_private_desktop(|| unsafe {
             let tools = DialogKind::Tools(ToolsFields {
                 status: null_mut(),
                 progress: null_mut(),
@@ -4669,64 +4685,66 @@ mod tests {
                 "the error line is left alone"
             );
             DestroyWindow(parent);
-        }
+        });
     }
 
     #[test]
     fn a_stopped_job_s_progress_bar_fills_in_the_critical_colour() {
-        unsafe {
-            use windows_sys::Win32::UI::Controls::{
-                InitCommonControlsEx, ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX,
-            };
-            let common = INITCOMMONCONTROLSEX {
-                dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_PROGRESS_CLASS,
-            };
-            assert_ne!(InitCommonControlsEx(&common), 0);
-            let (width, height) = (120, 12);
-            let screen = GetDC(null_mut());
-            let dc = CreateCompatibleDC(screen);
-            ReleaseDC(null_mut(), screen);
-            let mut info: BITMAPINFO = zeroed();
-            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-            info.bmiHeader.biWidth = width;
-            info.bmiHeader.biHeight = -height;
-            info.bmiHeader.biPlanes = 1;
-            info.bmiHeader.biBitCount = 32;
-            info.bmiHeader.biCompression = BI_RGB;
-            let mut bits: *mut c_void = null_mut();
-            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-            assert!(!bitmap.is_null() && !bits.is_null());
-            let previous = SelectObject(dc, bitmap as HGDIOBJ);
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            let bar = control(parent, "msctls_progress32", "", WS_CHILD, 0, 1);
-            MoveWindow(bar, 0, 0, width, height, 0);
-            SendMessageW(bar, PBM_SETRANGE32, 0, 1000);
-            SendMessageW(bar, PBM_SETPOS, 500, 0);
-            let palette = main_palette(parent);
-            let painted = |stopped: bool| -> Vec<u32> {
-                set_progress_stopped(bar, stopped);
-                paint_modern_progress(bar, dc);
-                std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
-                    .iter()
-                    // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
-                    .map(|&p| ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff))
-                    .collect()
-            };
-            let normal = painted(false);
-            let failed = painted(true);
-            SelectObject(dc, previous);
-            DeleteObject(bitmap as HGDIOBJ);
-            DeleteDC(dc);
-            DestroyWindow(parent);
-            assert!(normal.contains(&palette.accent));
-            assert!(!normal.contains(&palette.critical));
-            assert!(failed.contains(&palette.critical));
-            assert!(!failed.contains(&palette.accent));
-            // Half done, the stopped bar still fills to its end.
-            let near_end = (height / 2 * width + width - 12) as usize;
-            assert_ne!(normal[near_end], palette.accent);
-            assert_eq!(failed[near_end], palette.critical);
-        }
+        crate::gui::native::tests::on_private_desktop(|| {
+            unsafe {
+                use windows_sys::Win32::UI::Controls::{
+                    InitCommonControlsEx, ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX,
+                };
+                let common = INITCOMMONCONTROLSEX {
+                    dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+                    dwICC: ICC_PROGRESS_CLASS,
+                };
+                assert_ne!(InitCommonControlsEx(&common), 0);
+                let (width, height) = (120, 12);
+                let screen = GetDC(null_mut());
+                let dc = CreateCompatibleDC(screen);
+                ReleaseDC(null_mut(), screen);
+                let mut info: BITMAPINFO = zeroed();
+                info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                info.bmiHeader.biWidth = width;
+                info.bmiHeader.biHeight = -height;
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = BI_RGB;
+                let mut bits: *mut c_void = null_mut();
+                let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+                assert!(!bitmap.is_null() && !bits.is_null());
+                let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                let bar = control(parent, "msctls_progress32", "", WS_CHILD, 0, 1);
+                MoveWindow(bar, 0, 0, width, height, 0);
+                SendMessageW(bar, PBM_SETRANGE32, 0, 1000);
+                SendMessageW(bar, PBM_SETPOS, 500, 0);
+                let palette = main_palette(parent);
+                let painted = |stopped: bool| -> Vec<u32> {
+                    set_progress_stopped(bar, stopped);
+                    paint_modern_progress(bar, dc);
+                    std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
+                        .iter()
+                        // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+                        .map(|&p| ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff))
+                        .collect()
+                };
+                let normal = painted(false);
+                let failed = painted(true);
+                SelectObject(dc, previous);
+                DeleteObject(bitmap as HGDIOBJ);
+                DeleteDC(dc);
+                DestroyWindow(parent);
+                assert!(normal.contains(&palette.accent));
+                assert!(!normal.contains(&palette.critical));
+                assert!(failed.contains(&palette.critical));
+                assert!(!failed.contains(&palette.accent));
+                // Half done, the stopped bar still fills to its end.
+                let near_end = (height / 2 * width + width - 12) as usize;
+                assert_ne!(normal[near_end], palette.accent);
+                assert_eq!(failed[near_end], palette.critical);
+            }
+        });
     }
 }
