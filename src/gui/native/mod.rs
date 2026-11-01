@@ -9020,7 +9020,6 @@ fn field_label(text: &str) -> &str {
 }
 
 unsafe fn dialog_label(parent: HWND, font: HFONT, label: &str, id: i32) -> HWND {
-    let label = if modern() { field_label(label) } else { label };
     let id = if id == 0 {
         5000 + child_statics(parent, null_mut()).len() as i32
     } else {
@@ -9205,7 +9204,7 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     create_error(dlg);
     create_kind_controls(dlg);
     if modern() {
-        flatten_inputs(dlg);
+        prepare_modern_form(dlg);
     }
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
     layout_dialog(dlg);

@@ -1921,11 +1921,22 @@ const INPUT_PAD_LEFT: i32 = 11;
 const INPUT_PAD_RIGHT: i32 = 8;
 const INPUT_PAD_TOP: i32 = 6;
 
-/// Takes the sunken border off a Modern dialog's text fields: their frames
-/// are painted by the dialog around them.
-pub(super) unsafe fn flatten_inputs(dlg: &DialogUi) {
-    for edit in modern_form(dlg).map(|form| form.inputs).unwrap_or_default() {
+/// Readies a dialog that has its Modern layout: its text fields lose their
+/// sunken border (the dialog paints their frames) and its field labels their
+/// trailing colon, as Fluent writes them.
+pub(super) unsafe fn prepare_modern_form(dlg: &DialogUi) {
+    let Some(form) = modern_form(dlg) else {
+        return;
+    };
+    for edit in form.inputs {
         flatten_edit(edit);
+    }
+    for label in child_statics(dlg.hwnd, dlg.error) {
+        let value = super::text(label);
+        let bare = field_label(&value);
+        if bare != value {
+            set_text(label, bare);
+        }
     }
 }
 
