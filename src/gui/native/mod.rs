@@ -568,39 +568,48 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
-/// Native MB_YESNO update offer, matching the application's message style.
-/// "Hayır" keeps the current version and retries on a later day; "Evet"
-/// downloads, verifies and installs; the third button skips this version.
+/// Native update offer, matching the application's message style: one line naming the
+/// offered and the running version, the question, and a link to the release page for the
+/// details. The first button downloads, verifies and installs (a portable copy opens the
+/// release page instead), the second skips this version, the third postpones the offer.
 pub fn offer_update(
     manifest: &crate::update::UpdateManifest,
 ) -> Option<crate::update::UpdateDecision> {
-    let installed = crate::update::is_installed_copy();
+    offer_update_with(
+        manifest,
+        env!("CARGO_PKG_VERSION"),
+        crate::update::is_installed_copy(),
+        crate::update::RELEASES_PAGE,
+        crate::update::open_in_browser,
+    )
+}
+
+fn offer_update_with(
+    manifest: &crate::update::UpdateManifest,
+    current: &str,
+    installed: bool,
+    release_page: &str,
+    open: fn(&str) -> bool,
+) -> Option<crate::update::UpdateDecision> {
     let body = format!(
-        "SSDownload {} {}\n\n{}\n\n{}",
-        manifest.version,
-        crate::i18n::ui(
-            "hazır. Şimdi güncellemek ister misiniz?",
-            "is ready. Would you like to update now?",
+        "{}\n\n{}",
+        crate::i18n::ui_format!(
+            "SSDownload {new} hazır. Kullandığınız sürüm: {current}.",
+            "SSDownload {new} is available. You have {current}.",
+            new = manifest.version,
+            current = current,
         ),
-        if manifest.notes.is_empty() {
-            crate::i18n::ui("Sürüm notları verilmedi.", "No release notes provided.")
-        } else {
-            manifest.notes.as_str()
-        },
-        // A portable copy never runs the silent Setup: its update opens the
-        // release page, so the offer must not promise an install.
-        if installed {
-            crate::i18n::ui(
-                "Kur: indir, doğrula ve kur. Atla: bu sürümü bir daha sorma. Daha sonra: sonra hatırlat.",
-                "Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.",
-            )
-        } else {
-            crate::i18n::ui(
-                "Sayfayı aç: indirme sayfasını aç. Atla: bu sürümü bir daha sorma. Daha sonra: sonra hatırlat.",
-                "Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.",
-            )
-        },
+        crate::i18n::ui("Şimdi güncellensin mi?", "Update now?"),
     );
+    let link = AlertLink {
+        label: crate::i18n::ui_format!(
+            "{0} sürümündeki yenilikler",
+            "What's new in {0}",
+            manifest.version
+        ),
+        target: release_page.to_string(),
+        open,
+    };
     let title = format!(
         "SSDownload {} {}",
         manifest.version,
@@ -622,12 +631,13 @@ pub fn offer_update(
         (IDNO, crate::i18n::ui("Daha sonra", "Later")),
     ];
     let answer = unsafe {
-        run_alert_buttons(
+        run_alert_linked(
             std::ptr::null_mut(),
             &body,
             &title,
             MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
             Some(&buttons),
+            Some(link),
         )
     };
     match answer {
@@ -1122,6 +1132,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
             dwICC: ICC_LISTVIEW_CLASSES
                 | ICC_PROGRESS_CLASS
+                | ICC_LINK_CLASS
                 | ICC_STANDARD_CLASSES
                 | ICC_TAB_CLASSES,
         };
@@ -11101,11 +11112,19 @@ mod tests {
         use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES};
 
         let offer = || {
-            super::offer_update(&UpdateManifest {
-                version: "9.9.9".into(),
-                url: "https://update.example/setup.exe".into(),
-                sha256: String::new(),
-                notes: "A release note.".into(),
+            with_common_controls_6(|| {
+                super::offer_update_with(
+                    &UpdateManifest {
+                        version: "9.9.9".into(),
+                        url: "https://update.example/setup.exe".into(),
+                        sha256: String::new(),
+                        notes: "A release note.".into(),
+                    },
+                    "9.9.8",
+                    true,
+                    "https://releases.example/v9.9.9",
+                    |_| true,
+                )
             })
         };
         let name = |decision: Option<UpdateDecision>| match decision {
@@ -11138,6 +11157,327 @@ mod tests {
             let (decision, _) = answer_alert(offer, click_button(index));
             assert_eq!(name(decision), expected, "button {index} from the left");
         }
+    }
+
+    /// Runs `body` with comctl32 version 6 active on this thread, the way the application's
+    /// manifest makes it for the whole process. The test executable has no manifest, and the
+    /// link control exists only in version 6.
+    fn with_common_controls_6<T>(body: impl FnOnce() -> T) -> T {
+        use windows_sys::Win32::System::ApplicationInstallationAndServicing::{
+            ActivateActCtx, CreateActCtxW, DeactivateActCtx, ReleaseActCtx, ACTCTXW,
+        };
+
+        const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency><dependentAssembly>
+    <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+  </dependentAssembly></dependency>
+</assembly>"#;
+        let path = std::env::temp_dir().join(format!(
+            "ssdownload-common-controls-{}.manifest",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, MANIFEST).unwrap();
+        let source = super::wide(&path.to_string_lossy());
+        unsafe {
+            let context = CreateActCtxW(&ACTCTXW {
+                cbSize: std::mem::size_of::<ACTCTXW>() as u32,
+                dwFlags: 0,
+                lpSource: source.as_ptr(),
+                wProcessorArchitecture: 0,
+                wLangId: 0,
+                lpAssemblyDirectory: std::ptr::null(),
+                lpResourceName: std::ptr::null(),
+                lpApplicationName: std::ptr::null(),
+                hModule: std::ptr::null_mut(),
+            });
+            let _ = std::fs::remove_file(&path);
+            assert!(
+                context as isize != -1,
+                "the manifest creates an activation context"
+            );
+            let mut cookie = 0usize;
+            assert_ne!(ActivateActCtx(context, &mut cookie), 0);
+            let result = body();
+            DeactivateActCtx(0, cookie);
+            ReleaseActCtx(context);
+            result
+        }
+    }
+
+    /// Handle, class and text of every child of an open alert, in tab order.
+    fn alert_children(alert: usize) -> Vec<(usize, String, String)> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GW_CHILD, GW_HWNDNEXT};
+
+        let mut children = Vec::new();
+        unsafe {
+            let mut child = GetWindow(alert as _, GW_CHILD);
+            while !child.is_null() {
+                children.push((
+                    child as usize,
+                    super::window_class(child),
+                    // A link control reports its length with the terminator.
+                    super::text(child).trim_end_matches('\0').to_string(),
+                ));
+                child = GetWindow(child, GW_HWNDNEXT);
+            }
+        }
+        children
+    }
+
+    fn screen_rect(window: usize) -> windows_sys::Win32::Foundation::RECT {
+        use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetWindowRect};
+
+        unsafe {
+            let mut rect: RECT = std::mem::zeroed();
+            GetWindowRect(window as _, &mut rect);
+            rect
+        }
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        for _ in 0..100 {
+            if done() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        panic!("timed out waiting until {what}");
+    }
+
+    #[test]
+    fn the_update_offer_names_both_versions_and_shows_none_of_the_release_notes() {
+        use crate::update::UpdateManifest;
+        use windows_sys::Win32::UI::{
+            HiDpi::GetDpiForWindow,
+            WindowsAndMessaging::{GetDlgCtrlID, SendMessageW, WM_GETFONT},
+        };
+
+        let notes = "**Languages**\n\
+            - The app, the browser extension and the installer speak Arabic, Spanish and German.\n\
+            - In Arabic every window is laid out right to left.\n\n\
+            **Video and audio**\n\
+            - Videos whose picture and sound come as separate streams download both at once.\n\
+            - Live recordings stay playable after they finish.";
+        for info in crate::i18n::LANGUAGES.iter() {
+            let code = info.code;
+            let offer = || {
+                with_common_controls_6(|| {
+                    crate::i18n::with_language(code, || {
+                        super::offer_update_with(
+                            &UpdateManifest {
+                                version: "9.9.9".into(),
+                                url: "https://update.example/setup.exe".into(),
+                                sha256: String::new(),
+                                notes: notes.into(),
+                            },
+                            "1.2.3",
+                            true,
+                            "https://releases.example/v9.9.9",
+                            |_| true,
+                        )
+                    })
+                })
+            };
+            answer_alert(offer, |alert, buttons| unsafe {
+                let children = alert_children(alert);
+                let body = children
+                    .iter()
+                    .find(|child| GetDlgCtrlID(child.0 as _) == super::ALERT_BODY_ID)
+                    .unwrap_or_else(|| panic!("{code}: the offer has a body"));
+                let link = children
+                    .iter()
+                    .find(|child| child.1 == "SysLink")
+                    .unwrap_or_else(|| panic!("{code}: the offer has a link"));
+
+                let mut everything = vec![super::text(alert as _)];
+                everything.extend(children.iter().map(|child| child.2.clone()));
+                let everything = everything.join("\n");
+                for line in notes.lines().filter(|line| !line.is_empty()) {
+                    assert!(
+                        !everything.contains(line),
+                        "{code}: the offer repeats the release note {line:?}"
+                    );
+                }
+                assert!(
+                    !everything.contains("**"),
+                    "{code}: Markdown shows in {everything:?}"
+                );
+                assert!(
+                    children.iter().all(|child| child.1 != "Edit"),
+                    "{code}: the notes would need a scrolling box"
+                );
+                for (what, text) in [("body", &body.2), ("link", &link.2)] {
+                    assert!(
+                        text.contains("9.9.9"),
+                        "{code}: the {what} names the new version"
+                    );
+                }
+                assert!(
+                    body.2.contains("1.2.3"),
+                    "{code}: the body names the running version"
+                );
+                match code {
+                    "en" => {
+                        assert_eq!(
+                            body.2,
+                            "SSDownload 9.9.9 is available. You have 1.2.3.\n\nUpdate now?"
+                        );
+                        assert_eq!(link.2, "<a>What's new in 9.9.9</a>");
+                    }
+                    "tr" => {
+                        assert_eq!(
+                            body.2,
+                            "SSDownload 9.9.9 hazır. Kullandığınız sürüm: 1.2.3.\n\nŞimdi güncellensin mi?"
+                        );
+                        assert_eq!(link.2, "<a>9.9.9 sürümündeki yenilikler</a>");
+                    }
+                    _ => {
+                        assert_ne!(
+                            body.2, "SSDownload 9.9.9 is available. You have 1.2.3.\n\nUpdate now?",
+                            "{code}: the body is translated"
+                        );
+                        assert_ne!(
+                            link.2, "<a>What's new in 9.9.9</a>",
+                            "{code}: the link is translated"
+                        );
+                    }
+                }
+
+                // The box is as tall as its content: body, link and buttons follow one
+                // another one gap apart, and the buttons end one margin above the frame.
+                let dpi = GetDpiForWindow(alert as _);
+                let (gap, margin) = (super::scale(8, dpi), super::scale(12, dpi));
+                let (body_box, link_box) = (screen_rect(body.0), screen_rect(link.0));
+                let font = SendMessageW(body.0 as _, WM_GETFONT, 0, 0) as super::HFONT;
+                let label = link.2.trim_start_matches("<a>").trim_end_matches("</a>");
+                for (what, window, text) in [
+                    ("body", &body_box, &body.2),
+                    ("link", &link_box, &label.to_string()),
+                ] {
+                    assert_eq!(
+                        window.bottom - window.top,
+                        super::wrapped_height(font, text, window.right - window.left),
+                        "{code}: the {what} is as tall as its text"
+                    );
+                }
+                let button_top = buttons
+                    .iter()
+                    .map(|button| screen_rect(button.handle).top)
+                    .min()
+                    .unwrap();
+                let button_bottom = buttons
+                    .iter()
+                    .map(|button| screen_rect(button.handle).bottom)
+                    .max()
+                    .unwrap();
+                let mut client: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+                windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(alert as _, &mut client);
+                let mut origin = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+                windows_sys::Win32::Graphics::Gdi::ClientToScreen(alert as _, &mut origin);
+                assert_eq!(
+                    link_box.top - body_box.bottom,
+                    gap,
+                    "{code}: link under the body"
+                );
+                assert_eq!(
+                    button_top - link_box.bottom,
+                    gap,
+                    "{code}: buttons under the link"
+                );
+                assert_eq!(
+                    origin.y + client.bottom - button_bottom,
+                    margin,
+                    "{code}: nothing is left empty under the buttons"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_release_page_link_takes_tab_focus_and_opens_the_page_it_was_given() {
+        use crate::update::UpdateManifest;
+        use std::sync::Mutex;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::{VK_RETURN, VK_SPACE, VK_TAB},
+            WindowsAndMessaging::{
+                GetGUIThreadInfo, GetWindowThreadProcessId, PostMessageW, GUITHREADINFO, IDYES,
+                WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
+            },
+        };
+
+        static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        fn record(address: &str) -> bool {
+            OPENED.lock().unwrap().push(address.to_string());
+            true
+        }
+        let opened = || OPENED.lock().unwrap().clone();
+        let page = "https://releases.example/v9.9.9";
+
+        let offer = || {
+            with_common_controls_6(|| {
+                super::offer_update_with(
+                    &UpdateManifest {
+                        version: "9.9.9".into(),
+                        url: "https://update.example/setup.exe".into(),
+                        sha256: String::new(),
+                        notes: String::new(),
+                    },
+                    "1.2.3",
+                    true,
+                    page,
+                    record,
+                )
+            })
+        };
+        answer_alert(offer, |alert, buttons| unsafe {
+            let link = alert_children(alert)
+                .into_iter()
+                .find(|child| child.1 == "SysLink")
+                .expect("the offer has a link")
+                .0;
+            let focus = || {
+                let mut info: GUITHREADINFO = std::mem::zeroed();
+                info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+                GetGUIThreadInfo(
+                    GetWindowThreadProcessId(alert as _, std::ptr::null_mut()),
+                    &mut info,
+                );
+                info.hwndFocus as usize
+            };
+            let key = |window: usize, code: u16| {
+                PostMessageW(window as _, WM_KEYDOWN, code as usize, 0);
+            };
+
+            key(alert, VK_TAB);
+            wait_until("Tab reaches the link first", || focus() == link);
+            assert!(opened().is_empty(), "moving the focus opens nothing");
+
+            key(link, VK_RETURN);
+            wait_until("Enter opens the page", || opened().len() == 1);
+            key(link, VK_SPACE);
+            wait_until("Space opens the page", || opened().len() == 2);
+            PostMessageW(link as _, WM_LBUTTONDOWN, 1, 3 | (3 << 16));
+            PostMessageW(link as _, WM_LBUTTONUP, 0, 3 | (3 << 16));
+            wait_until("a click opens the page", || opened().len() == 3);
+            assert_eq!(
+                opened(),
+                [page, page, page],
+                "every way in opens the given page"
+            );
+
+            let install = buttons
+                .iter()
+                .find(|button| button.id == IDYES)
+                .unwrap()
+                .handle;
+            wait_until("Tab leaves the link for Install", || {
+                // A key goes to the window that has the focus.
+                key(focus(), VK_TAB);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                focus() == install
+            });
+        });
     }
 
     #[test]

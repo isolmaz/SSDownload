@@ -922,8 +922,8 @@ fn report_install_failure(paths: &AppPaths) {
 
 /// Registry key the installer writes; its `InstallLocation` is the installed copy's folder.
 const INSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SSDownload";
-/// Page that lists the portable ZIP of the newest release.
-const RELEASES_PAGE: &str = "https://github.com/isolmaz/SSDownload/releases/latest";
+/// Page of the newest release: its notes and the portable ZIP.
+pub(crate) const RELEASES_PAGE: &str = "https://github.com/isolmaz/SSDownload/releases/latest";
 
 fn installed_location() -> Option<PathBuf> {
     let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
@@ -959,7 +959,7 @@ pub fn is_installed_copy() -> bool {
 }
 
 /// Opens `url` in the default browser; false when the shell refused.
-fn open_in_browser(url: &str) -> bool {
+pub(crate) fn open_in_browser(url: &str) -> bool {
     use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
     let verb: Vec<u16> = "open\0".encode_utf16().collect();
     let target: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();

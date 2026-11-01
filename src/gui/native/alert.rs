@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// A link under the body of an alert: `label` is what the user reads, activating it
+/// passes `target` to `open`.
+pub(super) struct AlertLink {
+    pub(super) label: String,
+    pub(super) target: String,
+    pub(super) open: fn(&str) -> bool,
+}
 /// One button of a themed alert, carrying the id MessageBoxW would return.
 pub(super) struct AlertButton {
     pub(super) id: i32,
@@ -14,6 +21,9 @@ pub(super) struct AlertButton {
 /// MessageBoxW keeps its body text in a static with this id; scripts, the
 /// automation harness and screen readers all reach the text through it.
 pub(super) const ALERT_BODY_ID: i32 = 0xFFFF;
+const ALERT_LINK_ID: i32 = 0xFFFE;
+/// Link text on the dark surface; COLORREF, renders RGB(96, 205, 255).
+const DARK_LINK: u32 = 0xffcd60;
 pub(super) struct AlertUi {
     pub(super) hwnd: HWND,
     pub(super) font: HFONT,
@@ -36,6 +46,10 @@ pub(super) struct AlertUi {
     /// The body is taller than the screen allows: it lives in a read-only
     /// multiline edit with a scroll bar instead of a static.
     pub(super) scroll: bool,
+    pub(super) link: Option<AlertLink>,
+    pub(super) link_handle: HWND,
+    /// Height of the link row; 0 when the alert has no link.
+    pub(super) link_height: i32,
 }
 /// The buttons a flag set asks for, in the order MessageBoxW shows them, plus
 /// the default button and the id Escape returns.
@@ -191,13 +205,29 @@ pub(super) unsafe fn alert_layout(ui: &AlertUi) {
             1,
         );
     }
+    let link_block = if ui.link_height > 0 {
+        ui.gap + ui.link_height
+    } else {
+        0
+    };
+    let body_height = (client.bottom - ui.margin - ui.row - ui.gap - ui.margin - link_block).max(1);
     if !ui.body_handle.is_null() {
         MoveWindow(
             ui.body_handle,
             ui.margin + ui.icon_column,
             ui.margin,
             ui.text_width,
-            (client.bottom - ui.margin - ui.row - ui.gap - ui.margin).max(1),
+            body_height,
+            1,
+        );
+    }
+    if !ui.link_handle.is_null() {
+        MoveWindow(
+            ui.link_handle,
+            ui.margin + ui.icon_column,
+            ui.margin + body_height + ui.gap,
+            ui.text_width,
+            ui.link_height,
             1,
         );
     }
@@ -260,6 +290,27 @@ pub(super) unsafe fn alert_create(ui: &mut AlertUi) {
             0,
         );
         SendMessageW(ui.icon_handle, STM_SETICON, ui.icon as usize, 0);
+    }
+    if let Some(link) = &ui.link {
+        // Created before the buttons, so Tab reaches it first, in reading order.
+        ui.link_handle = control(
+            ui.hwnd,
+            "SysLink",
+            &format!("<a>{}</a>", link.label),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0,
+            ALERT_LINK_ID,
+        );
+        apply_font(ui.link_handle, ui.font);
+        if ui.dark {
+            // The link then takes the colour the window answers WM_CTLCOLORSTATIC with:
+            // its own blue is too dark for the dark surface.
+            let mut item: LITEM = zeroed();
+            item.mask = LIF_ITEMINDEX | LIF_STATE;
+            item.state = LIS_DEFAULTCOLORS;
+            item.stateMask = LIS_DEFAULTCOLORS;
+            SendMessageW(ui.link_handle, LM_SETITEM, 0, &item as *const _ as LPARAM);
+        }
     }
     for index in 0..ui.buttons.len() {
         let (id, label) = (ui.buttons[index].id, ui.buttons[index].label);
@@ -326,10 +377,12 @@ pub(super) unsafe extern "system" fn alert_proc(
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT => {
             SetTextColor(
                 wparam as HDC,
-                if ui.dark {
-                    DARK_TEXT
-                } else {
+                if !ui.dark {
                     GetSysColor(COLOR_WINDOWTEXT)
+                } else if lparam as HWND == ui.link_handle {
+                    DARK_LINK
+                } else {
+                    DARK_TEXT
                 },
             );
             SetBkMode(wparam as HDC, TRANSPARENT as i32);
@@ -338,6 +391,27 @@ pub(super) unsafe extern "system" fn alert_proc(
             } else {
                 GetSysColorBrush(COLOR_WINDOW) as LRESULT
             }
+        }
+        WM_NOTIFY => {
+            let header = &*(lparam as *const NMHDR);
+            if header.idFrom == ALERT_LINK_ID as usize
+                && (header.code == NM_CLICK || header.code == NM_RETURN)
+            {
+                if let Some(link) = &ui.link {
+                    (link.open)(&link.target);
+                    // The page opens in front of the offer instead of behind a topmost box.
+                    SetWindowPos(
+                        hwnd,
+                        HWND_NOTOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                }
+            }
+            0
         }
         WM_COMMAND => {
             let id = loword(wparam) as i32;
@@ -388,6 +462,17 @@ pub(super) unsafe fn run_alert_buttons(
     flags: MESSAGEBOX_STYLE,
     buttons: Option<&[(i32, &'static str)]>,
 ) -> Option<i32> {
+    run_alert_linked(owner, body, title, flags, buttons, None)
+}
+/// `run_alert_buttons` with a link between the body and the buttons.
+pub(super) unsafe fn run_alert_linked(
+    owner: HWND,
+    body: &str,
+    title: &str,
+    flags: MESSAGEBOX_STYLE,
+    buttons: Option<&[(i32, &'static str)]>,
+    link: Option<AlertLink>,
+) -> Option<i32> {
     let (plan, default, escape) = match buttons {
         Some(custom) if !custom.is_empty() => {
             let default = custom[(((flags & MB_DEFMASK) >> 8) as usize).min(custom.len() - 1)].0;
@@ -413,10 +498,18 @@ pub(super) unsafe fn run_alert_buttons(
     let text_width = scale(340, dpi);
     let wrapped =
         wrapped_height(font, body, text_width).max(if icon.is_null() { 0 } else { icon_size });
-    // Caption, borders and the button row come out of the space the body may take.
+    let link_height = link
+        .as_ref()
+        .map_or(0, |link| wrapped_height(font, &link.label, text_width));
+    let link_block = if link_height > 0 {
+        gap + link_height
+    } else {
+        0
+    };
+    // Caption, borders, the link and the button row come out of the space the body may take.
     let cap = alert_body_cap(
         alert_work_height(owner),
-        2 * margin + gap + row + scale(48, dpi),
+        2 * margin + gap + row + scale(48, dpi) + link_block,
     )
     .max(icon_size);
     let scroll = wrapped > cap;
@@ -427,7 +520,7 @@ pub(super) unsafe fn run_alert_buttons(
         text_width
     };
     let client_width = text_width + icon_column + 2 * margin;
-    let client_height = margin + body_height + gap + row + margin;
+    let client_height = margin + body_height + link_block + gap + row + margin;
     let style = WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     let ex_style = owned_layout(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT);
     let mut frame = RECT {
@@ -465,6 +558,9 @@ pub(super) unsafe fn run_alert_buttons(
         body_height,
         dark,
         scroll,
+        link,
+        link_handle: null_mut(),
+        link_height,
     }));
     let hwnd = CreateWindowExW(
         ex_style,
