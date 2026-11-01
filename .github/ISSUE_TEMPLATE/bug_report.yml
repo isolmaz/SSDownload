@@ -11,7 +11,7 @@ body:
     attributes:
       label: SSDownload version
       description: "Shown in **Help → About**."
-      placeholder: "1.9.0"
+      placeholder: "1.x.y"
     validations:
       required: true
   - type: input
@@ -53,5 +53,5 @@ body:
       options:
         - label: I attached no cookies, signed download addresses or private files.
           required: true
-        - label: I only report problems with content I have the right to download.
+        - label: I only report problems with content I have the right to download (DRM-protected streams are out of scope).
           required: true
