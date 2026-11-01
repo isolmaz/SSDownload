@@ -966,7 +966,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui("Eksikleri kur", "Install missing"),
                 T_INSTALL,
-                true,
+                false,
             );
             f.update = dialog_button(
                 dlg.hwnd,
@@ -1488,7 +1488,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui("Ekle / güncelle", "Add / update"),
                 L_ADD,
-                false,
+                true,
             );
             dialog_button(
                 dlg.hwnd,
@@ -1502,7 +1502,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui("Kaydet", "Save"),
                 L_SAVE,
-                true,
+                false,
             );
             dialog_button(
                 dlg.hwnd,
@@ -1939,7 +1939,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.font,
                 crate::i18n::ui("Duraklat", "Pause"),
                 P_ACTION,
-                true,
+                false,
             );
             f.cancel = dialog_button(
                 dlg.hwnd,
