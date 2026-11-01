@@ -1711,6 +1711,8 @@
   "Copying the audio into {0}: {1}%": "جارٍ نسخ الصوت إلى ملف {0}: {1}%",
   "The downloaded stream has no readable audio": "لا يحتوي البث الذي تم تنزيله على صوت قابل للقراءة",
   "The audio could not be converted: {0}": "تعذّر تحويل الصوت: {0}",
+  "Downloading media; the server is limiting requests": "جارٍ تنزيل الوسائط؛ الخادم يحدّ من الطلبات",
+  "Waiting for the server, which is limiting requests": "في انتظار الخادم الذي يحدّ من الطلبات",
   "The audio conversion did not finish within {0} seconds": "لم يكتمل تحويل الصوت خلال {0} ث",
   "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old": "لا يوجد إصدار مستقر من Deno {0}.x ضمن أحدث {1} إصدارًا من Deno؛ هذا الإصدار من التطبيق مرتبط بإصدار Deno قديم جدًا",
   "No stable release of Deno {0}.x was found": "لم يُعثر على إصدار مستقر من Deno {0}.x",
