@@ -1662,17 +1662,56 @@ fn a_download_that_starts_over_is_measured_afresh() {
     replay.flow(Duration::ZERO, 100, 1_000_000, 0, 400_000_000);
     replay.flow(ms(100_000), 70, 1_000_000, 0, 400_000_000);
 
+    assert_one_megabyte_a_second_after(&replay, ms(100_000));
+}
+
+/// The size of the playlist items finished before it is part of the displayed count but not of
+/// the stream's own.
+#[test]
+fn a_playlist_item_that_starts_over_is_measured_afresh() {
+    let folder = crate::test_http::TempDir::new("playlist-item");
+    let finished = folder.0.join("first.mp4");
+    File::create(&finished)
+        .unwrap()
+        .set_len(300_000_000)
+        .unwrap();
+    let mut replay = Replay::new();
+    replay.completed.insert(finished);
+    replay.flow(Duration::ZERO, 100, 1_000_000, 0, 400_000_000);
+    replay.flow(ms(100_000), 70, 1_000_000, 0, 400_000_000);
+
+    assert_one_megabyte_a_second_after(&replay, ms(100_000));
+}
+
+fn assert_one_megabyte_a_second_after(replay: &Replay, restart: Duration) {
     for seconds in [10, 30, 50, 70] {
         let (_, update) = replay
             .events
             .iter()
-            .find(|(at, _)| *at >= ms(100_000 + seconds * 1000))
+            .find(|(at, _)| *at >= restart + ms(seconds * 1000))
             .unwrap();
         assert!(
             update.speed.abs_diff(1_000_000) < 100_000 && update.eta.is_some(),
             "{seconds} s after the restart: {update:?}"
         );
     }
+}
+
+/// A fragment retry takes a few MB off the count of a large download: that is no restart, so
+/// the measurement goes on.
+#[test]
+fn a_drop_of_a_few_megabytes_in_a_large_count_is_not_a_restart() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 100, 1_000_000, 0, 400_000_000);
+    replay.line(ms(100_100), "downloading\t95000000\t400000000");
+    replay.flow(ms(100_100), 10, 1_000_000, 95_000_000, 400_000_000);
+
+    let (_, update) = replay
+        .events
+        .iter()
+        .find(|(at, _)| *at >= ms(100_600))
+        .unwrap();
+    assert!(update.speed > 500_000 && update.eta.is_some(), "{update:?}");
 }
 
 /// Counts of the tool's threads that arrive late fall behind the highest one by at most a few
@@ -1770,10 +1809,8 @@ fn a_silent_tool_does_not_freeze_the_progress() {
 /// of the recording nor is repeated while the tool is silent.
 #[test]
 fn a_live_recording_reports_only_its_own_size() {
-    let root = std::env::temp_dir().join(format!("ssdownload-live-test-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("media.mp4.part"), vec![0u8; 2048]).unwrap();
-    let mut recording = LiveRecordingGauge::new(&root);
+    let folder = recording_folder();
+    let mut recording = LiveRecordingGauge::new(&folder.0);
 
     let updates = updates_from_script(SLOW_THEN_SILENT, Some(&mut recording));
 
@@ -1781,7 +1818,101 @@ fn a_live_recording_reports_only_its_own_size() {
     for (_, update) in &updates {
         assert_eq!(update.downloaded, 2048, "{update:?}");
     }
-    fs::remove_dir_all(&root).unwrap();
+}
+
+const LIVE_TOOL_LINE: &str = "SSDOWNLOAD_PROGRESS\tdownloading\t9999999\t10000000";
+
+fn recording_folder() -> crate::test_http::TempDir {
+    let folder = crate::test_http::TempDir::new("live-recording");
+    fs::write(folder.0.join("media.mp4.part"), vec![0u8; 2048]).unwrap();
+    folder
+}
+
+/// A tool that has exited already, so that the monitor's exit check finds it on its first pass.
+fn exited_tool() -> RunningDownload {
+    let args = vec!["/C".into(), "exit 0".into()];
+    let mut running =
+        RunningDownload::spawn_with_proxy(Path::new("cmd.exe"), &args, b"", None).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while running.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the tool never exited");
+        thread::sleep(Duration::from_millis(20));
+    }
+    running
+}
+
+/// What the monitor reports for `running` as a live recording of a folder that holds 2048
+/// bytes; `after_update` runs on the monitor's thread after each update.
+fn live_updates(
+    mut running: RunningDownload,
+    mut after_update: impl FnMut(),
+) -> Vec<TransferProgress> {
+    let folder = recording_folder();
+    let mut recording = LiveRecordingGauge::new(&folder.0);
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| {
+            updates.push(update);
+            after_update();
+        },
+        &mut HashSet::new(),
+        &mut None,
+        Some(&mut recording),
+    )
+    .unwrap();
+    assert!(matches!(outcome, MonitorOutcome::Exited(_)));
+    assert!(!updates.is_empty());
+    for update in &updates {
+        assert_eq!(update.downloaded, 2048, "{update:?}");
+    }
+    updates
+}
+
+/// A line that waits in the queue when the monitor starts is read by the drain at the top of
+/// its loop.
+#[test]
+fn a_live_progress_line_in_the_queue_is_not_reported() {
+    let mut running = exited_tool();
+    let (sender, lines) = mpsc::sync_channel(8);
+    sender.send(LIVE_TOOL_LINE.into()).unwrap();
+    running.lines = lines;
+
+    live_updates(running, || {});
+}
+
+/// A line that arrives while the monitor reports, after it has read the queue and before it
+/// finds that the tool exited, is read by the drain after the exit.
+#[test]
+fn a_live_progress_line_that_arrives_before_the_exit_check_is_not_reported() {
+    let mut running = exited_tool();
+    let (sender, lines) = mpsc::sync_channel(8);
+    running.lines = lines;
+    let mut sent = false;
+
+    live_updates(running, || {
+        if !std::mem::replace(&mut sent, true) {
+            sender.send(LIVE_TOOL_LINE.into()).unwrap();
+        }
+    });
+}
+
+/// A line that arrives while the monitor waits for the tool's workers is read by the drain
+/// after them.
+#[test]
+fn a_live_progress_line_that_arrives_while_the_workers_are_joined_is_not_reported() {
+    let mut running = exited_tool();
+    let (sender, lines) = mpsc::sync_channel(8);
+    running.lines = lines;
+    running.stdin_thread = Some(thread::spawn(move || {
+        thread::sleep(Duration::from_millis(500));
+        sender.send(LIVE_TOOL_LINE.into()).unwrap();
+        Ok(())
+    }));
+
+    live_updates(running, || {});
 }
 
 #[test]

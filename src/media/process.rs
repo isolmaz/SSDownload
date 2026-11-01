@@ -482,8 +482,9 @@ impl DownloadGauge {
     const MAX_WINDOW: Duration = Duration::from_secs(60);
     /// A shorter measurement is too noisy to be a speed.
     const MIN_SPAN: Duration = Duration::from_secs(1);
-    /// A recorded run left a count at most 247 KB behind an earlier one because of the tool's
-    /// unordered threads; this is four times that, while a restart falls to nearly zero.
+    /// A recorded run left a stream's count at most 247 KB behind an earlier one because of the
+    /// tool's unordered threads; this is four times that, while a stream that starts over
+    /// counts from nearly zero.
     const RESTART_DROP: u64 = 1 << 20;
     const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -499,7 +500,9 @@ impl DownloadGauge {
 
     /// The tool counts across its download threads, so a report can carry a total a few blocks
     /// behind an earlier one; a lower count is ignored. A count that has fallen by half and by
-    /// `RESTART_DROP` is the tool starting over inside one run, which measures afresh.
+    /// `RESTART_DROP` is the stream starting over inside one run, which measures afresh. The
+    /// counts are the current stream's own: the size of the files finished before it must not
+    /// raise the highest count the drop is compared with.
     fn record(&mut self, bytes: u64, now: Instant) {
         let drop = self.newest.saturating_sub(bytes);
         if drop >= Self::RESTART_DROP && drop > self.newest / 2 {
@@ -551,14 +554,18 @@ impl DownloadGauge {
         (self.newest.saturating_sub(base) as f64 / span.as_secs_f64()) as u64
     }
 
+    /// `current` is the byte count of the stream the tool is downloading; `base` is the size of
+    /// the files finished before it.
     fn report(
         &mut self,
-        downloaded: u64,
+        base: u64,
+        current: u64,
         total: Option<u64>,
         processing: bool,
         now: Instant,
     ) -> TransferProgress {
-        self.record(downloaded, now);
+        let downloaded = base.saturating_add(current);
+        self.record(current, now);
         let speed = self.speed(now);
         let update = TransferProgress {
             downloaded,
@@ -772,12 +779,7 @@ pub(super) fn handle_machine_line(
             let base = completed_file_bytes(completed_files);
             let current = parse_number(values[1]).unwrap_or(0);
             let total = parse_number(values[2]).map(|v| base.saturating_add(v));
-            progress(gauge.report(
-                base.saturating_add(current),
-                total,
-                values[0] == "finished",
-                now,
-            ));
+            progress(gauge.report(base, current, total, values[0] == "finished", now));
         }
     } else if line.starts_with(POSTPROCESS_PREFIX) {
         gauge.latest = None;
