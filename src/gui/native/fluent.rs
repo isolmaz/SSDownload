@@ -126,6 +126,8 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
         .into_iter()
         .find(|&fill| contrast(on_accent, fill) >= 4.5)
         .unwrap_or(accent_fill);
+    let [control, control_hover, control_pressed, control_disabled, control_stroke, control_stroke_bottom] =
+        control_layers(dark, base);
     MainPalette {
         base,
         card,
@@ -134,12 +136,12 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
         secondary: on(0x9e000000, 0xc5ffffff, card),
         disabled: on(0x5c000000, 0x5dffffff, base),
         hover: on(0x09000000, 0x0fffffff, base),
-        control: on(0xb3ffffff, 0x0fffffff, base),
-        control_hover: on(0x80f9f9f9, 0x15ffffff, base),
-        control_pressed: on(0x4df9f9f9, 0x08ffffff, base),
-        control_disabled: on(0x4df9f9f9, 0x0bffffff, base),
-        control_stroke: on(0x0f000000, 0x12ffffff, base),
-        control_stroke_bottom: on(0x29000000, 0x18ffffff, base),
+        control,
+        control_hover,
+        control_pressed,
+        control_disabled,
+        control_stroke,
+        control_stroke_bottom,
         accent: accent_fill,
         accent_hover,
         accent_pressed,
@@ -162,6 +164,52 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
         caution: pick(0x005d9d, 0x00e1fc),
         critical: pick(0x1c2bc4, 0xa499ff),
         flyout: pick(0xf9f9f9, 0x2c2c2c),
+    }
+}
+
+/// The control fill, hover, pressed and disabled fills (ControlFillColor*)
+/// and the stroke and its bottom edge (ControlStrokeColor*), composited over
+/// `below`, the layer the controls sit on.
+fn control_layers(dark: bool, below: u32) -> [u32; 6] {
+    let on = |light: u32, dark_value: u32| over(if dark { dark_value } else { light }, below);
+    [
+        on(0xb3ffffff, 0x0fffffff),
+        on(0x80f9f9f9, 0x15ffffff),
+        on(0x4df9f9f9, 0x08ffffff),
+        on(0x4df9f9f9, 0x0bffffff),
+        on(0x0f000000, 0x12ffffff),
+        on(0x29000000, 0x18ffffff),
+    ]
+}
+
+/// The palette of a control on a dialog's content card: the card is its
+/// layer, so its fills and strokes are composited over the card.
+pub(super) fn on_card(palette: MainPalette, dark: bool) -> MainPalette {
+    let [control, control_hover, control_pressed, control_disabled, control_stroke, control_stroke_bottom] =
+        control_layers(dark, palette.card);
+    MainPalette {
+        base: palette.card,
+        control,
+        control_hover,
+        control_pressed,
+        control_disabled,
+        control_stroke,
+        control_stroke_bottom,
+        ..palette
+    }
+}
+
+/// `on_card` for the scheme `hwnd` is shown in; high contrast keeps the
+/// system's colours.
+pub(super) unsafe fn card_palette(hwnd: HWND) -> MainPalette {
+    let palette = main_palette(hwnd);
+    if high_contrast() {
+        MainPalette {
+            base: palette.card,
+            ..palette
+        }
+    } else {
+        on_card(palette, scheme_dark(hwnd))
     }
 }
 
@@ -968,12 +1016,11 @@ unsafe fn paint_combo(hwnd: HWND, dc: HDC) {
     let mut client: RECT = zeroed();
     GetClientRect(hwnd, &mut client);
     let dpi = GetDpiForWindow(hwnd).max(96);
-    let palette = main_palette(hwnd);
     // The filter sits on the base layer, a dialog's box on its content card.
-    let surface = if GetDlgCtrlID(hwnd) == ID_FILTER {
-        palette.base
+    let palette = if GetDlgCtrlID(hwnd) == ID_FILTER {
+        main_palette(hwnd)
     } else {
-        palette.card
+        card_palette(hwnd)
     };
     let disabled = IsWindowEnabled(hwnd) == 0;
     let pressed = !disabled && SendMessageW(hwnd, CB_GETDROPPEDSTATE, 0, 0) != 0;
@@ -987,19 +1034,7 @@ unsafe fn paint_combo(hwnd: HWND, dc: HDC) {
         underline: false,
     };
     let font = SendMessageW(hwnd, WM_GETFONT, 0, 0) as HFONT;
-    paint_button(
-        dc,
-        client,
-        dpi,
-        &MainPalette {
-            base: surface,
-            ..palette
-        },
-        font,
-        &[],
-        None,
-        look,
-    );
+    paint_button(dc, client, dpi, &palette, font, &[], None, look);
     let face = inflate(client, -scale(FOCUS_MARGIN, dpi), -scale(FOCUS_MARGIN, dpi));
     let chevron_w = scale(COMBO_CHEVRON, dpi);
     let colour = if disabled {
@@ -2584,7 +2619,7 @@ pub(super) unsafe fn modern_dialog_message(
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
             let dc = wparam as HDC;
             let (text, fill) = if msg == WM_CTLCOLOREDIT {
-                let (fill, text) = input_colours(&palette);
+                let (fill, text) = input_colours(&card_palette(dlg.hwnd));
                 (text, fill)
             } else if lparam as HWND == dlg.error {
                 (palette.critical, palette.card)
@@ -2679,10 +2714,7 @@ pub(super) unsafe fn modern_dialog_message(
                 },
             ));
             let surface = if form.card_buttons.contains(&id) {
-                MainPalette {
-                    base: palette.card,
-                    ..palette
-                }
+                card_palette(dlg.hwnd)
             } else {
                 palette
             };
@@ -2741,12 +2773,13 @@ unsafe fn paint_modern_surfaces(dlg: &DialogUi, form: &ModernForm, dc: HDC, pale
         palette.stroke,
     );
     let focus = GetFocus();
+    let card = card_palette(dlg.hwnd);
     for &edit in &form.inputs {
         if edit.is_null() || IsWindowVisible(edit) == 0 {
             continue;
         }
         let frame = input_frame(dlg.hwnd, edit, dlg.dpi);
-        paint_input_frame(dc, &frame, dlg.dpi, palette, focus == edit);
+        paint_input_frame(dc, &frame, dlg.dpi, &card, focus == edit);
     }
     for &list in &form.lists {
         if list.is_null() || IsWindowVisible(list) == 0 {
@@ -2758,7 +2791,7 @@ unsafe fn paint_modern_surfaces(dlg: &DialogUi, form: &ModernForm, dc: HDC, pale
             &frame,
             scale(CORNER, dlg.dpi),
             palette.card,
-            Some(palette.control_stroke),
+            Some(card.control_stroke),
         );
     }
 }
@@ -3321,6 +3354,36 @@ mod tests {
         assert_eq!(over(0x800000ff, 0x000000), 0x800000);
         assert_eq!(over(0x80ff0000, 0x000000), 0x000080);
         assert_eq!(over(with_alpha(0x0000ff, 0xff), 0x123456), 0x0000ff);
+    }
+
+    #[test]
+    fn controls_on_a_card_stand_out_from_it_in_both_schemes() {
+        let step = |a: u32, b: u32| {
+            (0..3)
+                .map(|shift| ((a >> (8 * shift)) & 0xff).abs_diff((b >> (8 * shift)) & 0xff))
+                .max()
+                .unwrap()
+        };
+        for dark in [false, true] {
+            let palette = fluent_palette(dark, BLUE);
+            let card = on_card(palette, dark);
+            assert_eq!(card.base, palette.card);
+            // WinUI's ControlFillColorDefault and ControlStrokeColorDefault
+            // over the card, not over the window's base layer.
+            let (fill, stroke) = if dark {
+                (0x0fffffff, 0x12ffffff)
+            } else {
+                (0xb3ffffff, 0x0f000000)
+            };
+            assert_eq!(card.control, over(fill, palette.card));
+            assert_eq!(card.control_stroke, over(stroke, palette.card));
+            // The stroke outlines the control against the card.
+            assert!(step(card.control_stroke, palette.card) >= 8, "dark {dark}");
+            if dark {
+                // On the dark card a control is lighter than the card itself.
+                assert!(step(card.control, palette.card) >= 10);
+            }
+        }
     }
 
     #[test]
