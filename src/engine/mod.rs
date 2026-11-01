@@ -2648,8 +2648,10 @@ impl Actor {
         }
         self.jobs.insert(id.into(), job.clone());
         self.cancel_source_refresh_workers(id);
-        let generation = self.next_generation;
-        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        // The receiver's state and the extension keep a transfer's generation after the app
+        // closes, so a transfer draws a random one, which a later session does not give again.
+        // The extension takes it only as a safe integer, below 2^53.
+        let generation = (Uuid::new_v4().as_u128() as u64 & ((1 << 53) - 1)).max(1);
         self.browser_transfers.insert(
             id.into(),
             BrowserTransferLease {

@@ -1491,6 +1491,80 @@ fn a_chunk_that_carries_the_token_of_a_transfer_that_ended_is_refused() {
 }
 
 #[test]
+fn a_chunk_that_carries_the_token_of_a_transfer_of_an_earlier_session_is_refused() {
+    use crate::browser_transfer::{dispatch, Command as Transfer};
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    let (root, paths, id) = browser_quota_job(
+        "browser-session",
+        "https://example.test/browser-session.bin".into(),
+        |job| job.browser_transfer_authorized = true,
+    );
+    let engine = Engine::open(paths.clone()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    let started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    let begun = dispatch(
+        &paths,
+        &engine,
+        Transfer::Begin {
+            id: id.clone(),
+            total: Some(4_000_000),
+            etag: Some("\"browser-session\"".into()),
+            restart: false,
+            sender_pid: Some(std::process::id()),
+            sender_started_at: Some(started_at),
+        },
+    )
+    .unwrap();
+    let token = begun.token.clone().unwrap();
+    let chunk = |engine: &Engine, offset: u64, sequence: u64| {
+        let bytes = vec![7u8; 300_000];
+        dispatch(
+            &paths,
+            engine,
+            Transfer::Chunk {
+                id: id.clone(),
+                token: token.clone(),
+                stream_id: 0,
+                sequence,
+                offset,
+                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                sha256: hex::encode(sha2::Sha256::digest(&bytes)),
+                client_checkpoint: None,
+            },
+        )
+    };
+    let stream = chunk(&engine, 0, begun.streams[0].next_sequence)
+        .unwrap()
+        .streams[0]
+        .clone();
+    engine.shutdown();
+
+    // In the next session a restart begins, and a chunk of the earlier session's transfer reaches
+    // the receiver before the restart does.
+    let engine = Engine::open(paths.clone()).unwrap();
+    let restarted = begin_as_this_process(&engine, &id, true);
+    let late = chunk(&engine, stream.offset, stream.next_sequence);
+    let consumed = consumed_quota_bytes(&engine, &queue);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    // The extension takes a generation only as a safe integer.
+    let safe = |generation: u64| (1..1 << 53).contains(&generation);
+    assert_eq!(
+        (
+            late.is_err(),
+            consumed,
+            safe(begun.sender_generation.unwrap()),
+            safe(restarted)
+        ),
+        (true, 300_000, true, true)
+    );
+}
+
+#[test]
 fn a_browser_transfer_counts_its_bytes_once_until_the_user_starts_it_over() {
     use crate::browser_transfer::{dispatch, Command as Transfer, Response};
     use base64::Engine as _;
