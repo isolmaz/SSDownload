@@ -1417,9 +1417,10 @@ pub(super) unsafe fn is_check_box(control: HWND) -> bool {
 }
 
 /// Places a Modern dialog control so that its face is `face`: an edit inside
-/// its painted frame, a drop-down list box and a push button FOCUS_MARGIN past
-/// the face on every side for the focus ring, a check box that far past it on
-/// the left and right, anything else on the face itself.
+/// its painted frame, a list box inside its 1 px frame with `ROW_HEIGHT`
+/// entries, a drop-down list box and a push button FOCUS_MARGIN past the face
+/// on every side for the focus ring, a check box that far past it on the left
+/// and right, anything else on the face itself.
 pub(super) unsafe fn place_modern(control: HWND, show: bool, face: RECT, dpi: u32) {
     if control.is_null() {
         return;
@@ -1429,6 +1430,15 @@ pub(super) unsafe fn place_modern(control: HWND, show: bool, face: RECT, dpi: u3
     let class = window_class(control).to_ascii_lowercase();
     let rect = match class.as_str() {
         "edit" => return place_in_frame(control, face, dpi),
+        "listbox" => {
+            SendMessageW(
+                control,
+                LB_SETITEMHEIGHT,
+                0,
+                scale(ROW_HEIGHT, dpi) as isize,
+            );
+            inflate(face, -1, -1)
+        }
         "combobox" => return place_combo(control, inflate(face, ring, ring), dpi),
         "button" if is_check_box(control) => inflate(face, ring, 0),
         "button" => inflate(face, ring, ring),
@@ -1898,6 +1908,12 @@ pub(super) const fn one_field_height(label_lines: i32) -> i32 {
 }
 /// The speed limit's label takes two lines in the longer languages.
 pub(super) const SPEED_LABEL_LINES: i32 = 2;
+/// The list and form dialogs' content sizes: the queue manager, and the rule,
+/// scan, sync and login dialogs.
+pub(super) const QUEUES_WIDTH: i32 = 860;
+pub(super) const QUEUES_HEIGHT: i32 = 630;
+pub(super) const FORM_WIDTH: i32 = 800;
+pub(super) const FORM_HEIGHT: i32 = 540;
 /// Space between an input frame and the text field inside it: left, right
 /// (a multiline field keeps its scroll bar inside the frame), and top for a
 /// multiline field; a single line is centred.
@@ -1905,9 +1921,15 @@ const INPUT_PAD_LEFT: i32 = 11;
 const INPUT_PAD_RIGHT: i32 = 8;
 const INPUT_PAD_TOP: i32 = 6;
 
-/// Takes the sunken border off an edit control: its frame is painted by the
-/// dialog around it.
-pub(super) unsafe fn flatten_edit(edit: HWND) {
+/// Takes the sunken border off a Modern dialog's text fields: their frames
+/// are painted by the dialog around them.
+pub(super) unsafe fn flatten_inputs(dlg: &DialogUi) {
+    for edit in modern_form(dlg).map(|form| form.inputs).unwrap_or_default() {
+        flatten_edit(edit);
+    }
+}
+
+unsafe fn flatten_edit(edit: HWND) {
     let style = GetWindowLongPtrW(edit, GWL_STYLE) & !(WS_BORDER as isize);
     SetWindowLongPtrW(edit, GWL_STYLE, style);
     let extended = GetWindowLongPtrW(edit, GWL_EXSTYLE) & !(WS_EX_CLIENTEDGE as isize);
@@ -1923,12 +1945,122 @@ pub(super) unsafe fn flatten_edit(edit: HWND) {
     );
 }
 
+/// A Modern dialog's list box: no border of its own (the dialog paints its
+/// frame) and entries it paints itself, `ROW_HEIGHT` tall. Like the classic
+/// one it sends no selection notifications.
+pub(super) unsafe fn modern_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
+    let list = control(
+        parent,
+        "LISTBOX",
+        "",
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | WS_VSCROLL
+            | LBS_NOINTEGRALHEIGHT as u32
+            | LBS_OWNERDRAWFIXED as u32
+            | LBS_HASSTRINGS as u32
+            | if multi { LBS_EXTENDEDSEL as u32 } else { 0 },
+        0,
+        id,
+    );
+    apply_font(list, font);
+    list
+}
+
+/// The frame around a list box placed by `place_modern`: its 1 px stroke.
+unsafe fn list_frame(parent: HWND, list: HWND) -> RECT {
+    inflate(child_rect(parent, list), 1, 1)
+}
+
+/// One entry of a Modern dialog's list box, painted like a job list row: the
+/// card, the selected entry's tinted backplate with the accent pill, the focus
+/// ring on the focused entry, and the text 12 epx in.
+unsafe fn paint_list_item(item: &DRAWITEMSTRUCT, dpi: u32, palette: &MainPalette, font: HFONT) {
+    let dc = item.hDC;
+    let rect = item.rcItem;
+    let selected = item.itemState & ODS_SELECTED != 0;
+    let focused = item.itemState & ODS_FOCUS != 0
+        && SendMessageW(item.hwndItem, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0;
+    let contrast = high_contrast();
+    let text_colour = if contrast {
+        let (back, fore) = if selected {
+            (COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT)
+        } else {
+            (COLOR_WINDOW, COLOR_WINDOWTEXT)
+        };
+        fill_colour(dc, &rect, GetSysColor(back));
+        GetSysColor(fore)
+    } else {
+        fill_colour(dc, &rect, palette.card);
+        if selected || focused {
+            let plate = inflate(rect, -scale(2, dpi), -scale(2, dpi));
+            let fill = if selected {
+                palette.row_selected
+            } else {
+                palette.card
+            };
+            if focused {
+                focus_plate(dc, &plate, scale(CORNER, dpi), dpi, palette, fill);
+            } else {
+                round_rect(dc, &plate, scale(CORNER, dpi), fill, None);
+            }
+            if selected {
+                let height = scale(16, dpi).min(plate.bottom - plate.top);
+                let top = plate.top + (plate.bottom - plate.top - height) / 2;
+                let left = plate.left + if focused { scale(3, dpi) } else { 0 };
+                let pill = RECT {
+                    left,
+                    top,
+                    right: left + scale(3, dpi),
+                    bottom: top + height,
+                };
+                round_rect(dc, &pill, scale(2, dpi), palette.accent, None);
+            }
+        }
+        palette.text
+    };
+    if item.itemID == u32::MAX {
+        return;
+    }
+    let length = SendMessageW(item.hwndItem, LB_GETTEXTLEN, item.itemID as usize, 0);
+    if length > 0 {
+        let mut entry = vec![0u16; length as usize + 1];
+        SendMessageW(
+            item.hwndItem,
+            LB_GETTEXT,
+            item.itemID as usize,
+            entry.as_mut_ptr() as isize,
+        );
+        let mut area = RECT {
+            left: rect.left + scale(12, dpi),
+            right: rect.right - scale(8, dpi),
+            ..rect
+        };
+        let previous = SelectObject(dc, font as HGDIOBJ);
+        SetBkMode(dc, TRANSPARENT as i32);
+        SetTextColor(dc, text_colour);
+        DrawTextW(
+            dc,
+            entry.as_mut_ptr(),
+            length as i32,
+            &mut area,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        SelectObject(dc, previous);
+    }
+    if contrast && focused {
+        DrawFocusRect(dc, &rect);
+    }
+}
+
 fn is_multiline(edit: HWND) -> bool {
     unsafe { GetWindowLongPtrW(edit, GWL_STYLE) as u32 & ES_MULTILINE as u32 != 0 }
 }
 
 /// Puts an edit control inside the input frame `frame`: a single line is
-/// centred on the frame's height.
+/// centred on the frame's height, and a multiline field shows its scroll bar
+/// only while its text overflows.
 pub(super) unsafe fn place_in_frame(edit: HWND, frame: RECT, dpi: u32) {
     let left = frame.left + scale(INPUT_PAD_LEFT, dpi);
     if is_multiline(edit) {
@@ -1941,6 +2073,7 @@ pub(super) unsafe fn place_in_frame(edit: HWND, frame: RECT, dpi: u32) {
             frame.bottom - scale(INPUT_PAD_TOP, dpi) - top,
             1,
         );
+        sync_edit_scrollbar(edit);
     } else {
         let font = SendMessageW(edit, WM_GETFONT, 0, 0) as HFONT;
         let height = line_height(edit, font).max(1);
@@ -2021,11 +2154,41 @@ pub(super) fn settings_combos(f: &SettingsFields) -> [HWND; 6] {
     ]
 }
 
-/// What a Modern dialog paints itself: its framed inputs, its WinUI buttons
-/// with the primary one, the buttons that sit on the content card rather than
-/// on the command bar, and a static shown as a secondary hint.
+/// The text fields of the list and form dialogs.
+pub(super) fn queue_inputs(f: &QueueFields) -> [HWND; 7] {
+    [
+        f.name,
+        f.concurrency,
+        f.windows,
+        f.quota,
+        f.program,
+        f.arguments,
+        f.delay,
+    ]
+}
+
+pub(super) fn rule_inputs(f: &RuleFields) -> [HWND; 3] {
+    [f.host, f.dir, f.priority]
+}
+
+pub(super) fn crawler_inputs(f: &CrawlerFields) -> [HWND; 4] {
+    [f.url, f.depth, f.pages, f.candidates]
+}
+
+pub(super) fn sync_inputs(f: &SyncFields) -> [HWND; 3] {
+    [f.url, f.dir, f.interval]
+}
+
+pub(super) fn login_inputs(f: &LoginFields) -> [HWND; 3] {
+    [f.host, f.user, f.pass]
+}
+
+/// What a Modern dialog paints itself: its framed inputs and list boxes, its
+/// WinUI buttons with the primary one, the buttons that sit on the content
+/// card rather than on the command bar, and a static shown as a secondary hint.
 struct ModernForm {
     inputs: Vec<HWND>,
+    lists: Vec<HWND>,
     buttons: &'static [i32],
     primary: i32,
     card_buttons: &'static [i32],
@@ -2036,6 +2199,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
     match &dlg.kind {
         DialogKind::Add(f) => Some(ModernForm {
             inputs: add_inputs(f).to_vec(),
+            lists: vec![],
             buttons: &[D_ADD_OK, D_ADVANCED, D_CANCEL, D_BROWSE],
             primary: D_ADD_OK,
             card_buttons: &[D_BROWSE],
@@ -2043,6 +2207,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         }),
         DialogKind::Settings(f) => Some(ModernForm {
             inputs: settings_inputs(f).to_vec(),
+            lists: vec![],
             buttons: &[
                 S_OK,
                 D_CANCEL,
@@ -2061,6 +2226,7 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         }),
         DialogKind::Speed(f) => Some(ModernForm {
             inputs: vec![f.edit],
+            lists: vec![],
             buttons: &[SP_OK, D_CANCEL],
             primary: SP_OK,
             card_buttons: &[],
@@ -2068,9 +2234,65 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
         }),
         DialogKind::Rename(f) => Some(ModernForm {
             inputs: vec![f.edit],
+            lists: vec![],
             buttons: &[RN_OK, D_CANCEL],
             primary: RN_OK,
             card_buttons: &[],
+            hint: null_mut(),
+        }),
+        DialogKind::Queues(f) => Some(ModernForm {
+            inputs: queue_inputs(f).to_vec(),
+            lists: vec![f.list],
+            buttons: &[
+                Q_CREATE,
+                Q_RENAME,
+                Q_DELETE,
+                Q_UPDATE,
+                Q_MOVE_JOB,
+                Q_CANCEL_COMPLETION,
+                D_CANCEL,
+            ],
+            primary: Q_UPDATE,
+            card_buttons: &[
+                Q_CREATE,
+                Q_RENAME,
+                Q_DELETE,
+                Q_UPDATE,
+                Q_MOVE_JOB,
+                Q_CANCEL_COMPLETION,
+            ],
+            hint: f.countdown,
+        }),
+        DialogKind::Rules(f) => Some(ModernForm {
+            inputs: rule_inputs(f).to_vec(),
+            lists: vec![f.list],
+            buttons: &[R_NEW, R_SAVE, R_REMOVE, D_CANCEL],
+            primary: R_SAVE,
+            card_buttons: &[R_NEW, R_SAVE, R_REMOVE],
+            hint: null_mut(),
+        }),
+        DialogKind::Crawler(f) => Some(ModernForm {
+            inputs: crawler_inputs(f).to_vec(),
+            lists: vec![f.list],
+            buttons: &[C_SCAN, C_ADD, D_CANCEL],
+            primary: C_SCAN,
+            card_buttons: &[C_SCAN],
+            hint: null_mut(),
+        }),
+        DialogKind::Synchronization(f) => Some(ModernForm {
+            inputs: sync_inputs(f).to_vec(),
+            lists: vec![f.list],
+            buttons: &[Y_NEW, Y_SAVE, Y_REMOVE, Y_RUN, D_CANCEL],
+            primary: Y_SAVE,
+            card_buttons: &[Y_NEW, Y_SAVE, Y_REMOVE, Y_RUN],
+            hint: null_mut(),
+        }),
+        DialogKind::Logins(f) => Some(ModernForm {
+            inputs: login_inputs(f).to_vec(),
+            lists: vec![f.list],
+            buttons: &[L_ADD, L_REMOVE, L_SAVE, D_CANCEL],
+            primary: L_SAVE,
+            card_buttons: &[L_ADD, L_REMOVE],
             hint: null_mut(),
         }),
         _ => None,
@@ -2108,6 +2330,8 @@ pub(super) unsafe fn modern_dialog_message(
             | WM_COMMAND
             | WM_NOTIFY
             | WM_LBUTTONDOWN
+            | WM_DRAWITEM
+            | WM_CTLCOLORLISTBOX
     ) {
         return None;
     }
@@ -2138,6 +2362,28 @@ pub(super) unsafe fn modern_dialog_message(
             paint_modern_surfaces(dlg, &form, wparam as HDC, &palette);
             Some(1)
         }
+        WM_DRAWITEM => {
+            let item = &*(lparam as *const DRAWITEMSTRUCT);
+            if item.CtlType != ODT_LISTBOX || !form.lists.contains(&item.hwndItem) {
+                return None;
+            }
+            paint_list_item(item, dlg.dpi, &palette, dlg.font);
+            Some(1)
+        }
+        WM_CTLCOLORLISTBOX => {
+            if !form.lists.contains(&(lparam as HWND)) {
+                return None;
+            }
+            let dc = wparam as HDC;
+            let fill = if high_contrast() {
+                GetSysColor(COLOR_WINDOW)
+            } else {
+                palette.card
+            };
+            SetBkColor(dc, fill);
+            SetDCBrushColor(dc, fill);
+            Some(GetStockObject(DC_BRUSH) as LRESULT)
+        }
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
             let dc = wparam as HDC;
             let (text, fill) = if msg == WM_CTLCOLOREDIT {
@@ -2162,10 +2408,10 @@ pub(super) unsafe fn modern_dialog_message(
                 let frame = input_frame(dlg.hwnd, control, dlg.dpi);
                 InvalidateRect(dlg.hwnd, &frame, 1);
             }
+            if code == EN_CHANGE && form.inputs.contains(&control) && is_multiline(control) {
+                sync_edit_scrollbar(control);
+            }
             if let DialogKind::Add(f) = &dlg.kind {
-                if code == EN_CHANGE && control == f.urls {
-                    sync_edit_scrollbar(f.urls);
-                }
                 if (code == EN_CHANGE && control == f.urls)
                     || (code == CBN_SELCHANGE && control == f.kind)
                 {
@@ -2303,6 +2549,19 @@ unsafe fn paint_modern_surfaces(dlg: &DialogUi, form: &ModernForm, dc: HDC, pale
         }
         let frame = input_frame(dlg.hwnd, edit, dlg.dpi);
         paint_input_frame(dc, &frame, dlg.dpi, palette, focus == edit);
+    }
+    for &list in &form.lists {
+        if list.is_null() || IsWindowVisible(list) == 0 {
+            continue;
+        }
+        let frame = list_frame(dlg.hwnd, list);
+        round_rect(
+            dc,
+            &frame,
+            scale(CORNER, dlg.dpi),
+            palette.card,
+            Some(palette.control_stroke),
+        );
     }
 }
 

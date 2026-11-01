@@ -14,6 +14,12 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             settings_logical_height(modern(), UiMode::parse(&f.value.ui_mode).is_simple())
         }
         DialogKind::Tools(_) => 425,
+        DialogKind::Queues(_) if modern() => QUEUES_HEIGHT,
+        DialogKind::Rules(_) | DialogKind::Crawler(_) | DialogKind::Synchronization(_)
+            if modern() =>
+        {
+            FORM_HEIGHT
+        }
         DialogKind::Queues(_) => 425,
         DialogKind::Rules(_) => 425,
         DialogKind::Crawler(_) => 425,
@@ -24,6 +30,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Rename(_) if modern() => one_field_height(1),
         DialogKind::Speed(_) => 110,
         DialogKind::Rename(_) => 110,
+        DialogKind::Logins(_) if modern() => FORM_HEIGHT,
         DialogKind::Logins(_) => 425,
         DialogKind::Media(f) => {
             if f.advanced {
@@ -277,7 +284,6 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
                 }
             }
-            sync_edit_scrollbar(f.urls);
             // The error line follows the last field shown.
             move_id(
                 dlg.hwnd,
@@ -288,14 +294,10 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 s(ADD_LABEL),
             );
 
-            let by = h - s(ADD_FOOTER) + s(ADD_PAD);
-            let ok_w = add_button_width(dlg, D_ADD_OK, 120);
-            let cancel_w = add_button_width(dlg, D_CANCEL, 96);
             // Advanced options carries its chevron before the label.
             let advanced_w = add_button_width(dlg, D_ADVANCED, 120) + s(16 + 8);
-            button(D_ADVANCED, x, by, advanced_w);
-            button(D_CANCEL, x + cw - cancel_w, by, cancel_w);
-            button(D_ADD_OK, x + cw - cancel_w - gap - ok_w, by, ok_w);
+            button(D_ADVANCED, x, h - s(ADD_FOOTER) + s(ADD_PAD), advanced_w);
+            command_bar(dlg, h, &[(D_ADD_OK, 120), (D_CANCEL, 96)]);
         }
         DialogKind::Settings(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);
@@ -894,6 +896,181 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(85, dlg.dpi),
                 row,
             );
+        }
+        DialogKind::Queues(f) if modern() => {
+            let labels: Vec<_> = child_statics(dlg.hwnd, dlg.error)
+                .into_iter()
+                .filter(|value| *value != f.countdown)
+                .collect();
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            let s = |value: i32| scale(value, dlg.dpi);
+            let x = s(ADD_PAD);
+            let room = w - 2 * x;
+            // Program path and arguments stack beside the time windows, whose
+            // field runs down both of their rows.
+            let half = (room - s(ADD_GROUP_GAP)) / 2;
+            let program = [field(label(6), f.program, Width::Flex, dlg.dpi)];
+            let arguments = [field(label(7), f.arguments, Width::Flex, dlg.dpi)];
+            let stack = form_row(dlg, &program, x, 0, half, 0, false)
+                + form_row(dlg, &arguments, x, 0, half, 0, false);
+            let status = s(ADD_LABEL + ADD_GROUP_GAP);
+            let y = form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[
+                        field(label(1), f.name, Width::Flex, dlg.dpi),
+                        button_cell(dlg, Q_CREATE),
+                        button_cell(dlg, Q_RENAME),
+                        button_cell(dlg, Q_DELETE),
+                    ],
+                    &[
+                        field(label(2), f.concurrency, Width::Label(s(96)), dlg.dpi),
+                        field(label(5), f.quota, Width::Label(s(160)), dlg.dpi),
+                        field(label(8), f.delay, Width::Label(s(96)), dlg.dpi),
+                        check_cell(dlg, f.enabled),
+                    ],
+                    &[
+                        field(
+                            label(3),
+                            f.completion,
+                            Width::Label(combo_face_width(f.completion, dlg.dpi)),
+                            dlg.dpi,
+                        ),
+                        button_cell(dlg, Q_UPDATE),
+                        button_cell(dlg, Q_MOVE_JOB),
+                        button_cell(dlg, Q_CANCEL_COMPLETION),
+                    ],
+                ],
+                stack + status,
+            );
+            let top = y + form_row(dlg, &program, x, y, half, 0, true);
+            form_row(dlg, &arguments, x, top, half, 0, true);
+            let windows_x = x + half + s(ADD_GROUP_GAP);
+            let windows_w = room - half - s(ADD_GROUP_GAP);
+            let windows_label = label_height(dlg, label(4), windows_w);
+            MoveWindow(label(4), windows_x, y, windows_w, windows_label, 1);
+            let field_top = y + windows_label + s(ADD_LABEL_GAP);
+            place_modern(
+                f.windows,
+                true,
+                RECT {
+                    left: windows_x,
+                    top: field_top,
+                    right: windows_x + windows_w,
+                    bottom: (y + stack - s(ADD_GROUP_GAP)).max(field_top + s(ADD_FIELD)),
+                },
+                dlg.dpi,
+            );
+            MoveWindow(f.countdown, x, y + stack, room, s(ADD_LABEL), 1);
+            command_bar(dlg, h, &[(D_CANCEL, 96)]);
+        }
+        DialogKind::Rules(f) if modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[field(label(1), f.host, Width::Flex, dlg.dpi)],
+                    &[field(label(2), f.dir, Width::Flex, dlg.dpi)],
+                    &[
+                        field(
+                            label(3),
+                            f.priority,
+                            Width::Label(scale(96, dlg.dpi)),
+                            dlg.dpi,
+                        ),
+                        check_cell(dlg, f.subdomains),
+                        check_cell(dlg, f.file),
+                        check_cell(dlg, f.video),
+                        check_cell(dlg, f.audio),
+                    ],
+                    &[
+                        button_cell(dlg, R_NEW),
+                        button_cell(dlg, R_SAVE),
+                        button_cell(dlg, R_REMOVE),
+                    ],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(D_CANCEL, 96)]);
+        }
+        DialogKind::Crawler(f) if modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            let number = Width::Label(scale(96, dlg.dpi));
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.url, Width::Flex, dlg.dpi)],
+                    &[
+                        field(label(1), f.depth, number, dlg.dpi),
+                        field(label(2), f.pages, number, dlg.dpi),
+                        field(label(3), f.candidates, number, dlg.dpi),
+                        button_cell(dlg, C_SCAN),
+                    ],
+                    &[field(null_mut(), f.list, Width::Flex, dlg.dpi).fill()],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(C_ADD, 96), (D_CANCEL, 96)]);
+        }
+        DialogKind::Synchronization(f) if modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[field(label(1), f.url, Width::Flex, dlg.dpi)],
+                    &[field(label(2), f.dir, Width::Flex, dlg.dpi)],
+                    &[
+                        field(
+                            label(3),
+                            f.interval,
+                            Width::Label(scale(96, dlg.dpi)),
+                            dlg.dpi,
+                        ),
+                        check_cell(dlg, f.enabled),
+                        check_cell(dlg, f.overwrite),
+                    ],
+                    &[
+                        button_cell(dlg, Y_NEW),
+                        button_cell(dlg, Y_SAVE),
+                        button_cell(dlg, Y_REMOVE),
+                        button_cell(dlg, Y_RUN),
+                    ],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(D_CANCEL, 96)]);
+        }
+        DialogKind::Logins(f) if modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[
+                        field(label(1), f.host, Width::Flex, dlg.dpi),
+                        field(label(2), f.user, Width::Flex, dlg.dpi),
+                    ],
+                    &[
+                        field(label(3), f.pass, Width::Flex, dlg.dpi),
+                        check_cell(dlg, f.allow_http),
+                    ],
+                    &[button_cell(dlg, L_ADD), button_cell(dlg, L_REMOVE)],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(L_SAVE, 96), (D_CANCEL, 96)]);
         }
         DialogKind::Queues(f) => {
             let labels: Vec<_> = child_statics(dlg.hwnd, dlg.error)
@@ -1988,21 +2165,280 @@ unsafe fn layout_one_field(
         cw,
         s(ADD_LABEL),
     );
+    command_bar(dlg, h, &[(ok, 120), (D_CANCEL, 96)]);
+}
+
+/// Puts a Modern dialog's command bar buttons at its right end, left to
+/// right as listed, each as wide as its label needs and at least `least` epx.
+unsafe fn command_bar(dlg: &DialogUi, h: i32, buttons: &[(i32, i32)]) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
     let ring = s(FOCUS_MARGIN);
     let by = h - s(ADD_FOOTER) + s(ADD_PAD);
-    let cancel_w = add_button_width(dlg, D_CANCEL, 96);
-    let ok_w = add_button_width(dlg, ok, 120);
-    for (id, bx, bw) in [
-        (D_CANCEL, x + cw - cancel_w, cancel_w),
-        (ok, x + cw - cancel_w - s(DIALOG_GAP) - ok_w, ok_w),
-    ] {
+    let mut right = client.right - s(ADD_PAD);
+    for &(id, least) in buttons.iter().rev() {
+        let bw = add_button_width(dlg, id, least);
         move_id(
             dlg.hwnd,
             id,
-            bx - ring,
+            right - bw - ring,
             by - ring,
             bw + 2 * ring,
             s(ADD_FIELD) + 2 * ring,
         );
+        right -= bw + s(DIALOG_GAP);
+    }
+}
+
+/// How wide a control in a Modern form row is.
+#[derive(Clone, Copy)]
+enum Width {
+    /// An equal share of what the row's other cells leave.
+    Flex,
+    /// Exactly this many pixels.
+    Fixed(i32),
+    /// As wide as its label and at least this many pixels. A row short of
+    /// room narrows the widest of these first, down to that least, and their
+    /// labels wrap.
+    Label(i32),
+}
+
+/// A control in a Modern form row and the label above it, if any. A height of
+/// 0 takes what the dialog has left.
+struct Cell {
+    label: HWND,
+    control: HWND,
+    width: Width,
+    height: i32,
+}
+
+impl Cell {
+    fn fill(self) -> Cell {
+        Cell { height: 0, ..self }
+    }
+}
+
+fn field(label: HWND, control: HWND, width: Width, dpi: u32) -> Cell {
+    Cell {
+        label,
+        control,
+        width,
+        height: scale(ADD_FIELD, dpi),
+    }
+}
+
+/// A push button on the card, as wide as its label needs and at least 96 epx.
+unsafe fn button_cell(dlg: &DialogUi, id: i32) -> Cell {
+    field(
+        null_mut(),
+        GetDlgItem(dlg.hwnd, id),
+        Width::Fixed(add_button_width(dlg, id, 96)),
+        dlg.dpi,
+    )
+}
+
+/// A check box as wide as its box and label.
+unsafe fn check_cell(dlg: &DialogUi, control: HWND) -> Cell {
+    field(
+        null_mut(),
+        control,
+        Width::Fixed(text_width(control) + check_text_inset(dlg.dpi)),
+        dlg.dpi,
+    )
+}
+
+/// The height a label needs at `width`: its wrapped lines, ADD_LABEL each.
+unsafe fn label_height(dlg: &DialogUi, label: HWND, width: i32) -> i32 {
+    let mut value: Vec<u16> = text(label).encode_utf16().collect();
+    let dc = GetDC(label);
+    let previous = SelectObject(dc, dlg.font as HGDIOBJ);
+    let mut line = RECT {
+        right: width,
+        ..zeroed()
+    };
+    let mut probe: Vec<u16> = "Ag".encode_utf16().collect();
+    DrawTextW(
+        dc,
+        probe.as_mut_ptr(),
+        probe.len() as i32,
+        &mut line,
+        DT_CALCRECT | DT_SINGLELINE,
+    );
+    let mut all = RECT {
+        right: width,
+        ..zeroed()
+    };
+    DrawTextW(
+        dc,
+        value.as_mut_ptr(),
+        value.len() as i32,
+        &mut all,
+        DT_CALCRECT | DT_WORDBREAK | DT_EXPANDTABS | DT_NOPREFIX,
+    );
+    SelectObject(dc, previous);
+    ReleaseDC(label, dc);
+    let line = line.bottom.max(1);
+    ((all.bottom + line - 1) / line).max(1) * scale(ADD_LABEL, dlg.dpi)
+}
+
+/// The space before a cell: 8 epx before a push button, 12 before the rest.
+unsafe fn cell_gap(dlg: &DialogUi, cell: &Cell) -> i32 {
+    let button =
+        window_class(cell.control).eq_ignore_ascii_case("Button") && !is_check_box(cell.control);
+    scale(if button { DIALOG_GAP } else { ADD_GROUP_GAP }, dlg.dpi)
+}
+
+/// The cells' widths in a row `room` pixels wide.
+unsafe fn cell_widths(dlg: &DialogUi, cells: &[Cell], room: i32) -> Vec<i32> {
+    let gaps: i32 = cells.iter().skip(1).map(|cell| cell_gap(dlg, cell)).sum();
+    let sized: Vec<(Width, i32)> = cells
+        .iter()
+        .map(|cell| {
+            let label = match cell.width {
+                Width::Label(_) => text_width(cell.label),
+                _ => 0,
+            };
+            (cell.width, label)
+        })
+        .collect();
+    share_row(&sized, room - gaps)
+}
+
+/// Splits `room` between a row's cells, each given with its label's width:
+/// fixed cells keep their width, label cells start as wide as their label
+/// and, while the row is too wide, the widest of them narrow together down to
+/// their least, and flexible cells share what is left.
+fn share_row(cells: &[(Width, i32)], room: i32) -> Vec<i32> {
+    let capped = |cap: i32| -> Vec<i32> {
+        cells
+            .iter()
+            .map(|&(width, label)| match width {
+                Width::Label(least) => label.min(cap).max(least),
+                Width::Fixed(width) => width,
+                Width::Flex => 0,
+            })
+            .collect()
+    };
+    let mut cap = cells.iter().map(|&(_, label)| label).max().unwrap_or(0);
+    let mut widths = capped(cap);
+    while cap > 0 && widths.iter().sum::<i32>() > room {
+        cap -= 1;
+        widths = capped(cap);
+    }
+    let flex = cells
+        .iter()
+        .filter(|(width, _)| matches!(width, Width::Flex))
+        .count() as i32;
+    if flex > 0 {
+        let share = (room - widths.iter().sum::<i32>()).max(0) / flex;
+        for (width, (kind, _)) in widths.iter_mut().zip(cells) {
+            if matches!(kind, Width::Flex) {
+                *width = share;
+            }
+        }
+    }
+    widths
+}
+
+/// Lays a Modern form row out at `y`, from `x` across `room` pixels: the
+/// labels above their controls, as tall as the row's longest wrapped label,
+/// and each control on its face. A cell of height 0 is `fill` tall. Returns
+/// the row's height with the space below it; with `place` false it only
+/// measures.
+unsafe fn form_row(
+    dlg: &DialogUi,
+    cells: &[Cell],
+    x: i32,
+    y: i32,
+    room: i32,
+    fill: i32,
+    place: bool,
+) -> i32 {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let widths = cell_widths(dlg, cells, room);
+    let label_h = cells
+        .iter()
+        .zip(&widths)
+        .filter(|(cell, _)| !cell.label.is_null())
+        .map(|(cell, &width)| label_height(dlg, cell.label, width))
+        .max()
+        .unwrap_or(0);
+    let top = if label_h > 0 {
+        y + label_h + s(ADD_LABEL_GAP)
+    } else {
+        y
+    };
+    let height_of = |cell: &Cell| if cell.height == 0 { fill } else { cell.height };
+    if place {
+        let mut left = x;
+        for (index, (cell, &width)) in cells.iter().zip(&widths).enumerate() {
+            if index > 0 {
+                left += cell_gap(dlg, cell);
+            }
+            if !cell.label.is_null() {
+                MoveWindow(cell.label, left, y, width, label_h, 1);
+            }
+            let face = RECT {
+                left,
+                top,
+                right: left + width,
+                bottom: top + height_of(cell),
+            };
+            place_modern(cell.control, true, face, dlg.dpi);
+            left += width;
+        }
+    }
+    top - y + cells.iter().map(height_of).max().unwrap_or(0) + s(ADD_GROUP_GAP)
+}
+
+/// Lays a Modern list and form dialog's rows out down its card, with the
+/// error line `reserve` pixels below them. The cell of height 0 takes the
+/// height the card has left, at least two list entries. Returns where the
+/// rows end.
+unsafe fn form_rows(dlg: &DialogUi, h: i32, rows: &[&[Cell]], reserve: i32) -> i32 {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(ADD_PAD);
+    let room = client.right - 2 * x;
+    let least = s(2 * ROW_HEIGHT) + 2;
+    let natural: i32 = rows
+        .iter()
+        .map(|row| form_row(dlg, row, x, 0, room, least, false))
+        .sum();
+    let spare = h - s(ADD_FOOTER) - s(ADD_LABEL) - reserve - s(ADD_TOP) - natural;
+    let fill = least + spare.max(0);
+    let mut y = s(ADD_TOP);
+    for row in rows {
+        y += form_row(dlg, row, x, y, room, fill, true);
+    }
+    move_id(dlg.hwnd, D_ERROR, x, y + reserve, room, s(ADD_LABEL));
+    y
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{share_row, Width};
+
+    #[test]
+    fn a_short_row_narrows_its_widest_labels_first_and_shares_the_rest() {
+        let row = [
+            (Width::Label(96), 150),
+            (Width::Label(160), 215),
+            (Width::Label(96), 230),
+            (Width::Fixed(165), 0),
+        ];
+        // Room for every label on one line.
+        assert_eq!(share_row(&row, 800), vec![150, 215, 230, 165]);
+        // 44 px short: the two widest narrow to the same width, the
+        // narrowest label and the fixed cell keep theirs.
+        assert_eq!(share_row(&row, 716), vec![150, 200, 200, 165]);
+        // Far too short: each label cell stops at its least.
+        assert_eq!(share_row(&row, 100), vec![96, 160, 96, 165]);
+        // Flexible cells split what the others leave, never below nothing.
+        let shared = [(Width::Flex, 0), (Width::Fixed(100), 0), (Width::Flex, 0)];
+        assert_eq!(share_row(&shared, 500), vec![200, 100, 200]);
+        assert_eq!(share_row(&shared, 50), vec![0, 100, 0]);
     }
 }

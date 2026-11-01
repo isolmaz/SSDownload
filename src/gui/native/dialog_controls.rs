@@ -337,18 +337,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.schedule = dialog_edit(dlg.hwnd, dlg.font, D_SCHEDULE, false, false);
-            // Modern: flat fields in painted frames, with cue banners.
+            // Modern: cue banners in the empty fields.
             if modern() {
-                for edit in [
-                    f.urls,
-                    f.dir,
-                    f.filename,
-                    f.connections,
-                    f.checksum,
-                    f.schedule,
-                ] {
-                    flatten_edit(edit);
-                }
                 for (index, (tr, en)) in ADD_CUES.iter().enumerate() {
                     let cue = wide(crate::i18n::ui(tr, en));
                     let edit = [f.filename, f.schedule][index];
@@ -957,11 +947,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 D_CANCEL,
                 false,
             );
-            // Modern: flat fields in painted frames, WinUI boxes and tabs.
+            // Modern: WinUI boxes and tabs.
             if modern() {
-                for edit in settings_inputs(f) {
-                    flatten_edit(edit);
-                }
                 for combo in settings_combos(f) {
                     subclass(combo, combo_proc);
                 }
@@ -1092,7 +1079,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Kuyruklar:", "Queues:"),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, Q_LIST, false);
+            f.list = form_list(dlg.hwnd, dlg.font, Q_LIST, false);
             dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Ad:", "Name:"), 0);
             f.name = dialog_edit(dlg.hwnd, dlg.font, Q_NAME, false, false);
             dialog_label(
@@ -1216,6 +1203,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                         .detail(format!("Kuyruk denetimleri yüklenemedi: {error:#}")),
                 );
             }
+            if modern() {
+                subclass(f.completion, combo_proc);
+            }
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
         DialogKind::Rules(f) => {
@@ -1228,7 +1218,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, R_LIST, false);
+            f.list = form_list(dlg.hwnd, dlg.font, R_LIST, false);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
@@ -1330,7 +1320,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 C_SCAN,
                 true,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, C_LIST, true);
+            f.list = form_list(dlg.hwnd, dlg.font, C_LIST, true);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1356,7 +1346,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Eşitleme kayıtları:", "Sync policies:"),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, Y_LIST, false);
+            f.list = form_list(dlg.hwnd, dlg.font, Y_LIST, false);
             dialog_label(dlg.hwnd, dlg.font, "URL:", 0);
             f.url = dialog_edit(dlg.hwnd, dlg.font, Y_URL, false, false);
             dialog_label(
@@ -1481,9 +1471,6 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.edit = dialog_edit(dlg.hwnd, dlg.font, SP_EDIT, false, true);
-            if modern() {
-                flatten_edit(f.edit);
-            }
             set_text(f.edit, &f.initial.to_string());
             dialog_button(
                 dlg.hwnd,
@@ -1509,9 +1496,6 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.edit = dialog_edit(dlg.hwnd, dlg.font, RN_EDIT, false, false);
-            if modern() {
-                flatten_edit(f.edit);
-            }
             set_text(f.edit, &f.initial);
             dialog_button(
                 dlg.hwnd,
@@ -1543,7 +1527,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, L_LIST, false);
+            f.list = form_list(dlg.hwnd, dlg.font, L_LIST, false);
             dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Sunucu:", "Host:"), 0);
             f.host = dialog_edit(dlg.hwnd, dlg.font, L_HOST, false, false);
             dialog_label(

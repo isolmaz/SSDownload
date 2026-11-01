@@ -85,7 +85,7 @@ Other shortcuts: Ctrl+V adds clipboard links, Ctrl+F searches, F5 refreshes, Alt
 - A failed download shows an error mark before its name and a paused one a pause mark. The progress column shows a thin bar under the percentage: in the Windows accent colour while a job runs, grey while it waits, yellow while it is paused, green when it completed and red when it failed or was cancelled (those two fill the whole bar).
 - The row menu groups its commands, with icons and the shortcut of each command.
 - **New download** shows a hint in each empty field, and its main button names what it does: **Continue** when a single link opens the format picker, **Download** otherwise (Classic's button says **Continue / Download** for both).
-- **New download**, **Settings**, the speed limit and **Rename** have the same fields in the same order and check them the same way; their buttons sit on a command bar at the bottom, with the main action (**Continue** or **Download**, **Save**, **Apply**, **Rename**) in the accent colour.
+- **New download**, **Settings**, the speed limit, **Rename**, **Queue manager**, **Folder rules**, **Site explorer**, **Sync manager** and **Site logins** have the same fields and buttons and check them the same way. Their window-wide actions (such as **Close**) sit on a command bar at the bottom and the other buttons beside the fields they act on, and the main action (**Continue** or **Download**, **Save**, **Apply**, **Rename**, **Save policy**, **Add / update**, **Scan within limits**) is in the accent colour.
 
 ## Settings
 

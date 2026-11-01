@@ -8287,6 +8287,15 @@ fn settings_width() -> i32 {
 /// shipped with was a 385 window. A mode's window is its own height plus this,
 /// so neither mode opens with rows it does not have.
 const SETTINGS_FRAME: i32 = 39;
+/// A list and form dialog's window: Modern's content size within its frame,
+/// Classic's fixed size.
+fn form_window(width: i32, height: i32) -> (i32, i32) {
+    if modern() {
+        (width, height + SETTINGS_FRAME + 3)
+    } else {
+        (700, 470)
+    }
+}
 /// The add dialog's logical content height without and with the advanced rows.
 fn add_content_height(advanced: bool) -> i32 {
     match (modern(), advanced) {
@@ -8444,12 +8453,13 @@ pub(super) unsafe fn open_job_view(owner: HWND, app: App, ids: Vec<String>) {
 
 unsafe fn show_site_logins(owner: HWND, app: App) {
     let logins = app.snapshot().settings.site_logins;
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Site girişleri", "Site logins"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Logins(LoginFields {
             logins,
             list: null_mut(),
@@ -8473,12 +8483,13 @@ unsafe fn refresh_login_list(f: &LoginFields) {
     }
 }
 unsafe fn show_queue_manager(owner: HWND, app: App, job_id: Option<String>) {
+    let (width, height) = form_window(QUEUES_WIDTH, QUEUES_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Kuyruk yönetimi", "Queue manager"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Queues(QueueFields {
             list: null_mut(),
             ids: Vec::new(),
@@ -8529,12 +8540,13 @@ unsafe fn show_job_log(owner: HWND, app: App, job: &str, name: &str) {
     );
 }
 unsafe fn show_rule_editor(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Klasör kuralları", "Folder rules"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Rules(RuleFields {
             list: null_mut(),
             ids: Vec::new(),
@@ -8549,12 +8561,13 @@ unsafe fn show_rule_editor(owner: HWND, app: App) {
     );
 }
 unsafe fn show_crawler(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Site bağlantılarını tara", "Scan site links"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Crawler(CrawlerFields {
             url: null_mut(),
             depth: null_mut(),
@@ -8567,12 +8580,13 @@ unsafe fn show_crawler(owner: HWND, app: App) {
     );
 }
 unsafe fn show_sync_manager(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Periyodik dosya eşitleme", "Periodic file sync"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Synchronization(SyncFields {
             list: null_mut(),
             ids: Vec::new(),
@@ -9114,6 +9128,15 @@ unsafe fn dialog_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
     h
 }
 
+/// A list and form dialog's list box: Modern paints its own.
+unsafe fn form_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
+    if modern() {
+        modern_list(parent, font, id, multi)
+    } else {
+        dialog_list(parent, font, id, multi)
+    }
+}
+
 unsafe fn dialog_combo(parent: HWND, font: HFONT, id: i32) -> HWND {
     let h = control(
         parent,
@@ -9150,6 +9173,11 @@ unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
                 | DialogKind::Settings(_)
                 | DialogKind::Speed(_)
                 | DialogKind::Rename(_)
+                | DialogKind::Queues(_)
+                | DialogKind::Rules(_)
+                | DialogKind::Crawler(_)
+                | DialogKind::Synchronization(_)
+                | DialogKind::Logins(_)
         )
     {
         ramp_font(dlg.dpi, BODY_PX, false)
@@ -9176,6 +9204,9 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     dlg.font = dialog_font(dlg);
     create_error(dlg);
     create_kind_controls(dlg);
+    if modern() {
+        flatten_inputs(dlg);
+    }
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
     layout_dialog(dlg);
     dialog_timer(dlg);
@@ -9347,6 +9378,11 @@ unsafe fn populate_queue_fields(f: &QueueFields, queue: &QueuePolicy) -> anyhow:
     set_text(f.delay, &delay.to_string());
     set_text(f.program, &program);
     set_text(f.arguments, &args);
+    // A multiline edit sends no EN_CHANGE for WM_SETTEXT.
+    if modern() {
+        sync_edit_scrollbar(f.windows);
+        sync_edit_scrollbar(f.arguments);
+    }
     Ok(())
 }
 unsafe fn refresh_completion_countdown(hwnd: HWND, f: &QueueFields, snapshot: &AppSnapshot) {
