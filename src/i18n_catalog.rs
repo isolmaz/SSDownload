@@ -442,7 +442,7 @@ static AR: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "لم يُعثر على أي رابط HTTP/HTTPS في النص الذي تم إفلاته."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "لم يُعثر على ترميز صوت متوافق مع MP4 باللغة المحددة؛ اختر MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "لم يُعثر على ترميز فيديو متوافق مع MP4 بالدقة المحددة؛ اختر MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "لم يُعثر على ملف ZIP لـ FFmpeg (Windows x64، ترخيص LGPL) في أحدث إصدار من BtbN"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "لم يُعثر على ملف ZIP لفرع إصدار FFmpeg (Windows x64، ترخيص LGPL) في أحدث إصدار من BtbN"),
     ("No active completion countdown.", "لا يوجد عد تنازلي نشط لإجراء الاكتمال."),
     ("No active downloads.", "لا توجد تنزيلات نشطة."),
     ("No capacity for the network connection became free in time", "لم تتوفر سعة للاتصال بالشبكة في الوقت المناسب"),
@@ -1874,7 +1874,7 @@ static ES: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "No se encontró ningún enlace HTTP/HTTPS en el texto soltado."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "No se encontró ningún códec de audio compatible con MP4 en el idioma seleccionado; elija MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "No se encontró ningún códec de vídeo compatible con MP4 en la resolución seleccionada; elija MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "No se encontró el archivo ZIP de FFmpeg LGPL para Windows x64 en la última versión de BtbN"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "No se encontró el archivo ZIP de una rama de versión de FFmpeg LGPL para Windows x64 en la última versión de BtbN"),
     ("No active completion countdown.", "No hay ninguna cuenta atrás de finalización activa."),
     ("No active downloads.", "No hay descargas activas."),
     ("No capacity for the network connection became free in time", "No quedó capacidad libre para la conexión de red a tiempo"),
@@ -3306,7 +3306,7 @@ static PT: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Nenhum link HTTP/HTTPS foi encontrado no texto arrastado."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "Nenhum codec de áudio compatível com MP4 foi encontrado no idioma selecionado; escolha MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Nenhum codec de vídeo compatível com MP4 foi encontrado na resolução selecionada; escolha MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Nenhum arquivo ZIP do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Nenhum arquivo ZIP de uma ramificação de versão do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN"),
     ("No active completion countdown.", "Nenhuma contagem regressiva de conclusão ativa."),
     ("No active downloads.", "Nenhum download ativo."),
     ("No capacity for the network connection became free in time", "Não ficou disponível capacidade para a conexão de rede a tempo"),
@@ -4738,7 +4738,7 @@ static FR: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Aucun lien HTTP/HTTPS n'a été trouvé dans le texte déposé."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "Aucun codec audio compatible MP4 n'a été trouvé dans la langue sélectionnée ; choisissez MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Aucun codec vidéo compatible MP4 n'a été trouvé à la résolution sélectionnée ; choisissez MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Aucun fichier ZIP FFmpeg LGPL Windows x64 n'a été trouvé dans la dernière version de BtbN"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Aucun fichier ZIP d'une branche de version FFmpeg LGPL Windows x64 n'a été trouvé dans la dernière version de BtbN"),
     ("No active completion countdown.", "Aucun compte à rebours de fin n'est actif."),
     ("No active downloads.", "Aucun téléchargement en cours."),
     ("No capacity for the network connection became free in time", "Aucune capacité n'a été libérée à temps pour la connexion réseau"),
@@ -6170,7 +6170,7 @@ static DE: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Im abgelegten Text wurde kein HTTP/HTTPS-Link gefunden."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "In der ausgewählten Sprache wurde kein MP4-kompatibler Audio-Codec gefunden; wählen Sie MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Bei der ausgewählten Auflösung wurde kein MP4-kompatibler Video-Codec gefunden; wählen Sie MKV"),
-    ("No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release", "Im neuesten BtbN-Release wurde keine Windows-x64-LGPL-FFmpeg-ZIP-Datei gefunden"),
+    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Im neuesten BtbN-Release wurde keine ZIP-Datei eines FFmpeg-Release-Zweigs (Windows x64, LGPL) gefunden"),
     ("No active completion countdown.", "Kein aktiver Countdown bis zum Abschluss."),
     ("No active downloads.", "Keine aktiven Downloads."),
     ("No capacity for the network connection became free in time", "Für die Netzwerkverbindung wurde nicht rechtzeitig Kapazität frei"),
@@ -7357,6 +7357,12 @@ macro_rules! __ui_template_ar {
     ("Missing value for {flag}") => {
         "القيمة مفقودة لـ {flag}"
     };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "لا يوجد إصدار مستقر من Deno {0}.x ضمن أحدث {1} إصدارًا من Deno؛ هذا الإصدار من التطبيق مرتبط بإصدار Deno قديم جدًا"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "لم يُعثر على إصدار مستقر من Deno {0}.x"
+    };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "لم يُعثر على SHA-256 صالح لـ {filename} في ملف المجموع الاختباري الأصلي"
     };
@@ -8174,6 +8180,12 @@ macro_rules! __ui_template_es {
     };
     ("Missing value for {flag}") => {
         "Falta el valor de {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Ninguna versión estable de Deno {0}.x figura entre las {1} versiones más recientes de Deno; esta versión de la aplicación está vinculada a una versión de Deno demasiado antigua"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "No se encontró ninguna versión estable de Deno {0}.x"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "No se encontró un SHA-256 válido para {filename} en el archivo de suma de comprobación del proyecto original"
@@ -8993,6 +9005,12 @@ macro_rules! __ui_template_pt {
     ("Missing value for {flag}") => {
         "Valor ausente para {flag}"
     };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Nenhuma versão estável do Deno {0}.x está entre as {1} versões mais recentes do Deno; esta versão do aplicativo está vinculada a uma versão do Deno muito antiga"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "Nenhuma versão estável do Deno {0}.x foi encontrada"
+    };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "Nenhum SHA-256 válido para {filename} foi encontrado no arquivo de soma de verificação upstream"
     };
@@ -9811,6 +9829,12 @@ macro_rules! __ui_template_fr {
     ("Missing value for {flag}") => {
         "Valeur manquante pour {flag}"
     };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Aucune version stable de Deno {0}.x ne figure parmi les {1} versions les plus récentes de Deno ; cette version de l'application est liée à une version de Deno trop ancienne"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "Aucune version stable de Deno {0}.x n'a été trouvée"
+    };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "Aucun SHA-256 valide pour {filename} n'a été trouvé dans le fichier de somme de contrôle amont"
     };
@@ -10628,6 +10652,12 @@ macro_rules! __ui_template_de {
     };
     ("Missing value for {flag}") => {
         "Fehlender Wert für {flag}"
+    };
+    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
+        "Unter den neuesten {1} Deno-Releases ist kein stabiles Release von Deno {0}.x; diese Version der Anwendung ist an eine zu alte Deno-Version gebunden"
+    };
+    ("No stable release of Deno {0}.x was found") => {
+        "Es wurde kein stabiles Release von Deno {0}.x gefunden"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "In der Upstream-Prüfsummendatei wurde keine gültige SHA-256 für {filename} gefunden"
