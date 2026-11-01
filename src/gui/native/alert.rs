@@ -339,6 +339,12 @@ pub(super) unsafe extern "system" fn alert_proc(
                 GetSysColorBrush(COLOR_WINDOW) as LRESULT
             }
         }
+        // The dialog manager asks which button Enter presses; without an answer it
+        // sends IDOK, which an alert with other buttons does not have.
+        DM_GETDEFID => match default_button_id(hwnd, None) {
+            Some(id) => ((DC_HASDEFID << 16) | id as u32) as LRESULT,
+            None => 0,
+        },
         WM_COMMAND => {
             let id = loword(wparam) as i32;
             if ui.buttons.iter().any(|button| button.id == id) {

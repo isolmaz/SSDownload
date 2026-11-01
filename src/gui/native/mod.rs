@@ -11177,4 +11177,186 @@ mod tests {
             );
         }
     }
+
+    /// The window that has the keyboard focus in the thread that owns `alert`.
+    fn alert_focus(alert: usize) -> usize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+        };
+
+        unsafe {
+            let mut info: GUITHREADINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+            GetGUIThreadInfo(
+                GetWindowThreadProcessId(alert as _, std::ptr::null_mut()),
+                &mut info,
+            );
+            info.hwndFocus as usize
+        }
+    }
+
+    /// Posts a key press to the window that has the focus, or to `alert` while no control has
+    /// it: the way the keyboard delivers a key.
+    fn alert_key(alert: usize, key: u16) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN};
+
+        let target = match alert_focus(alert) {
+            0 => alert,
+            focus => focus,
+        };
+        unsafe { PostMessageW(target as _, WM_KEYDOWN, key as usize, 0) };
+    }
+
+    /// Presses Tab until the focus is on the button with the id `button`; the alert is
+    /// closed by whatever the caller presses next.
+    fn alert_tab_to(alert: usize, buttons: &[AlertButton], button: i32) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_TAB;
+
+        let handle = buttons
+            .iter()
+            .find(|candidate| candidate.id == button)
+            .expect("the alert has the button")
+            .handle;
+        for _ in 0..buttons.len() {
+            let before = alert_focus(alert);
+            alert_key(alert, VK_TAB);
+            for _ in 0..200 {
+                if alert_focus(alert) != before {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            if alert_focus(alert) == handle {
+                return;
+            }
+        }
+        panic!("Tab never reached the button {button}");
+    }
+
+    /// Opens the alert with `open`, lets `act` press its keys and returns what it answered.
+    fn alert_answer(
+        open: impl FnOnce() -> Option<i32> + Send,
+        act: impl FnOnce(usize, &[AlertButton]) + Send,
+    ) -> Option<i32> {
+        answer_alert(open, act).0
+    }
+
+    /// The buttons of an update offer: the first is the default, Escape means the last.
+    const OFFER_BUTTONS: [(i32, &str); 3] = [
+        (
+            windows_sys::Win32::UI::WindowsAndMessaging::IDYES,
+            "Install",
+        ),
+        (100, "Skip"),
+        (windows_sys::Win32::UI::WindowsAndMessaging::IDNO, "Later"),
+    ];
+
+    #[test]
+    fn enter_answers_an_alert_with_its_default_button() {
+        use super::{run_alert, run_alert_buttons};
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_RETURN,
+            WindowsAndMessaging::{
+                IDNO, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OK, MB_YESNO,
+            },
+        };
+
+        let enter = |alert: usize, _: &[AlertButton]| alert_key(alert, VK_RETURN);
+        let custom = |flags| {
+            move || unsafe {
+                run_alert_buttons(
+                    std::ptr::null_mut(),
+                    "Body",
+                    "Title",
+                    flags,
+                    Some(&OFFER_BUTTONS),
+                )
+            }
+        };
+        let plain =
+            |flags| move || unsafe { run_alert(std::ptr::null_mut(), "Body", "Title", flags) };
+        assert_eq!(
+            alert_answer(custom(MB_ICONQUESTION), enter),
+            Some(IDYES),
+            "the first of three buttons"
+        );
+        assert_eq!(
+            alert_answer(custom(MB_ICONQUESTION | MB_DEFBUTTON2), enter),
+            Some(100),
+            "the button MB_DEFBUTTON2 names"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNO | MB_ICONQUESTION), enter),
+            Some(IDYES),
+            "Yes of a yes/no question, which has no OK"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNO | MB_DEFBUTTON2), enter),
+            Some(IDNO),
+            "No when the question makes it the default"
+        );
+        assert_eq!(alert_answer(plain(MB_OK), enter), Some(IDOK), "OK");
+    }
+
+    #[test]
+    fn enter_after_tabbing_to_another_button_answers_that_button() {
+        use super::run_alert_buttons;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_RETURN, WindowsAndMessaging::MB_ICONQUESTION,
+        };
+
+        for (id, label) in OFFER_BUTTONS {
+            let answer = alert_answer(
+                || unsafe {
+                    run_alert_buttons(
+                        std::ptr::null_mut(),
+                        "Body",
+                        "Title",
+                        MB_ICONQUESTION,
+                        Some(&OFFER_BUTTONS),
+                    )
+                },
+                |alert, buttons| {
+                    alert_tab_to(alert, buttons, id);
+                    alert_key(alert, VK_RETURN);
+                },
+            );
+            assert_eq!(answer, Some(id), "Enter on {label}");
+        }
+    }
+
+    #[test]
+    fn escape_answers_an_alert_with_its_own_action_and_not_its_default_button() {
+        use super::{run_alert, run_alert_buttons};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            IDCANCEL, IDNO, MB_ICONQUESTION, MB_YESNO, MB_YESNOCANCEL,
+        };
+
+        let custom = || unsafe {
+            run_alert_buttons(
+                std::ptr::null_mut(),
+                "Body",
+                "Title",
+                MB_ICONQUESTION,
+                Some(&OFFER_BUTTONS),
+            )
+        };
+        assert_eq!(
+            alert_answer(custom, press_escape),
+            Some(IDNO),
+            "Later, the last of three buttons"
+        );
+        let plain =
+            |flags| move || unsafe { run_alert(std::ptr::null_mut(), "Body", "Title", flags) };
+        assert_eq!(
+            alert_answer(plain(MB_YESNO), press_escape),
+            Some(IDNO),
+            "No of a yes/no question"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNOCANCEL), press_escape),
+            Some(IDCANCEL),
+            "Cancel when there is one"
+        );
+    }
 }
