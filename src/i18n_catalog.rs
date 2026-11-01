@@ -1394,6 +1394,7 @@ static AR: &[(&str, &str)] = &[
     ("errors", "الأخطاء"),
     ("failed", "فشل"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "لم يُعثر على ffmpeg.exe في أرشيف FFmpeg"),
+    ("ffprobe did not print JSON", "لم يطبع ffprobe بيانات JSON"),
     ("ffprobe.exe was not found in the FFmpeg archive", "لم يُعثر على ffprobe.exe في أرشيف FFmpeg"),
     ("file", "ملف"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -1443,6 +1444,9 @@ static AR: &[(&str, &str)] = &[
     ("video", "فيديو"),
     ("yt-dlp did not return valid JSON media information", "لم يُرجع yt-dlp معلومات وسائط بصيغة JSON صالحة"),
     ("yt-dlp failed without giving details", "فشل yt-dlp دون تقديم تفاصيل"),
+    ("yt-dlp printed no output file line", "لم يطبع yt-dlp سطر ملف المخرجات"),
+    ("yt-dlp printed no post-processor line", "لم يطبع yt-dlp أي سطر للمعالجة اللاحقة"),
+    ("yt-dlp printed no progress line", "لم يطبع yt-dlp أي سطر تقدّم"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "حالة yt-dlp وFFmpeg وDeno لتنزيلات الفيديو والصوت:"),
 ];
 
@@ -2826,6 +2830,7 @@ static ES: &[(&str, &str)] = &[
     ("errors", "errores"),
     ("failed", "fallida"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "No se ha encontrado ffmpeg.exe en el archivo de FFmpeg"),
+    ("ffprobe did not print JSON", "ffprobe no imprimió JSON"),
     ("ffprobe.exe was not found in the FFmpeg archive", "No se ha encontrado ffprobe.exe en el archivo de FFmpeg"),
     ("file", "archivo"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -2875,6 +2880,9 @@ static ES: &[(&str, &str)] = &[
     ("video", "vídeo"),
     ("yt-dlp did not return valid JSON media information", "yt-dlp no ha devuelto información multimedia JSON válida"),
     ("yt-dlp failed without giving details", "yt-dlp ha fallado sin proporcionar detalles"),
+    ("yt-dlp printed no output file line", "yt-dlp no imprimió la línea del archivo de salida"),
+    ("yt-dlp printed no post-processor line", "yt-dlp no imprimió ninguna línea de posprocesamiento"),
+    ("yt-dlp printed no progress line", "yt-dlp no imprimió ninguna línea de progreso"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Estado de yt-dlp, FFmpeg y Deno para las descargas de vídeo/audio:"),
 ];
 
@@ -4258,6 +4266,7 @@ static PT: &[(&str, &str)] = &[
     ("errors", "erros"),
     ("failed", "falhou"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe não foi encontrado no arquivo do FFmpeg"),
+    ("ffprobe did not print JSON", "O ffprobe não imprimiu JSON"),
     ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe não foi encontrado no arquivo do FFmpeg"),
     ("file", "arquivo"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -4307,6 +4316,9 @@ static PT: &[(&str, &str)] = &[
     ("video", "vídeo"),
     ("yt-dlp did not return valid JSON media information", "o yt-dlp não retornou informações de mídia em JSON válido"),
     ("yt-dlp failed without giving details", "o yt-dlp falhou sem fornecer detalhes"),
+    ("yt-dlp printed no output file line", "O yt-dlp não imprimiu a linha do arquivo de saída"),
+    ("yt-dlp printed no post-processor line", "O yt-dlp não imprimiu nenhuma linha de pós-processamento"),
+    ("yt-dlp printed no progress line", "O yt-dlp não imprimiu nenhuma linha de progresso"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Status do yt-dlp, FFmpeg e Deno para downloads de vídeo/áudio:"),
 ];
 
@@ -5690,6 +5702,7 @@ static FR: &[(&str, &str)] = &[
     ("errors", "erreurs"),
     ("failed", "échoué"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe est introuvable dans l'archive FFmpeg"),
+    ("ffprobe did not print JSON", "ffprobe n'a pas affiché de JSON"),
     ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe est introuvable dans l'archive FFmpeg"),
     ("file", "fichier"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -5739,6 +5752,9 @@ static FR: &[(&str, &str)] = &[
     ("video", "vidéo"),
     ("yt-dlp did not return valid JSON media information", "yt-dlp n'a pas renvoyé d'informations média JSON valides"),
     ("yt-dlp failed without giving details", "yt-dlp a échoué sans donner de détails"),
+    ("yt-dlp printed no output file line", "yt-dlp n'a pas affiché la ligne du fichier de sortie"),
+    ("yt-dlp printed no post-processor line", "yt-dlp n'a affiché aucune ligne de post-traitement"),
+    ("yt-dlp printed no progress line", "yt-dlp n'a affiché aucune ligne de progression"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "État de yt-dlp, FFmpeg et Deno pour les téléchargements vidéo/audio :"),
 ];
 
@@ -7122,6 +7138,7 @@ static DE: &[(&str, &str)] = &[
     ("errors", "Fehler"),
     ("failed", "fehlgeschlagen"),
     ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe wurde im FFmpeg-Archiv nicht gefunden"),
+    ("ffprobe did not print JSON", "ffprobe hat kein JSON ausgegeben"),
     ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe wurde im FFmpeg-Archiv nicht gefunden"),
     ("file", "Datei"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
@@ -7171,6 +7188,9 @@ static DE: &[(&str, &str)] = &[
     ("video", "Video"),
     ("yt-dlp did not return valid JSON media information", "yt-dlp hat keine gültigen JSON-Medieninformationen zurückgegeben"),
     ("yt-dlp failed without giving details", "yt-dlp ist ohne Details fehlgeschlagen"),
+    ("yt-dlp printed no output file line", "yt-dlp hat keine Zeile mit der Ausgabedatei ausgegeben"),
+    ("yt-dlp printed no post-processor line", "yt-dlp hat keine Zeile der Nachbearbeitung ausgegeben"),
+    ("yt-dlp printed no progress line", "yt-dlp hat keine Fortschrittszeile ausgegeben"),
     ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Status von yt-dlp, FFmpeg und Deno für Video- und Audio-Downloads:"),
 ];
 
@@ -7290,6 +7310,9 @@ macro_rules! __ui_template_ar {
     };
     ("Error: {message}\r\n") => {
         "خطأ: {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "لم يُنشئ FFmpeg مقطع الاختبار ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "نقل FTP غير مكتمل: {bytes}/{total} بايت"
@@ -7843,8 +7866,14 @@ macro_rules! __ui_template_ar {
     ("client version {0}") => {
         "إصدار العميل {0}"
     };
+    ("exit code {0}") => {
+        "رمز الخروج {0}"
+    };
     ("expected {0}, received {1}") => {
         "المتوقع {0}، والمستلم {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "تعذّرت على ffprobe قراءة المخرجات ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "لم تستجب القناة المحلية خلال {0} ث"
@@ -7854,6 +7883,12 @@ macro_rules! __ui_template_ar {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "جُرّبت القناة المحلية {attempts} مرة، وكان آخر رد: {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "ملف المخرجات {0} غير موجود"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "فشل yt-dlp ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  الحالة: {1}\r\n  الإصدار: {2}\r\n  الموقع: {3}\r\n\r\n"
@@ -7884,6 +7919,9 @@ macro_rules! __ui_template_ar {
     };
     ("{0} downloads") => {
         "التنزيلات: {0}"
+    };
+    ("{0} is not a file address") => {
+        "{0} ليس عنوان ملف"
     };
     ("{0} stage: {error:#}") => {
         "مرحلة {0}: {error:#}"
@@ -8114,6 +8152,9 @@ macro_rules! __ui_template_es {
     };
     ("Error: {message}\r\n") => {
         "Error: {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "FFmpeg no generó el clip de prueba ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transferencia FTP incompleta: {bytes}/{total} bytes"
@@ -8667,8 +8708,14 @@ macro_rules! __ui_template_es {
     ("client version {0}") => {
         "versión del cliente {0}"
     };
+    ("exit code {0}") => {
+        "código de salida {0}"
+    };
     ("expected {0}, received {1}") => {
         "esperado {0}, recibido {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "ffprobe no pudo leer la salida ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "el canal local no ha respondido durante {0} segundos"
@@ -8678,6 +8725,12 @@ macro_rules! __ui_template_es {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "se ha intentado conectar con el canal local {attempts} veces; última respuesta: {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "el archivo de salida {0} no existe"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "yt-dlp falló ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Estado: {1}\r\n  Versión: {2}\r\n  Ubicación: {3}\r\n\r\n"
@@ -8708,6 +8761,9 @@ macro_rules! __ui_template_es {
     };
     ("{0} downloads") => {
         "{0} descargas"
+    };
+    ("{0} is not a file address") => {
+        "{0} no es una dirección de archivo"
     };
     ("{0} stage: {error:#}") => {
         "En la fase {0}: {error:#}"
@@ -8938,6 +8994,9 @@ macro_rules! __ui_template_pt {
     };
     ("Error: {message}\r\n") => {
         "Erro: {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "O FFmpeg não gerou o clipe de teste ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transferência FTP incompleta: {bytes}/{total} bytes"
@@ -9491,8 +9550,14 @@ macro_rules! __ui_template_pt {
     ("client version {0}") => {
         "versão do cliente {0}"
     };
+    ("exit code {0}") => {
+        "código de saída {0}"
+    };
     ("expected {0}, received {1}") => {
         "esperado {0}, recebido {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "O ffprobe não conseguiu ler a saída ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "o canal local não respondeu por {0} segundos"
@@ -9502,6 +9567,12 @@ macro_rules! __ui_template_pt {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "o canal local foi tentado {attempts} vezes, última resposta: {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "o arquivo de saída {0} não existe"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "O yt-dlp falhou ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Versão: {2}\r\n  Local: {3}\r\n\r\n"
@@ -9532,6 +9603,9 @@ macro_rules! __ui_template_pt {
     };
     ("{0} downloads") => {
         "{0} downloads"
+    };
+    ("{0} is not a file address") => {
+        "{0} não é um endereço de arquivo"
     };
     ("{0} stage: {error:#}") => {
         "etapa {0}: {error:#}"
@@ -9762,6 +9836,9 @@ macro_rules! __ui_template_fr {
     };
     ("Error: {message}\r\n") => {
         "Erreur : {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "FFmpeg n'a pas généré le clip de test ({0}) : {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transfert FTP incomplet : {bytes}/{total} octets"
@@ -10315,8 +10392,14 @@ macro_rules! __ui_template_fr {
     ("client version {0}") => {
         "version du client {0}"
     };
+    ("exit code {0}") => {
+        "code de sortie {0}"
+    };
     ("expected {0}, received {1}") => {
         "attendu {0}, reçu {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "ffprobe n'a pas pu lire la sortie ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "le canal local n'a pas répondu pendant {0} secondes"
@@ -10326,6 +10409,12 @@ macro_rules! __ui_template_fr {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "le canal local a été essayé {attempts} fois, dernière réponse : {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "le fichier de sortie {0} n'existe pas"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "yt-dlp a échoué ({0}) : {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  État : {1}\r\n  Version : {2}\r\n  Emplacement : {3}\r\n\r\n"
@@ -10356,6 +10445,9 @@ macro_rules! __ui_template_fr {
     };
     ("{0} downloads") => {
         "{0} téléchargements"
+    };
+    ("{0} is not a file address") => {
+        "{0} n'est pas une adresse de fichier"
     };
     ("{0} stage: {error:#}") => {
         "Étape {0} : {error:#}"
@@ -10586,6 +10678,9 @@ macro_rules! __ui_template_de {
     };
     ("Error: {message}\r\n") => {
         "Fehler: {message}\r\n"
+    };
+    ("FFmpeg did not generate the test clip ({0}): {1}") => {
+        "FFmpeg hat den Testclip nicht erzeugt ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "FTP-Übertragung unvollständig: {bytes}/{total} Byte"
@@ -11139,8 +11234,14 @@ macro_rules! __ui_template_de {
     ("client version {0}") => {
         "Client-Version {0}"
     };
+    ("exit code {0}") => {
+        "Exitcode {0}"
+    };
     ("expected {0}, received {1}") => {
         "erwartet {0}, erhalten {1}"
+    };
+    ("ffprobe could not read the output ({0})") => {
+        "ffprobe konnte die Ausgabe nicht lesen ({0})"
     };
     ("the local channel did not answer for {0} seconds") => {
         "der lokale Kanal hat {0} Sekunden lang nicht geantwortet"
@@ -11150,6 +11251,12 @@ macro_rules! __ui_template_de {
     };
     ("the local channel was tried {attempts} times, last reply: {error}") => {
         "der lokale Kanal wurde {attempts} Mal versucht, letzte Antwort: {error}"
+    };
+    ("the output file {0} does not exist") => {
+        "die Ausgabedatei {0} existiert nicht"
+    };
+    ("yt-dlp failed ({0}): {1}") => {
+        "yt-dlp ist fehlgeschlagen ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Speicherort: {3}\r\n\r\n"
@@ -11180,6 +11287,9 @@ macro_rules! __ui_template_de {
     };
     ("{0} downloads") => {
         "{0} Downloads"
+    };
+    ("{0} is not a file address") => {
+        "{0} ist keine Dateiadresse"
     };
     ("{0} stage: {error:#}") => {
         "{0}-Phase: {error:#}"

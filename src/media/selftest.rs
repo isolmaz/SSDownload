@@ -44,9 +44,13 @@ fn check_tools(tools: &tools::VerifiedTools, scratch: &Path, run: &mut Run) -> R
     let made = run(&tools.ffmpeg, &clip_args(&video, &audio), CLIP_TIMEOUT)?;
     if !made.status.success() || !video.is_file() || !audio.is_file() {
         bail!(
-            "FFmpeg did not generate the test clip ({}): {}",
-            describe(&made.status),
-            bounded_tail(made.stderr.trim(), 400)
+            "{}",
+            crate::i18n::ui_format!(
+                "FFmpeg deneme klibini üretemedi ({0}): {1}",
+                "FFmpeg did not generate the test clip ({0}): {1}",
+                describe(&made.status),
+                bounded_tail(made.stderr.trim(), 400)
+            )
         );
     }
 
@@ -71,12 +75,18 @@ fn check_tools(tools: &tools::VerifiedTools, scratch: &Path, run: &mut Run) -> R
     let probed = run(&tools.ffprobe, &probe_args(&file), PROBE_TIMEOUT)?;
     if !probed.status.success() {
         bail!(
-            "ffprobe could not read the output ({})",
-            describe(&probed.status)
+            "{}",
+            crate::i18n::ui_format!(
+                "ffprobe çıktıyı okuyamadı ({0})",
+                "ffprobe could not read the output ({0})",
+                describe(&probed.status)
+            )
         );
     }
-    let probe: Value =
-        serde_json::from_slice(&probed.stdout).context("ffprobe did not print JSON")?;
+    let probe: Value = serde_json::from_slice(&probed.stdout).context(crate::i18n::ui(
+        "ffprobe JSON yazdırmadı",
+        "ffprobe did not print JSON",
+    ))?;
     validate_probe(&probe, &probe_request(), &MediaInfo::default())
 }
 
@@ -118,9 +128,16 @@ fn clip_args(video: &Path, audio: &Path) -> Vec<String> {
 /// The extractor document yt-dlp downloads from: one video and one audio format, both local files.
 fn info_document(video: &Path, audio: &Path) -> Result<Value> {
     let address = |path: &Path| {
-        Url::from_file_path(path)
-            .map(String::from)
-            .map_err(|()| anyhow!("{} is not a file address", path.display()))
+        Url::from_file_path(path).map(String::from).map_err(|()| {
+            anyhow!(
+                "{}",
+                crate::i18n::ui_format!(
+                    "{0} bir dosya adresi değil",
+                    "{0} is not a file address",
+                    path.display()
+                )
+            )
+        })
     };
     let (video, audio) = (address(video)?, address(audio)?);
     Ok(serde_json::json!({
@@ -143,9 +160,13 @@ fn info_document(video: &Path, audio: &Path) -> Result<Value> {
 fn check_download(captured: &Captured) -> Result<PathBuf> {
     if !captured.status.success() {
         bail!(
-            "yt-dlp failed ({}): {}",
-            describe(&captured.status),
-            bounded_tail(captured.stderr.trim(), 400)
+            "{}",
+            crate::i18n::ui_format!(
+                "yt-dlp başarısız oldu ({0}): {1}",
+                "yt-dlp failed ({0}): {1}",
+                describe(&captured.status),
+                bounded_tail(captured.stderr.trim(), 400)
+            )
         );
     }
     let stdout = String::from_utf8_lossy(&captured.stdout);
@@ -178,22 +199,47 @@ fn check_download(captured: &Captured) -> Result<PathBuf> {
         );
     }
     if !progressed {
-        bail!("yt-dlp printed no progress line");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "yt-dlp hiç ilerleme satırı yazdırmadı",
+                "yt-dlp printed no progress line"
+            )
+        );
     }
     if !processed {
-        bail!("yt-dlp printed no post-processor line");
+        bail!(
+            "{}",
+            crate::i18n::ui(
+                "yt-dlp hiç son işlem satırı yazdırmadı",
+                "yt-dlp printed no post-processor line"
+            )
+        );
     }
-    let file = file.context("yt-dlp printed no output file line")?;
+    let file = file.context(crate::i18n::ui(
+        "yt-dlp çıktı dosyası satırı yazdırmadı",
+        "yt-dlp printed no output file line",
+    ))?;
     if !completed.contains(&file) {
-        bail!("the output file {} does not exist", file.display());
+        bail!(
+            "{}",
+            crate::i18n::ui_format!(
+                "çıktı dosyası {0} yok",
+                "the output file {0} does not exist",
+                file.display()
+            )
+        );
     }
     Ok(file)
 }
 
+/// Windows always reports an exit code.
 fn describe(status: &ExitStatus) -> String {
-    status
-        .code()
-        .map_or_else(|| "no exit code".into(), |code| format!("exit code {code}"))
+    crate::i18n::ui_format!(
+        "çıkış kodu {0}",
+        "exit code {0}",
+        status.code().unwrap_or_default()
+    )
 }
 
 /// Stub tools that behave like real ones for a good set and misbehave in one chosen way.
@@ -409,68 +455,95 @@ mod tests {
         outcome(Fault::None).unwrap();
     }
 
+    /// What each way of failing is reported with, in English.
+    fn english_reasons() -> Vec<(Fault, String)> {
+        crate::i18n::with_language("en", || {
+            // What the application's own probe validation says about the stub's output.
+            let finding = |video, audio, length| {
+                let probe = serde_json::from_str(&probe_output(video, audio, length)).unwrap();
+                let error = validate_probe(&probe, &probe_request(), &MediaInfo::default())
+                    .expect_err("the stub output is invalid");
+                format!("{error:#}")
+            };
+            let table = vec![
+                (
+                    Fault::ClipFailsToRun,
+                    "did not generate the test clip".into(),
+                ),
+                (
+                    Fault::ClipWritesNothing,
+                    "did not generate the test clip".into(),
+                ),
+                (
+                    Fault::DownloadExitsWithError,
+                    "yt-dlp failed (exit code 1)".into(),
+                ),
+                (Fault::NoProgressLine, "no progress line".into()),
+                (Fault::ProgressOnlyOnStderr, "no progress line".into()),
+                (Fault::NoPostprocessLine, "no post-processor line".into()),
+                (Fault::NoFileLine, "no output file line".into()),
+                (Fault::FileLineNamesAMissingFile, "does not exist".into()),
+                (
+                    Fault::ProbeExitsWithError,
+                    "ffprobe could not read the output".into(),
+                ),
+                (
+                    Fault::ProbePrintsNoJson,
+                    "ffprobe did not print JSON".into(),
+                ),
+                (Fault::ProbeFindsNoAudio, finding(true, false, "")),
+                (
+                    Fault::ProbeFindsNoVideo,
+                    finding(false, true, "00:00:01.023000000"),
+                ),
+                (
+                    Fault::StreamsDisagreeInLength,
+                    finding(true, true, "00:00:02.500000000"),
+                ),
+            ];
+            for fault in Fault::FAILING {
+                assert!(
+                    table.iter().any(|(listed, _)| *listed == fault),
+                    "{fault:?} has no expectation"
+                );
+            }
+            table
+        })
+    }
+
+    fn failure_text(fault: Fault) -> String {
+        let error = outcome(fault).expect_err(&format!("{fault:?} passed the self-test"));
+        format!("{error:#}")
+    }
+
     #[test]
     fn every_way_a_set_can_fail_is_reported() {
-        let fixed = |reason: &str| reason.to_owned();
-        // What the application's own probe validation says about the stub's output.
-        let finding = |video, audio, length| {
-            let probe = serde_json::from_str(&probe_output(video, audio, length)).unwrap();
-            let error = validate_probe(&probe, &probe_request(), &MediaInfo::default())
-                .expect_err("the stub output is invalid");
-            format!("{error:#}")
-        };
-        let table = [
-            (
-                Fault::ClipFailsToRun,
-                fixed("did not generate the test clip"),
-            ),
-            (
-                Fault::ClipWritesNothing,
-                fixed("did not generate the test clip"),
-            ),
-            (
-                Fault::DownloadExitsWithError,
-                fixed("yt-dlp failed (exit code 1)"),
-            ),
-            (Fault::NoProgressLine, fixed("no progress line")),
-            (Fault::ProgressOnlyOnStderr, fixed("no progress line")),
-            (Fault::NoPostprocessLine, fixed("no post-processor line")),
-            (Fault::NoFileLine, fixed("no output file line")),
-            (Fault::FileLineNamesAMissingFile, fixed("does not exist")),
-            (
-                Fault::ProbeExitsWithError,
-                fixed("ffprobe could not read the output"),
-            ),
-            (
-                Fault::ProbePrintsNoJson,
-                fixed("ffprobe did not print JSON"),
-            ),
-            (Fault::ProbeFindsNoAudio, finding(true, false, "")),
-            (
-                Fault::ProbeFindsNoVideo,
-                finding(false, true, "00:00:01.023000000"),
-            ),
-            (
-                Fault::StreamsDisagreeInLength,
-                finding(true, true, "00:00:02.500000000"),
-            ),
-        ];
-        for fault in Fault::FAILING {
-            assert!(
-                table.iter().any(|(listed, _)| *listed == fault),
-                "{fault:?} has no expectation"
+        let table = english_reasons();
+        crate::i18n::with_language("en", || {
+            let prefix = crate::i18n::ui_format!(
+                "Medya özdenetimi başarısız: {0}",
+                "The media self-test failed: {0}",
+                ""
             );
-        }
-        let prefix = crate::i18n::ui_format!(
-            "Medya özdenetimi başarısız: {0}",
-            "The media self-test failed: {0}",
-            ""
-        );
-        for (fault, reason) in table {
-            let error = outcome(fault).expect_err(&format!("{fault:?} passed the self-test"));
-            let text = format!("{error:#}");
-            assert!(text.starts_with(&prefix), "{fault:?}: {text}");
-            assert!(text.contains(&reason), "{fault:?}: {text}");
+            for (fault, reason) in &table {
+                let text = failure_text(*fault);
+                assert!(text.starts_with(&prefix), "{fault:?}: {text}");
+                assert!(text.contains(reason.as_str()), "{fault:?}: {text}");
+            }
+        });
+    }
+
+    #[test]
+    fn every_failure_is_reported_in_the_language_of_the_interface() {
+        let table = english_reasons();
+        for code in ["tr", "ar", "de", "es", "fr", "pt"] {
+            crate::i18n::with_language(code, || {
+                for (fault, reason) in &table {
+                    let text = failure_text(*fault);
+                    assert!(!text.contains(reason.as_str()), "{code} {fault:?}: {text}");
+                    assert!(!text.contains("exit code"), "{code} {fault:?}: {text}");
+                }
+            });
         }
     }
 

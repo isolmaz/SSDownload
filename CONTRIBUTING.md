@@ -36,7 +36,7 @@ The HLS end-to-end tests download from a local server through the media tools th
 cargo test --lib hls_tests -- --ignored
 ```
 
-The same installed tools also run the self-test that gates a tool update (`the_installed_tools_pass_the_self_test`, part of that command).
+The same installed tools also run the self-test that gates a tool update (`the_installed_tools_pass_the_self_test`, part of that command) and check that a tool set can be deleted right after its self-test, passed or failed (`a_tool_set_can_be_deleted_right_after_its_self_test`).
 
 The download benchmarks (`bench_*` in `src/transfer/loopback.rs`) fetch a 128 MiB file from the throttled loopback test server in `src/test_http.rs` and check its SHA-256 each time. They take several minutes, run only on request and print seconds and MiB/s per scenario; run them one at a time:
 
