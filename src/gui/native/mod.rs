@@ -9569,16 +9569,18 @@ unsafe fn place_static(
         place(label, visible, x, y, w, h);
     }
 }
-/// Whether the control a key goes to handles the arrow keys itself.
+/// Whether the control a key goes to handles the arrow keys itself. The tab
+/// strip asks for them too, but there the keys scroll the page, as in Classic.
 unsafe fn wants_arrows(msg: &MSG) -> bool {
-    SendMessageW(
-        msg.hwnd,
-        WM_GETDLGCODE,
-        msg.wParam,
-        msg as *const MSG as isize,
-    ) as u32
-        & DLGC_WANTARROWS
-        != 0
+    !window_class(msg.hwnd).eq_ignore_ascii_case("SysTabControl32")
+        && SendMessageW(
+            msg.hwnd,
+            WM_GETDLGCODE,
+            msg.wParam,
+            msg as *const MSG as isize,
+        ) as u32
+            & DLGC_WANTARROWS
+            != 0
 }
 /// The scroll step a key asks for, zero when the key is not a scroll key.
 fn scroll_delta_for_key(key: u16, dpi: u32) -> i32 {
@@ -10571,6 +10573,54 @@ mod tests {
                 0,
                 "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
             );
+        }
+    }
+
+    #[test]
+    fn the_scroll_keys_reach_the_page_unless_a_field_uses_the_arrows() {
+        use super::{control, wants_arrows, BS_PUSHBUTTON, VK_DOWN};
+        use std::ptr::null_mut;
+        use windows_sys::Win32::UI::Controls::{
+            InitCommonControlsEx, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DestroyWindow, MSG, WM_KEYDOWN, WS_CHILD, WS_POPUP,
+        };
+
+        unsafe {
+            let common = INITCOMMONCONTROLSEX {
+                dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_TAB_CLASSES,
+            };
+            assert_ne!(InitCommonControlsEx(&common), 0);
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let edit = control(parent, "EDIT", "", WS_CHILD, 0, 1);
+            let tabs = control(parent, "SysTabControl32", "", WS_CHILD, 0, 2);
+            assert!(!tabs.is_null(), "the tab strip is created");
+            let button = control(
+                parent,
+                "BUTTON",
+                "OK",
+                WS_CHILD | BS_PUSHBUTTON as u32,
+                0,
+                3,
+            );
+            let down = |hwnd| MSG {
+                hwnd,
+                message: WM_KEYDOWN,
+                wParam: VK_DOWN as usize,
+                lParam: 1,
+                ..std::mem::zeroed()
+            };
+            let (edit_keeps, tabs_keep, button_keeps) = (
+                wants_arrows(&down(edit)),
+                wants_arrows(&down(tabs)),
+                wants_arrows(&down(button)),
+            );
+            DestroyWindow(parent);
+            assert!(edit_keeps, "a text field moves its caret with the arrows");
+            assert!(!tabs_keep, "the tab strip leaves the arrows to the page");
+            assert!(!button_keeps, "a button leaves the arrows to the page");
         }
     }
 }
