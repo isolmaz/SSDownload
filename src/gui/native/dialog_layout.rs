@@ -188,7 +188,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_ADD_OK,
-                w - m - scale(150, dlg.dpi),
+                w - m - scale(250, dlg.dpi),
                 by,
                 scale(150, dlg.dpi),
                 row,
@@ -196,7 +196,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(250, dlg.dpi),
+                w - m - scale(92, dlg.dpi),
                 by,
                 scale(92, dlg.dpi),
                 row,
@@ -687,7 +687,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 S_OK,
-                w - m - scale(100, dlg.dpi),
+                w - m - scale(208, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -695,7 +695,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(208, dlg.dpi),
+                w - m - scale(100, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1175,7 +1175,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 SP_OK,
-                w - m - scale(100, dlg.dpi),
+                w - m - scale(208, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1183,7 +1183,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(208, dlg.dpi),
+                w - m - scale(100, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1205,7 +1205,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 RN_OK,
-                w - m - scale(130, dlg.dpi),
+                w - m - scale(238, dlg.dpi),
                 by,
                 scale(130, dlg.dpi),
                 row,
@@ -1213,7 +1213,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(238, dlg.dpi),
+                w - m - scale(100, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1267,7 +1267,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 L_SAVE,
-                w - m - scale(100, dlg.dpi),
+                w - m - scale(208, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1275,7 +1275,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(208, dlg.dpi),
+                w - m - scale(100, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1590,7 +1590,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 M_QUEUE,
-                w - m - scale(120, dlg.dpi),
+                w - m - scale(220, dlg.dpi),
                 by,
                 scale(120, dlg.dpi),
                 row,
@@ -1618,7 +1618,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(230, dlg.dpi),
+                w - m - scale(92, dlg.dpi),
                 by,
                 scale(92, dlg.dpi),
                 row,

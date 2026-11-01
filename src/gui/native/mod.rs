@@ -9505,6 +9505,88 @@ mod tests {
         })
     }
 
+    fn crawler_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Crawler(super::CrawlerFields {
+            url: null_mut(),
+            depth: null_mut(),
+            pages: null_mut(),
+            candidates: null_mut(),
+            list: null_mut(),
+            result: None,
+            pending: None,
+        })
+    }
+
+    fn events_kind() -> super::DialogKind {
+        super::DialogKind::Events(super::EventFields {
+            list: std::ptr::null_mut(),
+            rendered: Vec::new(),
+        })
+    }
+
+    fn job_log_kind() -> super::DialogKind {
+        super::DialogKind::JobLog(super::JobLogFields {
+            job: "job".into(),
+            list: std::ptr::null_mut(),
+            rendered: Vec::new(),
+        })
+    }
+
+    fn settings_kind(mode: crate::model::UiMode) -> super::DialogKind {
+        use std::ptr::null_mut;
+        let value = crate::model::Settings {
+            ui_mode: mode.as_str().into(),
+            ..crate::model::Settings::default()
+        };
+        super::DialogKind::Settings(Box::new(super::SettingsFields {
+            opened: value.clone(),
+            value,
+            dir: null_mut(),
+            max_active: null_mut(),
+            connections: null_mut(),
+            media_fragments: null_mut(),
+            per_host: null_mut(),
+            speed: null_mut(),
+            retry: null_mut(),
+            clipboard: null_mut(),
+            tray: null_mut(),
+            startup: null_mut(),
+            notify: null_mut(),
+            schedule: null_mut(),
+            start: null_mut(),
+            end: null_mut(),
+            dark: null_mut(),
+            mode_video: null_mut(),
+            mode_file: null_mut(),
+            mode_audio: null_mut(),
+            browser_transfer: null_mut(),
+            update_check: null_mut(),
+            log_level: null_mut(),
+            log_hosts: null_mut(),
+            ui_mode: null_mut(),
+            site_entries: null_mut(),
+            ui_language: null_mut(),
+            proxy_mode: null_mut(),
+            proxy_url: null_mut(),
+            proxy_user: null_mut(),
+            proxy_pass: null_mut(),
+            speed_schedule: null_mut(),
+            speed_start: null_mut(),
+            speed_end: null_mut(),
+            speed_kib: null_mut(),
+            keep_awake: null_mut(),
+            sound: null_mut(),
+            takeover: null_mut(),
+            completion_card: null_mut(),
+            metered: null_mut(),
+            battery_saver: null_mut(),
+            hotkey: null_mut(),
+            double_click: null_mut(),
+            history: null_mut(),
+        }))
+    }
+
     /// Answers the "Delete ...?" box of the dialogs on this thread.
     fn answer_removal(yes: bool) {
         super::dialog_commands::TEST_REMOVAL_ANSWER.with(|answer| answer.set(Some(yes)));
@@ -10164,68 +10246,14 @@ mod tests {
 
     #[test]
     fn the_error_line_of_settings_has_its_own_space_on_every_tab() {
-        use super::{settings_logical_height, DialogKind, SettingsFields, SETTINGS_FRAME};
-        use crate::model::{Settings, UiMode};
-        use std::ptr::null_mut;
-
-        fn settings(mode: UiMode) -> DialogKind {
-            let value = Settings {
-                ui_mode: mode.as_str().into(),
-                ..Settings::default()
-            };
-            DialogKind::Settings(Box::new(SettingsFields {
-                opened: value.clone(),
-                value,
-                dir: null_mut(),
-                max_active: null_mut(),
-                connections: null_mut(),
-                media_fragments: null_mut(),
-                per_host: null_mut(),
-                speed: null_mut(),
-                retry: null_mut(),
-                clipboard: null_mut(),
-                tray: null_mut(),
-                startup: null_mut(),
-                notify: null_mut(),
-                schedule: null_mut(),
-                start: null_mut(),
-                end: null_mut(),
-                dark: null_mut(),
-                mode_video: null_mut(),
-                mode_file: null_mut(),
-                mode_audio: null_mut(),
-                browser_transfer: null_mut(),
-                update_check: null_mut(),
-                log_level: null_mut(),
-                log_hosts: null_mut(),
-                ui_mode: null_mut(),
-                site_entries: null_mut(),
-                ui_language: null_mut(),
-                proxy_mode: null_mut(),
-                proxy_url: null_mut(),
-                proxy_user: null_mut(),
-                proxy_pass: null_mut(),
-                speed_schedule: null_mut(),
-                speed_start: null_mut(),
-                speed_end: null_mut(),
-                speed_kib: null_mut(),
-                keep_awake: null_mut(),
-                sound: null_mut(),
-                takeover: null_mut(),
-                completion_card: null_mut(),
-                metered: null_mut(),
-                battery_saver: null_mut(),
-                hotkey: null_mut(),
-                double_click: null_mut(),
-                history: null_mut(),
-            }))
-        }
+        use super::{settings_logical_height, SETTINGS_FRAME};
+        use crate::model::UiMode;
 
         let mut crowded = Vec::new();
         for (mode, tabs) in [(UiMode::Simple, 1), (UiMode::Advanced, 4)] {
             let height = settings_logical_height(mode.is_simple()) + SETTINGS_FRAME;
             let over = with_dialog(
-                move || settings(mode),
+                move || settings_kind(mode),
                 560,
                 height,
                 |dialog| {
@@ -10447,5 +10475,445 @@ mod tests {
                 "Queues",
             );
         }
+    }
+
+    /// A dialog that closes with a commit row, and what that row holds.
+    struct CommitCase {
+        name: &'static str,
+        make: fn() -> super::DialogKind,
+        width: i32,
+        height: i32,
+        /// The button that does the dialog's work and closes it; none when the
+        /// closing button is the only commit button.
+        affirmative: Option<i32>,
+        /// The button that closes the dialog without doing its work.
+        closer: i32,
+        /// The button that carries `BS_DEFPUSHBUTTON`, the one Enter presses.
+        default: Option<i32>,
+        /// Puts the dialog into the state the case is about.
+        prepare: fn(&HiddenDialog),
+    }
+
+    /// A visible control of a dialog.
+    struct Shown {
+        id: i32,
+        rect: windows_sys::Win32::Foundation::RECT,
+        tab_stop: bool,
+        default: bool,
+    }
+
+    /// The visible controls of the dialog in tab order (the first child is the
+    /// first control Tab reaches), with their rectangles on the screen.
+    unsafe fn shown_controls(hwnd: super::HWND) -> Vec<Shown> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect, BS_DEFPUSHBUTTON,
+            BS_TYPEMASK, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, WS_TABSTOP, WS_VISIBLE,
+        };
+
+        let mut shown = Vec::new();
+        let mut child = GetWindow(hwnd, GW_CHILD);
+        while !child.is_null() {
+            let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+            if style & WS_VISIBLE != 0 {
+                let mut rect: RECT = std::mem::zeroed();
+                GetWindowRect(child, &mut rect);
+                shown.push(Shown {
+                    id: GetDlgCtrlID(child),
+                    rect,
+                    tab_stop: style & WS_TABSTOP != 0,
+                    default: super::window_class(child).eq_ignore_ascii_case("Button")
+                        && style & BS_TYPEMASK as u32 == BS_DEFPUSHBUTTON as u32,
+                });
+            }
+            child = GetWindow(child, GW_HWNDNEXT);
+        }
+        shown
+    }
+
+    /// What is wrong with the dialog's commit row as it is laid out now; empty
+    /// when the row follows the Windows order. Positions are screen positions,
+    /// so in a mirrored dialog the row reads from the right and ends at the
+    /// left edge.
+    unsafe fn commit_row_problems(
+        dialog: &HiddenDialog,
+        case: &CommitCase,
+        mirrored: bool,
+    ) -> Vec<String> {
+        use windows_sys::Win32::Foundation::{POINT, RECT};
+        use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, GetDlgCtrlID, GetDlgItem, GetNextDlgTabItem,
+        };
+
+        let shown = shown_controls(dialog.hwnd);
+        let find = |id: i32| shown.iter().find(|control| control.id == id);
+        let Some(closer) = find(case.closer) else {
+            return vec![format!("the closing button {} is not shown", case.closer)];
+        };
+        let affirmative = match case.affirmative {
+            Some(id) => match find(id) {
+                Some(control) => Some(control),
+                None => return vec![format!("the affirmative button {id} is not shown")],
+            },
+            None => None,
+        };
+        let mut problems = Vec::new();
+
+        if let Some(affirmative) = affirmative {
+            let in_order = if mirrored {
+                closer.rect.right <= affirmative.rect.left
+            } else {
+                affirmative.rect.right <= closer.rect.left
+            };
+            if !in_order {
+                problems.push(format!(
+                    "the affirmative button {} (x {}..{}) does not come before the closing button {} (x {}..{})",
+                    affirmative.id,
+                    affirmative.rect.left,
+                    affirmative.rect.right,
+                    closer.id,
+                    closer.rect.left,
+                    closer.rect.right
+                ));
+            }
+        }
+
+        let mut client: RECT = std::mem::zeroed();
+        GetClientRect(dialog.hwnd, &mut client);
+        let mut near = POINT { x: 0, y: 0 };
+        let mut far = POINT {
+            x: client.right,
+            y: 0,
+        };
+        ClientToScreen(dialog.hwnd, &mut near);
+        ClientToScreen(dialog.hwnd, &mut far);
+        let margin = super::scale(super::DIALOG_MARGIN, (*dialog.raw).dpi);
+        let edge = if mirrored {
+            closer.rect.left - near.x.min(far.x)
+        } else {
+            near.x.max(far.x) - closer.rect.right
+        };
+        if edge != margin {
+            problems.push(format!(
+                "the closing button is {edge} px from the dialog's trailing edge, not the {margin} px margin"
+            ));
+        }
+
+        let in_row = |control: &Shown| {
+            control.rect.top < closer.rect.bottom && control.rect.bottom > closer.rect.top
+        };
+        let commit: Vec<i32> = affirmative
+            .map(|control| control.id)
+            .into_iter()
+            .chain([closer.id])
+            .collect();
+        let span_left = affirmative.map_or(closer.rect.left, |a| a.rect.left.min(closer.rect.left));
+        let span_right =
+            affirmative.map_or(closer.rect.right, |a| a.rect.right.max(closer.rect.right));
+        for other in shown
+            .iter()
+            .filter(|control| !commit.contains(&control.id) && in_row(control))
+        {
+            let before_the_commit_buttons = if mirrored {
+                other.rect.left >= span_right
+            } else {
+                other.rect.right <= span_left
+            };
+            if !before_the_commit_buttons {
+                problems.push(format!(
+                    "control {} stands in the commit row and not before its buttons",
+                    other.id
+                ));
+            }
+        }
+
+        let row_tab: Vec<i32> = shown
+            .iter()
+            .filter(|control| control.tab_stop && in_row(control))
+            .map(|control| control.id)
+            .collect();
+        if !row_tab.ends_with(&commit) {
+            problems.push(format!(
+                "the row is reached in the order {row_tab:?} and does not end with {commit:?}"
+            ));
+        }
+        if let Some(affirmative) = affirmative {
+            let button = GetDlgItem(dialog.hwnd, affirmative.id);
+            if IsWindowEnabled(button) != 0 {
+                let next = GetDlgCtrlID(GetNextDlgTabItem(dialog.hwnd, button, 0));
+                if next != closer.id {
+                    problems.push(format!(
+                        "Tab from the affirmative button {} reaches control {next}, not the closing button {}",
+                        affirmative.id, closer.id
+                    ));
+                }
+            }
+        }
+
+        let defaults: Vec<i32> = shown
+            .iter()
+            .filter(|control| control.default)
+            .map(|control| control.id)
+            .collect();
+        if defaults != case.default.into_iter().collect::<Vec<_>>() {
+            problems.push(format!(
+                "the default buttons are {defaults:?}, expected {:?}",
+                case.default
+            ));
+        }
+        problems
+    }
+
+    /// The first-run wizard and the job view are not in this table: their rows
+    /// are not laid out in the Windows order.
+    #[test]
+    fn the_commit_row_of_every_dialog_follows_the_windows_order() {
+        use super::{
+            settings_logical_height, DialogKind, ADD_DIALOG_HEIGHT, C_SCAN, D_ADD_OK, D_CANCEL,
+            E_CLOSE, J_CLOSE, L_ADD, L_SAVE, M_QUEUE, RENAME_LOGICAL_HEIGHT, RN_OK, R_SAVE,
+            SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT, SP_OK, S_OK, Y_SAVE,
+        };
+        use crate::model::UiMode;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_LAYOUTRTL,
+        };
+
+        fn add_advanced() -> DialogKind {
+            match add_kind() {
+                DialogKind::Add(mut f) => {
+                    f.advanced = true;
+                    DialogKind::Add(f)
+                }
+                other => other,
+            }
+        }
+        fn media_advanced() -> DialogKind {
+            match media_kind() {
+                DialogKind::Media(mut f) => {
+                    f.advanced = true;
+                    DialogKind::Media(f)
+                }
+                other => other,
+            }
+        }
+        fn failed_analysis(dialog: &HiddenDialog) {
+            unsafe {
+                if let DialogKind::Media(f) = &mut (*dialog.raw).kind {
+                    f.report_shown = true;
+                }
+                super::layout_dialog(&*dialog.raw);
+            }
+        }
+        let nothing: fn(&HiddenDialog) = |_| {};
+        let basic_height = settings_logical_height(true) + SETTINGS_FRAME;
+        let advanced_height = settings_logical_height(false) + SETTINGS_FRAME;
+        fn case(
+            name: &'static str,
+            make: fn() -> DialogKind,
+            (width, height): (i32, i32),
+            (affirmative, closer): (Option<i32>, i32),
+            default: Option<i32>,
+            prepare: fn(&HiddenDialog),
+        ) -> CommitCase {
+            CommitCase {
+                name,
+                make,
+                width,
+                height,
+                affirmative,
+                closer,
+                default,
+                prepare,
+            }
+        }
+        let cases = [
+            case(
+                "new download",
+                add_kind,
+                (620, ADD_DIALOG_HEIGHT),
+                (Some(D_ADD_OK), D_CANCEL),
+                Some(D_ADD_OK),
+                nothing,
+            ),
+            case(
+                "new download, advanced",
+                add_advanced,
+                (620, 420),
+                (Some(D_ADD_OK), D_CANCEL),
+                Some(D_ADD_OK),
+                nothing,
+            ),
+            case(
+                "settings, basic",
+                || settings_kind(UiMode::Simple),
+                (560, basic_height),
+                (Some(S_OK), D_CANCEL),
+                Some(S_OK),
+                nothing,
+            ),
+            case(
+                "settings, general",
+                || settings_kind(UiMode::Advanced),
+                (560, advanced_height),
+                (Some(S_OK), D_CANCEL),
+                Some(S_OK),
+                nothing,
+            ),
+            case(
+                "settings, advanced tab",
+                || settings_kind(UiMode::Advanced),
+                (560, advanced_height),
+                (Some(S_OK), D_CANCEL),
+                Some(S_OK),
+                |d| d.show_tab(1),
+            ),
+            case(
+                "settings, network tab",
+                || settings_kind(UiMode::Advanced),
+                (560, advanced_height),
+                (Some(S_OK), D_CANCEL),
+                Some(S_OK),
+                |d| d.show_tab(2),
+            ),
+            case(
+                "settings, behaviour tab",
+                || settings_kind(UiMode::Advanced),
+                (560, advanced_height),
+                (Some(S_OK), D_CANCEL),
+                Some(S_OK),
+                |d| d.show_tab(3),
+            ),
+            case(
+                "speed limit",
+                speed_kind,
+                (420, SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1),
+                (Some(SP_OK), D_CANCEL),
+                Some(SP_OK),
+                nothing,
+            ),
+            case(
+                "rename",
+                rename_kind,
+                (460, RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1),
+                (Some(RN_OK), D_CANCEL),
+                Some(RN_OK),
+                nothing,
+            ),
+            case(
+                "site logins",
+                logins_kind,
+                (700, 470),
+                (Some(L_SAVE), D_CANCEL),
+                Some(L_ADD),
+                nothing,
+            ),
+            case(
+                "media picker",
+                media_kind,
+                (640, 420),
+                (Some(M_QUEUE), D_CANCEL),
+                Some(M_QUEUE),
+                nothing,
+            ),
+            case(
+                "media picker, advanced",
+                media_advanced,
+                (640, 730),
+                (Some(M_QUEUE), D_CANCEL),
+                Some(M_QUEUE),
+                nothing,
+            ),
+            case(
+                "media picker, failed analysis",
+                media_kind,
+                (640, 420),
+                (Some(M_QUEUE), D_CANCEL),
+                Some(M_QUEUE),
+                failed_analysis,
+            ),
+            case(
+                "queues",
+                queues_kind,
+                (700, 470),
+                (None, D_CANCEL),
+                None,
+                nothing,
+            ),
+            case(
+                "folder rules",
+                rules_kind,
+                (700, 470),
+                (None, D_CANCEL),
+                Some(R_SAVE),
+                nothing,
+            ),
+            case(
+                "site crawler",
+                crawler_kind,
+                (700, 470),
+                (None, D_CANCEL),
+                Some(C_SCAN),
+                nothing,
+            ),
+            case(
+                "file sync",
+                sync_kind,
+                (700, 470),
+                (None, D_CANCEL),
+                Some(Y_SAVE),
+                nothing,
+            ),
+            case(
+                "event log",
+                events_kind,
+                (700, 470),
+                (None, E_CLOSE),
+                None,
+                nothing,
+            ),
+            case(
+                "job log",
+                job_log_kind,
+                (700, 470),
+                (None, J_CLOSE),
+                None,
+                nothing,
+            ),
+            case(
+                "media tools",
+                tools_kind,
+                (700, 470),
+                (None, D_CANCEL),
+                None,
+                nothing,
+            ),
+        ];
+
+        let mut wrong = Vec::new();
+        for case in cases {
+            let found = with_dialog(case.make, case.width, case.height, |dialog| unsafe {
+                (case.prepare)(dialog);
+                let mut found = commit_row_problems(dialog, &case, false);
+                let style = GetWindowLongPtrW(dialog.hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(dialog.hwnd, GWL_EXSTYLE, style | WS_EX_LAYOUTRTL as isize);
+                super::layout_dialog(&*dialog.raw);
+                let mirrored = commit_row_problems(dialog, &case, true);
+                found.extend(
+                    mirrored
+                        .into_iter()
+                        .map(|problem| format!("mirrored: {problem}")),
+                );
+                found
+            });
+            if !found.is_empty() {
+                wrong.push((case.name, found));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "dialogs whose commit row is not in the Windows order: {wrong:#?}"
+        );
     }
 }
