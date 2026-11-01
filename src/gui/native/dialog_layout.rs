@@ -105,7 +105,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             }
             MoveWindow(
                 f.start,
-                w - m - scale(110, dlg.dpi),
+                w - m - scale(210, dlg.dpi),
                 by,
                 scale(110, dlg.dpi),
                 row,
@@ -114,7 +114,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(210, dlg.dpi),
+                w - m - scale(92, dlg.dpi),
                 by,
                 scale(92, dlg.dpi),
                 row,
@@ -188,7 +188,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_ADD_OK,
-                w - m - scale(150, dlg.dpi),
+                w - m - scale(250, dlg.dpi),
                 by,
                 scale(150, dlg.dpi),
                 row,
@@ -196,7 +196,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(250, dlg.dpi),
+                w - m - scale(92, dlg.dpi),
                 by,
                 scale(92, dlg.dpi),
                 row,
@@ -687,7 +687,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 S_OK,
-                w - m - scale(100, dlg.dpi),
+                w - m - scale(208, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -695,7 +695,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(208, dlg.dpi),
+                w - m - scale(100, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1175,7 +1175,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 SP_OK,
-                w - m - scale(100, dlg.dpi),
+                w - m - scale(208, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1183,7 +1183,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(208, dlg.dpi),
+                w - m - scale(100, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1205,7 +1205,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 RN_OK,
-                w - m - scale(130, dlg.dpi),
+                w - m - scale(238, dlg.dpi),
                 by,
                 scale(130, dlg.dpi),
                 row,
@@ -1213,7 +1213,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(238, dlg.dpi),
+                w - m - scale(100, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1267,7 +1267,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 L_SAVE,
-                w - m - scale(100, dlg.dpi),
+                w - m - scale(208, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1275,7 +1275,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(208, dlg.dpi),
+                w - m - scale(100, dlg.dpi),
                 by,
                 scale(100, dlg.dpi),
                 row,
@@ -1587,10 +1587,16 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             ] {
                 EnableWindow(control, (!audio_only) as BOOL);
             }
+            // "MP3 olarak indir" queues the selection and closes the picker like
+            // "İndir", so the commit row reads Download, Download as MP3, Cancel.
+            // A failed analysis has nothing to download, and its report button
+            // next to "Gelişmiş seçenekler" leaves no room for a third commit
+            // button, so the MP3 button gives way.
+            let mp3_shown = !f.report_shown;
             move_id(
                 dlg.hwnd,
                 M_QUEUE,
-                w - m - scale(120, dlg.dpi),
+                w - m - scale(if mp3_shown { 378 } else { 220 }, dlg.dpi),
                 by,
                 scale(120, dlg.dpi),
                 row,
@@ -1606,11 +1612,10 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(112, dlg.dpi),
                 row,
             );
-            // "MP3 olarak indir" uses the same middle place while nothing failed.
             place(
                 GetDlgItem(dlg.hwnd, M_MP3),
-                !f.report_shown,
-                m + scale(197, dlg.dpi),
+                mp3_shown,
+                w - m - scale(250, dlg.dpi),
                 by,
                 scale(150, dlg.dpi),
                 row,
@@ -1618,7 +1623,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             move_id(
                 dlg.hwnd,
                 D_CANCEL,
-                w - m - scale(230, dlg.dpi),
+                w - m - scale(92, dlg.dpi),
                 by,
                 scale(92, dlg.dpi),
                 row,
