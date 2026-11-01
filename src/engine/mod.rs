@@ -2621,9 +2621,13 @@ impl Actor {
         // A restart of a job authorized for a transfer starts the download over at once: its size
         // and count go to 0. Sending a job that is not authorized to the browser starts it over
         // as well, once the receiver is ready, which authorizes the job and uses up its grant.
-        // Until then nothing of that begin is saved: after a begin that ends early, also when the
-        // app closes, the job is as it was, and the next start does not run it on its own.
+        // Until then the job's record keeps the state it has now, whatever saves the job: after a
+        // begin that ends early, also when the app closes, the job is as it was, and the next
+        // start does not run it on its own.
         let handed_over = !job.browser_transfer_authorized;
+        if handed_over {
+            self.store.hold(&job);
+        }
         let restarted = restart && !handed_over;
         if restarted {
             job.downloaded = 0;
@@ -2644,8 +2648,10 @@ impl Actor {
         }
         self.jobs.insert(id.into(), job.clone());
         self.cancel_source_refresh_workers(id);
-        let generation = self.next_generation;
-        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        // The receiver's state and the extension keep a transfer's generation after the app
+        // closes, so a transfer draws a random one, which a later session does not give again.
+        // The extension takes it only as a safe integer, below 2^53.
+        let generation = (Uuid::new_v4().as_u128() as u64 & ((1 << 53) - 1)).max(1);
         self.browser_transfers.insert(
             id.into(),
             BrowserTransferLease {
@@ -2959,7 +2965,9 @@ impl Actor {
 
     /// Ends the transfer and with it every network permit it still holds. The extension's
     /// late `end_request` for that generation is refused, so nothing else could release them.
+    /// The job's record is no longer held either.
     fn remove_browser_transfer(&mut self, id: &str) -> Option<BrowserTransferLease> {
+        self.store.release(id);
         self.browser_transfers.remove(id)
     }
 
