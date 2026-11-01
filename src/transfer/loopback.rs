@@ -1699,6 +1699,11 @@ fn stopping_a_one_connection_download_at_any_point_leaves_a_record_of_true_bytes
     every_stop_leaves_a_record_of_true_bytes(1, 12 * MIB + 17, 32 * MIB, 18);
 }
 
+/// The rate at which a test holds a download while it waits for checkpoint cycles. The 12 MiB of
+/// the smallest of these downloads take more than three minutes at it, so the download ends long
+/// after the cycles that the test waits for.
+const HELD_RATE: u64 = 64 * 1024;
+
 /// Opens `path` the way a scanner or a sync client can: other processes may read it but not
 /// replace or delete it. Retries while a record write has the file.
 fn hold_against_replacement(path: &Path) -> File {
@@ -1718,9 +1723,9 @@ fn hold_against_replacement(path: &Path) -> File {
 }
 
 /// The record cannot be replaced for as long as the first periodic cycle takes to give up, then
-/// it can again; the download has to finish all the same. The download is held at 2 MiB/s until
-/// that cycle has failed and the record is free, however long the cycle takes to flush the part
-/// file: a segmented download that ended first would have its last record refused as well.
+/// it can again; the download has to finish all the same. The download is held at `HELD_RATE`
+/// until that cycle has failed and the record is free: a segmented download that ended first
+/// would have its last record refused as well.
 fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
     let server = Server::start(Config {
         size,
@@ -1731,7 +1736,7 @@ fn survives_periodic_checkpoints_that_fail(connections: u8, size: u64) {
     let output = directory.0.join("payload.bin");
     let state_file = state_path(&output);
     let control = TransferControl::default();
-    control.set_speed_limit(2 * MIB);
+    control.set_speed_limit(HELD_RATE);
     let mut held = None;
     let mut acquired = false;
     let result = fetch(
@@ -1854,10 +1859,10 @@ fn flushes_before_it_records(connections: u8) {
     checkpoint_every(Duration::from_millis(100), u64::MAX);
     let directory = TempDir::new("cycle-order");
     let output = directory.0.join("payload.bin");
-    // The download is held at 1 MiB/s until two periodic cycles have recorded, however long the
-    // disk takes to flush; the rest then arrives, and a cycle at the end covers it.
+    // The download is held at `HELD_RATE` until two periodic cycles have recorded; the rest then
+    // arrives, and a cycle at the end covers it.
     let control = TransferControl::default();
-    control.set_speed_limit(MIB);
+    control.set_speed_limit(HELD_RATE);
     let result = fetch(
         &request_for(&server),
         &output,

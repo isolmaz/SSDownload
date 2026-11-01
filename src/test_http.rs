@@ -1969,6 +1969,9 @@ mod tests {
         request(&mut connection, "GET", "/", &["Range: bytes=500-509"]);
         let log = server.log();
         let waited = |entry: &Logged| entry.answered.unwrap() - entry.arrived;
+        // The upper bound is what tells the early offset from the late one. The server measures
+        // the wait itself, from a request's arrival to its answer, so only a stall of its own
+        // thread can lift the early wait over `early`, and `late` lies 1.4 s above that.
         assert!(waited(&log[0]) >= early && waited(&log[0]) < late);
         assert!(waited(&log[1]) >= late);
     }
