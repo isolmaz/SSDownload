@@ -1852,6 +1852,74 @@ fn a_segmented_download_completes_when_only_the_final_record_cannot_be_written()
 }
 
 #[test]
+fn a_segmented_download_stopped_after_its_final_record_failed_resumes_from_the_previous_record() {
+    let size = 12 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(4 * MIB),
+        ..Config::default()
+    });
+    // One periodic cycle records, and the record is held from then on: the cycle at the end
+    // cannot write it. The download is stopped by the report that comes right before the file is
+    // published.
+    checkpoint_every(NEVER, 4 * MIB);
+    let directory = TempDir::new("stopped-after-final-record");
+    let output = directory.0.join("payload.bin");
+    let state_file = state_path(&output);
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let mut held = None;
+    let mut observed = None;
+    let completing = crate::i18n::ui("Tamamlanıyor", "Completing");
+    let first = fetch(
+        &request_for(&server),
+        &output,
+        &control,
+        2,
+        2,
+        &mut |progress| {
+            if held.is_none() && checkpoint_cycles() > 0 {
+                held = Some(hold_against_replacement(&state_file));
+                // The record that stays, read with the part file as it is while it is held.
+                observed = read_state(&state_file).zip(fs::read(part_path(&output)).ok());
+            }
+            if progress.phase == completing {
+                cancel.cancel();
+            }
+        },
+    );
+    assert!(held.is_some(), "the record was never held");
+    drop(held);
+    first.expect_err("the download was stopped before it was published");
+
+    // The record is the one of the periodic cycle, as it was when it was held: every byte it
+    // claims was in the part file then, and it does not claim them all.
+    let (observed, part_then) = observed.expect("the record was never read");
+    let claimed = assert_claims_are_exact(&observed, &part_then, &pattern(1, size));
+    assert!(claimed > 0 && claimed < size, "{claimed} of {size} bytes");
+    let state = read_state(&state_file).expect("the previous record stays");
+    assert_eq!(state.completed, observed.completed);
+
+    server.wait_idle();
+    let first_attempt = server.log().len();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        2,
+        2,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert!(!part_path(&output).exists() && !state_path(&output).exists());
+    server.wait_idle();
+    let mut requested = delivered(&server.log()[first_attempt..], size);
+    requested.extend(state.completed.iter().map(|range| (range.start, range.end)));
+    assert_tiles(requested, size);
+}
+
+#[test]
 fn a_transport_error_stays_a_transport_error_when_the_record_cannot_be_written() {
     let size = 6 * MIB;
     let cut = 3 * MIB;

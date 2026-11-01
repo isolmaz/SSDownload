@@ -2484,7 +2484,8 @@ impl Checkpoints {
     }
 
     /// Makes everything written so far durable, after any cycle in progress, and records it as
-    /// `record` says. No worker may be writing.
+    /// `record` says. Fails when the flush fails, when the ranges cannot be merged into a
+    /// record, or when a required record cannot be written. No worker may be writing.
     fn checkpoint(&mut self, record: Record) -> std::result::Result<(), AttemptFailure> {
         if let Some(ended) = self.cycle.wait() {
             let _ = self.absorb(ended);
