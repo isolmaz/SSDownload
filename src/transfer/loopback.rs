@@ -1381,6 +1381,12 @@ fn pause_cycles_for(pause: Duration) {
     TEST_PAUSE.with(|current| current.set(pause));
 }
 
+/// Makes the range workers of the downloads that the current test thread starts wait `delay`
+/// between receiving a range and requesting it, as a busy machine makes them.
+fn delay_range_starts_by(delay: Duration) {
+    TEST_START_DELAY.with(|current| current.set(delay));
+}
+
 /// The steps of every cycle, split at the step that begins a cycle.
 fn cycles() -> Vec<Vec<&'static str>> {
     let mut cycles: Vec<Vec<&'static str>> = Vec::new();
@@ -2409,6 +2415,20 @@ fn a_short_range_that_arrives_in_one_burst_does_not_make_its_connection_the_fast
 
 #[test]
 fn a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows() {
+    assert_a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows();
+}
+
+#[test]
+fn a_worker_that_starts_late_does_not_make_its_range_look_slow() {
+    // The wait for the first byte counts from the moment the scheduler handed the range over, so
+    // that the time a busy machine takes to start the worker is not taken for time in which the
+    // range was flowing. Otherwise a worker that starts 200 ms late makes its range look slow
+    // until it has flowed for a while, and an idle worker is given its back half.
+    delay_range_starts_by(Duration::from_millis(200));
+    assert_a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows();
+}
+
+fn assert_a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_flows() {
     // Three leases of 8 MiB over 2 connections at 8 MiB/s, and every ranged response, the probe
     // among them, starts a second after its request. The worker that finishes first takes the
     // last lease and the other has nothing to take. Once the last lease flows, a request for its
@@ -2449,6 +2469,20 @@ fn a_late_first_byte_keeps_an_idle_worker_from_taking_the_back_of_a_range_that_f
 
 #[test]
 fn a_short_wait_for_the_first_byte_still_lets_an_idle_worker_take_the_back_of_a_range() {
+    assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range();
+}
+
+#[test]
+fn the_time_before_a_request_is_sent_is_not_a_wait_for_its_first_byte() {
+    // The workers send their requests 1.2 s after the ranges are handed to them, as if each had
+    // to renew an expired address first. The wait that an idle worker is expected to have for its
+    // own request is the 0.1 s that the request took, not the 1.3 s since the hand-over, which
+    // would keep it from taking the back half it is quicker with.
+    delay_range_starts_by(Duration::from_millis(1200));
+    assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range();
+}
+
+fn assert_a_short_wait_for_the_first_byte_lets_an_idle_worker_take_the_back_of_a_range() {
     // Three leases of 8 MiB over 2 connections at 4 MiB/s, every ranged response a tenth of a
     // second late. The worker that finishes first takes the last lease, the other is idle. The
     // last lease needs 2 s for its 8 MiB; the back half takes the idle worker 1 s at the rate of
