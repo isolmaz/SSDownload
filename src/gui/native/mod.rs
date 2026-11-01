@@ -10243,4 +10243,126 @@ mod tests {
             "settings tabs with controls (by id) over the error line: {crowded:?}"
         );
     }
+
+    /// Like `with_dialog`, with the dark scheme on or off in the app's settings.
+    fn with_themed_dialog<T: Send>(
+        dark: bool,
+        make: impl FnOnce() -> super::DialogKind + Send,
+        width: i32,
+        height: i32,
+        body: impl FnOnce(&HiddenDialog) -> T + Send,
+    ) -> T {
+        with_seeded_dialog(
+            |app| {
+                let mut settings = app.snapshot().settings.clone();
+                settings.dark_mode = dark;
+                app.update_settings_quiet(settings).unwrap();
+            },
+            make,
+            width,
+            height,
+            body,
+        )
+    }
+
+    /// The top edge of every control of the dialog, by control id, in client
+    /// coordinates.
+    unsafe fn control_tops(hwnd: super::HWND) -> Vec<(i32, i32)> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::MapWindowPoints;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetDlgCtrlID, GetWindow, GetWindowRect, GW_CHILD, GW_HWNDNEXT,
+        };
+
+        let mut tops = Vec::new();
+        let mut child = GetWindow(hwnd, GW_CHILD);
+        while !child.is_null() {
+            let mut rect: RECT = std::mem::zeroed();
+            GetWindowRect(child, &mut rect);
+            MapWindowPoints(
+                std::ptr::null_mut(),
+                hwnd,
+                (&mut rect as *mut RECT).cast(),
+                2,
+            );
+            tops.push((GetDlgCtrlID(child), rect.top));
+            child = GetWindow(child, GW_HWNDNEXT);
+        }
+        tops.sort();
+        tops
+    }
+
+    /// Scrolls a dialog that is too short for its controls by the wheel and by
+    /// the arrow keys, and checks after every step that the offset the dialog
+    /// keeps is the one step asked for and that every control moved up by
+    /// exactly that offset.
+    fn assert_scroll_steps_move_the_controls_by_the_offset(
+        dark: bool,
+        make: impl FnOnce() -> super::DialogKind + Send,
+        width: i32,
+        height: i32,
+        what: &str,
+    ) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_UP};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SendMessageW, WM_KEYDOWN, WM_MOUSEWHEEL,
+        };
+
+        with_themed_dialog(dark, make, width, height, |dialog| unsafe {
+            let dlg = &*dialog.raw;
+            assert_eq!(super::dialog_is_dark(dlg), dark, "{what}: the scheme");
+            let range = dlg.scroll_range.get();
+            let step = super::scale(48, dlg.dpi);
+            assert!(range > step, "{what} needs more than one step of scrolling");
+            let before = control_tops(dialog.hwnd);
+            let notch = |delta: i16| (delta as u16 as usize) << 16;
+            // The wheel reports a notch down as a negative delta.
+            let steps: [(&str, u32, usize, i32); 5] = [
+                ("a wheel notch down", WM_MOUSEWHEEL, notch(-120), 1),
+                ("a second notch down", WM_MOUSEWHEEL, notch(-120), 1),
+                ("a notch up", WM_MOUSEWHEEL, notch(120), -1),
+                ("the Down key", WM_KEYDOWN, VK_DOWN as usize, 1),
+                ("the Up key", WM_KEYDOWN, VK_UP as usize, -1),
+            ];
+            let mut offset = 0;
+            for (label, message, wparam, direction) in steps {
+                SendMessageW(dialog.hwnd, message, wparam, 0);
+                offset = (offset + direction * step).clamp(0, range);
+                assert_eq!(
+                    dlg.scroll_y.get(),
+                    offset,
+                    "{what}, dark {dark}: the offset after {label}"
+                );
+                let moved: Vec<i32> = before
+                    .iter()
+                    .zip(control_tops(dialog.hwnd))
+                    .map(|(was, now)| was.1 - now.1)
+                    .collect();
+                assert!(
+                    moved.iter().all(|moved| *moved == offset),
+                    "{what}, dark {dark}: after {label} the offset is {offset} and the controls moved up by {moved:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn a_scroll_step_moves_the_controls_by_the_same_amount_in_the_light_and_the_dark_scheme() {
+        for dark in [false, true] {
+            assert_scroll_steps_move_the_controls_by_the_offset(
+                dark,
+                speed_kind,
+                420,
+                90,
+                "Speed limit",
+            );
+            assert_scroll_steps_move_the_controls_by_the_offset(
+                dark,
+                queues_kind,
+                620,
+                200,
+                "Queues",
+            );
+        }
+    }
 }
