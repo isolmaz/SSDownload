@@ -5268,9 +5268,26 @@ unsafe fn update_status(ui: &MainUi) {
     }
 }
 
-/// Every selected row, in list order. The list is multi-select, so batch
-/// actions and the status line work from this set.
+/// Every selected row, in queue order whatever order the list shows. The list
+/// is multi-select, so batch actions and the status line work from this set,
+/// and a sorted view never changes what a command does.
 unsafe fn selected_ids(ui: &MainUi) -> Vec<String> {
+    in_queue_order(&ui.snapshot.jobs, selected_rows(ui))
+}
+
+/// `ids` in the order of `jobs`, the queue.
+fn in_queue_order(jobs: &[Job], mut ids: Vec<String>) -> Vec<String> {
+    let place: HashMap<&str, usize> = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| (job.id.as_str(), index))
+        .collect();
+    ids.sort_by_key(|id| place.get(id.as_str()).copied().unwrap_or(usize::MAX));
+    ids
+}
+
+/// Every selected row, in list order.
+unsafe fn selected_rows(ui: &MainUi) -> Vec<String> {
     let mut ids = Vec::new();
     let mut index =
         SendMessageW(ui.list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize) as i32;
@@ -9939,6 +9956,32 @@ mod tests {
         // order; a finished job and one being removed are left alone.
         assert_eq!(plan, expected);
         assert!(pause_resume_plan(&[&done]).is_empty());
+    }
+
+    #[test]
+    fn a_selection_in_a_sorted_view_reaches_commands_in_queue_order() {
+        use super::{compare_jobs, in_queue_order, COL_NAME};
+        use crate::model::JobState;
+        let queue = vec![
+            sample_job("a", JobState::Queued),
+            sample_job("b", JobState::Queued),
+            sample_job("c", JobState::Queued),
+            sample_job("d", JobState::Queued),
+        ];
+        // The list sorted by name, descending: d, c, b, a.
+        let mut view: Vec<&crate::model::Job> = queue.iter().collect();
+        view.sort_by(|x, y| compare_jobs(x, y, COL_NAME).reverse());
+        let shown: Vec<String> = view.iter().map(|job| job.id.clone()).collect();
+        assert_eq!(shown, ["d", "c", "b", "a"]);
+        // Selecting d, b and a there gives Move to top, Copy addresses and
+        // Start now the queue's a, b, d, as in an unsorted list.
+        let selected = vec!["d".to_string(), "b".into(), "a".into()];
+        assert_eq!(in_queue_order(&queue, selected), ["a", "b", "d"]);
+        // A job the queue no longer has goes last instead of being dropped.
+        assert_eq!(
+            in_queue_order(&queue, vec!["gone".into(), "c".into()]),
+            ["c", "gone"]
+        );
     }
 
     #[test]
