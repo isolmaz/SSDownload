@@ -1422,7 +1422,7 @@ fn the_processing_state_comes_from_the_tool_stage_not_the_phase_text() {
     let mut seen = Vec::new();
     let mut completed = HashSet::new();
     let mut last_path = None;
-    let mut gauge = DownloadGauge::new();
+    let mut gauge = DownloadGauge::new(0);
     for line in [
         format!("{PROGRESS_PREFIX}downloading	100	1000"),
         format!("{PROGRESS_PREFIX}finished	1000	1000"),
@@ -1457,7 +1457,12 @@ fn ms(value: u64) -> Duration {
 
 impl Replay {
     fn new() -> Self {
-        let gauge = DownloadGauge::new();
+        Self::after_files(0)
+    }
+
+    /// A run of the tool that starts with `finished` bytes of files finished before it.
+    fn after_files(finished: u64) -> Self {
+        let gauge = DownloadGauge::new(finished);
         Self {
             origin: Instant::now(),
             now: Duration::ZERO,
@@ -1478,11 +1483,19 @@ impl Replay {
     }
 
     fn line(&mut self, at: Duration, fields: &str) {
+        self.feed(at, &format!("{PROGRESS_PREFIX}{fields}"));
+    }
+
+    fn marker(&mut self, at: Duration, status: &str) {
+        self.feed(at, &format!("{POSTPROCESS_PREFIX}{status}"));
+    }
+
+    fn feed(&mut self, at: Duration, line: &str) {
         self.wait_until(at);
         self.now = self.now.max(at);
         let events = &mut self.events;
         process::handle_machine_line(
-            &format!("{PROGRESS_PREFIX}{fields}"),
+            line,
             self.origin + at,
             &mut |update| events.push((at, update)),
             &mut self.completed,
@@ -1654,6 +1667,22 @@ fn the_next_stream_of_a_download_is_measured_from_its_own_start() {
     );
 }
 
+#[test]
+fn the_time_left_of_the_next_stream_counts_the_bytes_of_the_stream_before() {
+    let mut replay = Replay::new();
+    replay.flow(Duration::ZERO, 5, 1_000_000, 0, 5_000_000);
+    replay.line(ms(5_000), "finished\t5000000\t5000000");
+    replay.flow(ms(5_000), 3, 1_000_000, 0, 10_000_000);
+
+    let (_, update) = replay.events.last().unwrap();
+    assert_eq!(
+        (update.downloaded, update.total),
+        (8_000_000, Some(15_000_000))
+    );
+    let left = update.eta.unwrap();
+    assert!((6..=8).contains(&left), "{left}");
+}
+
 /// A download that starts over inside one run (a server that ignores the range of a resumed
 /// request) counts from zero without a finished stream.
 #[test]
@@ -1669,14 +1698,7 @@ fn a_download_that_starts_over_is_measured_afresh() {
 /// the stream's own.
 #[test]
 fn a_playlist_item_that_starts_over_is_measured_afresh() {
-    let folder = crate::test_http::TempDir::new("playlist-item");
-    let finished = folder.0.join("first.mp4");
-    File::create(&finished)
-        .unwrap()
-        .set_len(300_000_000)
-        .unwrap();
-    let mut replay = Replay::new();
-    replay.completed.insert(finished);
+    let mut replay = Replay::after_files(300_000_000);
     replay.flow(Duration::ZERO, 100, 1_000_000, 0, 400_000_000);
     replay.flow(ms(100_000), 70, 1_000_000, 0, 400_000_000);
 
@@ -1729,6 +1751,93 @@ fn a_late_count_early_in_a_download_does_not_restart_the_measurement() {
         .find(|(at, _)| *at >= ms(2_500))
         .unwrap();
     assert!(update.speed.abs_diff(200_000) < 20_000, "{}", update.speed);
+}
+
+/// The lines are what yt-dlp 2026.10.26 printed (their offset in ms from the first line) for a
+/// master playlist with a video and a separate audio playlist: 326932 bytes of video, then
+/// 110168 bytes of audio, merged by FFmpeg into a file of 387271 bytes. Each stream counts from
+/// zero, and the counts of the tool's threads arrive out of order (112384, then 86056).
+const VIDEO_THEN_AUDIO: [(u64, &str); 33] = [
+    (0, "downloading\t1024\t313584.0"),
+    (1, "downloading\t3072\t319728.0"),
+    (2, "downloading\t7168\t332016.0"),
+    (3, "downloading\t15360\t356592.0"),
+    (4, "downloading\t31744\t405744.0"),
+    (6, "downloading\t32768\t526608.0"),
+    (12, "downloading\t85032\t833424.0"),
+    (12, "downloading\t110336\t852480.0"),
+    (12, "downloading\t112384\t991392.0"),
+    (13, "downloading\t86056\t828288.0"),
+    (15, "downloading\t116480\t1003680.0"),
+    (17, "downloading\t126720\t520272.0"),
+    (21, "downloading\t171776\t416816.0"),
+    (23, "downloading\t216200\t495888.0"),
+    (28, "downloading\t216200\t542192.0"),
+    (34, "downloading\t217224\t326668.80000000005"),
+    (40, "downloading\t273248\t365990.4"),
+    (43, "downloading\t326932\t430411.19999999995"),
+    (45, "downloading\t326932\t381640.0"),
+    (72, "finished\t326932\t326932"),
+    (102, "downloading\t1024\t126336.0"),
+    (103, "downloading\t3072\t133504.0"),
+    (107, "downloading\t16384\t183680.0"),
+    (113, "downloading\t34432\t361508.0"),
+    (117, "downloading\t67004\t595364.0"),
+    (119, "downloading\t40380\t390180.0"),
+    (120, "downloading\t69880\t298340.0"),
+    (123, "downloading\t72568\t211437.3333333333"),
+    (131, "downloading\t73508\t102911.2"),
+    (143, "downloading\t107104\t146230.0"),
+    (145, "downloading\t110168\t125528.0"),
+    (147, "downloading\t110168\t128592.0"),
+    (171, "finished\t110168\t110168"),
+];
+
+#[test]
+fn the_count_of_a_job_with_two_streams_only_rises_and_ends_at_their_bytes() {
+    let mut replay = Replay::new();
+    for (at, fields) in VIDEO_THEN_AUDIO {
+        replay.line(ms(at), fields);
+    }
+
+    let counts: Vec<_> = replay
+        .events
+        .iter()
+        .map(|(_, update)| update.downloaded)
+        .collect();
+    assert!(
+        counts.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{counts:?}"
+    );
+    assert_eq!(counts.last(), Some(&(326_932 + 110_168)));
+}
+
+#[test]
+fn the_size_of_a_job_with_two_streams_adds_up_the_streams() {
+    let mut replay = Replay::new();
+    for (at, fields) in VIDEO_THEN_AUDIO {
+        replay.line(ms(at), fields);
+    }
+
+    let (_, update) = replay
+        .events
+        .iter()
+        .find(|(_, update)| update.downloaded == 326_932 + 73_508)
+        .unwrap();
+    assert_eq!(update.total, Some(326_932 + 102_911));
+}
+
+#[test]
+fn a_post_processor_marker_keeps_the_count_of_the_job() {
+    let mut replay = Replay::after_files(1_000);
+    for (at, fields) in VIDEO_THEN_AUDIO {
+        replay.line(ms(at), fields);
+    }
+    replay.marker(ms(180), "started");
+
+    let (_, update) = replay.events.last().unwrap();
+    assert!(update.processing);
+    assert_eq!(update.downloaded, 1_000 + 326_932 + 110_168);
 }
 
 /// Runs a PowerShell script as the tool and returns when each progress update reached the
@@ -1805,6 +1914,78 @@ fn a_silent_tool_does_not_freeze_the_progress() {
         .all(|pair| pair[1].1.speed <= pair[0].1.speed));
 }
 
+fn tool_running(script: &str) -> RunningDownload {
+    let args = vec![
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-Command".into(),
+        script.to_owned(),
+    ];
+    RunningDownload::spawn_with_proxy(Path::new("powershell.exe"), &args, b"", None).unwrap()
+}
+
+/// yt-dlp prints its post-processor markers on stderr, because --print keeps stdout for its
+/// own lines.
+#[test]
+fn a_post_processor_marker_on_stderr_reaches_the_progress() {
+    let mut running =
+        tool_running("[Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\")");
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| updates.push(update),
+        &mut HashSet::new(),
+        &mut None,
+        None,
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
+    let phase = crate::i18n::ui("FFmpeg ile işleniyor", "Processing with FFmpeg");
+    assert!(
+        updates
+            .iter()
+            .any(|update| update.processing && update.phase == phase),
+        "{updates:?}"
+    );
+}
+
+/// FFmpeg prints nothing while it merges or converts a large file, and opens no connection.
+#[test]
+fn a_silent_post_processor_is_stalled_by_its_own_limit_not_the_transfer_limit() {
+    let mut running = tool_running(
+        "[Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); \
+         Start-Sleep -Milliseconds 500; \
+         [Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\"); \
+         [Console]::Error.Flush(); Start-Sleep -Seconds 20",
+    );
+    // The limits count from the moment the tool is known to run.
+    running.lines.recv_timeout(Duration::from_secs(30)).unwrap();
+    running.stall_limit = Duration::from_secs(4);
+    running.postprocess_stall_limit = Duration::from_secs(8);
+
+    let began = Instant::now();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |_| {},
+        &mut HashSet::new(),
+        &mut None,
+        None,
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, MonitorOutcome::Stalled));
+    assert!(
+        began.elapsed() >= Duration::from_secs(6),
+        "{:?}",
+        began.elapsed()
+    );
+}
+
 /// The tool's own counter of a live job covers one stream: it neither alternates with the size
 /// of the recording nor is repeated while the tool is silent.
 #[test]
@@ -1818,6 +1999,34 @@ fn a_live_recording_reports_only_its_own_size() {
     for (_, update) in &updates {
         assert_eq!(update.downloaded, 2048, "{update:?}");
     }
+}
+
+/// The tool post-processes a recording that has ended: its markers report the job as processing,
+/// and the recording's size must not take the state back to downloading every second.
+#[test]
+fn a_live_recording_that_the_tool_post_processes_stays_in_processing() {
+    let folder = recording_folder();
+    let mut recording = LiveRecordingGauge::new(&folder.0);
+    let mut running = tool_running(
+        "[Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\"); \
+         [Console]::Error.Flush(); Start-Sleep -Seconds 3",
+    );
+    let mut updates = Vec::new();
+    let outcome = monitor_download(
+        &mut running,
+        &TransferControl::default(),
+        0,
+        &mut |update| updates.push(update),
+        &mut HashSet::new(),
+        &mut None,
+        Some(&mut recording),
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
+    let processing = updates.iter().position(|update| update.processing).unwrap();
+    let after = &updates[processing..];
+    assert!(after.iter().all(|update| update.processing), "{after:?}");
 }
 
 const LIVE_TOOL_LINE: &str = "SSDOWNLOAD_PROGRESS\tdownloading\t9999999\t10000000";
@@ -2049,4 +2258,31 @@ fn every_stream_is_decoded_up_to_half_a_second_before_its_own_end() {
         "-t 0.200 -map 0:0 -f null - -t 0.120 -map 0:1 -f null -"
     );
     assert_eq!(args(&[stream(0, Some(0.55))], 0.0, Some(2.0), 0.5), "");
+}
+
+#[test]
+fn an_evidence_request_is_sent_only_with_a_millisecond_or_more_left() {
+    let now = Instant::now();
+    let mut budget = EvidenceBudget {
+        deadline: now + Duration::from_micros(500),
+        requests: 0,
+        bytes: 0,
+    };
+    assert_eq!(budget.request_timeout_at(now), None);
+    assert_eq!(
+        budget.requests, 0,
+        "a request that is not sent is not counted"
+    );
+    budget.deadline = now + Duration::from_millis(3);
+    assert_eq!(
+        budget.request_timeout_at(now),
+        Some(Duration::from_millis(3))
+    );
+    assert_eq!(budget.requests, 1);
+    budget.deadline = now + Duration::from_secs(15);
+    assert_eq!(
+        budget.request_timeout_at(now),
+        Some(SOURCE_EVIDENCE_REQUEST_TIMEOUT),
+        "a request is never given more than its own limit"
+    );
 }

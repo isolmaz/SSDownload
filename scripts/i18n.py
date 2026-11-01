@@ -10,7 +10,8 @@ English text in `i18n/<code>.json`, a JSON object from English text to translati
     python scripts/i18n.py check     fails on an untranslated or stale catalog entry, a
                                      placeholder or menu marker a translation changes, two items
                                      of one menu that share an access letter in any language, a
-                                     text the extractor cannot read, or an out-of-date
+                                     text the extractor cannot read, a window text written as a
+                                     bare literal instead of through ui(), or an out-of-date
                                      i18n_catalog.rs
 """
 import json
@@ -428,8 +429,40 @@ def menu_letter_clashes(catalogs):
     return problems
 
 
+# The window helpers and the positions of the arguments that carry a text the user reads.
+TEXT_ARGUMENTS = {
+    "dialog_label": (2,), "dialog_button": (2,), "dialog_check": (2,), "dialog_check_wrapped": (2,),
+    "dialog_card": (2,), "tab_item": (2,), "combo_add": (1,), "append": (2,), "control": (2,),
+    "message": (1, 2), "notify": (1, 2), "set_dialog_error": (2,),
+}
+# Written the same in every language.
+UNTRANSLATED = {"SSDownload"}
+
+
+def bare_texts():
+    """Window texts written as a bare literal, which no catalog can translate.
+
+    A literal with a word of three lowercase letters is English; one without (URL, VTT) is the same
+    in every language."""
+    problems = []
+    for path in sorted((SOURCE / "gui").rglob("*.rs")):
+        text = code_only(path.read_text(encoding="utf-8"))
+        if "#[cfg(test)]" in text:
+            text = text[:text.index("#[cfg(test)]")]
+        for call in re.finditer(r"(?<![\w.:$])(" + "|".join(TEXT_ARGUMENTS) + r")\s*\(", text):
+            if text[max(0, call.start() - 3):call.start()] == "fn ":
+                continue
+            arguments = split_top(text[call.end():closing(text, call.end())])
+            for position in TEXT_ARGUMENTS[call.group(1)]:
+                value = literal_value(arguments[position]) if position < len(arguments) else None
+                if value and value not in UNTRANSLATED and re.search(r"[a-z]{3}", value):
+                    where = f"{path.relative_to(ROOT).as_posix()}:{text[:call.start()].count(chr(10)) + 1}"
+                    problems.append(f'{where}: {call.group(1)}() shows {json.dumps(value, ensure_ascii=False)} as a bare literal; write it as ui("Türkçe", "English") so the catalogs translate it')
+    return problems
+
+
 def check(extraction):
-    problems = list(extraction.problems)
+    problems = list(extraction.problems) + bare_texts()
     catalogs = {}
     for code, _ in LANGUAGES:
         catalog = catalogs[code] = load_catalog(code)
