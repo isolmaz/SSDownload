@@ -1647,7 +1647,8 @@ impl Reporter {
     }
 
     /// The progress of the streams at `now`: the bytes, size and speed of all of them, the time
-    /// left of the stream that needs the longest, and whether a host limits the requests.
+    /// left of the stream that needs the longest, none while the download waits for the server,
+    /// and whether a host limits the requests.
     fn report(&mut self, context: &WorkerContext, now: Instant) -> TransferProgress {
         let streams = context
             .joins
@@ -1676,7 +1677,11 @@ impl Reporter {
             downloaded: self.downloaded,
             total: streams.iter().map(|stream| stream.size).sum(),
             speed: streams.iter().filter_map(|stream| stream.speed).sum(),
-            eta: time_left(&streams),
+            // Speeds measured before the wait read lower and lower during it, and say nothing of
+            // when it ends.
+            eta: (limited != Limited::Waiting)
+                .then(|| time_left(&streams))
+                .flatten(),
             phase: match limited {
                 Limited::No => crate::i18n::ui("Medya indiriliyor", "Downloading media"),
                 Limited::Flowing => crate::i18n::ui(
@@ -3276,6 +3281,116 @@ mod tests {
         assert_eq!(report(at(5), 6_000, 700).0, 6_700);
         assert_eq!(report(at(6), 6_000, 600).0, 6_700);
         assert_eq!(report(at(7), 6_000, 750).0, 6_750);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_time_left_is_blank_while_the_whole_download_waits_for_the_server() {
+        let root = std::env::temp_dir().join(format!("ssdownload-held-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        // Two segments of video from one host and two of audio from another.
+        let streams = [
+            NativeStream {
+                role: "video",
+                segments: (0..2)
+                    .map(|index| Url::parse(&format!("https://video.example/{index}.ts")).unwrap())
+                    .collect(),
+                ..one_host_stream(2)
+            },
+            one_host_stream(2),
+        ];
+        let joins = streams
+            .each_ref()
+            .map(|stream| Join::resume(&root, stream).unwrap());
+        let shared = Shared::new(&streams, &joins, 2);
+        let (control, network) = (TransferControl::default(), NetworkGovernor::new(8));
+        let received = [AtomicU64::new(0), AtomicU64::new(0)];
+        let context = WorkerContext {
+            streams: &streams,
+            joins: &joins,
+            shared: &shared,
+            cookies: &[],
+            control: &control,
+            network: &network,
+            received: &received,
+            workers: 1,
+        };
+        let (video, audio) = (shared.hosts[0][0], shared.hosts[1][0]);
+        let join = |stream: usize, index, bytes| {
+            fs::write(segment_path(&joins[stream].joined, index), vec![0; bytes]).unwrap();
+            joins[stream].mark_ready(index).unwrap();
+        };
+        let take = |kept, now| {
+            shared
+                .lock()
+                .take(&shared.hosts, &streams, kept, now)
+                .expect("a segment is due")
+        };
+        let start = Instant::now();
+        let after = |millis| start + Duration::from_millis(millis);
+        let mut reporter = Reporter::new(&received, start);
+        let mut report = |now, video, audio| {
+            received[0].store(video, Ordering::Relaxed);
+            received[1].store(audio, Ordering::Relaxed);
+            let report = reporter.report(&context, now);
+            (report.phase, report.eta)
+        };
+        let (downloading, limiting, waiting) = (
+            crate::i18n::ui("Medya indiriliyor", "Downloading media").to_owned(),
+            crate::i18n::ui(
+                "Medya indiriliyor; sunucu istekleri sınırlıyor",
+                "Downloading media; the server is limiting requests",
+            )
+            .to_owned(),
+            crate::i18n::ui(
+                "Sunucu bekleniyor; istekleri sınırlıyor",
+                "Waiting for the server, which is limiting requests",
+            )
+            .to_owned(),
+        );
+        let [video_0, audio_0, video_1, audio_1] = [(); 4].map(|_| take(None, start));
+        assert_eq!(
+            [video_0, audio_0, video_1, audio_1].map(|task| (task.stream, task.index)),
+            [(0, 0), (1, 0), (0, 1), (1, 1)]
+        );
+        join(0, 0, 3_000);
+        join(1, 0, 300);
+        shared
+            .lock()
+            .settle(video, Settled::Done { sent: video_0.sent }, after(1_000));
+        shared
+            .lock()
+            .settle(audio, Settled::Done { sent: audio_0.sent }, after(1_000));
+        assert_eq!(
+            report(after(2_000), 4_000, 400),
+            (downloading.clone(), Some(1))
+        );
+
+        // The audio host refuses the audio's last segment for 30 s while the video's last one
+        // comes: the time left still follows both streams.
+        shared.lock().settle(
+            audio,
+            Settled::Retry {
+                task: audio_1,
+                throttled: true,
+                retry_after: Some(Duration::from_secs(30)),
+            },
+            after(2_100),
+        );
+        assert_eq!(report(after(3_000), 5_000, 300), (limiting, Some(3)));
+        // Once the video is done, nothing is in flight and the audio waits for its host.
+        join(0, 1, 3_000);
+        shared
+            .lock()
+            .settle(video, Settled::Done { sent: video_1.sent }, after(4_000));
+        assert_eq!(report(after(4_100), 6_000, 300), (waiting, None));
+        // When the audio goes again, its time left follows its bytes.
+        take(Some(audio), after(32_100));
+        assert_eq!(
+            report(after(32_100), 6_000, 300),
+            (downloading.clone(), None)
+        );
+        assert_eq!(report(after(33_100), 6_000, 400), (downloading, Some(2)));
         fs::remove_dir_all(root).unwrap();
     }
 
