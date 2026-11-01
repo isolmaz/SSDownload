@@ -2657,8 +2657,9 @@ impl Actor {
         self.jobs.insert(id.into(), job.clone());
         self.cancel_source_refresh_workers(id);
         // The receiver's state and the extension keep a transfer's generation after the app
-        // closes, so a transfer draws a random one, which a later session does not give again.
-        // The extension takes it only as a safe integer, below 2^53.
+        // closes, so a transfer draws a random one: a later session gives the same one again
+        // only by chance, about once in 2^53. The extension takes it only as a safe integer,
+        // below 2^53.
         let generation = (Uuid::new_v4().as_u128() as u64 & ((1 << 53) - 1)).max(1);
         self.browser_transfers.insert(
             id.into(),
