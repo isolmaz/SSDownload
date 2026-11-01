@@ -9130,6 +9130,23 @@ unsafe fn dialog_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
     h
 }
 
+/// Puts `controls` in the Tab order right after `first`, in the order given.
+unsafe fn tab_order(first: HWND, controls: &[HWND]) {
+    let mut previous = first;
+    for &control in controls {
+        SetWindowPos(
+            control,
+            previous,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        previous = control;
+    }
+}
+
 /// A list and form dialog's list box: Modern paints its own.
 unsafe fn form_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
     if modern() {

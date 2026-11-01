@@ -993,19 +993,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION),
                 GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
             ]);
-            let mut previous = tabs;
-            for control in order {
-                SetWindowPos(
-                    control,
-                    previous,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-                previous = control;
-            }
+            tab_order(tabs, &order);
         }
         DialogKind::Tools(f) => {
             dialog_label(
@@ -1205,6 +1193,28 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             }
             if modern() {
                 subclass(f.completion, combo_proc);
+                // Tab follows the rows Modern lays the fields out in.
+                let button = |id: i32| GetDlgItem(dlg.hwnd, id);
+                tab_order(
+                    f.list,
+                    &[
+                        f.name,
+                        button(Q_CREATE),
+                        button(Q_RENAME),
+                        button(Q_DELETE),
+                        f.concurrency,
+                        f.quota,
+                        f.delay,
+                        f.enabled,
+                        f.completion,
+                        button(Q_UPDATE),
+                        button(Q_MOVE_JOB),
+                        button(Q_CANCEL_COMPLETION),
+                        f.program,
+                        f.arguments,
+                        f.windows,
+                    ],
+                );
             }
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
