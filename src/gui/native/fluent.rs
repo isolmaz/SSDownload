@@ -864,6 +864,29 @@ pub(super) unsafe fn place_combo(combo: HWND, rect: RECT, dpi: u32) {
     }
 }
 
+/// The face width a Modern combo box needs for its widest entry: the text
+/// 11 epx in and the chevron's 32 epx after it.
+pub(super) unsafe fn combo_face_width(combo: HWND, dpi: u32) -> i32 {
+    let dc = GetDC(combo);
+    let previous = SelectObject(dc, SendMessageW(combo, WM_GETFONT, 0, 0) as HGDIOBJ);
+    let mut widest = 0;
+    for index in 0..SendMessageW(combo, CB_GETCOUNT, 0, 0).max(0) as usize {
+        let length = SendMessageW(combo, CB_GETLBTEXTLEN, index, 0);
+        if length <= 0 {
+            continue;
+        }
+        let mut item = vec![0u16; length as usize + 1];
+        SendMessageW(combo, CB_GETLBTEXT, index, item.as_mut_ptr() as isize);
+        widest = widest.max(label_width(
+            dc,
+            &String::from_utf16_lossy(&item[..length as usize]),
+        ));
+    }
+    SelectObject(dc, previous);
+    ReleaseDC(combo, dc);
+    widest + scale(INPUT_PAD_LEFT + 32, dpi)
+}
+
 /// Paints a closed drop-down list box as a WinUI ComboBox: the standard
 /// button's surface, states and focus ring, the selection 11 epx in from the
 /// left, and the chevron at the right. The open list stays the system's.
@@ -1380,6 +1403,8 @@ unsafe fn draw_button_content(
 /// The WinUI CheckBox's box and the space between it and the label, in epx.
 const CHECK_BOX: i32 = 20;
 const CHECK_GAP: i32 = 8;
+/// Where a check box's text starts, from the left of its face.
+pub(super) const CHECK_TEXT_INSET: i32 = CHECK_BOX + CHECK_GAP;
 
 /// Whether `control` is a check box button.
 pub(super) unsafe fn is_check_box(control: HWND) -> bool {

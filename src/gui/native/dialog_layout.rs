@@ -327,6 +327,15 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     place(control, show, x, y, width, height);
                 }
             };
+            // Modern widens a slot to its text where a translation needs more:
+            // `pad` is what the control keeps beside its text.
+            let fit = |control: HWND, base: i32, pad: i32| {
+                if look {
+                    base.max(text_width(control) + s(pad))
+                } else {
+                    base
+                }
+            };
             let cx = if look { s(ADD_PAD) } else { m + s(2) };
             if look {
                 // The first label lines up with the page's text.
@@ -389,15 +398,15 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             row_y += step;
 
             place_static(&labels, 0, cx, row_y + label_dy, label_w, label_h, genel);
-            put(f.dir, genel, field_x, row_y, cw - label_w - hx(92), line);
-            put(
-                GetDlgItem(dlg.hwnd, S_BROWSE),
-                genel,
-                cx + cw - hx(88),
-                row_y,
-                hx(88),
-                line,
-            );
+            let browse = GetDlgItem(dlg.hwnd, S_BROWSE);
+            let browse_w = fit(browse, hx(88), 32);
+            let dir_w = if look {
+                cw - label_w - browse_w - hx(4)
+            } else {
+                cw - label_w - hx(92)
+            };
+            put(f.dir, genel, field_x, row_y, dir_w, line);
+            put(browse, genel, cx + cw - browse_w, row_y, browse_w, line);
             row_y += step;
 
             // Eşzamanlı indirme and Bağlantı sayısı: the two transfer rows the
@@ -440,7 +449,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row_y += step;
             }
 
-            // Pano and başlangıç share a row in advanced mode. In simple mode
+            // Pano and başlangıç share a row in advanced mode. In Classic's simple mode
             // the clipboard watch is gone, so the two remaining checkboxes take
             // the row - and the site-entry toggle, whose label is the longest,
             // gets the wider half of it.
@@ -448,6 +457,11 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             put(f.clipboard, clipboard, cx, row_y, half, line);
             if clipboard {
                 put(f.startup, genel, cx + half + gap, row_y, half, line);
+            } else if look {
+                // Modern's longer text gives each toggle a row of its own.
+                put(f.site_entries, genel, cx, row_y, cw, line);
+                row_y += step;
+                put(f.startup, genel, cx, row_y, cw, line);
             } else {
                 let site_w = half + hx(20);
                 put(f.site_entries, genel, cx, row_y, site_w, line);
@@ -491,46 +505,73 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // The labels carry the "(SS:DD)" hint, so their slots are sized for
             // the longest language's text.
             let clock_w = hx(56);
-            put(f.schedule, schedule, cx, row_y, hx(194), line);
+            let label_at = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            // Modern lines the row up from the measured texts; Classic keeps
+            // its fixed slots.
+            let schedule_w = fit(f.schedule, hx(194), CHECK_TEXT_INSET);
+            let start_label_x = if look {
+                cx + schedule_w + hx(6)
+            } else {
+                cx + hx(200)
+            };
+            let start_label_w = fit(label_at(2), hx(100), 0);
+            let start_x = if look {
+                start_label_x + start_label_w + hx(4)
+            } else {
+                cx + hx(304)
+            };
+            let end_label_x = if look {
+                start_x + clock_w + hx(6)
+            } else {
+                cx + hx(366)
+            };
+            let end_label_w = fit(label_at(3), hx(80), 0);
+            let end_x = if look {
+                end_label_x + end_label_w + hx(4)
+            } else {
+                cx + hx(450)
+            };
+            put(f.schedule, schedule, cx, row_y, schedule_w, line);
             place_static(
                 &labels,
                 2,
-                cx + hx(200),
+                start_label_x,
                 row_y + label_dy,
-                hx(100),
+                start_label_w,
                 label_h,
                 schedule,
             );
-            put(f.start, schedule, cx + hx(304), row_y, clock_w, line);
+            put(f.start, schedule, start_x, row_y, clock_w, line);
             place_static(
                 &labels,
                 3,
-                cx + hx(366),
+                end_label_x,
                 row_y + label_dy,
-                hx(80),
+                end_label_w,
                 label_h,
                 schedule,
             );
-            put(f.end, schedule, cx + hx(450), row_y, clock_w, line);
+            put(f.end, schedule, end_x, row_y, clock_w, line);
             if !simple {
                 row_y += step;
             }
             put(f.update_check, genel, cx, row_y, cw, line);
             row_y += step;
+            let check_updates = GetDlgItem(dlg.hwnd, ID_SETTINGS_CHECK_UPDATES);
+            let install = GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION);
+            let check_updates_w = fit(check_updates, hx(232), 32);
+            put(check_updates, genel, cx, row_y, check_updates_w, line);
+            let install_x = if look {
+                cx + check_updates_w + hx(8)
+            } else {
+                cx + hx(240)
+            };
             put(
-                GetDlgItem(dlg.hwnd, ID_SETTINGS_CHECK_UPDATES),
+                install,
                 genel,
-                cx,
+                install_x,
                 row_y,
-                hx(232),
-                line,
-            );
-            put(
-                GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION),
-                genel,
-                cx + hx(240),
-                row_y,
-                hx(232),
+                fit(install, hx(232), 32),
                 line,
             );
 
@@ -606,15 +647,21 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 label_h,
                 advanced,
             );
-            put(f.log_level, advanced, field_x, log_y, hx(140), line);
+            let log_level_w = if look {
+                hx(140).max(combo_face_width(f.log_level, dlg.dpi))
+            } else {
+                hx(140)
+            };
+            put(f.log_level, advanced, field_x, log_y, log_level_w, line);
             // The host-log toggle shares the row with the level it belongs to
             // instead of pushing another row into the error line.
+            let hosts_offset = if look { log_level_w + hx(12) } else { hx(152) };
             put(
                 f.log_hosts,
                 advanced,
-                field_x + hx(152),
+                field_x + hosts_offset,
                 log_y,
-                cw - label_w - hx(152),
+                cw - label_w - hosts_offset,
                 line,
             );
 
@@ -630,7 +677,11 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             {
                 let y = cy + step * i as i32;
                 place_static(&labels, *label, cx, y + label_dy, label_w, label_h, network);
-                let width = if i == 0 { hx(160) } else { cw - label_w };
+                let width = match (i, look) {
+                    (0, true) => hx(160).max(combo_face_width(f.proxy_mode, dlg.dpi)),
+                    (0, false) => hx(160),
+                    _ => cw - label_w,
+                };
                 put(*control, network, field_x, y, width, line);
             }
             let limit_y = cy + step * 4;

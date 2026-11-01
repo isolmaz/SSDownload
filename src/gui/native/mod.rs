@@ -8261,12 +8261,12 @@ unsafe fn show_add_dialog(owner: HWND, app: App, initial: String, analyze_first:
 }
 /// Logical content height of the settings dialog for one surface depth: the
 /// rows that depth shows plus the shared button and error rows above the
-/// bottom edge. A simple dialog is the shorter one, because the rows it hides
-/// are not replaced by anything.
+/// bottom edge. In Classic a simple dialog is the shorter one, because the
+/// rows it hides are not replaced by anything; Modern's simple page gives two
+/// toggles a row each and is as tall as the advanced one.
 fn settings_logical_height(simple: bool) -> i32 {
     match (modern(), simple) {
-        (true, true) => 608,
-        (true, false) => 648,
+        (true, _) => 648,
         (false, true) => 398,
         (false, false) => 424,
     }
