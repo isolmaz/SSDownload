@@ -998,7 +998,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Kuyruklar:", "Queues:"),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, Q_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, Q_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Ad:", "Name:"), 0);
             f.name = dialog_edit(dlg.hwnd, dlg.font, Q_NAME, false, false);
             dialog_label(
@@ -1134,7 +1134,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, R_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, R_LIST, LBS_NOTIFY as u32);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
@@ -1241,7 +1241,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 C_SCAN,
                 true,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, C_LIST, true);
+            f.list = dialog_list(dlg.hwnd, dlg.font, C_LIST, LBS_EXTENDEDSEL as u32);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1267,7 +1267,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Eşitleme kayıtları:", "Sync policies:"),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, Y_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, Y_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, "URL:", 0);
             f.url = dialog_edit(dlg.hwnd, dlg.font, Y_URL, false, false);
             dialog_label(
@@ -1348,7 +1348,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, E_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, E_LIST, 0);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1444,7 +1444,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, L_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, L_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Sunucu:", "Host:"), 0);
             f.host = dialog_edit(dlg.hwnd, dlg.font, L_HOST, false, false);
             dialog_label(
@@ -1523,7 +1523,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, J_LIST, false);
+            f.list = dialog_list(dlg.hwnd, dlg.font, J_LIST, 0);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
