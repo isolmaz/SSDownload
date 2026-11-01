@@ -114,11 +114,18 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
     let pick = |light: u32, dark_value: u32| if dark { dark_value } else { light };
     let on = |light: u32, dark_value: u32, below: u32| over(pick(light, dark_value), below);
     let accent_fill = pick(accent.dark1, accent.light2);
-    let accent_hover = over(with_alpha(accent_fill, 0xe6), base);
     let accent_pressed = over(with_alpha(accent_fill, 0xcc), base);
     // TextOnAccentFillColor is white in the light theme and black in the dark
     // one; a light or dark custom accent takes whichever of the two reads.
     let on_white = contrast(0xffffff, accent_fill) >= contrast(0x000000, accent_fill);
+    let on_accent = if on_white { 0xffffff } else { 0x000000 };
+    // The hover fill lets the base show through; where that would leave the
+    // text below 4.5:1, it lets the colour opposite the text through instead.
+    let accent_hover = [base, on_accent ^ 0xffffff]
+        .map(|below| over(with_alpha(accent_fill, 0xe6), below))
+        .into_iter()
+        .find(|&fill| contrast(on_accent, fill) >= 4.5)
+        .unwrap_or(accent_fill);
     MainPalette {
         base,
         card,
@@ -136,7 +143,7 @@ pub(super) fn fluent_palette(dark: bool, accent: AccentShades) -> MainPalette {
         accent: accent_fill,
         accent_hover,
         accent_pressed,
-        on_accent: if on_white { 0xffffff } else { 0x000000 },
+        on_accent,
         on_accent_pressed: over(
             if on_white { 0xb3ffffff } else { 0x80000000 },
             accent_pressed,
@@ -2893,6 +2900,30 @@ mod tests {
             let on_deep = fluent_palette(dark, deep);
             assert_eq!(on_deep.on_accent, 0xffffff);
             assert!(contrast(on_deep.on_accent, on_deep.accent) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn text_on_any_accent_reads_at_rest_and_under_the_pointer() {
+        for dark in [false, true] {
+            for r in (0..=255u32).step_by(5) {
+                for g in (0..=255u32).step_by(5) {
+                    for b in (0..=255u32).step_by(5) {
+                        let colour = r | g << 8 | b << 16;
+                        let palette = fluent_palette(
+                            dark,
+                            AccentShades {
+                                dark1: colour,
+                                light2: colour,
+                            },
+                        );
+                        for fill in [palette.accent, palette.accent_hover] {
+                            let ratio = contrast(palette.on_accent, fill);
+                            assert!(ratio >= 4.5, "dark={dark} accent={colour:06x} {ratio:.2}");
+                        }
+                    }
+                }
+            }
         }
     }
 
