@@ -2395,6 +2395,20 @@ fn next_sort(current: Option<(usize, bool)>, column: usize) -> Option<(usize, bo
     }
 }
 
+/// The order a sorted list shows: the rows it already shows while the same
+/// jobs are listed, so rows hold still while their values change, and the
+/// fresh sort when jobs come or go or `resort` asks for it (a header click,
+/// another filter or search, F5).
+fn hold_order(previous: &[String], fresh: Vec<String>, resort: bool) -> Vec<String> {
+    let shown: HashSet<&str> = previous.iter().map(String::as_str).collect();
+    let same = previous.len() == fresh.len() && fresh.iter().all(|id| shown.contains(id.as_str()));
+    if same && !resort {
+        previous.to_vec()
+    } else {
+        fresh
+    }
+}
+
 /// Orders two jobs by a column's value, not its text: names and locations
 /// without case, the state in its lifecycle order, progress by the share
 /// done and then the bytes, speed in bytes per second, and the time left
@@ -5386,9 +5400,28 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
                 order.reverse()
             }
         });
+        // Rows keep their places while only their values change.
+        let fresh: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+        let held = hold_order(&ui.visible_ids, fresh, force);
+        let place: HashMap<&str, usize> = held
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect();
+        jobs.sort_by_key(|job| place.get(job.id.as_str()).copied().unwrap_or(usize::MAX));
     }
     let ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
     let prior = selected_ids(ui);
+    // Modern keeps the focus on the job that had it; Classic, as before,
+    // gives it to the first selected job.
+    let focused = if modern() {
+        let index = SendMessageW(ui.list, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize);
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| ui.visible_ids.get(index).cloned())
+    } else {
+        None
+    };
     let rebuild = force || ids != ui.visible_ids;
     let mut changed = rebuild;
     // Deleting every item scrolls the list back to the top; the row that was on
@@ -5449,11 +5482,15 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
     if rebuild {
         for (order, id) in prior.iter().enumerate() {
             if let Some(pos) = ui.visible_ids.iter().position(|v| v == id) {
+                let focus = match &focused {
+                    Some(focused) => focused == id,
+                    None => order == 0,
+                };
                 let item = LVITEMW {
                     mask: LVIF_STATE,
                     iItem: pos as i32,
                     iSubItem: 0,
-                    state: LVIS_SELECTED | if order == 0 { LVIS_FOCUSED } else { 0 },
+                    state: LVIS_SELECTED | if focus { LVIS_FOCUSED } else { 0 },
                     stateMask: LVIS_SELECTED | LVIS_FOCUSED,
                     pszText: null_mut(),
                     cchTextMax: 0,
@@ -5468,6 +5505,16 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
                 };
                 SendMessageW(ui.list, LVM_SETITEMSTATE, pos, &item as *const _ as isize);
             }
+        }
+        // A focused row that is not selected keeps the focus too.
+        if let Some(pos) = focused
+            .filter(|id| !prior.contains(id))
+            .and_then(|id| ui.visible_ids.iter().position(|v| *v == id))
+        {
+            let mut item: LVITEMW = zeroed();
+            item.state = LVIS_FOCUSED;
+            item.stateMask = LVIS_FOCUSED;
+            SendMessageW(ui.list, LVM_SETITEMSTATE, pos, &item as *const _ as isize);
         }
         // A new search or filter starts at the top; only a change made by the
         // engine keeps the user's place.
@@ -10087,6 +10134,58 @@ mod tests {
     }
 
     #[test]
+    fn sorted_rows_hold_still_until_jobs_come_or_go_or_a_resort_is_asked_for() {
+        use super::hold_order;
+        let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let shown = ids(&["b", "a", "c"]);
+        // Faster speeds would put a first now: the rows stay as they are.
+        assert_eq!(hold_order(&shown, ids(&["a", "b", "c"]), false), shown);
+        // A header click, a filter or F5 sorts again.
+        assert_eq!(
+            hold_order(&shown, ids(&["a", "b", "c"]), true),
+            ids(&["a", "b", "c"])
+        );
+        // A job that comes or goes sorts again.
+        assert_eq!(
+            hold_order(&shown, ids(&["a", "d", "b", "c"]), false),
+            ids(&["a", "d", "b", "c"])
+        );
+        assert_eq!(
+            hold_order(&shown, ids(&["a", "c"]), false),
+            ids(&["a", "c"])
+        );
+        assert_eq!(
+            hold_order(&shown, ids(&["a", "b", "d"]), false),
+            ids(&["a", "b", "d"])
+        );
+    }
+
+    #[test]
+    fn new_download_opens_the_picker_only_for_one_address_that_is_not_a_file() {
+        use super::add_opens_picker;
+        use crate::model::{AddRequest, DownloadKind};
+        let request = |url: &str, kind: DownloadKind| AddRequest {
+            url: url.into(),
+            kind,
+            ..AddRequest::default()
+        };
+        let page = request("https://example.com/watch?v=1", DownloadKind::Auto);
+        let file = request("https://example.com/setup.zip", DownloadKind::Auto);
+        assert!(add_opens_picker(std::slice::from_ref(&page)));
+        assert!(add_opens_picker(&[request(
+            "https://example.com/a.zip",
+            DownloadKind::Video
+        )]));
+        assert!(!add_opens_picker(std::slice::from_ref(&file)));
+        assert!(!add_opens_picker(&[request(
+            "https://example.com/page",
+            DownloadKind::File
+        )]));
+        assert!(!add_opens_picker(&[page, file]));
+        assert!(!add_opens_picker(&[]));
+    }
+
+    #[test]
     fn stored_hidden_columns_never_hide_the_name_or_the_state() {
         use super::visible_columns;
         assert_eq!(visible_columns(&[]), [0, 1, 2, 3, 4, 5]);
@@ -10161,31 +10260,6 @@ mod tests {
         assert!(shown.contains("sürüm bilgisi alınamadı"), "{shown}");
         // The developer surface keeps the upstream names verbatim.
         assert_eq!(super::display_text(true, raw), raw);
-    }
-
-    #[test]
-    fn new_download_opens_the_picker_only_for_one_address_that_is_not_a_file() {
-        use super::add_opens_picker;
-        use crate::model::{AddRequest, DownloadKind};
-        let request = |url: &str, kind: DownloadKind| AddRequest {
-            url: url.into(),
-            kind,
-            ..AddRequest::default()
-        };
-        let page = request("https://example.com/watch?v=1", DownloadKind::Auto);
-        let file = request("https://example.com/setup.zip", DownloadKind::Auto);
-        assert!(add_opens_picker(std::slice::from_ref(&page)));
-        assert!(add_opens_picker(&[request(
-            "https://example.com/a.zip",
-            DownloadKind::Video
-        )]));
-        assert!(!add_opens_picker(std::slice::from_ref(&file)));
-        assert!(!add_opens_picker(&[request(
-            "https://example.com/page",
-            DownloadKind::File
-        )]));
-        assert!(!add_opens_picker(&[page, file]));
-        assert!(!add_opens_picker(&[]));
     }
 
     #[test]
