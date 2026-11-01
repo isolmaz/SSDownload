@@ -2138,29 +2138,12 @@ unsafe fn paint_list_item(item: &DRAWITEMSTRUCT, dpi: u32, palette: &MainPalette
     } else {
         fill_colour(dc, &rect, palette.card);
         if selected || focused {
-            let plate = inflate(rect, -scale(2, dpi), -scale(2, dpi));
             let fill = if selected {
                 palette.row_selected
             } else {
                 palette.card
             };
-            if focused {
-                focus_plate(dc, &plate, scale(CORNER, dpi), dpi, palette, fill);
-            } else {
-                round_rect(dc, &plate, scale(CORNER, dpi), fill, None);
-            }
-            if selected {
-                let height = scale(16, dpi).min(plate.bottom - plate.top);
-                let top = plate.top + (plate.bottom - plate.top - height) / 2;
-                let left = plate.left + if focused { scale(3, dpi) } else { 0 };
-                let pill = RECT {
-                    left,
-                    top,
-                    right: left + scale(3, dpi),
-                    bottom: top + height,
-                };
-                round_rect(dc, &pill, scale(2, dpi), palette.accent, None);
-            }
+            paint_row_plate(dc, rect, dpi, palette, fill, focused, selected);
         }
         palette.text
     };
@@ -3202,12 +3185,6 @@ unsafe fn paint_row_backplate(ui: &MainUi, draw: &NMLVCUSTOMDRAW) {
     if !(selected || hot || focused) {
         return;
     }
-    let plate = RECT {
-        left: band.left + scale(2, ui.dpi),
-        top: band.top + scale(2, ui.dpi),
-        right: band.right - scale(2, ui.dpi),
-        bottom: band.bottom - scale(2, ui.dpi),
-    };
     let fill = match (selected, hot) {
         (true, true) => palette.row_selected_hover,
         (true, false) => palette.row_selected,
@@ -3220,24 +3197,40 @@ unsafe fn paint_row_backplate(ui: &MainUi, draw: &NMLVCUSTOMDRAW) {
             }
         }
     };
+    paint_row_plate(dc, band, ui.dpi, &palette, fill, focused, selected);
+}
+
+/// A list row's backplate as WinUI's ListView draws it: `fill`, rounded, 2 epx
+/// inside the row's `band`, the focus rings around it while `focused`, and
+/// the selection mark at its start while `selected`.
+unsafe fn paint_row_plate(
+    dc: HDC,
+    band: RECT,
+    dpi: u32,
+    palette: &MainPalette,
+    fill: u32,
+    focused: bool,
+    selected: bool,
+) {
+    let plate = inflate(band, -scale(2, dpi), -scale(2, dpi));
     if focused {
-        focus_plate(dc, &plate, scale(CORNER, ui.dpi), ui.dpi, &palette, fill);
+        focus_plate(dc, &plate, scale(CORNER, dpi), dpi, palette, fill);
     } else {
-        round_rect(dc, &plate, scale(CORNER, ui.dpi), fill, None);
+        round_rect(dc, &plate, scale(CORNER, dpi), fill, None);
     }
     if selected {
         // ListView's selection mark: a 3 x 16 epx accent pill at the row start.
-        let height = scale(16, ui.dpi).min(plate.bottom - plate.top);
+        let height = scale(16, dpi).min(plate.bottom - plate.top);
         let top = plate.top + (plate.bottom - plate.top - height) / 2;
         // Inside the focus rings when they show.
-        let left = plate.left + if focused { scale(3, ui.dpi) } else { 0 };
+        let left = plate.left + if focused { scale(3, dpi) } else { 0 };
         let pill = RECT {
             left,
             top,
-            right: left + scale(3, ui.dpi),
+            right: left + scale(3, dpi),
             bottom: top + height,
         };
-        round_rect(dc, &pill, scale(2, ui.dpi), palette.accent, None);
+        round_rect(dc, &pill, scale(2, dpi), palette.accent, None);
     }
 }
 
