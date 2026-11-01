@@ -413,9 +413,9 @@ pub struct Job {
     #[serde(default)]
     pub sequence: u64,
     /// The last `TransferProgress::ranges` of the job's transfer: kept through a pause or a
-    /// failure (the part file still holds those bytes), `[(0, total)]` once the job is
-    /// completed, and cleared when its bytes are dropped (a restart from zero, a browser
-    /// hand-over). Never stored.
+    /// failure (the part file still holds those bytes) and through a source refresh that
+    /// keeps the bytes, `[(0, total)]` once the job is completed, and cleared when its bytes
+    /// are dropped (a restart from zero, a browser hand-over). Never stored.
     #[serde(skip)]
     pub ranges: Option<Arc<[(u64, u64)]>>,
     /// The last `TransferProgress::resumable` of the job's transfer: kept through a pause or

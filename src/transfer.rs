@@ -2389,6 +2389,13 @@ impl Checkpoints {
         }
     }
 
+    fn downloaded(&self) -> u64 {
+        let in_cycle = self.cycle.covers().map_or(0, |snapshot| {
+            snapshot.fresh.iter().map(|range| range.len()).sum()
+        });
+        self.recorded_bytes() + in_cycle + self.waiting()
+    }
+
     fn recorded_bytes(&self) -> u64 {
         self.completed.iter().map(|range| range.len()).sum()
     }
@@ -2795,7 +2802,8 @@ fn download_segmented(
     let mut successful_since_failure = 0usize;
     let mut last_time = Instant::now();
     let mut last_downloaded = baseline;
-    let mut notice: Option<String> = None;
+    // The ranges of the last report, which a retry notice shows again.
+    let mut last_ranges: Option<Arc<[(u64, u64)]>> = None;
     let outcome = 'scheduler: loop {
         if control.stop_requested() {
             break Err(AttemptFailure::Interrupted);
@@ -2915,13 +2923,22 @@ fn download_segmented(
                         effective_workers = (effective_workers / 2).max(1);
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
-                        notice = Some(crate::i18n::ui_format!(
-                            "HTTP {status}; {0} sn sonra {1} bağlantıyla yeniden denenecek",
-                            "HTTP {status}; retrying in {0} s using {1} connections",
-                            retry_after.as_secs(),
-                            effective_workers,
-                            status = status
-                        ));
+                        progress(TransferProgress {
+                            ranges: last_ranges.clone(),
+                            resumable: Some(true),
+                            processing: false,
+                            downloaded: ledger.downloaded(),
+                            total: Some(total),
+                            speed: 0,
+                            eta: None,
+                            phase: crate::i18n::ui_format!(
+                                "HTTP {status}; {0} sn sonra {1} bağlantıyla yeniden denenecek",
+                                "HTTP {status}; retrying in {0} s using {1} connections",
+                                retry_after.as_secs(),
+                                effective_workers,
+                                status = status
+                            ),
+                        });
                     }
                     Err(AttemptFailure::RetryableTransport(_error))
                         if work.attempts + 1 < MAX_RANGE_ATTEMPTS =>
@@ -2943,12 +2960,21 @@ fn download_segmented(
                         effective_workers = (effective_workers / 2).max(1);
                         successful_since_failure = 0;
                         retry_not_before = retry_not_before.max(not_before);
-                        notice = Some(crate::i18n::ui_format!(
-                            "Geçici ağ hatası; {0} sn sonra {1} bağlantıyla yeniden denenecek",
-                            "Transient network error; retrying in {0} s using {1} connections",
-                            retry_after.as_secs(),
-                            effective_workers
-                        ));
+                        progress(TransferProgress {
+                            ranges: last_ranges.clone(),
+                            resumable: Some(true),
+                            processing: false,
+                            downloaded: ledger.downloaded(),
+                            total: Some(total),
+                            speed: 0,
+                            eta: None,
+                            phase: crate::i18n::ui_format!(
+                                "Geçici ağ hatası; {0} sn sonra {1} bağlantıyla yeniden denenecek",
+                                "Transient network error; retrying in {0} s using {1} connections",
+                                retry_after.as_secs(),
+                                effective_workers
+                            ),
+                        });
                     }
                     Err(AttemptFailure::RetryableTransport(error)) => {
                         break 'scheduler Err(AttemptFailure::Other(error))
@@ -2978,14 +3004,11 @@ fn download_segmented(
         let now = Instant::now();
         if now.duration_since(last_time) >= Duration::from_millis(200) {
             // The only place the ranges are built: once per report, every 200 ms, never per
-            // write. A retry notice waits for it too.
+            // write.
             let (downloaded, ranges) = ledger.view();
             let elapsed = now.duration_since(last_time).as_secs_f64().max(0.001);
-            let speed = if notice.is_some() {
-                0
-            } else {
-                ((downloaded.saturating_sub(last_downloaded)) as f64 / elapsed) as u64
-            };
+            let speed = ((downloaded.saturating_sub(last_downloaded)) as f64 / elapsed) as u64;
+            last_ranges = Some(ranges.clone());
             progress(TransferProgress {
                 ranges: Some(ranges),
                 resumable: Some(true),
@@ -2995,17 +3018,11 @@ fn download_segmented(
                 speed,
                 eta: eta(Some(total), downloaded.min(total), speed),
                 // Shown after the state: "Downloading — 8 connections".
-                phase: notice.take().unwrap_or_else(|| {
-                    if effective_workers == 1 {
-                        crate::i18n::ui("1 bağlantı", "1 connection").to_string()
-                    } else {
-                        crate::i18n::ui_format!(
-                            "{0} bağlantı",
-                            "{0} connections",
-                            effective_workers
-                        )
-                    }
-                }),
+                phase: if effective_workers == 1 {
+                    crate::i18n::ui("1 bağlantı", "1 connection").to_string()
+                } else {
+                    crate::i18n::ui_format!("{0} bağlantı", "{0} connections", effective_workers)
+                },
             });
             last_time = now;
             last_downloaded = downloaded;
@@ -6947,7 +6964,11 @@ mod tests {
         }
     }
 
-    fn later_range_server_error_keeps_the_recorded_range(status: u32, line: &'static str) {
+    /// Returns the progress the download reported.
+    fn later_range_server_error_keeps_the_recorded_range(
+        status: u32,
+        line: &'static str,
+    ) -> Vec<TransferProgress> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -7011,6 +7032,7 @@ mod tests {
 
         let directory = TestDirectory::new(&format!("range-gateway-{status}"));
         let output = directory.0.join("large.bin");
+        let mut events = Vec::new();
         let error = download(
             &local_request(format!("http://{address}/large")),
             &output,
@@ -7018,7 +7040,7 @@ mod tests {
             &NetworkGovernor::new(16),
             2,
             None,
-            &mut |_| {},
+            &mut |event| events.push(event),
         )
         .unwrap_err();
         stop.store(true, Ordering::Release);
@@ -7033,6 +7055,40 @@ mod tests {
                 start: 0,
                 end: MIN_SEGMENT_SIZE * 3 / 2
             }]
+        );
+        events
+    }
+
+    #[test]
+    fn a_retry_notice_is_reported_at_once_with_the_ranges_of_the_last_report() {
+        // A 503 is retried by the range scheduler, which says so before it waits.
+        let events = later_range_server_error_keeps_the_recorded_range(
+            503,
+            "503 Service Unavailable\r\nRetry-After: 1",
+        );
+        let at = events
+            .iter()
+            .position(|event| {
+                event.phase.contains("retrying in") || event.phase.contains("yeniden denenecek")
+            })
+            .unwrap_or_else(|| {
+                let phases: Vec<&str> = events.iter().map(|event| event.phase.as_str()).collect();
+                panic!("no retry notice in {phases:?}")
+            });
+        let notice = &events[at];
+        assert_eq!((notice.speed, notice.eta), (0, None), "{notice:?}");
+        let last = events[..at]
+            .iter()
+            .rev()
+            .find_map(|event| event.ranges.as_ref())
+            .expect("a report before the notice");
+        // Every 200 ms report builds its own ranges; a notice made at once shows the last ones.
+        assert!(
+            notice
+                .ranges
+                .as_ref()
+                .is_some_and(|ranges| Arc::ptr_eq(ranges, last)),
+            "{notice:?}"
         );
     }
 
