@@ -1507,6 +1507,13 @@ pub(super) unsafe fn paint_check_box(
     };
     let size = scale(CHECK_BOX, dpi).min(height);
     let (box_x, box_y) = (ring, (height - size) / 2);
+    // The pixels are not mirrored with a right-to-left DC, while the mark and
+    // the label drawn through it are: the box goes where the mark lands.
+    let pixel_x = if GetLayout(dc) & LAYOUT_RTL != 0 {
+        width - ring - size
+    } else {
+        box_x
+    };
     let face = paint_button_surface(
         size as usize,
         size as usize,
@@ -1522,7 +1529,7 @@ pub(super) unsafe fn paint_check_box(
     );
     for y in 0..size {
         for x in 0..size {
-            let (tx, ty) = (box_x + x, box_y + y);
+            let (tx, ty) = (pixel_x + x, box_y + y);
             if tx < width && ty < height {
                 pixels[(ty * width + tx) as usize] = face[(y * size + x) as usize];
             }
