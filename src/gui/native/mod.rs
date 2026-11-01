@@ -8264,11 +8264,10 @@ unsafe fn center_window(hwnd: HWND, owner: HWND) {
 /// last on, if the profile has one.
 unsafe fn show_usage_wizard(owner: HWND, app: App, settings: Settings) {
     let simple = UiMode::parse(&settings.ui_mode).is_simple();
-    let (width, height) = if modern() {
-        (WIZARD_WIDTH, wizard_content_height(1) + SETTINGS_FRAME + 3)
-    } else {
-        (576, 546)
-    };
+    let (width, height) = (
+        WIZARD_WIDTH,
+        wizard_content_height(1, modern()) + SETTINGS_FRAME + 3,
+    );
     let origin = settings
         .window_placement
         .filter(|_| owner.is_null())
@@ -8417,6 +8416,59 @@ fn add_window_height(advanced: bool) -> i32 {
     }
 }
 
+/// A Settings window's fields for `value`, before its controls exist.
+fn settings_fields(value: Settings) -> SettingsFields {
+    SettingsFields {
+        opened: value.clone(),
+        value,
+        dir: null_mut(),
+        max_active: null_mut(),
+        connections: null_mut(),
+        media_fragments: null_mut(),
+        per_host: null_mut(),
+        speed: null_mut(),
+        retry: null_mut(),
+        clipboard: null_mut(),
+        tray: null_mut(),
+        startup: null_mut(),
+        notify: null_mut(),
+        schedule: null_mut(),
+        start: null_mut(),
+        end: null_mut(),
+        dark: null_mut(),
+        theme: null_mut(),
+        theme_label: null_mut(),
+        theme_note: null_mut(),
+        mode_video: null_mut(),
+        mode_file: null_mut(),
+        mode_audio: null_mut(),
+        browser_transfer: null_mut(),
+        update_check: null_mut(),
+        log_level: null_mut(),
+        log_hosts: null_mut(),
+        ui_mode: null_mut(),
+        site_entries: null_mut(),
+        ui_language: null_mut(),
+        proxy_mode: null_mut(),
+        proxy_url: null_mut(),
+        proxy_user: null_mut(),
+        proxy_pass: null_mut(),
+        speed_schedule: null_mut(),
+        speed_start: null_mut(),
+        speed_end: null_mut(),
+        speed_kib: null_mut(),
+        keep_awake: null_mut(),
+        sound: null_mut(),
+        takeover: null_mut(),
+        completion_card: null_mut(),
+        metered: null_mut(),
+        battery_saver: null_mut(),
+        hotkey: null_mut(),
+        double_click: null_mut(),
+        history: null_mut(),
+    }
+}
+
 unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
     let simple = UiMode::parse(&value.ui_mode).is_simple();
     run_modal(
@@ -8425,55 +8477,7 @@ unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
         crate::i18n::ui("SSDownload ayarları", "SSDownload settings"),
         settings_width(),
         settings_logical_height(modern(), simple) + SETTINGS_FRAME,
-        DialogKind::Settings(Box::new(SettingsFields {
-            opened: value.clone(),
-            value,
-            dir: null_mut(),
-            max_active: null_mut(),
-            connections: null_mut(),
-            media_fragments: null_mut(),
-            per_host: null_mut(),
-            speed: null_mut(),
-            retry: null_mut(),
-            clipboard: null_mut(),
-            tray: null_mut(),
-            startup: null_mut(),
-            notify: null_mut(),
-            schedule: null_mut(),
-            start: null_mut(),
-            end: null_mut(),
-            dark: null_mut(),
-            theme: null_mut(),
-            theme_label: null_mut(),
-            theme_note: null_mut(),
-            mode_video: null_mut(),
-            mode_file: null_mut(),
-            mode_audio: null_mut(),
-            browser_transfer: null_mut(),
-            update_check: null_mut(),
-            log_level: null_mut(),
-            log_hosts: null_mut(),
-            ui_mode: null_mut(),
-            site_entries: null_mut(),
-            ui_language: null_mut(),
-            proxy_mode: null_mut(),
-            proxy_url: null_mut(),
-            proxy_user: null_mut(),
-            proxy_pass: null_mut(),
-            speed_schedule: null_mut(),
-            speed_start: null_mut(),
-            speed_end: null_mut(),
-            speed_kib: null_mut(),
-            keep_awake: null_mut(),
-            sound: null_mut(),
-            takeover: null_mut(),
-            completion_card: null_mut(),
-            metered: null_mut(),
-            battery_saver: null_mut(),
-            hotkey: null_mut(),
-            double_click: null_mut(),
-            history: null_mut(),
-        })),
+        DialogKind::Settings(Box::new(settings_fields(value))),
     );
 }
 unsafe fn show_speed_limit(owner: HWND, app: App, ids: Vec<String>, initial: u64) {
@@ -9313,6 +9317,7 @@ unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
                 | DialogKind::JobLog(_)
                 | DialogKind::Media(_)
                 | DialogKind::Progress(_)
+                | DialogKind::Wizard(_)
         )
     {
         ramp_font(dlg.dpi, BODY_PX, false)
@@ -9343,6 +9348,8 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
         prepare_modern_form(dlg);
         fit_first_label(dlg);
         fit_media_picker(dlg);
+    } else if matches!(dlg.kind, DialogKind::Wizard(_)) {
+        fit_first_label(dlg);
     }
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
     layout_dialog(dlg);
@@ -10824,8 +10831,18 @@ mod tests {
         width: i32,
         height: i32,
     ) -> (*mut super::DialogUi, super::HWND, std::path::PathBuf) {
+        theme_test_dialog(true, kind, width, height)
+    }
+
+    /// `modern_test_dialog` in Modern when `in_modern` is true, else in Classic.
+    unsafe fn theme_test_dialog(
+        in_modern: bool,
+        kind: super::DialogKind,
+        width: i32,
+        height: i32,
+    ) -> (*mut super::DialogUi, super::HWND, std::path::PathBuf) {
         use super::*;
-        set_modern(true);
+        set_modern(in_modern);
         register_classes().unwrap();
         let root =
             std::env::temp_dir().join(format!("ssdownload-gui-test-{}", uuid::Uuid::new_v4()));
@@ -10911,6 +10928,55 @@ mod tests {
         }
     }
 
+    /// A media picker that has not inspected its page yet.
+    fn blank_picker() -> super::DialogKind {
+        use super::*;
+        DialogKind::Media(Box::new(MediaFields {
+            base: AddRequest::default(),
+            subtitle_none: false,
+            session_consent: None,
+            summary: null_mut(),
+            name: null_mut(),
+            kind: null_mut(),
+            kind_values: Vec::new(),
+            format: null_mut(),
+            audio: null_mut(),
+            audio_tracks: null_mut(),
+            subtitles: null_mut(),
+            external_url: null_mut(),
+            external_language: null_mut(),
+            external_label: null_mut(),
+            external_kind: null_mut(),
+            external_default: null_mut(),
+            external_list: null_mut(),
+            full_verification: null_mut(),
+            playlist: null_mut(),
+            renew_job: null_mut(),
+            renew_restart: null_mut(),
+            renew_ids: Vec::new(),
+            video_formats: Vec::new(),
+            audio_values: Vec::new(),
+            info: MediaInfo::default(),
+            size: null_mut(),
+            subtitle_values: Vec::new(),
+            external_values: Vec::new(),
+            loaded_title: String::new(),
+            populated: false,
+            inspect_generation: 0,
+            advanced: false,
+            report_shown: false,
+            report_error: None,
+            host: String::new(),
+            auto_queue: false,
+            remember: null_mut(),
+            from_start: null_mut(),
+            from_start_offered: false,
+            playlist_items: null_mut(),
+            thumbnail: null_mut(),
+            thumbnail_requested: false,
+        }))
+    }
+
     #[test]
     fn modern_s_picker_fits_its_window_to_its_rows_and_tabs_in_their_order() {
         use super::*;
@@ -10918,50 +10984,7 @@ mod tests {
             // The window size below is the Modern one.
             set_modern(true);
             let (raw, hwnd, root) = modern_test_dialog(
-                DialogKind::Media(Box::new(MediaFields {
-                    base: AddRequest::default(),
-                    subtitle_none: false,
-                    session_consent: None,
-                    summary: null_mut(),
-                    name: null_mut(),
-                    kind: null_mut(),
-                    kind_values: Vec::new(),
-                    format: null_mut(),
-                    audio: null_mut(),
-                    audio_tracks: null_mut(),
-                    subtitles: null_mut(),
-                    external_url: null_mut(),
-                    external_language: null_mut(),
-                    external_label: null_mut(),
-                    external_kind: null_mut(),
-                    external_default: null_mut(),
-                    external_list: null_mut(),
-                    full_verification: null_mut(),
-                    playlist: null_mut(),
-                    renew_job: null_mut(),
-                    renew_restart: null_mut(),
-                    renew_ids: Vec::new(),
-                    video_formats: Vec::new(),
-                    audio_values: Vec::new(),
-                    info: MediaInfo::default(),
-                    size: null_mut(),
-                    subtitle_values: Vec::new(),
-                    external_values: Vec::new(),
-                    loaded_title: String::new(),
-                    populated: false,
-                    inspect_generation: 0,
-                    advanced: false,
-                    report_shown: false,
-                    report_error: None,
-                    host: String::new(),
-                    auto_queue: false,
-                    remember: null_mut(),
-                    from_start: null_mut(),
-                    from_start_offered: false,
-                    playlist_items: null_mut(),
-                    thumbnail: null_mut(),
-                    thumbnail_requested: false,
-                })),
+                blank_picker(),
                 MEDIA_WIDTH,
                 media_window_height(MEDIA_HEIGHT, 420),
             );
@@ -10974,7 +10997,10 @@ mod tests {
             let walk = tab_walk(hwnd);
             SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
             let closed_again = window_height(hwnd);
+            let cue = playlist_field_proc(raw);
             close_test_dialog(raw, hwnd, root);
+            // Modern draws the playlist field's hint itself.
+            assert_eq!(cue, cue_proc as *const () as isize);
             assert!(
                 open > closed,
                 "the advanced rows grow the window: {closed} -> {open}"
@@ -11053,6 +11079,260 @@ mod tests {
             let row = SendMessageW(GetDlgItem(hwnd, E_LIST), LB_GETITEMHEIGHT, 0, 0) as i32;
             close_test_dialog(raw, hwnd, root);
             assert_eq!(row, COMPACT_ROW);
+        }
+    }
+
+    /// The window procedure of a picker's playlist field.
+    unsafe fn playlist_field_proc(raw: *mut super::DialogUi) -> isize {
+        match &(*raw).kind {
+            super::DialogKind::Media(f) => {
+                super::GetWindowLongPtrW(f.playlist_items, super::GWLP_WNDPROC)
+            }
+            _ => 0,
+        }
+    }
+
+    /// A setup wizard with the advanced depth chosen, so all its cards show.
+    unsafe fn advanced_wizard(
+        in_modern: bool,
+    ) -> (*mut super::DialogUi, super::HWND, std::path::PathBuf) {
+        use super::*;
+        theme_test_dialog(
+            in_modern,
+            DialogKind::Wizard(WizardFields {
+                modes: crate::model::UsageModes::default(),
+                simple: false,
+                modern: in_modern,
+                intro_lines: 1,
+                video: null_mut(),
+                file: null_mut(),
+                audio: null_mut(),
+                simple_card: null_mut(),
+                advanced_card: null_mut(),
+                classic_card: null_mut(),
+                modern_card: null_mut(),
+                note: null_mut(),
+                start: null_mut(),
+            }),
+            WIZARD_WIDTH,
+            wizard_content_height(1, in_modern) + SETTINGS_FRAME + 3,
+        )
+    }
+
+    #[test]
+    fn the_wizard_lays_its_cards_out_in_rows_and_tabs_through_them_in_both_themes() {
+        use super::*;
+        let cards = [
+            ID_WIZARD_SIMPLE,
+            ID_WIZARD_ADVANCED,
+            ID_WIZARD_CLASSIC,
+            ID_WIZARD_MODERN,
+            ID_WIZARD_VIDEO,
+            ID_WIZARD_FILE,
+            ID_WIZARD_AUDIO,
+        ];
+        for modern in [false, true] {
+            unsafe {
+                let (raw, hwnd, root) = advanced_wizard(modern);
+                let walk = tab_walk(hwnd);
+                let mut client: RECT = zeroed();
+                GetClientRect(hwnd, &mut client);
+                let rects: Vec<RECT> = cards
+                    .iter()
+                    .chain(&[D_CANCEL, ID_WIZARD_START])
+                    .map(|&id| child_rect(hwnd, GetDlgItem(hwnd, id)))
+                    .collect();
+                close_test_dialog(raw, hwnd, root);
+                // Row by row, then the buttons left to right: Modern's command bar
+                // has Start first, Classic's button row Cancel.
+                let mut order = cards.to_vec();
+                order.extend(if modern {
+                    [ID_WIZARD_START, D_CANCEL]
+                } else {
+                    [D_CANCEL, ID_WIZARD_START]
+                });
+                assert_eq!(walk, order, "modern {modern}");
+                let ring = if modern { FOCUS_MARGIN } else { 0 };
+                for (index, rect) in rects.iter().enumerate() {
+                    assert!(
+                        rect.left >= 0
+                            && rect.top >= 0
+                            && rect.right <= client.right
+                            && rect.bottom <= client.bottom,
+                        "modern {modern}: {index} at {:?} outside {:?}",
+                        (rect.left, rect.top, rect.right, rect.bottom),
+                        (client.right, client.bottom)
+                    );
+                    if index < cards.len() {
+                        assert_eq!(rect.bottom - rect.top, WIZARD_CARD + 2 * ring);
+                    }
+                    for other in &rects[index + 1..] {
+                        let apart = rect.right <= other.left
+                            || other.right <= rect.left
+                            || rect.bottom <= other.top
+                            || other.bottom <= rect.top;
+                        // Modern's focus margins may touch, never its faces.
+                        let faces_apart = rect.right - ring <= other.left + ring
+                            || other.right - ring <= rect.left + ring
+                            || rect.bottom - ring <= other.top + ring
+                            || other.bottom - ring <= rect.top + ring;
+                        assert!(apart || faces_apart, "modern {modern}: {index} overlaps");
+                    }
+                }
+                // The depth, theme and purpose rows, one under the other.
+                assert!(rects[0].bottom <= rects[2].top && rects[2].bottom <= rects[4].top);
+            }
+        }
+    }
+
+    #[test]
+    fn the_wizard_s_cards_show_their_full_text_in_a_tooltip() {
+        use super::*;
+        unsafe {
+            let (raw, hwnd, root) = advanced_wizard(true);
+            let class = wide("tooltips_class32");
+            let mut tip = null_mut();
+            let mut window = FindWindowExW(null_mut(), null_mut(), class.as_ptr(), null());
+            while !window.is_null() {
+                if GetWindow(window, GW_OWNER) == hwnd
+                    && SendMessageW(window, TTM_GETTOOLCOUNT, 0, 0) == 7
+                {
+                    tip = window;
+                }
+                window = FindWindowExW(null_mut(), window, class.as_ptr(), null());
+            }
+            let mut shown = Vec::new();
+            for id in [ID_WIZARD_SIMPLE, ID_WIZARD_MODERN, ID_WIZARD_AUDIO] {
+                let card = GetDlgItem(hwnd, id);
+                let mut buffer = [0u16; 1024];
+                let mut info: TTTOOLINFOW = zeroed();
+                info.cbSize = (size_of::<TTTOOLINFOW>() - size_of::<*mut c_void>()) as u32;
+                info.hwnd = hwnd;
+                info.uId = card as usize;
+                info.lpszText = buffer.as_mut_ptr();
+                if !tip.is_null() {
+                    SendMessageW(
+                        tip,
+                        TTM_GETTEXTW,
+                        buffer.len(),
+                        &mut info as *mut _ as LPARAM,
+                    );
+                }
+                let length = buffer.iter().position(|&c| c == 0).unwrap_or(0);
+                shown.push((text(card), String::from_utf16_lossy(&buffer[..length])));
+            }
+            close_test_dialog(raw, hwnd, root);
+            assert!(!tip.is_null(), "no tooltip with a tool for each card");
+            for (card, tip) in shown {
+                assert!(card.contains(" — "), "{card}");
+                assert_eq!(tip, card);
+            }
+        }
+    }
+
+    #[test]
+    fn classic_s_picker_keeps_its_creation_order_and_its_plain_playlist_field() {
+        use super::*;
+        unsafe {
+            let (raw, hwnd, root) = theme_test_dialog(false, blank_picker(), 640, 420);
+            SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+            let walk = tab_walk(hwnd);
+            let field = playlist_field_proc(raw);
+            close_test_dialog(raw, hwnd, root);
+            let at = |id: i32| walk.iter().position(|&walked| walked == id);
+            // Created after the queue box; Modern's reading order puts it first.
+            assert!(
+                matches!((at(M_QUEUE), at(D_ADVANCED)), (Some(a), Some(b)) if a < b),
+                "{walk:?}"
+            );
+            assert_ne!(field, cue_proc as *const () as isize);
+        }
+    }
+
+    #[test]
+    fn the_settings_theme_box_reads_and_stores_classic_first_then_modern() {
+        use super::*;
+        for modern in [false, true] {
+            for (stored, shown) in [("classic", 0), ("modern", 1), ("", 0)] {
+                unsafe {
+                    let value = Settings {
+                        theme: stored.into(),
+                        download_dir: std::env::temp_dir(),
+                        ..Settings::default()
+                    };
+                    let simple = UiMode::parse(&value.ui_mode).is_simple();
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        modern,
+                        DialogKind::Settings(Box::new(settings_fields(value))),
+                        settings_width(),
+                        settings_logical_height(modern, simple) + SETTINGS_FRAME,
+                    );
+                    let mut saved = Vec::new();
+                    let mut opened = -1;
+                    if let DialogKind::Settings(f) = &(*raw).kind {
+                        opened = combo_index(f.theme);
+                        for pick in [0, 1] {
+                            combo_select(f.theme, pick);
+                            saved.push(collect_settings(f).map(|value| value.theme).ok());
+                        }
+                    }
+                    close_test_dialog(raw, hwnd, root);
+                    assert_eq!(opened, shown, "modern {modern}, stored {stored:?}");
+                    assert_eq!(
+                        saved,
+                        [Some("classic".to_string()), Some("modern".to_string())]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn modern_s_job_view_marks_its_bar_stopped_only_for_a_failed_or_cancelled_job() {
+        use super::*;
+        use crate::model::JobState;
+        unsafe {
+            let (raw, hwnd, root) = modern_test_dialog(
+                DialogKind::Progress(Box::new(ProgressFields {
+                    ids: vec!["job".into()],
+                    selected: 0,
+                    raised: HashSet::new(),
+                    rendered: String::new(),
+                    rendered_rows: String::new(),
+                    action_label: String::new(),
+                    summary: null_mut(),
+                    list: null_mut(),
+                    status: null_mut(),
+                    progress: null_mut(),
+                    action: null_mut(),
+                    cancel: null_mut(),
+                    open_file: null_mut(),
+                    open_folder: null_mut(),
+                    close: null_mut(),
+                    hint: null_mut(),
+                    report: null_mut(),
+                })),
+                MEDIA_WIDTH,
+                media_window_height(PROGRESS_HEIGHT, 420),
+            );
+            let mut snapshot = (*raw).app.snapshot();
+            let error = (*raw).error;
+            let mut stopped = Vec::new();
+            for state in [
+                JobState::Downloading,
+                JobState::Failed,
+                JobState::Paused,
+                JobState::Cancelled,
+                JobState::Completed,
+            ] {
+                snapshot.jobs = std::sync::Arc::new(vec![sample_job("job", state)]);
+                if let DialogKind::Progress(f) = &mut (*raw).kind {
+                    refresh_job_view(hwnd, error, f, &snapshot);
+                    stopped.push(!GetPropW(f.progress, stopped_prop()).is_null());
+                }
+            }
+            close_test_dialog(raw, hwnd, root);
+            assert_eq!(stopped, [false, true, false, true, false]);
         }
     }
 }

@@ -315,64 +315,45 @@ pub(super) unsafe fn card_font(
 /// private-use codepoint as a tofu box, which no size check can tell apart from
 /// a real glyph.
 pub(super) unsafe fn draw_card_glyph(dc: HDC, id: i32, origin: POINT, size: i32, colour: u32) {
-    let brush = CreateSolidBrush(colour);
-    if brush.is_null() {
-        return;
-    }
-    let previous = SelectObject(dc, brush as HGDIOBJ);
-    let unit = (size / 16).max(1);
-    let (x, y) = (origin.x, origin.y);
-    match id {
-        ID_WIZARD_FILE => {
-            // Folder: the tab first, then the body.
-            Rectangle(dc, x, y + 2 * unit, x + 6 * unit, y + 5 * unit);
-            Rectangle(dc, x, y + 4 * unit, x + 13 * unit, y + 12 * unit);
+    // A 16-unit grid. Straight edges land on whole pixels so they stay sharp;
+    // only curves and slopes are smoothed.
+    let unit = size as f32 / 16.0;
+    let at = |value: f32| (value * unit).round();
+    let edges =
+        |left: f32, top: f32, right: f32, bottom: f32| [at(left), at(top), at(right), at(bottom)];
+    let stroke = unit.round().max(1.0);
+    let shapes = match id {
+        // Folder: the tab, then the body.
+        ID_WIZARD_FILE => vec![
+            Shape::Rect(edges(1.0, 2.0, 7.0, 5.0), unit),
+            Shape::Rect(edges(1.0, 4.0, 15.0, 14.0), unit),
+        ],
+        // Note: head, stem and flag.
+        ID_WIZARD_AUDIO => vec![
+            Shape::Ellipse([2.0 * unit, 9.0 * unit, 8.5 * unit, 14.0 * unit]),
+            Shape::Rect(edges(7.0, 2.0, 8.5, 12.0), 0.0),
+            Shape::Rect(edges(8.5, 2.0, 13.0, 4.0), 0.0),
+        ],
+        // A window outline: a filled title bar and square corners for Classic,
+        // a title line and rounded corners for Modern.
+        ID_WIZARD_CLASSIC => vec![
+            Shape::Frame(edges(1.0, 2.0, 15.0, 14.0), 0.0, stroke),
+            Shape::Rect(edges(1.0, 2.0, 15.0, 5.0), 0.0),
+        ],
+        ID_WIZARD_MODERN => {
+            let frame = edges(1.0, 2.0, 15.0, 14.0);
+            vec![
+                Shape::Frame(frame, 3.0 * unit, stroke),
+                Shape::Rect([frame[0], at(5.0), frame[2], at(5.0) + stroke], 0.0),
+            ]
         }
-        ID_WIZARD_AUDIO => {
-            // Note: head, stem and flag.
-            Ellipse(dc, x + 2 * unit, y + 8 * unit, x + 8 * unit, y + 13 * unit);
-            Rectangle(dc, x + 7 * unit, y + 2 * unit, x + 9 * unit, y + 11 * unit);
-            Rectangle(dc, x + 9 * unit, y + 2 * unit, x + 13 * unit, y + 4 * unit);
-        }
-        ID_WIZARD_CLASSIC | ID_WIZARD_MODERN => {
-            // A window outline: a filled title bar and square corners for
-            // Classic, a title line and rounded corners for Modern.
-            let pen = CreatePen(PS_SOLID | PS_INSIDEFRAME, unit, colour);
-            let previous_pen = SelectObject(dc, pen as HGDIOBJ);
-            let hollow = SelectObject(dc, GetStockObject(NULL_BRUSH));
-            let (left, top, right, bottom) = (x + unit, y + 2 * unit, x + 15 * unit, y + 14 * unit);
-            if id == ID_WIZARD_CLASSIC {
-                Rectangle(dc, left, top, right, bottom);
-                SelectObject(dc, brush as HGDIOBJ);
-                Rectangle(dc, left, top, right, top + 3 * unit);
-            } else {
-                RoundRect(dc, left, top, right, bottom, 6 * unit, 6 * unit);
-                Rectangle(dc, left, top + 3 * unit, right, top + 4 * unit);
-            }
-            SelectObject(dc, hollow);
-            SelectObject(dc, previous_pen);
-            DeleteObject(pen as HGDIOBJ);
-        }
-        _ => {
-            let mut triangle = [
-                POINT {
-                    x: x + 3 * unit,
-                    y: y + 2 * unit,
-                },
-                POINT {
-                    x: x + 13 * unit,
-                    y: y + 7 * unit,
-                },
-                POINT {
-                    x: x + 3 * unit,
-                    y: y + 12 * unit,
-                },
-            ];
-            Polygon(dc, triangle.as_mut_ptr(), triangle.len() as i32);
-        }
-    }
-    SelectObject(dc, previous);
-    DeleteObject(brush as HGDIOBJ);
+        _ => vec![Shape::Triangle([
+            (4.0 * unit, 2.5 * unit),
+            (13.5 * unit, 8.0 * unit),
+            (4.0 * unit, 13.5 * unit),
+        ])],
+    };
+    paint_shapes(dc, origin.x, origin.y, size, &shapes, colour);
 }
 /// Splits a card's own caption into its title and its explanation, so the
 /// window text automation reads stays the full sentence.
@@ -413,67 +394,56 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     SelectObject(dc, pen);
     SelectObject(dc, fill);
     SetBkMode(dc, TRANSPARENT as i32);
-    // Vector glyph on top, centred.
-    let glyph_size = scale(32, dpi);
+    // One row: the glyph at the start, then the title over a one-line
+    // explanation, shortened with an ellipsis where it does not fit.
+    let glyph_size = scale(20, dpi);
     draw_card_glyph(
         dc,
         GetDlgCtrlID(hwnd),
         POINT {
-            x: (padded.left + padded.right - glyph_size) / 2,
-            y: padded.top + scale(12, dpi),
+            x: padded.left + scale(10, dpi),
+            y: (padded.top + padded.bottom - glyph_size) / 2,
         },
         glyph_size,
         face.glyph,
     );
-    // Title, then the explanation under it.
     let mut buffer = [0u16; 512];
     let len = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32).max(0) as usize;
     let (title, description) = card_text_parts(&String::from_utf16_lossy(&buffer[..len]));
-    let mut title_wide = wide(&title);
+    let line = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
+    let text_top = (padded.top + padded.bottom - scale(CARD_TEXT, dpi)) / 2;
     let mut title_area = RECT {
-        left: padded.left + scale(8, dpi),
-        top: padded.top + scale(52, dpi),
-        right: padded.right - scale(8, dpi),
-        bottom: padded.bottom,
+        left: padded.left + scale(10, dpi) + glyph_size + scale(10, dpi),
+        top: text_top,
+        right: padded.right - scale(10, dpi),
+        bottom: text_top + scale(CARD_TITLE, dpi),
     };
     let title_font = SelectObject(
         dc,
         card_font(
             hwnd,
             "title-font",
-            11,
+            9,
             600,
             &["Segoe UI Semibold", "Segoe UI"],
         ) as HGDIOBJ,
     );
     SetTextColor(dc, face.title);
-    DrawTextW(
-        dc,
-        title_wide.as_mut_ptr(),
-        -1,
-        &mut title_area,
-        DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS,
-    );
+    let mut title: Vec<u16> = title.encode_utf16().collect();
+    draw_text(dc, &mut title, &mut title_area, line);
     SelectObject(dc, title_font);
-    let mut description_wide = wide(&description);
     let mut description_area = RECT {
-        left: padded.left + scale(10, dpi),
-        top: padded.top + scale(76, dpi),
-        right: padded.right - scale(10, dpi),
-        bottom: padded.bottom - scale(8, dpi),
+        top: title_area.bottom,
+        bottom: text_top + scale(CARD_TEXT, dpi),
+        ..title_area
     };
     let description_font = SelectObject(
         dc,
         card_font(hwnd, "text-font", 8, FW_NORMAL as i32, &["Segoe UI"]) as HGDIOBJ,
     );
     SetTextColor(dc, face.description);
-    DrawTextW(
-        dc,
-        description_wide.as_mut_ptr(),
-        -1,
-        &mut description_area,
-        DT_CENTER | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL,
-    );
+    let mut description: Vec<u16> = description.encode_utf16().collect();
+    draw_text(dc, &mut description, &mut description_area, line);
     SelectObject(dc, description_font);
     if GetFocus() == hwnd {
         let mut focus = padded;

@@ -1357,12 +1357,13 @@ pub(super) unsafe fn paint_button(
     });
 }
 
-/// Modern's choice card (the setup wizard's): a card face FOCUS_MARGIN inside
-/// the control with the focus ring around it, its glyph, title and
-/// explanation, and a mark in the top corner: a radio mark for a card of a
-/// one-of group, a check mark for a usage purpose, of which several can be
-/// chosen. A chosen card takes the accent stroke, a light accent tint and a
-/// filled mark.
+/// Modern's choice card (the setup wizard's): one row on a card face
+/// FOCUS_MARGIN inside the control with the focus ring around it. Its glyph
+/// at the start, its title over a one-line explanation shortened with an
+/// ellipsis where it does not fit, and a mark at the end: a radio mark for a
+/// card of a one-of group, a check mark for a usage purpose, of which several
+/// can be chosen. A chosen card takes the accent stroke, a light accent tint
+/// and a filled mark.
 pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
     let mut rect: RECT = zeroed();
     GetClientRect(hwnd, &mut rect);
@@ -1403,17 +1404,26 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
     let id = GetDlgCtrlID(hwnd);
     let check = matches!(id, ID_WIZARD_VIDEO | ID_WIZARD_FILE | ID_WIZARD_AUDIO);
     let size = s(16) as f32;
-    let right = (width - margin - s(10)) as f32;
-    let top = (margin + s(10)) as f32;
-    let mark = [right - size, top, right, top + size];
+    let end = (width - margin - s(12)) as f32;
+    let top = ((height - s(16)) / 2) as f32;
+    // Where the tick, the glyph and the text are drawn: through the DC, which
+    // mirrors them in a right-to-left window.
+    let mark = [end - size, top, end, top + size];
+    // The pixels are not mirrored, so there the mark goes where the tick lands.
+    let right = if GetLayout(dc) & LAYOUT_RTL != 0 {
+        (margin + s(12)) as f32 + size
+    } else {
+        end
+    };
+    let disc = [right - size, top, right, top + size];
     let corner = if check { s(3) as f32 } else { size / 2.0 };
     let dot = size * 3.0 / 16.0;
     let centre = (right - size / 2.0, top + size / 2.0);
     for y in (top as usize)..((top + size) as usize + 1).min(height as usize) {
         for x in ((right - size) as usize)..((right as usize) + 1).min(width as usize) {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let outer = rounded_coverage(px, py, mark, corner);
-            let inner_box = [mark[0] + 1.0, mark[1] + 1.0, mark[2] - 1.0, mark[3] - 1.0];
+            let outer = rounded_coverage(px, py, disc, corner);
+            let inner_box = [disc[0] + 1.0, disc[1] + 1.0, disc[2] - 1.0, disc[3] - 1.0];
             let inner = rounded_coverage(px, py, inner_box, corner - 1.0);
             let pixel = &mut pixels[y * width as usize + x];
             if selected {
@@ -1440,7 +1450,7 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
     let length = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32).max(0) as usize;
     let (title, description) = card_text_parts(&String::from_utf16_lossy(&buffer[..length]));
     let language = crate::i18n::language();
-    let title_font = card_font(hwnd, "title-font", 11, 600, ramp_faces(language, false));
+    let title_font = card_font(hwnd, "title-font", 10, 600, ramp_faces(language, false));
     let text_font = card_font(
         hwnd,
         "text-font",
@@ -1448,6 +1458,10 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
         FW_NORMAL as i32,
         ramp_faces(language, true),
     );
+    let glyph = s(20);
+    let text_left = margin + s(12) + glyph + s(12);
+    let text_right = mark[0] as i32 - s(8);
+    let text_top = (height - s(CARD_TEXT)) / 2;
     let tick = if check && selected {
         icon_font_px(dpi, 12)
     } else {
@@ -1471,14 +1485,12 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
             );
         }
-        let glyph = s(32);
-        let previous_pen = SelectObject(memory, GetStockObject(NULL_PEN));
         draw_card_glyph(
             memory,
             id,
             POINT {
-                x: (width - glyph) / 2,
-                y: margin + s(6),
+                x: margin + s(12),
+                y: (height - glyph) / 2,
             },
             glyph,
             if contrast {
@@ -1487,39 +1499,27 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
                 palette.accent
             },
         );
-        SelectObject(memory, previous_pen);
-        let mut title_wide = wide(&title);
+        let line = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
         let mut area = RECT {
-            left: margin + s(12),
-            top: margin + s(36),
-            right: width - margin - s(12),
-            bottom: margin + s(56),
+            left: text_left,
+            top: text_top,
+            right: text_right,
+            bottom: text_top + s(CARD_TITLE),
         };
         SelectObject(memory, title_font as HGDIOBJ);
         SetTextColor(memory, palette.text);
-        DrawTextW(
-            memory,
-            title_wide.as_mut_ptr(),
-            -1,
-            &mut area,
-            DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-        );
-        let mut description_wide = wide(&description);
+        let mut title: Vec<u16> = title.encode_utf16().collect();
+        draw_text(memory, &mut title, &mut area, line);
         let mut area = RECT {
-            left: margin + s(12),
-            top: margin + s(56),
-            right: width - margin - s(12),
-            bottom: height - margin - s(4),
+            left: text_left,
+            top: area.bottom,
+            right: text_right,
+            bottom: text_top + s(CARD_TEXT),
         };
         SelectObject(memory, text_font as HGDIOBJ);
         SetTextColor(memory, palette.secondary);
-        DrawTextW(
-            memory,
-            description_wide.as_mut_ptr(),
-            -1,
-            &mut area,
-            DT_CENTER | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX,
-        );
+        let mut description: Vec<u16> = description.encode_utf16().collect();
+        draw_text(memory, &mut description, &mut area, line);
     });
     if !tick.is_null() {
         DeleteObject(tick as HGDIOBJ);
@@ -1533,6 +1533,8 @@ unsafe fn blit_surface(dc: HDC, rect: RECT, pixels: &[u32], draw: impl FnOnce(HD
     let width = (rect.right - rect.left).max(1);
     let height = (rect.bottom - rect.top).max(1);
     let memory = CreateCompatibleDC(dc);
+    // Drawn through a mirrored DC, the content lands where it does in `dc`.
+    SetLayout(memory, GetLayout(dc));
     let mut info: BITMAPINFO = zeroed();
     info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
     info.bmiHeader.biWidth = width;
@@ -1978,6 +1980,179 @@ pub(super) unsafe fn draw_glyph(dc: HDC, x: i32, y: i32, dpi: u32, code: u16, co
     DeleteObject(font as HGDIOBJ);
 }
 
+/// A filled shape of a vector icon, in pixels from the icon's top left corner.
+#[derive(Clone, Copy)]
+pub(super) enum Shape {
+    /// `[left, top, right, bottom]` with corners of this radius.
+    Rect([f32; 4], f32),
+    /// The band `width` wide inside the edge of a `Rect`.
+    Frame([f32; 4], f32, f32),
+    /// The ellipse inside `[left, top, right, bottom]`.
+    Ellipse([f32; 4]),
+    /// The band `width` wide inside the edge of an `Ellipse`.
+    Ring([f32; 4], f32),
+    /// The stroke `width` wide from one point to the other, with round ends.
+    Line((f32, f32), (f32, f32), f32),
+    Triangle([(f32, f32); 3]),
+}
+
+impl Shape {
+    fn contains(self, x: f32, y: f32) -> bool {
+        let in_rect = |bounds: [f32; 4], radius: f32| {
+            bounds[0] < bounds[2]
+                && bounds[1] < bounds[3]
+                && rounded_coverage(x, y, bounds, radius) >= 0.5
+        };
+        let in_ellipse = |[left, top, right, bottom]: [f32; 4]| {
+            let (rx, ry) = ((right - left) / 2.0, (bottom - top) / 2.0);
+            if rx <= 0.0 || ry <= 0.0 {
+                return false;
+            }
+            let (dx, dy) = ((x - left - rx) / rx, (y - top - ry) / ry);
+            dx * dx + dy * dy <= 1.0
+        };
+        let inset = |[left, top, right, bottom]: [f32; 4], by: f32| {
+            [left + by, top + by, right - by, bottom - by]
+        };
+        match self {
+            Shape::Rect(bounds, radius) => in_rect(bounds, radius),
+            Shape::Frame(bounds, radius, width) => {
+                in_rect(bounds, radius) && !in_rect(inset(bounds, width), (radius - width).max(0.0))
+            }
+            Shape::Ellipse(bounds) => in_ellipse(bounds),
+            Shape::Ring(bounds, width) => in_ellipse(bounds) && !in_ellipse(inset(bounds, width)),
+            Shape::Line((ax, ay), (bx, by), width) => {
+                let (dx, dy) = (bx - ax, by - ay);
+                let length = dx * dx + dy * dy;
+                let t = if length > 0.0 {
+                    (((x - ax) * dx + (y - ay) * dy) / length).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let (px, py) = (ax + t * dx - x, ay + t * dy - y);
+                px * px + py * py <= width * width / 4.0
+            }
+            Shape::Triangle([a, b, c]) => {
+                let side = |(px, py): (f32, f32), (qx, qy): (f32, f32)| {
+                    (qx - px) * (y - py) - (qy - py) * (x - px)
+                };
+                let (d1, d2, d3) = (side(a, b), side(b, c), side(c, a));
+                !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+            }
+        }
+    }
+}
+
+/// How much of pixel (`x`, `y`) the `shapes` cover together, from 0 to 1, from a
+/// 4 x 4 grid of samples inside the pixel.
+pub(super) fn shape_coverage(shapes: &[Shape], x: i32, y: i32) -> f32 {
+    const SAMPLES: i32 = 4;
+    let mut inside = 0;
+    for row in 0..SAMPLES {
+        for column in 0..SAMPLES {
+            let sx = x as f32 + (column as f32 + 0.5) / SAMPLES as f32;
+            let sy = y as f32 + (row as f32 + 0.5) / SAMPLES as f32;
+            if shapes.iter().any(|shape| shape.contains(sx, sy)) {
+                inside += 1;
+            }
+        }
+    }
+    inside as f32 / (SAMPLES * SAMPLES) as f32
+}
+
+/// Draws a vector icon `size` pixels square at (`x`, `y`) in `colour`, its edges
+/// smoothed by how much of each pixel the shapes cover. Vector shapes, not an
+/// icon font: a missing or substituted font would show a tofu box instead.
+pub(super) unsafe fn paint_shapes(
+    dc: HDC,
+    x: i32,
+    y: i32,
+    size: i32,
+    shapes: &[Shape],
+    colour: u32,
+) {
+    if size <= 0 {
+        return;
+    }
+    let memory = CreateCompatibleDC(dc);
+    SetLayout(memory, GetLayout(dc));
+    let mut info: BITMAPINFO = zeroed();
+    info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = size;
+    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    let mut bits: *mut c_void = null_mut();
+    let bitmap = CreateDIBSection(memory, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+    if memory.is_null() || bitmap.is_null() || bits.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as HGDIOBJ);
+        }
+        if !memory.is_null() {
+            DeleteDC(memory);
+        }
+        return;
+    }
+    let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (size * size) as usize);
+    let (red, green, blue) = (colour & 0xff, (colour >> 8) & 0xff, (colour >> 16) & 0xff);
+    for row in 0..size {
+        for column in 0..size {
+            let alpha = (shape_coverage(shapes, column, row) * 255.0).round() as u32;
+            let premultiply = |channel: u32| channel * alpha / 255;
+            pixels[(row * size + column) as usize] =
+                alpha << 24 | premultiply(red) << 16 | premultiply(green) << 8 | premultiply(blue);
+        }
+    }
+    let previous = SelectObject(memory, bitmap as HGDIOBJ);
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 255,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    GdiAlphaBlend(dc, x, y, size, size, memory, 0, 0, size, size, blend);
+    SelectObject(memory, previous);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(memory);
+}
+
+/// `draw` run on a white `size` square DIB, as 0x00RRGGBB pixels.
+#[cfg(test)]
+pub(super) unsafe fn on_white(size: i32, draw: impl FnOnce(HDC)) -> Vec<u32> {
+    let screen = GetDC(null_mut());
+    let dc = CreateCompatibleDC(screen);
+    ReleaseDC(null_mut(), screen);
+    let mut info: BITMAPINFO = zeroed();
+    info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = size;
+    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    let mut bits: *mut c_void = null_mut();
+    let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+    assert!(!bitmap.is_null() && !bits.is_null());
+    let previous = SelectObject(dc, bitmap as HGDIOBJ);
+    let area = RECT {
+        left: 0,
+        top: 0,
+        right: size,
+        bottom: size,
+    };
+    fill_colour(dc, &area, 0xffffff);
+    draw(dc);
+    GdiFlush();
+    let pixels = std::slice::from_raw_parts(bits as *const u32, (size * size) as usize)
+        .iter()
+        .map(|pixel| pixel & 0xffffff)
+        .collect();
+    SelectObject(dc, previous);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(dc);
+    pixels
+}
+
 /// Glyphs of the filter entries, in `MAIN_FILTERS` order: List, Download,
 /// Completed, Error, Video, Audio, Document, ZipFolder, AppIconDefault.
 pub(super) const FILTER_GLYPHS: [u16; 9] = [
@@ -2187,21 +2362,38 @@ pub(super) const MEDIA_WIDTH: i32 = 720;
 pub(super) const MEDIA_HEIGHT: i32 = 416;
 pub(super) const MEDIA_SUMMARY: i32 = 64;
 pub(super) const PROGRESS_HEIGHT: i32 = 472;
-/// The setup wizard's width and the face height of its choice cards.
-pub(super) const WIZARD_WIDTH: i32 = 760;
-pub(super) const WIZARD_CARD: i32 = 92;
+/// The setup wizard's width in both themes, the face height of its one-row
+/// choice cards, and in a card the title's line and the title and its
+/// explanation together.
+pub(super) const WIZARD_WIDTH: i32 = 560;
+pub(super) const WIZARD_CARD: i32 = 48;
+pub(super) const CARD_TITLE: i32 = 20;
+pub(super) const CARD_TEXT: i32 = 36;
+/// The wizard's space under a label, before the cards it introduces.
+pub(super) const fn wizard_label_gap(modern: bool) -> i32 {
+    if modern {
+        ADD_LABEL_GAP
+    } else {
+        4
+    }
+}
 /// The setup wizard's content height with an introduction `intro_lines` tall:
 /// three rows of cards, the two lower ones under a heading, then the error
-/// line and the command bar.
-pub(super) const fn wizard_content_height(intro_lines: i32) -> i32 {
-    ADD_TOP
-        + ADD_LABEL * intro_lines
-        + ADD_LABEL_GAP
+/// line and Modern's command bar or Classic's button row.
+pub(super) const fn wizard_content_height(intro_lines: i32, modern: bool) -> i32 {
+    let (top, bottom) = if modern {
+        (ADD_TOP, ADD_LABEL + ADD_FOOTER)
+    } else {
+        // Classic's error line ends 9 epx above its button row.
+        (DIALOG_MARGIN, ADD_LABEL + 9 + DIALOG_ROW + DIALOG_MARGIN)
+    };
+    let gap = wizard_label_gap(modern);
+    top + ADD_LABEL * intro_lines
+        + gap
         + WIZARD_CARD
-        + 2 * (DIALOG_GAP + ADD_LABEL + ADD_LABEL_GAP + WIZARD_CARD)
+        + 2 * (DIALOG_GAP + ADD_LABEL + gap + WIZARD_CARD)
         + ADD_GROUP_GAP
-        + ADD_LABEL
-        + ADD_FOOTER
+        + bottom
 }
 /// Space between an input frame and the text field inside it: left, right
 /// (a multiline field keeps its scroll bar inside the frame), and top for a
@@ -2305,7 +2497,7 @@ pub(super) unsafe extern "system" fn modern_progress_proc(
     call_previous(hwnd, msg, wparam, lparam)
 }
 
-fn stopped_prop() -> *const u16 {
+pub(super) fn stopped_prop() -> *const u16 {
     static NAME: std::sync::LazyLock<Vec<u16>> =
         std::sync::LazyLock::new(|| wide("SSDownload.ProgressStopped"));
     NAME.as_ptr()
@@ -2341,7 +2533,11 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
     let position = SendMessageW(hwnd, PBM_GETPOS, 0, 0) as i32;
     let span = (range.iHigh - range.iLow).max(1);
     let width = client.right - client.left;
-    let (start, end) = if GetWindowLongW(hwnd, GWL_STYLE) as u32 & PBS_MARQUEE != 0 {
+    let stopped = !GetPropW(hwnd, stopped_prop()).is_null();
+    // A stopped job's bar fills, as the job list's does.
+    let (start, end) = if stopped {
+        (0, width)
+    } else if GetWindowLongW(hwnd, GWL_STYLE) as u32 & PBS_MARQUEE != 0 {
         processing_sweep(sweep_clock(), width)
     } else {
         (
@@ -2369,7 +2565,7 @@ unsafe fn paint_modern_progress(hwnd: HWND, dc: HDC) {
             right: client.left + end,
             bottom: middle - thickness / 2 + thickness,
         };
-        let colour = if !GetPropW(hwnd, stopped_prop()).is_null() {
+        let colour = if stopped {
             palette.critical
         } else {
             palette.accent
@@ -3747,6 +3943,157 @@ mod tests {
     }
 
     #[test]
+    fn shapes_cover_edge_pixels_partly_their_inside_fully_and_nothing_outside() {
+        let half_column = [Shape::Rect([0.0, 0.0, 4.5, 8.0], 0.0)];
+        assert_eq!(shape_coverage(&half_column, 2, 3), 1.0);
+        assert_eq!(shape_coverage(&half_column, 4, 3), 0.5);
+        assert_eq!(shape_coverage(&half_column, 5, 3), 0.0);
+        let triangle = [Shape::Triangle([(0.0, 0.0), (8.0, 0.0), (0.0, 8.0)])];
+        assert_eq!(shape_coverage(&triangle, 1, 1), 1.0);
+        let slope = shape_coverage(&triangle, 3, 4);
+        assert!(slope > 0.0 && slope < 1.0, "{slope}");
+        assert_eq!(shape_coverage(&triangle, 6, 6), 0.0);
+        let ring = [Shape::Ring([0.0, 0.0, 16.0, 16.0], 2.0)];
+        assert_eq!(shape_coverage(&ring, 8, 0), 1.0);
+        assert_eq!(shape_coverage(&ring, 8, 8), 0.0);
+        let arc = shape_coverage(&ring, 2, 2);
+        assert!(arc > 0.0 && arc < 1.0, "{arc}");
+        let frame = [Shape::Frame([0.0, 0.0, 16.0, 16.0], 4.0, 2.0)];
+        assert_eq!(shape_coverage(&frame, 1, 8), 1.0);
+        assert_eq!(shape_coverage(&frame, 8, 8), 0.0);
+        let corner = shape_coverage(&frame, 1, 1);
+        assert!(corner > 0.0 && corner < 1.0, "{corner}");
+        let stroke = [Shape::Line((2.0, 8.0), (14.0, 8.0), 2.0)];
+        assert_eq!(shape_coverage(&stroke, 8, 7), 1.0);
+        assert_eq!(shape_coverage(&stroke, 8, 9), 0.0);
+        // The round end reaches one half stroke beyond the end point.
+        let end = shape_coverage(&stroke, 14, 7);
+        assert!(end > 0.0 && end < 1.0, "{end}");
+        assert_eq!(shape_coverage(&stroke, 15, 7), 0.0);
+        // Overlapping shapes cover a pixel once.
+        let overlap = [
+            Shape::Rect([0.0, 0.0, 2.0, 2.0], 0.0),
+            Shape::Rect([1.0, 0.0, 3.0, 2.0], 0.0),
+        ];
+        assert_eq!(shape_coverage(&overlap, 1, 1), 1.0);
+    }
+
+    #[test]
+    fn painted_shapes_blend_their_edge_pixels_into_the_background() {
+        unsafe {
+            let pixels = on_white(16, |dc| {
+                let shapes = [Shape::Rect([0.0, 0.0, 8.5, 16.0], 0.0)];
+                paint_shapes(dc, 0, 0, 16, &shapes, 0x204060);
+            });
+            let row = &pixels[5 * 16..6 * 16];
+            assert_eq!(row[2], 0x604020);
+            // Half covered: halfway between the colour and the white below.
+            let edge = row[8];
+            for (channel, halfway) in [
+                (edge >> 16, 0xaf),
+                ((edge >> 8) & 0xff, 0x9f),
+                (edge & 0xff, 0x8f),
+            ] {
+                assert!(channel.abs_diff(halfway) <= 1, "{edge:06x}");
+            }
+            assert_eq!(row[12], 0xffffff);
+        }
+    }
+
+    #[test]
+    fn a_card_has_its_mark_at_its_end_in_either_direction() {
+        unsafe {
+            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+            let card = control(
+                parent,
+                "BUTTON",
+                "Basic — downloads",
+                WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
+                0,
+                ID_WIZARD_SIMPLE,
+            );
+            let width = 200;
+            MoveWindow(card, 0, 0, width, 54, 0);
+            let s = |value: i32| scale(value, GetDpiForWindow(card).max(96)) as usize;
+            // An unchosen mark is a ring in the strong stroke colour, nearly
+            // whole where it crosses its middle row.
+            let stroke = card_palette(parent).strong_stroke;
+            let near = |pixel: u32| {
+                // A DIB pixel is 0x00RRGGBB, a COLORREF 0x00BBGGRR.
+                [
+                    (pixel >> 16, stroke),
+                    (pixel >> 8, stroke >> 8),
+                    (pixel, stroke >> 16),
+                ]
+                .iter()
+                .all(|&(a, b)| (a & 0xff).abs_diff(b & 0xff) <= 8)
+            };
+            // The ring's 16 epx sit 12 epx inside the face, which starts
+            // FOCUS_MARGIN inside the card; the glyph is at the other side.
+            let inset = s(FOCUS_MARGIN) + s(12);
+            let left = inset..inset + s(16);
+            let right = width as usize - inset - s(16)..width as usize - inset;
+            let ring_in = |rtl: bool| -> [bool; 2] {
+                let pixels = on_white(width, |dc| {
+                    if rtl {
+                        SetLayout(dc, LAYOUT_RTL);
+                    }
+                    paint_choice_card(card, dc);
+                });
+                let row = &pixels[27 * width as usize..28 * width as usize];
+                [left.clone(), right.clone()].map(|side| row[side].iter().any(|&p| near(p)))
+            };
+            let (ltr, rtl) = (ring_in(false), ring_in(true));
+            DestroyWindow(parent);
+            assert_eq!(
+                ltr,
+                [false, true],
+                "left to right: ring on the left, on the right"
+            );
+            assert_eq!(
+                rtl,
+                [true, false],
+                "right to left: ring on the left, on the right"
+            );
+        }
+    }
+
+    #[test]
+    fn wizard_card_glyphs_smooth_their_curves_and_keep_straight_edges_sharp() {
+        let counts = |id| {
+            let pixels = unsafe {
+                on_white(30, |dc| {
+                    draw_card_glyph(dc, id, POINT { x: 0, y: 0 }, 30, 0)
+                })
+            };
+            let solid = pixels.iter().filter(|&&pixel| pixel == 0).count();
+            let blended = pixels
+                .iter()
+                .filter(|&&pixel| pixel != 0 && pixel != 0xffffff)
+                .count();
+            (solid, blended)
+        };
+        for id in [
+            ID_WIZARD_VIDEO,
+            ID_WIZARD_FILE,
+            ID_WIZARD_AUDIO,
+            ID_WIZARD_MODERN,
+        ] {
+            let (solid, blended) = counts(id);
+            assert!(
+                solid > 0 && blended > 0,
+                "{id}: {solid} solid, {blended} blended"
+            );
+        }
+        // Classic's window is all straight edges on whole pixels.
+        let (solid, blended) = counts(ID_WIZARD_CLASSIC);
+        assert!(
+            solid > 0 && blended == 0,
+            "{solid} solid, {blended} blended"
+        );
+    }
+
+    #[test]
     fn a_button_surface_has_its_darker_edge_at_the_bottom_and_a_ring_only_with_focus() {
         let surface = |focus| ButtonSurface {
             background: 0x111111,
@@ -4353,6 +4700,10 @@ mod tests {
             assert!(!normal.contains(&palette.critical));
             assert!(failed.contains(&palette.critical));
             assert!(!failed.contains(&palette.accent));
+            // Half done, the stopped bar still fills to its end.
+            let near_end = (height / 2 * width + width - 12) as usize;
+            assert_ne!(normal[near_end], palette.accent);
+            assert_eq!(failed[near_end], palette.critical);
         }
     }
 }

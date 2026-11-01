@@ -8,8 +8,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     let w = r.right;
     let actual_height = r.bottom;
     let logical_height = match &dlg.kind {
-        DialogKind::Wizard(f) if modern() => wizard_content_height(f.intro_lines),
-        DialogKind::Wizard(_) => 506,
+        DialogKind::Wizard(f) => wizard_content_height(f.intro_lines, modern()),
         DialogKind::Add(f) => add_content_height(f.advanced),
         DialogKind::Settings(f) => {
             settings_logical_height(modern(), UiMode::parse(&f.value.ui_mode).is_simple())
@@ -61,89 +60,26 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         scale(20, dlg.dpi),
     );
     match &dlg.kind {
-        DialogKind::Wizard(f) if modern() => layout_modern_wizard(dlg, h, f),
         DialogKind::Wizard(f) => {
-            let labels = child_statics(dlg.hwnd, dlg.error);
-            if let Some(label) = labels.first() {
-                MoveWindow(*label, m, m, w - 2 * m, scale(20, dlg.dpi), 1);
-            }
-            // Cards are sized to their own content (icon, title, explanation)
-            // and centred in the body, instead of being stretched to whatever
-            // height the body happens to have.
-            let advanced = check(f.advanced_card);
-            let card_h = scale(112, dlg.dpi);
-            let card_gap = gap * 2;
-            let mode_w = (w - 2 * m - gap) / 2;
-            let mode_top = m + scale(28, dlg.dpi);
-            place(f.simple_card, true, m, mode_top, mode_w, card_h);
-            place(
-                f.advanced_card,
-                true,
-                m + mode_w + gap,
-                mode_top,
-                mode_w,
-                card_h,
-            );
-            let theme_y = mode_top + card_h + gap;
-            wizard_theme_heading(
-                dlg,
-                f,
-                &labels,
-                m,
-                theme_y + scale(3, dlg.dpi),
-                scale(18, dlg.dpi),
-            );
-            let theme_top = theme_y + scale(22, dlg.dpi);
-            place(f.classic_card, true, m, theme_top, mode_w, card_h);
-            place(
-                f.modern_card,
-                true,
-                m + mode_w + gap,
-                theme_top,
-                mode_w,
-                card_h,
-            );
-            // The purpose cards are the advanced answer's detail; a simple
-            // choice stays one decision, so they leave the dialog entirely.
-            let heading_y = theme_top + card_h + gap;
-            place_static(
-                &labels,
-                2,
-                m,
-                heading_y + scale(3, dlg.dpi),
-                w - 2 * m,
-                scale(18, dlg.dpi),
-                advanced,
-            );
-            let cards = [f.video, f.file, f.audio];
-            let card_w = (w - 2 * m - 2 * card_gap) / 3;
-            let top = heading_y + scale(22, dlg.dpi);
-            for (index, control) in cards.iter().enumerate() {
-                place(
-                    *control,
-                    advanced,
-                    m + index as i32 * (card_w + card_gap),
-                    top,
-                    card_w,
-                    card_h,
+            layout_wizard(dlg, h, f);
+            if !modern() {
+                MoveWindow(
+                    f.start,
+                    w - m - scale(110, dlg.dpi),
+                    by,
+                    scale(110, dlg.dpi),
+                    row,
+                    1,
+                );
+                move_id(
+                    dlg.hwnd,
+                    D_CANCEL,
+                    w - m - scale(210, dlg.dpi),
+                    by,
+                    scale(92, dlg.dpi),
+                    row,
                 );
             }
-            MoveWindow(
-                f.start,
-                w - m - scale(110, dlg.dpi),
-                by,
-                scale(110, dlg.dpi),
-                row,
-                1,
-            );
-            move_id(
-                dlg.hwnd,
-                D_CANCEL,
-                w - m - scale(210, dlg.dpi),
-                by,
-                scale(92, dlg.dpi),
-                row,
-            );
         }
         DialogKind::Add(f) if !modern() => {
             let labels = child_statics(dlg.hwnd, dlg.error);
@@ -2260,9 +2196,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
         }
     }
-    // Modern moves controls into new rows, so Tab follows where they are.
-    // Settings and the queue manager set their own order.
-    if modern() && !matches!(dlg.kind, DialogKind::Settings(_) | DialogKind::Queues(_)) {
+    if follows_reading_order(&dlg.kind, modern()) {
         tab_in_reading_order(dlg.hwnd);
     }
     let offset = dlg.scroll_y.get().clamp(0, (h - actual_height).max(0));
@@ -2322,6 +2256,28 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
             child = GetWindow(child, GW_HWNDNEXT);
         }
+    }
+}
+
+/// Whether Tab walks a `kind` dialog in its reading order: the wizard in both
+/// themes, and in Modern the windows its own layout moves into new rows. Every
+/// other window keeps its creation order; Settings and the queue manager set
+/// their own.
+fn follows_reading_order(kind: &DialogKind, modern: bool) -> bool {
+    match kind {
+        DialogKind::Wizard(_) => true,
+        DialogKind::Add(_)
+        | DialogKind::Media(_)
+        | DialogKind::Progress(_)
+        | DialogKind::Rules(_)
+        | DialogKind::Crawler(_)
+        | DialogKind::Synchronization(_)
+        | DialogKind::Logins(_)
+        | DialogKind::Events(_)
+        | DialogKind::JobLog(_)
+        | DialogKind::Speed(_)
+        | DialogKind::Rename(_) => modern,
+        DialogKind::Settings(_) | DialogKind::Queues(_) | DialogKind::Tools(_) => false,
     }
 }
 
@@ -2451,12 +2407,14 @@ pub(super) unsafe fn fit_first_label(dlg: &mut DialogUi) {
         return;
     };
     let (hwnd, font, dpi) = (dlg.hwnd, dlg.font, dlg.dpi);
+    // Classic fits only the wizard, whose sides keep the dialog margin.
+    let pad = if modern() { ADD_PAD } else { DIALOG_MARGIN };
     let lines = match &mut dlg.kind {
         DialogKind::Speed(f) => &mut f.label_lines,
         DialogKind::Wizard(f) => &mut f.intro_lines,
         _ => return,
     };
-    let wrapped = fit_label_lines(hwnd, label, font, dpi, *lines);
+    let wrapped = fit_label_lines(hwnd, label, font, dpi, *lines, pad);
     dlg.design.1 += (wrapped - *lines) * ADD_LABEL;
     *lines = wrapped;
 }
@@ -2484,18 +2442,27 @@ unsafe fn wizard_theme_heading(
     }
 }
 
-/// Modern's setup wizard: the introduction, the depth cards, the theme cards
-/// and the purpose cards (the advanced depth's detail) under their headings,
-/// the error line and the command bar.
-unsafe fn layout_modern_wizard(dlg: &DialogUi, h: i32, f: &WizardFields) {
+/// The setup wizard: the introduction, the depth cards, the theme cards and
+/// the purpose cards (the advanced depth's detail) under their headings, and
+/// the error line. Modern puts its buttons on the command bar; Classic's go on
+/// its button row.
+unsafe fn layout_wizard(dlg: &DialogUi, h: i32, f: &WizardFields) {
     let s = |value: i32| scale(value, dlg.dpi);
+    let modern = modern();
     let mut client: RECT = zeroed();
     GetClientRect(dlg.hwnd, &mut client);
     let labels = child_statics(dlg.hwnd, dlg.error);
-    let x = s(ADD_PAD);
+    let (x, top) = if modern {
+        (s(ADD_PAD), s(ADD_TOP))
+    } else {
+        (s(DIALOG_MARGIN), s(DIALOG_MARGIN))
+    };
     let cw = client.right - 2 * x;
-    let (ring, gap, card) = (s(FOCUS_MARGIN), s(DIALOG_GAP), s(WIZARD_CARD));
-    // A card's window reaches FOCUS_MARGIN past its face for the focus ring.
+    let label_gap = s(wizard_label_gap(modern));
+    let ring = if modern { s(FOCUS_MARGIN) } else { 0 };
+    let (gap, card) = (s(DIALOG_GAP), s(WIZARD_CARD));
+    // A Modern card's window reaches FOCUS_MARGIN past its face for the focus
+    // ring.
     let row = |cards: &[HWND], show: bool, top: i32| {
         let count = cards.len() as i32;
         let width = (cw - (count - 1) * gap) / count;
@@ -2512,22 +2479,26 @@ unsafe fn layout_modern_wizard(dlg: &DialogUi, h: i32, f: &WizardFields) {
         }
     };
     let intro = s(ADD_LABEL * f.intro_lines);
-    let mut y = s(ADD_TOP);
+    let mut y = top;
     place_static(&labels, 0, x, y, cw, intro, true);
-    y += intro + s(ADD_LABEL_GAP);
+    y += intro + label_gap;
     row(&[f.simple_card, f.advanced_card], true, y);
     y += card + gap;
     wizard_theme_heading(dlg, f, &labels, x, y, s(ADD_LABEL));
-    y += s(ADD_LABEL + ADD_LABEL_GAP);
+    y += s(ADD_LABEL) + label_gap;
     row(&[f.classic_card, f.modern_card], true, y);
     y += card + gap;
+    // The purpose cards are the advanced answer's detail; a simple choice
+    // stays one decision, so they leave the dialog.
     let advanced = check(f.advanced_card);
     place_static(&labels, 2, x, y, cw, s(ADD_LABEL), advanced);
-    y += s(ADD_LABEL + ADD_LABEL_GAP);
+    y += s(ADD_LABEL) + label_gap;
     row(&[f.video, f.file, f.audio], advanced, y);
-    y += card + s(ADD_GROUP_GAP);
-    move_id(dlg.hwnd, D_ERROR, x, y, cw, s(ADD_LABEL));
-    command_bar(dlg, h, &[(ID_WIZARD_START, 120), (D_CANCEL, 96)]);
+    if modern {
+        y += card + s(ADD_GROUP_GAP);
+        move_id(dlg.hwnd, D_ERROR, x, y, cw, s(ADD_LABEL));
+        command_bar(dlg, h, &[(ID_WIZARD_START, 120), (D_CANCEL, 96)]);
+    }
 }
 
 /// Modern's log windows: the list under its label, the `actions` on the card
@@ -2973,11 +2944,19 @@ fn fill_height(h: i32, top: i32, natural: i32, reserve: i32, dpi: u32) -> i32 {
 }
 
 /// Grows `window` by the lines `label` wraps to beyond `lines` at the card's
-/// width, ADD_LABEL each, and returns the lines it wraps to.
-unsafe fn fit_label_lines(window: HWND, label: HWND, font: HFONT, dpi: u32, lines: i32) -> i32 {
+/// width, `pad` epx inside each side, ADD_LABEL each, and returns the lines it
+/// wraps to.
+unsafe fn fit_label_lines(
+    window: HWND,
+    label: HWND,
+    font: HFONT,
+    dpi: u32,
+    lines: i32,
+    pad: i32,
+) -> i32 {
     let mut client: RECT = zeroed();
     GetClientRect(window, &mut client);
-    let room = client.right - 2 * scale(ADD_PAD, dpi);
+    let room = client.right - 2 * scale(pad, dpi);
     let wrapped = wrapped_height(label, font, dpi, room) / scale(ADD_LABEL, dpi);
     let extra = wrapped - lines;
     if extra != 0 {
@@ -3034,13 +3013,13 @@ mod tests {
                 SetWindowPos(window, null_mut(), 0, 0, 300, 200, SWP_NOZORDER | SWP_NOACTIVATE);
                 let label = control(window, "STATIC", value, WS_CHILD, 0, 1);
                 apply_font(label, font);
-                let lines = fit_label_lines(window, label, font, 96, 1);
+                let lines = fit_label_lines(window, label, font, 96, 1, ADD_PAD);
                 assert_eq!(lines > 1, wraps, "{value}: {lines} lines");
                 let mut frame: RECT = zeroed();
                 GetWindowRect(window, &mut frame);
                 assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
                 // Measured again at its lines, the window stays as it is.
-                assert_eq!(fit_label_lines(window, label, font, 96, lines), lines);
+                assert_eq!(fit_label_lines(window, label, font, 96, lines, ADD_PAD), lines);
                 GetWindowRect(window, &mut frame);
                 assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
                 DestroyWindow(window);
