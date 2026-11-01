@@ -938,8 +938,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "SSDownload yeniden başlatılınca uygulanır",
-                    "Applies when SSDownload restarts",
+                    "Yeniden başlatınca geçerli olur",
+                    "Takes effect after a restart",
                 ),
                 0,
             );

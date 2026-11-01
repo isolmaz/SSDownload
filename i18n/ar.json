@@ -1726,7 +1726,7 @@
   "Settings": "الإعدادات",
   "URL links (one link per line):": "روابط URL (رابط واحد في كل سطر):",
   "&Pause / Resume": "إي&قاف مؤقت / استئناف",
-  "Applies when SSDownload restarts": "يُطبَّق عند إعادة تشغيل SSDownload",
+  "Takes effect after a restart": "يسري بعد إعادة التشغيل",
   "Classic": "كلاسيكي",
   "Theme:": "السمة:",
   "Modern": "حديث"

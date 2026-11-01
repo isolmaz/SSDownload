@@ -1726,7 +1726,7 @@
   "Settings": "Einstellungen",
   "URL links (one link per line):": "URL-Links (ein Link pro Zeile):",
   "&Pause / Resume": "&Pausieren / Fortsetzen",
-  "Applies when SSDownload restarts": "Gilt nach einem Neustart von SSDownload",
+  "Takes effect after a restart": "Gilt nach einem Neustart",
   "Classic": "Klassisch",
   "Theme:": "Design:",
   "Modern": "Modern"

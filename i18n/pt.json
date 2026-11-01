@@ -1726,7 +1726,7 @@
   "Settings": "Configurações",
   "URL links (one link per line):": "Links de URL (um link por linha):",
   "&Pause / Resume": "&Pausar / Retomar",
-  "Applies when SSDownload restarts": "Aplica-se quando o SSDownload reinicia",
+  "Takes effect after a restart": "Aplica-se ao reiniciar",
   "Classic": "Clássico",
   "Theme:": "Tema:",
   "Modern": "Moderno"
