@@ -7367,7 +7367,10 @@ unsafe fn dialog_check_wrapped(parent: HWND, font: HFONT, label: &str, id: i32) 
     apply_font(h, font);
     h
 }
-unsafe fn dialog_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
+/// `style` adds list box styles. A list box sends its dialog no notifications
+/// unless it has `LBS_NOTIFY`, so a list whose selection the dialog acts on
+/// needs it.
+unsafe fn dialog_list(parent: HWND, font: HFONT, id: i32, style: u32) -> HWND {
     let h = control(
         parent,
         "LISTBOX",
@@ -7378,7 +7381,7 @@ unsafe fn dialog_list(parent: HWND, font: HFONT, id: i32, multi: bool) -> HWND {
             | WS_BORDER
             | WS_VSCROLL
             | LBS_NOINTEGRALHEIGHT as u32
-            | if multi { LBS_EXTENDEDSEL as u32 } else { 0 },
+            | style,
         WS_EX_CLIENTEDGE,
         id,
     );
@@ -8513,7 +8516,14 @@ mod tests {
     }
 
     impl HiddenDialog {
-        fn new(kind: super::DialogKind, width: i32, height: i32) -> Self {
+        /// `seed` runs on the app before the dialog is created, so the dialog
+        /// opens on what it stored.
+        fn seeded(
+            kind: super::DialogKind,
+            width: i32,
+            height: i32,
+            seed: impl FnOnce(&crate::app::App),
+        ) -> Self {
             use super::{create_dialog, DialogRequest};
             use std::ptr::null_mut;
 
@@ -8522,6 +8532,7 @@ mod tests {
                 std::env::temp_dir().join(format!("ssdownload-dialog-{}", uuid::Uuid::new_v4()));
             let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
             let app = crate::app::App::open(paths).unwrap();
+            seed(&app);
             unsafe {
                 CLASSES.call_once(|| super::register_classes().unwrap());
                 let (raw, hwnd) = create_dialog(
@@ -8602,7 +8613,18 @@ mod tests {
         height: i32,
         body: impl FnOnce(&HiddenDialog) -> T + Send,
     ) -> T {
-        on_private_desktop(|| body(&HiddenDialog::new(make(), width, height)))
+        with_seeded_dialog(|_| {}, make, width, height, body)
+    }
+
+    /// `with_dialog` on an app that `seed` has filled first.
+    fn with_seeded_dialog<T: Send>(
+        seed: impl FnOnce(&crate::app::App) + Send,
+        make: impl FnOnce() -> super::DialogKind + Send,
+        width: i32,
+        height: i32,
+        body: impl FnOnce(&HiddenDialog) -> T + Send,
+    ) -> T {
+        on_private_desktop(|| body(&HiddenDialog::seeded(make(), width, height, seed)))
     }
 
     /// For each name: the Rename dialog's selection and the client x of the
@@ -9296,6 +9318,526 @@ mod tests {
                 0,
                 "Apply did not run"
             );
+        });
+    }
+    /// Clicks a row of a list box the way the mouse does.
+    fn click_row(list: super::HWND, row: usize) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SendMessageW, LB_GETITEMHEIGHT, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        };
+        unsafe {
+            let height = SendMessageW(list, LB_GETITEMHEIGHT, 0, 0) as isize;
+            let point = ((row as isize * height + height / 2) << 16) | 8;
+            SendMessageW(list, WM_LBUTTONDOWN, 1, point);
+            SendMessageW(list, WM_LBUTTONUP, 0, point);
+        }
+    }
+
+    /// Presses a button of the dialog.
+    fn command(dialog: &HiddenDialog, id: i32) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COMMAND};
+        unsafe { SendMessageW(dialog.hwnd, WM_COMMAND, id as usize, 0) };
+    }
+
+    /// One tick of the timer that keeps the dialog up to date.
+    fn tick(dialog: &HiddenDialog) {
+        unsafe { super::dialog_timer(&mut *dialog.raw) };
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join("ssdownload-list-test").join(name)
+    }
+
+    fn rules_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Rules(super::RuleFields {
+            list: null_mut(),
+            ids: Vec::new(),
+            host: null_mut(),
+            dir: null_mut(),
+            subdomains: null_mut(),
+            file: null_mut(),
+            video: null_mut(),
+            audio: null_mut(),
+            priority: null_mut(),
+        })
+    }
+
+    #[test]
+    fn folder_rules_follow_the_selected_row() {
+        use super::{check, set_text, text, DialogKind, R_SAVE};
+        use crate::model::{Action, DownloadKind, FolderRule};
+
+        let rule = |host: &str, kind, priority| FolderRule {
+            id: uuid::Uuid::new_v4().to_string(),
+            host: host.into(),
+            include_subdomains: true,
+            kinds: vec![kind],
+            destination: scratch(host),
+            priority,
+            enabled: true,
+        };
+        let seed = |app: &crate::app::App| {
+            let mut settings = app.snapshot().settings;
+            settings.folder_rules = vec![
+                rule("first.example", DownloadKind::File, 1),
+                rule("second.example", DownloadKind::Video, 7),
+            ];
+            app.dispatch(Action::SetSettings { settings }).unwrap();
+        };
+        with_seeded_dialog(seed, rules_kind, 700, 470, |dialog| {
+            let DialogKind::Rules(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let before = dialog.app().snapshot().settings.folder_rules;
+            unsafe {
+                click_row(f.list, 0);
+                assert_eq!(text(f.host), "first.example");
+                set_text(f.host, "typed.example");
+                tick(dialog);
+                assert_eq!(text(f.host), "typed.example", "a tick keeps what was typed");
+
+                click_row(f.list, 1);
+                assert_eq!(text(f.host), "second.example", "another row replaces it");
+                assert_eq!(text(f.dir), scratch("second.example").to_string_lossy());
+                assert_eq!(text(f.priority), "7");
+                assert!(check(f.video) && !check(f.file), "the kind is shown");
+
+                command(dialog, R_SAVE);
+                assert_eq!(
+                    dialog.app().snapshot().settings.folder_rules,
+                    before,
+                    "saving the selected rule unchanged writes nothing else"
+                );
+
+                set_text(f.dir, &scratch("moved").to_string_lossy());
+                command(dialog, R_SAVE);
+            }
+            let rules = dialog.app().snapshot().settings.folder_rules;
+            assert_eq!(rules[0], before[0], "the first rule is untouched");
+            assert_eq!(rules[1].destination, scratch("moved"));
+            assert_eq!(rules[1].host, before[1].host);
+            assert_eq!(rules.len(), 2);
+        });
+    }
+
+    #[test]
+    fn sync_records_follow_the_selected_row() {
+        use super::{check, set_text, text, DialogKind, SyncFields, Y_SAVE};
+        use crate::model::{Action, SyncPolicy};
+        use std::ptr::null_mut;
+
+        let policy = |name: &str, minutes| SyncPolicy {
+            id: uuid::Uuid::new_v4().to_string(),
+            url: format!("https://{name}.example/file.txt"),
+            destination: scratch(name),
+            enabled: false,
+            interval_minutes: minutes,
+            ..SyncPolicy::default()
+        };
+        let seed = |app: &crate::app::App| {
+            let mut settings = app.snapshot().settings;
+            settings.synchronization_policies = vec![policy("first", 30), policy("second", 90)];
+            app.dispatch(Action::SetSettings { settings }).unwrap();
+        };
+        let kind = || {
+            DialogKind::Synchronization(SyncFields {
+                list: null_mut(),
+                ids: Vec::new(),
+                url: null_mut(),
+                dir: null_mut(),
+                interval: null_mut(),
+                overwrite: null_mut(),
+                enabled: null_mut(),
+            })
+        };
+        with_seeded_dialog(seed, kind, 700, 470, |dialog| {
+            let DialogKind::Synchronization(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let before = dialog.app().snapshot().settings.synchronization_policies;
+            unsafe {
+                click_row(f.list, 0);
+                assert_eq!(text(f.interval), "30");
+                set_text(f.interval, "45");
+                tick(dialog);
+                assert_eq!(text(f.interval), "45", "a tick keeps what was typed");
+
+                click_row(f.list, 1);
+                assert_eq!(text(f.url), "https://second.example/file.txt");
+                assert_eq!(text(f.interval), "90", "another row replaces it");
+                assert!(!check(f.enabled));
+
+                command(dialog, Y_SAVE);
+                assert_eq!(
+                    dialog.app().snapshot().settings.synchronization_policies,
+                    before,
+                    "saving the selected record unchanged writes nothing else"
+                );
+
+                set_text(f.interval, "15");
+                command(dialog, Y_SAVE);
+            }
+            let policies = dialog.app().snapshot().settings.synchronization_policies;
+            assert_eq!(policies[0], before[0], "the first record is untouched");
+            assert_eq!(policies[1].interval_minutes, 15);
+            assert_eq!(policies[1].url, before[1].url);
+            assert_eq!(policies.len(), 2);
+        });
+    }
+
+    fn sync_kind() -> super::DialogKind {
+        use std::ptr::null_mut;
+        super::DialogKind::Synchronization(super::SyncFields {
+            list: null_mut(),
+            ids: Vec::new(),
+            url: null_mut(),
+            dir: null_mut(),
+            interval: null_mut(),
+            overwrite: null_mut(),
+            enabled: null_mut(),
+        })
+    }
+
+    /// Answers the "Delete ...?" box of the dialogs on this thread.
+    fn answer_removal(yes: bool) {
+        super::dialog_commands::TEST_REMOVAL_ANSWER.with(|answer| answer.set(Some(yes)));
+    }
+
+    #[test]
+    fn saving_a_new_rule_twice_keeps_one_rule() {
+        use super::{set_check, set_text, DialogKind, R_SAVE};
+
+        with_dialog(rules_kind, 700, 470, |dialog| {
+            let DialogKind::Rules(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (host, dir, priority, video) = (f.host, f.dir, f.priority, f.video);
+            let rules = || dialog.app().snapshot().settings.folder_rules;
+            unsafe {
+                set_text(host, "new.example");
+                set_text(dir, &scratch("new.example").to_string_lossy());
+                set_text(priority, "3");
+                set_check(video, true);
+            }
+            command(dialog, R_SAVE);
+            assert_eq!(rules().len(), 1, "the rule was added");
+            let id = rules()[0].id.clone();
+
+            command(dialog, R_SAVE);
+            assert_eq!(rules().len(), 1, "saving again updates the rule");
+            assert_eq!(rules()[0].id, id);
+
+            unsafe { set_text(priority, "5") };
+            command(dialog, R_SAVE);
+            assert_eq!(rules().len(), 1);
+            assert_eq!((rules()[0].id.clone(), rules()[0].priority), (id, 5));
+        });
+    }
+
+    #[test]
+    fn saving_a_new_sync_record_twice_keeps_one_record() {
+        use super::{set_check, set_text, DialogKind, Y_SAVE};
+
+        with_dialog(sync_kind, 700, 470, |dialog| {
+            let DialogKind::Synchronization(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (url, dir, interval, enabled) = (f.url, f.dir, f.interval, f.enabled);
+            let records = || dialog.app().snapshot().settings.synchronization_policies;
+            unsafe {
+                set_text(url, "https://new.example/file.txt");
+                set_text(dir, &scratch("new").to_string_lossy());
+                set_text(interval, "30");
+                // A disabled record is never checked, so no request is sent.
+                set_check(enabled, false);
+            }
+            command(dialog, Y_SAVE);
+            assert_eq!(records().len(), 1, "the record was added");
+            let id = records()[0].id.clone();
+
+            command(dialog, Y_SAVE);
+            assert_eq!(records().len(), 1, "saving again updates the record");
+            assert_eq!(records()[0].id, id);
+
+            unsafe { set_text(interval, "45") };
+            command(dialog, Y_SAVE);
+            assert_eq!(records().len(), 1);
+            assert_eq!(
+                (records()[0].id.clone(), records()[0].interval_minutes),
+                (id, 45)
+            );
+        });
+    }
+
+    #[test]
+    fn removing_a_rule_empties_the_form_so_save_cannot_bring_it_back() {
+        use super::{text, DialogKind, R_REMOVE, R_SAVE};
+        use crate::model::{Action, DownloadKind, FolderRule};
+
+        let rule = |host: &str| FolderRule {
+            id: uuid::Uuid::new_v4().to_string(),
+            host: host.into(),
+            include_subdomains: true,
+            kinds: vec![DownloadKind::File],
+            destination: scratch(host),
+            priority: 1,
+            enabled: true,
+        };
+        let seed = |app: &crate::app::App| {
+            let mut settings = app.snapshot().settings;
+            settings.folder_rules = vec![rule("first.example"), rule("second.example")];
+            app.dispatch(Action::SetSettings { settings }).unwrap();
+        };
+        with_seeded_dialog(seed, rules_kind, 700, 470, |dialog| {
+            let DialogKind::Rules(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (host, dir, list) = (f.host, f.dir, f.list);
+            let rules = || dialog.app().snapshot().settings.folder_rules;
+            answer_removal(true);
+            click_row(list, 0);
+            command(dialog, R_REMOVE);
+            assert_eq!(rules().len(), 1, "the rule was removed");
+            assert_eq!(rules()[0].host, "second.example");
+            unsafe {
+                assert!(
+                    text(host).is_empty() && text(dir).is_empty(),
+                    "the form is empty"
+                );
+            }
+            command(dialog, R_SAVE);
+            assert_eq!(rules().len(), 1, "Save did not bring the removed rule back");
+            assert_eq!(rules()[0].host, "second.example");
+        });
+    }
+
+    #[test]
+    fn removing_a_sync_record_empties_the_form_so_save_cannot_bring_it_back() {
+        use super::{text, DialogKind, Y_REMOVE, Y_SAVE};
+        use crate::model::{Action, SyncPolicy};
+
+        let policy = |name: &str| SyncPolicy {
+            id: uuid::Uuid::new_v4().to_string(),
+            url: format!("https://{name}.example/file.txt"),
+            destination: scratch(name),
+            enabled: false,
+            interval_minutes: 30,
+            ..SyncPolicy::default()
+        };
+        let seed = |app: &crate::app::App| {
+            let mut settings = app.snapshot().settings;
+            settings.synchronization_policies = vec![policy("first"), policy("second")];
+            app.dispatch(Action::SetSettings { settings }).unwrap();
+        };
+        with_seeded_dialog(seed, sync_kind, 700, 470, |dialog| {
+            let DialogKind::Synchronization(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (url, list) = (f.url, f.list);
+            let records = || dialog.app().snapshot().settings.synchronization_policies;
+            answer_removal(true);
+            click_row(list, 0);
+            command(dialog, Y_REMOVE);
+            assert_eq!(records().len(), 1, "the record was removed");
+            assert_eq!(records()[0].url, "https://second.example/file.txt");
+            assert!(unsafe { text(url) }.is_empty(), "the form is empty");
+            command(dialog, Y_SAVE);
+            assert_eq!(
+                records().len(),
+                1,
+                "Save did not bring the removed record back"
+            );
+            assert_eq!(records()[0].url, "https://second.example/file.txt");
+        });
+    }
+
+    #[test]
+    fn removing_a_site_login_empties_the_form_so_enter_cannot_bring_it_back() {
+        use super::{text, DialogKind, LoginFields, L_REMOVE};
+        use crate::model::SiteLogin;
+        use std::ptr::null_mut;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+        let login = |host: &str, user: &str| SiteLogin {
+            host: host.into(),
+            username: user.into(),
+            password: crate::secure::seal(uuid::Uuid::new_v4().to_string()).unwrap(),
+            allow_http: false,
+        };
+        let kind = move || {
+            DialogKind::Logins(LoginFields {
+                logins: vec![
+                    login("files.example", "alice"),
+                    login("other.example", "bob"),
+                ],
+                list: null_mut(),
+                host: null_mut(),
+                user: null_mut(),
+                pass: null_mut(),
+                allow_http: null_mut(),
+            })
+        };
+        with_dialog(kind, 700, 470, |dialog| {
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let (host, user, list) = (f.host, f.user, f.list);
+            answer_removal(true);
+            click_row(list, 0);
+            command(dialog, L_REMOVE);
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_eq!(f.logins.len(), 1, "the login was removed");
+            assert_eq!(f.logins[0].host, "other.example");
+            unsafe {
+                assert!(
+                    text(host).is_empty() && text(user).is_empty(),
+                    "the form is empty"
+                );
+            }
+            // Enter presses Add / update, which must not bring the login back.
+            assert!(press(dialog, VK_RETURN));
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_eq!(
+                f.logins.len(),
+                1,
+                "Enter did not bring the removed login back"
+            );
+        });
+    }
+
+    #[test]
+    fn queues_follow_the_selected_row() {
+        use super::{set_text, text, DialogKind, QueueFields, Q_UPDATE};
+        use crate::model::Action;
+        use std::ptr::null_mut;
+
+        let seed = |app: &crate::app::App| {
+            app.dispatch(Action::CreateQueue {
+                name: "Night".into(),
+            })
+            .unwrap();
+        };
+        let kind = || {
+            DialogKind::Queues(QueueFields {
+                list: null_mut(),
+                ids: Vec::new(),
+                name: null_mut(),
+                concurrency: null_mut(),
+                completion: null_mut(),
+                countdown: null_mut(),
+                enabled: null_mut(),
+                windows: null_mut(),
+                quota: null_mut(),
+                program: null_mut(),
+                arguments: null_mut(),
+                delay: null_mut(),
+                job_id: None,
+            })
+        };
+        with_seeded_dialog(seed, kind, 700, 470, |dialog| {
+            let DialogKind::Queues(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let before = dialog.app().snapshot().settings.queues;
+            assert_eq!(before.len(), 2, "the default queue and Night");
+            unsafe {
+                click_row(f.list, 0);
+                assert_eq!(text(f.name), before[0].display_name());
+                set_text(f.name, "Typed");
+                tick(dialog);
+                assert_eq!(text(f.name), "Typed", "a tick keeps what was typed");
+
+                click_row(f.list, 1);
+                assert_eq!(text(f.name), "Night", "another row replaces it");
+
+                command(dialog, Q_UPDATE);
+                assert_eq!(
+                    dialog.app().snapshot().settings.queues,
+                    before,
+                    "updating the selected queue unchanged writes nothing else"
+                );
+
+                set_text(f.name, "Late");
+                command(dialog, Q_UPDATE);
+            }
+            let queues = dialog.app().snapshot().settings.queues;
+            assert_eq!(queues[0], before[0], "the default queue is untouched");
+            assert_eq!(queues[1].name, "Late");
+            assert_eq!(queues[1].id, before[1].id);
+            assert_eq!(queues.len(), 2);
+        });
+    }
+
+    #[test]
+    fn site_logins_follow_the_selected_row() {
+        use super::{check, set_text, text, DialogKind, LoginFields, L_ADD};
+        use crate::model::SiteLogin;
+        use std::ptr::null_mut;
+
+        let login = |host: &str, user: &str| SiteLogin {
+            host: host.into(),
+            username: user.into(),
+            password: crate::secure::seal("secret".into()).unwrap(),
+            allow_http: host.starts_with("plain"),
+        };
+        let logins = move || {
+            vec![
+                login("files.example", "alice"),
+                login("plain.example", "bob"),
+            ]
+        };
+        let kind = move || {
+            DialogKind::Logins(LoginFields {
+                logins: logins(),
+                list: null_mut(),
+                host: null_mut(),
+                user: null_mut(),
+                pass: null_mut(),
+                allow_http: null_mut(),
+            })
+        };
+        with_dialog(kind, 700, 470, |dialog| {
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let before = f.logins.clone();
+            unsafe {
+                click_row(f.list, 0);
+                assert_eq!(text(f.user), "alice");
+                set_text(f.user, "typed");
+                tick(dialog);
+                assert_eq!(text(f.user), "typed", "a tick keeps what was typed");
+
+                click_row(f.list, 1);
+                assert_eq!(text(f.host), "plain.example", "another row replaces it");
+                assert_eq!(text(f.user), "bob");
+                assert!(check(f.allow_http));
+
+                command(dialog, L_ADD);
+            }
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_eq!(
+                f.logins, before,
+                "saving the selected login unchanged writes nothing else"
+            );
+            unsafe {
+                set_text(f.user, "carol");
+                command(dialog, L_ADD);
+            }
+            let DialogKind::Logins(f) = dialog.kind() else {
+                unreachable!()
+            };
+            assert_eq!(f.logins[0], before[0], "the first login is untouched");
+            assert_eq!(f.logins[1].username, "carol");
+            assert_eq!(f.logins[1].host, before[1].host);
+            assert_eq!(f.logins.len(), 2);
         });
     }
     #[test]
