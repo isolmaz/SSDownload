@@ -893,14 +893,6 @@ pub(crate) fn download(
         last_path.as_deref(),
     )?;
     let bytes = path_bytes(&result_path)?;
-    progress(TransferProgress {
-        processing: false,
-        downloaded: bytes,
-        total: Some(bytes),
-        speed: 0,
-        eta: Some(0),
-        phase: crate::i18n::ui("Tamamlandı", "Completed").into(),
-    });
     Ok(TransferResult {
         path: result_path,
         bytes,
