@@ -485,7 +485,7 @@
   "No HTTP/HTTPS link was found in the dropped text.": "Nenhum link HTTP/HTTPS foi encontrado no texto arrastado.",
   "No MP4-compatible audio codec was found in the selected language; choose MKV": "Nenhum codec de áudio compatível com MP4 foi encontrado no idioma selecionado; escolha MKV",
   "No MP4-compatible video codec was found at the selected resolution; choose MKV": "Nenhum codec de vídeo compatível com MP4 foi encontrado na resolução selecionada; escolha MKV",
-  "No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release": "Nenhum arquivo ZIP do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN",
+  "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release": "Nenhum arquivo ZIP de uma ramificação de versão do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN",
   "No active completion countdown.": "Nenhuma contagem regressiva de conclusão ativa.",
   "No active downloads.": "Nenhum download ativo.",
   "No countdown is active": "Nenhuma contagem regressiva está ativa",
@@ -1695,5 +1695,6 @@
   "The digest did not match; downloading the file again": "O resumo não corresponde; o arquivo está sendo baixado novamente",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "O arquivo não corresponde ao resumo SHA-256 que a fonte publica ({0}) e dois downloads deram bytes diferentes; o arquivo parcial foi excluído e uma nova tentativa o baixa novamente",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "O arquivo foi salvo, mas não corresponde ao resumo SHA-256 que a fonte publica ({0}); dois downloads deram os mesmos bytes",
-  "No capacity for the network connection became free in time": "Não ficou disponível capacidade para a conexão de rede a tempo"
+  "No capacity for the network connection became free in time": "Não ficou disponível capacidade para a conexão de rede a tempo",
+  "No stable release of Deno {0}.x was found": "Nenhuma versão estável do Deno {0}.x foi encontrada"
 }

@@ -485,7 +485,7 @@
   "No HTTP/HTTPS link was found in the dropped text.": "No se encontró ningún enlace HTTP/HTTPS en el texto soltado.",
   "No MP4-compatible audio codec was found in the selected language; choose MKV": "No se encontró ningún códec de audio compatible con MP4 en el idioma seleccionado; elija MKV",
   "No MP4-compatible video codec was found at the selected resolution; choose MKV": "No se encontró ningún códec de vídeo compatible con MP4 en la resolución seleccionada; elija MKV",
-  "No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release": "No se encontró el archivo ZIP de FFmpeg LGPL para Windows x64 en la última versión de BtbN",
+  "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release": "No se encontró el archivo ZIP de una rama de versión de FFmpeg LGPL para Windows x64 en la última versión de BtbN",
   "No active completion countdown.": "No hay ninguna cuenta atrás de finalización activa.",
   "No active downloads.": "No hay descargas activas.",
   "No countdown is active": "No hay ninguna cuenta atrás activa",
@@ -1695,5 +1695,6 @@
   "The digest did not match; downloading the file again": "El resumen no coincide; se vuelve a descargar el archivo",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "El archivo no coincide con el resumen SHA-256 que publica su origen ({0}) y dos descargas dieron bytes distintos; se eliminó el archivo parcial y el reintento vuelve a descargarlo desde el principio",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "El archivo se guardó, pero no coincide con el resumen SHA-256 que publica su origen ({0}); dos descargas dieron los mismos bytes",
-  "No capacity for the network connection became free in time": "No quedó capacidad libre para la conexión de red a tiempo"
+  "No capacity for the network connection became free in time": "No quedó capacidad libre para la conexión de red a tiempo",
+  "No stable release of Deno {0}.x was found": "No se encontró ninguna versión estable de Deno {0}.x"
 }
