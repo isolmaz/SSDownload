@@ -330,10 +330,10 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 }
             };
             // Modern widens a slot to its text where a translation needs more:
-            // `pad` is what the control keeps beside its text.
+            // `pad` is what the control keeps beside its text, in pixels.
             let fit = |control: HWND, base: i32, pad: i32| {
                 if look {
-                    base.max(text_width(control) + s(pad))
+                    base.max(text_width(control) + pad)
                 } else {
                     base
                 }
@@ -403,7 +403,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
 
             place_static(&labels, 0, cx, row_y + label_dy, label_w, label_h, genel);
             let browse = GetDlgItem(dlg.hwnd, S_BROWSE);
-            let browse_w = fit(browse, hx(88), 32);
+            let browse_w = fit(browse, hx(88), s(32));
             let dir_w = if look {
                 cw - label_w - browse_w - hx(4)
             } else {
@@ -512,26 +512,26 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             let label_at = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
             // Modern lines the row up from the measured texts; Classic keeps
             // its fixed slots.
-            let schedule_w = fit(f.schedule, hx(194), CHECK_TEXT_INSET);
+            let schedule_w = fit(f.schedule, hx(194), check_text_inset(dlg.dpi));
             let start_label_x = if look {
-                cx + schedule_w + hx(6)
+                cx + schedule_w + s(12)
             } else {
                 cx + hx(200)
             };
             let start_label_w = fit(label_at(2), hx(100), 0);
             let start_x = if look {
-                start_label_x + start_label_w + hx(4)
+                start_label_x + start_label_w + s(8)
             } else {
                 cx + hx(304)
             };
             let end_label_x = if look {
-                start_x + clock_w + hx(6)
+                start_x + clock_w + s(12)
             } else {
                 cx + hx(366)
             };
             let end_label_w = fit(label_at(3), hx(80), 0);
             let end_x = if look {
-                end_label_x + end_label_w + hx(4)
+                end_label_x + end_label_w + s(8)
             } else {
                 cx + hx(450)
             };
@@ -563,7 +563,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             row_y += check_step;
             let check_updates = GetDlgItem(dlg.hwnd, ID_SETTINGS_CHECK_UPDATES);
             let install = GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION);
-            let check_updates_w = fit(check_updates, hx(232), 32);
+            let check_updates_w = fit(check_updates, hx(232), s(32));
             put(check_updates, genel, cx, row_y, check_updates_w, line);
             let install_x = if look {
                 cx + check_updates_w + hx(8)
@@ -575,7 +575,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 genel,
                 install_x,
                 row_y,
-                fit(install, hx(232), 32),
+                fit(install, hx(232), s(32)),
                 line,
             );
 

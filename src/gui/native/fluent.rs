@@ -864,8 +864,10 @@ pub(super) unsafe fn place_combo(combo: HWND, rect: RECT, dpi: u32) {
     }
 }
 
+/// The width of a combo box's chevron area.
+const COMBO_CHEVRON: i32 = 32;
 /// The face width a Modern combo box needs for its widest entry: the text
-/// 11 epx in and the chevron's 32 epx after it.
+/// 11 epx in and the chevron's 32 epx after it, the sums `paint_combo` takes.
 pub(super) unsafe fn combo_face_width(combo: HWND, dpi: u32) -> i32 {
     let dc = GetDC(combo);
     let previous = SelectObject(dc, SendMessageW(combo, WM_GETFONT, 0, 0) as HGDIOBJ);
@@ -884,7 +886,7 @@ pub(super) unsafe fn combo_face_width(combo: HWND, dpi: u32) -> i32 {
     }
     SelectObject(dc, previous);
     ReleaseDC(combo, dc);
-    widest + scale(INPUT_PAD_LEFT + 32, dpi)
+    widest + scale(INPUT_PAD_LEFT, dpi) + scale(COMBO_CHEVRON, dpi)
 }
 
 /// Paints a closed drop-down list box as a WinUI ComboBox: the standard
@@ -980,7 +982,7 @@ unsafe fn paint_combo(hwnd: HWND, dc: HDC) {
         look,
     );
     let face = inflate(client, -scale(FOCUS_MARGIN, dpi), -scale(FOCUS_MARGIN, dpi));
-    let chevron_w = scale(32, dpi);
+    let chevron_w = scale(COMBO_CHEVRON, dpi);
     let colour = if disabled {
         palette.disabled
     } else if pressed {
@@ -1403,8 +1405,11 @@ unsafe fn draw_button_content(
 /// The WinUI CheckBox's box and the space between it and the label, in epx.
 const CHECK_BOX: i32 = 20;
 const CHECK_GAP: i32 = 8;
-/// Where a check box's text starts, from the left of its face.
-pub(super) const CHECK_TEXT_INSET: i32 = CHECK_BOX + CHECK_GAP;
+/// Where a check box's text starts, from the left of its face, in pixels:
+/// the sum `paint_check_box` takes.
+pub(super) fn check_text_inset(dpi: u32) -> i32 {
+    scale(CHECK_BOX, dpi) + scale(CHECK_GAP, dpi)
+}
 
 /// Whether `control` is a check box button.
 pub(super) unsafe fn is_check_box(control: HWND) -> bool {
