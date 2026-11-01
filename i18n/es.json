@@ -485,7 +485,7 @@
   "No HTTP/HTTPS link was found in the dropped text.": "No se encontró ningún enlace HTTP/HTTPS en el texto soltado.",
   "No MP4-compatible audio codec was found in the selected language; choose MKV": "No se encontró ningún códec de audio compatible con MP4 en el idioma seleccionado; elija MKV",
   "No MP4-compatible video codec was found at the selected resolution; choose MKV": "No se encontró ningún códec de vídeo compatible con MP4 en la resolución seleccionada; elija MKV",
-  "No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release": "No se encontró el archivo ZIP de FFmpeg LGPL para Windows x64 en la última versión de BtbN",
+  "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release": "No se encontró el archivo ZIP de una rama de versión de FFmpeg LGPL para Windows x64 en la última versión de BtbN",
   "No active completion countdown.": "No hay ninguna cuenta atrás de finalización activa.",
   "No active downloads.": "No hay descargas activas.",
   "No countdown is active": "No hay ninguna cuenta atrás activa",
@@ -1702,5 +1702,7 @@
   "The audio could not be converted: {0}": "No se ha podido convertir el audio: {0}",
   "Downloading media; the server is limiting requests": "Descargando contenido multimedia; el servidor está limitando las solicitudes",
   "Waiting for the server, which is limiting requests": "Esperando al servidor, que está limitando las solicitudes",
-  "The audio conversion did not finish within {0} seconds": "La conversión del audio no terminó en {0} segundos"
+  "The audio conversion did not finish within {0} seconds": "La conversión del audio no terminó en {0} segundos",
+  "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old": "Ninguna versión estable de Deno {0}.x figura entre las {1} versiones más recientes de Deno; esta versión de la aplicación está vinculada a una versión de Deno demasiado antigua",
+  "No stable release of Deno {0}.x was found": "No se encontró ninguna versión estable de Deno {0}.x"
 }

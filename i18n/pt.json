@@ -485,7 +485,7 @@
   "No HTTP/HTTPS link was found in the dropped text.": "Nenhum link HTTP/HTTPS foi encontrado no texto arrastado.",
   "No MP4-compatible audio codec was found in the selected language; choose MKV": "Nenhum codec de áudio compatível com MP4 foi encontrado no idioma selecionado; escolha MKV",
   "No MP4-compatible video codec was found at the selected resolution; choose MKV": "Nenhum codec de vídeo compatível com MP4 foi encontrado na resolução selecionada; escolha MKV",
-  "No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release": "Nenhum arquivo ZIP do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN",
+  "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release": "Nenhum arquivo ZIP de uma ramificação de versão do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN",
   "No active completion countdown.": "Nenhuma contagem regressiva de conclusão ativa.",
   "No active downloads.": "Nenhum download ativo.",
   "No countdown is active": "Nenhuma contagem regressiva está ativa",
@@ -1702,5 +1702,7 @@
   "The audio could not be converted: {0}": "Não foi possível converter o áudio: {0}",
   "Downloading media; the server is limiting requests": "Baixando mídia; o servidor está limitando as solicitações",
   "Waiting for the server, which is limiting requests": "Aguardando o servidor, que está limitando as solicitações",
-  "The audio conversion did not finish within {0} seconds": "A conversão do áudio não terminou em {0} segundos"
+  "The audio conversion did not finish within {0} seconds": "A conversão do áudio não terminou em {0} segundos",
+  "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old": "Nenhuma versão estável do Deno {0}.x está entre as {1} versões mais recentes do Deno; esta versão do aplicativo está vinculada a uma versão do Deno muito antiga",
+  "No stable release of Deno {0}.x was found": "Nenhuma versão estável do Deno {0}.x foi encontrada"
 }

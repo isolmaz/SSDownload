@@ -485,7 +485,7 @@
   "No HTTP/HTTPS link was found in the dropped text.": "لم يُعثر على أي رابط HTTP/HTTPS في النص الذي تم إفلاته.",
   "No MP4-compatible audio codec was found in the selected language; choose MKV": "لم يُعثر على ترميز صوت متوافق مع MP4 باللغة المحددة؛ اختر MKV",
   "No MP4-compatible video codec was found at the selected resolution; choose MKV": "لم يُعثر على ترميز فيديو متوافق مع MP4 بالدقة المحددة؛ اختر MKV",
-  "No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release": "لم يُعثر على ملف ZIP لـ FFmpeg (Windows x64، ترخيص LGPL) في أحدث إصدار من BtbN",
+  "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release": "لم يُعثر على ملف ZIP لفرع إصدار FFmpeg (Windows x64، ترخيص LGPL) في أحدث إصدار من BtbN",
   "No active completion countdown.": "لا يوجد عد تنازلي نشط لإجراء الاكتمال.",
   "No active downloads.": "لا توجد تنزيلات نشطة.",
   "No countdown is active": "لا يوجد عد تنازلي نشط",
@@ -1702,5 +1702,7 @@
   "The audio could not be converted: {0}": "تعذّر تحويل الصوت: {0}",
   "Downloading media; the server is limiting requests": "جارٍ تنزيل الوسائط؛ الخادم يحدّ من الطلبات",
   "Waiting for the server, which is limiting requests": "في انتظار الخادم الذي يحدّ من الطلبات",
-  "The audio conversion did not finish within {0} seconds": "لم يكتمل تحويل الصوت خلال {0} ث"
+  "The audio conversion did not finish within {0} seconds": "لم يكتمل تحويل الصوت خلال {0} ث",
+  "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old": "لا يوجد إصدار مستقر من Deno {0}.x ضمن أحدث {1} إصدارًا من Deno؛ هذا الإصدار من التطبيق مرتبط بإصدار Deno قديم جدًا",
+  "No stable release of Deno {0}.x was found": "لم يُعثر على إصدار مستقر من Deno {0}.x"
 }
