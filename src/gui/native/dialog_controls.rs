@@ -1868,6 +1868,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             f.playlist_items = dialog_edit(dlg.hwnd, dlg.font, M_PLAYLIST_ITEMS, false, false);
             let cue = wide(crate::i18n::ui("öğeler: 1-10,15", "items: 1-10,15"));
             SendMessageW(f.playlist_items, EM_SETCUEBANNER, 1, cue.as_ptr() as LPARAM);
+            if modern() {
+                subclass(f.playlist_items, cue_proc);
+            }
             if let Some(items) = &f.base.playlist_items {
                 set_text(f.playlist_items, items);
             }
