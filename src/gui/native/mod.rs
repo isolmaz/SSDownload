@@ -7483,8 +7483,10 @@ struct WizardFields {
     modes: UsageModes,
     simple: bool,
     modern: bool,
-    /// Lines the introduction wraps to in Modern.
+    /// Lines the introduction wraps to.
     intro_lines: i32,
+    /// Explanation lines the card rows need beyond one per row.
+    caption_lines: i32,
     video: HWND,
     file: HWND,
     audio: HWND,
@@ -8266,7 +8268,7 @@ unsafe fn show_usage_wizard(owner: HWND, app: App, settings: Settings) {
     let simple = UiMode::parse(&settings.ui_mode).is_simple();
     let (width, height) = (
         WIZARD_WIDTH,
-        wizard_content_height(1, modern()) + SETTINGS_FRAME + 3,
+        wizard_content_height(1, 0, modern()) + SETTINGS_FRAME + 3,
     );
     let origin = settings
         .window_placement
@@ -8283,6 +8285,7 @@ unsafe fn show_usage_wizard(owner: HWND, app: App, settings: Settings) {
             simple,
             modern: settings.modern_theme(),
             intro_lines: 1,
+            caption_lines: 0,
             video: null_mut(),
             file: null_mut(),
             audio: null_mut(),
@@ -11104,6 +11107,7 @@ mod tests {
                 simple: false,
                 modern: in_modern,
                 intro_lines: 1,
+                caption_lines: 0,
                 video: null_mut(),
                 file: null_mut(),
                 audio: null_mut(),
@@ -11115,7 +11119,7 @@ mod tests {
                 start: null_mut(),
             }),
             WIZARD_WIDTH,
-            wizard_content_height(1, in_modern) + SETTINGS_FRAME + 3,
+            wizard_content_height(1, 0, in_modern) + SETTINGS_FRAME + 3,
         )
     }
 
@@ -11164,7 +11168,9 @@ mod tests {
                         (client.right, client.bottom)
                     );
                     if index < cards.len() {
-                        assert_eq!(rect.bottom - rect.top, WIZARD_CARD + 2 * ring);
+                        // One explanation line and whole further ones.
+                        let beyond = rect.bottom - rect.top - WIZARD_CARD - 2 * ring;
+                        assert!(beyond >= 0 && beyond % CARD_LINE == 0, "{index}: {beyond}");
                     }
                     for other in &rects[index + 1..] {
                         let apart = rect.right <= other.left
@@ -11179,55 +11185,131 @@ mod tests {
                         assert!(apart || faces_apart, "modern {modern}: {index} overlaps");
                     }
                 }
-                // The depth, theme and purpose rows, one under the other.
+                // The depth, theme and purpose rows, one under the other, each
+                // card as tall as the others of its row.
                 assert!(rects[0].bottom <= rects[2].top && rects[2].bottom <= rects[4].top);
+                for row in [&rects[0..2], &rects[2..4], &rects[4..7]] {
+                    assert!(row
+                        .iter()
+                        .all(|r| r.bottom - r.top == row[0].bottom - row[0].top));
+                }
             }
         }
     }
 
     #[test]
-    fn the_wizard_s_cards_show_their_full_text_in_a_tooltip() {
+    fn the_wizard_s_cards_show_their_whole_text_in_every_language_at_96_and_144_dpi() {
         use super::*;
-        unsafe {
-            let (raw, hwnd, root) = advanced_wizard(true);
-            let class = wide("tooltips_class32");
-            let mut tip = null_mut();
-            let mut window = FindWindowExW(null_mut(), null_mut(), class.as_ptr(), null());
-            while !window.is_null() {
-                if GetWindow(window, GW_OWNER) == hwnd
-                    && SendMessageW(window, TTM_GETTOOLCOUNT, 0, 0) == 7
-                {
-                    tip = window;
-                }
-                window = FindWindowExW(null_mut(), window, class.as_ptr(), null());
-            }
-            let mut shown = Vec::new();
-            for id in [ID_WIZARD_SIMPLE, ID_WIZARD_MODERN, ID_WIZARD_AUDIO] {
-                let card = GetDlgItem(hwnd, id);
-                let mut buffer = [0u16; 1024];
-                let mut info: TTTOOLINFOW = zeroed();
-                info.cbSize = (size_of::<TTTOOLINFOW>() - size_of::<*mut c_void>()) as u32;
-                info.hwnd = hwnd;
-                info.uId = card as usize;
-                info.lpszText = buffer.as_mut_ptr();
-                if !tip.is_null() {
-                    SendMessageW(
-                        tip,
-                        TTM_GETTEXTW,
-                        buffer.len(),
-                        &mut info as *mut _ as LPARAM,
-                    );
-                }
-                let length = buffer.iter().position(|&c| c == 0).unwrap_or(0);
-                shown.push((text(card), String::from_utf16_lossy(&buffer[..length])));
-            }
-            close_test_dialog(raw, hwnd, root);
-            assert!(!tip.is_null(), "no tooltip with a tool for each card");
-            for (card, tip) in shown {
-                assert!(card.contains(" — "), "{card}");
-                assert_eq!(tip, card);
+        let ids = [
+            ID_WIZARD_SIMPLE,
+            ID_WIZARD_ADVANCED,
+            ID_WIZARD_CLASSIC,
+            ID_WIZARD_MODERN,
+            ID_WIZARD_VIDEO,
+            ID_WIZARD_FILE,
+            ID_WIZARD_AUDIO,
+        ];
+        // The width `text` takes on one line, or its size wrapped at `width`.
+        let measure = |font: HFONT, text: &str, width: i32| unsafe {
+            let dc = GetDC(null_mut());
+            let previous = SelectObject(dc, font as HGDIOBJ);
+            let mut text: Vec<u16> = text.encode_utf16().collect();
+            let mut area = RECT {
+                right: width,
+                ..zeroed()
+            };
+            let format = if width == 0 {
+                DT_SINGLELINE
+            } else {
+                DT_WORDBREAK
+            };
+            draw_text(dc, &mut text, &mut area, format | DT_NOPREFIX | DT_CALCRECT);
+            SelectObject(dc, previous);
+            ReleaseDC(null_mut(), dc);
+            (area.right, area.bottom)
+        };
+        let mut cut = Vec::new();
+        for code in ["tr", "en", "ar", "de", "es", "fr", "pt"] {
+            for modern in [false, true] {
+                crate::i18n::with_language(code, || unsafe {
+                    let (raw, hwnd, root) = advanced_wizard(modern);
+                    let system = GetDpiForWindow(hwnd).max(96);
+                    let mut client: RECT = zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let error = child_rect(hwnd, GetDlgItem(hwnd, D_ERROR));
+                    // Modern's command bar, or Classic's button row.
+                    let buttons = if modern {
+                        client.bottom - scale(ADD_FOOTER, system)
+                    } else {
+                        child_rect(hwnd, GetDlgItem(hwnd, D_CANCEL)).top
+                    };
+                    let cards: Vec<(String, RECT)> = ids
+                        .iter()
+                        .map(|&id| {
+                            let card = GetDlgItem(hwnd, id);
+                            (text(card), child_rect(hwnd, card))
+                        })
+                        .collect();
+                    close_test_dialog(raw, hwnd, root);
+                    // The window grew for the rows: they end, focus margin and all,
+                    // above the error line, and the error line above the buttons.
+                    if cards[6].1.bottom > error.top || error.bottom > buttons {
+                        cut.push(format!(
+                            "{code} modern {modern}: cards end at {}, the error line takes {}-{}, \
+                             the buttons start at {buttons}",
+                            cards[6].1.bottom, error.top, error.bottom
+                        ));
+                    }
+                    let mut dpis = vec![system, 96, 144];
+                    dpis.sort();
+                    dpis.dedup();
+                    for dpi in dpis {
+                        let s = |value: i32| scale(value, dpi);
+                        // Modern's face sits inside the focus margin and keeps the
+                        // mark at the end of the title's line; Classic's sits
+                        // inside a one-pixel frame. The glyph is 20 epx between
+                        // two pads.
+                        let (face, pad, mark) = if modern {
+                            (s(FOCUS_MARGIN), s(12), s(16) + s(8))
+                        } else {
+                            (1, s(10), 0)
+                        };
+                        let font = |title: bool| {
+                            let (points, weight, faces) = card_font_spec(title, modern);
+                            make_face_font(dpi, points, weight, faces)
+                        };
+                        let (title_font, text_font) = (font(true), font(false));
+                        for (whole, rect) in &cards {
+                            // Cards laid out at another DPI are as wide in epx.
+                            let width = (rect.right - rect.left) * dpi as i32 / system as i32;
+                            let room = width - 2 * face - 3 * pad - s(20);
+                            let (title, caption) = card_text_parts(whole);
+                            let (title_width, _) = measure(title_font, &title, 0);
+                            let (caption_width, caption_height) =
+                                measure(text_font, &caption, room);
+                            let lines = (caption_height + s(CARD_LINE) - 1) / s(CARD_LINE);
+                            // At the window's own DPI the card is as tall as its text.
+                            let fits = dpi != system
+                                || 2 * s(CARD_PAD) + s(CARD_TITLE) + caption_height
+                                    <= rect.bottom - rect.top - 2 * face;
+                            if title_width > room - mark
+                                || caption_width > room
+                                || lines > 2
+                                || !fits
+                            {
+                                cut.push(format!(
+                                    "{code} modern {modern} {dpi} dpi: {whole:?} in {room} px: \
+                                     title {title_width}, explanation {caption_width}x{caption_height}"
+                                ));
+                            }
+                        }
+                        DeleteObject(title_font as HGDIOBJ);
+                        DeleteObject(text_font as HGDIOBJ);
+                    }
+                });
             }
         }
+        assert!(cut.is_empty(), "{cut:#?}");
     }
 
     #[test]

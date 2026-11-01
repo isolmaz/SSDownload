@@ -98,42 +98,6 @@ unsafe fn prepare_error_line(dlg: &DialogUi) {
     SetPropW(dlg.hwnd, error_tip_prop(), tip as HANDLE);
 }
 
-/// A tooltip with each of the `cards`' full text, which their one-line
-/// explanations may shorten.
-unsafe fn card_tips(dlg: &DialogUi, cards: &[HWND]) {
-    let tip = CreateWindowExW(
-        owned_layout(WS_EX_TOPMOST),
-        wide("tooltips_class32").as_ptr(),
-        null(),
-        WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        dlg.hwnd,
-        null_mut(),
-        GetModuleHandleW(null()),
-        null(),
-    );
-    if tip.is_null() {
-        return;
-    }
-    SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, scale(360, dlg.dpi) as LPARAM);
-    for &card in cards {
-        // The tooltip keeps its own copy of the text.
-        let mut label = wide(&text(card));
-        let mut info: TTTOOLINFOW = zeroed();
-        // The size without the last field, which every common controls
-        // version accepts.
-        info.cbSize = (size_of::<TTTOOLINFOW>() - size_of::<*mut c_void>()) as u32;
-        info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-        info.hwnd = dlg.hwnd;
-        info.uId = card as usize;
-        info.lpszText = label.as_mut_ptr();
-        SendMessageW(tip, TTM_ADDTOOLW, 0, &info as *const _ as LPARAM);
-    }
-}
-
 /// The controls one kind of dialog is made of, plus the timer that keeps that
 /// kind up to date. Created once when the window is created, and again when a
 /// window changes kind in place (`rebuild_dialog_controls`).
@@ -155,8 +119,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Basit — indirme listesi, yeni indirme ve temel ayarlar",
-                    "Basic — downloads, new download and essential settings",
+                    "Basit — indirmeler ve temel ayarlar",
+                    "Basic — essential downloads and settings",
                 ),
                 ID_WIZARD_SIMPLE,
             );
@@ -164,8 +128,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Gelişmiş — kuyruk, klasör kuralları, site gezgini, eşitleme, günlükler",
-                    "Advanced — queues, folder rules, site crawler, sync, logs",
+                    "Gelişmiş — kuyruk, kurallar, gezgin, eşitleme, günlükler",
+                    "Advanced — queues, rules, crawler, sync, logs",
                 ),
                 ID_WIZARD_ADVANCED,
             );
@@ -201,8 +165,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Video — MP4/MKV, kalite, ses parçası ve altyazı seçenekleri",
-                    "Video — MP4/MKV, quality, audio track and subtitle options",
+                    "Video — kalite, ses parçası, altyazı",
+                    "Video — quality, tracks, subtitles",
                 ),
                 ID_WIZARD_VIDEO,
             );
@@ -210,8 +174,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Dosya — normal dosya bağlantılarını güvenilir biçimde aktar",
-                    "File — reliably transfer regular file links",
+                    "Dosya — normal dosya bağlantıları",
+                    "File — regular file links",
                 ),
                 ID_WIZARD_FILE,
             );
@@ -219,22 +183,10 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Ses — video sayfalarından veya ses bağlantılarından yalnız sesi çıkar",
-                    "Audio — extract audio only from video pages or audio links",
+                    "Ses — sayfalardan yalnız ses",
+                    "Audio — audio only from pages and links",
                 ),
                 ID_WIZARD_AUDIO,
-            );
-            card_tips(
-                dlg,
-                &[
-                    f.simple_card,
-                    f.advanced_card,
-                    f.classic_card,
-                    f.modern_card,
-                    f.video,
-                    f.file,
-                    f.audio,
-                ],
             );
             // The running windows keep their theme, so a wizard opened from
             // them says when its choice applies, as Settings does.

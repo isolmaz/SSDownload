@@ -1359,8 +1359,8 @@ pub(super) unsafe fn paint_button(
 
 /// Modern's choice card (the setup wizard's): one row on a card face
 /// FOCUS_MARGIN inside the control with the focus ring around it. Its glyph
-/// at the start, its title over a one-line explanation shortened with an
-/// ellipsis where it does not fit, and a mark at the end: a radio mark for a
+/// at the start, its title over its explanation, which wraps where it is
+/// longer than a line, and a mark at the end: a radio mark for a
 /// card of a one-of group, a check mark for a usage purpose, of which several
 /// can be chosen. A chosen card takes the accent stroke, a light accent tint
 /// and a filled mark.
@@ -1403,9 +1403,14 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
     // mark has a rounded square and draws its tick over the fill below.
     let id = GetDlgCtrlID(hwnd);
     let check = matches!(id, ID_WIZARD_VIDEO | ID_WIZARD_FILE | ID_WIZARD_AUDIO);
+    let (title, description) = card_text_parts(&super::text(hwnd));
+    let (title_font, text_font) = (card_title_font(hwnd), card_text_font(hwnd));
+    let lines = card_text_lines(hwnd, width);
+    let (mut title_area, mut text_area) = card_text_areas(width, height, dpi, true, lines);
+    // The mark sits at the end of the title's line.
     let size = s(16) as f32;
     let end = (width - margin - s(12)) as f32;
-    let top = ((height - s(16)) / 2) as f32;
+    let top = (title_area.top + (s(CARD_TITLE) - s(16)) / 2) as f32;
     // Where the tick, the glyph and the text are drawn: through the DC, which
     // mirrors them in a right-to-left window.
     let mark = [end - size, top, end, top + size];
@@ -1446,22 +1451,7 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
             }
         }
     }
-    let mut buffer = [0u16; 512];
-    let length = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32).max(0) as usize;
-    let (title, description) = card_text_parts(&String::from_utf16_lossy(&buffer[..length]));
-    let language = crate::i18n::language();
-    let title_font = card_font(hwnd, "title-font", 10, 600, ramp_faces(language, false));
-    let text_font = card_font(
-        hwnd,
-        "text-font",
-        9,
-        FW_NORMAL as i32,
-        ramp_faces(language, true),
-    );
     let glyph = s(20);
-    let text_left = margin + s(12) + glyph + s(12);
-    let text_right = mark[0] as i32 - s(8);
-    let text_top = (height - s(CARD_TEXT)) / 2;
     let tick = if check && selected {
         icon_font_px(dpi, 12)
     } else {
@@ -1499,27 +1489,14 @@ pub(super) unsafe fn paint_choice_card(hwnd: HWND, dc: HDC) {
                 palette.accent
             },
         );
-        let line = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
-        let mut area = RECT {
-            left: text_left,
-            top: text_top,
-            right: text_right,
-            bottom: text_top + s(CARD_TITLE),
-        };
         SelectObject(memory, title_font as HGDIOBJ);
         SetTextColor(memory, palette.text);
         let mut title: Vec<u16> = title.encode_utf16().collect();
-        draw_text(memory, &mut title, &mut area, line);
-        let mut area = RECT {
-            left: text_left,
-            top: area.bottom,
-            right: text_right,
-            bottom: text_top + s(CARD_TEXT),
-        };
+        draw_text(memory, &mut title, &mut title_area, CARD_TITLE_FORMAT);
         SelectObject(memory, text_font as HGDIOBJ);
         SetTextColor(memory, palette.secondary);
         let mut description: Vec<u16> = description.encode_utf16().collect();
-        draw_text(memory, &mut description, &mut area, line);
+        draw_text(memory, &mut description, &mut text_area, CARD_TEXT_FORMAT);
     });
     if !tick.is_null() {
         DeleteObject(tick as HGDIOBJ);
@@ -2362,13 +2339,15 @@ pub(super) const MEDIA_WIDTH: i32 = 720;
 pub(super) const MEDIA_HEIGHT: i32 = 416;
 pub(super) const MEDIA_SUMMARY: i32 = 64;
 pub(super) const PROGRESS_HEIGHT: i32 = 472;
-/// The setup wizard's width in both themes, the face height of its one-row
-/// choice cards, and in a card the title's line and the title and its
-/// explanation together.
+/// The setup wizard's width in both themes; in its choice cards the space
+/// above and below the text, the title's line and each line of the
+/// explanation; and the face height of a card whose explanation is one line.
 pub(super) const WIZARD_WIDTH: i32 = 560;
-pub(super) const WIZARD_CARD: i32 = 48;
+pub(super) const CARD_PAD: i32 = 6;
 pub(super) const CARD_TITLE: i32 = 20;
-pub(super) const CARD_TEXT: i32 = 36;
+// An Arabic explanation's lines are taller than a Latin one's.
+pub(super) const CARD_LINE: i32 = 17;
+pub(super) const WIZARD_CARD: i32 = 2 * CARD_PAD + CARD_TITLE + CARD_LINE;
 /// The wizard's space under a label, before the cards it introduces.
 pub(super) const fn wizard_label_gap(modern: bool) -> i32 {
     if modern {
@@ -2377,22 +2356,27 @@ pub(super) const fn wizard_label_gap(modern: bool) -> i32 {
         4
     }
 }
-/// The setup wizard's content height with an introduction `intro_lines` tall:
-/// three rows of cards, the two lower ones under a heading, then the error
-/// line and Modern's command bar or Classic's button row.
-pub(super) const fn wizard_content_height(intro_lines: i32, modern: bool) -> i32 {
+/// The setup wizard's content height with an introduction `intro_lines` tall
+/// and `extra_lines` explanation lines beyond one per row of cards: three
+/// rows of cards, the two lower ones under a heading, then the error line
+/// and Modern's command bar or Classic's button row. Modern's error line
+/// sits in the content's bottom padding.
+pub(super) const fn wizard_content_height(intro_lines: i32, extra_lines: i32, modern: bool) -> i32 {
     let (top, bottom) = if modern {
-        (ADD_TOP, ADD_LABEL + ADD_FOOTER)
+        (ADD_TOP, ADD_PAD + ADD_FOOTER)
     } else {
         // Classic's error line ends 9 epx above its button row.
-        (DIALOG_MARGIN, ADD_LABEL + 9 + DIALOG_ROW + DIALOG_MARGIN)
+        (
+            DIALOG_MARGIN,
+            ADD_GROUP_GAP + ADD_LABEL + 9 + DIALOG_ROW + DIALOG_MARGIN,
+        )
     };
     let gap = wizard_label_gap(modern);
     top + ADD_LABEL * intro_lines
         + gap
         + WIZARD_CARD
         + 2 * (DIALOG_GAP + ADD_LABEL + gap + WIZARD_CARD)
-        + ADD_GROUP_GAP
+        + CARD_LINE * extra_lines
         + bottom
 }
 /// Space between an input frame and the text field inside it: left, right
@@ -4033,6 +4017,10 @@ mod tests {
             let inset = s(FOCUS_MARGIN) + s(12);
             let left = inset..inset + s(16);
             let right = width as usize - inset - s(16)..width as usize - inset;
+            // The mark is centred on the title's line.
+            let dpi = GetDpiForWindow(card).max(96);
+            let (title, _) = card_text_areas(width, 54, dpi, true, 1);
+            let middle = (title.top + scale(CARD_TITLE, dpi) / 2) as usize;
             let ring_in = |rtl: bool| -> [bool; 2] {
                 let pixels = on_white(width, |dc| {
                     if rtl {
@@ -4040,7 +4028,8 @@ mod tests {
                     }
                     paint_choice_card(card, dc);
                 });
-                let row = &pixels[27 * width as usize..28 * width as usize];
+                let row = middle * width as usize;
+                let row = &pixels[row..row + width as usize];
                 [left.clone(), right.clone()].map(|side| row[side].iter().any(|&p| near(p)))
             };
             let (ltr, rtl) = (ring_in(false), ring_in(true));
@@ -4055,6 +4044,43 @@ mod tests {
                 [true, false],
                 "right to left: ring on the left, on the right"
             );
+        }
+    }
+
+    #[test]
+    fn a_card_wraps_its_explanation_instead_of_shortening_it_in_both_themes() {
+        for in_modern in [false, true] {
+            unsafe {
+                set_modern(in_modern);
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                let card = control(
+                    parent,
+                    "BUTTON",
+                    "Advanced — queues, rules, crawler, sync, logs",
+                    WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
+                    0,
+                    ID_WIZARD_ADVANCED,
+                );
+                let dpi = GetDpiForWindow(card).max(96);
+                let width = 160;
+                let lines = card_text_lines(card, width);
+                let ring = if in_modern {
+                    scale(FOCUS_MARGIN, dpi)
+                } else {
+                    0
+                };
+                let height =
+                    scale(WIZARD_CARD, dpi) + (lines - 1) * scale(CARD_LINE, dpi) + 2 * ring;
+                MoveWindow(card, 0, 0, width, height, 0);
+                let (_, text) = card_text_areas(width, height, dpi, in_modern, lines);
+                let pixels = on_white(width, |dc| draw_card(card, dc));
+                DestroyWindow(parent);
+                // The explanation's last line has text on it.
+                let inked = (text.bottom - scale(CARD_LINE, dpi)..text.bottom).any(|y| {
+                    (text.left..text.right).any(|x| pixels[(y * width + x) as usize] & 0xff < 0xa0)
+                });
+                assert!(lines >= 2 && inked, "modern {in_modern}: {lines} lines");
+            }
         }
     }
 

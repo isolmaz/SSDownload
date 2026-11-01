@@ -8,7 +8,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     let w = r.right;
     let actual_height = r.bottom;
     let logical_height = match &dlg.kind {
-        DialogKind::Wizard(f) => wizard_content_height(f.intro_lines, modern()),
+        DialogKind::Wizard(f) => wizard_content_height(f.intro_lines, f.caption_lines, modern()),
         DialogKind::Add(f) => add_content_height(f.advanced),
         DialogKind::Settings(f) => {
             settings_logical_height(modern(), UiMode::parse(&f.value.ui_mode).is_simple())
@@ -2417,6 +2417,47 @@ pub(super) unsafe fn fit_first_label(dlg: &mut DialogUi) {
     let wrapped = fit_label_lines(hwnd, label, font, dpi, *lines, pad);
     dlg.design.1 += (wrapped - *lines) * ADD_LABEL;
     *lines = wrapped;
+    let DialogKind::Wizard(f) = &dlg.kind else {
+        return;
+    };
+    let needed: i32 = wizard_rows(f)
+        .iter()
+        .map(|cards| wizard_row(dlg, cards).1)
+        .sum();
+    let extra = needed - f.caption_lines;
+    grow_window(hwnd, scale(extra * CARD_LINE, dpi));
+    dlg.design.1 += extra * CARD_LINE;
+    if let DialogKind::Wizard(f) = &mut dlg.kind {
+        f.caption_lines = needed;
+    }
+}
+
+/// The wizard's rows of cards, top to bottom.
+fn wizard_rows(f: &WizardFields) -> [Vec<HWND>; 3] {
+    [
+        vec![f.simple_card, f.advanced_card],
+        vec![f.classic_card, f.modern_card],
+        vec![f.video, f.file, f.audio],
+    ]
+}
+
+/// The face width of each card in a wizard row of `cards`, and the
+/// explanation lines beyond one that the row's longest explanation needs.
+unsafe fn wizard_row(dlg: &DialogUi, cards: &[HWND]) -> (i32, i32) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let modern = modern();
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(if modern { ADD_PAD } else { DIALOG_MARGIN });
+    let ring = if modern { s(FOCUS_MARGIN) } else { 0 };
+    let count = cards.len() as i32;
+    let width = (client.right - 2 * x - (count - 1) * s(DIALOG_GAP)) / count;
+    let lines = cards
+        .iter()
+        .map(|&card| card_text_lines(card, width + 2 * ring))
+        .max()
+        .unwrap_or(1);
+    (width, lines - 1)
 }
 
 /// The wizard's theme heading at (`x`, `y`) and, beside it, its restart note
@@ -2460,12 +2501,12 @@ unsafe fn layout_wizard(dlg: &DialogUi, h: i32, f: &WizardFields) {
     let cw = client.right - 2 * x;
     let label_gap = s(wizard_label_gap(modern));
     let ring = if modern { s(FOCUS_MARGIN) } else { 0 };
-    let (gap, card) = (s(DIALOG_GAP), s(WIZARD_CARD));
+    let gap = s(DIALOG_GAP);
     // A Modern card's window reaches FOCUS_MARGIN past its face for the focus
-    // ring.
+    // ring. A row is as tall as its longest explanation.
     let row = |cards: &[HWND], show: bool, top: i32| {
-        let count = cards.len() as i32;
-        let width = (cw - (count - 1) * gap) / count;
+        let (width, extra) = wizard_row(dlg, cards);
+        let card = s(WIZARD_CARD) + extra * s(CARD_LINE);
         for (index, &card_window) in cards.iter().enumerate() {
             let left = x + index as i32 * (width + gap);
             place(
@@ -2477,26 +2518,27 @@ unsafe fn layout_wizard(dlg: &DialogUi, h: i32, f: &WizardFields) {
                 card + 2 * ring,
             );
         }
+        top + card
     };
     let intro = s(ADD_LABEL * f.intro_lines);
     let mut y = top;
     place_static(&labels, 0, x, y, cw, intro, true);
     y += intro + label_gap;
-    row(&[f.simple_card, f.advanced_card], true, y);
-    y += card + gap;
+    let [depth, theme, purpose] = wizard_rows(f);
+    y = row(&depth, true, y) + gap;
     wizard_theme_heading(dlg, f, &labels, x, y, s(ADD_LABEL));
     y += s(ADD_LABEL) + label_gap;
-    row(&[f.classic_card, f.modern_card], true, y);
-    y += card + gap;
+    y = row(&theme, true, y) + gap;
     // The purpose cards are the advanced answer's detail; a simple choice
     // stays one decision, so they leave the dialog.
     let advanced = check(f.advanced_card);
     place_static(&labels, 2, x, y, cw, s(ADD_LABEL), advanced);
     y += s(ADD_LABEL) + label_gap;
-    row(&[f.video, f.file, f.audio], advanced, y);
+    y = row(&purpose, advanced, y);
     if modern {
-        y += card + s(ADD_GROUP_GAP);
-        move_id(dlg.hwnd, D_ERROR, x, y, cw, s(ADD_LABEL));
+        // The error line sits in the content's bottom padding, under the
+        // cards' focus margin and above the command bar.
+        move_id(dlg.hwnd, D_ERROR, x, y + ring, cw, s(ADD_LABEL));
         command_bar(dlg, h, &[(ID_WIZARD_START, 120), (D_CANCEL, 96)]);
     }
 }
@@ -2958,21 +3000,26 @@ unsafe fn fit_label_lines(
     GetClientRect(window, &mut client);
     let room = client.right - 2 * scale(pad, dpi);
     let wrapped = wrapped_height(label, font, dpi, room) / scale(ADD_LABEL, dpi);
-    let extra = wrapped - lines;
-    if extra != 0 {
-        let mut frame: RECT = zeroed();
-        GetWindowRect(window, &mut frame);
-        SetWindowPos(
-            window,
-            null_mut(),
-            0,
-            0,
-            frame.right - frame.left,
-            frame.bottom - frame.top + scale(extra * ADD_LABEL, dpi),
-            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-    }
+    grow_window(window, scale((wrapped - lines) * ADD_LABEL, dpi));
     wrapped
+}
+
+/// Makes `window` `pixels` taller, or shorter for a negative count.
+unsafe fn grow_window(window: HWND, pixels: i32) {
+    if pixels == 0 {
+        return;
+    }
+    let mut frame: RECT = zeroed();
+    GetWindowRect(window, &mut frame);
+    SetWindowPos(
+        window,
+        null_mut(),
+        0,
+        0,
+        frame.right - frame.left,
+        frame.bottom - frame.top + pixels,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }
 
 #[cfg(test)]

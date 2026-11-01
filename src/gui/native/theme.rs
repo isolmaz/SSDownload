@@ -363,6 +363,83 @@ pub(super) fn card_text_parts(text: &str) -> (String, String) {
         None => (text.to_string(), String::new()),
     }
 }
+/// The points, weight and faces of a card's title or explanation font:
+/// Modern's type ramp, or Classic's Segoe UI.
+pub(super) fn card_font_spec(title: bool, modern: bool) -> (i32, i32, &'static [&'static str]) {
+    let language = crate::i18n::language();
+    match (title, modern) {
+        (true, true) => (10, 600, ramp_faces(language, false)),
+        (false, true) => (9, FW_NORMAL as i32, ramp_faces(language, true)),
+        (true, false) => (9, 600, &["Segoe UI Semibold", "Segoe UI"]),
+        (false, false) => (8, FW_NORMAL as i32, &["Segoe UI"]),
+    }
+}
+pub(super) unsafe fn card_title_font(hwnd: HWND) -> HFONT {
+    let (points, weight, faces) = card_font_spec(true, modern());
+    card_font(hwnd, "title-font", points, weight, faces)
+}
+pub(super) unsafe fn card_text_font(hwnd: HWND) -> HFONT {
+    let (points, weight, faces) = card_font_spec(false, modern());
+    card_font(hwnd, "text-font", points, weight, faces)
+}
+/// Where a card `width` x `height` pixels puts its title and, below it, an
+/// explanation `lines` lines tall: beside the glyph, centred on the face.
+/// Modern's face sits FOCUS_MARGIN inside the card and its title stops before
+/// the mark at the end of its line; Classic's face sits inside a one-pixel
+/// frame.
+pub(super) fn card_text_areas(
+    width: i32,
+    height: i32,
+    dpi: u32,
+    modern: bool,
+    lines: i32,
+) -> (RECT, RECT) {
+    let s = |value: i32| scale(value, dpi);
+    let (face, pad, mark) = if modern {
+        (s(FOCUS_MARGIN), s(12), s(16) + s(8))
+    } else {
+        (1, s(10), 0)
+    };
+    let left = face + pad + s(20) + pad;
+    let right = width - face - pad;
+    let top = (height - s(CARD_TITLE) - lines * s(CARD_LINE)) / 2;
+    let title = RECT {
+        left,
+        top,
+        right: right - mark,
+        bottom: top + s(CARD_TITLE),
+    };
+    let text = RECT {
+        left,
+        top: title.bottom,
+        right,
+        bottom: title.bottom + lines * s(CARD_LINE),
+    };
+    (title, text)
+}
+/// How many lines `card`'s explanation wraps to on a card `width` pixels
+/// wide.
+pub(super) unsafe fn card_text_lines(card: HWND, width: i32) -> i32 {
+    let dpi = GetDpiForWindow(card).max(96);
+    let (_, area) = card_text_areas(width, 0, dpi, modern(), 1);
+    let (_, text) = card_text_parts(&super::text(card));
+    let mut text: Vec<u16> = text.encode_utf16().collect();
+    let dc = GetDC(card);
+    let previous = SelectObject(dc, card_text_font(card) as HGDIOBJ);
+    let mut needed = RECT {
+        right: area.right - area.left,
+        ..zeroed()
+    };
+    draw_text(dc, &mut text, &mut needed, CARD_TEXT_FORMAT | DT_CALCRECT);
+    SelectObject(dc, previous);
+    ReleaseDC(card, dc);
+    let line = scale(CARD_LINE, dpi);
+    ((needed.bottom + line - 1) / line).max(1)
+}
+/// A card's title stays on one line and its explanation wraps; neither is
+/// shortened.
+pub(super) const CARD_TITLE_FORMAT: u32 = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX;
+pub(super) const CARD_TEXT_FORMAT: u32 = DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX;
 pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     if modern() {
         paint_choice_card(hwnd, dc);
@@ -394,8 +471,7 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     SelectObject(dc, pen);
     SelectObject(dc, fill);
     SetBkMode(dc, TRANSPARENT as i32);
-    // One row: the glyph at the start, then the title over a one-line
-    // explanation, shortened with an ellipsis where it does not fit.
+    // The glyph at the start, then the title over the explanation.
     let glyph_size = scale(20, dpi);
     draw_card_glyph(
         dc,
@@ -407,44 +483,24 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
         glyph_size,
         face.glyph,
     );
-    let mut buffer = [0u16; 512];
-    let len = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32).max(0) as usize;
-    let (title, description) = card_text_parts(&String::from_utf16_lossy(&buffer[..len]));
-    let line = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
-    let text_top = (padded.top + padded.bottom - scale(CARD_TEXT, dpi)) / 2;
-    let mut title_area = RECT {
-        left: padded.left + scale(10, dpi) + glyph_size + scale(10, dpi),
-        top: text_top,
-        right: padded.right - scale(10, dpi),
-        bottom: text_top + scale(CARD_TITLE, dpi),
-    };
-    let title_font = SelectObject(
-        dc,
-        card_font(
-            hwnd,
-            "title-font",
-            9,
-            600,
-            &["Segoe UI Semibold", "Segoe UI"],
-        ) as HGDIOBJ,
-    );
+    let (title, description) = card_text_parts(&super::text(hwnd));
+    let lines = card_text_lines(hwnd, rect.right);
+    let (mut title_area, mut description_area) =
+        card_text_areas(rect.right, rect.bottom, dpi, false, lines);
+    let previous = SelectObject(dc, card_title_font(hwnd) as HGDIOBJ);
     SetTextColor(dc, face.title);
     let mut title: Vec<u16> = title.encode_utf16().collect();
-    draw_text(dc, &mut title, &mut title_area, line);
-    SelectObject(dc, title_font);
-    let mut description_area = RECT {
-        top: title_area.bottom,
-        bottom: text_top + scale(CARD_TEXT, dpi),
-        ..title_area
-    };
-    let description_font = SelectObject(
-        dc,
-        card_font(hwnd, "text-font", 8, FW_NORMAL as i32, &["Segoe UI"]) as HGDIOBJ,
-    );
+    draw_text(dc, &mut title, &mut title_area, CARD_TITLE_FORMAT);
+    SelectObject(dc, card_text_font(hwnd) as HGDIOBJ);
     SetTextColor(dc, face.description);
     let mut description: Vec<u16> = description.encode_utf16().collect();
-    draw_text(dc, &mut description, &mut description_area, line);
-    SelectObject(dc, description_font);
+    draw_text(
+        dc,
+        &mut description,
+        &mut description_area,
+        CARD_TEXT_FORMAT,
+    );
+    SelectObject(dc, previous);
     if GetFocus() == hwnd {
         let mut focus = padded;
         focus.left += scale(3, dpi);
