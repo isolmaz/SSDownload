@@ -5448,9 +5448,11 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
         jobs.sort_by_key(|job| place.get(job.id.as_str()).copied().unwrap_or(usize::MAX));
     }
     let ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
-    let prior = selected_ids(ui);
-    // Modern keeps the focus on the job that had it; Classic, as before,
-    // gives it to the first selected job.
+    // List order, not queue order: when the job of the first selected row has
+    // left, Classic focuses no row.
+    let prior = selected_rows(ui);
+    // Modern keeps the focus on the job that had it; Classic gives it to the
+    // first selected row.
     let focused = if modern() {
         let index = SendMessageW(ui.list, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize);
         usize::try_from(index)
