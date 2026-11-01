@@ -1697,5 +1697,7 @@
   "Converting the audio to {0}: {1}%": "جارٍ تحويل الصوت إلى {0}: {1}%",
   "Copying the audio into {0}: {1}%": "جارٍ نسخ الصوت إلى ملف {0}: {1}%",
   "The downloaded stream has no readable audio": "لا يحتوي البث الذي تم تنزيله على صوت قابل للقراءة",
-  "The audio could not be converted: {0}": "تعذّر تحويل الصوت: {0}"
+  "The audio could not be converted: {0}": "تعذّر تحويل الصوت: {0}",
+  "Downloading media; the server is limiting requests": "جارٍ تنزيل الوسائط؛ الخادم يحدّ من الطلبات",
+  "Waiting for the server, which is limiting requests": "في انتظار الخادم الذي يحدّ من الطلبات"
 }

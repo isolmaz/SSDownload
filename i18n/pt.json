@@ -1697,5 +1697,7 @@
   "Converting the audio to {0}: {1}%": "Convertendo o áudio para {0}: {1}%",
   "Copying the audio into {0}: {1}%": "Copiando o áudio para um arquivo {0}: {1}%",
   "The downloaded stream has no readable audio": "O fluxo baixado não tem áudio legível",
-  "The audio could not be converted: {0}": "Não foi possível converter o áudio: {0}"
+  "The audio could not be converted: {0}": "Não foi possível converter o áudio: {0}",
+  "Downloading media; the server is limiting requests": "Baixando mídia; o servidor está limitando as solicitações",
+  "Waiting for the server, which is limiting requests": "Aguardando o servidor, que está limitando as solicitações"
 }

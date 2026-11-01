@@ -259,7 +259,10 @@ fn fetch_segments(
         .collect::<Result<Vec<_>>>()?;
     let shared = Shared::new(streams, &joins, per_host);
     let workers = (per_host * streams.len()).clamp(1, MAX_WORKERS);
-    let received = AtomicU64::new(joins.iter().map(Join::stored_bytes).sum());
+    let received = joins
+        .iter()
+        .map(|join| AtomicU64::new(join.stored_bytes()))
+        .collect::<Vec<_>>();
     let context = WorkerContext {
         streams,
         joins: &joins,
@@ -611,6 +614,31 @@ impl Join {
                 .sum::<u64>()
     }
 
+    /// The stream's size and whether every segment is joined. Until then the size follows from
+    /// the average of the joined segments, or, while none is joined, of the finished segments
+    /// that wait for an earlier one; `None` while no segment is finished.
+    fn estimate(&self) -> (Option<u64>, bool) {
+        let state = self.lock();
+        let count = state.ready.len();
+        if state.next == count {
+            return (Some(state.length), true);
+        }
+        let (bytes, finished) = if state.next > 0 {
+            (state.length, state.next as u64)
+        } else {
+            (0..count)
+                .filter(|index| state.ready[*index])
+                .filter_map(|index| fs::metadata(segment_path(&self.joined, index)).ok())
+                .fold((0, 0), |(bytes, finished), meta| {
+                    (bytes + meta.len(), finished + 1)
+                })
+        };
+        (
+            (finished > 0).then(|| bytes.saturating_mul(count as u64) / finished),
+            false,
+        )
+    }
+
     fn pending(&self) -> Vec<usize> {
         let state = self.lock();
         (state.next..state.ready.len())
@@ -823,7 +851,26 @@ struct Schedule {
     per_host: usize,
     remaining: usize,
     failure: Option<anyhow::Error>,
+    /// When a host last answered 429 or 503.
+    refused: Option<Instant>,
 }
+
+/// What the status says about the hosts' limits.
+#[derive(Debug, PartialEq)]
+enum Limited {
+    No,
+    /// A host answered 429 or 503 within `LIMITED_SHOWN`, and requests still go out.
+    Flowing,
+    /// A host has answered 429 or 503, and no request is in flight or may start within
+    /// `WAITING_SHOWN`.
+    Waiting,
+}
+
+/// How long the status says that the server limits requests after its last 429 or 503.
+const LIMITED_SHOWN: Duration = Duration::from_secs(5);
+/// A wait at least this long before the next request reads as waiting for the server, and not
+/// as the gap between two paced requests.
+const WAITING_SHOWN: Duration = Duration::from_secs(2);
 
 /// What a worker does next.
 enum Next {
@@ -885,6 +932,7 @@ impl Shared {
                 per_host,
                 remaining,
                 failure: None,
+                refused: None,
             }),
             wake: Condvar::new(),
             hosts,
@@ -1007,7 +1055,10 @@ impl Shared {
                 task,
                 throttled: true,
                 retry_after,
-            } => state.paces[host].refuse(task.sent, *retry_after, now),
+            } => {
+                state.paces[host].refuse(task.sent, *retry_after, now);
+                state.refused = Some(now);
+            }
             Settled::Retry { .. } | Settled::Failed => {}
         }
         match outcome {
@@ -1023,6 +1074,28 @@ impl Shared {
             }
         }
         self.wake.notify_all();
+    }
+
+    fn limited(&self, now: Instant) -> Limited {
+        let state = self.lock();
+        let Some(refused) = state.refused else {
+            return Limited::No;
+        };
+        let held = state.busy.iter().all(|busy| *busy == 0)
+            && state.queues.iter().any(|queue| !queue.is_empty())
+            && state.queues.iter().enumerate().all(|(stream, queue)| {
+                queue.iter().all(|task| {
+                    let pace = &state.paces[self.hosts[stream][task.index]];
+                    task.not_before.max(pace.next_start) >= now + WAITING_SHOWN
+                })
+            });
+        if held {
+            Limited::Waiting
+        } else if now.duration_since(refused) < LIMITED_SHOWN {
+            Limited::Flowing
+        } else {
+            Limited::No
+        }
     }
 }
 
@@ -1059,7 +1132,8 @@ struct WorkerContext<'a> {
     cookies: &'a [ScopedCookie],
     control: &'a TransferControl,
     network: &'a NetworkGovernor,
-    received: &'a AtomicU64,
+    /// Each stream's bytes on disk and in flight.
+    received: &'a [AtomicU64],
     workers: u64,
 }
 
@@ -1104,7 +1178,7 @@ impl WorkerContext<'_> {
             }
             let segment = segment_path(&join.joined, task.index);
             let mut url = stream.segments[task.index].clone();
-            let mut fetched = self.fetch_kept(&mut kept, &url, stream, &segment);
+            let mut fetched = self.fetch_kept(&mut kept, &url, stream_index, &segment);
             for _ in 0..MAX_REDIRECTS {
                 let Ok(Fetched::Redirect(next)) = &fetched else {
                     break;
@@ -1115,7 +1189,7 @@ impl WorkerContext<'_> {
                     .network
                     .easy_for_url(&url, self.control)
                     .and_then(|mut easy| {
-                        self.fetch(&mut easy, &url, stream, &segment, same_origin)
+                        self.fetch(&mut easy, &url, stream_index, &segment, same_origin)
                     });
             }
             match fetched {
@@ -1189,7 +1263,7 @@ impl WorkerContext<'_> {
         &self,
         kept: &mut Option<Kept>,
         url: &Url,
-        stream: &NativeStream,
+        stream: usize,
         segment: &Path,
     ) -> Result<Fetched> {
         let origin = url.origin();
@@ -1212,17 +1286,18 @@ impl WorkerContext<'_> {
         fetched
     }
 
-    /// One request for a segment into `<segment>.tmp`, renamed to `segment` once whole. Off the
-    /// segment's own origin, which a redirect can lead to, the request carries only the headers
-    /// that are safe across origins and no cookies, as a file transfer's does.
+    /// One request for a segment of `stream` into `<segment>.tmp`, renamed to `segment` once
+    /// whole. Off the segment's own origin, which a redirect can lead to, the request carries
+    /// only the headers that are safe across origins and no cookies, as a file transfer's does.
     fn fetch(
         &self,
         easy: &mut crate::network::GovernedEasy,
         url: &Url,
-        stream: &NativeStream,
+        stream: usize,
         segment: &Path,
         same_origin: bool,
     ) -> Result<Fetched> {
+        let (received, stream) = (&self.received[stream], &self.streams[stream]);
         let partial = partial_path(segment);
         let mut file = match File::create(&partial) {
             Ok(file) => file,
@@ -1270,8 +1345,7 @@ impl WorkerContext<'_> {
                     return Ok(0);
                 }
                 written += data.len() as u64;
-                self.received
-                    .fetch_add(data.len() as u64, Ordering::Relaxed);
+                received.fetch_add(data.len() as u64, Ordering::Relaxed);
                 crate::transfer::throttle(
                     self.control,
                     self.workers,
@@ -1308,7 +1382,7 @@ impl WorkerContext<'_> {
         } else {
             None
         };
-        self.received.fetch_sub(written, Ordering::Relaxed);
+        received.fetch_sub(written, Ordering::Relaxed);
         let _ = fs::remove_file(&partial);
         if let Some(error) = write_error.or(renamed) {
             return Ok(file_retry(&error));
@@ -1371,59 +1445,110 @@ fn segment_failure(
     }
 }
 
-/// Reports the combined progress of every stream until the segments are done or the
-/// download stops. The total is estimated from the average size of the segments so far.
-fn report_until_done(context: &WorkerContext, progress: &mut dyn FnMut(TransferProgress)) {
-    let started = Instant::now();
-    let mut window = VecDeque::from([(started, context.received.load(Ordering::Relaxed))]);
-    loop {
-        let finished = context.shared.finished() || context.control.stop_requested();
-        let downloaded = context.received.load(Ordering::Relaxed);
-        let now = Instant::now();
-        window.push_back((now, downloaded));
-        // A throttling host answers in bursts seconds apart; a shorter window reads zero between.
-        while window.len() > 2 && now.duration_since(window[0].0) > Duration::from_secs(10) {
+/// A throttling host answers in bursts seconds apart; a shorter window reads zero between.
+const SPEED_WINDOW: Duration = Duration::from_secs(10);
+/// A shorter measurement is too noisy for a speed or a time left.
+const RATE_WARM_UP: Duration = Duration::from_secs(1);
+
+/// One stream's bytes over the last `SPEED_WINDOW`.
+struct Rate(VecDeque<(Instant, u64)>);
+
+impl Rate {
+    fn new(now: Instant, bytes: u64) -> Self {
+        Self(VecDeque::from([(now, bytes)]))
+    }
+
+    /// Records the stream's bytes at `now` and returns its speed over the window, `None` while
+    /// the window spans less than `RATE_WARM_UP`.
+    fn record(&mut self, now: Instant, bytes: u64) -> Option<u64> {
+        let window = &mut self.0;
+        window.push_back((now, bytes));
+        while window.len() > 2 && now.duration_since(window[0].0) > SPEED_WINDOW {
             window.pop_front();
         }
         let (since, base) = window[0];
-        let elapsed = now.duration_since(since).as_secs_f64();
-        let speed = if elapsed > 0.0 {
-            (downloaded.saturating_sub(base) as f64 / elapsed) as u64
-        } else {
-            0
-        };
-        let total = estimated_total(context);
+        let span = now.duration_since(since);
+        (span >= RATE_WARM_UP)
+            .then(|| (bytes.saturating_sub(base) as f64 / span.as_secs_f64()) as u64)
+    }
+}
+
+/// One stream at one moment.
+struct StreamStatus {
+    bytes: u64,
+    size: Option<u64>,
+    joined: bool,
+    speed: Option<u64>,
+}
+
+/// The time left of the stream that needs the longest at its own speed. `None` while an
+/// unfinished stream has no size or no speed, or has reached its estimated size.
+fn time_left(streams: &[StreamStatus]) -> Option<u64> {
+    streams.iter().try_fold(0, |longest, stream| {
+        if stream.joined {
+            return Some(longest);
+        }
+        let rest = stream
+            .size?
+            .checked_sub(stream.bytes)
+            .filter(|rest| *rest > 0)?;
+        Some(longest.max(rest.checked_div(stream.speed?)?))
+    })
+}
+
+/// Reports the progress of the streams until the segments are done or the download stops: the
+/// bytes, size and speed of all of them, the time left of the stream that needs the longest,
+/// and whether a host limits the requests.
+fn report_until_done(context: &WorkerContext, progress: &mut dyn FnMut(TransferProgress)) {
+    let started = Instant::now();
+    let mut rates = context
+        .received
+        .iter()
+        .map(|bytes| Rate::new(started, bytes.load(Ordering::Relaxed)))
+        .collect::<Vec<_>>();
+    loop {
+        let finished = context.shared.finished() || context.control.stop_requested();
+        let now = Instant::now();
+        let streams = context
+            .joins
+            .iter()
+            .zip(context.received)
+            .zip(&mut rates)
+            .map(|((join, received), rate)| {
+                let bytes = received.load(Ordering::Relaxed);
+                let (size, joined) = join.estimate();
+                StreamStatus {
+                    bytes,
+                    size,
+                    joined,
+                    speed: rate.record(now, bytes),
+                }
+            })
+            .collect::<Vec<_>>();
         progress(TransferProgress {
             processing: false,
-            downloaded,
-            total,
-            speed,
-            eta: total
-                .filter(|total| *total >= downloaded)
-                .and_then(|total| (total - downloaded).checked_div(speed)),
-            phase: crate::i18n::ui("Medya indiriliyor", "Downloading media").into(),
+            downloaded: streams.iter().map(|stream| stream.bytes).sum(),
+            total: streams.iter().map(|stream| stream.size).sum(),
+            speed: streams.iter().filter_map(|stream| stream.speed).sum(),
+            eta: time_left(&streams),
+            phase: match context.shared.limited(now) {
+                Limited::No => crate::i18n::ui("Medya indiriliyor", "Downloading media"),
+                Limited::Flowing => crate::i18n::ui(
+                    "Medya indiriliyor; sunucu istekleri sınırlıyor",
+                    "Downloading media; the server is limiting requests",
+                ),
+                Limited::Waiting => crate::i18n::ui(
+                    "Sunucu bekleniyor; istekleri sınırlıyor",
+                    "Waiting for the server, which is limiting requests",
+                ),
+            }
+            .into(),
         });
         if finished {
             return;
         }
         thread::sleep(Duration::from_millis(250));
     }
-}
-
-fn estimated_total(context: &WorkerContext) -> Option<u64> {
-    let mut total = 0u64;
-    for (stream, join) in context.streams.iter().zip(context.joins) {
-        let state = join.lock();
-        if state.next == state.ready.len() {
-            total += state.length;
-            continue;
-        }
-        if state.next == 0 {
-            return None;
-        }
-        total += state.length / state.next as u64 * stream.segments.len() as u64;
-    }
-    Some(total)
 }
 
 #[cfg(test)]
@@ -2099,6 +2224,50 @@ mod tests {
     }
 
     #[test]
+    fn a_download_says_that_it_waits_for_the_server_and_then_that_the_server_limits_it() {
+        use crate::test_http::{pattern, Config, RetryAfter, Scripted, Server, TempDir};
+        // The only segment is refused once, with a Retry-After of three seconds.
+        let server = Server::start(Config {
+            size: 2000,
+            scripted: vec![Scripted {
+                status: 429,
+                retry_after: Some(RetryAfter::Seconds(3)),
+            }],
+            ..Config::default()
+        });
+        let workspace = TempDir::new("native-waiting");
+        let streams = [NativeStream {
+            segments: vec![Url::parse(&server.url("/a/0.ts")).unwrap()],
+            ..one_host_stream(0)
+        }];
+        let mut phases = Vec::new();
+        let joins = fetch_segments(
+            &streams,
+            &workspace.0,
+            &AddRequest::default(),
+            &TransferControl::default(),
+            &NetworkGovernor::new(8),
+            &mut |update| phases.push(update.phase),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&joins[0].joined).unwrap(), pattern(1, 2000));
+        // Nothing may start for more than two seconds of the wait, then the retry is due.
+        phases.dedup();
+        let waiting = phases
+            .iter()
+            .position(|phase| phase == "Sunucu bekleniyor; istekleri sınırlıyor")
+            .unwrap_or_else(|| panic!("{phases:?}"));
+        assert_eq!(
+            phases[waiting..],
+            [
+                "Sunucu bekleniyor; istekleri sınırlıyor",
+                "Medya indiriliyor; sunucu istekleri sınırlıyor"
+            ],
+            "{phases:?}"
+        );
+    }
+
+    #[test]
     fn no_more_workers_keep_a_host_than_its_bound_and_they_let_go_once_it_is_done() {
         let root = std::env::temp_dir().join(format!("ssdownload-kept-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -2204,6 +2373,127 @@ mod tests {
         ));
         assert_eq!(shared.lock().holders, [1]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_status_says_when_a_host_limits_the_requests_and_when_the_download_waits_for_it() {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-limited-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let streams = [one_host_stream(3)];
+        let joins = [Join::resume(&root, &streams[0]).unwrap()];
+        let shared = Shared::new(&streams, &joins, 2);
+        let first = task_for(&shared, &streams, None);
+        let second = task_for(&shared, &streams, None);
+        assert_eq!(shared.limited(Instant::now()), Limited::No);
+
+        // The first segment is refused while the second is in flight: the status says so for
+        // five seconds after the refusal.
+        shared.settle(
+            0,
+            Settled::Retry {
+                task: first,
+                throttled: true,
+                retry_after: None,
+            },
+        );
+        let refused = shared.lock().refused.expect("the refusal is recorded");
+        assert_eq!(shared.limited(refused), Limited::Flowing);
+        assert_eq!(
+            shared.limited(refused + Duration::from_millis(4900)),
+            Limited::Flowing
+        );
+        assert_eq!(
+            shared.limited(refused + Duration::from_secs(5)),
+            Limited::No
+        );
+        // A request in flight still brings data, however long the others wait.
+        shared.lock().paces[0].next_start = refused + Duration::from_secs(30);
+        assert_eq!(shared.limited(refused), Limited::Flowing);
+
+        // Once it is done, the download waits for the server, also long after the refusal, ...
+        shared.settle(0, Settled::Done { sent: second.sent });
+        assert_eq!(shared.limited(refused), Limited::Waiting);
+        assert_eq!(
+            shared.limited(refused + Duration::from_secs(20)),
+            Limited::Waiting
+        );
+        assert_eq!(
+            shared.limited(refused + Duration::from_secs(29)),
+            Limited::No
+        );
+        // ... but not for the pace's gap before its next request.
+        shared.lock().paces[0].next_start = refused + Duration::from_millis(500);
+        assert_eq!(shared.limited(refused), Limited::Flowing);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_stream_is_sized_from_its_finished_segments_also_before_one_is_joined() {
+        let root = std::env::temp_dir().join(format!("ssdownload-size-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let stream = one_host_stream(4);
+        let joined = root.join("media.native-audio.part");
+        assert_eq!(
+            Join::resume(&root, &stream).unwrap().estimate(),
+            (None, false)
+        );
+
+        // Segments 1 and 2 have come before the first; waiting to be joined, they tell the size.
+        fs::write(segment_path(&joined, 1), b"1111").unwrap();
+        fs::write(segment_path(&joined, 2), b"222222").unwrap();
+        let join = Join::resume(&root, &stream).unwrap();
+        assert_eq!(join.estimate(), (Some(20), false));
+        // Once joined, the joined segments tell it, and the last one makes it exact.
+        fs::write(segment_path(&joined, 0), b"00").unwrap();
+        join.mark_ready(0).unwrap();
+        assert_eq!(join.estimate(), (Some(16), false));
+        fs::write(segment_path(&joined, 3), b"333").unwrap();
+        join.mark_ready(3).unwrap();
+        assert_eq!(join.estimate(), (Some(15), true));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_speed_is_measured_over_the_last_ten_seconds_once_a_second_has_passed() {
+        let start = Instant::now();
+        let at = |seconds: f64| start + Duration::from_secs_f64(seconds);
+        let mut rate = Rate::new(start, 0);
+        assert_eq!(rate.record(at(0.5), 500), None);
+        assert_eq!(rate.record(at(1.0), 1_000), Some(1_000));
+        // Between bursts the speed is the average since the window's start, and it reads 0 once
+        // the last bytes are older than the window.
+        assert_eq!(rate.record(at(5.0), 1_000), Some(200));
+        assert_eq!(rate.record(at(12.0), 1_000), Some(0));
+    }
+
+    #[test]
+    fn the_time_left_is_that_of_the_stream_that_needs_the_longest_at_its_own_speed() {
+        let stream = |bytes, size, joined, speed| StreamStatus {
+            bytes,
+            size,
+            joined,
+            speed,
+        };
+        // 90 MB of video at 10 MB/s take 9 s and 5 MB of audio at 250 kB/s take 20 s, while all
+        // of it at the speed of both would take 9 s.
+        let video = || stream(10_000_000, Some(100_000_000), false, Some(10_000_000));
+        let audio = stream(1_000_000, Some(6_000_000), false, Some(250_000));
+        assert_eq!(time_left(&[video(), audio]), Some(20));
+        // A stream whose segments are all joined is done, whatever its speed reads.
+        let joined = stream(6_000_000, Some(6_000_000), true, Some(0));
+        assert_eq!(time_left(&[video(), joined]), Some(9));
+        assert_eq!(time_left(&[stream(10, Some(10), true, None)]), Some(0));
+        // Unknown while an unfinished stream has no speed yet, a speed of 0 or no size, or has
+        // reached the size it was estimated at.
+        for unknown in [
+            stream(1, Some(10), false, None),
+            stream(1, Some(10), false, Some(0)),
+            stream(1, None, false, Some(5)),
+            stream(10, Some(10), false, Some(5)),
+        ] {
+            assert_eq!(time_left(&[video(), unknown]), None);
+        }
     }
 
     #[test]
@@ -2468,11 +2758,11 @@ mod tests {
             .map(|stream| Join::resume(workspace, stream).unwrap())
             .collect::<Vec<_>>();
         let shared = Shared::new(streams, &joins, 1);
-        let (control, network, received) = (
-            TransferControl::default(),
-            NetworkGovernor::new(8),
-            AtomicU64::new(0),
-        );
+        let (control, network) = (TransferControl::default(), NetworkGovernor::new(8));
+        let received = streams
+            .iter()
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>();
         let context = WorkerContext {
             streams,
             joins: &joins,
