@@ -485,7 +485,7 @@
   "No HTTP/HTTPS link was found in the dropped text.": "Im abgelegten Text wurde kein HTTP/HTTPS-Link gefunden.",
   "No MP4-compatible audio codec was found in the selected language; choose MKV": "In der ausgewählten Sprache wurde kein MP4-kompatibler Audio-Codec gefunden; wählen Sie MKV",
   "No MP4-compatible video codec was found at the selected resolution; choose MKV": "Bei der ausgewählten Auflösung wurde kein MP4-kompatibler Video-Codec gefunden; wählen Sie MKV",
-  "No Windows x64 LGPL FFmpeg ZIP asset was found in the BtbN latest release": "Im neuesten BtbN-Release wurde keine Windows-x64-LGPL-FFmpeg-ZIP-Datei gefunden",
+  "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release": "Im neuesten BtbN-Release wurde keine ZIP-Datei eines FFmpeg-Release-Zweigs (Windows x64, LGPL) gefunden",
   "No active completion countdown.": "Kein aktiver Countdown bis zum Abschluss.",
   "No active downloads.": "Keine aktiven Downloads.",
   "No countdown is active": "Kein Countdown ist aktiv",
@@ -1695,5 +1695,7 @@
   "The digest did not match; downloading the file again": "Die Prüfsumme stimmt nicht überein; die Datei wird erneut heruntergeladen",
   "The file does not match the SHA-256 digest its source publishes ({0}), and two downloads gave different bytes; the partial file was deleted and a retry downloads it again": "Die Datei stimmt nicht mit der SHA-256-Prüfsumme überein, die ihre Quelle veröffentlicht ({0}), und zwei Downloads lieferten unterschiedliche Bytes; die unvollständige Datei wurde gelöscht und wird beim nächsten Versuch erneut heruntergeladen",
   "The file was saved, but it does not match the SHA-256 digest its source publishes ({0}); two downloads gave the same bytes": "Die Datei wurde gespeichert, stimmt aber nicht mit der SHA-256-Prüfsumme überein, die ihre Quelle veröffentlicht ({0}); zwei Downloads lieferten dieselben Bytes",
-  "No capacity for the network connection became free in time": "Für die Netzwerkverbindung wurde nicht rechtzeitig Kapazität frei"
+  "No capacity for the network connection became free in time": "Für die Netzwerkverbindung wurde nicht rechtzeitig Kapazität frei",
+  "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old": "Unter den neuesten {1} Deno-Releases ist kein stabiles Release von Deno {0}.x; diese Version der Anwendung ist an eine zu alte Deno-Version gebunden",
+  "No stable release of Deno {0}.x was found": "Es wurde kein stabiles Release von Deno {0}.x gefunden"
 }
