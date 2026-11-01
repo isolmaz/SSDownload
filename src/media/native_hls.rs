@@ -18,15 +18,20 @@ use std::{
 /// How many refusals (429 or 503) a segment goes again after with its host's next paced request;
 /// after each later one it waits as after other failures.
 const FREE_REFUSALS: u32 = 2;
-/// Tries per segment before the download fails; the joined part is kept for a retry. For a
-/// segment its host keeps refusing, however the host answers the other segments, the waits between
-/// them span 390 s, as between 30 tries after other failures, since its first `FREE_REFUSALS`
-/// refusals go again with the host's next paced request. A segment that fails otherwise waits 15 s
-/// longer for each of those tries.
+/// Tries per segment before the download fails; the joined part is kept for a retry. A segment's
+/// first `FREE_REFUSALS` refusals go again with the host's next paced request, and every other
+/// failure waits out the backoff of the segment's failures counted without those. So whatever mix
+/// of refusals and other failures a segment meets, and however its host answers the other
+/// segments, the waits between its tries span at least 390 s, as between 30 tries after other
+/// failures. Those of a segment that is never refused span 420 s.
 const SEGMENT_ATTEMPTS: u32 = 30 + FREE_REFUSALS;
 const MAX_BACKOFF: Duration = Duration::from_secs(15);
 /// Longest server-requested pause honoured for one segment.
 const MAX_SEGMENT_RETRY_AFTER: Duration = Duration::from_secs(60);
+/// How long a worker with no segment to take waits before it looks again, at least and at most;
+/// a settled segment wakes it sooner.
+const MIN_IDLE_WAIT: Duration = Duration::from_millis(10);
+const MAX_IDLE_WAIT: Duration = Duration::from_millis(200);
 const MAX_REDIRECTS: usize = 5;
 /// The total parallelism stays below the global connection budget, which other jobs share.
 const MAX_WORKERS: usize = crate::network::GLOBAL_CONNECTION_BUDGET - 2;
@@ -440,8 +445,10 @@ struct Task {
     stream: usize,
     index: usize,
     attempt: u32,
-    /// How often the segment's host refused it. Admissions of other segments leave it as it is,
-    /// so that a segment its host keeps refusing backs off however the others fare.
+    /// How often the segment's host refused it: its first `FREE_REFUSALS` refusals go again with
+    /// the host's pace, and later ones back off by the segment's failures. Admissions of other
+    /// segments leave it as it is, so that a segment its host keeps refusing backs off however the
+    /// others fare.
     refused: u32,
     not_before: Instant,
     /// When the task was last handed to a worker.
@@ -722,8 +729,8 @@ impl Shared {
             }
             let wait = earliest
                 .map(|at| at.saturating_duration_since(now))
-                .unwrap_or(Duration::from_millis(200))
-                .clamp(Duration::from_millis(10), Duration::from_millis(200));
+                .unwrap_or(MAX_IDLE_WAIT)
+                .clamp(MIN_IDLE_WAIT, MAX_IDLE_WAIT);
             state = self
                 .wake
                 .wait_timeout(state, wait)
@@ -804,8 +811,8 @@ impl Schedule {
     /// goes back in playlist order. An ordinary retry waits out the backoff of the segment's
     /// failures. A refused one (429 or 503) goes again with the host's next paced request after
     /// its first `FREE_REFUSALS` refusals, and after each later one waits out the backoff of its
-    /// refusals beyond those, however the host answers the other segments. A `Retry-After`
-    /// replaces the wait of an ordinary or refused retry, but not that backoff.
+    /// failures counted without those, however the host answers the other segments. A
+    /// `Retry-After` replaces the wait of an ordinary or refused retry, but not that backoff.
     fn settle(&mut self, host: usize, outcome: Settled, now: Instant) {
         self.busy[host] = self.busy[host].saturating_sub(1);
         match outcome {
@@ -831,7 +838,7 @@ impl Schedule {
                     self.paces[host].refuse(task.sent, retry_after, now);
                     task.refused += 1;
                     if task.refused > FREE_REFUSALS {
-                        wait = wait.max(backoff(task.refused - FREE_REFUSALS));
+                        wait = wait.max(backoff(task.attempt.saturating_sub(FREE_REFUSALS)));
                     }
                 }
                 task.not_before = now + wait;
@@ -1732,18 +1739,17 @@ mod tests {
     /// - each answer comes `latency` after its request and up to 40 ms later, by a sequence that
     ///   is the same in every run;
     /// - an admitted segment settles 1 ms after its answer, once its file is written;
-    /// - a worker with nothing to take waits until a request settles or its wait of 10 to 200 ms
-    ///   ends, at the next 15.6 ms timer tick.
+    /// - a worker with nothing to take waits until a request settles or its wait of
+    ///   `MIN_IDLE_WAIT` to `MAX_IDLE_WAIT` ends, at the next 15.6 ms timer tick.
     ///
-    /// `host` decides each request as it is sent, from the segment, the time since the start and
-    /// that of its answer: `Ok` admits it, and `Err` refuses it with a 429 and the `Retry-After`
-    /// given. Returns how long the download took and how many requests were refused, or the
-    /// segment that used up its attempts and when.
+    /// `host` answers each request as it is sent, from the segment, the time since the start and
+    /// that of its answer. Returns how long the download took and how many requests were refused,
+    /// or the segment that used up its attempts and when.
     fn simulate(
         segments: usize,
         workers: usize,
         latency: Duration,
-        mut host: impl FnMut(usize, Duration, Duration) -> Result<(), Option<Duration>>,
+        mut host: impl FnMut(usize, Duration, Duration) -> Answer,
     ) -> Result<(Duration, usize), (usize, Duration)> {
         let root =
             std::env::temp_dir().join(format!("ssdownload-virtual-{}", uuid::Uuid::new_v4()));
@@ -1770,15 +1776,13 @@ mod tests {
                         let answer =
                             now + latency + Duration::from_millis(u64::from(seed >> 16) % 41);
                         let verdict = host(task.index, now - start, answer - start);
-                        let written = Duration::from_millis(u64::from(verdict.is_ok()));
+                        let written = Duration::from_millis(u64::from(verdict == Answer::Admitted));
                         *slot = Some((task, answer + written, verdict));
                     }
                     Err((earliest, _)) => {
                         let wait = earliest
-                            .map_or(Duration::from_millis(200), |at| {
-                                at.saturating_duration_since(now)
-                            })
-                            .clamp(Duration::from_millis(10), Duration::from_millis(200));
+                            .map_or(MAX_IDLE_WAIT, |at| at.saturating_duration_since(now))
+                            .clamp(MIN_IDLE_WAIT, MAX_IDLE_WAIT);
                         let ticks = (now + wait - start).as_nanos().div_ceil(tick.as_nanos());
                         wake = Some(start + tick * u32::try_from(ticks).unwrap());
                         break;
@@ -1796,25 +1800,40 @@ mod tests {
                     continue;
                 };
                 *slot = None;
-                let outcome = match verdict {
-                    Ok(()) => Settled::Done { sent: task.sent },
-                    Err(retry_after) if task.attempt + 1 < SEGMENT_ATTEMPTS => {
-                        refused += 1;
-                        Settled::Retry {
-                            task: Task {
-                                attempt: task.attempt + 1,
-                                ..task
-                            },
-                            throttled: true,
-                            retry_after,
-                        }
+                let (throttled, retry_after) = match verdict {
+                    Answer::Admitted => {
+                        state.settle(0, Settled::Done { sent: task.sent }, at);
+                        continue;
                     }
-                    Err(_) => return Err((task.index, at - start)),
+                    _ if task.attempt + 1 >= SEGMENT_ATTEMPTS => {
+                        return Err((task.index, at - start));
+                    }
+                    Answer::Refused(retry_after) => (true, retry_after),
+                    Answer::Failed => (false, None),
+                };
+                refused += usize::from(throttled);
+                let outcome = Settled::Retry {
+                    task: Task {
+                        attempt: task.attempt + 1,
+                        ..task
+                    },
+                    throttled,
+                    retry_after,
                 };
                 state.settle(0, outcome, at);
             }
         }
         Ok((now - start, refused))
+    }
+
+    /// How a simulated host answers a request.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Answer {
+        Admitted,
+        /// A 429, with the `Retry-After` given.
+        Refused(Option<Duration>),
+        /// A failure other than a refusal, such as a 500.
+        Failed,
     }
 
     #[test]
@@ -1823,8 +1842,13 @@ mod tests {
         // its host refuses for that long still has a try left after it.
         let outage = Duration::from_secs(390);
         for segments in [1, 40] {
-            let refused_until_the_end =
-                |_, sent: Duration, _| if sent < outage { Err(None) } else { Ok(()) };
+            let refused_until_the_end = |_, sent: Duration, _| {
+                if sent < outage {
+                    Answer::Refused(None)
+                } else {
+                    Answer::Admitted
+                }
+            };
             match simulate(
                 segments,
                 8,
@@ -1845,11 +1869,44 @@ mod tests {
         // refusing span the 390 s of the backoff between 30 tries, also when its Retry-After
         // is shorter than the backoff.
         for retry_after in [None, Some(Duration::from_secs(1))] {
-            let refused_alone = |index, _, _| if index == 0 { Err(retry_after) } else { Ok(()) };
+            let refused_alone = |index, _, _| {
+                if index == 0 {
+                    Answer::Refused(retry_after)
+                } else {
+                    Answer::Admitted
+                }
+            };
             let (index, at) = simulate(200, 8, Duration::from_millis(50), refused_alone)
                 .expect_err("the host never admits the first segment");
             assert_eq!(index, 0);
             assert!(at >= Duration::from_secs(390), "{retry_after:?}: {at:?}");
+        }
+    }
+
+    #[test]
+    fn a_segment_that_fails_otherwise_and_then_is_refused_lasts_as_long_as_30_tries_back_off() {
+        // A segment that first fails otherwise, as with a 500 or a timeout, and is then refused
+        // waits between its tries as long as one that only fails or is only refused.
+        for failures in 1..=8 {
+            let mut tries = 0;
+            let failing_then_refused = |index, _, _| {
+                if index != 0 {
+                    return Answer::Admitted;
+                }
+                tries += 1;
+                if tries <= failures {
+                    Answer::Failed
+                } else {
+                    Answer::Refused(None)
+                }
+            };
+            let (index, at) = simulate(200, 8, Duration::from_millis(50), failing_then_refused)
+                .expect_err("the host never admits the first segment");
+            assert_eq!(index, 0);
+            assert!(
+                at >= Duration::from_secs(390),
+                "{failures} failures first: {at:?}"
+            );
         }
     }
 
@@ -2003,10 +2060,12 @@ mod tests {
                     answers.push(answered);
                 }
             }
-            wait.map_or(Ok(()), |wait| {
-                Err(limit
-                    .retry_after
-                    .then(|| Duration::from_secs(retry_after_seconds(wait))))
+            wait.map_or(Answer::Admitted, |wait| {
+                Answer::Refused(
+                    limit
+                        .retry_after
+                        .then(|| Duration::from_secs(retry_after_seconds(wait))),
+                )
             })
         };
         let (took, refused) = simulate(segments, 4, Duration::from_millis(40), host)
