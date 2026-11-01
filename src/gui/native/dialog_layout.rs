@@ -20,6 +20,8 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Synchronization(_) => 425,
         DialogKind::Events(_) => 425,
         DialogKind::JobLog(_) => 425,
+        DialogKind::Speed(_) if modern() => one_field_height(SPEED_LABEL_LINES),
+        DialogKind::Rename(_) if modern() => one_field_height(1),
         DialogKind::Speed(_) => 110,
         DialogKind::Rename(_) => 110,
         DialogKind::Logins(_) => 425,
@@ -1296,6 +1298,12 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row,
             );
         }
+        DialogKind::Speed(f) if modern() => {
+            layout_one_field(dlg, h, f.edit, SP_OK, SPEED_LABEL_LINES, Some(140));
+        }
+        DialogKind::Rename(f) if modern() => {
+            layout_one_field(dlg, h, f.edit, RN_OK, 1, None);
+        }
         DialogKind::Speed(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);
             if let Some(&c) = labels.first() {
@@ -1932,5 +1940,60 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
             child = GetWindow(child, GW_HWNDNEXT);
         }
+    }
+}
+
+/// Modern's one-field dialogs: the label above the field (`label_lines` lines
+/// tall), the field `field_w` epx wide or the full width, the error line
+/// under it, and OK and Cancel on the command bar.
+unsafe fn layout_one_field(
+    dlg: &DialogUi,
+    h: i32,
+    edit: HWND,
+    ok: i32,
+    label_lines: i32,
+    field_w: Option<i32>,
+) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(ADD_PAD);
+    let cw = client.right - 2 * x;
+    let labels = child_statics(dlg.hwnd, dlg.error);
+    if let Some(&label) = labels.first() {
+        MoveWindow(label, x, s(ADD_TOP), cw, s(ADD_LABEL * label_lines), 1);
+    }
+    let top = s(ADD_TOP + ADD_LABEL * label_lines + ADD_LABEL_GAP);
+    let field = RECT {
+        left: x,
+        top,
+        right: x + field_w.map_or(cw, s),
+        bottom: top + s(ADD_FIELD),
+    };
+    place_in_frame(edit, field, dlg.dpi);
+    move_id(
+        dlg.hwnd,
+        D_ERROR,
+        x,
+        field.bottom + s(ADD_GROUP_GAP),
+        cw,
+        s(ADD_LABEL),
+    );
+    let ring = s(FOCUS_MARGIN);
+    let by = h - s(ADD_FOOTER) + s(ADD_PAD);
+    let cancel_w = add_button_width(dlg, D_CANCEL, 96);
+    let ok_w = add_button_width(dlg, ok, 120);
+    for (id, bx, bw) in [
+        (D_CANCEL, x + cw - cancel_w, cancel_w),
+        (ok, x + cw - cancel_w - s(DIALOG_GAP) - ok_w, ok_w),
+    ] {
+        move_id(
+            dlg.hwnd,
+            id,
+            bx - ring,
+            by - ring,
+            bw + 2 * ring,
+            s(ADD_FIELD) + 2 * ring,
+        );
     }
 }

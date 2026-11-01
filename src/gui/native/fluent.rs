@@ -1861,6 +1861,19 @@ pub(super) const ADD_FOOTER: i32 = 80;
 /// The dialog's content height without and with the advanced rows.
 pub(super) const ADD_HEIGHT: i32 = 376;
 pub(super) const ADD_ADVANCED_HEIGHT: i32 = 592;
+/// A one-field dialog (speed limit, rename) in the same rhythm: its label's
+/// lines, the field, the error line and the command bar.
+pub(super) const fn one_field_height(label_lines: i32) -> i32 {
+    ADD_TOP
+        + ADD_LABEL * label_lines
+        + ADD_LABEL_GAP
+        + ADD_FIELD
+        + ADD_GROUP_GAP
+        + ADD_LABEL
+        + ADD_FOOTER
+}
+/// The speed limit's label takes two lines in the longer languages.
+pub(super) const SPEED_LABEL_LINES: i32 = 2;
 /// Space between an input frame and the text field inside it: left, right
 /// (a multiline field keeps its scroll bar inside the frame), and top for a
 /// multiline field; a single line is centred.
@@ -2021,6 +2034,20 @@ unsafe fn modern_form(dlg: &DialogUi) -> Option<ModernForm> {
                 ID_SETTINGS_INSTALL_EXTENSION,
             ],
             hint: f.theme_note,
+        }),
+        DialogKind::Speed(f) => Some(ModernForm {
+            inputs: vec![f.edit],
+            buttons: &[SP_OK, D_CANCEL],
+            primary: SP_OK,
+            card_buttons: &[],
+            hint: null_mut(),
+        }),
+        DialogKind::Rename(f) => Some(ModernForm {
+            inputs: vec![f.edit],
+            buttons: &[RN_OK, D_CANCEL],
+            primary: RN_OK,
+            card_buttons: &[],
+            hint: null_mut(),
         }),
         _ => None,
     }

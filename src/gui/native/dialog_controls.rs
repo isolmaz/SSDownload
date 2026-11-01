@@ -1481,6 +1481,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.edit = dialog_edit(dlg.hwnd, dlg.font, SP_EDIT, false, true);
+            if modern() {
+                flatten_edit(f.edit);
+            }
             set_text(f.edit, &f.initial.to_string());
             dialog_button(
                 dlg.hwnd,
@@ -1506,6 +1509,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.edit = dialog_edit(dlg.hwnd, dlg.font, RN_EDIT, false, false);
+            if modern() {
+                flatten_edit(f.edit);
+            }
             set_text(f.edit, &f.initial);
             dialog_button(
                 dlg.hwnd,

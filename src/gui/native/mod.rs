@@ -8368,8 +8368,12 @@ unsafe fn show_speed_limit(owner: HWND, app: App, ids: Vec<String>, initial: u64
         owner,
         app,
         crate::i18n::ui("İndirme hız sınırı", "Download speed limit"),
-        420,
-        150,
+        if modern() { 480 } else { 420 },
+        if modern() {
+            one_field_height(SPEED_LABEL_LINES) + SETTINGS_FRAME + 3
+        } else {
+            150
+        },
         DialogKind::Speed(SpeedFields {
             ids,
             initial,
@@ -8382,8 +8386,12 @@ unsafe fn show_rename(owner: HWND, app: App, id: String, name: String) {
         owner,
         app,
         crate::i18n::ui("Yeniden adlandır", "Rename"),
-        460,
-        150,
+        if modern() { 520 } else { 460 },
+        if modern() {
+            one_field_height(1) + SETTINGS_FRAME + 3
+        } else {
+            150
+        },
         DialogKind::Rename(RenameFields {
             id,
             initial: name,
@@ -9121,10 +9129,18 @@ unsafe fn create_error(dlg: &mut DialogUi) {
     dlg.error = dialog_label(dlg.hwnd, dlg.font, "", D_ERROR);
 }
 
-/// Modern's New download and Settings dialogs use the Windows 11 Body style;
-/// the others keep the classic dialog font.
+/// Modern's converted dialogs use the Windows 11 Body style; the others keep
+/// the classic dialog font.
 unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
-    if modern() && matches!(dlg.kind, DialogKind::Add(_) | DialogKind::Settings(_)) {
+    if modern()
+        && matches!(
+            dlg.kind,
+            DialogKind::Add(_)
+                | DialogKind::Settings(_)
+                | DialogKind::Speed(_)
+                | DialogKind::Rename(_)
+        )
+    {
         ramp_font(dlg.dpi, BODY_PX, false)
     } else {
         make_font(dlg.dpi, 9, FW_NORMAL as i32)
