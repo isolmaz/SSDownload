@@ -11,7 +11,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Wizard(_) => 372,
         DialogKind::Add(f) => add_content_height(f.advanced),
         DialogKind::Settings(f) => {
-            settings_logical_height(UiMode::parse(&f.value.ui_mode).is_simple())
+            settings_logical_height(modern(), UiMode::parse(&f.value.ui_mode).is_simple())
         }
         DialogKind::Tools(_) => 425,
         DialogKind::Queues(_) => 425,
@@ -360,6 +360,8 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             };
             let line = s(if look { ADD_FIELD } else { 22 });
             let step = s(if look { 40 } else { 26 });
+            // A row that holds only check boxes: WinUI's 32 epx box plus 4.
+            let check_step = s(if look { 36 } else { 26 });
             let label_dy = s(if look { 6 } else { 3 });
             let label_h = s(if look { ADD_LABEL } else { 18 });
             let browser_h = s(if look { 44 } else { 38 });
@@ -462,7 +464,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             } else if look {
                 // Modern's longer text gives each toggle a row of its own.
                 put(f.site_entries, genel, cx, row_y, cw, line);
-                row_y += step;
+                row_y += check_step;
                 put(f.startup, genel, cx, row_y, cw, line);
             } else {
                 let site_w = half + hx(20);
@@ -476,13 +478,13 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     line,
                 );
             }
-            row_y += step;
+            row_y += check_step;
             put(f.tray, genel, cx, row_y, cw, line);
-            row_y += step;
+            row_y += check_step;
             put(f.notify, genel, cx, row_y, cw, line);
-            row_y += step;
+            row_y += check_step;
             put(f.dark, genel, cx, row_y, cw, line);
-            row_y += step;
+            row_y += check_step;
             // Tema: the box in the field column like the level box, the note
             // beside it.
             put(f.theme_label, genel, cx, row_y + label_dy, label_w, label_h);
@@ -498,7 +500,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             row_y += step;
             if !simple {
                 put(f.site_entries, genel, cx, row_y, cw, line);
-                row_y += step;
+                row_y += check_step;
             }
 
             // The schedule toggle and its two clock fields share one row, and
@@ -558,7 +560,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row_y += step;
             }
             put(f.update_check, genel, cx, row_y, cw, line);
-            row_y += step;
+            row_y += check_step;
             let check_updates = GetDlgItem(dlg.hwnd, ID_SETTINGS_CHECK_UPDATES);
             let install = GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION);
             let check_updates_w = fit(check_updates, hx(232), 32);
@@ -733,9 +735,16 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             .iter()
             .enumerate()
             {
-                put(*control, behaviour, cx, cy + step * i as i32, cw, line);
+                put(
+                    *control,
+                    behaviour,
+                    cx,
+                    cy + check_step * i as i32,
+                    cw,
+                    line,
+                );
             }
-            let choice_y = cy + step * 7;
+            let choice_y = cy + check_step * 7;
             place_static(
                 &labels,
                 22,

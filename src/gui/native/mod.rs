@@ -8031,10 +8031,13 @@ unsafe fn run_modal_at(
             break;
         }
         // The dialog manager hands the arrow keys to the focused control, so
-        // the scroll keys are taken here, on the wheel's own clamp.
+        // the scroll keys are taken here, on the wheel's own clamp. Modern
+        // leaves them to a control that uses them itself, such as a box or a
+        // text field.
         let dialog = &*raw;
         if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)
             && dialog.scroll_range.get() > 0
+            && !(modern() && wants_arrows(&msg))
         {
             let delta = scroll_delta_for_key(msg.wParam as u16, dialog.dpi);
             if delta != 0 {
@@ -8232,7 +8235,7 @@ unsafe fn apply_settings_mode(dlg: &DialogUi, f: &SettingsFields) {
     resize_dialog(
         dlg.hwnd,
         dlg.dpi,
-        settings_logical_height(simple) + SETTINGS_FRAME,
+        settings_logical_height(modern(), simple) + SETTINGS_FRAME,
     );
     layout_dialog(dlg);
 }
@@ -8264,9 +8267,9 @@ unsafe fn show_add_dialog(owner: HWND, app: App, initial: String, analyze_first:
 /// bottom edge. In Classic a simple dialog is the shorter one, because the
 /// rows it hides are not replaced by anything; Modern's simple page gives two
 /// toggles a row each and is as tall as the advanced one.
-fn settings_logical_height(simple: bool) -> i32 {
-    match (modern(), simple) {
-        (true, _) => 648,
+fn settings_logical_height(modern: bool, simple: bool) -> i32 {
+    match (modern, simple) {
+        (true, _) => 624,
         (false, true) => 398,
         (false, false) => 424,
     }
@@ -8311,7 +8314,7 @@ unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
         app,
         crate::i18n::ui("SSDownload ayarları", "SSDownload settings"),
         settings_width(),
-        settings_logical_height(simple) + SETTINGS_FRAME,
+        settings_logical_height(modern(), simple) + SETTINGS_FRAME,
         DialogKind::Settings(Box::new(SettingsFields {
             opened: value.clone(),
             value,
@@ -9523,6 +9526,17 @@ unsafe fn place_static(
         place(label, visible, x, y, w, h);
     }
 }
+/// Whether the control a key goes to handles the arrow keys itself.
+unsafe fn wants_arrows(msg: &MSG) -> bool {
+    SendMessageW(
+        msg.hwnd,
+        WM_GETDLGCODE,
+        msg.wParam,
+        msg as *const MSG as isize,
+    ) as u32
+        & DLGC_WANTARROWS
+        != 0
+}
 /// The scroll step a key asks for, zero when the key is not a scroll key.
 fn scroll_delta_for_key(key: u16, dpi: u32) -> i32 {
     let step = scale(48, dpi);
@@ -10296,6 +10310,25 @@ mod tests {
         ));
         assert!(!add_links_open_picker("not a link", Auto));
         assert!(!add_links_open_picker("", Auto));
+    }
+
+    #[test]
+    fn settings_fit_a_1080p_screen_at_150_percent_with_the_taskbar() {
+        use super::{scale, settings_logical_height, SETTINGS_FRAME};
+        // 1080 px less the 48 epx taskbar at 144 dpi.
+        let work_area = 1080 - scale(48, 144);
+        for modern in [false, true] {
+            for simple in [false, true] {
+                let window = scale(
+                    settings_logical_height(modern, simple) + SETTINGS_FRAME,
+                    144,
+                );
+                assert!(
+                    window <= work_area,
+                    "modern={modern} simple={simple}: {window}"
+                );
+            }
+        }
     }
 
     #[test]
