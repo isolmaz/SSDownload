@@ -228,14 +228,17 @@ pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &
     }
     make_font(dpi, points, weight)
 }
-/// A card font, created once per control and DPI and owned by that control.
-pub(super) unsafe fn card_font(
-    hwnd: HWND,
-    prop: &str,
-    points: i32,
-    weight: i32,
-    faces: &[&str],
-) -> HFONT {
+/// The font of a card's title at `dpi`.
+pub(super) unsafe fn card_title_font(dpi: u32) -> HFONT {
+    make_face_font(dpi, 11, 600, &["Segoe UI Semibold", "Segoe UI"])
+}
+/// The font of a card's explanation at `dpi`.
+pub(super) unsafe fn card_description_font(dpi: u32) -> HFONT {
+    make_face_font(dpi, 8, FW_NORMAL as i32, &["Segoe UI"])
+}
+/// A card font, created once per control and DPI by `make` and owned by that
+/// control.
+pub(super) unsafe fn card_font(hwnd: HWND, prop: &str, make: unsafe fn(u32) -> HFONT) -> HFONT {
     let dpi = GetDpiForWindow(hwnd).max(96);
     // Each font records the DPI it was made for: the title and the description
     // are drawn one after the other, so a shared record would mark the second
@@ -254,7 +257,7 @@ pub(super) unsafe fn card_font(
         DeleteObject(stored as HGDIOBJ);
         RemovePropW(hwnd, card_prop(prop));
     }
-    let font = make_face_font(dpi, points, weight, faces);
+    let font = make(dpi);
     SetPropW(hwnd, card_prop(prop), font as HANDLE);
     SetPropW(hwnd, dpi_prop, dpi as usize as HANDLE);
     font
@@ -312,6 +315,24 @@ pub(super) fn card_text_parts(text: &str) -> (String, String) {
         None => (text.to_string(), String::new()),
     }
 }
+/// Where a card whose rounded outline is `padded` writes its title and, under it,
+/// its explanation.
+pub(super) fn card_text_areas(padded: RECT, dpi: u32) -> (RECT, RECT) {
+    (
+        RECT {
+            left: padded.left + scale(8, dpi),
+            top: padded.top + scale(52, dpi),
+            right: padded.right - scale(8, dpi),
+            bottom: padded.bottom,
+        },
+        RECT {
+            left: padded.left + scale(10, dpi),
+            top: padded.top + scale(76, dpi),
+            right: padded.right - scale(10, dpi),
+            bottom: padded.bottom - scale(4, dpi),
+        },
+    )
+}
 pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     let mut rect: RECT = zeroed();
     GetClientRect(hwnd, &mut rect);
@@ -355,22 +376,11 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     let mut buffer = [0u16; 512];
     let len = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32).max(0) as usize;
     let (title, description) = card_text_parts(&String::from_utf16_lossy(&buffer[..len]));
+    let (mut title_area, mut description_area) = card_text_areas(padded, dpi);
     let mut title_wide = wide(&title);
-    let mut title_area = RECT {
-        left: padded.left + scale(8, dpi),
-        top: padded.top + scale(52, dpi),
-        right: padded.right - scale(8, dpi),
-        bottom: padded.bottom,
-    };
     let title_font = SelectObject(
         dc,
-        card_font(
-            hwnd,
-            "title-font",
-            11,
-            600,
-            &["Segoe UI Semibold", "Segoe UI"],
-        ) as HGDIOBJ,
+        card_font(hwnd, "title-font", card_title_font) as HGDIOBJ,
     );
     SetTextColor(dc, face.title);
     DrawTextW(
@@ -382,15 +392,9 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     );
     SelectObject(dc, title_font);
     let mut description_wide = wide(&description);
-    let mut description_area = RECT {
-        left: padded.left + scale(10, dpi),
-        top: padded.top + scale(76, dpi),
-        right: padded.right - scale(10, dpi),
-        bottom: padded.bottom - scale(8, dpi),
-    };
     let description_font = SelectObject(
         dc,
-        card_font(hwnd, "text-font", 8, FW_NORMAL as i32, &["Segoe UI"]) as HGDIOBJ,
+        card_font(hwnd, "text-font", card_description_font) as HGDIOBJ,
     );
     SetTextColor(dc, face.description);
     DrawTextW(
@@ -1499,11 +1503,46 @@ pub(super) unsafe fn paint_theme(
         _ => None,
     }
 }
+/// A disabled push button in the dark scheme. The theme dims its label so little that the
+/// button reads as enabled, so uxtheme draws the disabled face and the label is drawn here
+/// in the scheme's muted colour on one line. An enabled button, and one that shows an icon
+/// or a bitmap or wraps its text, is left to the window.
+unsafe fn paint_disabled_push_button(draw: &NMCUSTOMDRAW, button: HWND) -> Option<LRESULT> {
+    let own = (BS_ICON | BS_BITMAP | BS_MULTILINE) as u32;
+    if IsWindowEnabled(button) != 0 || GetWindowLongPtrW(button, GWL_STYLE) as u32 & own != 0 {
+        return None;
+    }
+    let theme = OpenThemeData(button, wide("Button").as_ptr());
+    if theme == 0 {
+        return None;
+    }
+    let dc = draw.hdc;
+    let saved = SaveDC(dc);
+    DrawThemeBackground(theme, dc, BP_PUSHBUTTON, PBS_DISABLED, &draw.rc, null());
+    CloseThemeData(theme);
+    let font = SendMessageW(button, WM_GETFONT, 0, 0);
+    if font != 0 {
+        SelectObject(dc, font as HGDIOBJ);
+    }
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, DARK_MUTED);
+    let mut text = vec![0u16; GetWindowTextLengthW(button).max(0) as usize + 1];
+    let length = GetWindowTextW(button, text.as_mut_ptr(), text.len() as i32).max(0);
+    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+    if SendMessageW(button, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    let mut area = draw.rc;
+    DrawTextW(dc, text.as_mut_ptr(), length, &mut area, flags);
+    RestoreDC(dc, saved);
+    Some(CDRF_SKIPDEFAULT as LRESULT)
+}
 /// A check box in the dark scheme. The themed button draws its label in the
 /// theme's own text colour, which ignores WM_CTLCOLORBTN and is dark on some
 /// Windows 11 builds, so uxtheme draws the box and the label is drawn here in
-/// the scheme's colours. This answers the NM_CUSTOMDRAW of a check box; any
-/// other notification and any other kind of button is left to the window.
+/// the scheme's colours. This answers the NM_CUSTOMDRAW of a check box and of a
+/// disabled push button; any other notification and any other kind of button is
+/// left to the window.
 unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
     if (*(lparam as *const NMHDR)).code != NM_CUSTOMDRAW {
         return None;
@@ -1515,6 +1554,9 @@ unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
     }
     let style = GetWindowLongPtrW(button, GWL_STYLE) as u32;
     let kind = (style & BS_TYPEMASK as u32) as i32;
+    if kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON {
+        return paint_disabled_push_button(draw, button);
+    }
     // A push-like check box looks like a button; the wizard's cards paint themselves.
     if !(kind == BS_CHECKBOX || kind == BS_AUTOCHECKBOX) || style & BS_PUSHLIKE as u32 != 0 {
         return None;

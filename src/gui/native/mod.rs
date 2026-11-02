@@ -43,7 +43,7 @@ use windows_sys::Win32::{
         Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
         Controls::*,
         HiDpi::{
-            GetDpiForSystem, GetDpiForWindow, GetSystemMetricsForDpi,
+            AdjustWindowRectExForDpi, GetDpiForSystem, GetDpiForWindow, GetSystemMetricsForDpi,
             SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
         Input::KeyboardAndMouse::{
@@ -1031,14 +1031,20 @@ unsafe fn dispatch(ui: &MainUi, action: Action) {
     }
 }
 
+/// The state of a job, and its phase when that says more than the state. A phase that
+/// only repeats the state ("Downloading" or the plain "Downloading media") is left out;
+/// one that goes on from the plain phase ("Downloading media; the server is limiting
+/// requests") already names the state, so it stands alone.
 fn state_label(job: &Job) -> String {
     let label = job.state.label();
     let phase = job.phase.trim();
-    // The plain transfer phase repeats the state ("Downloading — Downloading").
-    if job.state.is_active() && !phase.is_empty() && phase != label {
-        format!("{label} — {phase}")
-    } else {
-        label.to_string()
+    if !job.state.is_active() || phase.is_empty() || phase == label {
+        return label.to_string();
+    }
+    match job.state.plain_phase() {
+        Some(plain) if phase == plain => label.to_string(),
+        Some(plain) if phase.starts_with(plain) => phase.to_string(),
+        _ => format!("{label} — {phase}"),
     }
 }
 fn format_bytes(value: u64) -> String {
@@ -4376,6 +4382,16 @@ fn short_error(job: &Job, value: &str) -> &'static str {
     }
 }
 
+/// The Error line of the details pane: the failure's code and short message, then what to
+/// do about it. The whole text stays in the error details.
+fn error_summary(job: &Job, error: &str) -> String {
+    let hint = short_error(job, error);
+    match crate::error_codes::from_text(error) {
+        Some(code) => format!("{} — {hint}", crate::error_codes::labelled_message(code)),
+        None => hint.to_string(),
+    }
+}
+
 fn display_url(value: &str) -> String {
     if let Ok(mut url) = url::Url::parse(value) {
         let _ = url.set_username("");
@@ -4502,7 +4518,7 @@ unsafe fn update_details(ui: &MainUi) {
         crate::i18n::ui("Zamanlama", "Schedule"), scheduled,
         crate::i18n::ui("Konum", "Location"), job.path.display(),
         crate::i18n::ui("URL", "URL"), display_url(&job.request.url),
-        job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), display_text(ui.snapshot.settings.debug_mode, short_error(job, error)))).unwrap_or_default());
+        job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), display_text(ui.snapshot.settings.debug_mode, &error_summary(job, error)))).unwrap_or_default());
     set_text(ui.details, &body);
     update_status(ui);
 }
@@ -6256,17 +6272,31 @@ unsafe fn dialog_state(hwnd: HWND) -> *mut DialogUi {
 /// activated them.
 unsafe fn dialog_message(dialog: HWND, msg: &MSG) -> bool {
     if msg.hwnd.is_null() {
-        return IsDialogMessageW(dialog, msg) != 0;
+        return navigate(dialog, msg);
     }
     let root = GetAncestor(msg.hwnd, GA_ROOT);
     if root == dialog || window_class(root).eq_ignore_ascii_case(CLASS_CARD) {
-        return IsDialogMessageW(root, msg) != 0;
+        return navigate(root, msg);
     }
     let state = dialog_state(root);
     if state.is_null() || !(*state).modeless {
         return false;
     }
-    IsDialogMessageW(root, msg) != 0
+    navigate(root, msg)
+}
+
+/// `IsDialogMessageW`, and a dialog that scrolls shows the control the message
+/// gave the focus to.
+unsafe fn navigate(dialog: HWND, msg: &MSG) -> bool {
+    let before = GetFocus();
+    let handled = IsDialogMessageW(dialog, msg) != 0;
+    if handled && GetFocus() != before {
+        let state = dialog_state(dialog);
+        if !state.is_null() {
+            reveal_focus(&*state);
+        }
+    }
+    handled
 }
 
 /// True when a window of this process other than `owner` holds the foreground:
@@ -6489,8 +6519,8 @@ unsafe fn show_usage_wizard(owner: HWND, app: App, settings: Settings) {
         owner,
         app,
         crate::i18n::ui("SSDownload kurulumu", "SSDownload setup"),
-        576,
-        412,
+        WIZARD_WIDTH,
+        WIZARD_HEIGHT,
         DialogKind::Wizard(WizardFields {
             modes: settings.usage_modes,
             simple,
@@ -6578,6 +6608,13 @@ const SETTINGS_FRAME: i32 = 39;
 /// The simple add dialog's window: its 292 logical content height plus the
 /// shared frame, with a few pixels so DPI rounding never shows a scroll bar.
 const ADD_DIALOG_HEIGHT: i32 = 292 + SETTINGS_FRAME + 3;
+/// The first-run wizard's content: the mode cards, the three purpose cards under
+/// them and the shared button row. The purpose cards are this much taller than the
+/// mode cards (`WIZARD_PURPOSE_EXTRA`), which the content height includes.
+const WIZARD_LOGICAL_HEIGHT: i32 = 372 + WIZARD_PURPOSE_EXTRA;
+const WIZARD_PURPOSE_EXTRA: i32 = 14;
+const WIZARD_WIDTH: i32 = 576;
+const WIZARD_HEIGHT: i32 = WIZARD_LOGICAL_HEIGHT + SETTINGS_FRAME + 1;
 /// Logical content height of the one-field dialogs: the label and the field,
 /// a gap, the error line and the button row. Their windows add the frame and a
 /// pixel, like every dialog here.
@@ -7917,6 +7954,9 @@ unsafe fn set_dialog_error(hwnd: HWND, error: HWND, value: &str, focus: HWND) {
     set_text(error, &display_text(debug, value));
     if !focus.is_null() {
         SetFocus(focus);
+        if !state.is_null() {
+            reveal_focus(&*state);
+        }
     }
     InvalidateRect(hwnd, null(), 1);
 }
@@ -8108,17 +8148,16 @@ unsafe fn resize_dialog(hwnd: HWND, dpi: u32, height: i32) {
     let width = rect.right - rect.left;
     let tall = scale(height, dpi);
     // The dialog keeps the centre of its current monitor: a handoff picker
-    // stays on the browser's monitor when its advanced rows open. Only a
-    // window that no longer fits is re-anchored on the owner.
-    let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    let mut info: MONITORINFO = zeroed();
-    info.cbSize = size_of::<MONITORINFO>() as u32;
-    if GetMonitorInfoW(monitor, &mut info) != 0 {
-        let area = info.rcWork;
-        let x = ((rect.left + rect.right) / 2 - width / 2)
-            .clamp(area.left, (area.right - width).max(area.left));
-        let y = ((rect.top + rect.bottom) / 2 - tall / 2)
-            .clamp(area.top, (area.bottom - tall).max(area.top));
+    // stays on the browser's monitor when its advanced rows open. It is pulled
+    // back into that monitor's work area, unless it reaches onto another
+    // monitor: a window that spans two monitors keeps its place.
+    if let Some(area) = work_area(hwnd) {
+        let mut x = rect.left;
+        let mut y = (rect.top + rect.bottom) / 2 - tall / 2;
+        if !reaches_another_monitor(hwnd, &rect) {
+            x = x.clamp(area.left, (area.right - width).max(area.left));
+            y = y.clamp(area.top, (area.bottom - tall).max(area.top));
+        }
         SetWindowPos(
             hwnd,
             null_mut(),
@@ -8296,12 +8335,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn state_label_shows_a_phase_only_when_it_adds_something() {
-        use crate::model::{AddRequest, Job, JobState};
-        let job = |state: JobState, phase: &str| Job {
+    /// A job in `state` with `phase`, for the text the lists show.
+    fn job_in(state: crate::model::JobState, phase: &str) -> crate::model::Job {
+        crate::model::Job {
             id: "job".into(),
-            request: AddRequest::default(),
+            request: crate::model::AddRequest::default(),
             name: "file.bin".into(),
             state,
             path: "file.bin".into(),
@@ -8324,7 +8362,13 @@ mod tests {
             open_when_done: false,
             live: false,
             sequence: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn state_label_shows_a_phase_only_when_it_adds_something() {
+        use crate::model::JobState;
+        let job = job_in;
         let downloading = JobState::Downloading.label();
         assert_eq!(
             super::state_label(&job(JobState::Downloading, downloading)),
@@ -8341,6 +8385,93 @@ mod tests {
         assert_eq!(
             super::state_label(&job(JobState::Paused, "MP4")),
             JobState::Paused.label()
+        );
+    }
+
+    #[test]
+    fn the_plain_media_phase_does_not_repeat_the_state_in_any_language() {
+        use crate::model::JobState;
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let code = info.code;
+                let downloading = JobState::Downloading.label();
+                let processing = JobState::Processing.label();
+                let plain = crate::i18n::ui("Medya indiriliyor", "Downloading media");
+                let limited = crate::i18n::ui(
+                    "Medya indiriliyor; sunucu istekleri sınırlıyor",
+                    "Downloading media; the server is limiting requests",
+                );
+                assert!(
+                    limited.starts_with(plain),
+                    "{code}: the longer phase goes on from the plain one"
+                );
+                assert_eq!(
+                    super::state_label(&job_in(JobState::Downloading, plain)),
+                    downloading,
+                    "{code}: the plain download phase"
+                );
+                assert_eq!(
+                    super::state_label(&job_in(JobState::Downloading, limited)),
+                    limited,
+                    "{code}: a phase that goes on from the plain one stands alone"
+                );
+                assert_eq!(
+                    super::state_label(&job_in(
+                        JobState::Processing,
+                        crate::i18n::ui("Medya işleniyor", "Processing media")
+                    )),
+                    processing,
+                    "{code}: the plain processing phase"
+                );
+                let converting = crate::i18n::ui_format!(
+                    "Ses {0} biçimine dönüştürülüyor: %{1}",
+                    "Converting the audio to {0}: {1}%",
+                    "MP3",
+                    40
+                );
+                assert_eq!(
+                    super::state_label(&job_in(JobState::Processing, &converting)),
+                    format!("{processing} — {converting}"),
+                    "{code}: a phase that says more is added to the state"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_error_line_names_the_code_and_the_short_message_of_every_code() {
+        use crate::model::JobState;
+        let failed = job_in(JobState::Failed, "");
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                for entry in crate::error_codes::TABLE {
+                    let error = format!("{} {}", entry.code, "the whole text of the failure");
+                    let line = super::error_summary(&failed, &error);
+                    let label = crate::error_codes::labelled_message(entry.code);
+                    assert!(
+                        label.len() > entry.code.to_string().len() + 1,
+                        "{} / {}: the code has a message",
+                        info.code,
+                        entry.code
+                    );
+                    assert!(
+                        line.starts_with(&label),
+                        "{} / {}: {line}",
+                        info.code,
+                        entry.code
+                    );
+                    assert!(
+                        !line.contains("the whole text of the failure"),
+                        "the full text stays in the error details: {line}"
+                    );
+                }
+            });
+        }
+        let plain = "fragment 7: connection reset";
+        assert_eq!(
+            super::error_summary(&failed, plain),
+            super::short_error(&failed, plain),
+            "a failure without a code has the hint only"
         );
     }
 
@@ -10102,12 +10233,17 @@ mod tests {
             i32,
         );
         let cases: Vec<Case> = vec![
-            ("wizard, simple", Box::new(|| wizard_kind(true)), 576, 412),
+            (
+                "wizard, simple",
+                Box::new(|| wizard_kind(true)),
+                super::WIZARD_WIDTH,
+                super::WIZARD_HEIGHT,
+            ),
             (
                 "wizard, advanced",
                 Box::new(|| wizard_kind(false)),
-                576,
-                412,
+                super::WIZARD_WIDTH,
+                super::WIZARD_HEIGHT,
             ),
             (
                 "new download",
@@ -10804,7 +10940,7 @@ mod tests {
             case(
                 "wizard, basic",
                 || wizard_kind(true),
-                (576, 412),
+                (super::WIZARD_WIDTH, super::WIZARD_HEIGHT),
                 (Some(ID_WIZARD_START), D_CANCEL),
                 Some(ID_WIZARD_START),
                 nothing,
@@ -10812,7 +10948,7 @@ mod tests {
             case(
                 "wizard, advanced",
                 || wizard_kind(false),
-                (576, 412),
+                (super::WIZARD_WIDTH, super::WIZARD_HEIGHT),
                 (Some(ID_WIZARD_START), D_CANCEL),
                 Some(ID_WIZARD_START),
                 nothing,
@@ -12815,6 +12951,96 @@ mod tests {
         }
 
         #[test]
+        fn a_disabled_push_button_is_dimmed_clearly_in_the_dark_scheme_and_left_alone_in_the_light_one(
+        ) {
+            for dark in [true, false] {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        let button = add_button(dialog, "Browse", BS_PUSHBUTTON, 0, dark);
+                        let skip = CDRF_SKIPDEFAULT as isize;
+                        let default = CDRF_DODEFAULT as isize;
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, button),
+                            default,
+                            "dark {dark}: an enabled push button is the theme's"
+                        );
+                        let enabled = paint(button, 0);
+                        EnableWindow(button, 0);
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, button),
+                            if dark { skip } else { default },
+                            "dark {dark}: a disabled push button"
+                        );
+                        if !dark {
+                            return;
+                        }
+                        let disabled = paint(button, 0);
+                        // The label, away from the border and the corners.
+                        let label = |face: &Face| {
+                            let mut top = [0; 3];
+                            for y in 4..face.height - 4 {
+                                for x in 8..face.width - 8 {
+                                    for (channel, value) in top.iter_mut().enumerate() {
+                                        *value = (*value)
+                                            .max((face.pixel(x, y) >> (16 - 8 * channel)) & 255);
+                                    }
+                                }
+                            }
+                            top
+                        };
+                        assert_eq!(label(&disabled), channels(DARK_MUTED), "the disabled label");
+                        let (enabled, disabled) = (label(&enabled), label(&disabled));
+                        for channel in 0..3 {
+                            assert!(
+                                enabled[channel] >= disabled[channel] + 0x30,
+                                "the enabled label {enabled:02x?} is clearly brighter than the disabled one {disabled:02x?}"
+                            );
+                        }
+                    },
+                );
+            }
+        }
+
+        #[test]
+        fn a_disabled_push_button_with_an_icon_a_bitmap_or_wrapped_text_is_left_to_the_theme() {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    for (what, style) in [
+                        ("an icon", BS_PUSHBUTTON | BS_ICON),
+                        ("a bitmap", BS_PUSHBUTTON | BS_BITMAP),
+                        ("wrapped text", BS_PUSHBUTTON | BS_MULTILINE),
+                        (
+                            "a default button with wrapped text",
+                            BS_DEFPUSHBUTTON | BS_MULTILINE,
+                        ),
+                    ] {
+                        let button = add_button(dialog, what, style, 0, true);
+                        assert_eq!(
+                            GetWindowLongPtrW(button, GWL_STYLE) as u32 & style as u32,
+                            style as u32,
+                            "{what} has its style"
+                        );
+                        EnableWindow(button, 0);
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, button),
+                            CDRF_DODEFAULT as isize,
+                            "a disabled push button with {what}"
+                        );
+                        DestroyWindow(button);
+                    }
+                },
+            );
+        }
+
+        #[test]
         fn only_the_dark_scheme_takes_over_the_drawing_of_check_boxes() {
             for dark in [false, true] {
                 with_styled_dialog(
@@ -13245,15 +13471,20 @@ mod tests {
         use crate::model::UiMode;
         use std::{collections::HashMap, mem::zeroed, ptr::null_mut};
         use windows_sys::Win32::{
-            Foundation::{POINT, RECT},
+            Foundation::{POINT, RECT, SIZE},
             Graphics::Gdi::{
-                ClientToScreen, DrawTextW, GetDC, ReleaseDC, SelectObject, DT_CALCRECT,
-                DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK,
+                ClientToScreen, DeleteObject, DrawTextW, GetDC, ReleaseDC, SelectObject,
+                DT_CALCRECT, DT_EDITCONTROL, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK,
             },
-            UI::WindowsAndMessaging::{
-                GetClientRect, GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect,
-                SendMessageW, SetWindowLongPtrW, ShowWindow, BS_TYPEMASK, GWL_EXSTYLE, GWL_STYLE,
-                GW_CHILD, GW_HWNDNEXT, SW_SHOW, WM_GETFONT, WS_EX_LAYOUTRTL, WS_VISIBLE,
+            UI::{
+                Controls::BCM_GETIDEALSIZE,
+                WindowsAndMessaging::{
+                    CallWindowProcW, GetClientRect, GetDlgCtrlID, GetWindow, GetWindowLongPtrW,
+                    GetWindowRect, SendMessageW, SetWindowLongPtrW, ShowWindow, BS_AUTOCHECKBOX,
+                    BS_AUTORADIOBUTTON, BS_CHECKBOX, BS_MULTILINE, BS_PUSHLIKE, BS_RADIOBUTTON,
+                    BS_TYPEMASK, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT,
+                    SW_SHOW, WM_GETFONT, WS_EX_LAYOUTRTL, WS_VISIBLE,
+                },
             },
         };
 
@@ -13326,8 +13557,20 @@ mod tests {
                 prepare,
             };
             vec![
-                case("wizard, basic", || wizard_kind(true), 576, 412, nothing),
-                case("wizard, advanced", || wizard_kind(false), 576, 412, nothing),
+                case(
+                    "wizard, basic",
+                    || wizard_kind(true),
+                    native::WIZARD_WIDTH,
+                    native::WIZARD_HEIGHT,
+                    nothing,
+                ),
+                case(
+                    "wizard, advanced",
+                    || wizard_kind(false),
+                    native::WIZARD_WIDTH,
+                    native::WIZARD_HEIGHT,
+                    nothing,
+                ),
                 case(
                     "new download",
                     add_kind,
@@ -13423,6 +13666,23 @@ mod tests {
                     && !self.text.is_empty()
             }
 
+            /// A check box or radio button that shows its text on one line.
+            fn check_box(&self) -> bool {
+                self.class.eq_ignore_ascii_case("Button")
+                    && matches!(
+                        (self.style & BS_TYPEMASK as u32) as i32,
+                        BS_CHECKBOX | BS_AUTOCHECKBOX | BS_RADIOBUTTON | BS_AUTORADIOBUTTON
+                    )
+                    && self.style & (BS_PUSHLIKE | BS_MULTILINE) as u32 == 0
+            }
+
+            /// A card the window draws itself: a push-like check box.
+            fn card(&self) -> bool {
+                self.class.eq_ignore_ascii_case("Button")
+                    && (self.style & BS_TYPEMASK as u32) as i32 == BS_AUTOCHECKBOX
+                    && self.style & BS_PUSHLIKE as u32 != 0
+            }
+
             fn name(&self) -> String {
                 format!("{} {} {:?}", self.class, self.id, self.text)
             }
@@ -13467,8 +13727,19 @@ mod tests {
         /// The size `text` takes in the font of `window`, wrapped to `width`
         /// when `flags` ask for it.
         unsafe fn extent(window: native::HWND, text: &str, flags: u32, width: i32) -> (i32, i32) {
-            let dc = GetDC(window);
             let font = SendMessageW(window, WM_GETFONT, 0, 0);
+            extent_in(window, font as _, text, flags, width)
+        }
+
+        /// `extent` in `font`.
+        unsafe fn extent_in(
+            window: native::HWND,
+            font: native::HFONT,
+            text: &str,
+            flags: u32,
+            width: i32,
+        ) -> (i32, i32) {
+            let dc = GetDC(window);
             let previous = SelectObject(dc, font as _);
             let mut rect = RECT {
                 left: 0,
@@ -13483,9 +13754,12 @@ mod tests {
             (rect.right - rect.left, rect.bottom - rect.top)
         }
 
-        /// What of the window's push buttons and labels does not show its whole
-        /// text: a button narrower than its text and the padding around it at `dpi`, a
-        /// label that needs more lines than its rectangle has height for.
+        /// What of the window's push buttons, check boxes, cards and labels does not
+        /// show its whole text: a button narrower than its text and the padding around
+        /// it at `dpi`, a check box narrower than the system says its text needs, a card
+        /// whose title does not fit one line or whose explanation needs more lines than
+        /// its area has height for, a label that needs more lines than its rectangle has
+        /// height for.
         unsafe fn clipped(parent: native::HWND, dpi: u32) -> Vec<String> {
             let padding = native::scale(native::BUTTON_TEXT_PADDING, dpi);
             let mut problems = Vec::new();
@@ -13500,6 +13774,63 @@ mod tests {
                         problems.push(format!(
                             "{}: the text takes {text} px and the padding {padding} px, the button is {width} px wide",
                             control.name()
+                        ));
+                    }
+                } else if control.check_box() {
+                    let mut ideal = SIZE { cx: 0, cy: 0 };
+                    let known = SendMessageW(
+                        control.hwnd,
+                        BCM_GETIDEALSIZE,
+                        0,
+                        &mut ideal as *mut SIZE as isize,
+                    );
+                    assert_ne!(
+                        known,
+                        0,
+                        "{} reports the width its text needs",
+                        control.name()
+                    );
+                    if ideal.cx > width {
+                        problems.push(format!(
+                            "{}: the text needs {} px, the check box is {width} px wide",
+                            control.name(),
+                            ideal.cx
+                        ));
+                    }
+                } else if control.card() {
+                    let outline = RECT {
+                        left: 1,
+                        top: 1,
+                        right: width - 1,
+                        bottom: height - 1,
+                    };
+                    let (title_area, description_area) = native::card_text_areas(outline, dpi);
+                    let (title, description) = native::card_text_parts(&control.text);
+                    let font = native::card_title_font(dpi);
+                    let (title_width, _) = extent_in(control.hwnd, font, &title, DT_SINGLELINE, 0);
+                    DeleteObject(font as _);
+                    if title_width > title_area.right - title_area.left {
+                        problems.push(format!(
+                            "{}: the title takes {title_width} px, the card has {} px for it",
+                            control.name(),
+                            title_area.right - title_area.left
+                        ));
+                    }
+                    let font = native::card_description_font(dpi);
+                    let (_, needed) = extent_in(
+                        control.hwnd,
+                        font,
+                        &description,
+                        DT_WORDBREAK | DT_EDITCONTROL,
+                        description_area.right - description_area.left,
+                    );
+                    DeleteObject(font as _);
+                    if needed > description_area.bottom - description_area.top {
+                        problems.push(format!(
+                            "{}: the explanation takes {needed} px of height at {} px wide, the card has {} px",
+                            control.name(),
+                            description_area.right - description_area.left,
+                            description_area.bottom - description_area.top
                         ));
                     }
                 } else if control.label() {
@@ -13725,6 +14056,423 @@ mod tests {
             assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
         }
 
+        /// The part of the screen the client area of `parent` covers.
+        unsafe fn client_on_screen(parent: native::HWND) -> RECT {
+            let mut client: RECT = zeroed();
+            GetClientRect(parent, &mut client);
+            let mut origin = POINT { x: 0, y: 0 };
+            ClientToScreen(parent, &mut origin);
+            RECT {
+                left: origin.x,
+                top: origin.y,
+                right: origin.x + client.right,
+                bottom: origin.y + client.bottom,
+            }
+        }
+
+        /// What is wrong with the control that holds the focus: it has to show
+        /// completely, or from its top when it is taller than the window.
+        unsafe fn hidden_focus(dialog: &HiddenDialog) -> Option<String> {
+            use windows_sys::Win32::UI::{
+                Input::KeyboardAndMouse::GetFocus, WindowsAndMessaging::GetParent,
+            };
+            let mut control = GetFocus();
+            while !control.is_null() && GetParent(control) != dialog.hwnd {
+                control = GetParent(control);
+            }
+            let focused = shown(dialog.hwnd)
+                .into_iter()
+                .find(|shown| shown.hwnd == control)?;
+            let view = client_on_screen(dialog.hwnd);
+            let (top, bottom) = (focused.rect.top, focused.rect.bottom);
+            let fits = top >= view.top && bottom <= view.bottom;
+            let tall = bottom - top > view.bottom - view.top;
+            (!(fits || tall && top >= view.top && top < view.bottom)).then(|| {
+                format!(
+                    "{} stands at y {top}..{bottom}, the window shows y {}..{}",
+                    focused.name(),
+                    view.top,
+                    view.bottom
+                )
+            })
+        }
+
+        /// Tab, and Shift+Tab, take the focus to a control that a dialog too short
+        /// for its content has scrolled out of view: the dialog scrolls it into view.
+        #[test]
+        fn tabbing_through_a_dialog_too_short_for_its_content_shows_every_control_it_reaches() {
+            use super::{press_in, ShiftHeld};
+            use windows_sys::Win32::UI::{
+                Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_TAB},
+                WindowsAndMessaging::{WS_DISABLED, WS_TABSTOP},
+            };
+            let mut wrong = Vec::new();
+            for code in ["en", "de"] {
+                let found = in_language(code, || {
+                    let mut found = Vec::new();
+                    for case in cases() {
+                        let short_case = Case {
+                            height: case.height * 3 / 5,
+                            ..case
+                        };
+                        let short = dialog(&short_case, false);
+                        (short_case.prepare)(&short);
+                        unsafe {
+                            let stops: Vec<_> = shown(short.hwnd)
+                                .into_iter()
+                                .filter(|control| {
+                                    control.style & WS_TABSTOP != 0
+                                        && control.style & WS_DISABLED == 0
+                                })
+                                .collect();
+                            if stops.len() < 2 || (*short.raw).scroll_range.get() == 0 {
+                                found.push(format!(
+                                    "{}: nothing to scroll between",
+                                    short_case.name
+                                ));
+                                continue;
+                            }
+                            let mut scrolled = 0;
+                            for backwards in [false, true] {
+                                SetFocus(stops[0].hwnd);
+                                let _shift = backwards.then(ShiftHeld::new);
+                                for _ in 0..=stops.len() {
+                                    assert!(
+                                        press_in(&short, GetFocus(), VK_TAB),
+                                        "{}: Tab is handled",
+                                        short_case.name
+                                    );
+                                    scrolled = scrolled.max((*short.raw).scroll_y.get());
+                                    if let Some(problem) = hidden_focus(&short) {
+                                        found.push(format!(
+                                            "{} (backwards: {backwards}): {problem}",
+                                            short_case.name
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                            if scrolled == 0 {
+                                found.push(format!(
+                                    "{}: the dialog never scrolled",
+                                    short_case.name
+                                ));
+                            }
+                        }
+                    }
+                    found
+                });
+                wrong.extend(
+                    found
+                        .into_iter()
+                        .map(|problem| format!("{code}: {problem}")),
+                );
+            }
+            assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
+        }
+
+        /// A field that is named in an error gets the focus and shows.
+        #[test]
+        fn the_field_an_error_names_shows_in_a_dialog_too_short_for_its_content() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::WS_TABSTOP;
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "settings, advanced tab")
+                    .unwrap();
+                let short_case = Case {
+                    height: case.height * 3 / 5,
+                    ..case
+                };
+                let short = dialog(&short_case, false);
+                (short_case.prepare)(&short);
+                unsafe {
+                    let ui = &*short.raw;
+                    assert!(ui.scroll_range.get() > 0, "the dialog scrolls");
+                    let last = shown(short.hwnd)
+                        .into_iter()
+                        .rfind(|control| control.style & WS_TABSTOP != 0)
+                        .unwrap();
+                    assert_eq!(ui.scroll_y.get(), 0);
+                    native::set_dialog_error(short.hwnd, ui.error, "Wrong", last.hwnd);
+                    if let Some(problem) = hidden_focus(&short) {
+                        panic!("{problem}");
+                    }
+                    assert!(ui.scroll_y.get() > 0, "the dialog scrolled to the field");
+                }
+            });
+        }
+
+        /// A long text for the "Keep on top" check box of the job view, which no
+        /// row of the dialog has room for.
+        const LONG_CHECK_BOX_TEXT: &str =
+            "Keep this window above every other window while the download runs, and also when it is minimised";
+
+        /// The window procedure the check box of the next test had before it
+        /// stopped answering `BCM_GETIDEALSIZE`.
+        static MEASURING_PROC: std::sync::atomic::AtomicIsize =
+            std::sync::atomic::AtomicIsize::new(0);
+
+        unsafe extern "system" fn cannot_measure(
+            hwnd: native::HWND,
+            message: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> isize {
+            if message == BCM_GETIDEALSIZE {
+                return 0;
+            }
+            let proc = MEASURING_PROC.load(std::sync::atomic::Ordering::SeqCst);
+            CallWindowProcW(
+                std::mem::transmute::<isize, windows_sys::Win32::UI::WindowsAndMessaging::WNDPROC>(
+                    proc,
+                ),
+                hwnd,
+                message,
+                wparam,
+                lparam,
+            )
+        }
+
+        #[test]
+        fn a_check_box_the_system_cannot_measure_keeps_its_width_beside_a_wide_button() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "job view")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                unsafe {
+                    let pin = GetDlgItem(dialog.hwnd, native::P_PIN);
+                    let mini = GetDlgItem(dialog.hwnd, native::P_MINI);
+                    let summary = GetDlgItem(dialog.hwnd, native::P_SUMMARY);
+                    let width_of = |hwnd| {
+                        let control = shown(dialog.hwnd)
+                            .into_iter()
+                            .find(|control| control.hwnd == hwnd)
+                            .unwrap();
+                        control.rect.right - control.rect.left
+                    };
+                    let (pin_before, mini_before) = (width_of(pin), width_of(mini));
+                    MEASURING_PROC.store(
+                        GetWindowLongPtrW(pin, GWLP_WNDPROC),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    SetWindowLongPtrW(
+                        pin,
+                        GWLP_WNDPROC,
+                        cannot_measure as *const () as usize as isize,
+                    );
+                    // The summary cannot give room, so the check box beside the button is
+                    // the only thing the button could squeeze.
+                    native::set_text(
+                        summary,
+                        &"A summary far too long to give any room to the buttons beside it. "
+                            .repeat(4),
+                    );
+                    native::set_text(mini, "Shrink to a small card here");
+                    native::layout_dialog(&*dialog.raw);
+                    assert!(width_of(mini) > mini_before, "the button grew for its text");
+                    assert_eq!(
+                        width_of(pin),
+                        pin_before,
+                        "the check box keeps the width the layout gave it"
+                    );
+                }
+            });
+        }
+
+        #[test]
+        fn a_check_box_grows_to_its_text_and_does_not_widen_the_window() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+            in_language("de", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "job view")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                unsafe {
+                    let pin = GetDlgItem(dialog.hwnd, native::P_PIN);
+                    let widths = window_widths(dialog.hwnd);
+                    let width_of = |hwnd| {
+                        let control = shown(dialog.hwnd)
+                            .into_iter()
+                            .find(|control| control.hwnd == hwnd)
+                            .unwrap();
+                        control.rect.right - control.rect.left
+                    };
+                    let (text, _) = extent(pin, &native::text(pin), DT_SINGLELINE, 0);
+                    assert!(
+                        width_of(pin) > text,
+                        "the check box shows its own text: {} px for {text} px",
+                        width_of(pin)
+                    );
+
+                    native::set_text(pin, LONG_CHECK_BOX_TEXT);
+                    let before = width_of(pin);
+                    native::layout_dialog(&*dialog.raw);
+                    assert!(
+                        width_of(pin) > before,
+                        "the check box grew from {before} px to {} px",
+                        width_of(pin)
+                    );
+                    assert_eq!(
+                        window_widths(dialog.hwnd),
+                        widths,
+                        "a check box does not widen the window"
+                    );
+                    let problems = crowded(dialog.hwnd);
+                    assert!(problems.is_empty(), "{problems:?}");
+                }
+            });
+        }
+
+        /// The rename dialog placed by `place` (which gets the size of the window and
+        /// answers where its top left corner goes) on a screen whose first monitor is
+        /// `work`, with `other` as a second monitor next to it, then resized to a
+        /// height of `height`: the window before and after.
+        fn resized(
+            work: RECT,
+            other: Option<RECT>,
+            place: impl FnOnce(i32, i32) -> (i32, i32) + Send,
+            height: i32,
+        ) -> (RECT, RECT) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            };
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "rename")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                unsafe {
+                    native::WORK_AREA.with(|area| area.set(Some(work)));
+                    native::OTHER_MONITOR.with(|area| area.set(other));
+                    let mut before: RECT = zeroed();
+                    GetWindowRect(dialog.hwnd, &mut before);
+                    let (x, y) = place(before.right - before.left, before.bottom - before.top);
+                    SetWindowPos(
+                        dialog.hwnd,
+                        null_mut(),
+                        x,
+                        y,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    GetWindowRect(dialog.hwnd, &mut before);
+                    native::resize_dialog(dialog.hwnd, (*dialog.raw).dpi, height);
+                    let mut after: RECT = zeroed();
+                    GetWindowRect(dialog.hwnd, &mut after);
+                    native::WORK_AREA.with(|area| area.set(None));
+                    native::OTHER_MONITOR.with(|area| area.set(None));
+                    (before, after)
+                }
+            })
+        }
+
+        #[test]
+        fn a_dialog_that_changes_height_is_pulled_back_into_its_work_area_unless_it_spans_two_monitors(
+        ) {
+            // Two monitors side by side, 0..1920 and 1920..3840, or one.
+            let work = RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1040,
+            };
+            let right = RECT {
+                left: 1920,
+                top: 0,
+                right: 3840,
+                bottom: 1080,
+            };
+            let left = RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1080,
+            };
+            let taller = 500;
+            let centred = |before: RECT, after: RECT| {
+                (before.top + before.bottom) / 2 - (after.bottom - after.top) / 2
+            };
+
+            let (before, after) = resized(work, Some(right), |_, _| (1500, 300), taller);
+            assert!(before.right > work.right, "the window spans both monitors");
+            assert!(after.bottom - after.top > before.bottom - before.top);
+            assert_eq!(
+                (after.left, after.right - after.left),
+                (before.left, before.right - before.left),
+                "a window that spans two monitors stays where it is across"
+            );
+            assert_eq!(after.top, centred(before, after), "it keeps its centre");
+
+            let (before, after) = resized(work, Some(left), |_, _| (-100, 300), taller);
+            assert_eq!(
+                after.left, -100,
+                "a window that overhangs onto the monitor on the left stays"
+            );
+            assert_eq!(after.top, centred(before, after));
+
+            let (_, after) = resized(work, Some(right), |_, _| (-100, 300), taller);
+            assert_eq!(
+                after.left, 0,
+                "a window that overhangs the left edge with no monitor there is pulled back"
+            );
+
+            let (before, after) = resized(work, None, |_, _| (400, -50), taller);
+            assert!(after.bottom - after.top > before.bottom - before.top);
+            assert_eq!(
+                after.top, work.top,
+                "a window that overhangs the top edge is pulled back"
+            );
+
+            let (before, after) = resized(
+                work,
+                None,
+                |_, height| (400, work.bottom - height - 10),
+                taller,
+            );
+            assert!(after.bottom - after.top > before.bottom - before.top);
+            assert_eq!(after.left, before.left);
+            assert_eq!(
+                after.bottom, work.bottom,
+                "a window that would leave the monitor ends at its edge"
+            );
+
+            let (before, after) = resized(
+                work,
+                None,
+                |_, height| (400, work.bottom - height / 2),
+                taller,
+            );
+            assert!(
+                before.bottom > work.bottom,
+                "the window reaches below the work area"
+            );
+            assert_eq!(
+                after.bottom, work.bottom,
+                "a window below the taskbar of a single monitor is pulled back above it"
+            );
+            assert_eq!(after.left, before.left);
+
+            let (before, after) = resized(
+                work,
+                Some(right),
+                |_, height| (1500, work.bottom - height / 2),
+                taller,
+            );
+            assert!(before.bottom > work.bottom);
+            assert_eq!(
+                after.top,
+                centred(before, after),
+                "a window that spans two monitors is not pulled up"
+            );
+        }
+
         #[test]
         fn fitting_a_language_keeps_the_order_of_the_rows_of_buttons() {
             let english = in_language("en", || {
@@ -13936,6 +14684,132 @@ mod tests {
                             if dark { "dark" } else { "light" }
                         )
                     }));
+                }
+            }
+            assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
+        }
+
+        /// The size and font height of every control of an alert, by id. The body
+        /// takes the height of the client area, which the window's own scale decides.
+        unsafe fn alert_shape(alert: native::HWND) -> Vec<(i32, i32, i32, i32)> {
+            use windows_sys::Win32::Graphics::Gdi::{GetObjectW, LOGFONTW};
+            shown(alert)
+                .into_iter()
+                .map(|control| {
+                    let font = SendMessageW(control.hwnd, WM_GETFONT, 0, 0);
+                    let mut face: LOGFONTW = zeroed();
+                    if font != 0 {
+                        GetObjectW(
+                            font as _,
+                            size_of::<LOGFONTW>() as i32,
+                            &mut face as *mut LOGFONTW as *mut _,
+                        );
+                    }
+                    let height = if control.id == native::ALERT_BODY_ID {
+                        0
+                    } else {
+                        control.rect.bottom - control.rect.top
+                    };
+                    (
+                        control.id,
+                        control.rect.right - control.rect.left,
+                        height,
+                        face.lfHeight,
+                    )
+                })
+                .collect()
+        }
+
+        /// What an alert measured for its scale.
+        type AlertSizes = (Vec<(i32, i32, i32, i32)>, [i32; 8], RECT);
+
+        /// The shape of an alert made for `dpi` and, when `moved_to` is given,
+        /// moved to a monitor of that scale after it was opened.
+        fn alert_at(dpi: u32, moved_to: Option<u32>) -> AlertSizes {
+            use std::sync::Mutex;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                DestroyWindow, GWLP_USERDATA, MB_ICONQUESTION, MB_YESNO, WM_DPICHANGED, WS_POPUP,
+            };
+
+            let sizes = Mutex::new((Vec::new(), [0; 8], unsafe { zeroed::<RECT>() }));
+            let open = || {
+                with_common_controls_6(|| {
+                    crate::i18n::with_language("en", || unsafe {
+                        native::ALERT_DPI.with(|alert_dpi| alert_dpi.set(Some(dpi)));
+                        let owner = native::control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                        let body =
+                            "Body of the alert, long enough to wrap onto a second line of the box.";
+                        let answer = native::run_alert_buttons(
+                            owner,
+                            body,
+                            "Title",
+                            MB_YESNO | MB_ICONQUESTION,
+                            None,
+                        );
+                        DestroyWindow(owner);
+                        native::ALERT_DPI.with(|alert_dpi| alert_dpi.set(None));
+                        answer
+                    })
+                })
+            };
+            answer_alert(open, |alert, buttons| unsafe {
+                let alert = alert as native::HWND;
+                if let Some(to) = moved_to {
+                    let mut suggested: RECT = zeroed();
+                    GetWindowRect(alert, &mut suggested);
+                    SendMessageW(
+                        alert,
+                        WM_DPICHANGED,
+                        ((to << 16) | to) as usize,
+                        &suggested as *const RECT as isize,
+                    );
+                }
+                let ui = &*(GetWindowLongPtrW(alert, GWLP_USERDATA) as *const native::AlertUi);
+                let mut frame: RECT = zeroed();
+                GetWindowRect(alert, &mut frame);
+                *sizes.lock().unwrap() = (
+                    alert_shape(alert),
+                    [
+                        ui.dpi as i32,
+                        ui.margin,
+                        ui.gap,
+                        ui.row,
+                        ui.icon_column,
+                        ui.text_width,
+                        ui.body_height,
+                        ui.link_height,
+                    ],
+                    frame,
+                );
+                press_escape(alert as usize, buttons);
+            });
+            sizes.into_inner().unwrap()
+        }
+
+        #[test]
+        fn an_alert_moved_to_a_monitor_of_another_scale_takes_the_fonts_and_sizes_of_that_scale() {
+            let mut wrong = Vec::new();
+            for (from, to) in [(96, 144), (144, 96), (96, 192)] {
+                let (shape, metrics, frame) = alert_at(from, Some(to));
+                let (made_shape, made_metrics, _) = alert_at(to, None);
+                let (_, _, before_frame) = alert_at(from, None);
+                if shape != made_shape {
+                    wrong.push(format!(
+                        "{from} -> {to} dpi: the controls are {shape:?}, an alert made at {to} dpi has {made_shape:?}"
+                    ));
+                }
+                if metrics != made_metrics {
+                    wrong.push(format!(
+                        "{from} -> {to} dpi: the alert is laid out with {metrics:?}, one made at {to} dpi with {made_metrics:?}"
+                    ));
+                }
+                let height = |frame: RECT| frame.bottom - frame.top;
+                if (height(frame) > height(before_frame)) != (to > from) {
+                    wrong.push(format!(
+                        "{from} -> {to} dpi: the window is {} px high, it was {}",
+                        height(frame),
+                        height(before_frame)
+                    ));
                 }
             }
             assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
