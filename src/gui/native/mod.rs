@@ -6251,14 +6251,16 @@ unsafe fn dialog_state(hwnd: HWND) -> *mut DialogUi {
 /// A modal dialog pumps its own loop through this; a modeless dialog has no loop
 /// of its own, so whichever loop is pumping at the time - the main one, or a
 /// modal dialog's nested one - has to run the same call for it. Messages for
-/// anything else, the main window included, are left to their own window.
+/// anything else, the main window included, are left to their own window. The cards
+/// of the mini views take Tab, Enter, Space and Escape from it as well, once a click has
+/// activated them.
 unsafe fn dialog_message(dialog: HWND, msg: &MSG) -> bool {
     if msg.hwnd.is_null() {
         return IsDialogMessageW(dialog, msg) != 0;
     }
     let root = GetAncestor(msg.hwnd, GA_ROOT);
-    if root == dialog {
-        return IsDialogMessageW(dialog, msg) != 0;
+    if root == dialog || window_class(root).eq_ignore_ascii_case(CLASS_CARD) {
+        return IsDialogMessageW(root, msg) != 0;
     }
     let state = dialog_state(root);
     if state.is_null() || !(*state).modeless {
@@ -8482,7 +8484,7 @@ mod tests {
     /// controls take the focus when they are created, which makes the dialog the
     /// foreground window of the process; on a private desktop that never
     /// reaches the keys the user is typing.
-    fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+    pub(super) fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
         use std::ptr::null;
         use windows_sys::Win32::Foundation::{GetLastError, GENERIC_ALL};
         use windows_sys::Win32::System::StationsAndDesktops::{
@@ -8548,7 +8550,7 @@ mod tests {
     }
 
     /// Registers the window classes once for the whole test process.
-    fn register_test_classes() {
+    pub(super) fn register_test_classes() {
         static CLASSES: std::sync::Once = std::sync::Once::new();
         CLASSES.call_once(|| unsafe { super::register_classes().unwrap() });
     }
@@ -9160,10 +9162,10 @@ mod tests {
 
     /// Shift held down in the key state of this thread, which is where
     /// `GetKeyState` reads it, until the value is dropped. No input is sent.
-    struct ShiftHeld([u8; 256]);
+    pub(super) struct ShiftHeld([u8; 256]);
 
     impl ShiftHeld {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
                 GetKeyboardState, SetKeyboardState, VK_SHIFT,
             };
@@ -11174,7 +11176,7 @@ mod tests {
     /// Runs `body` with comctl32 version 6 active on this thread, the way the application's
     /// manifest makes it for the whole process. The test executable has no manifest, and the
     /// link control exists only in version 6.
-    fn with_common_controls_6<T>(body: impl FnOnce() -> T) -> T {
+    pub(super) fn with_common_controls_6<T>(body: impl FnOnce() -> T) -> T {
         use windows_sys::Win32::System::ApplicationInstallationAndServicing::{
             ActivateActCtx, CreateActCtxW, DeactivateActCtx, ReleaseActCtx, ACTCTXW,
         };
