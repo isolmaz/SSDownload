@@ -167,25 +167,21 @@ pub(super) unsafe fn alert_is_dark(owner: HWND) -> bool {
     let main = FindWindowW(wide(CLASS_MAIN).as_ptr(), null());
     !main.is_null() && scheme_dark(main)
 }
-pub(super) unsafe fn alert_measure_button(ui: &AlertUi, label: &str) -> i32 {
+/// The width of a button in `font`, the font the alert draws its buttons with at
+/// `dpi`; the font exists before the window does, so the box can be sized for
+/// its buttons.
+pub(super) unsafe fn alert_measure_button(font: HFONT, dpi: u32, label: &str) -> i32 {
     let mut text = wide(label);
-    let dc = GetDC(ui.hwnd);
+    let dc = GetDC(null_mut());
     if dc.is_null() {
-        return scale(80, ui.dpi);
+        return scale(80, dpi);
     }
-    let font = SendMessageW(ui.hwnd, WM_GETFONT, 0, 0);
-    let previous = if font == 0 {
-        null_mut()
-    } else {
-        SelectObject(dc, font as HGDIOBJ)
-    };
+    let previous = SelectObject(dc, font as HGDIOBJ);
     let mut size: SIZE = zeroed();
     GetTextExtentPoint32W(dc, text.as_mut_ptr(), text.len() as i32, &mut size);
-    if !previous.is_null() {
-        SelectObject(dc, previous);
-    }
-    ReleaseDC(ui.hwnd, dc);
-    (size.cx + scale(28, ui.dpi)).max(scale(80, ui.dpi))
+    SelectObject(dc, previous);
+    ReleaseDC(null_mut(), dc);
+    (size.cx + scale(28, dpi)).max(scale(80, dpi))
 }
 pub(super) unsafe fn alert_layout(ui: &AlertUi) {
     let mut client: RECT = zeroed();
@@ -233,7 +229,7 @@ pub(super) unsafe fn alert_layout(ui: &AlertUi) {
     // Buttons sit bottom-right, in MessageBoxW's order, one gap apart.
     let mut x = client.right - ui.margin;
     for button in ui.buttons.iter().rev() {
-        let width = alert_measure_button(ui, button.label);
+        let width = alert_measure_button(ui.font, ui.dpi, button.label);
         x -= width;
         MoveWindow(
             button.handle,
@@ -453,6 +449,12 @@ pub(super) unsafe extern "system" fn alert_proc(
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
+#[cfg(test)]
+thread_local! {
+    /// The DPI the alerts of this thread are made for, instead of their owner's:
+    /// a test machine has one monitor at one scale.
+    pub(super) static ALERT_DPI: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
 /// Themed, content-sized replacement for MessageBoxW. Returns None when the
 /// window cannot be created, so the caller can fall back to the system box.
 pub(super) unsafe fn run_alert(
@@ -500,6 +502,8 @@ pub(super) unsafe fn run_alert_linked(
         GetDpiForWindow(owner)
     }
     .max(96);
+    #[cfg(test)]
+    let dpi = ALERT_DPI.with(std::cell::Cell::get).unwrap_or(dpi);
     let font = make_font(dpi, 9, FW_NORMAL as i32);
     let margin = scale(12, dpi);
     let gap = scale(8, dpi);
@@ -530,7 +534,12 @@ pub(super) unsafe fn run_alert_linked(
     } else {
         text_width
     };
-    let client_width = text_width + icon_column + 2 * margin;
+    let buttons_width = plan
+        .iter()
+        .map(|(_, label)| alert_measure_button(font, dpi, label))
+        .sum::<i32>()
+        + gap * (plan.len() as i32 - 1);
+    let client_width = (text_width + icon_column).max(buttons_width) + 2 * margin;
     let client_height = margin + body_height + link_block + gap + row + margin;
     let style = WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     let ex_style = owned_layout(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT);
