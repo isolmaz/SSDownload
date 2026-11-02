@@ -177,13 +177,14 @@ pub(super) unsafe fn alert_is_dark(owner: HWND) -> bool {
     let main = FindWindowW(wide(CLASS_MAIN).as_ptr(), null());
     !main.is_null() && scheme_dark(main)
 }
-pub(super) unsafe fn alert_measure_button(ui: &AlertUi, label: &str) -> i32 {
+/// The width of `label` in `font` (the DC's own font when `font` is 0), measured on
+/// `window`'s DC; 0 when there is none.
+unsafe fn alert_label_extent(window: HWND, font: isize, label: &str) -> i32 {
     let mut text = wide(label);
-    let dc = GetDC(ui.hwnd);
+    let dc = GetDC(window);
     if dc.is_null() {
-        return scale(80, ui.dpi);
+        return 0;
     }
-    let font = SendMessageW(ui.hwnd, WM_GETFONT, 0, 0);
     let previous = if font == 0 {
         null_mut()
     } else {
@@ -194,12 +195,26 @@ pub(super) unsafe fn alert_measure_button(ui: &AlertUi, label: &str) -> i32 {
     if !previous.is_null() {
         SelectObject(dc, previous);
     }
-    ReleaseDC(ui.hwnd, dc);
-    if ui.modern {
-        (size.cx + scale(32, ui.dpi)).max(scale(96, ui.dpi))
+    ReleaseDC(window, dc);
+    size.cx
+}
+/// The width of an alert button whose label is `extent` wide.
+fn alert_button_width(extent: i32, dpi: u32, modern: bool) -> i32 {
+    if modern {
+        (extent + scale(32, dpi)).max(scale(96, dpi))
     } else {
-        (size.cx + scale(28, ui.dpi)).max(scale(80, ui.dpi))
+        (extent + scale(28, dpi)).max(scale(80, dpi))
     }
+}
+pub(super) unsafe fn alert_measure_button(ui: &AlertUi, label: &str) -> i32 {
+    // The alert window never takes a font, so Classic's labels are measured in the
+    // DC's own; Modern's buttons are painted in the font the alert holds.
+    let font = if ui.modern {
+        ui.font as isize
+    } else {
+        SendMessageW(ui.hwnd, WM_GETFONT, 0, 0)
+    };
+    alert_button_width(alert_label_extent(ui.hwnd, font, label), ui.dpi, ui.modern)
 }
 pub(super) unsafe fn alert_layout(ui: &AlertUi) {
     let mut client: RECT = zeroed();
@@ -284,7 +299,8 @@ pub(super) unsafe fn alert_create(ui: &mut AlertUi) {
                 | ES_MULTILINE as u32
                 | ES_READONLY as u32
                 | ES_AUTOVSCROLL as u32,
-            WS_EX_CLIENTEDGE,
+            // Modern's text lies flat on the card, like the report of Media tools.
+            if ui.modern { 0 } else { WS_EX_CLIENTEDGE },
             ALERT_BODY_ID,
         )
     } else {
@@ -431,11 +447,7 @@ pub(super) unsafe extern "system" fn alert_proc(
             let dc = wparam as HDC;
             SetTextColor(
                 dc,
-                if lparam as HWND == ui.link_handle {
-                    palette.accent
-                } else {
-                    palette.text
-                },
+                alert_text_colour(&palette, lparam as HWND == ui.link_handle),
             );
             SetBkColor(dc, palette.card);
             if ui.card_brush.1.is_null() || ui.card_brush.0 != palette.card {
@@ -527,6 +539,15 @@ pub(super) unsafe extern "system" fn alert_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+/// The text colour of a control on a Modern alert's card: the link colour for its
+/// link, else the text colour.
+fn alert_text_colour(palette: &MainPalette, link: bool) -> u32 {
+    if link {
+        unsafe { link_colour(palette) }
+    } else {
+        palette.text
     }
 }
 /// Paints a button of a Modern alert as a WinUI button, the default one in
@@ -637,7 +658,23 @@ pub(super) unsafe fn run_alert_linked(
     };
     let icon_size = scale(32, dpi);
     let icon_column = if icon.is_null() { 0 } else { icon_size + gap };
-    let text_width = scale(340, dpi);
+    let mut text_width = scale(340, dpi);
+    if modern {
+        // The message is as wide as the command bar needs for the buttons, so that
+        // the longest labels fit between its paddings.
+        let buttons: i32 = plan
+            .iter()
+            .map(|(_, label)| {
+                alert_button_width(
+                    alert_label_extent(null_mut(), font as isize, label),
+                    dpi,
+                    true,
+                )
+            })
+            .sum::<i32>()
+            + gap * (plan.len() as i32 - 1);
+        text_width = text_width.max(buttons - icon_column);
+    }
     let wrapped =
         wrapped_height(font, body, text_width).max(if icon.is_null() { 0 } else { icon_size });
     let link_height = link
@@ -804,8 +841,29 @@ pub(super) unsafe fn message(owner: HWND, body: &str, title: &str, flags: MESSAG
 
 #[cfg(test)]
 mod tests {
-    use super::{alert_body_cap, alert_escape};
+    use super::{alert_body_cap, alert_escape, alert_text_colour};
+    use crate::gui::native::fluent::{fluent_palette, AccentShades};
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDCANCEL, IDNO, IDOK, IDYES};
+
+    #[test]
+    fn a_modern_alert_s_link_is_in_the_accent_only_where_that_reads_on_its_card() {
+        let accent = |colour| AccentShades {
+            dark1: colour,
+            light2: colour,
+        };
+        // A pale yellow accent on the light card, a deep navy on the dark one.
+        let light = fluent_palette(false, accent(0x80f0ff));
+        assert_eq!(alert_text_colour(&light, true), light.text);
+        let dark = fluent_palette(true, accent(0x401010));
+        assert_eq!(alert_text_colour(&dark, true), dark.text);
+        // The accents that read are kept, and the rest of the text is never the accent.
+        let light = fluent_palette(false, accent(0x401010));
+        assert_eq!(alert_text_colour(&light, true), light.accent);
+        assert_eq!(alert_text_colour(&light, false), light.text);
+        let dark = fluent_palette(true, accent(0x80f0ff));
+        assert_eq!(alert_text_colour(&dark, true), dark.accent);
+        assert_eq!(alert_text_colour(&dark, false), dark.text);
+    }
 
     #[test]
     fn body_cap_is_seventy_percent_of_the_work_area_minus_the_chrome() {

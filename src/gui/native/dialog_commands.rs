@@ -14,6 +14,15 @@ fn parse_number<T: std::str::FromStr>(value: &str, label: &str) -> anyhow::Resul
     })
 }
 
+/// The buttons of the question asked when an address is already in the download list.
+pub(super) fn duplicate_address_buttons() -> [(i32, &'static str); 3] {
+    [
+        (IDYES, crate::i18n::ui("Mevcut işi kullan", "Use existing")),
+        (IDNO, crate::i18n::ui("Yeni kopya indir", "Download a copy")),
+        (IDCANCEL, crate::i18n::ui("İptal", "Cancel")),
+    ]
+}
+
 #[cfg(test)]
 thread_local! {
     /// What `confirm_removal` answers in a test, where no box is shown.
@@ -687,17 +696,12 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         .count();
                     if duplicates > 0 {
                         let body = crate::i18n::ui_format!("{duplicates} adres zaten indirme listesinde.\n\nMevcut işler kullanılsın mı, yoksa yeni kopyalar mı indirilsin?", "{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?", duplicates = duplicates);
-                        let buttons = [
-                            (IDYES, crate::i18n::ui("Mevcut işi kullan", "Use existing")),
-                            (IDNO, crate::i18n::ui("Yeni kopya indir", "Download a copy")),
-                            (IDCANCEL, crate::i18n::ui("İptal", "Cancel")),
-                        ];
                         match run_alert_buttons(
                             dlg.hwnd,
                             &body,
                             "SSDownload",
                             MB_ICONQUESTION,
-                            Some(&buttons),
+                            Some(&duplicate_address_buttons()),
                         )
                         .unwrap_or(IDCANCEL)
                         {

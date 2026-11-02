@@ -668,10 +668,30 @@ fn offer_update_with(
         manifest.version,
         crate::i18n::ui("güncellemesi", "update"),
     );
-    // Escape and the close button answer "Later" (no Cancel button is listed, so
-    // the alert falls back to No): dismissing the offer never skips the version.
-    const SKIP: i32 = 100;
-    let buttons = [
+    let answer = unsafe {
+        run_alert_linked(
+            std::ptr::null_mut(),
+            &body,
+            &title,
+            MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
+            Some(&update_offer_buttons(installed)),
+            Some(link),
+        )
+    };
+    match answer {
+        Some(IDYES) => Some(crate::update::UpdateDecision::Install),
+        Some(UPDATE_SKIP) => Some(crate::update::UpdateDecision::Skip),
+        _ => Some(crate::update::UpdateDecision::Later),
+    }
+}
+
+const UPDATE_SKIP: i32 = 100;
+
+/// The buttons of the update offer. Escape and the close button answer "Later" (no
+/// Cancel button is listed, so the alert falls back to No): dismissing the offer
+/// never skips the version.
+fn update_offer_buttons(installed: bool) -> [(i32, &'static str); 3] {
+    [
         (
             IDYES,
             if installed {
@@ -680,24 +700,12 @@ fn offer_update_with(
                 crate::i18n::ui("Sayfayı aç", "Open page")
             },
         ),
-        (SKIP, crate::i18n::ui("Bu sürümü atla", "Skip this version")),
+        (
+            UPDATE_SKIP,
+            crate::i18n::ui("Bu sürümü atla", "Skip this version"),
+        ),
         (IDNO, crate::i18n::ui("Daha sonra", "Later")),
-    ];
-    let answer = unsafe {
-        run_alert_linked(
-            std::ptr::null_mut(),
-            &body,
-            &title,
-            MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
-            Some(&buttons),
-            Some(link),
-        )
-    };
-    match answer {
-        Some(IDYES) => Some(crate::update::UpdateDecision::Install),
-        Some(SKIP) => Some(crate::update::UpdateDecision::Skip),
-        _ => Some(crate::update::UpdateDecision::Later),
-    }
+    ]
 }
 
 /// First-run wizard auto-popup opt-out for automated desktop runs.
@@ -12891,20 +12899,72 @@ mod tests {
     }
 
     #[test]
+    fn modern_s_media_tools_lay_out_at_the_height_of_the_other_form_dialogs() {
+        use super::{scale, FORM_HEIGHT, FORM_WIDTH, SETTINGS_FRAME};
+        use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetClientRect};
+
+        // A window shorter than the form scrolls by the height it lacks.
+        with_dialog(
+            || {
+                super::set_modern(true);
+                tools_kind()
+            },
+            FORM_WIDTH,
+            FORM_HEIGHT / 2 + SETTINGS_FRAME + 3,
+            |dialog| unsafe {
+                let dpi = (*dialog.raw).dpi;
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(dialog.hwnd, &mut client);
+                assert!(
+                    client.bottom < scale(FORM_HEIGHT, dpi),
+                    "the window is shorter than the form"
+                );
+                assert_eq!(
+                    (*dialog.raw).scroll_range.get(),
+                    scale(FORM_HEIGHT, dpi) - client.bottom
+                );
+            },
+        );
+    }
+
+    #[test]
     fn enter_in_the_media_tools_dialog_installs_nothing() {
+        use super::{FORM_HEIGHT, FORM_WIDTH, SETTINGS_FRAME};
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
 
-        with_dialog(tools_kind, 700, 470, |dialog| {
-            assert_eq!(default_id(dialog), 0, "no button is the default");
-            assert!(press(dialog, VK_RETURN), "Enter is handled by the dialog");
-            assert!(dialog.is_open());
-            assert!(
-                dialog.app().snapshot().tool_progress.is_none(),
-                "no install was started"
+        for modern in [false, true] {
+            let theme = if modern { "Modern" } else { "Classic" };
+            let (width, height) = if modern {
+                (FORM_WIDTH, FORM_HEIGHT + SETTINGS_FRAME + 3)
+            } else {
+                (700, 470)
+            };
+            with_dialog(
+                move || {
+                    super::set_modern(modern);
+                    tools_kind()
+                },
+                width,
+                height,
+                |dialog| {
+                    assert_eq!(default_id(dialog), 0, "{theme}: no button is the default");
+                    assert!(
+                        press(dialog, VK_RETURN),
+                        "{theme}: Enter is handled by the dialog"
+                    );
+                    assert!(dialog.is_open(), "{theme}");
+                    assert!(
+                        dialog.app().snapshot().tool_progress.is_none(),
+                        "{theme}: no install was started"
+                    );
+                    assert!(
+                        press(dialog, VK_ESCAPE),
+                        "{theme}: Escape is handled by the dialog"
+                    );
+                    assert!(!dialog.is_open(), "{theme}: Escape still closes the dialog");
+                },
             );
-            assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
-            assert!(!dialog.is_open(), "Escape still closes the dialog");
-        });
+        }
     }
 
     #[test]
@@ -16477,7 +16537,7 @@ mod tests {
                         pixels_of(alert, body, rgb(palette.card)),
                         pixels_in(alert, free, rgb(palette.base)),
                         pixels_of(alert, default.handle, rgb(palette.accent)),
-                        pixels_of(alert, link, rgb(palette.accent)),
+                        pixels_of(alert, link, rgb(super::link_colour(&palette))),
                         buttons
                             .iter()
                             .filter(|button| !button.default)
@@ -16509,7 +16569,7 @@ mod tests {
                     drawn.2 >= 100,
                     "the default button is the accent button: {drawn:?}"
                 );
-                assert!(drawn.3 >= 40, "the link is in the accent colour: {drawn:?}");
+                assert!(drawn.3 >= 40, "the link is in the link colour: {drawn:?}");
                 assert_eq!(
                     drawn.4, 0,
                     "only the default button is filled with the accent: {drawn:?}"
@@ -16546,6 +16606,264 @@ mod tests {
             Some(IDNO),
             "Escape is the last button"
         );
+    }
+
+    /// The rectangle an open alert's client area covers on the screen.
+    fn client_on_screen(alert: usize) -> windows_sys::Win32::Foundation::RECT {
+        use windows_sys::Win32::{
+            Foundation::{POINT, RECT},
+            Graphics::Gdi::ClientToScreen,
+            UI::WindowsAndMessaging::GetClientRect,
+        };
+
+        unsafe {
+            let mut client: RECT = std::mem::zeroed();
+            GetClientRect(alert as _, &mut client);
+            let mut near = POINT {
+                x: client.left,
+                y: client.top,
+            };
+            let mut far = POINT {
+                x: client.right,
+                y: client.bottom,
+            };
+            ClientToScreen(alert as _, &mut near);
+            ClientToScreen(alert as _, &mut far);
+            // A mirrored window counts its x from the right.
+            RECT {
+                left: near.x.min(far.x),
+                top: near.y.min(far.y),
+                right: near.x.max(far.x),
+                bottom: near.y.max(far.y),
+            }
+        }
+    }
+
+    #[test]
+    fn a_modern_alert_is_wide_enough_for_its_buttons_in_every_language_and_scheme() {
+        use super::{ramp_font, scale, text, ADD_PAD, BODY_PX, FOCUS_MARGIN};
+        use windows_sys::Win32::{
+            Foundation::SIZE,
+            Graphics::Gdi::{
+                DeleteObject, GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, HGDIOBJ,
+            },
+            UI::{
+                HiDpi::GetDpiForWindow,
+                Input::KeyboardAndMouse::VK_ESCAPE,
+                WindowsAndMessaging::{
+                    DestroyWindow, SetPropW, MB_ABORTRETRYIGNORE, MB_CANCELTRYCONTINUE,
+                    MB_ICONQUESTION, MB_OKCANCEL, MB_YESNOCANCEL, WS_POPUP,
+                },
+            },
+        };
+
+        type Labels = Option<fn() -> Vec<(i32, &'static str)>>;
+        let question = MB_ICONQUESTION;
+        let cases: [(&str, super::MESSAGEBOX_STYLE, Labels); 7] = [
+            ("Abort, Retry, Ignore", MB_ABORTRETRYIGNORE | question, None),
+            ("Yes, No, Cancel", MB_YESNOCANCEL | question, None),
+            (
+                "Cancel, Retry, Continue",
+                MB_CANCELTRYCONTINUE | question,
+                None,
+            ),
+            ("OK, Cancel", MB_OKCANCEL | question, None),
+            (
+                "the question about an address already in the list",
+                question,
+                Some(|| super::duplicate_address_buttons().to_vec()),
+            ),
+            (
+                "the About box",
+                super::ABOUT_FLAGS,
+                Some(|| super::about_buttons().to_vec()),
+            ),
+            (
+                "the update offer",
+                question,
+                Some(|| super::update_offer_buttons(true).to_vec()),
+            ),
+        ];
+        for info in crate::i18n::LANGUAGES.iter() {
+            let code = info.code;
+            for dark in [false, true] {
+                for (name, flags, labels) in cases {
+                    let open = || {
+                        with_common_controls_6(|| {
+                            crate::i18n::with_language(code, || unsafe {
+                                super::set_modern(true);
+                                // The scheme of an alert is the one of its owner.
+                                let owner = super::control(
+                                    std::ptr::null_mut(),
+                                    "STATIC",
+                                    "",
+                                    WS_POPUP,
+                                    0,
+                                    0,
+                                );
+                                if dark {
+                                    SetPropW(owner, super::dark_prop(), 1usize as _);
+                                }
+                                let buttons = labels.map(|labels| labels());
+                                let answer = super::run_alert_buttons(
+                                    owner,
+                                    "Body",
+                                    "Title",
+                                    flags,
+                                    buttons.as_deref(),
+                                );
+                                DestroyWindow(owner);
+                                answer
+                            })
+                        })
+                    };
+                    answer_alert(open, |alert, buttons| unsafe {
+                        let dpi = GetDpiForWindow(alert as _);
+                        let client = client_on_screen(alert);
+                        let ring = scale(FOCUS_MARGIN, dpi);
+                        let pad = scale(ADD_PAD, dpi);
+                        let font = ramp_font(dpi, BODY_PX, false);
+                        for button in buttons {
+                            let window = screen_rect(button.handle);
+                            let label = text(button.handle as _);
+                            let what = format!("{code} dark={dark} {name}: {label}");
+                            assert!(
+                                window.left >= client.left && window.right <= client.right,
+                                "{what}: the button and its focus ring are inside the window \
+                                 ({}..{} in {}..{})",
+                                window.left,
+                                window.right,
+                                client.left,
+                                client.right
+                            );
+                            assert!(
+                                window.left + ring >= client.left + pad
+                                    && window.right - ring <= client.right - pad,
+                                "{what}: the face keeps the command bar's padding"
+                            );
+                            let dc = GetDC(std::ptr::null_mut());
+                            let previous = SelectObject(dc, font as HGDIOBJ);
+                            let mut extent: SIZE = std::mem::zeroed();
+                            let characters = super::wide(&label);
+                            GetTextExtentPoint32W(
+                                dc,
+                                characters.as_ptr(),
+                                characters.len() as i32 - 1,
+                                &mut extent,
+                            );
+                            SelectObject(dc, previous);
+                            ReleaseDC(std::ptr::null_mut(), dc);
+                            assert!(
+                                window.right - window.left - 2 * ring
+                                    >= extent.cx + 2 * scale(8, dpi),
+                                "{what}: the label fits the face"
+                            );
+                        }
+                        DeleteObject(font as HGDIOBJ);
+                        post_key(alert, VK_ESCAPE);
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_classic_alert_keeps_the_width_of_its_message_whatever_its_buttons() {
+        use super::scale;
+        use windows_sys::Win32::UI::{
+            HiDpi::GetDpiForWindow,
+            Input::KeyboardAndMouse::VK_ESCAPE,
+            WindowsAndMessaging::{IDCANCEL, IDNO, IDYES, MB_ICONQUESTION},
+        };
+
+        const LONG: [(i32, &str); 3] = [
+            (IDYES, "A first button with a very long label"),
+            (IDNO, "A second button with a very long label"),
+            (IDCANCEL, "A third button with a very long label"),
+        ];
+        answer_alert(
+            || unsafe {
+                super::set_modern(false);
+                super::run_alert_buttons(
+                    std::ptr::null_mut(),
+                    "Body",
+                    "Title",
+                    MB_ICONQUESTION,
+                    Some(&LONG),
+                )
+            },
+            |alert, _| unsafe {
+                let dpi = GetDpiForWindow(alert as _);
+                let client = client_on_screen(alert);
+                // The message, the icon and its gap, and the margins on both sides.
+                assert_eq!(
+                    client.right - client.left,
+                    scale(340, dpi) + scale(32, dpi) + scale(8, dpi) + 2 * scale(12, dpi)
+                );
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    #[test]
+    fn a_modern_alert_shows_a_scrolling_message_flat_on_the_card_and_a_classic_one_in_a_sunken_edge(
+    ) {
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_ESCAPE,
+            WindowsAndMessaging::{
+                DestroyWindow, GetWindowLongPtrW, SetPropW, GWL_EXSTYLE, GWL_STYLE,
+                MB_ICONQUESTION, WS_BORDER, WS_EX_CLIENTEDGE, WS_POPUP,
+            },
+        };
+
+        let body = (1..=400)
+            .map(|line| format!("Line {line}"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        for modern in [false, true] {
+            for dark in [false, true] {
+                let open = || unsafe {
+                    super::set_modern(modern);
+                    // The scheme of an alert is the one of its owner.
+                    let owner = super::control(std::ptr::null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    if dark {
+                        SetPropW(owner, super::dark_prop(), 1usize as _);
+                    }
+                    let answer = super::run_alert_buttons(
+                        owner,
+                        &body,
+                        "Title",
+                        MB_ICONQUESTION,
+                        Some(&OFFER_BUTTONS),
+                    );
+                    DestroyWindow(owner);
+                    answer
+                };
+                answer_alert(open, |alert, _| unsafe {
+                    let edit = alert_children(alert)
+                        .into_iter()
+                        .find(|child| child.1 == "Edit")
+                        .expect("a body this long scrolls in an edit")
+                        .0;
+                    let extended = GetWindowLongPtrW(edit as _, GWL_EXSTYLE) as u32;
+                    let style = GetWindowLongPtrW(edit as _, GWL_STYLE) as u32;
+                    assert_eq!(
+                        extended & WS_EX_CLIENTEDGE != 0,
+                        !modern,
+                        "modern={modern} dark={dark}: only Classic's text has a sunken edge"
+                    );
+                    assert_eq!(
+                        style & WS_BORDER,
+                        0,
+                        "modern={modern} dark={dark}: no frame of any kind"
+                    );
+                    post_key(alert, VK_ESCAPE);
+                });
+            }
+        }
     }
 
     #[test]
@@ -16695,40 +17013,48 @@ mod tests {
         };
 
         let enter = |alert: usize, _: &[AlertButton]| alert_key(alert, VK_RETURN);
-        let custom = |flags| {
-            move || unsafe {
-                run_alert_buttons(
-                    std::ptr::null_mut(),
-                    "Body",
-                    "Title",
-                    flags,
-                    Some(&OFFER_BUTTONS),
-                )
-            }
-        };
-        let plain =
-            |flags| move || unsafe { run_alert(std::ptr::null_mut(), "Body", "Title", flags) };
-        assert_eq!(
-            alert_answer(custom(MB_ICONQUESTION), enter),
-            Some(IDYES),
-            "the first of three buttons"
-        );
-        assert_eq!(
-            alert_answer(custom(MB_ICONQUESTION | MB_DEFBUTTON2), enter),
-            Some(100),
-            "the button MB_DEFBUTTON2 names"
-        );
-        assert_eq!(
-            alert_answer(plain(MB_YESNO | MB_ICONQUESTION), enter),
-            Some(IDYES),
-            "Yes of a yes/no question, which has no OK"
-        );
-        assert_eq!(
-            alert_answer(plain(MB_YESNO | MB_DEFBUTTON2), enter),
-            Some(IDNO),
-            "No when the question makes it the default"
-        );
-        assert_eq!(alert_answer(plain(MB_OK), enter), Some(IDOK), "OK");
+        for modern in [false, true] {
+            let theme = if modern { "Modern" } else { "Classic" };
+            let custom = |flags| {
+                move || unsafe {
+                    super::set_modern(modern);
+                    run_alert_buttons(
+                        std::ptr::null_mut(),
+                        "Body",
+                        "Title",
+                        flags,
+                        Some(&OFFER_BUTTONS),
+                    )
+                }
+            };
+            let plain = |flags| {
+                move || unsafe {
+                    super::set_modern(modern);
+                    run_alert(std::ptr::null_mut(), "Body", "Title", flags)
+                }
+            };
+            assert_eq!(
+                alert_answer(custom(MB_ICONQUESTION), enter),
+                Some(IDYES),
+                "{theme}: the first of three buttons"
+            );
+            assert_eq!(
+                alert_answer(custom(MB_ICONQUESTION | MB_DEFBUTTON2), enter),
+                Some(100),
+                "{theme}: the button MB_DEFBUTTON2 names"
+            );
+            assert_eq!(
+                alert_answer(plain(MB_YESNO | MB_ICONQUESTION), enter),
+                Some(IDYES),
+                "{theme}: Yes of a yes/no question, which has no OK"
+            );
+            assert_eq!(
+                alert_answer(plain(MB_YESNO | MB_DEFBUTTON2), enter),
+                Some(IDNO),
+                "{theme}: No when the question makes it the default"
+            );
+            assert_eq!(alert_answer(plain(MB_OK), enter), Some(IDOK), "{theme}: OK");
+        }
     }
 
     #[test]
@@ -16738,24 +17064,28 @@ mod tests {
             Input::KeyboardAndMouse::VK_RETURN, WindowsAndMessaging::MB_ICONQUESTION,
         };
 
-        for (id, label) in OFFER_BUTTONS {
-            let answer = alert_answer(
-                || unsafe {
-                    run_alert_buttons(
-                        std::ptr::null_mut(),
-                        "Body",
-                        "Title",
-                        MB_ICONQUESTION,
-                        Some(&OFFER_BUTTONS),
-                    )
-                },
-                |alert, buttons| {
-                    let button = buttons.iter().find(|button| button.id == id).unwrap();
-                    tab_until_focused(alert, button.handle);
-                    alert_key(alert, VK_RETURN);
-                },
-            );
-            assert_eq!(answer, Some(id), "Enter on {label}");
+        for modern in [false, true] {
+            let theme = if modern { "Modern" } else { "Classic" };
+            for (id, label) in OFFER_BUTTONS {
+                let answer = alert_answer(
+                    || unsafe {
+                        super::set_modern(modern);
+                        run_alert_buttons(
+                            std::ptr::null_mut(),
+                            "Body",
+                            "Title",
+                            MB_ICONQUESTION,
+                            Some(&OFFER_BUTTONS),
+                        )
+                    },
+                    |alert, buttons| {
+                        let button = buttons.iter().find(|button| button.id == id).unwrap();
+                        tab_until_focused(alert, button.handle);
+                        alert_key(alert, VK_RETURN);
+                    },
+                );
+                assert_eq!(answer, Some(id), "{theme}: Enter on {label}");
+            }
         }
     }
 

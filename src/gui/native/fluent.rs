@@ -291,6 +291,26 @@ pub(super) unsafe fn main_palette(hwnd: HWND) -> MainPalette {
     }
 }
 
+/// The colour of link text on a card: the system's link colour while high
+/// contrast is on, else the accent.
+pub(super) unsafe fn link_colour(palette: &MainPalette) -> u32 {
+    if high_contrast() {
+        GetSysColor(COLOR_HOTLIGHT)
+    } else {
+        accent_text(palette)
+    }
+}
+
+/// The accent as a text colour on the card; where it would read below 4.5:1 there
+/// (a pale accent on the light card), the text colour.
+fn accent_text(palette: &MainPalette) -> u32 {
+    if contrast(palette.accent, palette.card) >= 4.5 {
+        palette.accent
+    } else {
+        palette.text
+    }
+}
+
 /// The accent as DWM reports it: its colorization colour follows the Windows
 /// accent. Windows' default blue when DWM does not answer.
 unsafe fn dwm_accent() -> u32 {
@@ -4275,6 +4295,51 @@ mod tests {
             let on_deep = fluent_palette(dark, deep);
             assert_eq!(on_deep.on_accent, 0xffffff);
             assert!(contrast(on_deep.on_accent, on_deep.accent) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn link_text_is_in_the_accent_only_where_that_reads_on_the_card() {
+        use super::accent_text;
+        let shades = |colour| AccentShades {
+            dark1: colour,
+            light2: colour,
+        };
+        // Windows' default blue: the shade of each scheme reads on its card.
+        for dark in [false, true] {
+            let blue = fluent_palette(
+                dark,
+                AccentShades {
+                    dark1: 0x9e5a00,
+                    light2: 0xffcd60,
+                },
+            );
+            assert_eq!(accent_text(&blue), blue.accent, "dark={dark}");
+        }
+        // A pale yellow reads on the dark card, not on the light one; a deep navy the other way.
+        let (pale, deep) = (0x80f0ff, 0x401010);
+        let light = fluent_palette(false, shades(pale));
+        assert_eq!(accent_text(&light), light.text);
+        let dark = fluent_palette(true, shades(pale));
+        assert_eq!(accent_text(&dark), dark.accent);
+        let light = fluent_palette(false, shades(deep));
+        assert_eq!(accent_text(&light), light.accent);
+        let dark = fluent_palette(true, shades(deep));
+        assert_eq!(accent_text(&dark), dark.text);
+        for dark in [false, true] {
+            for r in (0..=255u32).step_by(15) {
+                for g in (0..=255u32).step_by(15) {
+                    for b in (0..=255u32).step_by(15) {
+                        let palette = fluent_palette(dark, shades(r | g << 8 | b << 16));
+                        let ratio = contrast(accent_text(&palette), palette.card);
+                        assert!(
+                            ratio >= 4.5,
+                            "dark={dark} accent={:06x} {ratio:.2}",
+                            palette.accent
+                        );
+                    }
+                }
+            }
         }
     }
 
