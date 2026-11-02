@@ -1933,6 +1933,114 @@ fn windows_filename_rules_remove_traversal_and_devices() {
 }
 
 #[test]
+fn bidirectional_and_invisible_format_characters_never_stay_in_a_file_name() {
+    // The right-to-left override draws the name that follows it backwards: this one ends in
+    // `.exe` and reads as `exe.txt`.
+    assert_eq!(safe_filename("\u{202e}txt.exe", "12345678"), "_txt.exe");
+    assert_eq!(safe_filename("\u{202e}exe.txt", "12345678"), "_exe.txt");
+    assert_eq!(
+        safe_filename("invoice\u{202e}fdp.exe", "12345678"),
+        "invoice_fdp.exe"
+    );
+    // Embeddings, overrides, isolates and marks.
+    let bidirectional = "\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}\u{200e}\u{200f}\u{061c}";
+    // Other format characters that draw nothing: a zero width space, the soft hyphen, a word
+    // joiner, a byte order mark, the deprecated format characters, the Mongolian vowel separator
+    // and a tag character that follows no flag emoji.
+    let invisible = "\u{200b}\u{00ad}\u{2060}\u{feff}\u{206a}\u{206f}\u{180e}\u{e0067}\u{1d173}";
+    // The other control characters: DEL and the C1 range.
+    let controls = "\u{7f}\u{85}\u{9f}";
+    for control in [bidirectional, invisible, controls]
+        .into_iter()
+        .flat_map(str::chars)
+    {
+        assert_eq!(
+            safe_filename(&format!("rapor{control}.pdf"), "12345678"),
+            "rapor_.pdf",
+            "U+{:04X}",
+            control as u32
+        );
+    }
+    // A name made of nothing but such characters is still a name that the user can see.
+    assert_eq!(safe_filename("\u{202e}\u{200b}", "12345678"), "__");
+}
+
+#[test]
+fn zero_width_joiners_that_spell_a_name_are_kept() {
+    for name in ["می\u{200c}خواهم.txt", "👩\u{200d}💻.png", "क्\u{200d}ष.pdf"] {
+        assert_eq!(safe_filename(name, "12345678"), name);
+    }
+}
+
+#[test]
+fn the_tag_characters_of_a_flag_emoji_are_kept_and_all_others_replaced() {
+    // The flags of England, Scotland and Wales: U+1F3F4, tag letters, the cancel tag.
+    for name in [
+        "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}.png",
+        "match \u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}.png",
+        "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f} cup.png",
+    ] {
+        assert_eq!(safe_filename(name, "12345678"), name);
+    }
+    // The cancel tag ends the sequence: a tag after it, a tag after another emoji and a tag
+    // after a character in between stand alone.
+    assert_eq!(
+        safe_filename("\u{1f3f4}\u{e0067}\u{e007f}\u{e0067}.png", "12345678"),
+        "\u{1f3f4}\u{e0067}\u{e007f}_.png"
+    );
+    assert_eq!(
+        safe_filename("\u{1f600}\u{e0067}\u{e007f}.png", "12345678"),
+        "\u{1f600}__.png"
+    );
+    assert_eq!(
+        safe_filename("\u{1f3f4}x\u{e0067}.png", "12345678"),
+        "\u{1f3f4}x_.png"
+    );
+    // Tags with no flag before them are replaced, whatever their place in the name.
+    assert_eq!(
+        safe_filename("\u{e0067}\u{e007f}report.pdf", "12345678"),
+        "__report.pdf"
+    );
+    // A bidirectional control inside a flag sequence is replaced and ends it.
+    assert_eq!(
+        safe_filename("\u{1f3f4}\u{e0067}\u{202e}\u{e0062}.png", "12345678"),
+        "\u{1f3f4}\u{e0067}__.png"
+    );
+}
+
+#[test]
+fn prepended_concatenation_marks_that_number_digits_are_kept() {
+    for mark in [
+        '\u{0600}',
+        '\u{0601}',
+        '\u{0602}',
+        '\u{0603}',
+        '\u{0604}',
+        '\u{0605}',
+        '\u{06dd}',
+        '\u{070f}',
+        '\u{0890}',
+        '\u{0891}',
+        '\u{08e2}',
+        '\u{110bd}',
+        '\u{110cd}',
+    ] {
+        let name = format!("{mark}\u{661}\u{662}.pdf");
+        assert_eq!(
+            safe_filename(&name, "12345678"),
+            name,
+            "U+{:04X}",
+            mark as u32
+        );
+    }
+    // They are no cover for the controls that reorder a name.
+    assert_eq!(
+        safe_filename("\u{06dd}1\u{202e}fdp.exe", "12345678"),
+        "\u{06dd}1_fdp.exe"
+    );
+}
+
+#[test]
 fn errors_redact_url_and_header_secrets() {
     let mut request = AddRequest {
         url: "https://example.test/file?token=secret".into(),
@@ -2506,6 +2614,78 @@ fn a_job_named_from_the_address_gets_the_decoded_file_name() {
     assert_eq!(job.path.file_name().unwrap(), "Yıllık Rapor (1).pdf");
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_named_from_the_address_or_the_browser_loses_bidirectional_controls() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-bidi-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let start_at = Some(Utc::now().timestamp() + 3600);
+    let mut ids = Vec::new();
+    for (url, filename) in [
+        // The name is the last part of the address, percent-encoded.
+        ("https://example.test/files/%E2%80%AEtxt.exe", None),
+        // The name is one the browser handed over or the user typed.
+        (
+            "https://example.test/files/download",
+            Some("invoice\u{202e}fdp.exe".to_owned()),
+        ),
+    ] {
+        ids.push(
+            engine
+                .add(AddRequest {
+                    url: url.into(),
+                    filename,
+                    directory: Some(root.join("out")),
+                    start_at,
+                    ..Default::default()
+                })
+                .unwrap()
+                .remove(0),
+        );
+    }
+    let snapshot = engine.snapshot();
+    let names = ids
+        .iter()
+        .map(|id| {
+            let job = snapshot.jobs.iter().find(|job| &job.id == id).unwrap();
+            assert_eq!(job.path.file_name().unwrap(), job.name.as_str());
+            job.name.clone()
+        })
+        .collect::<Vec<_>>();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(names, ["_txt.exe", "invoice_fdp.exe"]);
+}
+
+#[test]
+fn renaming_a_completed_file_replaces_bidirectional_controls() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-rename-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/plain.bin".into(), vec![3; 2048], false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(file_request(server.url("/plain.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+
+    engine.rename(&id, "\u{202e}txt.exe").unwrap();
+
+    let snapshot = engine.snapshot();
+    let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+    let renamed = job.path.clone();
+    engine.shutdown();
+    let on_disk = fs::read_dir(root.join("out"))
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(renamed.file_name().unwrap(), "_txt.exe");
+    assert_eq!(on_disk, ["_txt.exe"]);
 }
 
 fn job_state(engine: &Engine, id: &str) -> JobState {

@@ -3776,6 +3776,32 @@ fn the_name_the_user_chose_and_the_content_disposition_win_over_the_name_a_redir
 }
 
 #[test]
+fn a_name_from_the_server_never_keeps_a_bidirectional_control() {
+    let size = 4_000;
+    // The name of the Content-Disposition header, in the encoded form that carries any text.
+    let disposition = Server::start(Config {
+        size,
+        content_disposition: Some("attachment; filename*=UTF-8''invoice%E2%80%AEfdp.exe".into()),
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(disposition.url("/get")), size),
+        "invoice_fdp.exe"
+    );
+
+    // The name of the address that a redirect led to.
+    let redirected = Server::start(Config {
+        size,
+        documents: vec![redirect_document("/get", 302, "/files/%E2%80%AEtxt.exe")],
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(redirected.url("/get")), size),
+        "_txt.exe"
+    );
+}
+
+#[test]
 fn a_file_saved_under_the_name_a_redirect_led_to_never_overwrites_one_that_exists() {
     let size = 4_000;
     let server = Server::start(Config {
