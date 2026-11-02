@@ -384,6 +384,21 @@ fn scripted_merge(
     source: &str,
     copy: &str,
 ) -> (Option<String>, Vec<&'static str>, bool) {
+    let (outcome, runs, remains) =
+        scripted_merge_until(transport_stream, plain, repaired, source, copy, None);
+    (outcome.unwrap(), runs, remains)
+}
+
+/// [`scripted_merge`] where the run named `stopped_at` ends in an error (a stop or a timeout)
+/// after it did what it does: FFmpeg has written the file when its run is the one that ends.
+fn scripted_merge_until(
+    transport_stream: bool,
+    plain: (u32, &str),
+    repaired: (u32, &str),
+    source: &str,
+    copy: &str,
+    stopped_at: Option<&str>,
+) -> (Result<Option<String>>, Vec<&'static str>, bool) {
     use std::os::windows::process::ExitStatusExt;
     let root = std::env::temp_dir().join(format!("ssdownload-merge-test-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
@@ -422,28 +437,37 @@ fn scripted_merge(
     };
     let mut runs = Vec::new();
     let outcome = merge_streams_with(&request, &streams, &staged, &tools, &mut |tool, args| {
-        if tool == Path::new("ffmpeg") {
+        let (run, result) = if tool == Path::new("ffmpeg") {
             let repairing = args.iter().any(|argument| argument.starts_with("-bsf"));
-            runs.push(if repairing {
-                "repaired copy"
-            } else {
-                "plain copy"
-            });
             // FFmpeg leaves the file it was writing behind.
             fs::write(&staged, b"copy").unwrap();
             let (code, stderr) = if repairing { repaired } else { plain };
-            return Ok(captured(code, "", stderr));
-        }
-        let of_the_copy = args.last().map(Path::new) == Some(staged.as_path());
-        runs.push(if of_the_copy {
-            "packets of the copy"
+            (
+                if repairing {
+                    "repaired copy"
+                } else {
+                    "plain copy"
+                },
+                captured(code, "", stderr),
+            )
         } else {
-            "packets of the source"
-        });
-        let listing = if of_the_copy { copy } else { source };
-        Ok(captured(u32::from(listing.is_empty()), listing, ""))
-    })
-    .unwrap();
+            let of_the_copy = args.last().map(Path::new) == Some(staged.as_path());
+            let listing = if of_the_copy { copy } else { source };
+            (
+                if of_the_copy {
+                    "packets of the copy"
+                } else {
+                    "packets of the source"
+                },
+                captured(u32::from(listing.is_empty()), listing, ""),
+            )
+        };
+        runs.push(run);
+        if stopped_at == Some(run) {
+            bail!("stopped");
+        }
+        Ok(result)
+    });
     let remains = staged.exists();
     fs::remove_dir_all(root).unwrap();
     (outcome, runs, remains)
@@ -460,6 +484,30 @@ fn a_merge_that_succeeds_as_it_is_is_not_repaired() {
     assert_eq!(outcome, None);
     assert_eq!(runs, ["plain copy"]);
     assert!(remains);
+}
+
+#[test]
+fn a_merge_that_is_stopped_or_runs_out_of_time_leaves_no_staged_copy() {
+    // Every stop point, in the order a repaired merge reaches them: FFmpeg's runs have written
+    // the copy when they end.
+    for stopped_at in [
+        "plain copy",
+        "packets of the source",
+        "repaired copy",
+        "packets of the copy",
+    ] {
+        let (outcome, runs, remains) = scripted_merge_until(
+            true,
+            (1, UNKNOWN_TIMESTAMP),
+            (0, PARAMETER_SET_REMARK),
+            OPEN_GOP_SEGMENTS,
+            OPEN_GOP_REPAIRED,
+            Some(stopped_at),
+        );
+        assert!(outcome.is_err(), "{stopped_at}");
+        assert_eq!(runs.last(), Some(&stopped_at), "{stopped_at}");
+        assert!(!remains, "{stopped_at}: the staged copy stayed");
+    }
 }
 
 #[test]
@@ -1459,6 +1507,59 @@ fn a_relayed_raw_file_is_placed_without_the_media_tools() {
     );
     assert!(source.exists());
     let _ = fs::remove_dir_all(&root);
+}
+
+/// FFmpeg is stopped while it copies the relayed file into its container: the half-written copy
+/// is removed and the relayed file stays for the next try. The tools are scripts that behave as
+/// the real ones do here: `ffprobe` names an MPEG-TS file, `ffmpeg` starts its output and goes on.
+#[test]
+fn a_stop_while_a_relayed_file_is_copied_into_its_container_leaves_no_staged_file() {
+    let root = std::env::temp_dir().join(format!("ssdownload-remux-stop-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let ffprobe = root.join("ffprobe.cmd");
+    fs::write(&ffprobe, "@echo off\r\necho mpegts\r\n").unwrap();
+    let ffmpeg = root.join("ffmpeg.cmd");
+    fs::write(
+        &ffmpeg,
+        "@echo off\r\n\
+         for %%a in (%*) do set \"last=%%~a\"\r\n\
+         echo partial> \"%last%\"\r\n\
+         ping -n 60 127.0.0.1 > nul\r\n",
+    )
+    .unwrap();
+    let tools = tools::VerifiedTools::staged("yt-dlp".into(), "deno".into(), ffmpeg, ffprobe);
+    let source = root.join("stream-0");
+    fs::write(&source, b"relayed bytes").unwrap();
+    let output = root.join("clip.mp4");
+    let control = TransferControl::default();
+    let staged = || {
+        fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".browser-mux-")
+            })
+            .count()
+    };
+
+    let outcome = thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while staged() == 0 && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            control.cancel();
+        });
+        remux_into_container(&tools, &source, &output, "mp4", &control)
+    });
+
+    assert!(outcome.is_err(), "the copy was stopped");
+    assert_eq!(staged(), 0, "the half-written copy stayed");
+    assert!(source.exists() && !output.exists());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
