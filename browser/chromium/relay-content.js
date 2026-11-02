@@ -615,11 +615,58 @@
     return name.split(/[\\/]/).pop().replace(/^[ .]+|[ .]+$/g, "");
   }
 
-  // The application's test for a page (`sniff_page`): in the first 1024 bytes, after a byte order
-  // mark and white space, a tag that only a page opens with.
+  // The application's test for a page (`sniff_page`) on the first 1024 bytes of a body: after a
+  // byte order mark and white space, a comment, a tag from the WHATWG MIME Sniffing standard's
+  // list for text/html (its name ends at white space, `/` or `>`, so `<header` is none) or an XML
+  // declaration that an `html` document follows. A body that could still become one is no page.
+  const PAGE_OPENINGS = ["<!doctype html", "<html", "<head", "<script", "<iframe", "<h1", "<div", "<font", "<table", "<a", "<style", "<title", "<b", "<body", "<br", "<p"];
+  const TAG_NAME_END = "\t\n\f\r />";
+  const PAGE = 1, UNDECIDED = 0, FILE = -1;
+
+  // PAGE when `body` begins with `pattern` (lower case), ignoring case, FILE when it does not,
+  // UNDECIDED when it is shorter and so far the same.
+  function beginsWith(body, pattern) {
+    const shared = Math.min(body.length, pattern.length);
+    if (body.slice(0, shared).toLowerCase() !== pattern.slice(0, shared)) return FILE;
+    return body.length < pattern.length ? UNDECIDED : PAGE;
+  }
+
+  // Like `beginsWith`, with a tag name that ends where `pattern` does.
+  function beginsWithTag(body, pattern) {
+    const verdict = beginsWith(body, pattern);
+    if (verdict !== PAGE) return verdict;
+    if (body.length === pattern.length) return UNDECIDED;
+    return TAG_NAME_END.includes(body[pattern.length]) ? PAGE : FILE;
+  }
+
+  const strongest = verdicts => verdicts.includes(PAGE) ? PAGE : verdicts.includes(UNDECIDED) ? UNDECIDED : FILE;
+
+  // Whether `body`, an XML document, is an XHTML page: after its declaration, white space and
+  // comments, the document type or the root element is `html`.
+  function xhtmlPage(body) {
+    const declared = beginsWith(body, "<?xml");
+    if (declared !== PAGE) return declared;
+    const end = body.indexOf("?>");
+    if (end < 0) return UNDECIDED;
+    let rest = body.slice(end + 2);
+    for (;;) {
+      rest = rest.replace(/^[\t\n\f\r ]+/, "");
+      const comment = beginsWith(rest, "<!--");
+      if (comment === FILE) break;
+      if (comment === UNDECIDED) return UNDECIDED;
+      const close = rest.indexOf("-->", 4);
+      if (close < 0) return UNDECIDED;
+      rest = rest.slice(close + 3);
+    }
+    return strongest([beginsWithTag(rest, "<!doctype html"), beginsWithTag(rest, "<html")]);
+  }
+
   function opensLikeAPage(bytes) {
+    const BOM = "\xEF\xBB\xBF";
     const start = String.fromCharCode(...bytes.subarray(0, 1024));
-    return /^(?:\xEF\xBB\xBF)?[\t\n\f\r ]*(?:<!doctype html|<html|<head|<body|<script|<title)/i.test(start);
+    if (start && start.length < BOM.length && BOM.startsWith(start)) return false;
+    const body = (start.startsWith(BOM) ? start.slice(BOM.length) : start).replace(/^[\t\n\f\r ]+/, "");
+    return strongest([...PAGE_OPENINGS.map(tag => beginsWithTag(body, tag)), beginsWith(body, "<!--"), xhtmlPage(body)]) === PAGE;
   }
 
   // A web page is never the file a relay job asked for. A video or audio job has no use for one;

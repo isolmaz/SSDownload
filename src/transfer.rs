@@ -5352,35 +5352,117 @@ enum Sniffed {
     Undecided,
 }
 
+/// The tags that open a page in the WHATWG MIME Sniffing standard's list for `text/html`, and the
+/// doctype. The standard ends a tag name at a space or `>`; the HTML tokenizer also ends it at
+/// the other white space and `/`, which a page may use (`<html\n lang=en>`).
+const PAGE_OPENINGS: [&[u8]; 16] = [
+    b"<!doctype html",
+    b"<html",
+    b"<head",
+    b"<script",
+    b"<iframe",
+    b"<h1",
+    b"<div",
+    b"<font",
+    b"<table",
+    b"<a",
+    b"<style",
+    b"<title",
+    b"<b",
+    b"<body",
+    b"<br",
+    b"<p",
+];
+const TAG_NAME_END: &[u8] = b"\t\n\x0C\r />";
+
+/// Whether `body` begins with `pattern`, ignoring case: `Page` when it does, `File` when it does
+/// not, `Undecided` when it is shorter and so far the same.
+fn begins_with(body: &[u8], pattern: &[u8]) -> Sniffed {
+    let shared = body.len().min(pattern.len());
+    if !body[..shared].eq_ignore_ascii_case(&pattern[..shared]) {
+        Sniffed::File
+    } else if body.len() < pattern.len() {
+        Sniffed::Undecided
+    } else {
+        Sniffed::Page
+    }
+}
+
+/// Like `begins_with`, with a tag name that ends where `pattern` does: `<header` and `<titles>`
+/// do not begin with `<head` and `<title`.
+fn begins_with_tag(body: &[u8], pattern: &[u8]) -> Sniffed {
+    match begins_with(body, pattern) {
+        Sniffed::Page => match body.get(pattern.len()) {
+            Some(byte) if TAG_NAME_END.contains(byte) => Sniffed::Page,
+            Some(_) => Sniffed::File,
+            None => Sniffed::Undecided,
+        },
+        other => other,
+    }
+}
+
+/// `Page` if any verdict is, else `Undecided` if any is, else `File`.
+fn strongest(verdicts: impl IntoIterator<Item = Sniffed>) -> Sniffed {
+    let mut strongest = Sniffed::File;
+    for verdict in verdicts {
+        match verdict {
+            Sniffed::Page => return Sniffed::Page,
+            Sniffed::Undecided => strongest = Sniffed::Undecided,
+            Sniffed::File => {}
+        }
+    }
+    strongest
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Whether `body`, an XML document, is an XHTML page: after its declaration, white space and
+/// comments, the document type or the root element is `html`.
+fn xhtml_page(body: &[u8]) -> Sniffed {
+    match begins_with(body, b"<?xml") {
+        Sniffed::Page => {}
+        other => return other,
+    }
+    let Some(end) = find(body, b"?>") else {
+        return Sniffed::Undecided;
+    };
+    let mut rest = &body[end + 2..];
+    loop {
+        rest = rest.trim_ascii_start();
+        match begins_with(rest, b"<!--") {
+            Sniffed::Page => match find(&rest[4..], b"-->") {
+                Some(end) => rest = &rest[4 + end + 3..],
+                None => return Sniffed::Undecided,
+            },
+            Sniffed::Undecided => return Sniffed::Undecided,
+            Sniffed::File => break,
+        }
+    }
+    strongest([
+        begins_with_tag(rest, b"<!doctype html"),
+        begins_with_tag(rest, b"<html"),
+    ])
+}
+
 /// Whether `start`, the first bytes of a body, is a web page: after a byte order mark and white
-/// space it opens with a tag that a page begins with. A text, CSV, JSON or XML file does not.
+/// space it opens with a comment, one of the tags in `PAGE_OPENINGS`, or an XML declaration that
+/// an `html` document follows. A text, CSV, JSON or XML file does not.
 fn sniff_page(start: &[u8]) -> Sniffed {
     const BOM: &[u8] = b"\xEF\xBB\xBF";
-    const TAGS: [&[u8]; 6] = [
-        b"<!doctype html",
-        b"<html",
-        b"<head",
-        b"<body",
-        b"<script",
-        b"<title",
-    ];
     if !start.is_empty() && start.len() < BOM.len() && BOM.starts_with(start) {
         return Sniffed::Undecided;
     }
     let body = start.strip_prefix(BOM).unwrap_or(start).trim_ascii_start();
-    if TAGS
-        .iter()
-        .any(|tag| body.len() >= tag.len() && body[..tag.len()].eq_ignore_ascii_case(tag))
-    {
-        Sniffed::Page
-    } else if TAGS
-        .iter()
-        .any(|tag| body.len() < tag.len() && tag[..body.len()].eq_ignore_ascii_case(body))
-    {
-        Sniffed::Undecided
-    } else {
-        Sniffed::File
-    }
+    strongest(
+        PAGE_OPENINGS
+            .iter()
+            .map(|tag| begins_with_tag(body, tag))
+            .chain([begins_with(body, b"<!--"), xhtml_page(body)]),
+    )
 }
 
 /// Holds back the start of the body of a page that is named as a file until its first bytes show
@@ -6441,53 +6523,23 @@ mod tests {
 
     #[test]
     fn the_start_of_a_body_is_a_page_only_when_it_opens_like_one() {
-        for page in [
-            "<!DOCTYPE html><html>",
-            "<!doctype HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\">",
-            "<html>",
-            "<HTML lang=en>",
-            "<head><title>x</title>",
-            "<body>",
-            "<script>location='/login'</script>",
-            "<title>Sign in</title>",
-            "\u{feff}<html>",
-            "  \r\n\t<html>",
-            "\u{feff} \n<!DOCTYPE html>",
+        // The browser extension's relay applies the same rule to the same cases
+        // (`browser/tests/relay-content.test.js`).
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../browser/tests/page-sniff-cases.json")).unwrap();
+        for (group, expected) in [
+            ("page", Sniffed::Page),
+            ("file", Sniffed::File),
+            ("undecided", Sniffed::Undecided),
         ] {
-            assert_eq!(sniff_page(page.as_bytes()), Sniffed::Page, "{page:?}");
-        }
-        for file in [
-            "id,name\n1,a\n",
-            "hello",
-            "{\"html\": \"<html>\"}",
-            "<?xml version=\"1.0\"?><html/>",
-            "<feed/>",
-            "<!-- <html> -->",
-            "x<html>",
-            "%PDF-1.7",
-            "PK\u{3}\u{4}",
-        ] {
-            assert_eq!(sniff_page(file.as_bytes()), Sniffed::File, "{file:?}");
+            let starts = cases[group].as_array().unwrap();
+            assert!(!starts.is_empty(), "{group}");
+            for start in starts {
+                let start = start.as_str().unwrap();
+                assert_eq!(sniff_page(start.as_bytes()), expected, "{group}: {start:?}");
+            }
         }
         assert_eq!(sniff_page(&[0xFF, 0xFE, b'<']), Sniffed::File);
-        // What could still become a tag or a byte order mark waits for more bytes.
-        for start in [
-            "",
-            " ",
-            "\n\n",
-            "<",
-            "<!doc",
-            "<!doctype htm",
-            "<htm",
-            "<scr",
-            "\u{feff}",
-        ] {
-            assert_eq!(
-                sniff_page(start.as_bytes()),
-                Sniffed::Undecided,
-                "{start:?}"
-            );
-        }
         assert_eq!(sniff_page(&[0xEF]), Sniffed::Undecided);
         assert_eq!(sniff_page(&[0xEF, 0xBB]), Sniffed::Undecided);
         assert_eq!(sniff_page(&[0xEF, 0xBB, 0x41]), Sniffed::File);

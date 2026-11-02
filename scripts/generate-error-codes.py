@@ -285,7 +285,7 @@ CODES = [
     ("NET-004", "network", "source", "error", "settings", False,
      "Dosya yerine bir web sayfası (örneğin oturum açma sayfası) geldi",
      "A web page (such as a sign-in page) arrived instead of the file",
-     "A file request that a redirect led to a web page the server does not send as an attachment (a sign-in page, for example) fails instead of saving the page. The request lacks the session, so repeating it unchanged gets the same page."),
+     "A file request fails instead of saving a web page that the server does not send as an attachment: a page that a redirect led to (a sign-in page, for example), or a page that opens like one (an HTML comment, a tag from the WHATWG MIME Sniffing list for HTML, or an XML declaration followed by an html document) when the file's name has the extension of another file type. The request lacks the session, so repeating it unchanged gets the same page."),
     ("NET-005", "network", "source", "error", "refresh", False,
      "Kaynak bulunamadı (404)",
      "Resource not found (404)",

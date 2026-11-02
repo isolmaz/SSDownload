@@ -118,6 +118,21 @@ test("a resumed run still continues the stored part with the file itself", async
   assert.equal(h.commands.find(command => command.command === "chunk").offset, 100);
 });
 
+test("a resumed run does not look at the start of the answer, which begins in the middle of the file", async () => {
+  const request = { kind: "file", filename: "report.pdf" };
+  const answer = () => served({ status: 206, type: "text/html", body: "<html>tail", headers: { "content-range": "bytes 100-109/110", etag: "\"v1\"" } });
+  const resume = { stream_id: 1, offset: 100, next_sequence: 3, sealed: false, etag: "\"v1\"", client_checkpoint: { v: 1, kind: "direct", sha: hash100, offset: 100 } };
+  const resumed = relayContentHarness({ request, resume, answer });
+  await resumed.run();
+  assert.equal(resumed.fetched[0].range, "bytes=100-");
+  assert.deepEqual(resumed.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"]);
+  assert.equal(Buffer.from(resumed.commands.find(command => command.command === "chunk").data, "base64").toString(), "<html>tail");
+
+  const fresh = relayContentHarness({ request, answer: () => served({ type: "text/html", body: "<html>tail" }) });
+  await fresh.run();
+  assert.deepEqual(fresh.names(), ["begin_request", "end_request", "failed"], "the same bytes at the start of a fresh run are a page");
+});
+
 test("a fresh run refuses a page that answers for a name with another file type's extension, redirected or not", async () => {
   const cases = [
     ["the job's own name", { kind: "file", filename: "report.pdf", url: "https://files.example/download" }],
@@ -173,12 +188,32 @@ test("a page that opens like one is refused before the run opens a stream, whate
 
 test("a file that the server labels as a page is written when its bytes are no page", async () => {
   for (const [filename, body] of [["data.csv", "id,name\n1,a\n"], ["notes.txt", "hello"], ["data.json", "{\"html\": \"<html>\"}"],
-    ["feed.xml", "<?xml version=\"1.0\"?><html/>"], ["tiny.txt", "<"], ["empty.txt", ""]]) {
+    ["feed.xml", "<?xml version=\"1.0\"?><feed/>"], ["tiny.txt", "<"], ["empty.txt", ""]]) {
     const h = relayContentHarness({ request: { kind: "file", filename }, answer: () => served({ type: "text/html", body }) });
     await h.run();
     const chunks = h.commands.filter(command => command.command === "chunk");
     assert.deepEqual(h.names(), body ? ["begin_request", "open", "chunk", "end_request", "seal", "finish"] : ["begin_request", "open", "end_request", "seal", "finish"], filename);
     assert.equal(chunks.map(chunk => Buffer.from(chunk.data, "base64").toString()).join(""), body, filename);
+  }
+});
+
+// The application tests the same cases against its own copy of the rule (`sniff_page`).
+const SNIFF_CASES = JSON.parse(fs.readFileSync(path.join(__dirname, "page-sniff-cases.json"), "utf8"));
+
+test("the start of a body is a page for the relay exactly where it is one for the application", async () => {
+  for (const [group, refused] of [["page", true], ["file", false], ["undecided", false]]) {
+    assert.ok(SNIFF_CASES[group].length > 0, group);
+    for (const body of SNIFF_CASES[group]) {
+      const h = relayContentHarness({ request: { kind: "file", filename: "report.pdf" }, answer: () => served({ type: "text/html", body }) });
+      await h.run();
+      const label = `${group}: ${JSON.stringify(body)}`;
+      if (refused) assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"], label);
+      else {
+        assert.equal(h.names().at(-1), "finish", label);
+        const written = h.commands.filter(command => command.command === "chunk").map(chunk => Buffer.from(chunk.data, "base64").toString()).join("");
+        assert.equal(written, body, label);
+      }
+    }
   }
 });
 
