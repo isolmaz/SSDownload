@@ -401,7 +401,7 @@ pub(crate) mod stubs {
                         captured(0, &probe_output(false, true, "00:00:01.023000000"), "")
                     }
                     Fault::StreamsDisagreeInLength => {
-                        captured(0, &probe_output(true, true, "00:00:02.500000000"), "")
+                        captured(0, &probe_output(true, true, "00:00:04.000000000"), "")
                     }
                     _ => captured(0, &probe_output(true, true, "00:00:01.023000000"), ""),
                 },
@@ -498,7 +498,7 @@ mod tests {
                 ),
                 (
                     Fault::StreamsDisagreeInLength,
-                    finding(true, true, "00:00:02.500000000"),
+                    finding(true, true, "00:00:04.000000000"),
                 ),
             ];
             for fault in Fault::FAILING {
