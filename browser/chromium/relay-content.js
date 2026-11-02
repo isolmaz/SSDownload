@@ -474,10 +474,11 @@
     return value;
   }
 
-  async function* transferChunks(reader) {
+  // `replay` holds reads of the body made before, which come first.
+  async function* transferChunks(reader, replay = []) {
     let chunk = null, used = 0;
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = replay.length ? replay.shift() : await reader.read();
       if (done) {
         if (used) yield chunk.subarray(0, used);
         return;
@@ -548,10 +549,30 @@
     await control(run,"seal",{streamId:stream.streamId,sha256:hash.digestHex()});
   }
 
-  async function directTransfer(run, fetchResult, existing) {
+  // Reads the body until `size` bytes are in or it ends, and returns the reads.
+  async function readHead(reader, size) {
+    const reads=[]; let length=0, ended=false;
+    while(length<size&&!ended) {
+      const read=await reader.read();
+      reads.push(read);ended=read.done;length+=read.value?.length||0;
+    }
+    return reads;
+  }
+
+  async function directTransfer(run, fetchResult, existing, lookForPage) {
     const response=fetchResult.response;
-    let reader=null, complete=false, alreadySealed=false, digest=null;
+    let reader=null, complete=false, alreadySealed=false, digest=null, head=[];
     try {
+      if(lookForPage) {
+        reader=response.body.getReader();
+        head=await readHead(reader,1024);
+        const start=new Uint8Array(1024);let used=0;
+        for(const read of head)if(read.value&&used<1024) {
+          const part=read.value.subarray(0,1024-used);
+          start.set(part,used);used+=part.length;
+        }
+        if(opensLikeAPage(start.subarray(0,used)))throw new Error(t("relayPageNotFile"));
+      }
       const etag=strongEtag(response.headers.get("etag"));
       const range=/^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(response.headers.get("content-range")||"");
       const length=Number(response.headers.get("content-length"));
@@ -562,8 +583,8 @@
       else {
         let hash=state.offset?new Sha256(state.client_checkpoint?.sha):new Sha256();
         if(hash.bytes!==state.offset||(state.offset&&state.client_checkpoint?.offset!==state.offset))throw new Error(t("relayFileCursorMismatch"));
-        reader=response.body.getReader();let pending=null,consumed=state.offset;
-        for await (const part of transferChunks(reader)) {
+        reader=reader||response.body.getReader();let pending=null,consumed=state.offset;
+        for await (const part of transferChunks(reader,head)) {
           if(pending)state=await sendPart(run,state,pending.bytes,{v:1,kind:"direct",sha:hash.exportState(),offset:pending.end},hash);
           consumed+=part.length;pending={bytes:part,end:consumed};
         }
@@ -582,17 +603,93 @@
     await control(run,"finish");
   }
 
+  // The name the application saves the job under (`url_file_name` and `safe_filename`): the name
+  // given or else the percent-decoded last segment of the address, cut at the last path separator
+  // and without the dots and spaces around it.
+  function savedName(request) {
+    let name = request.filename;
+    if (typeof name !== "string") {
+      name = new URL(request.url).pathname.split("/").pop();
+      try { name = decodeURIComponent(name); } catch (_) {}
+    }
+    return name.split(/[\\/]/).pop().replace(/^[ .]+|[ .]+$/g, "");
+  }
+
+  // The application's test for a page (`sniff_page`) on the first 1024 bytes of a body: after a
+  // byte order mark and white space, a comment, a tag from the WHATWG MIME Sniffing standard's
+  // list for text/html (its name ends at white space, `/` or `>`, so `<header` is none) or an XML
+  // declaration that an `html` document follows. A body that could still become one is no page.
+  // The rule differs from the standard in three ways, because the server has declared a page
+  // already and only the file's own bytes are in question: a tag name also ends at the other
+  // white space and `/`, as the HTML tokenizer ends it; `<!--` needs no byte after it; and a byte
+  // order mark before the first tag is skipped. The XHTML case is not in the standard.
+  const PAGE_OPENINGS = ["<!doctype html", "<html", "<head", "<script", "<iframe", "<h1", "<div", "<font", "<table", "<a", "<style", "<title", "<b", "<body", "<br", "<p"];
+  const TAG_NAME_END = "\t\n\f\r />";
+  const PAGE = 1, UNDECIDED = 0, FILE = -1;
+
+  // PAGE when `body` begins with `pattern` (lower case), ignoring case, FILE when it does not,
+  // UNDECIDED when it is shorter and so far the same.
+  function beginsWith(body, pattern) {
+    const shared = Math.min(body.length, pattern.length);
+    if (body.slice(0, shared).toLowerCase() !== pattern.slice(0, shared)) return FILE;
+    return body.length < pattern.length ? UNDECIDED : PAGE;
+  }
+
+  // Like `beginsWith`, with a tag name that ends where `pattern` does.
+  function beginsWithTag(body, pattern) {
+    const verdict = beginsWith(body, pattern);
+    if (verdict !== PAGE) return verdict;
+    if (body.length === pattern.length) return UNDECIDED;
+    return TAG_NAME_END.includes(body[pattern.length]) ? PAGE : FILE;
+  }
+
+  const strongest = verdicts => verdicts.includes(PAGE) ? PAGE : verdicts.includes(UNDECIDED) ? UNDECIDED : FILE;
+
+  // Whether `body`, an XML document, is an XHTML page: after its declaration, white space,
+  // comments and processing instructions, the document type or the root element is `html`.
+  function xhtmlPage(body) {
+    const declared = beginsWith(body, "<?xml");
+    if (declared !== PAGE) return declared;
+    const end = body.indexOf("?>");
+    if (end < 0) return UNDECIDED;
+    let rest = body.slice(end + 2);
+    for (;;) {
+      rest = rest.replace(/^[\t\n\f\r ]+/, "");
+      const [open, close] = beginsWith(rest, "<!--") === FILE ? ["<?", "?>"] : ["<!--", "-->"];
+      const opens = beginsWith(rest, open);
+      if (opens === FILE) break;
+      if (opens === UNDECIDED) return UNDECIDED;
+      const closed = rest.indexOf(close, open.length);
+      if (closed < 0) return UNDECIDED;
+      rest = rest.slice(closed + close.length);
+    }
+    return strongest([beginsWithTag(rest, "<!doctype html"), beginsWithTag(rest, "<html")]);
+  }
+
+  function opensLikeAPage(bytes) {
+    const BOM = "\xEF\xBB\xBF";
+    const start = String.fromCharCode(...bytes.subarray(0, 1024));
+    if (start && start.length < BOM.length && BOM.startsWith(start)) return false;
+    const body = (start.startsWith(BOM) ? start.slice(BOM.length) : start).replace(/^[\t\n\f\r ]+/, "");
+    return strongest([...PAGE_OPENINGS.map(tag => beginsWithTag(body, tag)), beginsWith(body, "<!--"), xhtmlPage(body)]) === PAGE;
+  }
+
   // A web page is never the file a relay job asked for. A video or audio job has no use for one;
   // for any other job the application's own rule applies (SSD-NET-004): the page that a redirect
   // led to is where a site sends a request without its session, so it is refused unless the
-  // server sent it as an attachment or the file's name, the job's or else the one the application
-  // takes from the last segment of the address, is a page's.
+  // server sent it as an attachment or the job's name is a page's. `true` refuses it. A page that
+  // no redirect led to is refused only when it opens like a page (`opensLikeAPage`) and the job's
+  // name has the extension of another file type (`report.pdf`; the `.2` of `v1.2` is not one):
+  // that is `"look"`, and the first bytes of the body decide. The job's name is the one the
+  // application saves it under, which the relay never takes from the server's answer.
   function webPageInsteadOfFile(run, response, type) {
     if (!/^\s*(?:text\/html|application\/xhtml\+xml)\s*(?:;|$)/.test(type)) return false;
     if (run.request.kind === "video" || run.request.kind === "audio") return true;
-    const attachment = /^\s*attachment\s*(?:;|$)/i.test(response.headers.get("content-disposition") || "");
-    const name = run.request.filename || new URL(run.request.url).pathname.split("/").pop();
-    return response.redirected === true && !attachment && !/\.(?:html?|xhtml)$/i.test(name);
+    if (/^\s*attachment\s*(?:;|$)/i.test(response.headers.get("content-disposition") || "")) return false;
+    const extension = /.\.([\p{Alphabetic}\p{N}]{1,16})$/su.exec(savedName(run.request))?.[1] || "";
+    if (/^(?:html?|xhtml|shtml|mhtml)$/i.test(extension)) return false;
+    if (response.redirected === true) return true;
+    return /\p{Alphabetic}/u.test(extension) ? "look" : false;
   }
 
   async function runTransfer(run) {
@@ -610,11 +707,12 @@
           try { await rootResponse.body.cancel(); } finally { await rootFetch.release(); }
           throw new Error(t("relayDirectWithTracks"));
         }
-        if(webPageInsteadOfFile(run,rootResponse,type)) {
+        const page=webPageInsteadOfFile(run,rootResponse,type);
+        if(page===true) {
           try { await rootResponse.body.cancel(); } finally { await rootFetch.release(); }
           throw new Error(t("relayPageNotFile"));
         }
-        run.kind="direct";await directTransfer(run,rootFetch,existing);return;
+        run.kind="direct";await directTransfer(run,rootFetch,existing,page==="look"&&!directResume);return;
       }
       if(directResume) {
         try { await rootResponse.body.cancel(); } finally { await rootFetch.release(); }

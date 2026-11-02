@@ -336,21 +336,21 @@ fn merge(
     let _ = fs::remove_file(&staged);
     // At least ten minutes, and enough for a slow disk to copy a large film at 20 MB/s.
     let bytes = joins.iter().map(Join::stored_bytes).sum::<u64>();
-    let result = run_capture(
-        &tools.ffmpeg,
-        &browser_mux_args(request, &files, &staged),
-        b"",
+    if let Some(reason) = merge_streams(
+        request,
+        &files,
+        &staged,
         Duration::from_secs((bytes / (20 << 20)).max(10 * 60)),
+        tools,
         control,
-    )?;
-    if !result.status.success() || !result.stderr.trim().is_empty() {
-        let _ = fs::remove_file(&staged);
-        bail!(
+    )? {
+        crate::bail_code!(
+            crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Görüntü ve ses akışları kayıpsız birleştirilemedi: {0}",
                 "The video and audio streams could not be merged losslessly: {0}",
-                bounded_tail(&result.stderr, 4096)
+                reason
             )
         );
     }

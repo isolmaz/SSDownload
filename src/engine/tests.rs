@@ -1042,6 +1042,175 @@ fn a_job_sent_to_the_browser_counts_again_after_a_begin_that_ended_early() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// A job that waits for a new source address, with the failure that sent it there, and a browser
+/// transfer that this process begins for it. Returns the folder, the paths, the engine, the job
+/// and the transfer's generation.
+fn awaiting_source_in_a_transfer(name: &str) -> (PathBuf, AppPaths, Engine, String, u64) {
+    let (root, paths, id) =
+        browser_quota_job(name, format!("https://example.test/{name}.bin"), |job| {
+            job.downloaded = 1_000_000;
+            job.error = Some("The signed address expired.".into());
+        });
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    (root, paths, engine, id, generation)
+}
+
+fn stored_job(paths: &AppPaths, id: &str) -> Job {
+    Store::open(&paths.database)
+        .unwrap()
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap()
+}
+
+fn shown_job(engine: &Engine, id: &str) -> Job {
+    let snapshot = engine.snapshot();
+    snapshot
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .clone()
+}
+
+/// What a job is, as the engine shows it and as the database has it.
+fn state_of_both(engine: &Engine, paths: &AppPaths, id: &str) -> [(JobState, bool); 2] {
+    [shown_job(engine, id), stored_job(paths, id)]
+        .map(|job| (job.state, job.browser_transfer_authorized))
+}
+
+#[test]
+fn a_job_waiting_for_a_source_waits_again_when_its_browser_transfer_ends_before_the_receiver_is_ready(
+) {
+    for end in ["released", "paused"] {
+        let (root, paths, engine, id, generation) =
+            awaiting_source_in_a_transfer(&format!("browser-ends-{end}"));
+        let before = stored_job(&paths, &id);
+        assert_eq!(before.state, JobState::AwaitingSource);
+        if end == "released" {
+            engine.release_browser_transfer(&id, generation)
+        } else {
+            engine.pause_browser_transfer(&id, generation)
+        }
+        .unwrap();
+
+        // As it was before the transfer began, in the engine and in the database.
+        for job in [shown_job(&engine, &id), stored_job(&paths, &id)] {
+            assert_eq!(
+                (
+                    job.state,
+                    &job.phase,
+                    &job.error,
+                    job.browser_transfer_authorized
+                ),
+                (
+                    JobState::AwaitingSource,
+                    &before.phase,
+                    &before.error,
+                    false
+                ),
+                "{end}"
+            );
+        }
+        // The address it waits for can still be delivered.
+        begin_as_this_process(&engine, &id, false);
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_paused_when_its_transfer_ends_after_the_receiver_was_ready() {
+    for end in ["released", "paused"] {
+        let (root, paths, engine, id, generation) =
+            awaiting_source_in_a_transfer(&format!("browser-prepared-{end}"));
+        engine
+            .browser_transfer_prepared(&id, generation, 0)
+            .unwrap();
+        if end == "released" {
+            engine.release_browser_transfer(&id, generation)
+        } else {
+            engine.pause_browser_transfer(&id, generation)
+        }
+        .unwrap();
+
+        assert_eq!(
+            state_of_both(&engine, &paths, &id),
+            [(JobState::Paused, true); 2],
+            "{end}"
+        );
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn a_job_waiting_for_a_source_waits_again_when_the_sender_of_its_browser_transfer_exits_before_the_receiver_is_ready(
+) {
+    // After the receiver is ready the sender's exit revokes the authorization and pauses the job.
+    for (prepared, expected) in [
+        (false, (JobState::AwaitingSource, false)),
+        (true, (JobState::Paused, false)),
+    ] {
+        let (root, paths, id) = browser_quota_job(
+            &format!("browser-exits-{prepared}"),
+            format!("https://example.test/browser-exits-{prepared}.bin"),
+            |job| job.downloaded = 1_000_000,
+        );
+        let mut sender = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                sender.id(),
+            )
+        };
+        assert!(!handle.is_null());
+        let sender_started_at = process_started_at(handle).unwrap();
+        unsafe {
+            CloseHandle(handle);
+        }
+        let engine = Engine::open(paths.clone()).unwrap();
+        engine.begin_source_refresh(&id).unwrap();
+        let before = stored_job(&paths, &id);
+        let (_, generation) = engine
+            .begin_browser_transfer(&id, sender.id(), sender_started_at, false)
+            .unwrap();
+        if prepared {
+            engine
+                .browser_transfer_prepared(&id, generation, 0)
+                .unwrap();
+        }
+        sender.kill().unwrap();
+        sender.wait().unwrap();
+        wait_until("the exit of the sender to end the transfer", || {
+            job_state(&engine, &id) != JobState::Downloading
+        });
+
+        assert_eq!(
+            state_of_both(&engine, &paths, &id),
+            [expected; 2],
+            "prepared: {prepared}"
+        );
+        if !prepared {
+            for job in [shown_job(&engine, &id), stored_job(&paths, &id)] {
+                assert_eq!((&job.phase, &job.error), (&before.phase, &before.error));
+            }
+        }
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[test]
 fn a_restart_counts_again_after_a_begin_that_ended_early() {
     // A browser transfer of the job had committed and counted 1 MB.
@@ -1485,8 +1654,11 @@ fn a_restart_sent_to_the_browser_that_ended_early_leaves_the_count_of_the_apps_o
     });
     let generation = begin_as_this_process(&engine, &id, true);
     engine.pause_browser_transfer(&id, generation).unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
 
-    // Resumed in the app, the downloader goes on from its partial file and reports from it.
+    // Paused and resumed in the app, the downloader goes on from its partial file and reports
+    // from it.
+    engine.pause(&id).unwrap();
     engine.resume(&id).unwrap();
     wait_until("the second run", || runs() == 2);
     report_downloaded(&engine, &id, &[1_000_000, 1_200_000]);
@@ -1933,6 +2105,114 @@ fn windows_filename_rules_remove_traversal_and_devices() {
 }
 
 #[test]
+fn bidirectional_and_invisible_format_characters_never_stay_in_a_file_name() {
+    // The right-to-left override draws the name that follows it backwards: this one ends in
+    // `.exe` and reads as `exe.txt`.
+    assert_eq!(safe_filename("\u{202e}txt.exe", "12345678"), "_txt.exe");
+    assert_eq!(safe_filename("\u{202e}exe.txt", "12345678"), "_exe.txt");
+    assert_eq!(
+        safe_filename("invoice\u{202e}fdp.exe", "12345678"),
+        "invoice_fdp.exe"
+    );
+    // Embeddings, overrides, isolates and marks.
+    let bidirectional = "\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}\u{200e}\u{200f}\u{061c}";
+    // Other format characters that draw nothing: a zero width space, the soft hyphen, a word
+    // joiner, a byte order mark, the deprecated format characters, the Mongolian vowel separator
+    // and a tag character that follows no flag emoji.
+    let invisible = "\u{200b}\u{00ad}\u{2060}\u{feff}\u{206a}\u{206f}\u{180e}\u{e0067}\u{1d173}";
+    // The other control characters: DEL and the C1 range.
+    let controls = "\u{7f}\u{85}\u{9f}";
+    for control in [bidirectional, invisible, controls]
+        .into_iter()
+        .flat_map(str::chars)
+    {
+        assert_eq!(
+            safe_filename(&format!("rapor{control}.pdf"), "12345678"),
+            "rapor_.pdf",
+            "U+{:04X}",
+            control as u32
+        );
+    }
+    // A name made of nothing but such characters is still a name that the user can see.
+    assert_eq!(safe_filename("\u{202e}\u{200b}", "12345678"), "__");
+}
+
+#[test]
+fn zero_width_joiners_that_spell_a_name_are_kept() {
+    for name in ["می\u{200c}خواهم.txt", "👩\u{200d}💻.png", "क्\u{200d}ष.pdf"] {
+        assert_eq!(safe_filename(name, "12345678"), name);
+    }
+}
+
+#[test]
+fn the_tag_characters_of_a_flag_emoji_are_kept_and_all_others_replaced() {
+    // The flags of England, Scotland and Wales: U+1F3F4, tag letters, the cancel tag.
+    for name in [
+        "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}.png",
+        "match \u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}.png",
+        "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f} cup.png",
+    ] {
+        assert_eq!(safe_filename(name, "12345678"), name);
+    }
+    // The cancel tag ends the sequence: a tag after it, a tag after another emoji and a tag
+    // after a character in between stand alone.
+    assert_eq!(
+        safe_filename("\u{1f3f4}\u{e0067}\u{e007f}\u{e0067}.png", "12345678"),
+        "\u{1f3f4}\u{e0067}\u{e007f}_.png"
+    );
+    assert_eq!(
+        safe_filename("\u{1f600}\u{e0067}\u{e007f}.png", "12345678"),
+        "\u{1f600}__.png"
+    );
+    assert_eq!(
+        safe_filename("\u{1f3f4}x\u{e0067}.png", "12345678"),
+        "\u{1f3f4}x_.png"
+    );
+    // Tags with no flag before them are replaced, whatever their place in the name.
+    assert_eq!(
+        safe_filename("\u{e0067}\u{e007f}report.pdf", "12345678"),
+        "__report.pdf"
+    );
+    // A bidirectional control inside a flag sequence is replaced and ends it.
+    assert_eq!(
+        safe_filename("\u{1f3f4}\u{e0067}\u{202e}\u{e0062}.png", "12345678"),
+        "\u{1f3f4}\u{e0067}__.png"
+    );
+}
+
+#[test]
+fn prepended_concatenation_marks_that_number_digits_are_kept() {
+    for mark in [
+        '\u{0600}',
+        '\u{0601}',
+        '\u{0602}',
+        '\u{0603}',
+        '\u{0604}',
+        '\u{0605}',
+        '\u{06dd}',
+        '\u{070f}',
+        '\u{0890}',
+        '\u{0891}',
+        '\u{08e2}',
+        '\u{110bd}',
+        '\u{110cd}',
+    ] {
+        let name = format!("{mark}\u{661}\u{662}.pdf");
+        assert_eq!(
+            safe_filename(&name, "12345678"),
+            name,
+            "U+{:04X}",
+            mark as u32
+        );
+    }
+    // They are no cover for the controls that reorder a name.
+    assert_eq!(
+        safe_filename("\u{06dd}1\u{202e}fdp.exe", "12345678"),
+        "\u{06dd}1_fdp.exe"
+    );
+}
+
+#[test]
 fn errors_redact_url_and_header_secrets() {
     let mut request = AddRequest {
         url: "https://example.test/file?token=secret".into(),
@@ -1988,6 +2268,142 @@ fn errors_redact_url_and_header_secrets() {
 }
 
 #[test]
+fn a_failed_media_run_is_read_by_its_final_error_line_and_keeps_its_code() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        page_url: Some("https://example.test/watch".into()),
+        ..AddRequest::default()
+    };
+    let download = |output: &str| {
+        transfer_failure(
+            &request,
+            crate::media::download_failure(output, &request, true, &[]),
+        )
+    };
+
+    // A 403 waits for a renewed source and is not retried.
+    let blocked = download("ERROR: unable to download video data: HTTP Error 403: Forbidden");
+    assert!(
+        blocked.message.starts_with("SSD-MED-007 "),
+        "{}",
+        blocked.message
+    );
+    assert!(blocked.source_refresh);
+    assert!(!blocked.retryable);
+
+    // A busy server is retried; the code of a download failure does not hide the reason.
+    let busy =
+        download("ERROR: unable to download video data: HTTP Error 503: Service Unavailable");
+    assert!(busy.message.starts_with("SSD-MED-017 "), "{}", busy.message);
+    assert!(busy.retryable);
+    assert!(!busy.source_refresh);
+
+    // A missing file is neither.
+    let missing = download("ERROR: unable to download video data: HTTP Error 404: Not Found");
+    assert!(
+        missing.message.starts_with("SSD-MED-017 "),
+        "{}",
+        missing.message
+    );
+    assert!(!missing.retryable);
+    assert!(!missing.source_refresh);
+
+    // A status the tool met on the way, before the error that ended the run, decides nothing.
+    let earlier = download(
+        "WARNING: HTTP Error 503: Service Unavailable. Retrying (1/3)\n\
+         ERROR: unable to download video data: HTTP Error 404: Not Found",
+    );
+    assert!(!earlier.retryable);
+
+    // An analysis the origin refused has the same 403 for the source refresh.
+    let analysis = transfer_failure(
+        &request,
+        crate::media::inspection_failure(
+            "[debug] Command-line config: ['-v']\n\
+             ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden",
+            &[],
+        ),
+    );
+    assert!(
+        analysis.message.starts_with("SSD-MED-007 "),
+        "{}",
+        analysis.message
+    );
+    assert!(analysis.message.contains("HTTP Error 403: Forbidden"));
+    assert!(!analysis.message.contains("[debug]"));
+    assert!(analysis.source_refresh);
+    assert!(!analysis.retryable);
+}
+
+/// What yt-dlp reports about a fragment it retries, each of which retries the job when it ends the
+/// run.
+const RETRYABLE_TOOL_ERRORS: [&str; 3] = [
+    "curl: (52) Empty reply from server",
+    "HTTP Error 503: Service Unavailable",
+    "The read operation timed out",
+];
+
+#[test]
+fn a_download_the_origin_refused_is_not_retried_for_what_the_tool_met_before() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        page_url: Some("https://example.test/watch".into()),
+        ..AddRequest::default()
+    };
+    let download = |output: String| {
+        transfer_failure(
+            &request,
+            crate::media::download_failure(&output, &request, true, &[]),
+        )
+    };
+    for error in RETRYABLE_TOOL_ERRORS {
+        let ended_by_it = download(format!("ERROR: unable to download video data: {error}"));
+        assert!(ended_by_it.retryable, "{}", ended_by_it.message);
+
+        let refused = download(format!(
+            "WARNING: [download] Got error: {error}. Retrying fragment 2 (1/10)\n\
+             ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        ));
+        assert!(!refused.retryable, "{}", refused.message);
+        assert!(refused.source_refresh, "{}", refused.message);
+        assert!(
+            refused.message.starts_with("SSD-MED-007 "),
+            "{}",
+            refused.message
+        );
+    }
+}
+
+#[test]
+fn an_analysis_the_origin_refused_is_not_retried_for_what_the_tool_met_before() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        page_url: Some("https://example.test/watch".into()),
+        ..AddRequest::default()
+    };
+    for error in RETRYABLE_TOOL_ERRORS {
+        let refused = transfer_failure(
+            &request,
+            crate::media::inspection_failure(
+                &format!(
+                    "[debug] Command-line config: ['-v']\n\
+                     WARNING: [generic] Unable to download webpage: {error}. Retrying (1/3)\n\
+                     ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden"
+                ),
+                &[],
+            ),
+        );
+        assert!(!refused.retryable, "{}", refused.message);
+        assert!(refused.source_refresh, "{}", refused.message);
+        assert!(
+            refused.message.starts_with("SSD-MED-007 "),
+            "{}",
+            refused.message
+        );
+    }
+}
+
+#[test]
 fn proxy_tunnel_failures_are_retryable() {
     // Reproduces the observed fragment-stage failure: the local proxy
     // answered CONNECT with 503 and the child's urllib stack reported it
@@ -2029,6 +2445,182 @@ fn an_http_error_in_a_media_tool_message_is_retried_by_the_rule_of_a_typed_statu
     assert!(!retryable_error(&anyhow!("HTTP Error 404: Not Found")));
     // Only a three-digit number is a status.
     assert!(!retryable_error(&anyhow!("HTTP Error 5039: unexpected")));
+}
+
+#[test]
+fn a_curl_error_in_a_media_tool_message_is_retried_by_the_rule_of_a_typed_one() {
+    for code in 1..=99 {
+        let typed = anyhow::Error::new(curl::Error::new(code));
+        let media = anyhow!(
+            "Media analysis failed: ERROR: [generic] Unable to download: curl: ({code}) Whatever"
+        );
+        assert_eq!(
+            retryable_error(&media),
+            retryable_error(&typed),
+            "curl {code}"
+        );
+    }
+    // The failure of the analysis of a source whose server closed the connection without a reply.
+    assert!(retryable_error(&anyhow!(
+        "Media analysis failed: ERROR: [generic] Unable to download webpage: \
+         curl: (52) Empty reply from server"
+    )));
+    assert!(retryable_error(&anyhow!(
+        "ERROR: [generic] Unable to download webpage: ('Connection aborted.', \
+         RemoteDisconnected('Remote end closed connection without response'))"
+    )));
+    // What the server answered for good stays permanent.
+    assert!(!retryable_error(&anyhow!(
+        "Media analysis failed: curl: (22) The requested URL returned error: 404"
+    )));
+    assert!(!retryable_error(&anyhow!(
+        "Media analysis failed: ERROR: Unsupported URL: https://example.test/page"
+    )));
+    // Only a code in parentheses is one.
+    assert!(!retryable_error(&anyhow!(
+        "curl: (52 Empty reply, curl: 52, curl: ()"
+    )));
+}
+
+#[test]
+fn a_failed_name_lookup_in_a_media_tool_message_is_retried() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        ..AddRequest::default()
+    };
+    // How the sockets of the tool's Python word it on Windows, on Linux (two ways) and on macOS.
+    for lookup in [
+        "<urlopen error [Errno 11001] getaddrinfo failed>",
+        "<urlopen error [Errno -2] Name or service not known>",
+        "<urlopen error [Errno -3] Temporary failure in name resolution>",
+        "<urlopen error [Errno 8] nodename nor servname provided, or not known>",
+    ] {
+        let analysis = transfer_failure(
+            &request,
+            crate::media::inspection_failure(
+                &format!("ERROR: [generic] Unable to download webpage: {lookup}"),
+                &[],
+            ),
+        );
+        assert!(analysis.retryable, "{}", analysis.message);
+        let download = |output: String| {
+            transfer_failure(
+                &request,
+                crate::media::download_failure(&output, &request, true, &[]),
+            )
+        };
+        let ended_by_it = download(format!("ERROR: unable to download video data: {lookup}"));
+        assert!(ended_by_it.retryable, "{}", ended_by_it.message);
+        // A lookup that failed on the way, before the error that ended the run, decides nothing.
+        let earlier = download(format!(
+            "WARNING: [download] Got error: {lookup}. Retrying fragment 2 (1/10)\n\
+             ERROR: unable to download video data: HTTP Error 404: Not Found"
+        ));
+        assert!(!earlier.retryable, "{}", earlier.message);
+    }
+    // What the server answered for good, and an address no extractor takes, stay permanent.
+    assert!(!retryable_error(&anyhow!(
+        "ERROR: unable to download video data: HTTP Error 404: Not Found"
+    )));
+    assert!(!retryable_error(&anyhow!(
+        "ERROR: Unsupported URL: https://example.test/page"
+    )));
+}
+
+#[test]
+fn a_failed_attempt_leads_its_message_with_the_network_code_of_the_failure() {
+    let request = AddRequest {
+        url: "https://files.example.test/a".into(),
+        ..Default::default()
+    };
+    let failed = |error: anyhow::Error| transfer_failure(&request, error);
+    let curl = |code| {
+        anyhow::Error::new(curl::Error::new(code)).context("The network transfer did not complete")
+    };
+
+    let unresolved = failed(curl(curl_sys::CURLE_COULDNT_RESOLVE_HOST));
+    assert!(
+        unresolved.message.starts_with("SSD-NET-001 "),
+        "{}",
+        unresolved.message
+    );
+    assert!(unresolved.retryable);
+    assert_eq!(
+        crate::error_codes::from_text(&unresolved.message),
+        Some(crate::error_codes::NET_001)
+    );
+
+    let missing = failed(anyhow::Error::new(transfer::HttpStatusError {
+        status: 404,
+    }));
+    assert!(
+        missing.message.starts_with("SSD-NET-005 "),
+        "{}",
+        missing.message
+    );
+    assert!(!missing.retryable);
+
+    let refused = failed(anyhow::Error::new(transfer::HttpStatusError {
+        status: 403,
+    }));
+    assert!(
+        refused.message.starts_with("SSD-NET-012 "),
+        "{}",
+        refused.message
+    );
+    assert!(!refused.retryable);
+
+    // The causes follow the code, and a code the error already has stays the only one.
+    assert!(unresolved
+        .message
+        .contains("The network transfer did not complete"));
+    let digest = failed(crate::error_codes::with_code(
+        curl(curl_sys::CURLE_RECV_ERROR),
+        crate::error_codes::TRF_003,
+    ));
+    assert!(
+        digest.message.starts_with("SSD-TRF-003 ") && !digest.message.contains("SSD-NET"),
+        "{}",
+        digest.message
+    );
+    assert_eq!(
+        failed(anyhow!("The disk is full")).message,
+        "The disk is full"
+    );
+}
+
+#[test]
+fn the_registry_says_what_the_engine_does_with_each_failure_that_has_a_network_code() {
+    use crate::error_codes::definition;
+    let retried = |code: crate::error_codes::Code| definition(code).unwrap().retryable;
+    for status in 400..=599 {
+        let error = anyhow::Error::new(transfer::HttpStatusError { status });
+        let code = transfer::network_code(&error).expect("every 4xx and 5xx has a code");
+        assert_eq!(
+            retried(code),
+            retryable_error(&error),
+            "HTTP {status}: {code:?}"
+        );
+    }
+    // Every libcurl code that has a network code, found by asking the mapping.
+    let mut mapped = Vec::new();
+    for curl in 1..=255 {
+        let error = anyhow::Error::new(curl::Error::new(curl));
+        let Some(code) = transfer::network_code(&error) else {
+            continue;
+        };
+        mapped.push(curl);
+        assert_eq!(
+            retried(code),
+            retryable_error(&error),
+            "curl error {curl}: {code:?}"
+        );
+    }
+    assert!(
+        mapped.contains(&curl_sys::CURLE_COULDNT_CONNECT)
+            && mapped.contains(&curl_sys::CURLE_PEER_FAILED_VERIFICATION),
+        "the libcurl codes with a network code were not found: {mapped:?}"
+    );
 }
 
 #[test]
@@ -2104,6 +2696,128 @@ fn a_job_whose_destination_folder_was_deleted_recreates_it_before_starting() {
         folder.is_dir(),
         "the destination folder was not recreated: {error:#}"
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A queued job of `url` that saves `file.bin` under `root`, with a work folder and the claim on
+/// its name that the engine takes when it adds a job.
+fn job_with_a_work_folder(root: &Path, url: String) -> (Job, PathBuf) {
+    let output = root.join("out").join("file.bin");
+    let id = Uuid::new_v4().to_string();
+    let job = Job {
+        id: id.clone(),
+        request: AddRequest {
+            url,
+            kind: DownloadKind::File,
+            ..Default::default()
+        },
+        name: "file.bin".into(),
+        state: JobState::Queued,
+        path: output.clone(),
+        downloaded: 0,
+        total: None,
+        speed: 0,
+        eta: None,
+        error: None,
+        phase: "Sırada".into(),
+        created_at: 0,
+        updated_at: 0,
+        attempts: 0,
+        work_dir: Some(crate::recovery::work_dir(&output, &id)),
+        remove_requested: None,
+        claim: Some(output.clone()),
+        legacy_completed: false,
+        browser_transfer_authorized: false,
+        priority: 0,
+        force_start: false,
+        open_when_done: false,
+        live: false,
+        sequence: 0,
+    };
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    crate::recovery::claim(&output, &id).unwrap();
+    (job, output)
+}
+
+#[test]
+fn a_finished_file_left_in_the_work_folder_is_published_instead_of_downloaded_again() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-adopt-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let server = FileServer::start(vec![("/file.bin".into(), b"served again".to_vec(), false)]);
+    let (job, output) = job_with_a_work_folder(&root, server.url("/file.bin"));
+    // The app stopped after the download moved its finished file into the work folder and
+    // before the publication wrote its journal.
+    let result = crate::recovery::prepare_work(&job).unwrap();
+    fs::write(&result, b"finished earlier").unwrap();
+    let allocation = ConnectionAllocation {
+        direct: 1,
+        media_fragments: 0,
+        usage_modes: UsageModes::default(),
+    };
+    let done = run_job(
+        &paths,
+        &job,
+        &output,
+        &TransferControl::default(),
+        &NetworkGovernor::new(2),
+        allocation,
+        &mut |_| {},
+    )
+    .unwrap();
+    let requested = server.hits.lock().unwrap().clone();
+    assert_eq!(
+        (
+            done.path.as_path(),
+            done.bytes,
+            fs::read(&output).unwrap(),
+            requested
+        ),
+        (
+            output.as_path(),
+            16,
+            b"finished earlier".to_vec(),
+            Vec::new()
+        )
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn the_archive_of_a_restarted_browser_transfer_is_not_published_as_the_file() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-archive-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let server = FileServer::start(vec![(
+        "/file.bin".into(),
+        b"the served file".to_vec(),
+        false,
+    )]);
+    let (job, output) = job_with_a_work_folder(&root, server.url("/file.bin"));
+    // The app stopped after a restart of a browser transfer renamed the transfer's folder to an
+    // archive and before it created the folder again: the work folder holds the archive only.
+    let work = job.work_dir.clone().unwrap();
+    crate::recovery::prepare_work(&job).unwrap();
+    let archive = work.join(format!("browser-transfer-previous-{}", Uuid::new_v4()));
+    fs::create_dir_all(archive.join("streams")).unwrap();
+    fs::write(archive.join("streams").join("1.bin"), b"half a file").unwrap();
+    let allocation = ConnectionAllocation {
+        direct: 1,
+        media_fragments: 0,
+        usage_modes: UsageModes::default(),
+    };
+    let done = run_job(
+        &paths,
+        &job,
+        &output,
+        &TransferControl::default(),
+        &NetworkGovernor::new(2),
+        allocation,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(done.path, output);
+    assert_eq!(fs::read(&output).unwrap(), b"the served file");
+    assert!(!server.hits.lock().unwrap().is_empty());
+    assert!(archive.join("streams").join("1.bin").exists());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2506,6 +3220,78 @@ fn a_job_named_from_the_address_gets_the_decoded_file_name() {
     assert_eq!(job.path.file_name().unwrap(), "Yıllık Rapor (1).pdf");
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_named_from_the_address_or_the_browser_loses_bidirectional_controls() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-bidi-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let start_at = Some(Utc::now().timestamp() + 3600);
+    let mut ids = Vec::new();
+    for (url, filename) in [
+        // The name is the last part of the address, percent-encoded.
+        ("https://example.test/files/%E2%80%AEtxt.exe", None),
+        // The name is one the browser handed over or the user typed.
+        (
+            "https://example.test/files/download",
+            Some("invoice\u{202e}fdp.exe".to_owned()),
+        ),
+    ] {
+        ids.push(
+            engine
+                .add(AddRequest {
+                    url: url.into(),
+                    filename,
+                    directory: Some(root.join("out")),
+                    start_at,
+                    ..Default::default()
+                })
+                .unwrap()
+                .remove(0),
+        );
+    }
+    let snapshot = engine.snapshot();
+    let names = ids
+        .iter()
+        .map(|id| {
+            let job = snapshot.jobs.iter().find(|job| &job.id == id).unwrap();
+            assert_eq!(job.path.file_name().unwrap(), job.name.as_str());
+            job.name.clone()
+        })
+        .collect::<Vec<_>>();
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(names, ["_txt.exe", "invoice_fdp.exe"]);
+}
+
+#[test]
+fn renaming_a_completed_file_replaces_bidirectional_controls() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-rename-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/plain.bin".into(), vec![3; 2048], false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(file_request(server.url("/plain.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+
+    engine.rename(&id, "\u{202e}txt.exe").unwrap();
+
+    let snapshot = engine.snapshot();
+    let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+    let renamed = job.path.clone();
+    engine.shutdown();
+    let on_disk = fs::read_dir(root.join("out"))
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(renamed.file_name().unwrap(), "_txt.exe");
+    assert_eq!(on_disk, ["_txt.exe"]);
 }
 
 fn job_state(engine: &Engine, id: &str) -> JobState {
@@ -3526,6 +4312,8 @@ mod retry_budget {
     };
 
     const MIB: u64 = 1024 * 1024;
+    /// How a sign-in page opens.
+    const PAGE_START: &[u8] = b"<!DOCTYPE html><html><head><title>Sign in</title></head><body>";
 
     fn engine_with_retry_limit(root: &Path, retry_limit: u8) -> Engine {
         let engine = Engine::open(AppPaths::new(root.to_path_buf()).unwrap()).unwrap();
@@ -3650,8 +4438,45 @@ mod retry_budget {
 
         let job = finished_job(&engine, &id);
         assert_eq!(job.state, JobState::Failed);
+        assert!(
+            job.error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("SSD-NET-013 "),
+            "{:?}",
+            job.error
+        );
         // Each attempt sends the HEAD probe and gives up on its answer.
         assert_eq!(server.log().len(), 3);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_source_that_answers_not_found_fails_the_job_at_once_with_its_code() {
+        let server = Server::start(Config {
+            size: MIB,
+            scripted: vec![
+                Scripted {
+                    status: 404,
+                    retry_after: None,
+                };
+                50
+            ],
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-not-found");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        let error = job.error.as_deref().unwrap();
+        assert!(error.starts_with("SSD-NET-005 "), "{error}");
+        assert!(error.contains("404"), "{error}");
+        let entry = crate::error_codes::definition(crate::error_codes::NET_005).unwrap();
+        assert!(!entry.retryable, "the registry must say what the job did");
+        assert_eq!(job.attempts, 0);
+        assert_eq!(attempts_made(&server), 1);
         engine.shutdown();
     }
 
@@ -3688,6 +4513,85 @@ mod retry_budget {
         assert!(!job.path.exists());
         assert_eq!(attempts_made(&source), 1);
         assert!(page.log().iter().all(|entry| entry.method == "HEAD"));
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_file_job_answered_with_a_page_at_the_address_of_a_file_fails_at_once_and_is_neither_retried_nor_sent_to_a_refresh(
+    ) {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-direct-page");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        // A job with a page to refresh from goes to the refresh on an authorization failure.
+        let id = engine
+            .add(AddRequest {
+                page_url: Some("https://page.example.test/watch".into()),
+                ..file_request(page.url("/report.pdf"), &root.0.join("out"))
+            })
+            .unwrap()
+            .remove(0);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        let error = job.error.as_deref().unwrap();
+        assert!(error.starts_with("SSD-NET-004 "), "{error}");
+        assert_eq!(job.attempts, 0);
+        assert!(!job.path.exists());
+        assert_eq!(attempts_made(&page), 1);
+        // The one GET is the one that shows the page.
+        assert_eq!(
+            page.log()
+                .iter()
+                .filter(|entry| entry.method == "GET")
+                .count(),
+            1
+        );
+        engine.shutdown();
+    }
+
+    /// The name decides whether a page is the file: one the user or the browser gave wins over
+    /// the address, and a name that is a page's or names no file type saves the page as before.
+    #[test]
+    fn the_name_of_the_job_decides_whether_a_page_without_a_redirect_is_the_file() {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        });
+        let root = TempDir::new("direct-page-names");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        let outcome = |name: Option<&str>, address: &str| {
+            let id = engine
+                .add(AddRequest {
+                    filename: name.map(str::to_owned),
+                    ..file_request(page.url(address), &root.0.join("out"))
+                })
+                .unwrap()
+                .remove(0);
+            let job = finished_job(&engine, &id);
+            let code = job
+                .error
+                .as_deref()
+                .and_then(|error| error.split(' ').next())
+                .map(str::to_owned);
+            (job.state, code)
+        };
+        let refused = (JobState::Failed, Some("SSD-NET-004".to_owned()));
+        let saved = (JobState::Completed, None);
+        // A name from the user or the browser.
+        assert_eq!(outcome(Some("report.pdf"), "/download"), refused);
+        assert_eq!(outcome(Some("saved.html"), "/report.pdf"), saved);
+        // The last part of the address.
+        assert_eq!(outcome(None, "/setup.exe"), refused);
+        assert_eq!(outcome(None, "/download"), saved);
+        assert_eq!(outcome(None, "/page.html"), saved);
+        assert_eq!(outcome(None, "/releases/v1.2"), saved);
         engine.shutdown();
     }
 
@@ -3800,6 +4704,82 @@ mod retry_budget {
                     page.log()
                 );
             }
+        }
+        engine.shutdown();
+    }
+
+    /// A page at the address of a file is handed back to the browser like a page a redirect led
+    /// to: no moment reports received bytes, and the job ends with `SSD-NET-004`.
+    #[test]
+    fn a_job_refused_for_a_page_at_the_address_of_a_file_never_reports_received_bytes() {
+        const PAGE: u64 = 400_000;
+        let probe_sees_page = Server::start(Config {
+            size: PAGE,
+            content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
+            throttle: Some(100_000),
+            ..Config::default()
+        });
+        let get_sees_page = Server::start(Config {
+            size: PAGE,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((1, "text/html".into())),
+            body_start: PAGE_START.to_vec(),
+            throttle: Some(100_000),
+            ..Config::default()
+        });
+        let ranges_see_page = Server::start(Config {
+            size: 6 * MIB,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((2, "text/html".into())),
+            throttle: Some(MIB),
+            ..Config::default()
+        });
+        let root = TempDir::new("add-status-direct-page");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        for (index, (label, source)) in [
+            ("the HEAD shows a page", &probe_sees_page),
+            ("the transfer meets the page", &get_sees_page),
+            ("every range is answered with the page", &ranges_see_page),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request_id = format!("takeover-{index}");
+            engine
+                .add(AddRequest {
+                    request_id: Some(request_id.clone()),
+                    ..file_request(source.url("/report.pdf"), &root.0.join("out"))
+                })
+                .unwrap();
+            let seen = statuses_until_the_job_ends(&engine, &request_id);
+            assert!(
+                seen.iter().all(|status| status.found && !status.received),
+                "{label}: {seen:?}"
+            );
+            let last = seen.last().unwrap();
+            assert_eq!(last.state, Some(JobState::Failed), "{label}: {last:?}");
+            assert_eq!(last.error_code.as_deref(), Some("SSD-NET-004"), "{label}");
+            let job = engine
+                .snapshot()
+                .jobs
+                .iter()
+                .find(|job| job.request.request_id.as_deref() == Some(request_id.as_str()))
+                .unwrap()
+                .clone();
+            assert_eq!(job.downloaded, 0, "{label}");
+            assert!(!job.path.exists(), "{label}: the page was published");
+            source.wait_idle();
+            // The page is refused at its first bytes, which only a GET shows.
+            assert!(
+                source
+                    .log()
+                    .iter()
+                    .any(|entry| entry.method == "GET"
+                        && entry.range.as_deref() != Some("bytes=0-0")),
+                "{label}: {:?}",
+                source.log()
+            );
         }
         engine.shutdown();
     }

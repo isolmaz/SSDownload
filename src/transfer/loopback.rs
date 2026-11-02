@@ -637,6 +637,136 @@ fn a_server_that_drops_the_connection_on_head_is_downloaded_over_several_connect
     );
 }
 
+/// Makes the probes that the current test thread starts wait `head` for a `HEAD` and `get` for a
+/// ranged `GET`.
+fn probe_waits(head: Duration, get: Duration) {
+    TEST_PROBE_TIMEOUTS.with(|timeouts| timeouts.set(Some((head, get))));
+}
+
+#[test]
+fn a_server_that_never_answers_head_is_downloaded_after_the_short_wait_for_it() {
+    let size = 24 * MIB + 12_345;
+    let server = Server::start(Config {
+        size,
+        head_hung: true,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("head-hung");
+    let output = directory.0.join("payload.bin");
+    // The wait for the `GET` is far longer than the one for the `HEAD`, so that it shows which of
+    // the two ended the `HEAD`.
+    probe_waits(Duration::from_millis(300), Duration::from_secs(20));
+    forget_writes();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    // One attempt: the HEAD that nothing answered, then the one-byte ranged GET in its place.
+    assert_eq!(log[0].method, "HEAD");
+    assert!(log[0].answered.is_none());
+    assert_eq!(log.iter().filter(|e| e.method == "HEAD").count(), 1);
+    assert_eq!(log[1].method, "GET");
+    assert_eq!(log[1].range.as_deref(), Some("bytes=0-0"));
+    let waited = log[1].arrived.duration_since(log[0].arrived);
+    assert!(
+        waited >= Duration::from_millis(250) && waited < Duration::from_secs(10),
+        "the HEAD was given up on after {waited:?}"
+    );
+    assert_tiles(delivered(&log, size), size);
+}
+
+#[test]
+fn a_server_that_hangs_on_head_and_on_the_ranged_get_fails_after_one_wait_for_each() {
+    let server = Server::start(Config {
+        size: 5 * MIB,
+        head_hung: true,
+        first_byte_delay: Some(Duration::from_secs(3)),
+        ..Config::default()
+    });
+    probe_waits(Duration::from_millis(200), Duration::from_millis(500));
+    let began = Instant::now();
+    let error = prepare_auto(
+        &request_for(&server),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("The server information could not be retrieved")
+            || format!("{error:#}").contains("Sunucu bilgileri alınamadı"),
+        "{error:#}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        began.elapsed()
+    );
+    let log = server.log();
+    assert_eq!(
+        log.iter()
+            .map(|entry| (entry.method.as_str(), entry.range.as_deref()))
+            .collect::<Vec<_>>(),
+        [("HEAD", None), ("GET", Some("bytes=0-0"))]
+    );
+}
+
+#[test]
+fn a_tls_handshake_that_hangs_is_given_up_on_after_one_connection_and_not_asked_again_by_get() {
+    // A server that takes the connection and never answers the handshake. The `HEAD` times out
+    // before the handshake has finished, so the server was not heard from and the one-byte `GET`
+    // would hang the same way: it is not sent.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server = {
+        let (accepted, stop) = (accepted.clone(), stop.clone());
+        thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        accepted.fetch_add(1, Ordering::AcqRel);
+                        held.push(stream);
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        })
+    };
+    probe_waits(Duration::from_millis(400), Duration::from_millis(400));
+    let url = format!("https://{address}/payload.bin");
+    let error = probe_http(
+        &file_request(url.clone()),
+        validate_source_url(&url).unwrap(),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("The server information could not be retrieved")
+            || format!("{error:#}").contains("Sunucu bilgileri alınamadı"),
+        "{error:#}"
+    );
+    // Any connection of a fallback would have been made by now.
+    thread::sleep(Duration::from_millis(300));
+    stop.store(true, Ordering::Release);
+    server.join().unwrap();
+    assert_eq!(accepted.load(Ordering::Acquire), 1);
+}
+
 #[test]
 fn a_probe_whose_head_is_dropped_takes_the_size_and_validators_from_the_ranged_get() {
     let size = 5 * MIB + 3;
@@ -3158,11 +3288,150 @@ fn file_request(url: String) -> AddRequest {
     }
 }
 
+/// The error of a download from `url` that fails.
+fn failed_fetch(url: String) -> anyhow::Error {
+    let directory = TempDir::new("network-code");
+    fetch(
+        &file_request(url),
+        &directory.0.join("payload.bin"),
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap_err()
+}
+
+/// A server that accepts `connections` connections, answers each with `reply` (after reading
+/// what the client sent first, if there is a reply) and closes it. Returns its port.
+fn closing_server(reply: Option<&'static [u8]>, connections: usize) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for _ in 0..connections {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            if let Some(reply) = reply {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let _ = stream.read(&mut [0u8; 1024]);
+                let _ = stream.write_all(reply);
+            }
+        }
+    });
+    port
+}
+
+#[test]
+fn a_status_that_fails_the_download_is_reported_with_the_network_code_of_its_class() {
+    use crate::error_codes::*;
+    for (status, code) in [
+        (404, NET_005),
+        (410, NET_014),
+        (403, NET_012),
+        (401, NET_012),
+        (408, NET_015),
+        (501, NET_016),
+        (500, NET_013),
+        (502, NET_013),
+        (503, NET_006),
+        (429, NET_006),
+    ] {
+        let server = Server::start(Config {
+            size: MIB,
+            scripted: vec![
+                Scripted {
+                    status,
+                    retry_after: None
+                };
+                8
+            ],
+            ..Config::default()
+        });
+        let error = failed_fetch(server.url("/payload.bin"));
+        assert_eq!(network_code(&error), Some(code), "HTTP {status}: {error:#}");
+        assert_eq!(http_status(&error), Some(u32::from(status)));
+    }
+}
+
+#[test]
+fn a_connection_that_is_refused_is_reported_as_the_server_not_being_reached() {
+    // A port that nothing listens on.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let error = failed_fetch(format!("http://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_011),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_server_that_closes_the_connection_without_an_answer_is_reported_as_a_reset_connection() {
+    // The HEAD gets nothing, then the ranged GET that takes its place gets nothing either.
+    let port = closing_server(None, 4);
+    let error = failed_fetch(format!("http://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_008),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_server_that_does_not_speak_tls_fails_an_https_download_with_the_tls_code() {
+    let port = closing_server(
+        Some(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+        4,
+    );
+    let error = failed_fetch(format!("https://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_002),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_name_that_does_not_resolve_is_reported_as_a_dns_failure() {
+    // A label of 64 bytes cannot be put in a DNS query (the limit is 63), so libcurl fails at once
+    // and locally: no resolver, not even one that answers every name, is asked.
+    let error = failed_fetch(format!("http://{}.invalid/payload.bin", "a".repeat(64)));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_001),
+        "{error:#}"
+    );
+}
+
 /// A server that sends the web page `kind` instead of a file: what a sign-in redirect ends on.
 fn page_server(size: u64, kind: &str) -> Server {
     Server::start(Config {
         size,
         content_type: Some(kind.into()),
+        ..Config::default()
+    })
+}
+
+/// How a sign-in page opens.
+const PAGE_START: &[u8] = b"<!DOCTYPE html><html><head><title>Sign in</title></head><body>";
+
+/// The body of a server with the `body_start` given: the pattern with `start` over its first bytes.
+fn body_starting(start: &[u8], size: u64) -> Vec<u8> {
+    let mut body = pattern(1, size);
+    body[..start.len()].copy_from_slice(start);
+    body
+}
+
+/// A server whose answers are web pages of `size` bytes that open like a page, of the content
+/// type `kind`.
+fn opened_page_server(size: u64, kind: &str) -> Server {
+    Server::start(Config {
+        size,
+        content_type: Some(kind.into()),
+        body_start: PAGE_START.to_vec(),
         ..Config::default()
     })
 }
@@ -3454,6 +3723,359 @@ fn a_page_that_is_reached_without_a_redirect_is_still_saved() {
     assert_eq!(fs::read(result.path).unwrap(), pattern(1, size));
 }
 
+/// Downloads from `server` into a file called `name`, as a job added with that name, or with an
+/// address that ends in it, does.
+fn fetch_into(server: &Server, name: &str, connections: u8) -> (Result<TransferResult>, TempDir) {
+    let directory = TempDir::new("direct-page");
+    let result = fetch(
+        &file_request(server.url("/file")),
+        &directory.0.join(name),
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    );
+    (result, directory)
+}
+
+#[test]
+fn a_page_that_answers_for_a_file_of_another_type_is_refused_without_a_redirect() {
+    for name in ["report.pdf", "setup.EXE", "archive.tar.gz", "photo.jpg"] {
+        for kind in [
+            "text/html",
+            "application/xhtml+xml",
+            "Text/HTML; charset=utf-8",
+        ] {
+            let page = opened_page_server(4_000, kind);
+            let directory = TempDir::new("direct-page-refused");
+            let output = directory.0.join(name);
+            let error = fetch(
+                &file_request(page.url("/file")),
+                &output,
+                &TransferControl::default(),
+                1,
+                1,
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert_page_refused(&error, &output);
+            page.wait_idle();
+            assert_eq!(
+                data_gets(&page.log()).count(),
+                1,
+                "{name} {kind}: {:?}",
+                page.log()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_page_is_recognised_by_how_it_opens_whatever_the_rest_of_it_is() {
+    let starts: [&[u8]; 7] = [
+        PAGE_START,
+        b"\xEF\xBB\xBF\r\n  <HTML lang=en>",
+        b"<script>location='/login'</script>",
+        b"<title>Sign in</title>",
+        b"<div id=login>",
+        b"<!-- sign in -->",
+        b"<?xml version=\"1.0\"?>\n<!DOCTYPE html>",
+    ];
+    for start in starts {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            body_start: start.to_vec(),
+            ..Config::default()
+        });
+        let directory = TempDir::new("direct-page-opening");
+        let output = directory.0.join("report.pdf");
+        let error = fetch(
+            &file_request(page.url("/file")),
+            &output,
+            &TransferControl::default(),
+            1,
+            1,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+    }
+}
+
+#[test]
+fn a_file_served_with_a_page_type_is_saved_when_its_bytes_are_no_page() {
+    for (name, start) in [
+        ("data.csv", "id,name\n1,a\n"),
+        ("notes.txt", "hello"),
+        ("data.json", "{\"html\": \"<html>\"}\n"),
+        ("feed.xml", "<?xml version=\"1.0\"?><feed/>"),
+        ("header.txt", "<header>"),
+        ("tiny.txt", "<"),
+        ("blank.txt", "\n"),
+    ] {
+        // The whole body fits the part that is looked at, and a body that is longer.
+        for size in [start.len() as u64, 4_000] {
+            let server = Server::start(Config {
+                size,
+                content_type: Some("text/html".into()),
+                body_start: start.as_bytes().to_vec(),
+                ..Config::default()
+            });
+            let (result, _directory) = fetch_into(&server, name, 1);
+            let path = result
+                .unwrap_or_else(|error| panic!("{name} {size}: {error:#}"))
+                .path;
+            assert_eq!(
+                fs::read(path).unwrap(),
+                body_starting(start.as_bytes(), size),
+                "{name} {size}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_large_file_served_with_a_page_type_is_downloaded_over_one_connection_because_one_byte_cannot_be_looked_at(
+) {
+    let size = 6 * MIB;
+    let server = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        body_start: b"id,name\n".to_vec(),
+        ..Config::default()
+    });
+    let (result, _directory) = fetch_into(&server, "data.csv", 4);
+    assert_eq!(
+        fs::read(result.unwrap().path).unwrap(),
+        body_starting(b"id,name\n", size)
+    );
+    server.wait_idle();
+    assert_eq!(data_gets(&server.log()).count(), 1, "{:?}", server.log());
+}
+
+#[test]
+fn a_resumed_download_of_a_file_served_with_a_page_type_continues_where_it_stopped() {
+    // The bytes that were kept are not the start of the body, which is all that can be looked at:
+    // what the rest of the body opens with, even a page's tag, decides nothing.
+    let size = MIB;
+    let held = 300_001usize;
+    let mut lead = vec![b'x'; held + 16];
+    lead[held..held + 6].copy_from_slice(b"<html>");
+    let server = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        body_start: lead.clone(),
+        ..Config::default()
+    });
+    let directory = TempDir::new("resume-mistyped");
+    let output = directory.0.join("data.csv");
+    fs::write(part_path(&output), &pattern(1, size)[..held]).unwrap();
+    fs::write(
+        state_path(&output),
+        previous_release_state(&server, size, false, "[]"),
+    )
+    .unwrap();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    let mut expected = pattern(1, size)[..held].to_vec();
+    expected.extend_from_slice(&body_starting(&lead, size)[held..]);
+    assert_eq!(fs::read(result.path).unwrap(), expected);
+    server.wait_idle();
+    let log = server.log();
+    let gets = log
+        .iter()
+        .filter(|entry| entry.method == "GET")
+        .collect::<Vec<_>>();
+    assert_eq!(gets.len(), 1, "{log:?}");
+    assert_eq!(gets[0].range, Some(format!("bytes={held}-")));
+}
+
+#[test]
+fn a_page_that_only_the_head_answer_announces_is_not_the_file_the_get_delivers() {
+    // The HEAD (request 0) says page; every GET says file.
+    for (size, connections) in [(4_000, 1), (6 * MIB, 4)] {
+        let server = Server::start(Config {
+            size,
+            content_type: Some("text/html".into()),
+            content_type_from: Some((1, "application/pdf".into())),
+            ..Config::default()
+        });
+        let (result, _directory) = fetch_into(&server, "report.pdf", connections);
+        assert_eq!(
+            fs::read(result.unwrap().path).unwrap(),
+            pattern(1, size),
+            "{size} bytes over {connections}"
+        );
+    }
+}
+
+#[test]
+fn the_name_a_page_would_be_saved_under_decides_whether_it_is_the_file() {
+    let size = 4_000;
+    let suggesting = |name: &str| {
+        Server::start(Config {
+            size,
+            content_type: Some("text/html".into()),
+            content_disposition: Some(format!("inline; filename=\"{name}\"")),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        })
+    };
+    // The server names a page as a file and the job's own name is no file's.
+    let server = suggesting("report.pdf");
+    let directory = TempDir::new("suggested-file");
+    let output = directory.0.join("download");
+    let error = fetch(
+        &file_request(server.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+
+    // The server names the page as a page, whatever the address ends in.
+    let server = suggesting("saved.html");
+    let (result, _directory) = fetch_into(&server, "report.pdf", 1);
+    let path = result.unwrap().path;
+    assert_eq!(path.file_name().unwrap(), "saved.html");
+    assert_eq!(fs::read(path).unwrap(), body_starting(PAGE_START, size));
+
+    // A name the user or the browser chose is not the server's to change.
+    let directory = TempDir::new("typed-file");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &AddRequest {
+            filename: Some("report.pdf".into()),
+            ..file_request(server.url("/file"))
+        },
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+}
+
+#[test]
+fn a_page_is_saved_when_the_name_is_a_pages_or_names_no_file_type() {
+    let size = 4_000;
+    for name in [
+        "page.html",
+        "page.HTM",
+        "page.xhtml",
+        "page.shtml",
+        "page.mhtml",
+        "page (1).html",
+        "download",
+        "v1.2",
+        "2024.11",
+        "Mr. Robot",
+    ] {
+        let page = page_server(size, "text/html");
+        let (result, _directory) = fetch_into(&page, name, 1);
+        let path = result
+            .unwrap_or_else(|error| panic!("{name}: {error:#}"))
+            .path;
+        assert_eq!(fs::read(path).unwrap(), pattern(1, size), "{name}");
+    }
+}
+
+#[test]
+fn a_page_sent_as_an_attachment_is_saved_whatever_the_name_asked_for() {
+    let size = 4_000;
+    let page = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        content_disposition: Some("attachment; filename=\"saved.bin\"".into()),
+        ..Config::default()
+    });
+    let (result, _directory) = fetch_into(&page, "report.pdf", 1);
+    assert_eq!(fs::read(result.unwrap().path).unwrap(), pattern(1, size));
+}
+
+#[test]
+fn a_page_the_transfer_meets_after_a_probe_that_saw_a_file_is_not_written_under_the_name_of_a_file()
+{
+    // The probe's HEAD (request 0) sees the file; the GET (request 1) answers with the page.
+    let page = Server::start(Config {
+        size: 4_000,
+        content_type: Some("application/octet-stream".into()),
+        content_type_from: Some((1, "text/html".into())),
+        body_start: PAGE_START.to_vec(),
+        ..Config::default()
+    });
+    let directory = TempDir::new("direct-get-page");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &file_request(page.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+    page.wait_idle();
+    assert!(
+        page.log().iter().any(|entry| entry.method == "GET"),
+        "the transfer should have reached the page: {:?}",
+        page.log()
+    );
+}
+
+#[test]
+fn a_page_in_the_range_support_probe_or_a_ranged_transfer_is_not_written_by_any_connection_of_a_file(
+) {
+    // Request 0 is the HEAD, request 1 the one-byte probe, the later ones are the ranges.
+    for page_from in [1, 2] {
+        let page = Server::start(Config {
+            size: 6 * MIB,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((page_from, "text/html".into())),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        });
+        let directory = TempDir::new("direct-ranged-page");
+        let output = directory.0.join("archive.zip");
+        forget_writes();
+        let error = fetch(
+            &file_request(page.url("/file")),
+            &output,
+            &TransferControl::default(),
+            4,
+            4,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+        assert!(writes().is_empty(), "{page_from}: {:?}", writes());
+        page.wait_idle();
+        // A page in the probe is looked at by the transfer over one connection, which asks for
+        // the whole file; a page in the ranges is refused by the first range that meets it.
+        let gets = data_gets(&page.log()).cloned().collect::<Vec<_>>();
+        assert!(!gets.is_empty(), "{page_from}: {:?}", page.log());
+        assert_eq!(
+            gets.iter().all(|entry| entry.range.is_none()),
+            page_from == 1,
+            "{page_from}: {gets:?}"
+        );
+    }
+}
+
 /// The answer that sends a request for `from` on to `to`, as the link of a download page does.
 fn redirect_document(from: &str, status: u16, to: &str) -> Document {
     Document {
@@ -3642,6 +4264,32 @@ fn the_name_the_user_chose_and_the_content_disposition_win_over_the_name_a_redir
     assert_eq!(
         saved_as(&file_request(disposition.url("/get")), size),
         "from-header.bin"
+    );
+}
+
+#[test]
+fn a_name_from_the_server_never_keeps_a_bidirectional_control() {
+    let size = 4_000;
+    // The name of the Content-Disposition header, in the encoded form that carries any text.
+    let disposition = Server::start(Config {
+        size,
+        content_disposition: Some("attachment; filename*=UTF-8''invoice%E2%80%AEfdp.exe".into()),
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(disposition.url("/get")), size),
+        "invoice_fdp.exe"
+    );
+
+    // The name of the address that a redirect led to.
+    let redirected = Server::start(Config {
+        size,
+        documents: vec![redirect_document("/get", 302, "/files/%E2%80%AEtxt.exe")],
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(redirected.url("/get")), size),
+        "_txt.exe"
     );
 }
 
