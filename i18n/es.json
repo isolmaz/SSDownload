@@ -1266,6 +1266,7 @@
   "The scheduled speed limit must be 0 or a positive integer.": "El límite de velocidad programado debe ser 0 o un número entero positivo.",
   "The secure connection (TLS) could not be established": "No se pudo establecer la conexión segura (TLS)",
   "The selected audio language tag could not be written to the output": "No se pudo escribir en la salida la etiqueta de idioma de audio seleccionada",
+  "The media tool could not finish the download": "La herramienta multimedia no pudo completar la descarga",
   "The selected audio or subtitle track was not found": "No se ha encontrado la pista de audio o de subtítulos seleccionada",
   "The selected audio streams could not be verified without tagging": "No se han podido verificar los flujos de audio seleccionados sin etiquetarlos",
   "The selected audio track is no longer available: {id}": "La pista de audio seleccionada ya no está disponible: {id}",

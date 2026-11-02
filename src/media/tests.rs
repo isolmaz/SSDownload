@@ -1,4 +1,5 @@
 use super::*;
+use crate::error_codes::code_of;
 use serde_json::json;
 
 #[test]
@@ -1872,6 +1873,213 @@ fn a_stored_download_failure_still_names_its_stage_in_every_language() {
                 info.code
             );
         }
+    }
+}
+
+#[test]
+fn a_marker_in_the_tools_text_does_not_change_the_stage_of_a_stored_failure() {
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    // The tool printed an address that holds the app's marker.
+    let summary = "ERROR: unable to download video data: HTTP Error 404: Not Found \
+                   (https://cdn.example/seg[ssdownload-stage=audio].ts)";
+    for info in crate::i18n::LANGUAGES {
+        let stored = crate::i18n::with_language(info.code, || {
+            crate::error_codes::coded(
+                crate::error_codes::MED_017,
+                download_failure_message("alt liste", false, summary),
+            )
+            .to_string()
+        });
+        assert_eq!(
+            classify_download_error(&stored, &request).0,
+            "alt liste",
+            "{}: {stored}",
+            info.code
+        );
+    }
+    // Without a label or a marker of the app's own, the text names no stage by it.
+    let text = format!("[download] Destination: media.f1.mp4\n{summary}");
+    assert_eq!(classify_download_error(&text, &request).0, "medya kaynağı");
+    // The marker the app appends to the tool's output is still read.
+    let marked = format!("{text}\n[ssdownload-stage=manifest_child]");
+    assert_eq!(classify_download_error(&marked, &request).0, "alt liste");
+}
+
+#[test]
+fn the_apps_wording_in_the_tools_text_does_not_change_the_stage_of_a_stored_failure() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    let spoof = "Media download failed at the discovery stage (compatibility attempt: 0/1): x";
+    let summary = format!("ERROR: fragment 3 not found: {spoof}");
+    for info in crate::i18n::LANGUAGES {
+        for (stage, _) in FAILURE_STAGES
+            .into_iter()
+            .filter(|(stage, _)| *stage != "keşif")
+        {
+            let stored = crate::i18n::with_language(info.code, || {
+                crate::error_codes::coded(
+                    crate::error_codes::MED_017,
+                    download_failure_message(stage, true, &summary),
+                )
+                .to_string()
+            });
+            assert_eq!(
+                classify_download_error(&stored, &request).0,
+                stage,
+                "{}: {stored}",
+                info.code
+            );
+        }
+    }
+}
+
+/// An analysis the origin refused, as the tool wrote it with `-v`: its trace, an earlier note and
+/// the traceback after the error line.
+const BLOCKED_ANALYSIS: &str = "[debug] Command-line config: ['-v']\n\
+    WARNING: [generic] Falling back on generic information extractor\n\
+    ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)\n\
+    Traceback (most recent call last):\n  \
+      File \"yt_dlp\\networking\\_requests.py\", line 361, in _send\n\
+    yt_dlp.networking.exceptions.HTTPError: HTTP Error 403: Forbidden";
+
+#[test]
+fn a_blocked_analysis_shows_the_final_error_line_and_still_names_the_403() {
+    let error = crate::i18n::with_language("en", || inspection_failure(BLOCKED_ANALYSIS, &[]));
+    assert_eq!(code_of(&error), Some(crate::error_codes::MED_007));
+    assert_eq!(
+        format!("{error:#}"),
+        "SSD-MED-007 ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)"
+    );
+}
+
+#[test]
+fn a_403_before_the_final_error_line_does_not_make_the_failure_a_block() {
+    let stderr =
+        "WARNING: [generic] Unable to download webpage: HTTP Error 403: Forbidden. Retrying\n\
+        ERROR: Unsupported URL: https://page.example/watch";
+    let error = crate::i18n::with_language("en", || inspection_failure(stderr, &[]));
+    assert_eq!(code_of(&error), Some(crate::error_codes::MED_006));
+    assert_eq!(
+        format!("{error:#}"),
+        "SSD-MED-006 Media analysis failed: ERROR: Unsupported URL: https://page.example/watch"
+    );
+}
+
+#[test]
+fn a_failed_download_carries_a_code_and_the_final_error_line_in_every_language() {
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    let visible = non_debug_lines(VERBOSE_DOWNLOAD_FAILURE);
+    for info in crate::i18n::LANGUAGES {
+        let error = crate::i18n::with_language(info.code, || {
+            download_failure(&visible, &request, true, &[])
+        });
+        let text = format!("{error:#}");
+        assert_eq!(
+            code_of(&error),
+            Some(crate::error_codes::MED_017),
+            "{}: {text}",
+            info.code
+        );
+        // The stored text starts with the code, so a job's stored failure keeps it.
+        assert_eq!(
+            crate::error_codes::from_text(&text),
+            Some(crate::error_codes::MED_017),
+            "{}: {text}",
+            info.code
+        );
+        assert!(
+            text.ends_with(": ERROR: unable to download video data: HTTP Error 404: Not Found"),
+            "{}: {text}",
+            info.code
+        );
+        for note in ["Traceback", "[debug]", "ssdownload-stage"] {
+            assert!(!text.contains(note), "{}: {text}", info.code);
+        }
+        // The code in front of the message changes neither the stage nor the kind it reads as.
+        assert_eq!(
+            classify_download_error(&text, &request),
+            ("alt liste", "not_found"),
+            "{}: {text}",
+            info.code
+        );
+    }
+}
+
+#[test]
+fn a_download_the_origin_refuses_carries_the_code_of_the_refusal() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        ..AddRequest::default()
+    };
+    let failed = |visible: &str| {
+        crate::i18n::with_language("en", || download_failure(visible, &request, true, &[]))
+    };
+
+    let forbidden = failed(
+        "[download] Destination: media.f1.mp4\n\
+         ERROR: unable to download video data: HTTP Error 403: Forbidden",
+    );
+    assert_eq!(code_of(&forbidden), Some(crate::error_codes::MED_007));
+    assert!(
+        format!("{forbidden:#}").ends_with("HTTP Error 403: Forbidden"),
+        "{forbidden:#}"
+    );
+
+    let private = failed(
+        "ERROR: [youtube] abc123: Private video. Sign in if you've been granted access to this video",
+    );
+    assert_eq!(code_of(&private), Some(crate::error_codes::MED_008));
+    assert_eq!(
+        format!("{private:#}"),
+        "SSD-MED-008 Media download failed at the media source stage (compatibility attempt: 1/1): \
+         ERROR: [youtube] abc123: Private video. Sign in if you've been granted access to this video"
+    );
+
+    // A 403 the tool met on the way is not the reason the run ended.
+    let other = failed(
+        "WARNING: HTTP Error 403: Forbidden. Retrying (1/3)\n\
+         ERROR: unable to download video data: HTTP Error 404: Not Found",
+    );
+    assert_eq!(code_of(&other), Some(crate::error_codes::MED_017));
+}
+
+#[test]
+fn the_refusal_of_the_origin_keeps_its_stage_when_the_stored_text_is_read_again() {
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    // The app marked the sub-playlist; the tool's line also says "fragment", which alone reads as
+    // a media segment.
+    let visible =
+        "ERROR: [generic] Video unavailable: fragment 4 is not available in your country\n\
+                   [ssdownload-stage=manifest_child]";
+    assert_eq!(classify_download_error(visible, &request).0, "alt liste");
+    for info in crate::i18n::LANGUAGES {
+        let error = crate::i18n::with_language(info.code, || {
+            download_failure(visible, &request, false, &[])
+        });
+        let stored = error.to_string();
+        assert_eq!(
+            code_of(&error),
+            Some(crate::error_codes::MED_008),
+            "{}: {stored}",
+            info.code
+        );
+        assert_eq!(
+            classify_download_error(&stored, &request).0,
+            "alt liste",
+            "{}: {stored}",
+            info.code
+        );
     }
 }
 
