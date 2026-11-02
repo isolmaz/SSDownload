@@ -1871,9 +1871,9 @@ pub(crate) fn classify_download_error(
         "other"
     };
     // An access/TLS failure must not erase which part of the media graph failed.
-    let phase = if let Some(phase) = marked_download_failure_phase(&lower) {
+    let phase = if let Some(phase) = named_download_failure_stage(error) {
         phase
-    } else if let Some(phase) = named_download_failure_stage(error) {
+    } else if let Some(phase) = marked_download_failure_phase(error) {
         phase
     } else if lower.contains("subtitle") || lower.contains("altyazı") {
         "altyazı"
@@ -2147,8 +2147,9 @@ fn failure_stage_label(stage: &str) -> &'static str {
 }
 
 /// The error of a download whose tool failed, from the tool's output without its `[debug]` trace:
-/// the origin's refusal (`SSD-MED-008`, `SSD-MED-007` for a 403) or `SSD-MED-017`, with the
-/// tool's final error text.
+/// `SSD-MED-008` when the origin refuses the media, `SSD-MED-007` when the tool's final error is a
+/// 403 and `SSD-MED-017` otherwise. The message names the failed stage and gives the tool's final
+/// error text.
 pub(crate) fn download_failure(
     visible: &str,
     request: &AddRequest,
@@ -2157,10 +2158,9 @@ pub(crate) fn download_failure(
 ) -> anyhow::Error {
     let phase = classify_download_error(&useful_error(visible, redactions), request).0;
     let summary = useful_error(&final_error_text(visible), redactions);
-    if site_access_blocked(visible) {
-        return crate::error_codes::coded(crate::error_codes::MED_008, summary);
-    }
-    let code = if is_forbidden(&summary) {
+    let code = if site_access_blocked(visible) {
+        crate::error_codes::MED_008
+    } else if is_forbidden(&summary) {
         crate::error_codes::MED_007
     } else {
         crate::error_codes::MED_017
@@ -2183,8 +2183,16 @@ fn download_failure_message(phase: &str, compatibility_retry: bool, summary: &st
 }
 
 /// The stage a [`download_failure_message`] names, read in whichever interface language wrote
-/// it: the stored message carries the stage by its label only.
+/// it: the stored message carries the stage by its label only. The label opens the message, after
+/// its code; the same words further in are the tool's own text and name nothing.
 fn named_download_failure_stage(error: &str) -> Option<&'static str> {
+    let text = error.trim_start();
+    let text = if crate::error_codes::from_text(text).is_some() {
+        text.split_once(char::is_whitespace)
+            .map_or("", |(_, rest)| rest.trim_start())
+    } else {
+        text
+    };
     crate::i18n::ui_templates!(
         "{0} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {1}/1): {2}",
         "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}"
@@ -2195,13 +2203,16 @@ fn named_download_failure_stage(error: &str) -> Option<&'static str> {
         let after = &rest[..rest.find('{')?];
         FAILURE_STAGES.into_iter().find_map(|(tr, en)| {
             crate::i18n::wordings(tr, en)
-                .any(|stage| error.contains(&format!("{before}{stage}{after}")))
+                .any(|stage| text.starts_with(&format!("{before}{stage}{after}")))
                 .then_some(tr)
         })
     })
 }
 
+/// The stage [`DownloadFailureStages::annotate`] marked: its marker ends the text, as a word of
+/// its own. The same words inside the tool's output name nothing.
 fn marked_download_failure_phase(error: &str) -> Option<&'static str> {
+    let last = error.split_whitespace().next_back()?;
     [
         ("[ssdownload-stage=manifest_root]", "ana liste"),
         ("[ssdownload-stage=manifest_child]", "alt liste"),
@@ -2210,7 +2221,7 @@ fn marked_download_failure_phase(error: &str) -> Option<&'static str> {
         ("[ssdownload-stage=media_segment]", "medya parçası"),
     ]
     .into_iter()
-    .find_map(|(marker, phase)| error.contains(marker).then_some(phase))
+    .find_map(|(marker, phase)| (last == marker).then_some(phase))
 }
 
 /// ISO 639-2 form of a language tag. The MP4 (mov) muxer writes only three-letter codes and

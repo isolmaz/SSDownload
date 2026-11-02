@@ -2335,6 +2335,74 @@ fn a_failed_media_run_is_read_by_its_final_error_line_and_keeps_its_code() {
     assert!(!analysis.retryable);
 }
 
+/// What yt-dlp prints while it retries a fragment, before the error that ends the run.
+const TOOL_RETRY_NOTES: &str = "WARNING: [download] Got error: curl: (52) Empty reply from server. Retrying fragment 2 (1/10)\n\
+    WARNING: [download] Got error: HTTP Error 503: Service Unavailable. Retrying fragment 2 (2/10)\n\
+    WARNING: [download] Got error: The read operation timed out. Retrying fragment 2 (3/10)\n";
+
+#[test]
+fn a_download_the_origin_refused_is_not_retried_for_what_the_tool_met_before() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        page_url: Some("https://example.test/watch".into()),
+        ..AddRequest::default()
+    };
+    let refused = transfer_failure(
+        &request,
+        crate::media::download_failure(
+            &format!(
+                "{TOOL_RETRY_NOTES}ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            ),
+            &request,
+            true,
+            &[],
+        ),
+    );
+    assert!(
+        refused.message.starts_with("SSD-MED-007 "),
+        "{}",
+        refused.message
+    );
+    assert!(
+        !refused.message.contains("Empty reply"),
+        "{}",
+        refused.message
+    );
+    assert!(refused.source_refresh);
+    assert!(!refused.retryable);
+}
+
+#[test]
+fn an_analysis_the_origin_refused_is_not_retried_for_what_the_tool_met_before() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        page_url: Some("https://example.test/watch".into()),
+        ..AddRequest::default()
+    };
+    let refused = transfer_failure(
+        &request,
+        crate::media::inspection_failure(
+            &format!(
+                "[debug] Command-line config: ['-v']\n{TOOL_RETRY_NOTES}\
+                 ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden"
+            ),
+            &[],
+        ),
+    );
+    assert!(
+        refused.message.starts_with("SSD-MED-007 "),
+        "{}",
+        refused.message
+    );
+    assert!(
+        !refused.message.contains("Empty reply"),
+        "{}",
+        refused.message
+    );
+    assert!(refused.source_refresh);
+    assert!(!refused.retryable);
+}
+
 #[test]
 fn proxy_tunnel_failures_are_retryable() {
     // Reproduces the observed fragment-stage failure: the local proxy

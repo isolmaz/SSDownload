@@ -1357,6 +1357,68 @@ fn a_stored_download_failure_still_names_its_stage_in_every_language() {
     }
 }
 
+#[test]
+fn a_marker_in_the_tools_text_does_not_change_the_stage_of_a_stored_failure() {
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    // The tool printed an address that holds the app's marker.
+    let summary = "ERROR: unable to download video data: HTTP Error 404: Not Found \
+                   (https://cdn.example/seg[ssdownload-stage=audio].ts)";
+    for info in crate::i18n::LANGUAGES {
+        let stored = crate::i18n::with_language(info.code, || {
+            crate::error_codes::coded(
+                crate::error_codes::MED_017,
+                download_failure_message("alt liste", false, summary),
+            )
+            .to_string()
+        });
+        assert_eq!(
+            classify_download_error(&stored, &request).0,
+            "alt liste",
+            "{}: {stored}",
+            info.code
+        );
+    }
+    // Without a label or a marker of the app's own, the text names no stage by it.
+    let text = format!("[download] Destination: media.f1.mp4\n{summary}");
+    assert_eq!(classify_download_error(&text, &request).0, "medya kaynağı");
+    // The marker the app appends to the tool's output is still read.
+    let marked = format!("{text}\n[ssdownload-stage=manifest_child]");
+    assert_eq!(classify_download_error(&marked, &request).0, "alt liste");
+}
+
+#[test]
+fn the_apps_wording_in_the_tools_text_does_not_change_the_stage_of_a_stored_failure() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    let spoof = "Media download failed at the discovery stage (compatibility attempt: 0/1): x";
+    let summary = format!("ERROR: fragment 3 not found: {spoof}");
+    for info in crate::i18n::LANGUAGES {
+        for (stage, _) in FAILURE_STAGES
+            .into_iter()
+            .filter(|(stage, _)| *stage != "keşif")
+        {
+            let stored = crate::i18n::with_language(info.code, || {
+                crate::error_codes::coded(
+                    crate::error_codes::MED_017,
+                    download_failure_message(stage, true, &summary),
+                )
+                .to_string()
+            });
+            assert_eq!(
+                classify_download_error(&stored, &request).0,
+                stage,
+                "{}: {stored}",
+                info.code
+            );
+        }
+    }
+}
+
 /// An analysis the origin refused, as the tool wrote it with `-v`: its trace, an earlier note and
 /// the traceback after the error line.
 const BLOCKED_ANALYSIS: &str = "[debug] Command-line config: ['-v']\n\
@@ -1458,7 +1520,8 @@ fn a_download_the_origin_refuses_carries_the_code_of_the_refusal() {
     assert_eq!(code_of(&private), Some(crate::error_codes::MED_008));
     assert_eq!(
         format!("{private:#}"),
-        "SSD-MED-008 ERROR: [youtube] abc123: Private video. Sign in if you've been granted access to this video"
+        "SSD-MED-008 Media download failed at the media source stage (compatibility attempt: 1/1): \
+         ERROR: [youtube] abc123: Private video. Sign in if you've been granted access to this video"
     );
 
     // A 403 the tool met on the way is not the reason the run ended.
@@ -1467,6 +1530,38 @@ fn a_download_the_origin_refuses_carries_the_code_of_the_refusal() {
          ERROR: unable to download video data: HTTP Error 404: Not Found",
     );
     assert_eq!(code_of(&other), Some(crate::error_codes::MED_017));
+}
+
+#[test]
+fn the_refusal_of_the_origin_keeps_its_stage_when_the_stored_text_is_read_again() {
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    // The app marked the sub-playlist; the tool's line also says "fragment", which alone reads as
+    // a media segment.
+    let visible =
+        "ERROR: [generic] Video unavailable: fragment 4 is not available in your country\n\
+                   [ssdownload-stage=manifest_child]";
+    assert_eq!(classify_download_error(visible, &request).0, "alt liste");
+    for info in crate::i18n::LANGUAGES {
+        let error = crate::i18n::with_language(info.code, || {
+            download_failure(visible, &request, false, &[])
+        });
+        let stored = error.to_string();
+        assert_eq!(
+            code_of(&error),
+            Some(crate::error_codes::MED_008),
+            "{}: {stored}",
+            info.code
+        );
+        assert_eq!(
+            classify_download_error(&stored, &request).0,
+            "alt liste",
+            "{}: {stored}",
+            info.code
+        );
+    }
 }
 
 #[test]
