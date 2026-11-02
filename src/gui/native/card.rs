@@ -6,7 +6,9 @@
 
 use super::*;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, SetActiveWindow};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetCapture, ReleaseCapture, SetActiveWindow, SetCapture,
+};
 
 pub(super) const CLASS_CARD: &str = "SSDownload.Card";
 const TIMER_CARD: usize = 7;
@@ -565,7 +567,7 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
             Glyph::Expand,
             CardAction::Expand,
             false,
-            crate::i18n::ui("Pencereyi aç", "Open window"),
+            crate::i18n::ui("Genişlet", "Expand"),
         ));
     }
     for (symbol, action, marked, name) in glyphs {
@@ -600,6 +602,7 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
             rect,
             DT_LEFT | DT_VCENTER,
         );
+        y += scale(ROW, d);
     }
     for job in &jobs {
         let name = RECT {
@@ -816,6 +819,12 @@ fn same_rect(a: &RECT, b: &RECT) -> bool {
     a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
 }
 
+/// A control's name as the text of its button, which turns the letter after an ampersand
+/// into an access key: a download called `AT&T.zip` must be read and typed as it is.
+fn button_text(name: &str) -> String {
+    name.replace('&', "&&")
+}
+
 /// Makes the push buttons of a card the controls a painting found. A control that is still
 /// there keeps its window, and with it the keyboard focus; the buttons stay in the order of
 /// the list, which is the order Tab visits them in.
@@ -838,17 +847,19 @@ unsafe fn sync_controls(card: &mut CardUi, painted: Painted, colours: Colours) {
             Some(at) => {
                 let mut shown = old.remove(at);
                 if shown.control.name != control.name {
-                    SetWindowTextW(shown.hwnd, wide(&control.name).as_ptr());
+                    SetWindowTextW(shown.hwnd, wide(&button_text(&control.name)).as_ptr());
                 }
-                if !same_rect(&shown.control.rect, &rect) {
+                if GetWindow(shown.hwnd, GW_HWNDPREV) != previous
+                    || !same_rect(&shown.control.rect, &rect)
+                {
                     SetWindowPos(
                         shown.hwnd,
-                        null_mut(),
+                        previous,
                         rect.left,
                         rect.top,
                         width,
                         height,
-                        SWP_NOZORDER | SWP_NOACTIVATE,
+                        SWP_NOACTIVATE,
                     );
                 }
                 if restyle || shown.control.look != control.look {
@@ -863,11 +874,12 @@ unsafe fn sync_controls(card: &mut CardUi, painted: Painted, colours: Colours) {
                 let hwnd = super::control(
                     card.hwnd,
                     "BUTTON",
-                    &control.name,
+                    &button_text(&control.name),
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
                     0,
                     id,
                 );
+                subclass(hwnd, card_button_proc);
                 SetWindowPos(
                     hwnd,
                     previous,
@@ -919,12 +931,65 @@ unsafe fn activate(hwnd: HWND) {
     }
 }
 
-/// Whether the user is working in the card: it is the active window, or the cursor is on it.
+/// Whether the user is working in the card: the cursor is on it, or one of its buttons has
+/// the keyboard focus. A card that was only activated is not in use, so it leaves when
+/// its time is up like any other.
 unsafe fn in_use(hwnd: HWND) -> bool {
     let mut area: RECT = zeroed();
     GetWindowRect(hwnd, &mut area);
     let mut cursor: POINT = zeroed();
-    GetActiveWindow() == hwnd || (GetCursorPos(&mut cursor) != 0 && PtInRect(&area, cursor) != 0)
+    (GetCursorPos(&mut cursor) != 0 && PtInRect(&area, cursor) != 0)
+        || GetParent(GetFocus()) == hwnd
+}
+
+/// Presses the button as the system does when its click is complete.
+unsafe fn click(button: HWND) {
+    SendMessageW(
+        GetParent(button),
+        WM_COMMAND,
+        GetDlgCtrlID(button) as usize,
+        button as LPARAM,
+    );
+}
+
+/// A button of a card is pressed by the mouse without taking the focus or activating the
+/// card: the user keeps working in the window they were in. The keyboard and screen readers
+/// press it through the dialog manager and `BM_CLICK` as for any button.
+unsafe extern "system" fn card_button_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            SetCapture(hwnd);
+            0
+        }
+        WM_LBUTTONUP if GetCapture() == hwnd => {
+            ReleaseCapture();
+            let mut area: RECT = zeroed();
+            GetClientRect(hwnd, &mut area);
+            let at = POINT {
+                x: (lparam & 0xffff) as i16 as i32,
+                y: ((lparam >> 16) & 0xffff) as i16 as i32,
+            };
+            if PtInRect(&area, at) != 0 {
+                click(hwnd);
+            }
+            0
+        }
+        BM_CLICK => {
+            click(hwnd);
+            0
+        }
+        WM_NCDESTROY => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            RemovePropW(hwnd, subclass_prop());
+            result
+        }
+        _ => call_previous(hwnd, msg, wparam, lparam),
+    }
 }
 
 /// The monitor of the card changed its scale: the fonts and the size are those of the new
@@ -1078,14 +1143,11 @@ unsafe extern "system" fn card_proc(
                 None => 0,
             }
         }
-        // WS_EX_NOACTIVATE keeps a click from activating the card, so the click does it:
-        // whoever clicks a card wants to work in it, and keys reach it only then. A card
-        // never activates itself when it appears.
+        // WS_EX_NOACTIVATE keeps a click from activating the card, so a click on the card
+        // itself does it: whoever clicks there wants to work in it, and keys reach it only
+        // then. The buttons never activate it, and a card never activates itself when it
+        // appears.
         WM_LBUTTONDOWN => {
-            activate(hwnd);
-            0
-        }
-        WM_PARENTNOTIFY if loword(wparam) as u32 == WM_LBUTTONDOWN => {
             activate(hwnd);
             0
         }
@@ -1155,7 +1217,7 @@ mod tests {
     };
     use crate::model::{Action as ModelAction, AddRequest};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SetActiveWindow, VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB,
+        GetActiveWindow, SetActiveWindow, VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB,
     };
 
     #[test]
@@ -1190,6 +1252,16 @@ mod tests {
         /// Opens a card of `kind` for `dpi`. A mirrored card is mirrored before it paints,
         /// the way the process default layout makes it when it is created.
         unsafe fn open(kind: impl FnOnce(&str) -> CardKind, dpi: u32, mirrored: bool) -> Self {
+            Self::open_named(kind, dpi, mirrored, None)
+        }
+
+        /// The same, for a download saved under `filename`.
+        unsafe fn open_named(
+            kind: impl FnOnce(&str) -> CardKind,
+            dpi: u32,
+            mirrored: bool,
+            filename: Option<&str>,
+        ) -> Self {
             register_test_classes();
             let root =
                 std::env::temp_dir().join(format!("ssdownload-card-{}", uuid::Uuid::new_v4()));
@@ -1198,6 +1270,7 @@ mod tests {
                 .dispatch_result(ModelAction::Add {
                     request: AddRequest {
                         url: "https://example.invalid/file.bin".into(),
+                        filename: filename.map(str::to_owned),
                         start_at: Some(chrono::Utc::now().timestamp() + 3_600),
                         ..Default::default()
                     },
@@ -1340,7 +1413,7 @@ mod tests {
             assert_eq!(
                 names,
                 [
-                    "Open window".to_owned(),
+                    "Expand".to_owned(),
                     "Pin".into(),
                     "Close".into(),
                     format!("Pause: {}", card.job_name()),
@@ -1384,25 +1457,64 @@ mod tests {
     /// The mouse key state of a left button message.
     const MK_LBUTTON: usize = 1;
 
+    /// The point `x`, `y` of a window as the position of a mouse message.
+    fn at(x: i32, y: i32) -> isize {
+        (((y & 0xffff) << 16) | (x & 0xffff)) as isize
+    }
+
     #[test]
-    fn a_click_on_a_card_or_on_one_of_its_controls_activates_it() {
+    fn a_click_on_the_card_itself_activates_it() {
         on_private_desktop(|| {
             with_common_controls_6(|| {
                 crate::i18n::with_language("en", || unsafe {
                     let other = control(null_mut(), "STATIC", "other", WS_POPUP | WS_VISIBLE, 0, 0);
                     let card = Fixture::open(jobs, 96, false);
-                    let inside = 1 | (1 << 16);
                     SetActiveWindow(other);
                     assert_eq!(GetActiveWindow(), other, "another window is active");
-                    SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, inside);
-                    assert_eq!(GetActiveWindow(), card.hwnd, "a click on the card");
-                    // The system tells a card of the clicks on its controls.
-                    SetActiveWindow(other);
-                    SendMessageW(card.hwnd, WM_PARENTNOTIFY, WM_LBUTTONDOWN as usize, inside);
-                    assert_eq!(GetActiveWindow(), card.hwnd, "a click on a control");
-                    SetActiveWindow(other);
-                    SendMessageW(card.hwnd, WM_PARENTNOTIFY, WM_MOUSEMOVE as usize, inside);
+                    SendMessageW(card.hwnd, WM_MOUSEMOVE, 0, at(1, 1));
                     assert_eq!(GetActiveWindow(), other, "no click, no activation");
+                    SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
+                    assert_eq!(GetActiveWindow(), card.hwnd, "a click on the card");
+                    drop(card);
+                    DestroyWindow(other);
+                })
+            })
+        });
+    }
+
+    #[test]
+    fn a_click_on_a_button_of_a_card_presses_it_and_leaves_the_active_window_and_the_focus_alone() {
+        on_private_desktop(|| {
+            with_common_controls_6(|| {
+                crate::i18n::with_language("en", || unsafe {
+                    let other = control(null_mut(), "STATIC", "other", WS_POPUP | WS_VISIBLE, 0, 0);
+                    let card = Fixture::open(jobs, 96, false);
+                    SetActiveWindow(other);
+                    let (active, focus) = (GetActiveWindow(), GetFocus());
+                    assert_eq!(active, other, "another window is active");
+                    let pin = card.buttons()[1].0;
+                    assert!(!(*card.card()).pinned);
+                    SendMessageW(pin, WM_LBUTTONDOWN, MK_LBUTTON, at(4, 4));
+                    assert_eq!(GetCapture(), pin, "the button holds the mouse");
+                    assert!(
+                        !(*card.card()).pinned,
+                        "nothing is pressed before the button is let go"
+                    );
+                    SendMessageW(pin, WM_LBUTTONUP, 0, at(4, 4));
+                    assert!(GetCapture().is_null(), "the mouse is let go");
+                    assert!((*card.card()).pinned, "the click pressed the pin");
+                    // A press that is let go outside the button is no click.
+                    SendMessageW(pin, WM_LBUTTONDOWN, MK_LBUTTON, at(4, 4));
+                    SendMessageW(pin, WM_LBUTTONUP, 0, at(-40, -40));
+                    assert!((*card.card()).pinned, "a press let go outside the button");
+                    // A double click is a second press.
+                    SendMessageW(pin, WM_LBUTTONDBLCLK, MK_LBUTTON, at(4, 4));
+                    SendMessageW(pin, WM_LBUTTONUP, 0, at(4, 4));
+                    assert!(!(*card.card()).pinned, "a double click");
+                    SendMessageW(pin, BM_CLICK, 0, 0);
+                    assert!((*card.card()).pinned, "a screen reader presses it too");
+                    assert_eq!(GetActiveWindow(), active, "the card was not activated");
+                    assert_eq!(GetFocus(), focus, "no button took the focus");
                     drop(card);
                     DestroyWindow(other);
                 })
@@ -1457,20 +1569,138 @@ mod tests {
     }
 
     #[test]
-    fn a_completion_card_does_not_leave_while_the_user_works_in_it() {
+    fn a_completion_card_the_user_activated_leaves_unless_a_button_has_the_keyboard() {
         with_card(done, |card| unsafe {
             let stale = || Instant::now() - DONE_LIFETIME - Duration::from_secs(1);
-            (*card.card()).opened = stale();
-            SetActiveWindow(card.hwnd);
-            SendMessageW(card.hwnd, WM_TIMER, TIMER_CARD, 0);
-            assert_ne!(IsWindow(card.hwnd), 0, "a card the user works in stays");
-            let other = control(null_mut(), "STATIC", "other", WS_POPUP | WS_VISIBLE, 0, 0);
-            SetActiveWindow(other);
+            SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
+            assert_eq!(GetActiveWindow(), card.hwnd, "the user clicked the card");
+            SetFocus(card.buttons()[0].0);
             (*card.card()).opened = stale();
             SendMessageW(card.hwnd, WM_TIMER, TIMER_CARD, 0);
-            assert_eq!(IsWindow(card.hwnd), 0, "an unattended card leaves");
-            DestroyWindow(other);
+            assert_ne!(
+                IsWindow(card.hwnd),
+                0,
+                "a card with the keyboard in one of its buttons stays"
+            );
+            SetFocus(card.hwnd);
+            assert_eq!(GetActiveWindow(), card.hwnd, "the card is still active");
+            (*card.card()).opened = stale();
+            SendMessageW(card.hwnd, WM_TIMER, TIMER_CARD, 0);
+            assert_eq!(IsWindow(card.hwnd), 0, "an active card nobody uses leaves");
         });
+    }
+
+    #[test]
+    fn an_ampersand_in_the_name_of_a_download_is_no_access_key_of_its_button() {
+        on_private_desktop(|| {
+            with_common_controls_6(|| {
+                crate::i18n::with_language("en", || unsafe {
+                    let main = control(null_mut(), "STATIC", "main", WS_POPUP, 0, 0);
+                    let card = Fixture::open_named(jobs, 96, false, Some("AT&T-report.zip"));
+                    // The engine numbers a name that an earlier run of this test claimed.
+                    let name = card.job_name();
+                    assert!(name.starts_with("AT&T-report"), "{name}");
+                    let buttons = card.buttons();
+                    assert_eq!(
+                        buttons[3].1,
+                        format!("Pause: {}", name.replace('&', "&&")),
+                        "the button shows the ampersand"
+                    );
+                    let state = || card.app.snapshot().jobs[0].state;
+                    let before = state();
+                    SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
+                    SetFocus(buttons[0].0);
+                    let mut msg: MSG = zeroed();
+                    msg.hwnd = GetFocus();
+                    msg.message = WM_CHAR;
+                    msg.wParam = 't' as usize;
+                    dialog_message(main, &msg);
+                    assert_eq!(
+                        state(),
+                        before,
+                        "the letter after the ampersand pauses nothing"
+                    );
+                    drop(card);
+                    DestroyWindow(main);
+                })
+            })
+        });
+    }
+
+    #[test]
+    fn the_buttons_of_a_card_follow_the_order_of_the_list_when_it_changes() {
+        with_card(jobs, |card| unsafe {
+            let place = RECT {
+                left: 10,
+                top: 40,
+                right: 60,
+                bottom: 60,
+            };
+            let sync = |names: [&str; 3]| {
+                let controls = names
+                    .iter()
+                    .map(|name| Control {
+                        rect: place,
+                        action: CardAction::Toggle((*name).to_owned()),
+                        name: (*name).to_owned(),
+                        look: Look::Label((*name).to_owned()),
+                    })
+                    .collect();
+                let painted = Painted {
+                    title: "title".to_owned(),
+                    controls,
+                };
+                sync_controls(&mut *card.card(), painted, colours(false, false));
+            };
+            let order = || {
+                card.buttons()
+                    .into_iter()
+                    .map(|button| button.1)
+                    .collect::<Vec<_>>()
+            };
+            sync(["a", "b", "c"]);
+            assert_eq!(order(), ["a", "b", "c"]);
+            let windows: Vec<HWND> = card.buttons().into_iter().map(|button| button.0).collect();
+            sync(["c", "a", "b"]);
+            assert_eq!(
+                order(),
+                ["c", "a", "b"],
+                "Tab visits them in the order of the list"
+            );
+            let now: Vec<HWND> = card.buttons().into_iter().map(|button| button.0).collect();
+            assert_eq!(
+                now,
+                [windows[2], windows[0], windows[1]],
+                "the windows are kept"
+            );
+        });
+    }
+
+    #[test]
+    fn the_footer_of_an_empty_panel_stands_below_its_text() {
+        with_card(
+            |_| CardKind::Panel,
+            |card| unsafe {
+                // The only download is scheduled for later, so the panel lists none.
+                let buttons = card.buttons();
+                let pause_all = buttons
+                    .iter()
+                    .find(|button| button.1 == "Pause all")
+                    .expect("the panel offers Pause all");
+                assert!(
+                    pause_all.2.top >= scale(HEADER + ROW, 96),
+                    "the button at {} px is below the text row that ends at {} px",
+                    pause_all.2.top,
+                    scale(HEADER + ROW, 96)
+                );
+                let mut frame: RECT = zeroed();
+                GetWindowRect(card.hwnd, &mut frame);
+                assert!(
+                    pause_all.2.bottom <= frame.bottom - frame.top,
+                    "the button is inside the card"
+                );
+            },
+        );
     }
 
     /// The controls of a card with their places, the size of its window and the height of
@@ -1698,10 +1928,7 @@ mod tests {
 
             let after = card.buttons();
             let names: Vec<&str> = after.iter().map(|button| button.1.as_str()).collect();
-            assert_eq!(
-                names,
-                ["Open window", "Pin", "Close", "Open", "Show in folder"]
-            );
+            assert_eq!(names, ["Expand", "Pin", "Close", "Open", "Show in folder"]);
             for (kept, now) in header.iter().zip(&after) {
                 assert_eq!(kept.0, now.0, "{} keeps its window", kept.1);
             }
