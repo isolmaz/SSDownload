@@ -1208,7 +1208,12 @@ impl Actor {
                     )
                 )
             }
-            if !pause && job.browser_transfer_authorized {
+            // A job that a browser transfer was begun for belongs to that transfer until it
+            // ends. Before the receiver is ready, the job is neither authorized nor awaiting a
+            // source.
+            if !pause
+                && (job.browser_transfer_authorized || self.browser_transfers.contains_key(id))
+            {
                 bail!(
                     "{}",
                     crate::i18n::ui(
@@ -1360,9 +1365,12 @@ impl Actor {
             .jobs
             .get_mut(id)
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
+        // A job that a browser transfer was begun for belongs to that transfer until it ends (see
+        // `transition`).
         if job.state.is_terminal() && job.state != JobState::Failed
             || job.remove_requested.is_some()
             || job.browser_transfer_authorized
+            || self.browser_transfers.contains_key(id)
         {
             bail!(
                 "{}",
@@ -2649,8 +2657,9 @@ impl Actor {
         self.jobs.insert(id.into(), job.clone());
         self.cancel_source_refresh_workers(id);
         // The receiver's state and the extension keep a transfer's generation after the app
-        // closes, so a transfer draws a random one, which a later session does not give again.
-        // The extension takes it only as a safe integer, below 2^53.
+        // closes, so a transfer draws a random one: a later session gives the same one again
+        // only by chance, about once in 2^53. The extension takes it only as a safe integer,
+        // below 2^53.
         let generation = (Uuid::new_v4().as_u128() as u64 & ((1 << 53) - 1)).max(1);
         self.browser_transfers.insert(
             id.into(),
@@ -2688,6 +2697,16 @@ impl Actor {
                 )
             );
         };
+        // The app's own downloader runs the job; a transfer does not take it over.
+        if self.active.contains_key(id) {
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Tarayıcı aktarımı artık bu işe yazamaz.",
+                    "The browser transfer can no longer write to this job."
+                )
+            );
+        }
         let mut job = self
             .jobs
             .get(id)
@@ -3974,6 +3993,7 @@ impl Actor {
                 job.force_start
                     && job.state == JobState::Queued
                     && !self.active.contains_key(&job.id)
+                    && !self.browser_transfers.contains_key(&job.id)
             })
             .map(|job| job.id.clone())
             .collect::<Vec<_>>();
