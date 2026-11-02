@@ -3454,6 +3454,284 @@ fn a_page_that_is_reached_without_a_redirect_is_still_saved() {
     assert_eq!(fs::read(result.path).unwrap(), pattern(1, size));
 }
 
+/// The answer that sends a request for `from` on to `to`, as the link of a download page does.
+fn redirect_document(from: &str, status: u16, to: &str) -> Document {
+    Document {
+        path: from.into(),
+        status,
+        headers: vec![format!("Location: {to}")],
+        body: Vec::new(),
+        unframed: false,
+    }
+}
+
+/// Downloads `request` as a job added with it is: into a file that the address names (or the name
+/// the user chose), which the finished file may replace. Returns the name the file was saved
+/// under, after checking that its bytes are the source's.
+fn saved_as(request: &AddRequest, size: u64) -> String {
+    let directory = TempDir::new("named");
+    let name = request
+        .filename
+        .clone()
+        .or_else(|| url_file_name(&validate_source_url(&request.url).unwrap()))
+        .unwrap();
+    let result = fetch(
+        request,
+        &directory.0.join(name),
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(fs::read(&result.path).unwrap(), pattern(1, size));
+    result
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Asserts that `server` serves each `(path, name)` under `name`, and lists every path that it
+/// does not, so that one wrong name does not hide the others.
+fn assert_saved_as(server: &Server, size: u64, cases: &[(&str, &str)]) {
+    let wrong = cases
+        .iter()
+        .filter_map(|&(path, name)| {
+            let saved = saved_as(&file_request(server.url(path)), size);
+            (saved != name).then(|| format!("{path} was saved as {saved}, not {name}"))
+        })
+        .collect::<Vec<_>>();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn a_redirect_to_a_named_file_saves_the_file_under_that_name() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/get", 302, "/files/Setup%20159.0.bin"),
+            redirect_document("/redirect-chain", 301, "/step-two"),
+            redirect_document("/step-two", 302, "/step-three"),
+            redirect_document("/step-three", 307, "/range.bin"),
+            redirect_document("/current", 302, "/releases/tool-1.2.exe"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/get", "Setup 159.0.bin"),
+            ("/redirect-chain", "range.bin"),
+            ("/current", "tool-1.2.exe"),
+        ],
+    );
+}
+
+#[test]
+fn a_redirect_to_a_path_without_an_extension_keeps_the_name_of_the_address() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/file.zip", 302, "/a1b2c3d4"),
+            redirect_document("/download", 302, "/a1b2c3d4"),
+            redirect_document("/folder", 302, "/files/"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/file.zip", "file.zip"),
+            ("/download", "download"),
+            ("/folder", "folder"),
+        ],
+    );
+}
+
+#[test]
+fn a_requested_name_with_an_extension_is_not_replaced_by_the_name_of_the_target() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/report.pdf", 302, "/download.php?id=5"),
+            redirect_document("/app.exe", 302, "/objects/7f3a.dat"),
+            redirect_document("/old.zip", 302, "/releases/new-1.2.zip"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/report.pdf", "report.pdf"),
+            ("/app.exe", "app.exe"),
+            ("/old.zip", "old.zip"),
+        ],
+    );
+}
+
+#[test]
+fn a_version_number_at_the_end_of_a_redirect_target_names_nothing() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/latest", 302, "/releases/v1.2"),
+            redirect_document("/stable", 302, "/builds/2024.11"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[("/latest", "latest"), ("/stable", "stable")],
+    );
+}
+
+#[test]
+fn a_version_number_at_the_end_of_the_requested_address_names_no_file() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/stable/2024.11", 302, "/files/app-2024.11.msi"),
+            redirect_document("/download/1.2", 302, "/files/app-1.2.zip"),
+            redirect_document("/v2.0", 302, "/files/tool-2.0.exe"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/stable/2024.11", "app-2024.11.msi"),
+            ("/download/1.2", "app-1.2.zip"),
+            ("/v2.0", "tool-2.0.exe"),
+        ],
+    );
+}
+
+#[test]
+fn the_name_the_user_chose_and_the_content_disposition_win_over_the_name_a_redirect_led_to() {
+    let size = 4_000;
+    let documents = vec![redirect_document("/get", 302, "/files/from-address.bin")];
+    let plain = Server::start(Config {
+        size,
+        documents: documents.clone(),
+        ..Config::default()
+    });
+    let chosen = AddRequest {
+        filename: Some("mine.bin".into()),
+        ..file_request(plain.url("/get"))
+    };
+    assert_eq!(saved_as(&chosen, size), "mine.bin");
+
+    let disposition = Server::start(Config {
+        size,
+        documents,
+        content_disposition: Some("attachment; filename=\"from-header.bin\"".into()),
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(disposition.url("/get")), size),
+        "from-header.bin"
+    );
+}
+
+#[test]
+fn a_file_saved_under_the_name_a_redirect_led_to_never_overwrites_one_that_exists() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![redirect_document("/get", 302, "/files/report.bin")],
+        ..Config::default()
+    });
+    let directory = TempDir::new("named-exists");
+    fs::write(directory.0.join("report.bin"), b"mine").unwrap();
+    let result = fetch(
+        &file_request(server.url("/get")),
+        &directory.0.join("get"),
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(result.path, directory.0.join("report (1).bin"));
+    assert_eq!(fs::read(&result.path).unwrap(), pattern(1, size));
+    assert_eq!(fs::read(directory.0.join("report.bin")).unwrap(), b"mine");
+}
+
+#[test]
+fn a_download_over_several_connections_is_named_after_the_file_its_redirect_led_to() {
+    let size = 6 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(8 * MIB),
+        documents: vec![redirect_document("/get", 302, "/files/Archive.bin")],
+        ..Config::default()
+    });
+    let directory = TempDir::new("named-segmented");
+    forget_writes();
+    let result = fetch(
+        &file_request(server.url("/get")),
+        &directory.0.join("get"),
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(result.path, directory.0.join("Archive.bin"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let connections = data_gets(&server.log())
+        .map(|entry| entry.connection)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        connections.len() > 1,
+        "ranges used connections {connections:?}"
+    );
+}
+
+#[test]
+fn a_download_over_one_connection_is_named_after_the_address_that_answered_it() {
+    // The probe sees no redirect; only the transfer is sent on.
+    let size = 4_000;
+    let target = Server::start(Config {
+        size,
+        ..Config::default()
+    });
+    let source = redirecting_get(target.url("/files/Archive.bin"), size);
+    assert_eq!(
+        saved_as(&file_request(source.url("/get")), size),
+        "Archive.bin"
+    );
+}
+
+#[test]
+fn a_download_over_one_connection_falls_back_to_the_name_of_the_address_the_probe_ended_at() {
+    // The probe ends at a named file; the transfer is sent on from there to an address without
+    // an extension.
+    let size = 4_000;
+    let blob = Server::start(Config {
+        size,
+        ..Config::default()
+    });
+    let named = redirecting_get(blob.url("/blob/abc123"), size);
+    let source = redirecting(named.url("/files/app.exe"));
+    assert_eq!(saved_as(&file_request(source.url("/get")), size), "app.exe");
+}
+
 #[test]
 fn an_auto_job_redirected_to_a_page_stays_a_media_job() {
     let page = page_server(4_000, "text/html");
