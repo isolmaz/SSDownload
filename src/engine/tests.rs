@@ -1042,6 +1042,175 @@ fn a_job_sent_to_the_browser_counts_again_after_a_begin_that_ended_early() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// A job that waits for a new source address, with the failure that sent it there, and a browser
+/// transfer that this process begins for it. Returns the folder, the paths, the engine, the job
+/// and the transfer's generation.
+fn awaiting_source_in_a_transfer(name: &str) -> (PathBuf, AppPaths, Engine, String, u64) {
+    let (root, paths, id) =
+        browser_quota_job(name, format!("https://example.test/{name}.bin"), |job| {
+            job.downloaded = 1_000_000;
+            job.error = Some("The signed address expired.".into());
+        });
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    (root, paths, engine, id, generation)
+}
+
+fn stored_job(paths: &AppPaths, id: &str) -> Job {
+    Store::open(&paths.database)
+        .unwrap()
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap()
+}
+
+fn shown_job(engine: &Engine, id: &str) -> Job {
+    let snapshot = engine.snapshot();
+    snapshot
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .clone()
+}
+
+/// What a job is, as the engine shows it and as the database has it.
+fn state_of_both(engine: &Engine, paths: &AppPaths, id: &str) -> [(JobState, bool); 2] {
+    [shown_job(engine, id), stored_job(paths, id)]
+        .map(|job| (job.state, job.browser_transfer_authorized))
+}
+
+#[test]
+fn a_job_waiting_for_a_source_waits_again_when_its_browser_transfer_ends_before_the_receiver_is_ready(
+) {
+    for end in ["released", "paused"] {
+        let (root, paths, engine, id, generation) =
+            awaiting_source_in_a_transfer(&format!("browser-ends-{end}"));
+        let before = stored_job(&paths, &id);
+        assert_eq!(before.state, JobState::AwaitingSource);
+        if end == "released" {
+            engine.release_browser_transfer(&id, generation)
+        } else {
+            engine.pause_browser_transfer(&id, generation)
+        }
+        .unwrap();
+
+        // As it was before the transfer began, in the engine and in the database.
+        for job in [shown_job(&engine, &id), stored_job(&paths, &id)] {
+            assert_eq!(
+                (
+                    job.state,
+                    &job.phase,
+                    &job.error,
+                    job.browser_transfer_authorized
+                ),
+                (
+                    JobState::AwaitingSource,
+                    &before.phase,
+                    &before.error,
+                    false
+                ),
+                "{end}"
+            );
+        }
+        // The address it waits for can still be delivered.
+        begin_as_this_process(&engine, &id, false);
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_paused_when_its_transfer_ends_after_the_receiver_was_ready() {
+    for end in ["released", "paused"] {
+        let (root, paths, engine, id, generation) =
+            awaiting_source_in_a_transfer(&format!("browser-prepared-{end}"));
+        engine
+            .browser_transfer_prepared(&id, generation, 0)
+            .unwrap();
+        if end == "released" {
+            engine.release_browser_transfer(&id, generation)
+        } else {
+            engine.pause_browser_transfer(&id, generation)
+        }
+        .unwrap();
+
+        assert_eq!(
+            state_of_both(&engine, &paths, &id),
+            [(JobState::Paused, true); 2],
+            "{end}"
+        );
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn a_job_waiting_for_a_source_waits_again_when_the_sender_of_its_browser_transfer_exits_before_the_receiver_is_ready(
+) {
+    // After the receiver is ready the sender's exit revokes the authorization and pauses the job.
+    for (prepared, expected) in [
+        (false, (JobState::AwaitingSource, false)),
+        (true, (JobState::Paused, false)),
+    ] {
+        let (root, paths, id) = browser_quota_job(
+            &format!("browser-exits-{prepared}"),
+            format!("https://example.test/browser-exits-{prepared}.bin"),
+            |job| job.downloaded = 1_000_000,
+        );
+        let mut sender = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                sender.id(),
+            )
+        };
+        assert!(!handle.is_null());
+        let sender_started_at = process_started_at(handle).unwrap();
+        unsafe {
+            CloseHandle(handle);
+        }
+        let engine = Engine::open(paths.clone()).unwrap();
+        engine.begin_source_refresh(&id).unwrap();
+        let before = stored_job(&paths, &id);
+        let (_, generation) = engine
+            .begin_browser_transfer(&id, sender.id(), sender_started_at, false)
+            .unwrap();
+        if prepared {
+            engine
+                .browser_transfer_prepared(&id, generation, 0)
+                .unwrap();
+        }
+        sender.kill().unwrap();
+        sender.wait().unwrap();
+        wait_until("the exit of the sender to end the transfer", || {
+            job_state(&engine, &id) != JobState::Downloading
+        });
+
+        assert_eq!(
+            state_of_both(&engine, &paths, &id),
+            [expected; 2],
+            "prepared: {prepared}"
+        );
+        if !prepared {
+            for job in [shown_job(&engine, &id), stored_job(&paths, &id)] {
+                assert_eq!((&job.phase, &job.error), (&before.phase, &before.error));
+            }
+        }
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[test]
 fn a_restart_counts_again_after_a_begin_that_ended_early() {
     // A browser transfer of the job had committed and counted 1 MB.
@@ -1485,8 +1654,11 @@ fn a_restart_sent_to_the_browser_that_ended_early_leaves_the_count_of_the_apps_o
     });
     let generation = begin_as_this_process(&engine, &id, true);
     engine.pause_browser_transfer(&id, generation).unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
 
-    // Resumed in the app, the downloader goes on from its partial file and reports from it.
+    // Paused and resumed in the app, the downloader goes on from its partial file and reports
+    // from it.
+    engine.pause(&id).unwrap();
     engine.resume(&id).unwrap();
     wait_until("the second run", || runs() == 2);
     report_downloaded(&engine, &id, &[1_000_000, 1_200_000]);
