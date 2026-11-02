@@ -211,15 +211,16 @@ fn inspect_document_with_tools(
         crate::logging::record(crate::logging::Event::failure(
             "inspect.failed",
             crate::error_codes::MED_006,
-            detail.clone(),
+            detail,
         ));
+        let short = useful_error(&final_error_text(&captured.stderr), &secrets.redactions);
         crate::bail_code!(
             crate::error_codes::MED_006,
             "{}",
             crate::i18n::ui_format!(
                 "Medya analizi başarısız: {detail}",
                 "Media analysis failed: {detail}",
-                detail = detail
+                detail = short
             )
         );
     }
@@ -1625,12 +1626,54 @@ fn non_debug_lines(text: &str) -> String {
         .join("\n")
 }
 
-/// The failure a user can act on: from the last `ERROR:` line to the end, bounded. The verbose
-/// trace around it is kept in the log only.
+/// The failure a user can act on: from the last `ERROR:` line to the end, bounded, without the
+/// Python traceback the tool prints after it and the app's own stage notes. The whole output is
+/// kept in the log only.
 fn final_error_text(text: &str) -> String {
+    let text = without_tracebacks(text);
     let text = text.trim();
     let start = text.rfind("ERROR:").unwrap_or(0);
     bounded_tail(text[start..].trim(), 2048)
+}
+
+/// The text without Python tracebacks (`Traceback (most recent call last):`, its frames, the
+/// exception line that ends it and the notes that chain tracebacks), without frames printed on
+/// their own (a stack under an `ERROR:` line), and without the lines of [`DownloadFailureStages`].
+/// A traceback can end in `yt_dlp.utils.DownloadError: ERROR: ...`, which is not the failure.
+fn without_tracebacks(text: &str) -> String {
+    #[derive(PartialEq)]
+    enum Trace {
+        Outside,
+        /// After the header: frames, then the exception line.
+        Header,
+        /// After a frame with no header.
+        Frames,
+    }
+    let mut trace = Trace::Outside;
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let indented = line.starts_with([' ', '\t']);
+        if trace != Trace::Outside && (indented || trimmed.is_empty()) {
+            continue;
+        }
+        if trace == Trace::Header {
+            trace = Trace::Outside;
+            continue;
+        }
+        trace = Trace::Outside;
+        if trimmed == "Traceback (most recent call last):" {
+            trace = Trace::Header;
+        } else if indented && trimmed.starts_with("File \"") && trimmed.contains("\", line ") {
+            trace = Trace::Frames;
+        } else if !trimmed.starts_with("During handling of the above exception")
+            && !trimmed.starts_with("The above exception was the direct cause")
+            && !trimmed.starts_with("[ssdownload-stage=")
+        {
+            kept.push(line);
+        }
+    }
+    kept.join("\n")
 }
 
 /// yt-dlp drops DRM formats and, when nothing else remains, ends with an `ERROR: ... This video
