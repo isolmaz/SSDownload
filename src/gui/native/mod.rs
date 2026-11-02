@@ -11247,8 +11247,8 @@ mod tests {
         panic!("timed out waiting until {what}");
     }
 
-    /// The window that has the keyboard focus in the thread that owns `alert`.
-    fn focused_window(alert: usize) -> usize {
+    /// The input state (focus, mouse capture) of the thread that owns `alert`.
+    fn input_state(alert: usize) -> windows_sys::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
         };
@@ -11260,8 +11260,13 @@ mod tests {
                 GetWindowThreadProcessId(alert as _, std::ptr::null_mut()),
                 &mut info,
             );
-            info.hwndFocus as usize
+            info
         }
+    }
+
+    /// The window that has the keyboard focus in the thread that owns `alert`.
+    fn focused_window(alert: usize) -> usize {
+        input_state(alert).hwndFocus as usize
     }
 
     /// Posts a key press to `window`. A real key goes to the window that has the focus.
@@ -11520,7 +11525,7 @@ mod tests {
     fn a_page_that_cannot_be_opened_is_named_in_a_notice_and_the_offer_stays_on_top() {
         use windows_sys::Win32::UI::{
             Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN},
-            WindowsAndMessaging::{FindWindowExW, GetDlgCtrlID, IsWindow, IsWindowVisible},
+            WindowsAndMessaging::{GetDlgCtrlID, IsWindow},
         };
 
         let page = "https://releases.example/v9.9.9";
@@ -11530,29 +11535,9 @@ mod tests {
                 let link = tab_to_the_link(alert);
                 post_key(link, VK_RETURN);
 
-                let class = super::wide(super::CLASS_ALERT);
-                let find_notice = || {
-                    let mut found = FindWindowExW(
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        class.as_ptr(),
-                        std::ptr::null(),
-                    );
-                    while !found.is_null()
-                        && (found as usize == alert || IsWindowVisible(found) == 0)
-                    {
-                        found = FindWindowExW(
-                            std::ptr::null_mut(),
-                            found,
-                            class.as_ptr(),
-                            std::ptr::null(),
-                        );
-                    }
-                    found as usize
-                };
                 let mut notice = 0;
                 wait_until("a notice opens over the offer", || {
-                    notice = find_notice();
+                    notice = notice_over(alert);
                     notice != 0
                 });
                 let body = alert_children(notice)
@@ -11759,6 +11744,349 @@ mod tests {
                 "button {index} from the left closes the box"
             );
         }
+    }
+
+    /// Posts a key press to the window that has the focus, or to `alert` while no control has
+    /// it: the way the keyboard delivers a key.
+    fn alert_key(alert: usize, key: u16) {
+        post_key(
+            match focused_window(alert) {
+                0 => alert,
+                focus => focus,
+            },
+            key,
+        );
+    }
+
+    /// Presses Tab until the window `target` has the focus.
+    fn tab_until_focused(alert: usize, target: usize) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_TAB;
+
+        for _ in 0..8 {
+            let before = focused_window(alert);
+            alert_key(alert, VK_TAB);
+            wait_until("Tab moves the focus", || focused_window(alert) != before);
+            if focused_window(alert) == target {
+                return;
+            }
+        }
+        panic!("Tab never reached the window {target}");
+    }
+
+    /// The ids of the buttons that carry the default-button mark right now.
+    fn default_buttons(buttons: &[AlertButton]) -> Vec<i32> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, BS_DEFPUSHBUTTON, BS_TYPEMASK, GWL_STYLE,
+        };
+
+        buttons
+            .iter()
+            .filter(|button| unsafe {
+                GetWindowLongPtrW(button.handle as _, GWL_STYLE) as u32 & BS_TYPEMASK as u32
+                    == BS_DEFPUSHBUTTON as u32
+            })
+            .map(|button| button.id)
+            .collect()
+    }
+
+    /// Waits until exactly the buttons `expected` carry the default-button mark.
+    fn wait_for_default(buttons: &[AlertButton], expected: &[i32]) {
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            seen = default_buttons(buttons);
+            if seen == expected {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        panic!("the default-button mark is on {seen:?}, expected {expected:?}");
+    }
+
+    /// The visible alert other than `alert`, or 0 while there is none: the notice an alert
+    /// opens over itself.
+    fn notice_over(alert: usize) -> usize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, IsWindowVisible};
+
+        let class = super::wide(super::CLASS_ALERT);
+        let mut found = std::ptr::null_mut();
+        loop {
+            found = unsafe {
+                FindWindowExW(
+                    std::ptr::null_mut(),
+                    found,
+                    class.as_ptr(),
+                    std::ptr::null(),
+                )
+            };
+            if found.is_null()
+                || (found as usize != alert && unsafe { IsWindowVisible(found) } != 0)
+            {
+                return found as usize;
+            }
+        }
+    }
+
+    /// Opens the alert with `open`, lets `act` press its keys and returns what it answered.
+    fn alert_answer(
+        open: impl FnOnce() -> Option<i32> + Send,
+        act: impl FnOnce(usize, &[AlertButton]) + Send,
+    ) -> Option<i32> {
+        answer_alert(open, act).0
+    }
+
+    /// The buttons of an update offer: the first is the default, Escape means the last.
+    const OFFER_BUTTONS: [(i32, &str); 3] = [
+        (
+            windows_sys::Win32::UI::WindowsAndMessaging::IDYES,
+            "Install",
+        ),
+        (100, "Skip"),
+        (windows_sys::Win32::UI::WindowsAndMessaging::IDNO, "Later"),
+    ];
+
+    #[test]
+    fn enter_answers_an_alert_with_its_default_button() {
+        use super::{run_alert, run_alert_buttons};
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_RETURN,
+            WindowsAndMessaging::{
+                IDNO, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OK, MB_YESNO,
+            },
+        };
+
+        let enter = |alert: usize, _: &[AlertButton]| alert_key(alert, VK_RETURN);
+        let custom = |flags| {
+            move || unsafe {
+                run_alert_buttons(
+                    std::ptr::null_mut(),
+                    "Body",
+                    "Title",
+                    flags,
+                    Some(&OFFER_BUTTONS),
+                )
+            }
+        };
+        let plain =
+            |flags| move || unsafe { run_alert(std::ptr::null_mut(), "Body", "Title", flags) };
+        assert_eq!(
+            alert_answer(custom(MB_ICONQUESTION), enter),
+            Some(IDYES),
+            "the first of three buttons"
+        );
+        assert_eq!(
+            alert_answer(custom(MB_ICONQUESTION | MB_DEFBUTTON2), enter),
+            Some(100),
+            "the button MB_DEFBUTTON2 names"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNO | MB_ICONQUESTION), enter),
+            Some(IDYES),
+            "Yes of a yes/no question, which has no OK"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNO | MB_DEFBUTTON2), enter),
+            Some(IDNO),
+            "No when the question makes it the default"
+        );
+        assert_eq!(alert_answer(plain(MB_OK), enter), Some(IDOK), "OK");
+    }
+
+    #[test]
+    fn enter_after_tabbing_to_another_button_answers_that_button() {
+        use super::run_alert_buttons;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_RETURN, WindowsAndMessaging::MB_ICONQUESTION,
+        };
+
+        for (id, label) in OFFER_BUTTONS {
+            let answer = alert_answer(
+                || unsafe {
+                    run_alert_buttons(
+                        std::ptr::null_mut(),
+                        "Body",
+                        "Title",
+                        MB_ICONQUESTION,
+                        Some(&OFFER_BUTTONS),
+                    )
+                },
+                |alert, buttons| {
+                    let button = buttons.iter().find(|button| button.id == id).unwrap();
+                    tab_until_focused(alert, button.handle);
+                    alert_key(alert, VK_RETURN);
+                },
+            );
+            assert_eq!(answer, Some(id), "Enter on {label}");
+        }
+    }
+
+    #[test]
+    fn escape_answers_an_alert_with_its_own_action_and_not_its_default_button() {
+        use super::{run_alert, run_alert_buttons};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            IDCANCEL, IDNO, MB_ICONQUESTION, MB_YESNO, MB_YESNOCANCEL,
+        };
+
+        let custom = || unsafe {
+            run_alert_buttons(
+                std::ptr::null_mut(),
+                "Body",
+                "Title",
+                MB_ICONQUESTION,
+                Some(&OFFER_BUTTONS),
+            )
+        };
+        assert_eq!(
+            alert_answer(custom, press_escape),
+            Some(IDNO),
+            "Later, the last of three buttons"
+        );
+        let plain =
+            |flags| move || unsafe { run_alert(std::ptr::null_mut(), "Body", "Title", flags) };
+        assert_eq!(
+            alert_answer(plain(MB_YESNO), press_escape),
+            Some(IDNO),
+            "No of a yes/no question"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNOCANCEL), press_escape),
+            Some(IDCANCEL),
+            "Cancel when there is one"
+        );
+    }
+
+    #[test]
+    fn the_default_button_is_marked_again_when_the_focus_leaves_the_buttons_for_a_scrolling_body() {
+        use super::run_alert_buttons;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_ESCAPE,
+            WindowsAndMessaging::{IDNO, IDYES, MB_ICONQUESTION},
+        };
+
+        let body = (1..=400)
+            .map(|line| format!("Line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        alert_answer(
+            || unsafe {
+                run_alert_buttons(
+                    std::ptr::null_mut(),
+                    &body,
+                    "Title",
+                    MB_ICONQUESTION,
+                    Some(&OFFER_BUTTONS),
+                )
+            },
+            |alert, buttons| {
+                let edit = alert_children(alert)
+                    .into_iter()
+                    .find(|child| child.1 == "Edit")
+                    .expect("a body this long scrolls in an edit")
+                    .0;
+                let handle = |id| {
+                    buttons
+                        .iter()
+                        .find(|button| button.id == id)
+                        .unwrap()
+                        .handle
+                };
+                assert_eq!(
+                    default_buttons(buttons),
+                    [IDYES],
+                    "Install when the box opens"
+                );
+
+                tab_until_focused(alert, handle(IDNO));
+                wait_for_default(buttons, &[IDNO]);
+                tab_until_focused(alert, edit);
+                wait_for_default(buttons, &[IDYES]);
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    #[test]
+    fn the_default_button_is_marked_again_when_the_focus_moves_to_the_offers_link() {
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_ESCAPE,
+            WindowsAndMessaging::{IDNO, IDYES},
+        };
+
+        answer_alert(
+            || english_offer("https://releases.example/v9.9.9", |_| true),
+            |alert, buttons| {
+                let link = alert_children(alert)
+                    .into_iter()
+                    .find(|child| child.1 == "SysLink")
+                    .expect("the offer has a link")
+                    .0;
+                let later = buttons.iter().find(|button| button.id == IDNO).unwrap();
+                assert_eq!(
+                    default_buttons(buttons),
+                    [IDYES],
+                    "Install when the box opens"
+                );
+
+                tab_until_focused(alert, later.handle);
+                wait_for_default(buttons, &[IDNO]);
+                tab_until_focused(alert, link);
+                wait_for_default(buttons, &[IDYES]);
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_link_that_cannot_open_its_page_leaves_the_notice_and_the_offer_usable() {
+        use crate::update::UpdateDecision;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::IsWindowEnabled,
+            WindowsAndMessaging::{IsWindow, PostMessageW, BM_CLICK, WM_LBUTTONDOWN, WM_LBUTTONUP},
+        };
+
+        let (answer, _) = answer_alert(
+            || english_offer("https://releases.example/v9.9.9", |_| false),
+            |alert, buttons| unsafe {
+                let link = alert_children(alert)
+                    .into_iter()
+                    .find(|child| child.1 == "SysLink")
+                    .expect("the offer has a link")
+                    .0;
+                PostMessageW(link as _, WM_LBUTTONDOWN, 1, 3 | (3 << 16));
+                PostMessageW(link as _, WM_LBUTTONUP, 0, 3 | (3 << 16));
+
+                let mut notice = 0;
+                wait_until("a notice opens over the offer", || {
+                    notice = notice_over(alert);
+                    notice != 0
+                });
+                assert_eq!(
+                    IsWindowEnabled(alert as _),
+                    0,
+                    "the offer waits for the notice"
+                );
+                assert_eq!(
+                    input_state(alert).hwndCapture as usize,
+                    0,
+                    "no control keeps the mouse, so the notice can be clicked"
+                );
+
+                let ok = alert_children(notice)
+                    .into_iter()
+                    .find(|child| child.1 == "Button")
+                    .expect("the notice has OK")
+                    .0;
+                PostMessageW(ok as _, BM_CLICK, 0, 0);
+                wait_until("the notice closes", || IsWindow(notice as _) == 0);
+                wait_until("the offer is enabled again", || {
+                    IsWindowEnabled(alert as _) != 0
+                });
+                click_button(1)(alert, buttons);
+            },
+        );
+        assert!(
+            matches!(answer, Some(UpdateDecision::Skip)),
+            "the offer still answers its buttons"
+        );
     }
 
     /// The title bar when the colour scheme is applied to a window.

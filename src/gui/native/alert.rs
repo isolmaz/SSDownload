@@ -391,6 +391,10 @@ pub(super) unsafe extern "system" fn alert_proc(
                 GetSysColorBrush(COLOR_WINDOW) as LRESULT
             }
         }
+        // The dialog manager asks which button Enter presses, and again to restore the
+        // default when focus leaves the buttons. Answering from `ui.default` keeps that
+        // answer fixed; the button style moves with focus and would answer in a circle.
+        DM_GETDEFID => ((DC_HASDEFID << 16) | ui.default as u32) as LRESULT,
         WM_NOTIFY => {
             let header = &*(lparam as *const NMHDR);
             if header.idFrom == ALERT_LINK_ID as usize
