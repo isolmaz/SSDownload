@@ -602,37 +602,26 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                     },
                 );
             }
+            ID_WIZARD_CLASSIC | ID_WIZARD_MODERN => {
+                // The two theme cards are one radio group as well.
+                set_check(f.classic_card, id == ID_WIZARD_CLASSIC);
+                set_check(f.modern_card, id == ID_WIZARD_MODERN);
+            }
             ID_WIZARD_START => {
-                let simple = check(f.simple_card);
-                // A simple installation keeps every purpose enabled; the
-                // detailed answer only exists in the advanced choice.
-                let modes = if simple {
-                    UsageModes {
-                        video: true,
-                        file: true,
-                        audio: true,
-                    }
-                } else {
+                let settings = wizard_settings(
+                    &dlg.app.snapshot().settings,
+                    check(f.simple_card),
                     UsageModes {
                         video: check(f.video),
                         file: check(f.file),
                         audio: check(f.audio),
-                    }
-                };
-                if let Err(error) = modes.validate() {
+                    },
+                    check(f.modern_card),
+                );
+                if let Err(error) = settings.usage_modes.validate() {
                     set_dialog_error(dlg.hwnd, dlg.error, error, f.video);
                     return;
                 }
-                let mut settings = dlg.app.snapshot().settings.clone();
-                settings.usage_modes = modes;
-                settings.ui_mode = if simple {
-                    UiMode::Simple
-                } else {
-                    UiMode::Advanced
-                }
-                .as_str()
-                .into();
-                settings.onboarding_version = ONBOARDING_VERSION;
                 match dlg.app.dispatch(Action::SetSettings { settings }) {
                     Ok(()) => {
                         DestroyWindow(dlg.hwnd);
@@ -662,11 +651,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
             }
             D_ADVANCED => {
                 f.advanced = !f.advanced;
-                resize_dialog(
-                    dlg.hwnd,
-                    dlg.dpi,
-                    if f.advanced { 420 } else { ADD_DIALOG_HEIGHT },
-                );
+                resize_dialog(dlg.hwnd, dlg.dpi, add_window_height(f.advanced));
                 layout_dialog(dlg);
             }
             D_ADD_OK => match collect_add(f, false) {
@@ -679,7 +664,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         set_dialog_error(dlg.hwnd, dlg.error, mode_error(request.kind), f.kind);
                         return;
                     }
-                    if requests.len() == 1 && !direct_file_request(&requests[0]) {
+                    if add_opens_picker(&requests) {
                         let request = requests.remove(0);
                         let owner = GetWindow(dlg.hwnd, GW_OWNER);
                         let app = dlg.app.clone();
@@ -724,18 +709,29 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         }
                     }
                     let batch = requests.len();
+                    // One download that starts now opens its window; a batch or
+                    // a start scheduled for later does not.
+                    let opens_window =
+                        matches!(requests.as_slice(), [request] if request.starts_now());
                     let mut added = 0usize;
+                    let mut added_ids = Vec::new();
                     let mut remaining = requests.into_iter();
                     while let Some(request) = remaining.next() {
                         let url = request.url.clone();
                         match dlg.app.dispatch_result(Action::Add { request }) {
-                            Ok(result) => added += result.job_ids.len(),
+                            Ok(result) => {
+                                added += result.job_ids.len();
+                                added_ids.extend(result.job_ids);
+                            }
                             Err(e) => {
                                 let pending = std::iter::once(url)
                                     .chain(remaining.map(|request| request.url))
                                     .collect::<Vec<_>>()
                                     .join("\r\n");
                                 set_text(f.urls, &pending);
+                                if modern() {
+                                    refresh_add_ok(dlg, f);
+                                }
                                 set_dialog_error(
                                     dlg.hwnd,
                                     dlg.error,
@@ -762,7 +758,12 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                             false,
                         );
                     }
+                    let owner = GetWindow(dlg.hwnd, GW_OWNER);
+                    let app = dlg.app.clone();
                     DestroyWindow(dlg.hwnd);
+                    if opens_window && added_ids.len() == 1 {
+                        open_job_view(owner, app, added_ids);
+                    }
                 }
                 Err((e, h)) => set_dialog_error(dlg.hwnd, dlg.error, &e, h),
             },
@@ -815,8 +816,8 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                 set_check(f.mode_video, settings.usage_modes.video);
                 set_check(f.mode_file, settings.usage_modes.file);
                 set_check(f.mode_audio, settings.usage_modes.audio);
-                // The wizard answers the same question as the mode selector, so
-                // the dialog follows whatever it decided.
+                // The wizard answers the same questions as the mode and theme
+                // selectors, so the dialog follows whatever it decided.
                 combo_select(
                     f.ui_mode,
                     if UiMode::parse(&settings.ui_mode).is_simple() {
@@ -825,6 +826,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         1
                     },
                 );
+                combo_select(f.theme, settings.modern_theme() as i32);
                 apply_settings_mode(dlg, f);
             }
             S_UI_MODE if _code == CBN_SELCHANGE as u16 => {
@@ -1223,8 +1225,15 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
         },
         DialogKind::Media(f) => match id {
             D_ADVANCED => {
+                // The form's advanced fields work before the analysis loads,
+                // so opening them ends the preparing state.
+                show_media_form(f);
                 f.advanced = !f.advanced;
-                resize_dialog(dlg.hwnd, dlg.dpi, if f.advanced { 730 } else { 420 });
+                if modern() {
+                    fit_media_picker(dlg);
+                } else {
+                    resize_dialog(dlg.hwnd, dlg.dpi, if f.advanced { 730 } else { 420 });
+                }
                 layout_dialog(dlg);
             }
             M_REPORT => {
@@ -1376,6 +1385,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
             );
         }
         DialogKind::Progress(f) => match id {
+            P_DETAILS => toggle_job_details(dlg.hwnd, f),
             P_ACTION => {
                 let snapshot = dlg.app.snapshot();
                 match job_view_job(&snapshot, f) {
@@ -1601,6 +1611,11 @@ pub(super) unsafe fn collect_settings(
     value.start_with_windows = check(f.startup);
     value.notify_completion = check(f.notify);
     value.dark_mode = check(f.dark);
+    value.theme = if combo_index(f.theme) == 1 {
+        "modern".into()
+    } else {
+        "classic".into()
+    };
     value.update_check_enabled = check(f.update_check);
     // Both modes show these two rows (on the general page in the simple one),
     // so both read them back.

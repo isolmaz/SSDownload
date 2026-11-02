@@ -25,11 +25,14 @@ static AR: &[(&str, &str)] = &[
     (" · default", " · الافتراضي"),
     (" · error", " · خطأ"),
     ("&About SSDownload", "&حول SSDownload"),
+    ("&Ascending", "ت&صاعدي"),
     ("&Audio download...\tCtrl+Shift+N", "تنزيل &صوت...\tCtrl+Shift+N"),
     ("&Batch download...", "تنزيل &دفعي..."),
     ("&Browser setup...", "إعداد المت&صفح..."),
     ("&Check for updates...", "التحقق من ال&تحديثات..."),
     ("&Clear completed", "م&سح المكتملة"),
+    ("&Columns", "الأ&عمدة"),
+    ("&Descending", "ت&نازلي"),
     ("&Diagnostics...", "ال&تشخيص..."),
     ("&Downloads", "ال&تنزيلات"),
     ("&Event log...", "سجل ال&أحداث..."),
@@ -38,16 +41,25 @@ static AR: &[(&str, &str)] = &[
     ("&Import list...", "استيراد ال&قائمة..."),
     ("&Install media support...", "ت&ثبيت دعم الوسائط..."),
     ("&Keyboard shortcuts", "اختصارات &لوحة المفاتيح"),
+    ("&Larger details pane", "تك&بير لوحة التفاصيل"),
     ("&Media tools...", "أدوات ال&وسائط..."),
     ("&Mini panel", "اللوحة الم&صغّرة"),
+    ("&New download", "ت&نزيل جديد"),
     ("&New download...\tCtrl+N", "تنزيل &جديد...\tCtrl+N"),
     ("&Open file\tEnter", "ف&تح الملف\tEnter"),
+    ("&Pause", "إي&قاف مؤقت"),
+    ("&Pause / Resume", "إي&قاف مؤقت / استئناف"),
     ("&Pause / resume selected\tSpace", "&إيقاف مؤقت / استئناف المحدّد\tSpace"),
     ("&Queue manager...", "مدير &قوائم الانتظار..."),
+    ("&Queue order", "ترتيب &قائمة الانتظار"),
     ("&Refresh source address...", "تحديث &عنوان المصدر..."),
+    ("&Resume", "ا&ستئناف"),
+    ("&Settings", "ا&لإعدادات"),
     ("&Settings...", "&الإعدادات..."),
+    ("&Sort by", "&ترتيب حسب"),
     ("&Tools", "الأ&دوات"),
     ("&Video download...\tCtrl+Shift+N", "تنزيل &فيديو...\tCtrl+Shift+N"),
+    ("&View", "&عرض"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
     ("1 connection", "اتصال واحد"),
@@ -92,7 +104,7 @@ static AR: &[(&str, &str)] = &[
     ("Address copied to the clipboard.", "تم نسخ العنوان إلى الحافظة."),
     ("Advanced", "متقدّم"),
     ("Advanced options", "خيارات متقدّمة"),
-    ("Advanced — queues, folder rules, site crawler, sync, logs", "متقدّم — قوائم الانتظار، وقواعد المجلدات، وزاحف المواقع، والمزامنة، والسجلات"),
+    ("Advanced — queues, rules, crawler, sync, logs", "متقدّم — قوائم الانتظار، والقواعد، والزاحف، والمزامنة، والسجلات"),
     ("All", "الكل"),
     ("All download workers closed unexpectedly", "أُغلق جميع عمال التنزيل بشكل غير متوقع"),
     ("Also send over unencrypted HTTP", "أرسل أيضًا عبر اتصال HTTP غير مشفّر"),
@@ -111,11 +123,11 @@ static AR: &[(&str, &str)] = &[
     ("Audio language", "لغة الصوت"),
     ("Audio only", "الصوت فقط"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "المسارات الصوتية (Ctrl/Shift؛ فارغ = الأصلي):"),
-    ("Audio — extract audio only from video pages or audio links", "الصوت — استخراج الصوت فقط من صفحات الفيديو أو روابط الصوت"),
+    ("Audio — audio only from pages and links", "الصوت — الصوت فقط من الصفحات والروابط"),
     ("Automatic", "تلقائي"),
     ("Awaiting source", "بانتظار تحديث المصدر"),
     ("Basic", "أساسي"),
-    ("Basic — downloads, new download and essential settings", "أساسي — التنزيلات، والتنزيل الجديد، والإعدادات الأساسية"),
+    ("Basic — essential downloads and settings", "أساسي — التنزيلات والإعدادات الأساسية"),
     ("Batch download...", "تنزيل دفعي..."),
     ("Battery saver is on: downloads are on hold", "توفير البطارية قيد التشغيل: التنزيلات متوقفة مؤقتًا"),
     ("Behaviour", "السلوك"),
@@ -148,6 +160,8 @@ static AR: &[(&str, &str)] = &[
     ("Choose format and resolution", "اختر التنسيق والدقة"),
     ("Choose how you want to use it. You can change this later in Settings.", "اختر طريقة الاستخدام. يمكنك تغيير ذلك لاحقًا من الإعدادات."),
     ("Choose only one operation per call.", "اختر عملية واحدة فقط في كل استدعاء."),
+    ("Classic", "كلاسيكي"),
+    ("Classic — the plain Windows look", "كلاسيكي — مظهر Windows البسيط"),
     ("Cleanup", "التنظيف"),
     ("Close", "إغلاق"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "أغلق المتصفح بالكامل وأعد فتحه، أو أضِف الإضافة من متجر Chrome الإلكتروني. يثبّت Edge إضافات متجر Chrome الإلكتروني أيضًا."),
@@ -170,6 +184,7 @@ static AR: &[(&str, &str)] = &[
     ("Connection to the app", "الاتصال بالتطبيق"),
     ("Connections per file", "الاتصالات لكل ملف"),
     ("Connections per file (1–16):", "الاتصالات لكل ملف (1–16):"),
+    ("Connections:", "الاتصالات:"),
     ("Continue", "متابعة"),
     ("Continue / Download", "متابعة / تنزيل"),
     ("Continues from the previous session", "سيتابع من الجلسة السابقة"),
@@ -214,6 +229,7 @@ static AR: &[(&str, &str)] = &[
     ("Depth", "العمق"),
     ("Depth:", "العمق:"),
     ("Detailed", "مفصّل"),
+    ("Details", "التفاصيل"),
     ("Detect automatically", "الكشف تلقائيًا"),
     ("Detect new URLs from the clipboard", "اكتشاف عناوين URL الجديدة من الحافظة"),
     ("Didn't see the notice?", "لم تر الإشعار؟"),
@@ -233,6 +249,7 @@ static AR: &[(&str, &str)] = &[
     ("Download stopped", "توقف التنزيل"),
     ("Download the playlist", "تنزيل قائمة التشغيل"),
     ("Download type:", "نوع التنزيل:"),
+    ("Downloaded:", "تم تنزيله:"),
     ("Downloading", "جارٍ التنزيل"),
     ("Downloading media", "جارٍ تنزيل الوسائط"),
     ("Downloading media; the server is limiting requests", "جارٍ تنزيل الوسائط؛ الخادم يحدّ من الطلبات"),
@@ -277,6 +294,7 @@ static AR: &[(&str, &str)] = &[
     ("External subtitle URL (VTT/SRT):", "عنوان URL للترجمة الخارجية (VTT/SRT):"),
     ("External subtitle language", "لغة الترجمة الخارجية"),
     ("External subtitles cannot be used together with extractor subtitle selections", "لا يمكن استخدام الترجمات الخارجية مع اختيارات ترجمة أداة الاستخراج"),
+    ("F&older", "الم&جلد"),
     ("FTP exceeded the limit of two concurrent sockets", "تجاوز FTP حد المقبسين المتزامنين"),
     ("Failed", "فشل"),
     ("Fetching current version information", "جارٍ جلب معلومات الإصدار الحالي"),
@@ -285,7 +303,9 @@ static AR: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "تنزيلات الملفات معطّلة في الإعدادات."),
     ("File name (optional, for a single URL):", "اسم الملف (اختياري، لعنوان URL واحد):"),
     ("File name:", "اسم الملف:"),
-    ("File — reliably transfer regular file links", "الملفات — نقل روابط الملفات العادية بموثوقية"),
+    ("File size:", "حجم الملف:"),
+    ("File — regular file links", "الملفات — روابط الملفات العادية"),
+    ("Filter", "عامل التصفية"),
     ("Finish live recordin&g and keep it", "إن&هاء التسجيل المباشر والاحتفاظ به"),
     ("Finish live recording and keep it", "إنهاء التسجيل المباشر والاحتفاظ به"),
     ("Finish the scan first", "أنهِ الفحص أولًا"),
@@ -294,12 +314,14 @@ static AR: &[(&str, &str)] = &[
     ("Folder rule IDs must be unique.", "يجب أن تكون معرّفات قواعد المجلدات فريدة."),
     ("Folder rule types must be unique.", "يجب أن تكون أنواع قواعد المجلدات فريدة."),
     ("Folder rules", "قواعد المجلدات"),
+    ("Found candidates", "المرشحون الذين عُثر عليهم"),
     ("Full media verification: the audio/video could not be decoded from start to end", "التحقق الكامل من الوسائط: تعذّر فك ترميز الصوت أو الفيديو من البداية حتى النهاية"),
     ("Full program path (program action only):", "المسار الكامل للبرنامج (إجراء البرنامج فقط):"),
     ("Gaps remained in the permanent range map", "بقيت فجوات في خريطة النطاقات الدائمة"),
     ("General", "عام"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "لا يمكن الجمع بين ترجمات مسار HTML وترجمات أداة الاستخراج في طلب واحد"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "تسجيلات الدخول من نوع HTTP Basic المرسلة إلى هذه المضيفات فقط لتنزيلات الملفات:"),
+    ("Hide details", "إخفاء التفاصيل"),
     ("Hold downloads on a metered connection", "إيقاف التنزيلات مؤقتًا على اتصال محدود البيانات"),
     ("Hold downloads while Windows Battery saver is on", "إيقاف التنزيلات مؤقتًا أثناء تشغيل توفير البطارية في Windows"),
     ("Host:", "المضيف:"),
@@ -342,6 +364,7 @@ static AR: &[(&str, &str)] = &[
     ("Invalid video format or resolution preference", "تفضيل تنسيق الفيديو أو الدقة غير صالح"),
     ("Job &log...", "سجل الم&همة..."),
     ("Job and connection limits must be between 1 and 16.", "يجب أن تكون حدود المهام والاتصالات بين 1 و16."),
+    ("Job details", "تفاصيل المهمة"),
     ("Job log", "سجل المهمة"),
     ("Job not found", "لم يُعثر على المهمة"),
     ("Jobs must be paused before deleting a queue that has active jobs.", "يجب إيقاف المهام مؤقتًا قبل حذف قائمة انتظار تحتوي على مهام نشطة."),
@@ -414,6 +437,8 @@ static AR: &[(&str, &str)] = &[
     ("Minimize", "تصغير"),
     ("Minimize to the notification area when closing the window", "التصغير إلى منطقة الإشعارات عند إغلاق النافذة"),
     ("Missing components are installed.", "تم تثبيت المكونات المفقودة."),
+    ("Modern", "حديث"),
+    ("Modern — the Windows 11 look", "حديث — مظهر Windows 11"),
     ("Move selected job", "نقل المهمة المحددة"),
     ("Move to bottom\tAlt+End", "نقل إلى الأسفل\tAlt+End"),
     ("Move to queue", "نقل إلى قائمة الانتظار"),
@@ -425,6 +450,7 @@ static AR: &[(&str, &str)] = &[
     ("Multiple video format IDs cannot be used together.", "لا يمكن استخدام عدة معرّفات لتنسيق الفيديو معًا."),
     ("Mute notifications for 1 hour", "كتم الإشعارات لمدة ساعة واحدة"),
     ("Name", "الاسم"),
+    ("Name from the server", "الاسم من الخادم"),
     ("Name resolution failed (DNS)", "فشل تحليل اسم النطاق (DNS)"),
     ("Name:", "الاسم:"),
     ("Native Messaging registration completed.", "اكتمل تسجيل Native Messaging."),
@@ -450,6 +476,7 @@ static AR: &[(&str, &str)] = &[
     ("No download is attached to this window.", "لا يوجد تنزيل مرتبط بهذه النافذة."),
     ("No downloadable media format found", "لم يُعثر على تنسيق وسائط قابل للتنزيل"),
     ("No entries for this download yet.", "لا توجد سجلات لهذا التنزيل بعد."),
+    ("No error was recorded for this download.", "لم يُسجَّل أي خطأ لهذا التنزيل."),
     ("No failure was found to report", "لم يُعثر على أي فشل للإبلاغ عنه"),
     ("No free output name was found", "لم يُعثر على اسم متاح للمخرجات"),
     ("No free output name was found in this folder.", "لم يُعثر على اسم متاح للمخرجات في هذا المجلد."),
@@ -550,6 +577,7 @@ static AR: &[(&str, &str)] = &[
     ("Quota", "الحصة"),
     ("Quota (bytes; 0: unlimited):", "الحصة (بايت؛ 0: غير محدودة):"),
     ("R&emove selected\tDelete", "إ&زالة المحدد\tDelete"),
+    ("Re&move", "إ&زالة"),
     ("Re&sume all", "استئ&ناف الكل"),
     ("Reading status...", "جارٍ قراءة الحالة..."),
     ("Ready", "جاهز"),
@@ -584,6 +612,7 @@ static AR: &[(&str, &str)] = &[
     ("Restart the download", "إعادة تشغيل التنزيل"),
     ("Resume", "استئناف"),
     ("Resume all", "استئناف الكل"),
+    ("Resume support:", "دعم الاستئناف:"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "استأنف هذه المهمة من النقل عبر المتصفح في علامة التبويب المصدر؛ لم يتغير أسلوب النقل."),
     ("Retries in a row without progress", "عدد إعادات المحاولة المتتالية بلا تقدم"),
     ("Retries in a row without progress:", "إعادات المحاولة المتتالية بلا تقدم:"),
@@ -591,9 +620,11 @@ static AR: &[(&str, &str)] = &[
     ("Retry", "إعادة المحاولة"),
     ("Retry &failed", "إعادة المحاولة لل&فاشلة"),
     ("Review the settings", "راجع الإعدادات"),
+    ("Right away when empty", "فورًا إذا تُرك فارغًا"),
     ("Right-click the icon at the bottom right: speed limit, shut down when done, quiet mode and the mini panel live there. The Network and Behaviour settings tabs manage proxy, sleep prevention and notifications.", "انقر بزر الفأرة الأيمن على الرمز في الركن السفلي الأيمن: تجد هناك حد السرعة، والإيقاف عند الانتهاء، والوضع الهادئ، واللوحة المصغّرة. وتدير علامتا «الشبكة» و«السلوك» في الإعدادات الخادم الوكيل ومنع السكون والإشعارات."),
     ("Rules (edit the selected row; with no selection a new rule is added):", "القواعد (عدّل الصف المحدد؛ وإن لم يكن هناك تحديد تُضاف قاعدة جديدة):"),
     ("Run the selected program", "تشغيل البرنامج المحدد"),
+    ("S&maller details pane", "ت&صغير لوحة التفاصيل"),
     ("SHA-256 (optional, 64 hexadecimal characters):", "SHA-256 (اختياري، 64 حرفًا سداسي عشريًا):"),
     ("SHA-256 verification failed", "فشل التحقق من SHA-256"),
     ("SHA-256 verification failed; the partial file was deleted and a retry downloads it again", "فشل التحقق من SHA-256؛ تم حذف الملف الجزئي، وستُنزَّل الملف من جديد عند إعادة المحاولة"),
@@ -622,12 +653,15 @@ static AR: &[(&str, &str)] = &[
     ("Scheduled", "مجدول"),
     ("Scheduled limit (KiB/s):", "الحد المجدول (KiB/s):"),
     ("Scheduled speed limit", "حد السرعة المجدول"),
+    ("Search", "بحث"),
+    ("Search downloads", "البحث في التنزيلات"),
     ("Search:", "بحث:"),
     ("Select &all\tCtrl+A", "تحديد ال&كل\tCtrl+A"),
     ("Select a completion action", "اختر إجراء الاكتمال"),
     ("Select a download job. Press Ctrl+N to add a URL or drag a link onto the window.", "اختر مهمة تنزيل. اضغط Ctrl+N لإضافة عنوان URL، أو اسحب رابطًا إلى النافذة."),
     ("Select a job.", "اختر مهمة."),
     ("Select a queue", "اختر قائمة انتظار"),
+    ("Select a single download.", "اختر تنزيلاً واحداً."),
     ("Select at least one usage mode.", "اختر وضع استخدام واحدًا على الأقل."),
     ("Select at least one usage purpose.", "اختر غرض استخدام واحدًا على الأقل."),
     ("Select one or more downloads in the list first.", "اختر تنزيلًا أو أكثر من القائمة أولًا."),
@@ -644,6 +678,7 @@ static AR: &[(&str, &str)] = &[
     ("Settings...", "الإعدادات..."),
     ("Show a notification when a download completes", "عرض إشعار عند اكتمال التنزيل"),
     ("Show an open card at the bottom right when a download completes", "عرض بطاقة فتح في الركن السفلي الأيمن عند اكتمال التنزيل"),
+    ("Show details", "إظهار التفاصيل"),
     ("Show in folder", "إظهار في المجلد"),
     ("Show job log...", "عرض سجل المهمة..."),
     ("Show site download entries in the browser", "عرض عناصر تنزيل المواقع في المتصفح"),
@@ -663,6 +698,7 @@ static AR: &[(&str, &str)] = &[
     ("Skip this version", "تخطّي هذا الإصدار"),
     ("Source preparation was stopped", "توقّف تحضير المصدر"),
     ("Source refresh stopped", "توقّف تحديث المصدر"),
+    ("Space", "مسافة"),
     ("Speed", "السرعة"),
     ("Speed &limit...", "حد الس&رعة..."),
     ("Speed limit", "حد السرعة"),
@@ -677,6 +713,7 @@ static AR: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "جارٍ بدء التثبيت؛ سيُعاد فتح التطبيق"),
     ("State", "الحالة"),
     ("States", "الحالات"),
+    ("Status:", "الحالة:"),
     ("Stream integrity could not be verified", "تعذّر التحقق من سلامة البث"),
     ("Subtitle embedding is only supported for video output", "دمج الترجمة مدعوم لمخرجات الفيديو فقط"),
     ("Subtitle language", "لغة الترجمة"),
@@ -688,6 +725,7 @@ static AR: &[(&str, &str)] = &[
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "تتطلب المزامنة عنوان URL بصيغة HTTP/HTTPS دون بيانات اعتماد للمستخدم."),
     ("TLS certificate validation failed", "فشل التحقق من شهادة TLS"),
     ("Take over browser downloads (by file type)", "اعتراض تنزيلات المتصفح (حسب نوع الملف)"),
+    ("Takes effect after a restart", "يسري بعد إعادة التشغيل"),
     ("Target file:", "الملف المستهدف:"),
     ("Target folder:", "المجلد المستهدف:"),
     ("Target queue not found.", "لم يُعثر على قائمة الانتظار المستهدفة."),
@@ -1080,6 +1118,7 @@ static AR: &[(&str, &str)] = &[
     ("The range could not be written to disk", "تعذّرت كتابة النطاق على القرص"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "ملف خريطة النطاقات المتفرقة مفقود أو قصير؛ ستبدأ المحاولة التالية التنزيل من البداية"),
     ("The range request was not accepted", "لم يُقبل طلب النطاق (range)"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "السبب أدناه. يكتب «الإبلاغ عن مشكلة» تقريرًا عنه ويفتح مجلده."),
     ("The record folder is missing", "مجلد السجل مفقود"),
     ("The redirect address has no host name", "عنوان إعادة التوجيه لا يحتوي على اسم مضيف"),
     ("The redirect target is invalid", "هدف إعادة التوجيه غير صالح"),
@@ -1289,6 +1328,7 @@ static AR: &[(&str, &str)] = &[
     ("The working folder contains a redirect", "يحتوي مجلد العمل على إعادة توجيه"),
     ("The working folder is missing", "مجلد العمل مفقود"),
     ("The yt-dlp version information could not be retrieved", "تعذّر الحصول على معلومات إصدار yt-dlp"),
+    ("Theme:", "السمة:"),
     ("There are no downloads to export.", "لا توجد تنزيلات لتصديرها."),
     ("There is no active browser transfer for this job.", "لا يوجد نقل نشط عبر المتصفح لهذه المهمة."),
     ("There is no active completion countdown for this queue.", "لا يوجد عد تنازلي نشط لإجراء الاكتمال في قائمة الانتظار هذه."),
@@ -1316,6 +1356,7 @@ static AR: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "هذا المصدر غير مدعوم؛ جرّب مصدرًا آخر"),
     ("This source or format is not supported; make a different choice.", "هذا المصدر أو التنسيق غير مدعوم؛ اختر خيارًا آخر."),
     ("This usage mode is disabled", "وضع الاستخدام هذا معطّل"),
+    ("Time left:", "الوقت المتبقي:"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "نوافذ زمنية: الأيام في كل سطر بالصيغة HH:MM-HH:MM · الاثنين=0، الأحد=6 · فارغ: دائمًا"),
     ("Too many HTTP headers", "عدد ترويسات HTTP كبير جدًا"),
     ("Too many HTTP redirects", "عدد كبير جدًا من إعادات توجيه HTTP"),
@@ -1324,6 +1365,7 @@ static AR: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "فشل التحقق من سلامة الأداة"),
     ("Tool verification stopped", "توقّف التحقق من الأداة"),
     ("Total speed", "السرعة الإجمالية"),
+    ("Transfer rate:", "معدل النقل:"),
     ("Try again; refresh the source if the same error persists", "حاول مرة أخرى؛ وإذا استمر الخطأ نفسه فحدّث المصدر"),
     ("Type", "النوع"),
     ("URL", "URL"),
@@ -1360,7 +1402,7 @@ static AR: &[(&str, &str)] = &[
     ("Video format id", "معرّف تنسيق الفيديو"),
     ("Video or audio downloading is disabled in Settings.", "تنزيل الفيديو أو الصوت معطّل في الإعدادات."),
     ("Video preferences", "تفضيلات الفيديو"),
-    ("Video — MP4/MKV, quality, audio track and subtitle options", "الفيديو — MP4/MKV، والجودة، والمسار الصوتي، وخيارات الترجمة"),
+    ("Video — quality, tracks, subtitles", "الفيديو — الجودة، والمسارات، والترجمات"),
     ("Video/audio setup stopped because of an unexpected error.", "توقّف إعداد الفيديو والصوت بسبب خطأ غير متوقع."),
     ("Video/audio support is already being prepared.", "دعم الفيديو والصوت قيد التحضير بالفعل."),
     ("Wait for the media analysis to finish first.", "انتظر حتى ينتهي تحليل الوسائط أولًا."),
@@ -1462,11 +1504,14 @@ static ES: &[(&str, &str)] = &[
     (" · default", " · predeterminado"),
     (" · error", " · error"),
     ("&About SSDownload", "&Acerca de SSDownload"),
+    ("&Ascending", "&Ascendente"),
     ("&Audio download...\tCtrl+Shift+N", "Descarga de &audio...\tCtrl+Shift+N"),
     ("&Batch download...", "Descarga por &lotes..."),
     ("&Browser setup...", "Instalación del &navegador..."),
     ("&Check for updates...", "&Buscar actualizaciones..."),
     ("&Clear completed", "Q&uitar completadas"),
+    ("&Columns", "&Columnas"),
+    ("&Descending", "&Descendente"),
     ("&Diagnostics...", "&Diagnóstico..."),
     ("&Downloads", "&Descargas"),
     ("&Event log...", "&Registro de eventos..."),
@@ -1475,16 +1520,25 @@ static ES: &[(&str, &str)] = &[
     ("&Import list...", "&Importar lista..."),
     ("&Install media support...", "Instalar com&patibilidad multimedia..."),
     ("&Keyboard shortcuts", "Atajos de &teclado"),
+    ("&Larger details pane", "&Ampliar el panel de detalles"),
     ("&Media tools...", "Herramientas &multimedia..."),
     ("&Mini panel", "&Mini panel"),
+    ("&New download", "&Nueva descarga"),
     ("&New download...\tCtrl+N", "&Nueva descarga...\tCtrl+N"),
     ("&Open file\tEnter", "&Abrir archivo\tEnter"),
+    ("&Pause", "&Pausar"),
+    ("&Pause / Resume", "&Pausar / Reanudar"),
     ("&Pause / resume selected\tSpace", "&Pausar / reanudar lo seleccionado\tSpace"),
     ("&Queue manager...", "&Administrador de colas..."),
+    ("&Queue order", "Orden de la &cola"),
     ("&Refresh source address...", "Actualizar &dirección de origen..."),
+    ("&Resume", "&Reanudar"),
+    ("&Settings", "&Configuración"),
     ("&Settings...", "&Configuración..."),
+    ("&Sort by", "&Ordenar por"),
     ("&Tools", "&Herramientas"),
     ("&Video download...\tCtrl+Shift+N", "Descarga de &vídeo...\tCtrl+Shift+N"),
+    ("&View", "&Ver"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
     ("1 connection", "1 conexión"),
@@ -1529,7 +1583,7 @@ static ES: &[(&str, &str)] = &[
     ("Address copied to the clipboard.", "Dirección copiada al portapapeles."),
     ("Advanced", "Avanzado"),
     ("Advanced options", "Opciones avanzadas"),
-    ("Advanced — queues, folder rules, site crawler, sync, logs", "Avanzado — colas, reglas de carpetas, rastreador de sitios, sincronización, registros"),
+    ("Advanced — queues, rules, crawler, sync, logs", "Avanzado — colas, reglas, rastreador, sincronización, registros"),
     ("All", "Todas"),
     ("All download workers closed unexpectedly", "Todos los trabajadores de descarga se cerraron inesperadamente"),
     ("Also send over unencrypted HTTP", "Enviar también por HTTP sin cifrar"),
@@ -1548,11 +1602,11 @@ static ES: &[(&str, &str)] = &[
     ("Audio language", "Idioma del audio"),
     ("Audio only", "Solo audio"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "Pistas de audio (Ctrl/Mayús; vacío = original):"),
-    ("Audio — extract audio only from video pages or audio links", "Audio — extraer solo el audio de páginas de vídeo o enlaces de audio"),
+    ("Audio — audio only from pages and links", "Audio — solo audio de páginas y enlaces"),
     ("Automatic", "Automático"),
     ("Awaiting source", "Esperando actualización del origen"),
     ("Basic", "Básico"),
-    ("Basic — downloads, new download and essential settings", "Básico — lista de descargas, nueva descarga y configuración esencial"),
+    ("Basic — essential downloads and settings", "Básico — descargas y ajustes esenciales"),
     ("Batch download...", "Descarga por lotes..."),
     ("Battery saver is on: downloads are on hold", "Ahorro de batería activado: descargas en espera"),
     ("Behaviour", "Comportamiento"),
@@ -1585,6 +1639,8 @@ static ES: &[(&str, &str)] = &[
     ("Choose format and resolution", "Elegir formato y resolución"),
     ("Choose how you want to use it. You can change this later in Settings.", "Elegir cómo se va a usar. Se puede cambiar más tarde en Configuración."),
     ("Choose only one operation per call.", "Solo se puede elegir una operación por llamada."),
+    ("Classic", "Clásico"),
+    ("Classic — the plain Windows look", "Clásico — el aspecto sencillo de Windows"),
     ("Cleanup", "Limpieza"),
     ("Close", "Cerrar"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "Cerrar el navegador por completo y volver a abrirlo, o añadir la extensión desde Chrome Web Store. Edge también instala extensiones de Chrome Web Store."),
@@ -1607,6 +1663,7 @@ static ES: &[(&str, &str)] = &[
     ("Connection to the app", "Conexión con la aplicación"),
     ("Connections per file", "Conexiones por archivo"),
     ("Connections per file (1–16):", "Conexiones por archivo (1–16):"),
+    ("Connections:", "Conexiones:"),
     ("Continue", "Continuar"),
     ("Continue / Download", "Continuar / Descargar"),
     ("Continues from the previous session", "Continúa desde la sesión anterior"),
@@ -1651,6 +1708,7 @@ static ES: &[(&str, &str)] = &[
     ("Depth", "Profundidad"),
     ("Depth:", "Profundidad:"),
     ("Detailed", "Detallado"),
+    ("Details", "Detalles"),
     ("Detect automatically", "Detectar automáticamente"),
     ("Detect new URLs from the clipboard", "Detectar nuevas URL del portapapeles"),
     ("Didn't see the notice?", "¿No ha aparecido el aviso?"),
@@ -1670,6 +1728,7 @@ static ES: &[(&str, &str)] = &[
     ("Download stopped", "Descarga detenida"),
     ("Download the playlist", "Descargar la lista de reproducción"),
     ("Download type:", "Tipo de descarga:"),
+    ("Downloaded:", "Descargado:"),
     ("Downloading", "Descargando"),
     ("Downloading media", "Descargando contenido multimedia"),
     ("Downloading media; the server is limiting requests", "Descargando contenido multimedia; el servidor está limitando las solicitudes"),
@@ -1714,6 +1773,7 @@ static ES: &[(&str, &str)] = &[
     ("External subtitle URL (VTT/SRT):", "URL del subtítulo externo (VTT/SRT):"),
     ("External subtitle language", "Idioma del subtítulo externo"),
     ("External subtitles cannot be used together with extractor subtitle selections", "Los subtítulos externos no se pueden usar junto con las selecciones de subtítulos del extractor"),
+    ("F&older", "Carpe&ta"),
     ("FTP exceeded the limit of two concurrent sockets", "FTP superó el límite de dos sockets simultáneos"),
     ("Failed", "Fallida"),
     ("Fetching current version information", "Obteniendo información de la versión actual"),
@@ -1722,7 +1782,9 @@ static ES: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "Las descargas de archivos están desactivadas en Configuración."),
     ("File name (optional, for a single URL):", "Nombre de archivo (opcional, para una sola URL):"),
     ("File name:", "Nombre de archivo:"),
-    ("File — reliably transfer regular file links", "Archivo — transferir de forma fiable los enlaces de archivos normales"),
+    ("File size:", "Tamaño del archivo:"),
+    ("File — regular file links", "Archivo — enlaces de archivos normales"),
+    ("Filter", "Filtro"),
     ("Finish live recordin&g and keep it", "Terminar la grabación en directo y &conservarla"),
     ("Finish live recording and keep it", "Terminar la grabación en directo y conservarla"),
     ("Finish the scan first", "Terminar primero el análisis"),
@@ -1731,12 +1793,14 @@ static ES: &[(&str, &str)] = &[
     ("Folder rule IDs must be unique.", "Los ID de las reglas de carpeta deben ser únicos."),
     ("Folder rule types must be unique.", "Los tipos de regla de carpeta deben ser únicos."),
     ("Folder rules", "Reglas de carpeta"),
+    ("Found candidates", "Candidatos encontrados"),
     ("Full media verification: the audio/video could not be decoded from start to end", "Verificación multimedia completa: no se pudo decodificar el audio o el vídeo de principio a fin"),
     ("Full program path (program action only):", "Ruta completa del programa (solo para programa):"),
     ("Gaps remained in the permanent range map", "Quedaron huecos en el mapa de intervalos permanente"),
     ("General", "General"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "Los subtítulos de pista HTML y los del extractor no se pueden mezclar en una misma solicitud"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "Inicios de sesión HTTP Basic que se envían solo a estos hosts para las descargas de archivos:"),
+    ("Hide details", "Ocultar detalles"),
     ("Hold downloads on a metered connection", "Poner en espera las descargas en una conexión medida"),
     ("Hold downloads while Windows Battery saver is on", "Poner en espera las descargas con el Ahorro de batería de Windows activado"),
     ("Host:", "Host:"),
@@ -1779,6 +1843,7 @@ static ES: &[(&str, &str)] = &[
     ("Invalid video format or resolution preference", "Preferencia de formato de vídeo o resolución no válida"),
     ("Job &log...", "Registro de &tarea..."),
     ("Job and connection limits must be between 1 and 16.", "Los límites de tareas y de conexiones deben estar entre 1 y 16."),
+    ("Job details", "Detalles de la tarea"),
     ("Job log", "Registro de tarea"),
     ("Job not found", "Tarea no encontrada"),
     ("Jobs must be paused before deleting a queue that has active jobs.", "Las tareas deben pausarse antes de eliminar una cola que tiene tareas activas."),
@@ -1851,6 +1916,8 @@ static ES: &[(&str, &str)] = &[
     ("Minimize", "Minimizar"),
     ("Minimize to the notification area when closing the window", "Minimizar al área de notificación al cerrar la ventana"),
     ("Missing components are installed.", "Se instalaron los componentes que faltaban."),
+    ("Modern", "Moderno"),
+    ("Modern — the Windows 11 look", "Moderno — el aspecto de Windows 11"),
     ("Move selected job", "Mover tarea"),
     ("Move to bottom\tAlt+End", "Mover al final\tAlt+End"),
     ("Move to queue", "Mover a la cola"),
@@ -1862,6 +1929,7 @@ static ES: &[(&str, &str)] = &[
     ("Multiple video format IDs cannot be used together.", "No se pueden usar varios IDs de formato de vídeo a la vez."),
     ("Mute notifications for 1 hour", "Silenciar notificaciones durante 1 hora"),
     ("Name", "Nombre"),
+    ("Name from the server", "Nombre del servidor"),
     ("Name resolution failed (DNS)", "No se pudo resolver el nombre (DNS)"),
     ("Name:", "Nombre:"),
     ("Native Messaging registration completed.", "Registro de Native Messaging completado."),
@@ -1887,6 +1955,7 @@ static ES: &[(&str, &str)] = &[
     ("No download is attached to this window.", "No hay ninguna descarga asociada a esta ventana."),
     ("No downloadable media format found", "No se encontró ningún formato multimedia descargable"),
     ("No entries for this download yet.", "Esta descarga todavía no tiene registros."),
+    ("No error was recorded for this download.", "No se registró ningún error para esta descarga."),
     ("No failure was found to report", "No se encontró ningún fallo que notificar"),
     ("No free output name was found", "No se encontró ningún nombre de salida disponible"),
     ("No free output name was found in this folder.", "No se encontró ningún nombre de salida disponible en esta carpeta."),
@@ -1987,6 +2056,7 @@ static ES: &[(&str, &str)] = &[
     ("Quota", "Cuota"),
     ("Quota (bytes; 0: unlimited):", "Cuota (bytes; 0: sin límite):"),
     ("R&emove selected\tDelete", "&Quitar seleccionados\tDelete"),
+    ("Re&move", "&Quitar"),
     ("Re&sume all", "Rea&nudar todo"),
     ("Reading status...", "Leyendo el estado..."),
     ("Ready", "Listo"),
@@ -2021,6 +2091,7 @@ static ES: &[(&str, &str)] = &[
     ("Restart the download", "Reiniciar la descarga"),
     ("Resume", "Reanudar"),
     ("Resume all", "Reanudar todo"),
+    ("Resume support:", "Se puede reanudar:"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Reanudar esta tarea desde la transferencia del navegador en su pestaña de origen; el método de transferencia no se ha modificado."),
     ("Retries in a row without progress", "El número de reintentos seguidos sin progreso"),
     ("Retries in a row without progress:", "Reintentos seguidos sin progreso:"),
@@ -2028,9 +2099,11 @@ static ES: &[(&str, &str)] = &[
     ("Retry", "Reintentar"),
     ("Retry &failed", "&Reintentar fallidas"),
     ("Review the settings", "Revisar la configuración"),
+    ("Right away when empty", "De inmediato si está vacío"),
     ("Right-click the icon at the bottom right: speed limit, shut down when done, quiet mode and the mini panel live there. The Network and Behaviour settings tabs manage proxy, sleep prevention and notifications.", "Clic derecho en el icono de la esquina inferior derecha: ahí están el límite de velocidad, apagar al terminar, el modo silencioso y el mini panel. Las pestañas «Red» y «Comportamiento» de la configuración gestionan el proxy, la prevención de suspensión y las notificaciones."),
     ("Rules (edit the selected row; with no selection a new rule is added):", "Reglas (editar la fila seleccionada; si no hay selección, se añade una regla nueva):"),
     ("Run the selected program", "Ejecutar el programa seleccionado"),
+    ("S&maller details pane", "&Reducir el panel de detalles"),
     ("SHA-256 (optional, 64 hexadecimal characters):", "SHA-256 (opcional, 64 caracteres hexadecimales):"),
     ("SHA-256 verification failed", "Error en la verificación de SHA-256"),
     ("SHA-256 verification failed; the partial file was deleted and a retry downloads it again", "Error en la verificación de SHA-256; se eliminó el archivo parcial y el reintento vuelve a descargarlo desde el principio"),
@@ -2059,12 +2132,15 @@ static ES: &[(&str, &str)] = &[
     ("Scheduled", "Programada"),
     ("Scheduled limit (KiB/s):", "Límite programado (KiB/s):"),
     ("Scheduled speed limit", "Límite de velocidad programado"),
+    ("Search", "Buscar"),
+    ("Search downloads", "Buscar en las descargas"),
     ("Search:", "Buscar:"),
     ("Select &all\tCtrl+A", "Seleccionar &todo\tCtrl+A"),
     ("Select a completion action", "Seleccionar una acción al terminar"),
     ("Select a download job. Press Ctrl+N to add a URL or drag a link onto the window.", "Seleccionar una tarea de descarga. Con Ctrl+N se añade una URL o se arrastra un enlace a la ventana."),
     ("Select a job.", "Seleccionar una tarea."),
     ("Select a queue", "Seleccionar una cola"),
+    ("Select a single download.", "Seleccione una sola descarga."),
     ("Select at least one usage mode.", "Seleccionar al menos una finalidad de uso."),
     ("Select at least one usage purpose.", "Seleccionar al menos una finalidad de uso."),
     ("Select one or more downloads in the list first.", "Primero, seleccionar una o más descargas de la lista."),
@@ -2081,6 +2157,7 @@ static ES: &[(&str, &str)] = &[
     ("Settings...", "Configuración..."),
     ("Show a notification when a download completes", "Mostrar una notificación cuando termine una descarga"),
     ("Show an open card at the bottom right when a download completes", "Mostrar una tarjeta para abrir en la esquina inferior derecha cuando termine una descarga"),
+    ("Show details", "Mostrar detalles"),
     ("Show in folder", "Mostrar en la carpeta"),
     ("Show job log...", "Mostrar el registro de la tarea..."),
     ("Show site download entries in the browser", "Mostrar las entradas de descarga del sitio en el navegador"),
@@ -2100,6 +2177,7 @@ static ES: &[(&str, &str)] = &[
     ("Skip this version", "Omitir esta versión"),
     ("Source preparation was stopped", "Se detuvo la preparación del origen"),
     ("Source refresh stopped", "Actualización del origen detenida"),
+    ("Space", "Espacio"),
     ("Speed", "Velocidad"),
     ("Speed &limit...", "Límite de &velocidad..."),
     ("Speed limit", "Límite de velocidad"),
@@ -2114,6 +2192,7 @@ static ES: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Iniciando la instalación; la aplicación se volverá a abrir"),
     ("State", "Estado"),
     ("States", "Estados"),
+    ("Status:", "Estado:"),
     ("Stream integrity could not be verified", "No se pudo verificar la integridad del flujo"),
     ("Subtitle embedding is only supported for video output", "La incrustación de subtítulos solo es compatible con la salida de vídeo"),
     ("Subtitle language", "Idioma de los subtítulos"),
@@ -2125,6 +2204,7 @@ static ES: &[(&str, &str)] = &[
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "La sincronización requiere una URL HTTP/HTTPS sin credenciales de usuario."),
     ("TLS certificate validation failed", "Error en la validación del certificado TLS"),
     ("Take over browser downloads (by file type)", "Capturar las descargas del navegador (por tipo de archivo)"),
+    ("Takes effect after a restart", "Se aplica al reiniciar"),
     ("Target file:", "Archivo de destino:"),
     ("Target folder:", "Carpeta de destino:"),
     ("Target queue not found.", "No se encontró la cola de destino."),
@@ -2517,6 +2597,7 @@ static ES: &[(&str, &str)] = &[
     ("The range could not be written to disk", "No se pudo escribir el rango en el disco"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "Falta o es demasiado corto el archivo disperso del mapa de rangos; el siguiente intento reinicia la descarga desde el principio"),
     ("The range request was not accepted", "La solicitud de rango no fue aceptada"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "El motivo aparece abajo. «Informar de un problema» escribe un informe sobre él y abre su carpeta."),
     ("The record folder is missing", "Falta la carpeta de registros"),
     ("The redirect address has no host name", "La dirección de redirección no tiene nombre de host"),
     ("The redirect target is invalid", "El destino de redirección no es válido"),
@@ -2726,6 +2807,7 @@ static ES: &[(&str, &str)] = &[
     ("The working folder contains a redirect", "La carpeta de trabajo contiene una redirección"),
     ("The working folder is missing", "Falta la carpeta de trabajo"),
     ("The yt-dlp version information could not be retrieved", "No se ha podido obtener la información de versión de yt-dlp"),
+    ("Theme:", "Tema:"),
     ("There are no downloads to export.", "No hay descargas que exportar."),
     ("There is no active browser transfer for this job.", "No hay ninguna transferencia en curso desde el navegador para esta tarea."),
     ("There is no active completion countdown for this queue.", "No hay ninguna cuenta atrás de finalización en curso para esta cola."),
@@ -2753,6 +2835,7 @@ static ES: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "Este origen no se admite; probar con otro origen"),
     ("This source or format is not supported; make a different choice.", "Este origen o formato no se admite; se debe elegir otra opción."),
     ("This usage mode is disabled", "Este modo de uso está desactivado"),
+    ("Time left:", "Tiempo restante:"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "Franjas horarias: días por línea HH:MM-HH:MM · lun=0, dom=6 · vacío: siempre"),
     ("Too many HTTP headers", "Demasiados encabezados HTTP"),
     ("Too many HTTP redirects", "Demasiadas redirecciones HTTP"),
@@ -2761,6 +2844,7 @@ static ES: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "La verificación de integridad de la herramienta ha fallado"),
     ("Tool verification stopped", "La verificación de la herramienta se ha detenido"),
     ("Total speed", "Velocidad total"),
+    ("Transfer rate:", "Velocidad:"),
     ("Try again; refresh the source if the same error persists", "Se puede volver a intentar; si el mismo error persiste, actualizar el origen."),
     ("Type", "Tipo"),
     ("URL", "URL"),
@@ -2797,7 +2881,7 @@ static ES: &[(&str, &str)] = &[
     ("Video format id", "ID de formato de vídeo"),
     ("Video or audio downloading is disabled in Settings.", "La descarga de vídeo o audio está desactivada en Configuración."),
     ("Video preferences", "Preferencias de vídeo"),
-    ("Video — MP4/MKV, quality, audio track and subtitle options", "Vídeo — MP4/MKV, calidad, pista de audio y opciones de subtítulos"),
+    ("Video — quality, tracks, subtitles", "Vídeo — calidad, pistas, subtítulos"),
     ("Video/audio setup stopped because of an unexpected error.", "La preparación de la compatibilidad con vídeo/audio se ha detenido por un error inesperado."),
     ("Video/audio support is already being prepared.", "La compatibilidad con vídeo/audio ya se está preparando."),
     ("Wait for the media analysis to finish first.", "Primero debe terminar el análisis multimedia."),
@@ -2899,11 +2983,14 @@ static PT: &[(&str, &str)] = &[
     (" · default", " · padrão"),
     (" · error", " · erro"),
     ("&About SSDownload", "&Sobre o SSDownload"),
+    ("&Ascending", "&Crescente"),
     ("&Audio download...\tCtrl+Shift+N", "Download de á&udio...\tCtrl+Shift+N"),
     ("&Batch download...", "Download em &lote..."),
     ("&Browser setup...", "Configurar o &navegador..."),
     ("&Check for updates...", "&Verificar atualizações..."),
     ("&Clear completed", "&Limpar concluídos"),
+    ("&Columns", "&Colunas"),
+    ("&Descending", "&Decrescente"),
     ("&Diagnostics...", "&Diagnóstico..."),
     ("&Downloads", "&Downloads"),
     ("&Event log...", "&Log de eventos..."),
@@ -2912,16 +2999,25 @@ static PT: &[(&str, &str)] = &[
     ("&Import list...", "&Importar lista..."),
     ("&Install media support...", "&Instalar suporte a mídia..."),
     ("&Keyboard shortcuts", "&Atalhos de teclado"),
+    ("&Larger details pane", "&Aumentar o painel de detalhes"),
     ("&Media tools...", "Ferramentas de &mídia..."),
     ("&Mini panel", "&Mini painel"),
+    ("&New download", "&Novo download"),
     ("&New download...\tCtrl+N", "&Novo download...\tCtrl+N"),
     ("&Open file\tEnter", "Abrir &arquivo\tEnter"),
+    ("&Pause", "&Pausar"),
+    ("&Pause / Resume", "&Pausar / Retomar"),
     ("&Pause / resume selected\tSpace", "&Pausar / retomar selecionados\tSpace"),
     ("&Queue manager...", "Gerenciador de &filas..."),
+    ("&Queue order", "Ordem da &fila"),
     ("&Refresh source address...", "Atualizar o &endereço da fonte..."),
+    ("&Resume", "&Retomar"),
+    ("&Settings", "&Configurações"),
     ("&Settings...", "&Configurações..."),
+    ("&Sort by", "&Ordenar por"),
     ("&Tools", "&Ferramentas"),
     ("&Video download...\tCtrl+Shift+N", "Download de &vídeo...\tCtrl+Shift+N"),
+    ("&View", "E&xibir"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
     ("1 connection", "1 conexão"),
@@ -2966,7 +3062,7 @@ static PT: &[(&str, &str)] = &[
     ("Address copied to the clipboard.", "Endereço copiado para a área de transferência."),
     ("Advanced", "Avançado"),
     ("Advanced options", "Opções avançadas"),
-    ("Advanced — queues, folder rules, site crawler, sync, logs", "Avançado — filas, regras de pasta, rastreador de sites, sincronização, logs"),
+    ("Advanced — queues, rules, crawler, sync, logs", "Avançado — filas, regras, rastreador, sincronização, logs"),
     ("All", "Todos"),
     ("All download workers closed unexpectedly", "Todos os trabalhadores de download foram encerrados inesperadamente"),
     ("Also send over unencrypted HTTP", "Também enviar por HTTP não criptografado"),
@@ -2985,11 +3081,11 @@ static PT: &[(&str, &str)] = &[
     ("Audio language", "Idioma do áudio"),
     ("Audio only", "Somente áudio"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "Faixas de áudio (Ctrl/Shift; vazio = original):"),
-    ("Audio — extract audio only from video pages or audio links", "Áudio — extrair somente o áudio de páginas de vídeo ou links de áudio"),
+    ("Audio — audio only from pages and links", "Áudio — só o áudio de páginas e links"),
     ("Automatic", "Automático"),
     ("Awaiting source", "Aguardando a fonte"),
     ("Basic", "Básico"),
-    ("Basic — downloads, new download and essential settings", "Básico — downloads, novo download e configurações essenciais"),
+    ("Basic — essential downloads and settings", "Básico — downloads e configurações essenciais"),
     ("Batch download...", "Download em lote..."),
     ("Battery saver is on: downloads are on hold", "Economia de bateria ativada: downloads suspensos"),
     ("Behaviour", "Comportamento"),
@@ -3022,6 +3118,8 @@ static PT: &[(&str, &str)] = &[
     ("Choose format and resolution", "Escolha o formato e a resolução"),
     ("Choose how you want to use it. You can change this later in Settings.", "Escolha como deseja usá-lo. Você pode alterar isso depois em Configurações."),
     ("Choose only one operation per call.", "Escolha apenas uma operação por chamada."),
+    ("Classic", "Clássico"),
+    ("Classic — the plain Windows look", "Clássico — a aparência simples do Windows"),
     ("Cleanup", "Limpeza"),
     ("Close", "Fechar"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "Feche o navegador completamente e abra-o novamente, ou adicione a extensão pela Chrome Web Store. O Edge também instala extensões da Chrome Web Store."),
@@ -3044,6 +3142,7 @@ static PT: &[(&str, &str)] = &[
     ("Connection to the app", "Conexão com o aplicativo"),
     ("Connections per file", "Conexões por arquivo"),
     ("Connections per file (1–16):", "Conexões por arquivo (1–16):"),
+    ("Connections:", "Conexões:"),
     ("Continue", "Continuar"),
     ("Continue / Download", "Continuar / Baixar"),
     ("Continues from the previous session", "Continua da sessão anterior"),
@@ -3088,6 +3187,7 @@ static PT: &[(&str, &str)] = &[
     ("Depth", "Profundidade"),
     ("Depth:", "Prof.:"),
     ("Detailed", "Detalhado"),
+    ("Details", "Detalhes"),
     ("Detect automatically", "Detectar automaticamente"),
     ("Detect new URLs from the clipboard", "Detectar novas URLs da área de transferência"),
     ("Didn't see the notice?", "Não viu o aviso?"),
@@ -3107,6 +3207,7 @@ static PT: &[(&str, &str)] = &[
     ("Download stopped", "Download interrompido"),
     ("Download the playlist", "Baixar a playlist"),
     ("Download type:", "Tipo de download:"),
+    ("Downloaded:", "Baixado:"),
     ("Downloading", "Baixando"),
     ("Downloading media", "Baixando mídia"),
     ("Downloading media; the server is limiting requests", "Baixando mídia; o servidor está limitando as solicitações"),
@@ -3151,6 +3252,7 @@ static PT: &[(&str, &str)] = &[
     ("External subtitle URL (VTT/SRT):", "URL da legenda externa (VTT/SRT):"),
     ("External subtitle language", "Idioma da legenda externa"),
     ("External subtitles cannot be used together with extractor subtitle selections", "Legendas externas não podem ser usadas junto com as seleções de legenda do extrator"),
+    ("F&older", "Pa&sta"),
     ("FTP exceeded the limit of two concurrent sockets", "O FTP excedeu o limite de dois soquetes simultâneos"),
     ("Failed", "Falhou"),
     ("Fetching current version information", "Obtendo informações da versão atual"),
@@ -3159,7 +3261,9 @@ static PT: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "Downloads de arquivos estão desativados nas Configurações."),
     ("File name (optional, for a single URL):", "Nome do arquivo (opcional, para uma única URL):"),
     ("File name:", "Nome do arquivo:"),
-    ("File — reliably transfer regular file links", "Arquivo — transferir links de arquivos comuns com confiabilidade"),
+    ("File size:", "Tamanho do arquivo:"),
+    ("File — regular file links", "Arquivo — links de arquivos comuns"),
+    ("Filter", "Filtro"),
     ("Finish live recordin&g and keep it", "&Concluir a gravação ao vivo e mantê-la"),
     ("Finish live recording and keep it", "Concluir a gravação ao vivo e mantê-la"),
     ("Finish the scan first", "Conclua primeiro a varredura"),
@@ -3168,12 +3272,14 @@ static PT: &[(&str, &str)] = &[
     ("Folder rule IDs must be unique.", "Os IDs de regras de pasta devem ser únicos."),
     ("Folder rule types must be unique.", "Os tipos de regra de pasta devem ser únicos."),
     ("Folder rules", "Regras de pasta"),
+    ("Found candidates", "Candidatos encontrados"),
     ("Full media verification: the audio/video could not be decoded from start to end", "Verificação completa de mídia: o áudio/vídeo não pôde ser decodificado do início ao fim"),
     ("Full program path (program action only):", "Caminho completo (somente ação de programa):"),
     ("Gaps remained in the permanent range map", "Restaram lacunas no mapa permanente de intervalos"),
     ("General", "Geral"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "Legendas de faixa HTML e legendas do extrator não podem ser misturadas em uma mesma solicitação"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "Logins HTTP Basic enviados somente a estes hosts para downloads de arquivos:"),
+    ("Hide details", "Ocultar detalhes"),
     ("Hold downloads on a metered connection", "Suspender downloads em conexão medida"),
     ("Hold downloads while Windows Battery saver is on", "Suspender downloads com a Economia de bateria do Windows ativada"),
     ("Host:", "Host:"),
@@ -3216,6 +3322,7 @@ static PT: &[(&str, &str)] = &[
     ("Invalid video format or resolution preference", "Preferência de formato ou resolução de vídeo inválida"),
     ("Job &log...", "Log da &tarefa..."),
     ("Job and connection limits must be between 1 and 16.", "Os limites de tarefas e conexões devem estar entre 1 e 16."),
+    ("Job details", "Detalhes da tarefa"),
     ("Job log", "Log da tarefa"),
     ("Job not found", "Tarefa não encontrada"),
     ("Jobs must be paused before deleting a queue that has active jobs.", "As tarefas devem ser pausadas antes de excluir uma fila que tenha tarefas ativas."),
@@ -3288,6 +3395,8 @@ static PT: &[(&str, &str)] = &[
     ("Minimize", "Minimizar"),
     ("Minimize to the notification area when closing the window", "Minimizar para a área de notificação ao fechar a janela"),
     ("Missing components are installed.", "Os componentes ausentes foram instalados."),
+    ("Modern", "Moderno"),
+    ("Modern — the Windows 11 look", "Moderno — a aparência do Windows 11"),
     ("Move selected job", "Mover tarefa"),
     ("Move to bottom\tAlt+End", "Mover para o fim\tAlt+End"),
     ("Move to queue", "Mover para a fila"),
@@ -3299,6 +3408,7 @@ static PT: &[(&str, &str)] = &[
     ("Multiple video format IDs cannot be used together.", "Múltiplos IDs de formato de vídeo não podem ser usados juntos."),
     ("Mute notifications for 1 hour", "Silenciar notificações por 1 hora"),
     ("Name", "Nome"),
+    ("Name from the server", "Nome do servidor"),
     ("Name resolution failed (DNS)", "Falha na resolução de nome (DNS)"),
     ("Name:", "Nome:"),
     ("Native Messaging registration completed.", "Registro do Native Messaging concluído."),
@@ -3324,6 +3434,7 @@ static PT: &[(&str, &str)] = &[
     ("No download is attached to this window.", "Nenhum download está vinculado a esta janela."),
     ("No downloadable media format found", "Nenhum formato de mídia disponível para download foi encontrado"),
     ("No entries for this download yet.", "Ainda não há registros para este download."),
+    ("No error was recorded for this download.", "Nenhum erro foi registrado para este download."),
     ("No failure was found to report", "Nenhuma falha foi encontrada para relatar"),
     ("No free output name was found", "Nenhum nome de saída livre foi encontrado"),
     ("No free output name was found in this folder.", "Nenhum nome de saída livre foi encontrado nesta pasta."),
@@ -3424,6 +3535,7 @@ static PT: &[(&str, &str)] = &[
     ("Quota", "Cota"),
     ("Quota (bytes; 0: unlimited):", "Cota do período (bytes; 0: ilimitada):"),
     ("R&emove selected\tDelete", "&Remover selecionados\tDelete"),
+    ("Re&move", "Re&mover"),
     ("Re&sume all", "Ret&omar tudo"),
     ("Reading status...", "Lendo o status..."),
     ("Ready", "Pronto"),
@@ -3458,6 +3570,7 @@ static PT: &[(&str, &str)] = &[
     ("Restart the download", "Reiniciar o download"),
     ("Resume", "Retomar"),
     ("Resume all", "Retomar tudo"),
+    ("Resume support:", "Pode ser retomado:"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Retome esta tarefa a partir da transferência pelo navegador na aba de origem; o método de transferência não foi alterado."),
     ("Retries in a row without progress", "O número de novas tentativas seguidas sem progresso"),
     ("Retries in a row without progress:", "Tentativas seguidas sem progresso:"),
@@ -3465,9 +3578,11 @@ static PT: &[(&str, &str)] = &[
     ("Retry", "Tentar novamente"),
     ("Retry &failed", "Tentar &novamente os que falharam"),
     ("Review the settings", "Revise as configurações"),
+    ("Right away when empty", "Imediatamente se vazio"),
     ("Right-click the icon at the bottom right: speed limit, shut down when done, quiet mode and the mini panel live there. The Network and Behaviour settings tabs manage proxy, sleep prevention and notifications.", "Clique com o botão direito no ícone no canto inferior direito: o limite de velocidade, o desligamento ao concluir, o modo silencioso e o mini painel ficam ali. As abas Rede e Comportamento das Configurações gerenciam o proxy, a prevenção de suspensão e as notificações."),
     ("Rules (edit the selected row; with no selection a new rule is added):", "Regras (edite a linha selecionada; sem seleção, uma nova regra é adicionada):"),
     ("Run the selected program", "Executar o programa selecionado"),
+    ("S&maller details pane", "&Reduzir o painel de detalhes"),
     ("SHA-256 (optional, 64 hexadecimal characters):", "SHA-256 (opcional, 64 caracteres hexadecimais):"),
     ("SHA-256 verification failed", "Falha na verificação SHA-256"),
     ("SHA-256 verification failed; the partial file was deleted and a retry downloads it again", "Falha na verificação SHA-256; o arquivo parcial foi excluído e uma nova tentativa o baixa novamente"),
@@ -3496,12 +3611,15 @@ static PT: &[(&str, &str)] = &[
     ("Scheduled", "Agendado"),
     ("Scheduled limit (KiB/s):", "Limite agendado (KiB/s):"),
     ("Scheduled speed limit", "Limite de velocidade agendado"),
+    ("Search", "Pesquisar"),
+    ("Search downloads", "Pesquisar downloads"),
     ("Search:", "Pesquisar:"),
     ("Select &all\tCtrl+A", "Selecionar &tudo\tCtrl+A"),
     ("Select a completion action", "Selecione uma ação de conclusão"),
     ("Select a download job. Press Ctrl+N to add a URL or drag a link onto the window.", "Selecione uma tarefa de download. Pressione Ctrl+N para adicionar uma URL ou arraste um link para a janela."),
     ("Select a job.", "Selecione uma tarefa."),
     ("Select a queue", "Selecione uma fila"),
+    ("Select a single download.", "Selecione um único download."),
     ("Select at least one usage mode.", "Selecione pelo menos um modo de uso."),
     ("Select at least one usage purpose.", "Selecione pelo menos uma finalidade de uso."),
     ("Select one or more downloads in the list first.", "Primeiro, selecione um ou mais downloads na lista."),
@@ -3518,6 +3636,7 @@ static PT: &[(&str, &str)] = &[
     ("Settings...", "Configurações..."),
     ("Show a notification when a download completes", "Mostrar uma notificação quando um download for concluído"),
     ("Show an open card at the bottom right when a download completes", "Mostrar um cartão para abrir no canto inferior direito quando um download for concluído"),
+    ("Show details", "Mostrar detalhes"),
     ("Show in folder", "Mostrar na pasta"),
     ("Show job log...", "Mostrar log da tarefa..."),
     ("Show site download entries in the browser", "Mostrar entradas de download do site no navegador"),
@@ -3537,6 +3656,7 @@ static PT: &[(&str, &str)] = &[
     ("Skip this version", "Pular esta versão"),
     ("Source preparation was stopped", "A preparação da fonte foi interrompida"),
     ("Source refresh stopped", "A atualização da fonte foi interrompida"),
+    ("Space", "Espaço"),
     ("Speed", "Velocidade"),
     ("Speed &limit...", "Limite de &velocidade..."),
     ("Speed limit", "Limite de velocidade"),
@@ -3551,6 +3671,7 @@ static PT: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Iniciando a instalação; o aplicativo será reaberto"),
     ("State", "Estado"),
     ("States", "Estados"),
+    ("Status:", "Estado:"),
     ("Stream integrity could not be verified", "A integridade do fluxo não pôde ser verificada"),
     ("Subtitle embedding is only supported for video output", "A incorporação de legendas só é suportada para saída de vídeo"),
     ("Subtitle language", "Idioma da legenda"),
@@ -3562,6 +3683,7 @@ static PT: &[(&str, &str)] = &[
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "A sincronização exige uma URL HTTP/HTTPS sem credenciais de usuário."),
     ("TLS certificate validation failed", "A validação do certificado TLS falhou"),
     ("Take over browser downloads (by file type)", "Assumir downloads do navegador (por tipo de arquivo)"),
+    ("Takes effect after a restart", "Aplica-se ao reiniciar"),
     ("Target file:", "Arquivo de destino:"),
     ("Target folder:", "Pasta de destino:"),
     ("Target queue not found.", "Fila de destino não encontrada."),
@@ -3954,6 +4076,7 @@ static PT: &[(&str, &str)] = &[
     ("The range could not be written to disk", "Não foi possível gravar o intervalo no disco"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "O arquivo esparso do mapa de intervalos está ausente ou incompleto; a próxima tentativa reinicia o download desde o início"),
     ("The range request was not accepted", "A solicitação de intervalo (range) não foi aceita"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "O motivo está abaixo. “Relatar problema” grava um relatório sobre ele e abre a pasta."),
     ("The record folder is missing", "A pasta de registros está ausente"),
     ("The redirect address has no host name", "O endereço de redirecionamento não tem nome de host"),
     ("The redirect target is invalid", "O destino do redirecionamento é inválido"),
@@ -4163,6 +4286,7 @@ static PT: &[(&str, &str)] = &[
     ("The working folder contains a redirect", "A pasta de trabalho contém um redirecionamento"),
     ("The working folder is missing", "A pasta de trabalho está ausente"),
     ("The yt-dlp version information could not be retrieved", "Não foi possível obter as informações de versão do yt-dlp"),
+    ("Theme:", "Tema:"),
     ("There are no downloads to export.", "Não há downloads para exportar."),
     ("There is no active browser transfer for this job.", "Não há transferência ativa pelo navegador para esta tarefa."),
     ("There is no active completion countdown for this queue.", "Não há contagem regressiva de conclusão ativa para esta fila."),
@@ -4190,6 +4314,7 @@ static PT: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "Esta fonte não é suportada; tente outra fonte"),
     ("This source or format is not supported; make a different choice.", "Esta fonte ou formato não é suportado; faça outra escolha."),
     ("This usage mode is disabled", "Este modo de uso está desativado"),
+    ("Time left:", "Tempo restante:"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "Janelas de horário: dias por linha HH:MM-HH:MM · Seg=0, Dom=6 · vazio: sempre"),
     ("Too many HTTP headers", "Cabeçalhos HTTP demais"),
     ("Too many HTTP redirects", "Redirecionamentos HTTP demais"),
@@ -4198,6 +4323,7 @@ static PT: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "A verificação de integridade da ferramenta falhou"),
     ("Tool verification stopped", "A verificação da ferramenta foi interrompida"),
     ("Total speed", "Velocidade total"),
+    ("Transfer rate:", "Taxa de transferência:"),
     ("Try again; refresh the source if the same error persists", "Tente novamente; atualize a fonte se o mesmo erro persistir"),
     ("Type", "Tipo"),
     ("URL", "URL"),
@@ -4234,7 +4360,7 @@ static PT: &[(&str, &str)] = &[
     ("Video format id", "ID do formato de vídeo"),
     ("Video or audio downloading is disabled in Settings.", "O download de vídeo ou áudio está desativado nas Configurações."),
     ("Video preferences", "Preferências de vídeo"),
-    ("Video — MP4/MKV, quality, audio track and subtitle options", "Vídeo — MP4/MKV, qualidade, faixa de áudio e opções de legenda"),
+    ("Video — quality, tracks, subtitles", "Vídeo — qualidade, faixas, legendas"),
     ("Video/audio setup stopped because of an unexpected error.", "A configuração de vídeo/áudio foi interrompida por um erro inesperado."),
     ("Video/audio support is already being prepared.", "O suporte a vídeo/áudio já está sendo preparado."),
     ("Wait for the media analysis to finish first.", "Aguarde primeiro a conclusão da análise de mídia."),
@@ -4336,11 +4462,14 @@ static FR: &[(&str, &str)] = &[
     (" · default", " · par défaut"),
     (" · error", " · erreur"),
     ("&About SSDownload", "À &propos de SSDownload"),
+    ("&Ascending", "&Croissant"),
     ("&Audio download...\tCtrl+Shift+N", "Téléchargement &audio...\tCtrl+Shift+N"),
     ("&Batch download...", "Téléchargement en &lot..."),
     ("&Browser setup...", "Configuration du &navigateur..."),
     ("&Check for updates...", "Rechercher les &mises à jour..."),
     ("&Clear completed", "&Effacer les terminés"),
+    ("&Columns", "&Colonnes"),
+    ("&Descending", "&Décroissant"),
     ("&Diagnostics...", "Dia&gnostic..."),
     ("&Downloads", "&Téléchargements"),
     ("&Event log...", "Journal des &événements..."),
@@ -4349,16 +4478,25 @@ static FR: &[(&str, &str)] = &[
     ("&Import list...", "&Importer la liste..."),
     ("&Install media support...", "Installer la prise en charge des &médias..."),
     ("&Keyboard shortcuts", "Raccourcis &clavier"),
+    ("&Larger details pane", "&Agrandir le volet de détails"),
     ("&Media tools...", "&Outils multimédias..."),
     ("&Mini panel", "&Mini-panneau"),
+    ("&New download", "&Nouveau téléchargement"),
     ("&New download...\tCtrl+N", "&Nouveau téléchargement...\tCtrl+N"),
     ("&Open file\tEnter", "&Ouvrir le fichier\tEnter"),
+    ("&Pause", "&Pause"),
+    ("&Pause / Resume", "&Pause / Reprendre"),
     ("&Pause / resume selected\tSpace", "Mettre en &pause / reprendre la sélection\tSpace"),
     ("&Queue manager...", "Gestionnaire de &files d'attente..."),
+    ("&Queue order", "Ordre de la &file"),
     ("&Refresh source address...", "&Actualiser l'adresse source..."),
+    ("&Resume", "R&eprendre"),
+    ("&Settings", "Pa&ramètres"),
     ("&Settings...", "&Paramètres..."),
+    ("&Sort by", "&Trier par"),
     ("&Tools", "&Outils"),
     ("&Video download...\tCtrl+Shift+N", "Téléchargement &vidéo...\tCtrl+Shift+N"),
+    ("&View", "Affi&chage"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
     ("1 connection", "1 connexion"),
@@ -4403,7 +4541,7 @@ static FR: &[(&str, &str)] = &[
     ("Address copied to the clipboard.", "Adresse copiée dans le presse-papiers."),
     ("Advanced", "Avancé"),
     ("Advanced options", "Options avancées"),
-    ("Advanced — queues, folder rules, site crawler, sync, logs", "Avancé — files d'attente, règles de dossiers, exploration de site, synchronisation, journaux"),
+    ("Advanced — queues, rules, crawler, sync, logs", "Avancé — files d'attente, règles, exploration, synchro, journaux"),
     ("All", "Tous"),
     ("All download workers closed unexpectedly", "Tous les processus de téléchargement se sont arrêtés de manière inattendue"),
     ("Also send over unencrypted HTTP", "Envoyer aussi via HTTP non chiffré"),
@@ -4422,11 +4560,11 @@ static FR: &[(&str, &str)] = &[
     ("Audio language", "Langue audio"),
     ("Audio only", "Audio uniquement"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "Pistes audio (Ctrl/Maj ; vide = originale) :"),
-    ("Audio — extract audio only from video pages or audio links", "Audio — extraire uniquement l'audio des pages vidéo ou des liens audio"),
+    ("Audio — audio only from pages and links", "Audio — l'audio seul des pages et liens"),
     ("Automatic", "Automatique"),
     ("Awaiting source", "En attente de la source"),
     ("Basic", "De base"),
-    ("Basic — downloads, new download and essential settings", "De base — téléchargements, nouveau téléchargement et paramètres essentiels"),
+    ("Basic — essential downloads and settings", "De base — téléchargements et réglages essentiels"),
     ("Batch download...", "Téléchargement en lot..."),
     ("Battery saver is on: downloads are on hold", "Économiseur de batterie actif : téléchargements suspendus"),
     ("Behaviour", "Comportement"),
@@ -4459,6 +4597,8 @@ static FR: &[(&str, &str)] = &[
     ("Choose format and resolution", "Choisir le format et la résolution"),
     ("Choose how you want to use it. You can change this later in Settings.", "Choisissez son mode d'utilisation. Vous pourrez le modifier plus tard dans les paramètres."),
     ("Choose only one operation per call.", "Choisissez une seule opération par appel."),
+    ("Classic", "Classique"),
+    ("Classic — the plain Windows look", "Classique — l'apparence Windows sobre"),
     ("Cleanup", "Nettoyage"),
     ("Close", "Fermer"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "Fermez complètement le navigateur puis rouvrez-le, ou ajoutez l'extension depuis le Chrome Web Store. Edge installe aussi les extensions du Chrome Web Store."),
@@ -4481,6 +4621,7 @@ static FR: &[(&str, &str)] = &[
     ("Connection to the app", "Connexion à l'application"),
     ("Connections per file", "Connexions par fichier"),
     ("Connections per file (1–16):", "Connexions par fichier (1–16) :"),
+    ("Connections:", "Connexions :"),
     ("Continue", "Continuer"),
     ("Continue / Download", "Continuer / Télécharger"),
     ("Continues from the previous session", "Reprend depuis la session précédente"),
@@ -4525,6 +4666,7 @@ static FR: &[(&str, &str)] = &[
     ("Depth", "Profondeur"),
     ("Depth:", "Profondeur :"),
     ("Detailed", "Détaillé"),
+    ("Details", "Détails"),
     ("Detect automatically", "Détecter automatiquement"),
     ("Detect new URLs from the clipboard", "Détecter les nouvelles URL du presse-papiers"),
     ("Didn't see the notice?", "Vous n'avez pas vu cet avis ?"),
@@ -4544,6 +4686,7 @@ static FR: &[(&str, &str)] = &[
     ("Download stopped", "Téléchargement arrêté"),
     ("Download the playlist", "Télécharger la liste de lecture"),
     ("Download type:", "Type de téléchargement :"),
+    ("Downloaded:", "Téléchargé :"),
     ("Downloading", "Téléchargement en cours"),
     ("Downloading media", "Téléchargement du média"),
     ("Downloading media; the server is limiting requests", "Téléchargement du média ; le serveur limite les requêtes"),
@@ -4588,6 +4731,7 @@ static FR: &[(&str, &str)] = &[
     ("External subtitle URL (VTT/SRT):", "URL du sous-titre externe (VTT/SRT) :"),
     ("External subtitle language", "Langue du sous-titre externe"),
     ("External subtitles cannot be used together with extractor subtitle selections", "Les sous-titres externes ne peuvent pas être utilisés avec les sélections de sous-titres de l'extracteur"),
+    ("F&older", "&Dossier"),
     ("FTP exceeded the limit of two concurrent sockets", "FTP a dépassé la limite de deux sockets simultanés"),
     ("Failed", "Échec"),
     ("Fetching current version information", "Récupération des informations de la version actuelle"),
@@ -4596,7 +4740,9 @@ static FR: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "Les téléchargements de fichiers sont désactivés dans les paramètres."),
     ("File name (optional, for a single URL):", "Nom de fichier (facultatif, pour une seule URL) :"),
     ("File name:", "Nom du fichier :"),
-    ("File — reliably transfer regular file links", "Fichier — transférer de façon fiable les liens de fichiers classiques"),
+    ("File size:", "Taille du fichier :"),
+    ("File — regular file links", "Fichier — liens de fichiers classiques"),
+    ("Filter", "Filtre"),
     ("Finish live recordin&g and keep it", "Terminer l'enre&gistrement en direct et le conserver"),
     ("Finish live recording and keep it", "Terminer l'enregistrement en direct et le conserver"),
     ("Finish the scan first", "Terminez d'abord l'analyse"),
@@ -4605,12 +4751,14 @@ static FR: &[(&str, &str)] = &[
     ("Folder rule IDs must be unique.", "Les identifiants des règles de dossier doivent être uniques."),
     ("Folder rule types must be unique.", "Les types de règles de dossier doivent être uniques."),
     ("Folder rules", "Règles de dossier"),
+    ("Found candidates", "Candidats trouvés"),
     ("Full media verification: the audio/video could not be decoded from start to end", "Vérification complète du média : l'audio ou la vidéo n'a pas pu être décodé du début à la fin"),
     ("Full program path (program action only):", "Chemin complet du programme (action seule) :"),
     ("Gaps remained in the permanent range map", "Des trous subsistent dans la carte permanente des plages"),
     ("General", "Général"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "Les sous-titres de piste HTML et les sous-titres de l'extracteur ne peuvent pas être mélangés dans une même requête"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "Identifiants HTTP Basic envoyés uniquement à ces hôtes pour les téléchargements de fichiers :"),
+    ("Hide details", "Masquer les détails"),
     ("Hold downloads on a metered connection", "Suspendre les téléchargements sur une connexion limitée"),
     ("Hold downloads while Windows Battery saver is on", "Suspendre les téléchargements si l'Économiseur de batterie est actif"),
     ("Host:", "Hôte :"),
@@ -4653,6 +4801,7 @@ static FR: &[(&str, &str)] = &[
     ("Invalid video format or resolution preference", "Préférence de format ou de résolution vidéo invalide"),
     ("Job &log...", "Journal de la &tâche..."),
     ("Job and connection limits must be between 1 and 16.", "Les limites de tâches et de connexions doivent être comprises entre 1 et 16."),
+    ("Job details", "Détails de la tâche"),
     ("Job log", "Journal de la tâche"),
     ("Job not found", "Tâche introuvable"),
     ("Jobs must be paused before deleting a queue that has active jobs.", "Les tâches doivent être mises en pause avant de supprimer une file d'attente comportant des tâches actives."),
@@ -4725,6 +4874,8 @@ static FR: &[(&str, &str)] = &[
     ("Minimize", "Réduire"),
     ("Minimize to the notification area when closing the window", "Réduire dans la zone de notification à la fermeture de la fenêtre"),
     ("Missing components are installed.", "Les composants manquants ont été installés."),
+    ("Modern", "Moderne"),
+    ("Modern — the Windows 11 look", "Moderne — l'apparence de Windows 11"),
     ("Move selected job", "Déplacer la tâche"),
     ("Move to bottom\tAlt+End", "Déplacer en bas\tAlt+End"),
     ("Move to queue", "Déplacer vers la file d'attente"),
@@ -4736,6 +4887,7 @@ static FR: &[(&str, &str)] = &[
     ("Multiple video format IDs cannot be used together.", "Plusieurs identifiants de format vidéo ne peuvent pas être utilisés ensemble."),
     ("Mute notifications for 1 hour", "Désactiver les notifications pendant 1 heure"),
     ("Name", "Nom"),
+    ("Name from the server", "Nom fourni par le serveur"),
     ("Name resolution failed (DNS)", "La résolution du nom a échoué (DNS)"),
     ("Name:", "Nom :"),
     ("Native Messaging registration completed.", "L'enregistrement Native Messaging est terminé."),
@@ -4761,6 +4913,7 @@ static FR: &[(&str, &str)] = &[
     ("No download is attached to this window.", "Aucun téléchargement n'est associé à cette fenêtre."),
     ("No downloadable media format found", "Aucun format média téléchargeable trouvé"),
     ("No entries for this download yet.", "Aucun enregistrement pour ce téléchargement pour l'instant."),
+    ("No error was recorded for this download.", "Aucune erreur n'a été enregistrée pour ce téléchargement."),
     ("No failure was found to report", "Aucune erreur à signaler n'a été trouvée"),
     ("No free output name was found", "Aucun nom de sortie libre n'a été trouvé"),
     ("No free output name was found in this folder.", "Aucun nom de sortie libre n'a été trouvé dans ce dossier."),
@@ -4861,6 +5014,7 @@ static FR: &[(&str, &str)] = &[
     ("Quota", "Quota"),
     ("Quota (bytes; 0: unlimited):", "Quota (octets ; 0 : illimité) :"),
     ("R&emove selected\tDelete", "Supp&rimer la sélection\tDelete"),
+    ("Re&move", "Ret&irer"),
     ("Re&sume all", "&Tout reprendre"),
     ("Reading status...", "Lecture de l'état..."),
     ("Ready", "Prêt"),
@@ -4895,6 +5049,7 @@ static FR: &[(&str, &str)] = &[
     ("Restart the download", "Redémarrer le téléchargement"),
     ("Resume", "Reprendre"),
     ("Resume all", "Tout reprendre"),
+    ("Resume support:", "Reprise possible :"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Reprenez cette tâche à partir du transfert par le navigateur dans son onglet source ; la méthode de transfert n'a pas été modifiée."),
     ("Retries in a row without progress", "Le nombre de réessais d’affilée sans progrès"),
     ("Retries in a row without progress:", "Réessais d’affilée sans progrès :"),
@@ -4902,9 +5057,11 @@ static FR: &[(&str, &str)] = &[
     ("Retry", "Réessayer"),
     ("Retry &failed", "Réessayer les é&checs"),
     ("Review the settings", "Vérifiez les paramètres"),
+    ("Right away when empty", "Immédiatement si vide"),
     ("Right-click the icon at the bottom right: speed limit, shut down when done, quiet mode and the mini panel live there. The Network and Behaviour settings tabs manage proxy, sleep prevention and notifications.", "Faites un clic droit sur l'icône en bas à droite : la limite de vitesse, l'arrêt à la fin, le mode silencieux et le mini-panneau s'y trouvent. Les onglets Réseau et Comportement des paramètres gèrent le proxy, la prévention de la mise en veille et les notifications."),
     ("Rules (edit the selected row; with no selection a new rule is added):", "Règles (modifiez la ligne sélectionnée ; sans sélection, une nouvelle règle est ajoutée) :"),
     ("Run the selected program", "Exécuter le programme sélectionné"),
+    ("S&maller details pane", "&Réduire le volet de détails"),
     ("SHA-256 (optional, 64 hexadecimal characters):", "SHA-256 (facultatif, 64 caractères hexadécimaux) :"),
     ("SHA-256 verification failed", "La vérification SHA-256 a échoué"),
     ("SHA-256 verification failed; the partial file was deleted and a retry downloads it again", "La vérification SHA-256 a échoué ; le fichier partiel a été supprimé et la nouvelle tentative le téléchargera à nouveau"),
@@ -4933,12 +5090,15 @@ static FR: &[(&str, &str)] = &[
     ("Scheduled", "Planifié"),
     ("Scheduled limit (KiB/s):", "Limite planifiée (KiB/s) :"),
     ("Scheduled speed limit", "Limite de vitesse planifiée"),
+    ("Search", "Rechercher"),
+    ("Search downloads", "Rechercher dans les téléchargements"),
     ("Search:", "Rechercher :"),
     ("Select &all\tCtrl+A", "Tout &sélectionner\tCtrl+A"),
     ("Select a completion action", "Sélectionnez une action de fin"),
     ("Select a download job. Press Ctrl+N to add a URL or drag a link onto the window.", "Sélectionnez une tâche de téléchargement. Appuyez sur Ctrl+N pour ajouter une URL ou faites glisser un lien sur la fenêtre."),
     ("Select a job.", "Sélectionnez une tâche."),
     ("Select a queue", "Sélectionnez une file d'attente"),
+    ("Select a single download.", "Sélectionnez un seul téléchargement."),
     ("Select at least one usage mode.", "Sélectionnez au moins un mode d'utilisation."),
     ("Select at least one usage purpose.", "Sélectionnez au moins un usage."),
     ("Select one or more downloads in the list first.", "Sélectionnez d'abord un ou plusieurs téléchargements dans la liste."),
@@ -4955,6 +5115,7 @@ static FR: &[(&str, &str)] = &[
     ("Settings...", "Paramètres..."),
     ("Show a notification when a download completes", "Afficher une notification à la fin d'un téléchargement"),
     ("Show an open card at the bottom right when a download completes", "Afficher une carte d'ouverture en bas à droite à la fin d'un téléchargement"),
+    ("Show details", "Afficher les détails"),
     ("Show in folder", "Afficher dans le dossier"),
     ("Show job log...", "Afficher le journal de la tâche..."),
     ("Show site download entries in the browser", "Afficher les téléchargements du site dans le navigateur"),
@@ -4974,6 +5135,7 @@ static FR: &[(&str, &str)] = &[
     ("Skip this version", "Ignorer cette version"),
     ("Source preparation was stopped", "La préparation de la source a été arrêtée"),
     ("Source refresh stopped", "Actualisation de la source arrêtée"),
+    ("Space", "Espace"),
     ("Speed", "Vitesse"),
     ("Speed &limit...", "&Limite de vitesse..."),
     ("Speed limit", "Limite de vitesse"),
@@ -4988,6 +5150,7 @@ static FR: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Lancement de l'installation ; l'application sera rouverte"),
     ("State", "État"),
     ("States", "États"),
+    ("Status:", "État :"),
     ("Stream integrity could not be verified", "L'intégrité du flux n'a pas pu être vérifiée"),
     ("Subtitle embedding is only supported for video output", "L'intégration des sous-titres n'est prise en charge que pour une sortie vidéo"),
     ("Subtitle language", "Langue des sous-titres"),
@@ -4999,6 +5162,7 @@ static FR: &[(&str, &str)] = &[
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "La synchronisation nécessite une URL HTTP/HTTPS sans identifiants d'utilisateur."),
     ("TLS certificate validation failed", "La validation du certificat TLS a échoué"),
     ("Take over browser downloads (by file type)", "Intercepter les téléchargements du navigateur (par type de fichier)"),
+    ("Takes effect after a restart", "Effectif après redémarrage"),
     ("Target file:", "Fichier cible :"),
     ("Target folder:", "Dossier cible :"),
     ("Target queue not found.", "File d'attente cible introuvable."),
@@ -5391,6 +5555,7 @@ static FR: &[(&str, &str)] = &[
     ("The range could not be written to disk", "La plage n'a pas pu être écrite sur le disque"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "Le fichier épars de la carte des plages est absent ou trop court ; la prochaine tentative recommence le téléchargement depuis le début"),
     ("The range request was not accepted", "La requête de plage (range) n'a pas été acceptée"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "La raison figure ci-dessous. « Signaler un problème » rédige un rapport à ce sujet et ouvre son dossier."),
     ("The record folder is missing", "Le dossier des enregistrements est manquant"),
     ("The redirect address has no host name", "L'adresse de redirection ne contient pas de nom d'hôte"),
     ("The redirect target is invalid", "La cible de redirection est invalide"),
@@ -5600,6 +5765,7 @@ static FR: &[(&str, &str)] = &[
     ("The working folder contains a redirect", "Le dossier de travail contient une redirection"),
     ("The working folder is missing", "Le dossier de travail est manquant"),
     ("The yt-dlp version information could not be retrieved", "Les informations de version de yt-dlp n'ont pas pu être récupérées"),
+    ("Theme:", "Thème :"),
     ("There are no downloads to export.", "Il n'y a aucun téléchargement à exporter."),
     ("There is no active browser transfer for this job.", "Aucun transfert par le navigateur n'est actif pour cette tâche."),
     ("There is no active completion countdown for this queue.", "Aucun compte à rebours de fin n'est actif pour cette file d'attente."),
@@ -5627,6 +5793,7 @@ static FR: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "Cette source n'est pas prise en charge ; essayez une autre source"),
     ("This source or format is not supported; make a different choice.", "Cette source ou ce format n'est pas pris en charge ; faites un autre choix."),
     ("This usage mode is disabled", "Ce mode d'utilisation est désactivé"),
+    ("Time left:", "Temps restant :"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "Plages horaires : jours par ligne HH:MM-HH:MM · lun=0, dim=6 · vide : toujours"),
     ("Too many HTTP headers", "Trop d'en-têtes HTTP"),
     ("Too many HTTP redirects", "Trop de redirections HTTP"),
@@ -5635,6 +5802,7 @@ static FR: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "La vérification d'intégrité de l'outil a échoué"),
     ("Tool verification stopped", "Vérification de l'outil arrêtée"),
     ("Total speed", "Vitesse totale"),
+    ("Transfer rate:", "Débit :"),
     ("Try again; refresh the source if the same error persists", "Réessayez ; actualisez la source si la même erreur persiste"),
     ("Type", "Type"),
     ("URL", "URL"),
@@ -5671,7 +5839,7 @@ static FR: &[(&str, &str)] = &[
     ("Video format id", "Identifiant du format vidéo"),
     ("Video or audio downloading is disabled in Settings.", "Le téléchargement de vidéos ou d'audio est désactivé dans les paramètres."),
     ("Video preferences", "Préférences vidéo"),
-    ("Video — MP4/MKV, quality, audio track and subtitle options", "Vidéo — MP4/MKV, qualité, piste audio et options de sous-titres"),
+    ("Video — quality, tracks, subtitles", "Vidéo — qualité, pistes, sous-titres"),
     ("Video/audio setup stopped because of an unexpected error.", "La configuration vidéo/audio s'est arrêtée à cause d'une erreur inattendue."),
     ("Video/audio support is already being prepared.", "La prise en charge vidéo/audio est déjà en cours de préparation."),
     ("Wait for the media analysis to finish first.", "Attendez d'abord la fin de l'analyse du média."),
@@ -5773,11 +5941,14 @@ static DE: &[(&str, &str)] = &[
     (" · default", " · Standard"),
     (" · error", " · Fehler"),
     ("&About SSDownload", "&Info zu SSDownload"),
+    ("&Ascending", "&Aufsteigend"),
     ("&Audio download...\tCtrl+Shift+N", "&Audio herunterladen...\tCtrl+Shift+N"),
     ("&Batch download...", "&Stapel-Download..."),
     ("&Browser setup...", "&Browser-Einrichtung..."),
     ("&Check for updates...", "Nach &Updates suchen..."),
     ("&Clear completed", "A&bgeschlossene entfernen"),
+    ("&Columns", "&Spalten"),
+    ("&Descending", "A&bsteigend"),
     ("&Diagnostics...", "Dia&gnose..."),
     ("&Downloads", "Do&wnloads"),
     ("&Event log...", "E&reignisprotokoll..."),
@@ -5786,16 +5957,25 @@ static DE: &[(&str, &str)] = &[
     ("&Import list...", "Liste &importieren..."),
     ("&Install media support...", "Medienunterstützung &installieren..."),
     ("&Keyboard shortcuts", "&Tastenkombinationen"),
+    ("&Larger details pane", "Detailbereich &vergrößern"),
     ("&Media tools...", "&Medienwerkzeuge..."),
     ("&Mini panel", "&Mini-Panel"),
+    ("&New download", "&Neuer Download"),
     ("&New download...\tCtrl+N", "&Neuer Download...\tCtrl+N"),
     ("&Open file\tEnter", "Datei &öffnen\tEnter"),
+    ("&Pause", "&Pausieren"),
+    ("&Pause / Resume", "&Pausieren / Fortsetzen"),
     ("&Pause / resume selected\tSpace", "&Ausgewählte pausieren / fortsetzen\tSpace"),
     ("&Queue manager...", "&Warteschlangenverwaltung..."),
+    ("&Queue order", "&Warteschlangenreihenfolge"),
     ("&Refresh source address...", "&Quelladresse aktualisieren..."),
+    ("&Resume", "&Fortsetzen"),
+    ("&Settings", "Ein&stellungen"),
     ("&Settings...", "&Einstellungen..."),
+    ("&Sort by", "S&ortieren nach"),
     ("&Tools", "&Extras"),
     ("&Video download...\tCtrl+Shift+N", "&Video herunterladen...\tCtrl+Shift+N"),
+    ("&View", "&Ansicht"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
     ("1 connection", "1 Verbindung"),
@@ -5840,7 +6020,7 @@ static DE: &[(&str, &str)] = &[
     ("Address copied to the clipboard.", "Adresse in die Zwischenablage kopiert."),
     ("Advanced", "Erweitert"),
     ("Advanced options", "Erweiterte Optionen"),
-    ("Advanced — queues, folder rules, site crawler, sync, logs", "Erweitert — Warteschlangen, Ordnerregeln, Website-Crawler, Synchronisierung, Protokolle"),
+    ("Advanced — queues, rules, crawler, sync, logs", "Erweitert — Warteschlangen, Regeln, Crawler, Sync, Protokolle"),
     ("All", "Alle"),
     ("All download workers closed unexpectedly", "Alle Download-Worker wurden unerwartet beendet"),
     ("Also send over unencrypted HTTP", "Auch über unverschlüsseltes HTTP senden"),
@@ -5859,11 +6039,11 @@ static DE: &[(&str, &str)] = &[
     ("Audio language", "Audiosprache"),
     ("Audio only", "Nur Audio"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "Audiospuren (Ctrl/Shift; leer = Original):"),
-    ("Audio — extract audio only from video pages or audio links", "Audio — nur den Ton von Videoseiten oder Audiolinks extrahieren"),
+    ("Audio — audio only from pages and links", "Audio — nur Ton aus Seiten und Links"),
     ("Automatic", "Automatisch"),
     ("Awaiting source", "Warte auf Quelle"),
     ("Basic", "Einfach"),
-    ("Basic — downloads, new download and essential settings", "Einfach — Downloadliste, neuer Download und wichtige Einstellungen"),
+    ("Basic — essential downloads and settings", "Einfach — Downloads und wichtige Einstellungen"),
     ("Batch download...", "Stapel-Download..."),
     ("Battery saver is on: downloads are on hold", "Energiesparmodus aktiv: Downloads werden zurückgehalten"),
     ("Behaviour", "Verhalten"),
@@ -5896,6 +6076,8 @@ static DE: &[(&str, &str)] = &[
     ("Choose format and resolution", "Format und Auflösung wählen"),
     ("Choose how you want to use it. You can change this later in Settings.", "Wählen Sie, wie Sie es verwenden möchten. Sie können dies später in den Einstellungen ändern."),
     ("Choose only one operation per call.", "Wählen Sie pro Aufruf nur einen Vorgang."),
+    ("Classic", "Klassisch"),
+    ("Classic — the plain Windows look", "Klassisch — das schlichte Windows-Aussehen"),
     ("Cleanup", "Bereinigung"),
     ("Close", "Schließen"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "Schließen Sie den Browser vollständig und öffnen Sie ihn erneut, oder installieren Sie die Erweiterung aus dem Chrome Web Store. Edge installiert Erweiterungen aus dem Chrome Web Store ebenfalls."),
@@ -5918,6 +6100,7 @@ static DE: &[(&str, &str)] = &[
     ("Connection to the app", "Verbindung zur App"),
     ("Connections per file", "Verbindungen pro Datei"),
     ("Connections per file (1–16):", "Verbindungen pro Datei (1–16):"),
+    ("Connections:", "Verbindungen:"),
     ("Continue", "Fortfahren"),
     ("Continue / Download", "Fortfahren / Herunterladen"),
     ("Continues from the previous session", "Wird aus der vorherigen Sitzung fortgesetzt"),
@@ -5962,6 +6145,7 @@ static DE: &[(&str, &str)] = &[
     ("Depth", "Tiefe"),
     ("Depth:", "Tiefe:"),
     ("Detailed", "Ausführlich"),
+    ("Details", "Details"),
     ("Detect automatically", "Automatisch erkennen"),
     ("Detect new URLs from the clipboard", "URLs aus der Zwischenablage erkennen"),
     ("Didn't see the notice?", "Den Hinweis nicht gesehen?"),
@@ -5981,6 +6165,7 @@ static DE: &[(&str, &str)] = &[
     ("Download stopped", "Download gestoppt"),
     ("Download the playlist", "Playlist herunterladen"),
     ("Download type:", "Downloadtyp:"),
+    ("Downloaded:", "Heruntergeladen:"),
     ("Downloading", "Wird heruntergeladen"),
     ("Downloading media", "Medien werden heruntergeladen"),
     ("Downloading media; the server is limiting requests", "Medien werden heruntergeladen; der Server begrenzt die Anfragen"),
@@ -6025,6 +6210,7 @@ static DE: &[(&str, &str)] = &[
     ("External subtitle URL (VTT/SRT):", "URL des externen Untertitels (VTT/SRT):"),
     ("External subtitle language", "Sprache des externen Untertitels"),
     ("External subtitles cannot be used together with extractor subtitle selections", "Externe Untertitel können nicht zusammen mit den Untertitelauswahlen des Extraktors verwendet werden"),
+    ("F&older", "&Ordner"),
     ("FTP exceeded the limit of two concurrent sockets", "FTP hat das Limit von zwei gleichzeitigen Sockets überschritten"),
     ("Failed", "Fehlgeschlagen"),
     ("Fetching current version information", "Aktuelle Versionsinformationen werden abgerufen"),
@@ -6033,7 +6219,9 @@ static DE: &[(&str, &str)] = &[
     ("File downloads are disabled in Settings.", "Datei-Downloads sind in den Einstellungen deaktiviert."),
     ("File name (optional, for a single URL):", "Dateiname (optional, für eine einzelne URL):"),
     ("File name:", "Dateiname:"),
-    ("File — reliably transfer regular file links", "Datei — reguläre Dateilinks zuverlässig übertragen"),
+    ("File size:", "Dateigröße:"),
+    ("File — regular file links", "Datei — normale Dateilinks"),
+    ("Filter", "Filter"),
     ("Finish live recordin&g and keep it", "Live-Aufnahme beenden und be&halten"),
     ("Finish live recording and keep it", "Live-Aufnahme beenden und behalten"),
     ("Finish the scan first", "Schließen Sie zuerst den Scan ab"),
@@ -6042,12 +6230,14 @@ static DE: &[(&str, &str)] = &[
     ("Folder rule IDs must be unique.", "Ordnerregel-IDs müssen eindeutig sein."),
     ("Folder rule types must be unique.", "Ordnerregel-Typen müssen eindeutig sein."),
     ("Folder rules", "Ordnerregeln"),
+    ("Found candidates", "Gefundene Kandidaten"),
     ("Full media verification: the audio/video could not be decoded from start to end", "Vollständige Medienprüfung: Audio und Video konnten nicht vom Anfang bis zum Ende dekodiert werden"),
     ("Full program path (program action only):", "Vollständiger Programmpfad (nur Programmaktion):"),
     ("Gaps remained in the permanent range map", "In der dauerhaften Bereichszuordnung sind Lücken verblieben"),
     ("General", "Allgemein"),
     ("HTML track subtitles and extractor subtitles cannot be mixed in one request", "HTML-Track-Untertitel und Extraktor-Untertitel können nicht in einer Anfrage gemischt werden"),
     ("HTTP Basic logins sent to exactly these hosts for file downloads:", "HTTP-Basic-Anmeldungen, die für Datei-Downloads nur an genau diese Hosts gesendet werden:"),
+    ("Hide details", "Details ausblenden"),
     ("Hold downloads on a metered connection", "Downloads bei getakteter Verbindung zurückhalten"),
     ("Hold downloads while Windows Battery saver is on", "Downloads zurückhalten, wenn der Windows-Energiesparmodus aktiv ist"),
     ("Host:", "Host:"),
@@ -6090,6 +6280,7 @@ static DE: &[(&str, &str)] = &[
     ("Invalid video format or resolution preference", "Ungültige Präferenz für Videoformat oder Auflösung"),
     ("Job &log...", "Auftrags&protokoll..."),
     ("Job and connection limits must be between 1 and 16.", "Auftrags- und Verbindungsgrenzen müssen zwischen 1 und 16 liegen."),
+    ("Job details", "Auftragsdetails"),
     ("Job log", "Auftragsprotokoll"),
     ("Job not found", "Auftrag nicht gefunden"),
     ("Jobs must be paused before deleting a queue that has active jobs.", "Aufträge müssen pausiert werden, bevor eine Warteschlange mit aktiven Aufträgen gelöscht wird."),
@@ -6162,6 +6353,8 @@ static DE: &[(&str, &str)] = &[
     ("Minimize", "Minimieren"),
     ("Minimize to the notification area when closing the window", "Beim Schließen des Fensters in den Infobereich minimieren"),
     ("Missing components are installed.", "Fehlende Komponenten wurden installiert."),
+    ("Modern", "Modern"),
+    ("Modern — the Windows 11 look", "Modern — das Aussehen von Windows 11"),
     ("Move selected job", "Auftrag verschieben"),
     ("Move to bottom\tAlt+End", "Nach unten verschieben\tAlt+End"),
     ("Move to queue", "In Warteschlange verschieben"),
@@ -6173,6 +6366,7 @@ static DE: &[(&str, &str)] = &[
     ("Multiple video format IDs cannot be used together.", "Mehrere Video-Format-IDs können nicht zusammen verwendet werden."),
     ("Mute notifications for 1 hour", "Benachrichtigungen 1 Stunde stummschalten"),
     ("Name", "Name"),
+    ("Name from the server", "Name vom Server"),
     ("Name resolution failed (DNS)", "Namensauflösung fehlgeschlagen (DNS)"),
     ("Name:", "Name:"),
     ("Native Messaging registration completed.", "Native-Messaging-Registrierung abgeschlossen."),
@@ -6198,6 +6392,7 @@ static DE: &[(&str, &str)] = &[
     ("No download is attached to this window.", "An dieses Fenster ist kein Download angehängt."),
     ("No downloadable media format found", "Kein herunterladbares Medienformat gefunden"),
     ("No entries for this download yet.", "Für diesen Download gibt es noch keine Einträge."),
+    ("No error was recorded for this download.", "Für diesen Download wurde kein Fehler aufgezeichnet."),
     ("No failure was found to report", "Es wurde kein Fehler zum Melden gefunden"),
     ("No free output name was found", "Kein freier Ausgabename gefunden"),
     ("No free output name was found in this folder.", "In diesem Ordner wurde kein freier Ausgabename gefunden."),
@@ -6298,6 +6493,7 @@ static DE: &[(&str, &str)] = &[
     ("Quota", "Kontingent"),
     ("Quota (bytes; 0: unlimited):", "Kontingent (Byte; 0: unbegrenzt):"),
     ("R&emove selected\tDelete", "Ausgewählte &entfernen\tDelete"),
+    ("Re&move", "Entfe&rnen"),
     ("Re&sume all", "Alle &fortsetzen"),
     ("Reading status...", "Status wird gelesen..."),
     ("Ready", "Bereit"),
@@ -6332,6 +6528,7 @@ static DE: &[(&str, &str)] = &[
     ("Restart the download", "Download neu starten"),
     ("Resume", "Fortsetzen"),
     ("Resume all", "Alle fortsetzen"),
+    ("Resume support:", "Fortsetzbar:"),
     ("Resume this job from the browser transfer on its source tab; the transfer method was not changed.", "Setzen Sie diesen Auftrag über die Browser-Übertragung auf dem Quell-Tab fort; die Übertragungsmethode wurde nicht geändert."),
     ("Retries in a row without progress", "Die Anzahl der Wiederholungen ohne Fortschritt in Folge"),
     ("Retries in a row without progress:", "Wdh. in Folge ohne Fortschritt:"),
@@ -6339,9 +6536,11 @@ static DE: &[(&str, &str)] = &[
     ("Retry", "Wiederholen"),
     ("Retry &failed", "Fehlgeschlagene &wiederholen"),
     ("Review the settings", "Prüfen Sie die Einstellungen"),
+    ("Right away when empty", "Sofort, wenn leer"),
     ("Right-click the icon at the bottom right: speed limit, shut down when done, quiet mode and the mini panel live there. The Network and Behaviour settings tabs manage proxy, sleep prevention and notifications.", "Klicken Sie mit der rechten Maustaste auf das Symbol unten rechts: Dort finden Sie das Geschwindigkeitslimit, Herunterfahren nach Abschluss, den stillen Modus und das Mini-Panel. Auf den Registerkarten Netzwerk und Verhalten der Einstellungen verwalten Sie Proxy, Ruhezustand verhindern und Benachrichtigungen."),
     ("Rules (edit the selected row; with no selection a new rule is added):", "Regeln (ausgewählte Zeile bearbeiten; ohne Auswahl wird eine neue Regel hinzugefügt):"),
     ("Run the selected program", "Ausgewähltes Programm ausführen"),
+    ("S&maller details pane", "Detailbereich ve&rkleinern"),
     ("SHA-256 (optional, 64 hexadecimal characters):", "SHA-256 (optional, 64 hexadezimale Zeichen):"),
     ("SHA-256 verification failed", "SHA-256-Prüfung fehlgeschlagen"),
     ("SHA-256 verification failed; the partial file was deleted and a retry downloads it again", "SHA-256-Prüfung fehlgeschlagen; die unvollständige Datei wurde gelöscht und wird beim nächsten Versuch erneut heruntergeladen"),
@@ -6370,12 +6569,15 @@ static DE: &[(&str, &str)] = &[
     ("Scheduled", "Geplant"),
     ("Scheduled limit (KiB/s):", "Zeitgesteuertes Limit (KiB/s):"),
     ("Scheduled speed limit", "Zeitgesteuertes Geschwindigkeitslimit"),
+    ("Search", "Suchen"),
+    ("Search downloads", "Downloads durchsuchen"),
     ("Search:", "Suchen:"),
     ("Select &all\tCtrl+A", "Alle a&uswählen\tCtrl+A"),
     ("Select a completion action", "Wählen Sie eine Aktion nach Abschluss"),
     ("Select a download job. Press Ctrl+N to add a URL or drag a link onto the window.", "Wählen Sie einen Download-Auftrag aus. Drücken Sie Ctrl+N, um eine URL hinzuzufügen, oder ziehen Sie einen Link in das Fenster."),
     ("Select a job.", "Wählen Sie einen Auftrag aus."),
     ("Select a queue", "Wählen Sie eine Warteschlange aus"),
+    ("Select a single download.", "Wählen Sie einen einzelnen Download aus."),
     ("Select at least one usage mode.", "Wählen Sie mindestens einen Verwendungsmodus aus."),
     ("Select at least one usage purpose.", "Wählen Sie mindestens einen Verwendungszweck aus."),
     ("Select one or more downloads in the list first.", "Wählen Sie zuerst einen oder mehrere Downloads in der Liste aus."),
@@ -6392,6 +6594,7 @@ static DE: &[(&str, &str)] = &[
     ("Settings...", "Einstellungen..."),
     ("Show a notification when a download completes", "Benachrichtigung anzeigen, wenn ein Download abgeschlossen ist"),
     ("Show an open card at the bottom right when a download completes", "Beim Abschluss eines Downloads unten rechts eine Karte zum Öffnen anzeigen"),
+    ("Show details", "Details anzeigen"),
     ("Show in folder", "Im Ordner anzeigen"),
     ("Show job log...", "Auftragsprotokoll anzeigen..."),
     ("Show site download entries in the browser", "Website-Download-Einträge im Browser anzeigen"),
@@ -6411,6 +6614,7 @@ static DE: &[(&str, &str)] = &[
     ("Skip this version", "Diese Version überspringen"),
     ("Source preparation was stopped", "Quellvorbereitung wurde gestoppt"),
     ("Source refresh stopped", "Quellaktualisierung gestoppt"),
+    ("Space", "Leertaste"),
     ("Speed", "Geschwindigkeit"),
     ("Speed &limit...", "&Geschwindigkeitslimit..."),
     ("Speed limit", "Geschwindigkeitslimit"),
@@ -6425,6 +6629,7 @@ static DE: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Installation wird gestartet; die Anwendung wird wieder geöffnet"),
     ("State", "Status"),
     ("States", "Zustände"),
+    ("Status:", "Status:"),
     ("Stream integrity could not be verified", "Die Integrität des Streams konnte nicht geprüft werden"),
     ("Subtitle embedding is only supported for video output", "Das Einbetten von Untertiteln wird nur für Videoausgabe unterstützt"),
     ("Subtitle language", "Untertitelsprache"),
@@ -6436,6 +6641,7 @@ static DE: &[(&str, &str)] = &[
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "Die Synchronisierung erfordert eine HTTP/HTTPS-URL ohne Anmeldedaten."),
     ("TLS certificate validation failed", "TLS-Zertifikatsprüfung fehlgeschlagen"),
     ("Take over browser downloads (by file type)", "Browser-Downloads übernehmen (nach Dateityp)"),
+    ("Takes effect after a restart", "Gilt nach einem Neustart"),
     ("Target file:", "Zieldatei:"),
     ("Target folder:", "Zielordner:"),
     ("Target queue not found.", "Zielwarteschlange nicht gefunden."),
@@ -6828,6 +7034,7 @@ static DE: &[(&str, &str)] = &[
     ("The range could not be written to disk", "Der Bereich konnte nicht auf den Datenträger geschrieben werden"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "Die Sparse-Datei der Bereichszuordnung fehlt oder ist zu kurz; der nächste Versuch startet den Download von vorn"),
     ("The range request was not accepted", "Die Bereichsanfrage (Range) wurde nicht akzeptiert"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "Der Grund steht unten. „Problem melden“ schreibt einen Bericht dazu und öffnet seinen Ordner."),
     ("The record folder is missing", "Der Datensatzordner fehlt"),
     ("The redirect address has no host name", "Die Weiterleitungsadresse enthält keinen Hostnamen"),
     ("The redirect target is invalid", "Das Weiterleitungsziel ist ungültig"),
@@ -7037,6 +7244,7 @@ static DE: &[(&str, &str)] = &[
     ("The working folder contains a redirect", "Der Arbeitsordner enthält eine Umleitung"),
     ("The working folder is missing", "Der Arbeitsordner fehlt"),
     ("The yt-dlp version information could not be retrieved", "Die yt-dlp-Versionsinformationen konnten nicht abgerufen werden"),
+    ("Theme:", "Design:"),
     ("There are no downloads to export.", "Es gibt keine Downloads zum Exportieren."),
     ("There is no active browser transfer for this job.", "Für diesen Auftrag gibt es keine aktive Browser-Übertragung."),
     ("There is no active completion countdown for this queue.", "Für diese Warteschlange gibt es keinen aktiven Countdown bis zum Abschluss."),
@@ -7064,6 +7272,7 @@ static DE: &[(&str, &str)] = &[
     ("This source is not supported; try another source", "Diese Quelle wird nicht unterstützt; versuchen Sie eine andere Quelle"),
     ("This source or format is not supported; make a different choice.", "Diese Quelle oder dieses Format wird nicht unterstützt; treffen Sie eine andere Auswahl."),
     ("This usage mode is disabled", "Dieser Verwendungszweck ist deaktiviert"),
+    ("Time left:", "Restzeit:"),
     ("Time windows: days per line HH:MM-HH:MM · Mon=0, Sun=6 · empty: always", "Zeitfenster: Tage pro Zeile HH:MM-HH:MM · Mo=0, So=6 · leer: immer"),
     ("Too many HTTP headers", "Zu viele HTTP-Header"),
     ("Too many HTTP redirects", "Zu viele HTTP-Weiterleitungen"),
@@ -7072,6 +7281,7 @@ static DE: &[(&str, &str)] = &[
     ("Tool integrity verification failed", "Prüfung der Werkzeugintegrität fehlgeschlagen"),
     ("Tool verification stopped", "Werkzeugprüfung gestoppt"),
     ("Total speed", "Gesamtgeschwindigkeit"),
+    ("Transfer rate:", "Übertragungsrate:"),
     ("Try again; refresh the source if the same error persists", "Versuchen Sie es erneut; aktualisieren Sie die Quelle, wenn derselbe Fehler weiterhin auftritt"),
     ("Type", "Typ"),
     ("URL", "URL"),
@@ -7108,7 +7318,7 @@ static DE: &[(&str, &str)] = &[
     ("Video format id", "Videoformat-ID"),
     ("Video or audio downloading is disabled in Settings.", "Das Herunterladen von Video oder Audio ist in den Einstellungen deaktiviert."),
     ("Video preferences", "Video-Einstellungen"),
-    ("Video — MP4/MKV, quality, audio track and subtitle options", "Video — MP4/MKV, Qualität, Audiospur und Untertiteloptionen"),
+    ("Video — quality, tracks, subtitles", "Video — Qualität, Spuren, Untertitel"),
     ("Video/audio setup stopped because of an unexpected error.", "Die Einrichtung der Video- und Audiounterstützung wurde wegen eines unerwarteten Fehlers beendet."),
     ("Video/audio support is already being prepared.", "Video- und Audiounterstützung wird bereits vorbereitet."),
     ("Wait for the media analysis to finish first.", "Warten Sie zuerst, bis die Medienanalyse abgeschlossen ist."),
@@ -7331,6 +7541,9 @@ macro_rules! __ui_template_ar {
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "تقرير الفشل جاهز. المجلد: {0} · ZIP: {1}"
     };
+    ("Getting the video information from the source.{status}") => {
+        "جارٍ جلب معلومات الفيديو من المصدر.{status}"
+    };
     ("GitHub returned HTTP {status}: {0}") => {
         "أعاد GitHub الرمز HTTP {status}: {0}"
     };
@@ -7475,6 +7688,9 @@ macro_rules! __ui_template_ar {
     ("SSDownload {new} is available. You have {current}.") => {
         "SSDownload {new} متاح. لديك الإصدار {current}."
     };
+    ("Save to: {0}") => {
+        "الحفظ في: {0}"
+    };
     ("Saved: {0}\r\n") => {
         "تم الحفظ: {0}\r\n"
     };
@@ -7495,6 +7711,9 @@ macro_rules! __ui_template_ar {
     };
     ("Site could not be scanned: {0}") => {
         "تعذّر فحص الموقع: {0}"
+    };
+    ("Source: {0}") => {
+        "المصدر: {0}"
     };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "حد السرعة للتنزيلات المحددة: {0} (KiB/s، 0 = الحد العام):"
@@ -7919,9 +8138,6 @@ macro_rules! __ui_template_ar {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  الحالة: {1}\r\n  الإصدار: {2}\r\n  الموقع: {3}\r\n\r\n"
     };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nالحالة: {1}\r\nالتقدم: {2}\r\nالسرعة: {3}\r\nالمتبقي: {4}\r\n"
-    };
     ("{0} address(es) exported: {1}") => {
         "تم تصدير {0} من العناوين: {1}"
     };
@@ -8194,6 +8410,9 @@ macro_rules! __ui_template_es {
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "Informe de error listo. Carpeta: {0} · ZIP: {1}"
     };
+    ("Getting the video information from the source.{status}") => {
+        "Obteniendo la información del vídeo desde el origen.{status}"
+    };
     ("GitHub returned HTTP {status}: {0}") => {
         "GitHub devolvió HTTP {status}: {0}"
     };
@@ -8338,6 +8557,9 @@ macro_rules! __ui_template_es {
     ("SSDownload {new} is available. You have {current}.") => {
         "SSDownload {new} está disponible. Tiene la versión {current}."
     };
+    ("Save to: {0}") => {
+        "Guardar en: {0}"
+    };
     ("Saved: {0}\r\n") => {
         "Guardado: {0}\r\n"
     };
@@ -8358,6 +8580,9 @@ macro_rules! __ui_template_es {
     };
     ("Site could not be scanned: {0}") => {
         "No se pudo analizar el sitio: {0}"
+    };
+    ("Source: {0}") => {
+        "Origen: {0}"
     };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "Límite de velocidad para {0} descarga(s) seleccionada(s) (KiB/s, 0 = límite global):"
@@ -8782,9 +9007,6 @@ macro_rules! __ui_template_es {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Estado: {1}\r\n  Versión: {2}\r\n  Ubicación: {3}\r\n\r\n"
     };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nEstado: {1}\r\nProgreso: {2}\r\nVelocidad: {3}\r\nTiempo restante: {4}\r\n"
-    };
     ("{0} address(es) exported: {1}") => {
         "{0} dirección(es) exportada(s): {1}"
     };
@@ -9057,6 +9279,9 @@ macro_rules! __ui_template_pt {
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "Relatório de falha pronto. Pasta: {0} · ZIP: {1}"
     };
+    ("Getting the video information from the source.{status}") => {
+        "Obtendo as informações do vídeo da fonte.{status}"
+    };
     ("GitHub returned HTTP {status}: {0}") => {
         "O GitHub retornou HTTP {status}: {0}"
     };
@@ -9201,6 +9426,9 @@ macro_rules! __ui_template_pt {
     ("SSDownload {new} is available. You have {current}.") => {
         "SSDownload {new} está disponível. Você usa a versão {current}."
     };
+    ("Save to: {0}") => {
+        "Salvar em: {0}"
+    };
     ("Saved: {0}\r\n") => {
         "Salvo: {0}\r\n"
     };
@@ -9221,6 +9449,9 @@ macro_rules! __ui_template_pt {
     };
     ("Site could not be scanned: {0}") => {
         "Não foi possível varrer o site: {0}"
+    };
+    ("Source: {0}") => {
+        "Origem: {0}"
     };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "Limite de velocidade para o(s) {0} download(s) selecionado(s) (KiB/s, 0 = limite geral):"
@@ -9645,9 +9876,6 @@ macro_rules! __ui_template_pt {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Versão: {2}\r\n  Local: {3}\r\n\r\n"
     };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nEstado: {1}\r\nProgresso: {2}\r\nVelocidade: {3}\r\nRestante: {4}\r\n"
-    };
     ("{0} address(es) exported: {1}") => {
         "{0} endereço(s) exportado(s): {1}"
     };
@@ -9920,6 +10148,9 @@ macro_rules! __ui_template_fr {
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "Rapport d'erreur prêt. Dossier : {0} · ZIP : {1}"
     };
+    ("Getting the video information from the source.{status}") => {
+        "Récupération des informations vidéo depuis la source.{status}"
+    };
     ("GitHub returned HTTP {status}: {0}") => {
         "GitHub a renvoyé HTTP {status} : {0}"
     };
@@ -10064,6 +10295,9 @@ macro_rules! __ui_template_fr {
     ("SSDownload {new} is available. You have {current}.") => {
         "SSDownload {new} est disponible. Vous utilisez la version {current}."
     };
+    ("Save to: {0}") => {
+        "Enregistrer dans : {0}"
+    };
     ("Saved: {0}\r\n") => {
         "Enregistré : {0}\r\n"
     };
@@ -10084,6 +10318,9 @@ macro_rules! __ui_template_fr {
     };
     ("Site could not be scanned: {0}") => {
         "Le site n'a pas pu être analysé : {0}"
+    };
+    ("Source: {0}") => {
+        "Source : {0}"
     };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "Limite de vitesse pour le ou les {0} téléchargement(s) sélectionné(s) (KiB/s, 0 = limite globale) :"
@@ -10508,9 +10745,6 @@ macro_rules! __ui_template_fr {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  État : {1}\r\n  Version : {2}\r\n  Emplacement : {3}\r\n\r\n"
     };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nÉtat : {1}\r\nProgression : {2}\r\nVitesse : {3}\r\nRestant : {4}\r\n"
-    };
     ("{0} address(es) exported: {1}") => {
         "{0} adresse(s) exportée(s) : {1}"
     };
@@ -10783,6 +11017,9 @@ macro_rules! __ui_template_de {
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "Fehlerbericht bereit. Ordner: {0} · ZIP: {1}"
     };
+    ("Getting the video information from the source.{status}") => {
+        "Die Videoinformationen werden von der Quelle abgerufen.{status}"
+    };
     ("GitHub returned HTTP {status}: {0}") => {
         "GitHub hat HTTP {status} zurückgegeben: {0}"
     };
@@ -10927,6 +11164,9 @@ macro_rules! __ui_template_de {
     ("SSDownload {new} is available. You have {current}.") => {
         "SSDownload {new} ist verfügbar. Sie verwenden {current}."
     };
+    ("Save to: {0}") => {
+        "Speichern unter: {0}"
+    };
     ("Saved: {0}\r\n") => {
         "Gespeichert: {0}\r\n"
     };
@@ -10947,6 +11187,9 @@ macro_rules! __ui_template_de {
     };
     ("Site could not be scanned: {0}") => {
         "Website konnte nicht durchsucht werden: {0}"
+    };
+    ("Source: {0}") => {
+        "Quelle: {0}"
     };
     ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
         "Geschwindigkeitslimit für die {0} ausgewählten Downloads (KiB/s, 0 = globales Limit):"
@@ -11370,9 +11613,6 @@ macro_rules! __ui_template_de {
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Speicherort: {3}\r\n\r\n"
-    };
-    ("{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n") => {
-        "{0}\r\nStatus: {1}\r\nFortschritt: {2}\r\nGeschwindigkeit: {3}\r\nVerbleibend: {4}\r\n"
     };
     ("{0} address(es) exported: {1}") => {
         "{0} Adresse(n) exportiert: {1}"

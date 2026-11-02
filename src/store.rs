@@ -501,6 +501,8 @@ mod tests {
             open_when_done: false,
             live: false,
             sequence: 0,
+            ranges: None,
+            resumable: None,
         }
     }
 

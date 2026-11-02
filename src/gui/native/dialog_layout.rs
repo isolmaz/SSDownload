@@ -10,27 +10,32 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     let w = r.right;
     let actual_height = r.bottom;
     let logical_height = match &dlg.kind {
-        DialogKind::Wizard(_) => 372,
-        DialogKind::Add(f) => {
-            if f.advanced {
-                372
-            } else {
-                292
-            }
-        }
+        DialogKind::Wizard(f) => wizard_content_height(f.intro_lines, f.caption_lines, modern()),
+        DialogKind::Add(f) => add_content_height(f.advanced),
         DialogKind::Settings(f) => {
-            settings_logical_height(UiMode::parse(&f.value.ui_mode).is_simple())
+            settings_logical_height(modern(), UiMode::parse(&f.value.ui_mode).is_simple())
         }
         DialogKind::Tools(_) => 425,
+        DialogKind::Queues(_) if modern() => QUEUES_HEIGHT,
+        DialogKind::Rules(_) | DialogKind::Crawler(_) | DialogKind::Synchronization(_)
+            if modern() =>
+        {
+            FORM_HEIGHT
+        }
         DialogKind::Queues(_) => 425,
         DialogKind::Rules(_) => 425,
         DialogKind::Crawler(_) => 425,
         DialogKind::Synchronization(_) => 425,
+        DialogKind::Events(_) | DialogKind::JobLog(_) if modern() => FORM_HEIGHT,
         DialogKind::Events(_) => 425,
         DialogKind::JobLog(_) => 425,
+        DialogKind::Speed(f) if modern() => one_field_height(f.label_lines),
+        DialogKind::Rename(_) if modern() => one_field_height(1),
         DialogKind::Speed(_) => SPEED_LOGICAL_HEIGHT,
         DialogKind::Rename(_) => RENAME_LOGICAL_HEIGHT,
+        DialogKind::Logins(_) if modern() => FORM_HEIGHT,
         DialogKind::Logins(_) => 425,
+        DialogKind::Media(f) if modern() => media_content_height(dlg, f),
         DialogKind::Media(f) => {
             if f.advanced {
                 682
@@ -38,7 +43,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 330
             }
         }
-        DialogKind::Progress(_) => 330,
+        DialogKind::Progress(f) => job_view_height(dlg, f),
     };
     let h = actual_height.max(scale(logical_height, dlg.dpi));
     let m = scale(DIALOG_MARGIN, dlg.dpi);
@@ -57,70 +62,27 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     );
     match &dlg.kind {
         DialogKind::Wizard(f) => {
-            let labels = child_statics(dlg.hwnd, dlg.error);
-            if let Some(label) = labels.first() {
-                MoveWindow(*label, m, m, w - 2 * m, scale(20, dlg.dpi), 1);
-            }
-            // Cards are sized to their own content (icon, title, explanation)
-            // and centred in the body, instead of being stretched to whatever
-            // height the body happens to have.
-            let advanced = check(f.advanced_card);
-            let card_h = scale(112, dlg.dpi);
-            let card_gap = gap * 2;
-            let mode_w = (w - 2 * m - gap) / 2;
-            let mode_top = m + scale(28, dlg.dpi);
-            place(f.simple_card, true, m, mode_top, mode_w, card_h);
-            place(
-                f.advanced_card,
-                true,
-                m + mode_w + gap,
-                mode_top,
-                mode_w,
-                card_h,
-            );
-            // The purpose cards are the advanced answer's detail; a simple
-            // choice stays one decision, so they leave the dialog entirely.
-            let heading_y = mode_top + card_h + gap;
-            place_static(
-                &labels,
-                1,
-                m,
-                heading_y + scale(3, dlg.dpi),
-                w - 2 * m,
-                scale(18, dlg.dpi),
-                advanced,
-            );
-            let cards = [f.video, f.file, f.audio];
-            let card_w = (w - 2 * m - 2 * card_gap) / 3;
-            let top = heading_y + scale(22, dlg.dpi);
-            for (index, control) in cards.iter().enumerate() {
-                place(
-                    *control,
-                    advanced,
-                    m + index as i32 * (card_w + card_gap),
-                    top,
-                    card_w,
-                    card_h,
+            layout_wizard(dlg, h, f);
+            if !modern() {
+                MoveWindow(
+                    f.start,
+                    w - m - scale(210, dlg.dpi),
+                    by,
+                    scale(110, dlg.dpi),
+                    row,
+                    1,
+                );
+                move_id(
+                    dlg.hwnd,
+                    D_CANCEL,
+                    w - m - scale(92, dlg.dpi),
+                    by,
+                    scale(92, dlg.dpi),
+                    row,
                 );
             }
-            MoveWindow(
-                f.start,
-                w - m - scale(210, dlg.dpi),
-                by,
-                scale(110, dlg.dpi),
-                row,
-                1,
-            );
-            move_id(
-                dlg.hwnd,
-                D_CANCEL,
-                w - m - scale(92, dlg.dpi),
-                by,
-                scale(92, dlg.dpi),
-                row,
-            );
         }
-        DialogKind::Add(f) => {
+        DialogKind::Add(f) if !modern() => {
             let labels = child_statics(dlg.hwnd, dlg.error);
             let line = scale(22, dlg.dpi);
             let step = scale(26, dlg.dpi);
@@ -202,6 +164,100 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row,
             );
         }
+        DialogKind::Add(f) => {
+            // Windows 11 dialog rhythm: a label 8 epx above every 32 epx field,
+            // 12 epx between groups, 24 epx padding, the command bar below.
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let s = |value: i32| scale(value, dlg.dpi);
+            let x = s(ADD_PAD);
+            let cw = w - 2 * x;
+            let label = |index: usize, lx: i32, ly: i32, lw: i32, show: bool| {
+                if let Some(label) = labels.get(index) {
+                    ShowWindow(*label, if show { SW_SHOW } else { SW_HIDE });
+                    MoveWindow(*label, lx, ly, lw, s(ADD_LABEL), 1);
+                }
+            };
+            let frame = |left: i32, top: i32, width: i32, height: i32| RECT {
+                left,
+                top,
+                right: left + width,
+                bottom: top + height,
+            };
+            let ring = s(FOCUS_MARGIN);
+            let button = |id: i32, bx: i32, by: i32, bw: i32| {
+                move_id(
+                    dlg.hwnd,
+                    id,
+                    bx - ring,
+                    by - ring,
+                    bw + 2 * ring,
+                    s(ADD_FIELD) + 2 * ring,
+                );
+            };
+            let field_top = |label_top: i32| label_top + s(ADD_LABEL + ADD_LABEL_GAP);
+
+            let mut y = s(ADD_TOP);
+            label(0, x, y, cw, true);
+            place_in_frame(f.urls, frame(x, field_top(y), cw, s(ADD_URLS)), dlg.dpi);
+            y = field_top(y) + s(ADD_URLS + ADD_GROUP_GAP);
+
+            let browse_w = add_button_width(dlg, D_BROWSE, 96);
+            label(1, x, y, cw, true);
+            place_in_frame(
+                f.dir,
+                frame(x, field_top(y), cw - browse_w - gap, s(ADD_FIELD)),
+                dlg.dpi,
+            );
+            button(D_BROWSE, x + cw - browse_w, field_top(y), browse_w);
+            y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
+
+            let kind_w = s(200).max(combo_face_width(f.kind, dlg.dpi));
+            let name_w = cw - kind_w - s(ADD_GROUP_GAP);
+            label(2, x, y, name_w, true);
+            label(3, x + name_w + s(ADD_GROUP_GAP), y, kind_w, true);
+            place_in_frame(
+                f.filename,
+                frame(x, field_top(y), name_w, s(ADD_FIELD)),
+                dlg.dpi,
+            );
+            // The box reaches FOCUS_MARGIN past its face for the focus ring.
+            place_combo(
+                f.kind,
+                inflate(
+                    frame(
+                        x + name_w + s(ADD_GROUP_GAP),
+                        field_top(y),
+                        kind_w,
+                        s(ADD_FIELD),
+                    ),
+                    ring,
+                    ring,
+                ),
+                dlg.dpi,
+            );
+            y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
+
+            for (label_index, control) in [(4, f.connections), (5, f.checksum), (6, f.schedule)] {
+                label(label_index, x, y, cw, f.advanced);
+                ShowWindow(control, if f.advanced { SW_SHOW } else { SW_HIDE });
+                place_in_frame(control, frame(x, field_top(y), cw, s(ADD_FIELD)), dlg.dpi);
+                if f.advanced {
+                    y = field_top(y) + s(ADD_FIELD + ADD_GROUP_GAP);
+                }
+            }
+            // The error line follows the last field shown.
+            move_id(
+                dlg.hwnd,
+                D_ERROR,
+                x,
+                y - s(ADD_GROUP_GAP) + gap,
+                cw,
+                s(ADD_LABEL),
+            );
+
+            bar_start(dlg, h, &[(D_ADVANCED, advanced_width(dlg))]);
+            command_bar(dlg, h, &[(D_ADD_OK, 120), (D_CANCEL, 96)]);
+        }
         DialogKind::Settings(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);
             let simple = UiMode::parse(&f.value.ui_mode).is_simple();
@@ -213,24 +269,66 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // The strip is wide enough for all four items; the page below it is
             // the dialog surface itself and paint_tabs owns the strip, so no
             // themed band or divider shows up next to or under the items.
-            move_id(
-                dlg.hwnd,
-                S_TABS,
-                m,
-                m,
-                scale(430, dlg.dpi),
-                scale(30, dlg.dpi),
-            );
-            let cx = m + scale(2, dlg.dpi);
+            // One rhythm for every tab and one label column. Classic: 22 px
+            // controls on a 26 px pitch in 12 px text, so no row ever touches
+            // the next one. Modern: the Windows 11 rhythm of 32 epx controls on
+            // a 40 epx pitch in 14 px Body text, above a command bar.
+            let look = modern();
+            let s = |value: i32| scale(value, dlg.dpi);
+            // A width sized for a caption grows with the text: 14/12 in Modern.
+            let hx = |value: i32| s(if look { value * 7 / 6 } else { value });
+            let put = |control: HWND, show: bool, x: i32, y: i32, width: i32, height: i32| {
+                if look {
+                    let face = RECT {
+                        left: x,
+                        top: y,
+                        right: x + width,
+                        bottom: y + height,
+                    };
+                    place_modern(control, show, face, dlg.dpi);
+                } else {
+                    place(control, show, x, y, width, height);
+                }
+            };
+            // Modern widens a slot to its text where a translation needs more:
+            // `pad` is what the control keeps beside its text, in pixels.
+            let fit = |control: HWND, base: i32, pad: i32| {
+                if look {
+                    base.max(text_width(control) + pad)
+                } else {
+                    base
+                }
+            };
+            let cx = if look { s(ADD_PAD) } else { m + s(2) };
+            if look {
+                // The first label lines up with the page's text.
+                move_id(
+                    dlg.hwnd,
+                    S_TABS,
+                    cx - s(TAB_PAD),
+                    s(16),
+                    hx(430),
+                    s(SELECTOR_TABS_HEIGHT),
+                );
+            } else {
+                move_id(dlg.hwnd, S_TABS, m, m, s(430), s(30));
+            }
             let cw = w - 2 * cx;
-            let cy = m + scale(38, dlg.dpi);
-            // One rhythm for both tabs: 22 px controls on a 26 px pitch, so no
-            // row ever touches the next one, and one label column.
-            let line = scale(22, dlg.dpi);
-            let step = scale(26, dlg.dpi);
-            let label_w = scale(200, dlg.dpi);
+            let cy = if look {
+                s(16 + SELECTOR_TABS_HEIGHT + 12)
+            } else {
+                m + s(38)
+            };
+            let line = s(if look { ADD_FIELD } else { 22 });
+            let step = s(if look { 40 } else { 26 });
+            // A row that holds only check boxes: WinUI's 32 epx box plus 4.
+            let check_step = s(if look { 36 } else { 26 });
+            let label_dy = s(if look { 6 } else { 3 });
+            let label_h = s(if look { ADD_LABEL } else { 18 });
+            let browser_h = s(if look { 44 } else { 38 });
+            let label_w = hx(200);
             let field_x = cx + label_w;
-            let small = scale(72, dlg.dpi);
+            let small = hx(72);
             let half = (cw - gap) / 2;
 
             // Genel: every control stays a direct child of the dialog, so
@@ -241,62 +339,39 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             let mut row_y = cy;
             // Arayüz düzeyi: which rows this page has at all. It is the first
             // row of the page it decides, and it stays reachable in both modes.
-            place_static(
-                &labels,
-                11,
-                cx,
-                row_y + scale(3, dlg.dpi),
-                label_w,
-                scale(18, dlg.dpi),
-                genel,
-            );
-            place(f.ui_mode, genel, field_x, row_y, scale(110, dlg.dpi), line);
+            place_static(&labels, 11, cx, row_y + label_dy, label_w, label_h, genel);
+            put(f.ui_mode, genel, field_x, row_y, hx(110), line);
             // Arayüz dili shares the mode row: the label column belongs to it,
             // so this label sits in the field area beside the combo.
             place_static(
                 &labels,
                 12,
-                field_x + scale(118, dlg.dpi),
-                row_y + scale(3, dlg.dpi),
-                scale(108, dlg.dpi),
-                scale(18, dlg.dpi),
+                field_x + hx(118),
+                row_y + label_dy,
+                hx(108),
+                label_h,
                 genel,
             );
-            place(
+            put(
                 f.ui_language,
                 genel,
-                field_x + scale(230, dlg.dpi),
+                field_x + hx(230),
                 row_y,
-                cw - label_w - scale(230, dlg.dpi),
+                cw - label_w - hx(230),
                 line,
             );
             row_y += step;
 
-            place_static(
-                &labels,
-                0,
-                cx,
-                row_y + scale(3, dlg.dpi),
-                label_w,
-                scale(18, dlg.dpi),
-                genel,
-            );
-            place(
-                f.dir,
-                genel,
-                field_x,
-                row_y,
-                cw - label_w - scale(92, dlg.dpi),
-                line,
-            );
-            place(
-                GetDlgItem(dlg.hwnd, S_BROWSE),
-                genel,
-                cx + cw - scale(88, dlg.dpi),
-                row_y,
-                scale(88, dlg.dpi),
-                line,
-            );
+            place_static(&labels, 0, cx, row_y + label_dy, label_w, label_h, genel);
+            let browse = GetDlgItem(dlg.hwnd, S_BROWSE);
+            let browse_w = fit(browse, hx(88), s(32));
+            let dir_w = if look {
+                cw - label_w - browse_w - hx(4)
+            } else {
+                cw - label_w - hx(92)
+            };
+            put(f.dir, genel, field_x, row_y, dir_w, line);
+            put(browse, genel, cx + cw - browse_w, row_y, browse_w, line);
             row_y += step;
 
             // Eşzamanlı indirme and Bağlantı sayısı: the two transfer rows the
@@ -312,12 +387,12 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     &labels,
                     *label,
                     cx,
-                    y + scale(3, dlg.dpi),
+                    y + label_dy,
                     label_w,
-                    scale(18, dlg.dpi),
+                    label_h,
                     simple_transfer,
                 );
-                place(*control, simple_transfer, field_x, y, small, line);
+                put(*control, simple_transfer, field_x, y, small, line);
             }
             if simple {
                 row_y += step * 2;
@@ -326,39 +401,36 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             // Kullanım amacı: part of the advanced answer only, so the simple
             // page has neither the row nor its label.
             let purpose = genel && !simple;
-            place_static(
-                &labels,
-                1,
-                cx,
-                row_y + scale(3, dlg.dpi),
-                label_w,
-                scale(18, dlg.dpi),
-                purpose,
-            );
+            place_static(&labels, 1, cx, row_y + label_dy, label_w, label_h, purpose);
             // Each box is as wide as its caption, so a longer translation moves the
             // next one along instead of running into it.
             let mut mode_x = field_x;
             for control in [f.mode_video, f.mode_file, f.mode_audio] {
-                let mode_w = scale(58, dlg.dpi).max(text_width(control) + scale(24, dlg.dpi));
-                place(control, purpose, mode_x, row_y, mode_w, line);
-                mode_x += mode_w;
+                let mode_w = hx(58).max(text_width(control) + s(if look { 32 } else { 24 }));
+                put(control, purpose, mode_x, row_y, mode_w, line);
+                mode_x += mode_w + s(if look { 16 } else { 0 });
             }
             if !simple {
                 row_y += step;
             }
 
             // Pano and başlangıç share a row in advanced mode. In simple mode
-            // the clipboard watch is gone, so the two remaining checkboxes take
-            // the row - and the site-entry toggle, whose label is the longest,
-            // gets the wider half of it.
+            // the clipboard watch is gone; in Classic the two remaining
+            // checkboxes take the row - and the site-entry toggle, whose label
+            // is the longest, gets the wider half of it.
             let clipboard = genel && !simple;
-            place(f.clipboard, clipboard, cx, row_y, half, line);
+            put(f.clipboard, clipboard, cx, row_y, half, line);
             if clipboard {
-                place(f.startup, genel, cx + half + gap, row_y, half, line);
+                put(f.startup, genel, cx + half + gap, row_y, half, line);
+            } else if look {
+                // Modern's longer text gives each toggle a row of its own.
+                put(f.site_entries, genel, cx, row_y, cw, line);
+                row_y += check_step;
+                put(f.startup, genel, cx, row_y, cw, line);
             } else {
-                let site_w = half + scale(20, dlg.dpi);
-                place(f.site_entries, genel, cx, row_y, site_w, line);
-                place(
+                let site_w = half + hx(20);
+                put(f.site_entries, genel, cx, row_y, site_w, line);
+                put(
                     f.startup,
                     genel,
                     cx + site_w + gap,
@@ -367,78 +439,104 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     line,
                 );
             }
-            row_y += step;
-            place(f.tray, genel, cx, row_y, cw, line);
-            row_y += step;
-            place(f.notify, genel, cx, row_y, cw, line);
-            row_y += step;
-            place(f.dark, genel, cx, row_y, cw, line);
+            row_y += check_step;
+            put(f.tray, genel, cx, row_y, cw, line);
+            row_y += check_step;
+            put(f.notify, genel, cx, row_y, cw, line);
+            row_y += check_step;
+            put(f.dark, genel, cx, row_y, cw, line);
+            row_y += check_step;
+            // Tema: the box in the field column like the level box, the note
+            // beside it.
+            put(f.theme_label, genel, cx, row_y + label_dy, label_w, label_h);
+            put(f.theme, genel, field_x, row_y, hx(110), line);
+            put(
+                f.theme_note,
+                genel,
+                field_x + hx(118),
+                row_y + label_dy,
+                cw - label_w - hx(118),
+                label_h,
+            );
             row_y += step;
             if !simple {
-                place(f.site_entries, genel, cx, row_y, cw, line);
-                row_y += step;
+                put(f.site_entries, genel, cx, row_y, cw, line);
+                row_y += check_step;
             }
 
             // The schedule toggle and its two clock fields share one row, and
             // all three are advanced-only.
             let schedule = genel && !simple;
-            // The labels carry the "(SS:DD)" hint, so their slots are sized for
-            // the longest language's text.
-            let clock_w = scale(56, dlg.dpi);
-            place(f.schedule, schedule, cx, row_y, scale(194, dlg.dpi), line);
+            // The labels carry the "(SS:DD)" hint; Classic sizes their slots for
+            // the longest language's text, Modern measures them.
+            let clock_w = hx(56);
+            let label_at = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            // Modern lines the row up from the measured texts; Classic keeps
+            // its fixed slots.
+            let schedule_w = fit(f.schedule, hx(194), check_text_inset(dlg.dpi));
+            let start_label_x = if look {
+                cx + schedule_w + s(12)
+            } else {
+                cx + hx(200)
+            };
+            let start_label_w = fit(label_at(2), hx(100), 0);
+            let start_x = if look {
+                start_label_x + start_label_w + s(8)
+            } else {
+                cx + hx(304)
+            };
+            let end_label_x = if look {
+                start_x + clock_w + s(12)
+            } else {
+                cx + hx(366)
+            };
+            let end_label_w = fit(label_at(3), hx(80), 0);
+            let end_x = if look {
+                end_label_x + end_label_w + s(8)
+            } else {
+                cx + hx(450)
+            };
+            put(f.schedule, schedule, cx, row_y, schedule_w, line);
             place_static(
                 &labels,
                 2,
-                cx + scale(200, dlg.dpi),
-                row_y + scale(3, dlg.dpi),
-                scale(100, dlg.dpi),
-                scale(18, dlg.dpi),
+                start_label_x,
+                row_y + label_dy,
+                start_label_w,
+                label_h,
                 schedule,
             );
-            place(
-                f.start,
-                schedule,
-                cx + scale(304, dlg.dpi),
-                row_y,
-                clock_w,
-                line,
-            );
+            put(f.start, schedule, start_x, row_y, clock_w, line);
             place_static(
                 &labels,
                 3,
-                cx + scale(366, dlg.dpi),
-                row_y + scale(3, dlg.dpi),
-                scale(80, dlg.dpi),
-                scale(18, dlg.dpi),
+                end_label_x,
+                row_y + label_dy,
+                end_label_w,
+                label_h,
                 schedule,
             );
-            place(
-                f.end,
-                schedule,
-                cx + scale(450, dlg.dpi),
-                row_y,
-                clock_w,
-                line,
-            );
+            put(f.end, schedule, end_x, row_y, clock_w, line);
             if !simple {
                 row_y += step;
             }
-            place(f.update_check, genel, cx, row_y, cw, line);
-            row_y += step;
-            place(
-                GetDlgItem(dlg.hwnd, ID_SETTINGS_CHECK_UPDATES),
+            put(f.update_check, genel, cx, row_y, cw, line);
+            row_y += check_step;
+            let check_updates = GetDlgItem(dlg.hwnd, ID_SETTINGS_CHECK_UPDATES);
+            let install = GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION);
+            let check_updates_w = fit(check_updates, hx(232), s(32));
+            put(check_updates, genel, cx, row_y, check_updates_w, line);
+            let install_x = if look {
+                cx + check_updates_w + hx(8)
+            } else {
+                cx + hx(240)
+            };
+            put(
+                install,
                 genel,
-                cx,
+                install_x,
                 row_y,
-                scale(232, dlg.dpi),
-                line,
-            );
-            place(
-                GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION),
-                genel,
-                cx + scale(240, dlg.dpi),
-                row_y,
-                scale(232, dlg.dpi),
+                fit(install, hx(232), s(32)),
                 line,
             );
 
@@ -457,13 +555,13 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                         &labels,
                         *label,
                         cx,
-                        y + scale(3, dlg.dpi),
+                        y + label_dy,
                         label_w,
-                        scale(18, dlg.dpi),
+                        label_h,
                         advanced,
                     );
                     // A two or three digit value needs no 120 px field.
-                    place(*control, advanced, field_x, y, small, line);
+                    put(*control, advanced, field_x, y, small, line);
                 }
             } else {
                 // The two fields belong to the simple rows that already hold
@@ -474,9 +572,9 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                         &labels,
                         *label,
                         cx,
-                        cy + step * i as i32 + scale(3, dlg.dpi),
+                        cy + step * i as i32 + label_dy,
                         label_w,
-                        scale(18, dlg.dpi),
+                        label_h,
                         false,
                     );
                 }
@@ -495,48 +593,40 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     &labels,
                     *label,
                     cx,
-                    y + scale(3, dlg.dpi),
+                    y + label_dy,
                     label_w,
-                    scale(18, dlg.dpi),
+                    label_h,
                     advanced,
                 );
-                place(*control, advanced, field_x, y, small, line);
+                put(*control, advanced, field_x, y, small, line);
             }
             let browser_y = cy + step * 6;
-            place(
-                f.browser_transfer,
-                advanced,
-                cx,
-                browser_y,
-                cw,
-                scale(38, dlg.dpi),
-            );
-            let log_y = browser_y + scale(46, dlg.dpi);
+            put(f.browser_transfer, advanced, cx, browser_y, cw, browser_h);
+            let log_y = browser_y + browser_h + s(if look { 12 } else { 8 });
             place_static(
                 &labels,
                 10,
                 cx,
-                log_y + scale(3, dlg.dpi),
+                log_y + label_dy,
                 label_w,
-                scale(18, dlg.dpi),
+                label_h,
                 advanced,
             );
-            place(
-                f.log_level,
-                advanced,
-                field_x,
-                log_y,
-                scale(140, dlg.dpi),
-                line,
-            );
+            let log_level_w = if look {
+                hx(140).max(combo_face_width(f.log_level, dlg.dpi))
+            } else {
+                hx(140)
+            };
+            put(f.log_level, advanced, field_x, log_y, log_level_w, line);
             // The host-log toggle shares the row with the level it belongs to
             // instead of pushing another row into the error line.
-            place(
+            let hosts_offset = if look { log_level_w + hx(12) } else { hx(152) };
+            put(
                 f.log_hosts,
                 advanced,
-                field_x + scale(152, dlg.dpi),
+                field_x + hosts_offset,
                 log_y,
-                cw - label_w - scale(152, dlg.dpi),
+                cw - label_w - hosts_offset,
                 line,
             );
 
@@ -551,76 +641,47 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             .enumerate()
             {
                 let y = cy + step * i as i32;
-                place_static(
-                    &labels,
-                    *label,
-                    cx,
-                    y + scale(3, dlg.dpi),
-                    label_w,
-                    scale(18, dlg.dpi),
-                    network,
-                );
-                let width = if i == 0 {
-                    scale(160, dlg.dpi)
-                } else {
-                    cw - label_w
+                place_static(&labels, *label, cx, y + label_dy, label_w, label_h, network);
+                let width = match (i, look) {
+                    (0, true) => hx(160).max(combo_face_width(f.proxy_mode, dlg.dpi)),
+                    (0, false) => hx(160),
+                    _ => cw - label_w,
                 };
-                place(*control, network, field_x, y, width, line);
+                put(*control, network, field_x, y, width, line);
             }
             let limit_y = cy + step * 4;
-            let clock_w = scale(64, dlg.dpi);
-            place(
-                f.speed_schedule,
-                network,
-                cx,
-                limit_y,
-                scale(238, dlg.dpi),
-                line,
-            );
+            let clock_w = hx(64);
+            put(f.speed_schedule, network, cx, limit_y, hx(238), line);
             place_static(
                 &labels,
                 19,
-                cx + scale(246, dlg.dpi),
-                limit_y + scale(3, dlg.dpi),
-                scale(62, dlg.dpi),
-                scale(18, dlg.dpi),
+                cx + hx(246),
+                limit_y + label_dy,
+                hx(62),
+                label_h,
                 network,
             );
-            place(
-                f.speed_start,
-                network,
-                cx + scale(310, dlg.dpi),
-                limit_y,
-                clock_w,
-                line,
-            );
+            put(f.speed_start, network, cx + hx(310), limit_y, clock_w, line);
             place_static(
                 &labels,
                 20,
-                cx + scale(382, dlg.dpi),
-                limit_y + scale(3, dlg.dpi),
-                scale(38, dlg.dpi),
-                scale(18, dlg.dpi),
+                cx + hx(382),
+                limit_y + label_dy,
+                hx(38),
+                label_h,
                 network,
             );
-            place(
-                f.speed_end,
-                network,
-                cx + scale(424, dlg.dpi),
-                limit_y,
-                clock_w,
-                line,
-            );
+            put(f.speed_end, network, cx + hx(424), limit_y, clock_w, line);
             place_static(
                 &labels,
                 21,
                 cx,
-                limit_y + step + scale(3, dlg.dpi),
+                limit_y + step + label_dy,
                 label_w,
-                scale(18, dlg.dpi),
+                label_h,
                 network,
             );
-            place(f.speed_kib, network, field_x, limit_y + step, small, line);
+            put(f.speed_kib, network, field_x, limit_y + step, small, line);
             // Davranış: switches, then the two labelled rows.
             let behaviour = dlg.tab.get() == 3 && !simple;
             for (i, control) in [
@@ -635,71 +696,122 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             .iter()
             .enumerate()
             {
-                place(*control, behaviour, cx, cy + step * i as i32, cw, line);
+                put(
+                    *control,
+                    behaviour,
+                    cx,
+                    cy + check_step * i as i32,
+                    cw,
+                    line,
+                );
             }
-            let choice_y = cy + step * 7;
+            let choice_y = cy + check_step * 7;
             place_static(
                 &labels,
                 22,
                 cx,
-                choice_y + scale(3, dlg.dpi),
-                scale(300, dlg.dpi),
-                scale(18, dlg.dpi),
+                choice_y + label_dy,
+                hx(300),
+                label_h,
                 behaviour,
             );
-            place(
+            put(
                 f.double_click,
                 behaviour,
-                cx + scale(304, dlg.dpi),
+                cx + hx(304),
                 choice_y,
-                scale(170, dlg.dpi),
+                hx(170),
                 line,
             );
             place_static(
                 &labels,
                 23,
                 cx,
-                choice_y + step + scale(3, dlg.dpi),
-                scale(300, dlg.dpi),
-                scale(18, dlg.dpi),
+                choice_y + step + label_dy,
+                hx(300),
+                label_h,
                 behaviour,
             );
-            place(
+            put(
                 f.history,
                 behaviour,
-                cx + scale(304, dlg.dpi),
+                cx + hx(304),
                 choice_y + step,
                 small,
                 line,
             );
 
-            // The secondary action sits at the left end of the same button
-            // row, so it never has to fight the purpose check boxes for the
-            // purpose row.
-            place(
-                GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
-                genel,
-                cx,
-                by,
-                scale(200, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                S_OK,
-                w - m - scale(208, dlg.dpi),
-                by,
-                scale(100, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                D_CANCEL,
-                w - m - scale(100, dlg.dpi),
-                by,
-                scale(100, dlg.dpi),
-                row,
-            );
+            if look {
+                // The command bar: the secondary action at its left end, Save
+                // and Cancel at its right, the error line just above it. Both
+                // stay at the bottom of the window while the page scrolls.
+                let bar_y = actual_height - s(ADD_FOOTER) + s(ADD_PAD);
+                let save_w = add_button_width(dlg, S_OK, 120);
+                let cancel_w = add_button_width(dlg, D_CANCEL, 96);
+                let wizard_w = add_button_width(dlg, ID_SETTINGS_REOPEN_WIZARD, 120);
+                put(
+                    GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
+                    genel,
+                    cx,
+                    bar_y,
+                    wizard_w,
+                    line,
+                );
+                put(
+                    GetDlgItem(dlg.hwnd, D_CANCEL),
+                    true,
+                    cx + cw - cancel_w,
+                    bar_y,
+                    cancel_w,
+                    line,
+                );
+                put(
+                    GetDlgItem(dlg.hwnd, S_OK),
+                    true,
+                    cx + cw - cancel_w - gap - save_w,
+                    bar_y,
+                    save_w,
+                    line,
+                );
+                let error_top = actual_height - s(ADD_FOOTER) - gap - label_h;
+                move_id(dlg.hwnd, D_ERROR, cx, error_top, cw, label_h);
+                move_id(
+                    dlg.hwnd,
+                    S_BAR,
+                    0,
+                    error_top - gap,
+                    w,
+                    actual_height - error_top + gap,
+                );
+            } else {
+                // The secondary action sits at the left end of the same button
+                // row, so it never has to fight the purpose check boxes for the
+                // purpose row.
+                place(
+                    GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
+                    genel,
+                    cx,
+                    by,
+                    scale(200, dlg.dpi),
+                    row,
+                );
+                move_id(
+                    dlg.hwnd,
+                    S_OK,
+                    w - m - scale(208, dlg.dpi),
+                    by,
+                    scale(100, dlg.dpi),
+                    row,
+                );
+                move_id(
+                    dlg.hwnd,
+                    D_CANCEL,
+                    w - m - scale(100, dlg.dpi),
+                    by,
+                    scale(100, dlg.dpi),
+                    row,
+                );
+            }
         }
         DialogKind::Tools(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);
@@ -746,6 +858,194 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(85, dlg.dpi),
                 row,
             );
+        }
+        DialogKind::Queues(f) if modern() => {
+            let labels: Vec<_> = child_statics(dlg.hwnd, dlg.error)
+                .into_iter()
+                .filter(|value| *value != f.countdown)
+                .collect();
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            let s = |value: i32| scale(value, dlg.dpi);
+            let x = s(ADD_PAD);
+            let room = w - 2 * x;
+            // Program path and arguments stack beside the time windows, whose
+            // field runs down both of their rows.
+            let half = (room - s(ADD_GROUP_GAP)) / 2;
+            let windows_x = x + half + s(ADD_GROUP_GAP);
+            let windows_w = room - half - s(ADD_GROUP_GAP);
+            // The two columns share one label band, so their fields start
+            // level; each label sits at the band's bottom.
+            let windows_label = label_height(dlg, label(4), windows_w);
+            let program_label = label_height(dlg, label(6), half);
+            let band = windows_label.max(program_label);
+            let program = [field(label(6), f.program, Width::Flex, dlg.dpi)];
+            let arguments = [field(label(7), f.arguments, Width::Flex, dlg.dpi)];
+            let stack = band - program_label
+                + form_row(dlg, &program, x, 0, half, 0, false)
+                + form_row(dlg, &arguments, x, 0, half, 0, false);
+            let status = s(ADD_LABEL + ADD_GROUP_GAP);
+            let y = form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[
+                        field(label(1), f.name, Width::Flex, dlg.dpi),
+                        button_cell(dlg, Q_CREATE),
+                        button_cell(dlg, Q_RENAME),
+                        button_cell(dlg, Q_DELETE),
+                    ],
+                    &[
+                        field(label(2), f.concurrency, Width::Label(s(96)), dlg.dpi),
+                        field(label(5), f.quota, Width::Label(s(160)), dlg.dpi),
+                        field(label(8), f.delay, Width::Label(s(96)), dlg.dpi),
+                        check_cell(dlg, f.enabled),
+                    ],
+                    &[
+                        field(
+                            label(3),
+                            f.completion,
+                            Width::Label(combo_face_width(f.completion, dlg.dpi)),
+                            dlg.dpi,
+                        ),
+                        button_cell(dlg, Q_UPDATE),
+                        button_cell(dlg, Q_MOVE_JOB),
+                        button_cell(dlg, Q_CANCEL_COMPLETION),
+                    ],
+                ],
+                stack + status,
+            );
+            let program_y = y + band - program_label;
+            let top = program_y + form_row(dlg, &program, x, program_y, half, 0, true);
+            form_row(dlg, &arguments, x, top, half, 0, true);
+            MoveWindow(
+                label(4),
+                windows_x,
+                y + band - windows_label,
+                windows_w,
+                windows_label,
+                1,
+            );
+            let field_top = y + band + s(ADD_LABEL_GAP);
+            place_modern(
+                f.windows,
+                true,
+                RECT {
+                    left: windows_x,
+                    top: field_top,
+                    right: windows_x + windows_w,
+                    bottom: (y + stack - s(ADD_GROUP_GAP)).max(field_top + s(ADD_FIELD)),
+                },
+                dlg.dpi,
+            );
+            MoveWindow(f.countdown, x, y + stack, room, s(ADD_LABEL), 1);
+            command_bar(dlg, h, &[(D_CANCEL, 96)]);
+        }
+        DialogKind::Rules(f) if modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[field(label(1), f.host, Width::Flex, dlg.dpi)],
+                    &[field(label(2), f.dir, Width::Flex, dlg.dpi)],
+                    &[
+                        field(
+                            label(3),
+                            f.priority,
+                            Width::Label(scale(96, dlg.dpi)),
+                            dlg.dpi,
+                        ),
+                        check_cell(dlg, f.subdomains),
+                        check_cell(dlg, f.file),
+                        check_cell(dlg, f.video),
+                        check_cell(dlg, f.audio),
+                    ],
+                    &[
+                        button_cell(dlg, R_NEW),
+                        button_cell(dlg, R_SAVE),
+                        button_cell(dlg, R_REMOVE),
+                    ],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(D_CANCEL, 96)]);
+        }
+        DialogKind::Crawler(f) if modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            let number = Width::Label(scale(96, dlg.dpi));
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.url, Width::Flex, dlg.dpi)],
+                    &[
+                        field(label(1), f.depth, number, dlg.dpi),
+                        field(label(2), f.pages, number, dlg.dpi),
+                        field(label(3), f.candidates, number, dlg.dpi),
+                        button_cell(dlg, C_SCAN),
+                    ],
+                    &[field(label(4), f.list, Width::Flex, dlg.dpi).fill()],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(C_ADD, 96), (D_CANCEL, 96)]);
+        }
+        DialogKind::Synchronization(f) if modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[field(label(1), f.url, Width::Flex, dlg.dpi)],
+                    &[field(label(2), f.dir, Width::Flex, dlg.dpi)],
+                    &[
+                        field(
+                            label(3),
+                            f.interval,
+                            Width::Label(scale(96, dlg.dpi)),
+                            dlg.dpi,
+                        ),
+                        check_cell(dlg, f.enabled),
+                        check_cell(dlg, f.overwrite),
+                    ],
+                    &[
+                        button_cell(dlg, Y_NEW),
+                        button_cell(dlg, Y_SAVE),
+                        button_cell(dlg, Y_REMOVE),
+                        button_cell(dlg, Y_RUN),
+                    ],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(D_CANCEL, 96)]);
+        }
+        DialogKind::Logins(f) if modern() => {
+            let labels = child_statics(dlg.hwnd, dlg.error);
+            let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label(0), f.list, Width::Flex, dlg.dpi).fill()],
+                    &[
+                        field(label(1), f.host, Width::Flex, dlg.dpi),
+                        field(label(2), f.user, Width::Flex, dlg.dpi),
+                    ],
+                    &[
+                        field(label(3), f.pass, Width::Flex, dlg.dpi),
+                        check_cell(dlg, f.allow_http),
+                    ],
+                    &[button_cell(dlg, L_ADD), button_cell(dlg, L_REMOVE)],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(L_SAVE, 96), (D_CANCEL, 96)]);
         }
         DialogKind::Queues(f) => {
             let labels: Vec<_> = child_statics(dlg.hwnd, dlg.error)
@@ -1127,6 +1427,12 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row,
             );
         }
+        DialogKind::Events(f) if modern() => {
+            layout_list_dialog(dlg, h, f.list, &[E_OPEN, E_PACKAGE], E_CLOSE);
+        }
+        DialogKind::JobLog(f) if modern() => {
+            layout_list_dialog(dlg, h, f.list, &[J_COPY, J_OPEN], J_CLOSE);
+        }
         DialogKind::Events(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);
             if let Some(&c) = labels.first() {
@@ -1158,6 +1464,12 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(90, dlg.dpi),
                 row,
             );
+        }
+        DialogKind::Speed(f) if modern() => {
+            layout_one_field(dlg, h, f.edit, SP_OK, f.label_lines, Some(140));
+        }
+        DialogKind::Rename(f) if modern() => {
+            layout_one_field(dlg, h, f.edit, RN_OK, 1, None);
         }
         DialogKind::Speed(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);
@@ -1312,6 +1624,96 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(90, dlg.dpi),
                 row,
             );
+        }
+        DialogKind::Media(f) if !f.held.is_empty() => layout_media_preparing(dlg, f, h),
+        DialogKind::Media(f) if modern() => {
+            let s = |value: i32| scale(value, dlg.dpi);
+            let x = s(ADD_PAD);
+            let room = w - 2 * x;
+            let audio_only = f
+                .kind_values
+                .get(combo_index(f.kind).max(0) as usize)
+                .map(|(kind, _)| *kind)
+                == Some(DownloadKind::Audio);
+            // A loaded thumbnail takes the right end of the summary row.
+            let thumb_w = if IsWindowVisible(f.thumbnail) != 0 {
+                s(100) + s(ADD_GROUP_GAP)
+            } else {
+                0
+            };
+            let summary_h = s(MEDIA_SUMMARY);
+            MoveWindow(f.summary, x, s(ADD_TOP), room - thumb_w, summary_h, 1);
+            MoveWindow(
+                f.thumbnail,
+                x + room - s(100),
+                s(ADD_TOP),
+                s(100),
+                summary_h,
+                1,
+            );
+            let shown = |open: bool| if open { SW_SHOW } else { SW_HIDE };
+            for &label in media_labels(dlg, f).iter().skip(3) {
+                ShowWindow(label, shown(f.advanced));
+            }
+            for control in [
+                f.audio,
+                f.audio_tracks,
+                f.subtitles,
+                f.external_url,
+                f.external_language,
+                f.external_label,
+                f.external_kind,
+                f.external_default,
+                f.external_list,
+                f.full_verification,
+                f.playlist,
+                f.playlist_items,
+                f.renew_job,
+                f.renew_restart,
+                GetDlgItem(dlg.hwnd, ID_MEDIA_EXTERNAL_ADD),
+                GetDlgItem(dlg.hwnd, ID_MEDIA_EXTERNAL_REMOVE),
+                GetDlgItem(dlg.hwnd, M_RENEW),
+            ] {
+                ShowWindow(control, shown(f.advanced));
+            }
+            ShowWindow(f.from_start, shown(f.from_start_offered));
+            let rows = media_rows(dlg, f);
+            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
+            form_rows_from(dlg, h, media_rows_top(dlg.dpi), &rows, 0);
+            EnableWindow(f.format, (!audio_only) as BOOL);
+            EnableWindow(f.audio, audio_only as BOOL);
+            EnableWindow(f.audio_tracks, 1);
+            for control in [
+                f.subtitles,
+                f.external_url,
+                f.external_language,
+                f.external_label,
+                f.external_kind,
+                f.external_default,
+                f.external_list,
+                GetDlgItem(dlg.hwnd, ID_MEDIA_EXTERNAL_ADD),
+                GetDlgItem(dlg.hwnd, ID_MEDIA_EXTERNAL_REMOVE),
+            ] {
+                EnableWindow(control, (!audio_only) as BOOL);
+            }
+            // "Download as MP3" queues and closes like Download, so it follows
+            // it in the commit group; a failed analysis has nothing to
+            // download and shows its report action after Advanced options.
+            ShowWindow(GetDlgItem(dlg.hwnd, M_REPORT), shown(f.report_shown));
+            ShowWindow(GetDlgItem(dlg.hwnd, M_MP3), shown(!f.report_shown));
+            bar_start(
+                dlg,
+                h,
+                &[
+                    (D_ADVANCED, advanced_width(dlg)),
+                    (M_REPORT, add_button_width(dlg, M_REPORT, 96)),
+                ],
+            );
+            if f.report_shown {
+                command_bar(dlg, h, &[(M_QUEUE, 120), (D_CANCEL, 96)]);
+            } else {
+                command_bar(dlg, h, &[(M_QUEUE, 120), (M_MP3, 96), (D_CANCEL, 96)]);
+            }
         }
         DialogKind::Media(f) => {
             // The thumbnail and the total size are STATICs too, but they are placed on
@@ -1630,119 +2032,20 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
         }
         DialogKind::Progress(f) => {
-            // The report action shares the error line it belongs to instead of
-            // taking a place in the transfer row: the line gives up exactly the
-            // width the button needs, and the button keeps its own visibility.
-            let report_w = scale(104, dlg.dpi);
-            move_id(
-                dlg.hwnd,
-                D_ERROR,
-                m,
-                by - scale(29, dlg.dpi),
-                w - 2 * m - report_w - gap,
-                scale(20, dlg.dpi),
-            );
-            move_id(
-                dlg.hwnd,
-                P_REPORT,
-                w - m - report_w,
-                by - scale(30, dlg.dpi),
-                report_w,
-                scale(22, dlg.dpi),
-            );
-            // A playlist fits its rows above the detail; a single job has
-            // nothing to choose between, so the rows give their place to the
-            // status text.
-            let multi = f.ids.len() > 1;
-            ShowWindow(f.list, multi as BOOL);
-            // "Küçült" and "Üstte tut" share the summary row, at its right end.
-            let tools_w = scale(84, dlg.dpi) + gap + scale(96, dlg.dpi);
-            MoveWindow(
-                f.summary,
-                m,
-                m,
-                w - 2 * m - tools_w - gap,
-                scale(20, dlg.dpi),
-                1,
-            );
-            move_id(
-                dlg.hwnd,
-                P_MINI,
-                w - m - tools_w,
-                m - scale(2, dlg.dpi),
-                scale(84, dlg.dpi),
-                scale(24, dlg.dpi),
-            );
-            move_id(
-                dlg.hwnd,
-                P_PIN,
-                w - m - scale(96, dlg.dpi),
-                m,
-                scale(96, dlg.dpi),
-                scale(20, dlg.dpi),
-            );
-            MoveWindow(
-                f.hint,
-                m,
-                m + scale(22, dlg.dpi),
-                w - 2 * m,
-                scale(18, dlg.dpi),
-                1,
-            );
-            let mut top = m + scale(46, dlg.dpi);
-            if multi {
-                MoveWindow(f.list, m, top, w - 2 * m, scale(92, dlg.dpi), 1);
-                top += scale(92, dlg.dpi) + gap;
-            }
-            // The framework's error line sits just above the button row; the
-            // bar takes the slot under the status text.
-            let body_bottom = by - scale(29, dlg.dpi) - gap;
-            let bar_y = body_bottom - scale(14, dlg.dpi);
-            MoveWindow(
-                f.status,
-                m,
-                top,
-                w - 2 * m,
-                (bar_y - gap - top).max(scale(60, dlg.dpi)),
-                1,
-            );
-            MoveWindow(f.progress, m, bar_y, w - 2 * m, scale(14, dlg.dpi), 1);
-            // Control pair on the left, the output actions on the right.
-            move_id(dlg.hwnd, P_ACTION, m, by, scale(104, dlg.dpi), row);
-            move_id(
-                dlg.hwnd,
-                P_CANCEL,
-                m + scale(112, dlg.dpi),
-                by,
-                scale(104, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                P_CLOSE,
-                w - m - scale(84, dlg.dpi),
-                by,
-                scale(84, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                P_OPEN_FOLDER,
-                w - m - scale(84, dlg.dpi) - gap - scale(132, dlg.dpi),
-                by,
-                scale(132, dlg.dpi),
-                row,
-            );
-            move_id(
-                dlg.hwnd,
-                P_OPEN_FILE,
-                w - m - scale(84, dlg.dpi) - gap - scale(132, dlg.dpi) - gap - scale(108, dlg.dpi),
-                by,
-                scale(108, dlg.dpi),
-                row,
-            );
+            job_view_rows(dlg, f, h, true);
         }
     }
+    if follows_reading_order(&dlg.kind, modern()) {
+        tab_in_reading_order(dlg.hwnd);
+    }
+    let pinned = pinned_controls(dlg);
+    // Above a pinned bar the page scrolls until its lowest control clears the bar.
+    let h = match page_end(dlg) {
+        Some(end) => {
+            lowest_on_page(dlg, &pinned) + scale(DIALOG_GAP, dlg.dpi) + actual_height - end
+        }
+        None => h,
+    };
     let offset = dlg.scroll_y.get().clamp(0, (h - actual_height).max(0));
     dlg.scroll_y.set(offset);
     let info = SCROLLINFO {
@@ -1798,6 +2101,10 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     if offset > 0 {
         let mut child = GetWindow(dlg.hwnd, GW_CHILD);
         while !child.is_null() {
+            if pinned.contains(&child) {
+                child = GetWindow(child, GW_HWNDNEXT);
+                continue;
+            }
             let mut rect: RECT = zeroed();
             GetWindowRect(child, &mut rect);
             MapWindowPoints(null_mut(), dlg.hwnd, (&mut rect as *mut RECT).cast(), 2);
@@ -1812,5 +2119,1352 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
             child = GetWindow(child, GW_HWNDNEXT);
         }
+    }
+    if let Some(end) = page_end(dlg) {
+        clip_to_page(dlg, &pinned, end);
+    }
+}
+
+/// The controls that stay at the bottom of a dialog while its page scrolls:
+/// Modern Settings' command bar, the error line above it and the surface
+/// under both.
+pub(super) unsafe fn pinned_controls(dlg: &DialogUi) -> Vec<HWND> {
+    if !modern() || !matches!(dlg.kind, DialogKind::Settings(_)) {
+        return Vec::new();
+    }
+    let mut pinned: Vec<HWND> = [ID_SETTINGS_REOPEN_WIZARD, S_OK, D_CANCEL, S_BAR]
+        .map(|id| GetDlgItem(dlg.hwnd, id))
+        .into_iter()
+        .filter(|control| !control.is_null())
+        .collect();
+    pinned.push(dlg.error);
+    pinned
+}
+
+/// The bottom of the lowest shown control of a dialog's page.
+unsafe fn lowest_on_page(dlg: &DialogUi, pinned: &[HWND]) -> i32 {
+    let mut lowest = 0;
+    let mut child = GetWindow(dlg.hwnd, GW_CHILD);
+    while !child.is_null() {
+        if !pinned.contains(&child) && GetWindowLongW(child, GWL_STYLE) as u32 & WS_VISIBLE != 0 {
+            lowest = lowest.max(child_rect(dlg.hwnd, child).bottom);
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    lowest
+}
+
+/// Where the page of a dialog with pinned controls ends: the top of the
+/// surface under them.
+pub(super) unsafe fn page_end(dlg: &DialogUi) -> Option<i32> {
+    if pinned_controls(dlg).is_empty() {
+        return None;
+    }
+    let bar = GetDlgItem(dlg.hwnd, S_BAR);
+    (!bar.is_null()).then(|| child_rect(dlg.hwnd, bar).top)
+}
+
+/// Cuts every scrolling control at `bottom`, the top of the pinned surface:
+/// the surface, on top of the page, clips what a control paints there, and
+/// the control's window region keeps clicks there from reaching it. A control
+/// below it keeps its place in the Tab order until it scrolls up.
+unsafe fn clip_to_page(dlg: &DialogUi, pinned: &[HWND], bottom: i32) {
+    let mut child = GetWindow(dlg.hwnd, GW_CHILD);
+    while !child.is_null() {
+        if !pinned.contains(&child) {
+            let style = GetWindowLongW(child, GWL_STYLE) as u32;
+            if style & WS_CLIPSIBLINGS == 0 {
+                SetWindowLongW(child, GWL_STYLE, (style | WS_CLIPSIBLINGS) as i32);
+            }
+            let rect = child_rect(dlg.hwnd, child);
+            let shown = (bottom - rect.top).clamp(0, rect.bottom - rect.top);
+            let mut current: RECT = zeroed();
+            let has = GetWindowRgnBox(child, &mut current) != RGN_ERROR;
+            if shown == rect.bottom - rect.top {
+                if has {
+                    SetWindowRgn(child, null_mut(), 1);
+                }
+            } else if !has || current.bottom - current.top != shown {
+                SetWindowRgn(child, CreateRectRgn(0, 0, rect.right - rect.left, shown), 1);
+            }
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+}
+
+/// Scrolls a dialog with pinned controls so that `focus`, a control on its
+/// page, is wholly between the top of the window and the command bar.
+pub(super) unsafe fn scroll_into_view(dlg: &DialogUi, focus: HWND) {
+    let pinned = pinned_controls(dlg);
+    if pinned.is_empty()
+        || dlg.scroll_range.get() == 0
+        || pinned.contains(&focus)
+        || GetParent(focus) != dlg.hwnd
+    {
+        return;
+    }
+    let Some(end) = page_end(dlg) else {
+        return;
+    };
+    let margin = scale(DIALOG_GAP, dlg.dpi);
+    let bottom = end - margin;
+    let rect = child_rect(dlg.hwnd, focus);
+    let delta = if rect.top < margin {
+        rect.top - margin
+    } else if rect.bottom > bottom {
+        (rect.bottom - bottom).min(rect.top - margin)
+    } else {
+        0
+    };
+    if delta != 0 {
+        dlg.scroll_y.set((dlg.scroll_y.get() + delta).max(0));
+        layout_dialog(dlg);
+    }
+}
+
+/// Whether Tab walks a `kind` dialog in its reading order: the wizard in both
+/// themes, and in Modern the windows its own layout moves into new rows. Every
+/// other window keeps its creation order; Settings and the queue manager set
+/// their own.
+fn follows_reading_order(kind: &DialogKind, modern: bool) -> bool {
+    match kind {
+        DialogKind::Wizard(_) => true,
+        DialogKind::Add(_)
+        | DialogKind::Media(_)
+        | DialogKind::Progress(_)
+        | DialogKind::Rules(_)
+        | DialogKind::Crawler(_)
+        | DialogKind::Synchronization(_)
+        | DialogKind::Logins(_)
+        | DialogKind::Events(_)
+        | DialogKind::JobLog(_)
+        | DialogKind::Speed(_)
+        | DialogKind::Rename(_) => modern,
+        DialogKind::Settings(_) | DialogKind::Queues(_) | DialogKind::Tools(_) => false,
+    }
+}
+
+/// The reading order of `rects`, as indexes: row by row from the top, and from
+/// the start side within a row. A rectangle joins the row of the topmost one
+/// it overlaps vertically.
+fn reading_order(rects: &[RECT]) -> Vec<usize> {
+    let mut by_top: Vec<usize> = (0..rects.len()).collect();
+    by_top.sort_by_key(|&i| (rects[i].top, rects[i].left));
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    for i in by_top {
+        match rows.last_mut() {
+            Some(row) if rects[i].top < rects[row[0]].bottom => row.push(i),
+            _ => rows.push(vec![i]),
+        }
+    }
+    rows.into_iter()
+        .flat_map(|mut row| {
+            row.sort_by_key(|&i| (rects[i].left, rects[i].top));
+            row
+        })
+        .collect()
+}
+
+/// Puts a window's tab stops in z-order, which Tab walks, in their reading
+/// order. In a right-to-left window the client coordinates are mirrored, so
+/// the start side is still the left.
+pub(super) unsafe fn tab_in_reading_order(window: HWND) {
+    let mut stops = Vec::new();
+    let mut rects = Vec::new();
+    let mut child = GetWindow(window, GW_CHILD);
+    while !child.is_null() {
+        if GetWindowLongW(child, GWL_STYLE) as u32 & WS_TABSTOP != 0 {
+            let mut rect: RECT = zeroed();
+            GetWindowRect(child, &mut rect);
+            MapWindowPoints(null_mut(), window, (&mut rect as *mut RECT).cast(), 2);
+            stops.push(child);
+            rects.push(rect);
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    let order = reading_order(&rects);
+    if order.iter().enumerate().all(|(place, &i)| place == i) {
+        return;
+    }
+    let ordered: Vec<HWND> = order.iter().map(|&i| stops[i]).collect();
+    // Null, when the first tab stop is the first child, is HWND_TOP.
+    SetWindowPos(
+        ordered[0],
+        GetWindow(stops[0], GW_HWNDPREV),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    );
+    tab_order(ordered[0], &ordered[1..]);
+}
+
+/// Modern's one-field dialogs: the label above the field (`label_lines` lines
+/// tall), the field `field_w` epx wide or the full width, the error line
+/// under it, and OK and Cancel on the command bar.
+unsafe fn layout_one_field(
+    dlg: &DialogUi,
+    h: i32,
+    edit: HWND,
+    ok: i32,
+    label_lines: i32,
+    field_w: Option<i32>,
+) {
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let [label, field, error] = one_field_rects(client.right, label_lines, field_w, dlg.dpi);
+    let move_to = |control: HWND, rect: RECT| {
+        MoveWindow(
+            control,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            1,
+        );
+    };
+    if let Some(&control) = child_statics(dlg.hwnd, dlg.error).first() {
+        move_to(control, label);
+    }
+    place_in_frame(edit, field, dlg.dpi);
+    move_to(GetDlgItem(dlg.hwnd, D_ERROR), error);
+    command_bar(dlg, h, &[(ok, 120), (D_CANCEL, 96)]);
+}
+
+/// Where a Modern one-field dialog `width` pixels wide puts its label
+/// (`label_lines` lines tall), its field (`field_w` epx wide or the full
+/// width) and the error line under it.
+fn one_field_rects(width: i32, label_lines: i32, field_w: Option<i32>, dpi: u32) -> [RECT; 3] {
+    let s = |value: i32| scale(value, dpi);
+    let x = s(ADD_PAD);
+    let right = width - x;
+    let label = RECT {
+        left: x,
+        top: s(ADD_TOP),
+        right,
+        bottom: s(ADD_TOP) + s(ADD_LABEL * label_lines),
+    };
+    let top = label.bottom + s(ADD_LABEL_GAP);
+    let field = RECT {
+        left: x,
+        top,
+        right: field_w.map_or(right, |value| x + s(value)),
+        bottom: top + s(ADD_FIELD),
+    };
+    let error_top = field.bottom + s(ADD_GROUP_GAP);
+    let error = RECT {
+        left: x,
+        top: error_top,
+        right,
+        bottom: error_top + s(ADD_LABEL),
+    };
+    [label, field, error]
+}
+
+/// Sizes the speed limit dialog and the setup wizard to the lines their first
+/// label wraps to, once their controls exist: one in most languages, more
+/// where the text is longer.
+pub(super) unsafe fn fit_first_label(dlg: &mut DialogUi) {
+    let Some(&label) = child_statics(dlg.hwnd, dlg.error).first() else {
+        return;
+    };
+    let (hwnd, font, dpi) = (dlg.hwnd, dlg.font, dlg.dpi);
+    // Classic fits only the wizard, whose sides keep the dialog margin.
+    let pad = if modern() { ADD_PAD } else { DIALOG_MARGIN };
+    let lines = match &mut dlg.kind {
+        DialogKind::Speed(f) => &mut f.label_lines,
+        DialogKind::Wizard(f) => &mut f.intro_lines,
+        _ => return,
+    };
+    let wrapped = fit_label_lines(hwnd, label, font, dpi, *lines, pad);
+    dlg.design.1 += (wrapped - *lines) * ADD_LABEL;
+    *lines = wrapped;
+    let DialogKind::Wizard(f) = &dlg.kind else {
+        return;
+    };
+    let needed: i32 = wizard_rows(f)
+        .iter()
+        .map(|cards| wizard_row(dlg, cards).1)
+        .sum();
+    let extra = needed - f.caption_lines;
+    grow_window(hwnd, scale(extra * CARD_LINE, dpi));
+    dlg.design.1 += extra * CARD_LINE;
+    if let DialogKind::Wizard(f) = &mut dlg.kind {
+        f.caption_lines = needed;
+    }
+}
+
+/// The wizard's rows of cards, top to bottom.
+fn wizard_rows(f: &WizardFields) -> [Vec<HWND>; 3] {
+    [
+        vec![f.simple_card, f.advanced_card],
+        vec![f.classic_card, f.modern_card],
+        vec![f.video, f.file, f.audio],
+    ]
+}
+
+/// The face width of each card in a wizard row of `cards`, and the
+/// explanation lines beyond one that the row's longest explanation needs.
+unsafe fn wizard_row(dlg: &DialogUi, cards: &[HWND]) -> (i32, i32) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let modern = modern();
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(if modern { ADD_PAD } else { DIALOG_MARGIN });
+    let ring = if modern { s(FOCUS_MARGIN) } else { 0 };
+    let count = cards.len() as i32;
+    let width = (client.right - 2 * x - (count - 1) * s(DIALOG_GAP)) / count;
+    let lines = cards
+        .iter()
+        .map(|&card| card_text_lines(card, width + 2 * ring))
+        .max()
+        .unwrap_or(1);
+    (width, lines - 1)
+}
+
+/// The wizard's theme heading at (`x`, `y`) and, beside it, its restart note
+/// when it has one.
+unsafe fn wizard_theme_heading(
+    dlg: &DialogUi,
+    f: &WizardFields,
+    labels: &[HWND],
+    x: i32,
+    y: i32,
+    height: i32,
+) {
+    let Some(&heading) = labels.get(1) else {
+        return;
+    };
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let width = text_width(heading) + scale(8, dlg.dpi);
+    MoveWindow(heading, x, y, width, height, 1);
+    if !f.note.is_null() {
+        let left = x + width + scale(DIALOG_GAP, dlg.dpi);
+        MoveWindow(f.note, left, y, client.right - x - left, height, 1);
+    }
+}
+
+/// The setup wizard: the introduction, the depth cards, the theme cards and
+/// the purpose cards (the advanced depth's detail) under their headings, and
+/// the error line. Modern puts its buttons on the command bar; Classic's go on
+/// its button row.
+unsafe fn layout_wizard(dlg: &DialogUi, h: i32, f: &WizardFields) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let modern = modern();
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let labels = child_statics(dlg.hwnd, dlg.error);
+    let (x, top) = if modern {
+        (s(ADD_PAD), s(ADD_TOP))
+    } else {
+        (s(DIALOG_MARGIN), s(DIALOG_MARGIN))
+    };
+    let cw = client.right - 2 * x;
+    let label_gap = s(wizard_label_gap(modern));
+    let ring = if modern { s(FOCUS_MARGIN) } else { 0 };
+    let gap = s(DIALOG_GAP);
+    // A Modern card's window reaches FOCUS_MARGIN past its face for the focus
+    // ring. A row is as tall as its longest explanation.
+    let row = |cards: &[HWND], show: bool, top: i32| {
+        let (width, extra) = wizard_row(dlg, cards);
+        let card = s(WIZARD_CARD) + extra * s(CARD_LINE);
+        for (index, &card_window) in cards.iter().enumerate() {
+            let left = x + index as i32 * (width + gap);
+            place(
+                card_window,
+                show,
+                left - ring,
+                top - ring,
+                width + 2 * ring,
+                card + 2 * ring,
+            );
+        }
+        top + card
+    };
+    let intro = s(ADD_LABEL * f.intro_lines);
+    let mut y = top;
+    place_static(&labels, 0, x, y, cw, intro, true);
+    y += intro + label_gap;
+    let [depth, theme, purpose] = wizard_rows(f);
+    y = row(&depth, true, y) + gap;
+    wizard_theme_heading(dlg, f, &labels, x, y, s(ADD_LABEL));
+    y += s(ADD_LABEL) + label_gap;
+    y = row(&theme, true, y) + gap;
+    // The purpose cards are the advanced answer's detail; a simple choice
+    // stays one decision, so they leave the dialog.
+    let advanced = check(f.advanced_card);
+    place_static(&labels, 2, x, y, cw, s(ADD_LABEL), advanced);
+    y += s(ADD_LABEL) + label_gap;
+    y = row(&purpose, advanced, y);
+    if modern {
+        // The error line sits in the content's bottom padding, under the
+        // cards' focus margin and above the command bar.
+        move_id(dlg.hwnd, D_ERROR, x, y + ring, cw, s(ADD_LABEL));
+        command_bar(dlg, h, &[(ID_WIZARD_START, 120), (D_CANCEL, 96)]);
+    }
+}
+
+/// Modern's log windows: the list under its label, the `actions` on the card
+/// below it and `close` on the command bar.
+unsafe fn layout_list_dialog(dlg: &DialogUi, h: i32, list: HWND, actions: &[i32], close: i32) {
+    let label = child_statics(dlg.hwnd, dlg.error)
+        .first()
+        .copied()
+        .unwrap_or(null_mut());
+    let buttons: Vec<Cell> = actions.iter().map(|&id| button_cell(dlg, id)).collect();
+    form_rows(
+        dlg,
+        h,
+        &[&[field(label, list, Width::Flex, dlg.dpi).fill()], &buttons],
+        0,
+    );
+    // A log shows more of its lines in compact rows.
+    SendMessageW(
+        list,
+        LB_SETITEMHEIGHT,
+        0,
+        scale(COMPACT_ROW, dlg.dpi) as isize,
+    );
+    command_bar(dlg, h, &[(close, 96)]);
+}
+
+/// Advanced options' face width: its label and the chevron before it.
+unsafe fn advanced_width(dlg: &DialogUi) -> i32 {
+    add_button_width(dlg, D_ADVANCED, 120) + scale(16 + 8, dlg.dpi)
+}
+
+/// Puts buttons at the left end of a Modern dialog's command bar, left to
+/// right as listed, each `width` pixels wide; a hidden button takes no place.
+unsafe fn bar_start(dlg: &DialogUi, h: i32, buttons: &[(i32, i32)]) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let ring = s(FOCUS_MARGIN);
+    let by = h - s(ADD_FOOTER) + s(ADD_PAD);
+    let mut left = s(ADD_PAD);
+    for &(id, width) in buttons {
+        let button = GetDlgItem(dlg.hwnd, id);
+        // The style, not IsWindowVisible: the window may not be shown yet.
+        if GetWindowLongW(button, GWL_STYLE) as u32 & WS_VISIBLE == 0 {
+            continue;
+        }
+        MoveWindow(
+            button,
+            left - ring,
+            by - ring,
+            width + 2 * ring,
+            s(ADD_FIELD) + 2 * ring,
+            1,
+        );
+        left += width + s(DIALOG_GAP);
+    }
+}
+
+/// The media picker's field labels, in the order they are created.
+unsafe fn media_labels(dlg: &DialogUi, f: &MediaFields) -> Vec<HWND> {
+    child_statics(dlg.hwnd, dlg.error)
+        .into_iter()
+        .filter(|value| ![f.thumbnail, f.size, f.prep_title, f.prep_detail].contains(value))
+        .collect()
+}
+
+/// The picker before its analysis loads: the title, the line under it and
+/// the moving bar from the top, and Advanced options, the report action and
+/// Cancel where the form has them.
+unsafe fn layout_media_preparing(dlg: &DialogUi, f: &MediaFields, h: i32) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let (x, mut y) = if modern() {
+        (s(ADD_PAD), s(ADD_TOP))
+    } else {
+        (s(DIALOG_MARGIN), s(DIALOG_MARGIN))
+    };
+    let room = client.right - 2 * x;
+    let title_h = wrapped_height(f.prep_title, f.title_font, dlg.dpi, room);
+    MoveWindow(f.prep_title, x, y, room, title_h, 1);
+    y += title_h + s(4);
+    let detail_h = wrapped_height(f.prep_detail, dlg.font, dlg.dpi, room);
+    MoveWindow(f.prep_detail, x, y, room, detail_h, 1);
+    y += detail_h + s(DIALOG_GAP);
+    MoveWindow(f.prep_bar, x, y, room, s(JOB_BAR), 1);
+    let report = GetDlgItem(dlg.hwnd, M_REPORT);
+    if modern() {
+        ShowWindow(report, if f.report_shown { SW_SHOW } else { SW_HIDE });
+        move_id(
+            dlg.hwnd,
+            D_ERROR,
+            x,
+            h - s(ADD_FOOTER) - s(ADD_LABEL),
+            room,
+            s(ADD_LABEL),
+        );
+        bar_start(
+            dlg,
+            h,
+            &[
+                (D_ADVANCED, advanced_width(dlg)),
+                (M_REPORT, add_button_width(dlg, M_REPORT, 96)),
+            ],
+        );
+        command_bar(dlg, h, &[(D_CANCEL, 96)]);
+    } else {
+        let (m, row) = (s(DIALOG_MARGIN), s(DIALOG_ROW));
+        let by = h - m - row;
+        move_id(dlg.hwnd, D_ADVANCED, m, by, s(185), row);
+        place(report, f.report_shown, m + s(197), by, s(112), row);
+        move_id(dlg.hwnd, D_CANCEL, client.right - m - s(92), by, s(92), row);
+    }
+}
+
+/// The Modern media picker's rows under its summary: the choices it always
+/// shows, then its advanced rows while they are open.
+unsafe fn media_rows(dlg: &DialogUi, f: &MediaFields) -> Vec<Vec<Cell>> {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let labels = media_labels(dlg, f);
+    let label = |index: usize| labels.get(index).copied().unwrap_or(null_mut());
+    let bare = |control: HWND, width: Width| field(null_mut(), control, width, dlg.dpi);
+    let combo = |control: HWND| Width::Label(combo_face_width(control, dlg.dpi));
+    let lists = list_height(2, dlg.dpi);
+    let mut rows = vec![
+        vec![field(label(0), f.name, Width::Flex, dlg.dpi)],
+        vec![
+            field(label(1), f.kind, combo(f.kind), dlg.dpi),
+            field(label(2), f.format, Width::Flex, dlg.dpi),
+        ],
+        vec![Cell {
+            height: s(ADD_LABEL),
+            ..bare(f.size, Width::Flex)
+        }],
+        vec![check_cell(dlg, f.remember)],
+    ];
+    if f.from_start_offered {
+        rows.push(vec![check_cell(dlg, f.from_start)]);
+    }
+    if f.advanced {
+        rows.extend([
+            vec![
+                field(label(3), f.audio, combo(f.audio), dlg.dpi),
+                check_cell(dlg, f.playlist),
+                bare(
+                    f.playlist_items,
+                    Width::Fixed(cue_face_width(f.playlist_items, dlg.dpi).max(s(112))),
+                ),
+            ],
+            vec![check_cell(dlg, f.full_verification)],
+            vec![
+                field(label(4), f.audio_tracks, Width::Flex, dlg.dpi).tall(lists),
+                field(label(5), f.subtitles, Width::Flex, dlg.dpi).tall(lists),
+            ],
+            vec![
+                field(label(6), f.external_url, Width::Flex, dlg.dpi),
+                bare(
+                    f.external_kind,
+                    Width::Fixed(combo_face_width(f.external_kind, dlg.dpi)),
+                ),
+            ],
+            vec![
+                field(label(7), f.external_language, Width::Label(s(96)), dlg.dpi),
+                field(label(8), f.external_label, Width::Flex, dlg.dpi),
+                check_cell(dlg, f.external_default),
+                button_cell(dlg, ID_MEDIA_EXTERNAL_ADD),
+            ],
+            vec![
+                bare(f.external_list, Width::Flex).tall(lists),
+                button_cell(dlg, ID_MEDIA_EXTERNAL_REMOVE),
+            ],
+            vec![
+                bare(f.renew_job, Width::Flex),
+                check_cell(dlg, f.renew_restart),
+                button_cell(dlg, M_RENEW),
+            ],
+        ]);
+    }
+    rows
+}
+
+/// Where the Modern media picker's rows start: below its summary.
+fn media_rows_top(dpi: u32) -> i32 {
+    scale(ADD_TOP + MEDIA_SUMMARY + ADD_GROUP_GAP, dpi)
+}
+
+/// The Modern media picker's content height in epx at its window's width:
+/// the summary, the rows it shows now, the error line and the command bar.
+pub(super) unsafe fn media_content_height(dlg: &DialogUi, f: &MediaFields) -> i32 {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(ADD_PAD);
+    let rows: i32 = media_rows(dlg, f)
+        .iter()
+        .map(|row| form_row(dlg, row, x, 0, client.right - 2 * x, 0, false))
+        .sum();
+    let pixels = media_rows_top(dlg.dpi) + rows + s(ADD_LABEL) + s(ADD_FOOTER);
+    (pixels * 96 + dlg.dpi as i32 - 1) / dlg.dpi as i32
+}
+
+/// Sizes the Modern media picker's window to the rows it shows now: once its
+/// controls exist, when its advanced rows open or close and when its choices
+/// arrive.
+pub(super) unsafe fn fit_media_picker(dlg: &DialogUi) {
+    if let DialogKind::Media(f) = &dlg.kind {
+        if modern() {
+            resize_dialog(
+                dlg.hwnd,
+                dlg.dpi,
+                media_window_height(media_content_height(dlg, f), 0),
+            );
+        }
+    }
+}
+
+/// Puts a Modern dialog's command bar buttons at its right end, left to
+/// right as listed, each as wide as its label needs and at least `least` epx.
+unsafe fn command_bar(dlg: &DialogUi, h: i32, buttons: &[(i32, i32)]) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let ring = s(FOCUS_MARGIN);
+    let by = h - s(ADD_FOOTER) + s(ADD_PAD);
+    let mut right = client.right - s(ADD_PAD);
+    for &(id, least) in buttons.iter().rev() {
+        let bw = add_button_width(dlg, id, least);
+        move_id(
+            dlg.hwnd,
+            id,
+            right - bw - ring,
+            by - ring,
+            bw + 2 * ring,
+            s(ADD_FIELD) + 2 * ring,
+        );
+        right -= bw + s(DIALOG_GAP);
+    }
+}
+
+/// How wide a control in a Modern form row is.
+#[derive(Clone, Copy)]
+enum Width {
+    /// An equal share of what the row's other cells leave.
+    Flex,
+    /// Exactly this many pixels.
+    Fixed(i32),
+    /// As wide as its label and at least this many pixels. A row short of
+    /// room narrows the widest of these first, down to that least, and their
+    /// labels wrap.
+    Label(i32),
+}
+
+/// A control in a Modern form row and the label above it, if any. A height of
+/// 0 takes what the dialog has left.
+struct Cell {
+    label: HWND,
+    control: HWND,
+    width: Width,
+    height: i32,
+}
+
+impl Cell {
+    fn fill(self) -> Cell {
+        Cell { height: 0, ..self }
+    }
+
+    fn tall(self, height: i32) -> Cell {
+        Cell { height, ..self }
+    }
+}
+
+fn field(label: HWND, control: HWND, width: Width, dpi: u32) -> Cell {
+    Cell {
+        label,
+        control,
+        width,
+        height: scale(ADD_FIELD, dpi),
+    }
+}
+
+/// A push button on the card, as wide as its label needs and at least 96 epx.
+unsafe fn button_cell(dlg: &DialogUi, id: i32) -> Cell {
+    field(
+        null_mut(),
+        GetDlgItem(dlg.hwnd, id),
+        Width::Fixed(add_button_width(dlg, id, 96)),
+        dlg.dpi,
+    )
+}
+
+/// A check box as wide as its box and label.
+unsafe fn check_cell(dlg: &DialogUi, control: HWND) -> Cell {
+    field(
+        null_mut(),
+        control,
+        Width::Fixed(text_width(control) + check_text_inset(dlg.dpi)),
+        dlg.dpi,
+    )
+}
+
+/// The height a label needs at `width`: its wrapped lines, ADD_LABEL each.
+unsafe fn label_height(dlg: &DialogUi, label: HWND, width: i32) -> i32 {
+    wrapped_height(label, dlg.font, dlg.dpi, width)
+}
+
+/// `label_height` in `font` at `dpi`.
+unsafe fn wrapped_height(label: HWND, font: HFONT, dpi: u32, width: i32) -> i32 {
+    let mut value: Vec<u16> = text(label).encode_utf16().collect();
+    let dc = GetDC(label);
+    let previous = SelectObject(dc, font as HGDIOBJ);
+    let mut line = RECT {
+        right: width,
+        ..zeroed()
+    };
+    let mut probe: Vec<u16> = "Ag".encode_utf16().collect();
+    DrawTextW(
+        dc,
+        probe.as_mut_ptr(),
+        probe.len() as i32,
+        &mut line,
+        DT_CALCRECT | DT_SINGLELINE,
+    );
+    let mut all = RECT {
+        right: width,
+        ..zeroed()
+    };
+    draw_text(
+        dc,
+        &mut value,
+        &mut all,
+        DT_CALCRECT | DT_WORDBREAK | DT_EXPANDTABS | DT_NOPREFIX,
+    );
+    SelectObject(dc, previous);
+    ReleaseDC(label, dc);
+    let line = line.bottom.max(1);
+    ((all.bottom + line - 1) / line).max(1) * scale(ADD_LABEL, dpi)
+}
+
+/// The space before a cell: 8 epx before a push button, 12 before the rest.
+unsafe fn cell_gap(dlg: &DialogUi, cell: &Cell) -> i32 {
+    let button =
+        window_class(cell.control).eq_ignore_ascii_case("Button") && !is_check_box(cell.control);
+    scale(if button { DIALOG_GAP } else { ADD_GROUP_GAP }, dlg.dpi)
+}
+
+/// The cells' widths in a row `room` pixels wide.
+unsafe fn cell_widths(dlg: &DialogUi, cells: &[Cell], room: i32) -> Vec<i32> {
+    let gaps: i32 = cells.iter().skip(1).map(|cell| cell_gap(dlg, cell)).sum();
+    let sized: Vec<(Width, i32)> = cells
+        .iter()
+        .map(|cell| {
+            let label = match cell.width {
+                Width::Label(_) => text_width(cell.label),
+                _ => 0,
+            };
+            (cell.width, label)
+        })
+        .collect();
+    share_row(&sized, room - gaps)
+}
+
+/// Splits `room` between a row's cells, each given with its label's width:
+/// fixed cells keep their width, label cells start as wide as their label
+/// and, while the row is too wide, the widest of them narrow together down to
+/// their least, and flexible cells share what is left.
+fn share_row(cells: &[(Width, i32)], room: i32) -> Vec<i32> {
+    let capped = |cap: i32| -> Vec<i32> {
+        cells
+            .iter()
+            .map(|&(width, label)| match width {
+                Width::Label(least) => label.min(cap).max(least),
+                Width::Fixed(width) => width,
+                Width::Flex => 0,
+            })
+            .collect()
+    };
+    let mut cap = cells.iter().map(|&(_, label)| label).max().unwrap_or(0);
+    let mut widths = capped(cap);
+    while cap > 0 && widths.iter().sum::<i32>() > room {
+        cap -= 1;
+        widths = capped(cap);
+    }
+    let flex = cells
+        .iter()
+        .filter(|(width, _)| matches!(width, Width::Flex))
+        .count() as i32;
+    if flex > 0 {
+        let share = (room - widths.iter().sum::<i32>()).max(0) / flex;
+        for (width, (kind, _)) in widths.iter_mut().zip(cells) {
+            if matches!(kind, Width::Flex) {
+                *width = share;
+            }
+        }
+    }
+    widths
+}
+
+/// Lays a Modern form row out at `y`, from `x` across `room` pixels: the
+/// labels above their controls, as tall as the row's longest wrapped label,
+/// and each control on its face. A cell of height 0 is `fill` tall. Returns
+/// the row's height with the space below it; with `place` false it only
+/// measures.
+unsafe fn form_row(
+    dlg: &DialogUi,
+    cells: &[Cell],
+    x: i32,
+    y: i32,
+    room: i32,
+    fill: i32,
+    place: bool,
+) -> i32 {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let widths = cell_widths(dlg, cells, room);
+    let label_h = cells
+        .iter()
+        .zip(&widths)
+        .filter(|(cell, _)| !cell.label.is_null())
+        .map(|(cell, &width)| label_height(dlg, cell.label, width))
+        .max()
+        .unwrap_or(0);
+    let top = if label_h > 0 {
+        y + label_h + s(ADD_LABEL_GAP)
+    } else {
+        y
+    };
+    let height_of = |cell: &Cell| if cell.height == 0 { fill } else { cell.height };
+    if place {
+        let mut left = x;
+        for (index, (cell, &width)) in cells.iter().zip(&widths).enumerate() {
+            if index > 0 {
+                left += cell_gap(dlg, cell);
+            }
+            if !cell.label.is_null() {
+                MoveWindow(cell.label, left, y, width, label_h, 1);
+            }
+            let face = RECT {
+                left,
+                top,
+                right: left + width,
+                bottom: top + height_of(cell),
+            };
+            place_modern(cell.control, true, face, dlg.dpi);
+            left += width;
+        }
+    }
+    top - y + cells.iter().map(height_of).max().unwrap_or(0) + s(ADD_GROUP_GAP)
+}
+
+/// Lays a Modern list and form dialog's rows out down its card, with the
+/// error line `reserve` pixels below them. The cell of height 0 takes the
+/// height the card has left, at least two list entries. Returns where the
+/// rows end.
+unsafe fn form_rows(dlg: &DialogUi, h: i32, rows: &[&[Cell]], reserve: i32) -> i32 {
+    form_rows_from(dlg, h, scale(ADD_TOP, dlg.dpi), rows, reserve)
+}
+
+/// `form_rows` from `top` pixels down instead of the card's first row.
+unsafe fn form_rows_from(dlg: &DialogUi, h: i32, top: i32, rows: &[&[Cell]], reserve: i32) -> i32 {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(ADD_PAD);
+    let room = client.right - 2 * x;
+    let natural: i32 = rows
+        .iter()
+        .map(|row| form_row(dlg, row, x, 0, room, least_fill(dlg.dpi), false))
+        .sum();
+    let fill = fill_height(h, top, natural, reserve, dlg.dpi);
+    let mut y = top;
+    for row in rows {
+        y += form_row(dlg, row, x, y, room, fill, true);
+    }
+    move_id(dlg.hwnd, D_ERROR, x, y + reserve, room, s(ADD_LABEL));
+    y
+}
+
+/// The height of a Modern list's face that shows `rows` whole entries inside
+/// its frame.
+fn list_height(rows: i32, dpi: u32) -> i32 {
+    rows * scale(ROW_HEIGHT, dpi) + 2 * scale(LIST_INSET, dpi)
+}
+
+/// The least height of a form's fill cell: two list entries in their frame.
+fn least_fill(dpi: u32) -> i32 {
+    list_height(2, dpi)
+}
+
+/// The height of a form's fill cell: its least, and what a card `h` pixels
+/// tall leaves below the rows' `natural` height (measured with the least),
+/// starting at `top`, with the error line `reserve` pixels below them.
+fn fill_height(h: i32, top: i32, natural: i32, reserve: i32, dpi: u32) -> i32 {
+    let spare = h - scale(ADD_FOOTER, dpi) - scale(ADD_LABEL, dpi) - reserve - top - natural;
+    least_fill(dpi) + spare.max(0)
+}
+
+/// Grows `window` by the lines `label` wraps to beyond `lines` at the card's
+/// width, `pad` epx inside each side, ADD_LABEL each, and returns the lines it
+/// wraps to.
+unsafe fn fit_label_lines(
+    window: HWND,
+    label: HWND,
+    font: HFONT,
+    dpi: u32,
+    lines: i32,
+    pad: i32,
+) -> i32 {
+    let mut client: RECT = zeroed();
+    GetClientRect(window, &mut client);
+    let room = client.right - 2 * scale(pad, dpi);
+    let wrapped = wrapped_height(label, font, dpi, room) / scale(ADD_LABEL, dpi);
+    grow_window(window, scale((wrapped - lines) * ADD_LABEL, dpi));
+    wrapped
+}
+
+/// Makes `window` `pixels` taller, or shorter for a negative count.
+unsafe fn grow_window(window: HWND, pixels: i32) {
+    if pixels == 0 {
+        return;
+    }
+    let mut frame: RECT = zeroed();
+    GetWindowRect(window, &mut frame);
+    SetWindowPos(
+        window,
+        null_mut(),
+        0,
+        0,
+        frame.right - frame.left,
+        frame.bottom - frame.top + pixels,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+/// The job view's spacing in each theme, in epx: the margin at the sides and
+/// the top, a text line, a button, the gaps between groups and between facts,
+/// a playlist's rows and the bottom band with the command row.
+struct JobViewRhythm {
+    pad: i32,
+    top: i32,
+    line: i32,
+    button: i32,
+    gap: i32,
+    fact_gap: i32,
+    list: i32,
+    footer: i32,
+}
+
+fn job_view_rhythm(modern: bool, dpi: u32) -> JobViewRhythm {
+    if modern {
+        JobViewRhythm {
+            pad: ADD_PAD,
+            top: ADD_TOP,
+            line: ADD_LABEL,
+            button: ADD_FIELD,
+            gap: ADD_GROUP_GAP,
+            fact_gap: 4,
+            list: list_height(4, dpi) * 96 / dpi as i32,
+            footer: ADD_FOOTER,
+        }
+    } else {
+        JobViewRhythm {
+            pad: DIALOG_MARGIN,
+            top: DIALOG_MARGIN,
+            line: 20,
+            button: DIALOG_ROW,
+            gap: DIALOG_GAP,
+            fact_gap: 0,
+            list: 92,
+            footer: DIALOG_ROW + DIALOG_MARGIN,
+        }
+    }
+}
+
+/// The height of the job view's status text while it shows, in epx.
+pub(super) const JOB_DETAILS: i32 = 140;
+/// The height of its progress bar and of its segment bar, in epx.
+const JOB_BAR: i32 = 16;
+const JOB_SEGMENTS: i32 = 12;
+
+/// Lays the job view out top down in a client `h` pixels tall, or with `place`
+/// false only measures it: the file name with Minimize and Keep on top at the
+/// end of its row, the source and the close hint, a playlist's rows, the facts
+/// as label and value, the progress bar, the segment bar, the details button
+/// with the error line and Report problem, the status text while the details
+/// show, and the command row. Texts take the lines they wrap to. Returns the
+/// content height in pixels.
+pub(super) unsafe fn job_view_rows(dlg: &DialogUi, f: &ProgressFields, h: i32, place: bool) -> i32 {
+    let in_modern = modern();
+    let r = job_view_rhythm(in_modern, dlg.dpi);
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let x = s(r.pad);
+    let room = client.right - 2 * x;
+    let ring = if in_modern { s(FOCUS_MARGIN) } else { 0 };
+    let button = |id: i32, left: i32, top: i32, width: i32| {
+        if place {
+            move_id(
+                dlg.hwnd,
+                id,
+                left - ring,
+                top - ring,
+                width + 2 * ring,
+                s(r.button) + 2 * ring,
+            );
+        }
+    };
+    let put = |control: HWND, left: i32, top: i32, width: i32, height: i32| {
+        if place {
+            if in_modern {
+                place_modern(
+                    control,
+                    true,
+                    RECT {
+                        left,
+                        top,
+                        right: left + width,
+                        bottom: top + height,
+                    },
+                    dlg.dpi,
+                );
+            } else {
+                MoveWindow(control, left, top, width, height, 1);
+            }
+        }
+    };
+    let lines = |control: HWND, font: HFONT, width: i32| {
+        wrapped_height(control, font, dlg.dpi, width) / s(ADD_LABEL) * s(r.line)
+    };
+    let mut y = s(r.top);
+
+    // The file name, with Minimize and Keep on top at the end of its row.
+    let pin = GetDlgItem(dlg.hwnd, P_PIN);
+    let mini_w = add_button_width(dlg, P_MINI, 84);
+    let pin_w = text_width(pin) + check_text_inset(dlg.dpi);
+    let tools_w = mini_w + s(r.gap) + pin_w;
+    let title_w = room - tools_w - s(r.gap);
+    let title_h = lines(f.summary, f.title_font, title_w);
+    put(f.summary, x, y, title_w, title_h);
+    button(P_MINI, x + room - tools_w, y, mini_w);
+    let pin_top = if in_modern {
+        y
+    } else {
+        y + (s(r.button) - s(20)) / 2
+    };
+    put(
+        pin,
+        x + room - pin_w,
+        pin_top,
+        pin_w,
+        if in_modern { s(r.button) } else { s(20) },
+    );
+    y += title_h.max(s(r.button)) + s(4);
+    for text in [f.source, f.hint] {
+        let height = lines(text, dlg.font, room);
+        put(text, x, y, room, height);
+        y += height;
+    }
+    y += s(r.gap);
+
+    let multi = f.ids.len() > 1;
+    ShowWindow(f.list, multi as BOOL);
+    if multi {
+        put(f.list, x, y, room, s(r.list));
+        y += s(r.list) + s(r.gap);
+    }
+
+    // The facts: labels in a column as wide as the widest, values beside it.
+    let labels = f.facts.map(|value| GetWindow(value, GW_HWNDPREV));
+    let label_w = labels
+        .iter()
+        .map(|&label| text_width(label))
+        .max()
+        .unwrap_or(0)
+        + s(r.gap);
+    for (&label, &value) in labels.iter().zip(&f.facts) {
+        let height = lines(value, dlg.font, room - label_w).max(s(r.line));
+        put(label, x, y, label_w, s(r.line));
+        put(value, x + label_w, y, room - label_w, height);
+        y += height + s(r.fact_gap);
+    }
+    y += s(r.gap);
+    put(f.progress, x, y, room, s(JOB_BAR));
+    y += s(JOB_BAR) + s(r.gap) / 2;
+    put(f.segment_bar, x, y, room, s(JOB_SEGMENTS));
+    y += s(JOB_SEGMENTS) + s(r.gap);
+
+    // Show details, then the error line with the report action it belongs to.
+    let details_w = add_button_width(dlg, P_DETAILS, 104);
+    let report_w = add_button_width(dlg, P_REPORT, 104);
+    button(P_DETAILS, x, y, details_w);
+    button(P_REPORT, x + room - report_w, y, report_w);
+    if place {
+        MoveWindow(
+            dlg.error,
+            x + details_w + s(r.gap),
+            y + (s(r.button) - s(20)) / 2,
+            room - details_w - report_w - 2 * s(r.gap),
+            s(20),
+            1,
+        );
+    }
+    y += s(r.button) + s(r.gap);
+    if f.details {
+        put(f.status, x, y, room, s(JOB_DETAILS));
+        y += s(JOB_DETAILS) + s(r.gap);
+    }
+    let content = y - s(r.gap) + s(r.footer) + if in_modern { 0 } else { s(r.gap) };
+    if place {
+        let bottom = h.max(content);
+        if in_modern {
+            bar_start(
+                dlg,
+                bottom,
+                &[
+                    (P_OPEN_FILE, add_button_width(dlg, P_OPEN_FILE, 96)),
+                    (P_OPEN_FOLDER, add_button_width(dlg, P_OPEN_FOLDER, 96)),
+                ],
+            );
+            command_bar(
+                dlg,
+                bottom,
+                &[(P_ACTION, 96), (P_CANCEL, 96), (P_CLOSE, 96)],
+            );
+        } else {
+            let by = bottom - s(DIALOG_MARGIN) - s(DIALOG_ROW);
+            let mut left = x;
+            for id in [P_OPEN_FILE, P_OPEN_FOLDER] {
+                let width = add_button_width(dlg, id, 84);
+                button(id, left, by, width);
+                left += width + s(DIALOG_GAP);
+            }
+            let mut right = x + room;
+            for (id, least) in [(P_CLOSE, 84), (P_CANCEL, 104), (P_ACTION, 104)] {
+                let width = add_button_width(dlg, id, least);
+                right -= width;
+                button(id, right, by, width);
+                right -= s(DIALOG_GAP);
+            }
+        }
+    }
+    content
+}
+
+/// The job view's content height in epx at its window's width.
+pub(super) unsafe fn job_view_height(dlg: &DialogUi, f: &ProgressFields) -> i32 {
+    let pixels = job_view_rows(dlg, f, 0, false);
+    (pixels * 96 + dlg.dpi as i32 - 1) / dlg.dpi as i32
+}
+
+/// Fits the job view's window to what it shows: its top stays where it is
+/// and it grows or shrinks at the bottom, within the work area. That height
+/// is also the least it can be made.
+pub(super) unsafe fn fit_job_view(dlg: &mut DialogUi) {
+    let DialogKind::Progress(f) = &dlg.kind else {
+        return;
+    };
+    dlg.design.1 = job_view_height(dlg, f) + SETTINGS_FRAME + 3;
+    let tall = scale(dlg.design.1, dlg.dpi);
+    let mut rect: RECT = zeroed();
+    GetWindowRect(dlg.hwnd, &mut rect);
+    let mut info: MONITORINFO = zeroed();
+    info.cbSize = size_of::<MONITORINFO>() as u32;
+    let monitor = MonitorFromWindow(dlg.hwnd, MONITOR_DEFAULTTONEAREST);
+    let (top, tall) = if GetMonitorInfoW(monitor, &mut info) != 0 {
+        let area = info.rcWork;
+        let tall = tall.min(area.bottom - area.top);
+        (
+            rect.top.clamp(area.top, (area.bottom - tall).max(area.top)),
+            tall,
+        )
+    } else {
+        (rect.top, tall)
+    };
+    SetWindowPos(
+        dlg.hwnd,
+        null_mut(),
+        rect.left,
+        top,
+        rect.right - rect.left,
+        tall,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{share_row, Width};
+
+    #[test]
+    fn a_form_s_fill_cell_keeps_two_list_entries_and_takes_what_is_left() {
+        use super::{fill_height, scale, ADD_FOOTER, ADD_LABEL, LIST_INSET, ROW_HEIGHT};
+        for dpi in [96, 120, 144, 168] {
+            let s = |value: i32| scale(value, dpi);
+            // Rows taller than the card: the cell keeps its least, and the
+            // list placed inside its frame still shows two whole entries.
+            let least = fill_height(s(300), s(20), s(600), 0, dpi);
+            assert!(least - 2 * s(LIST_INSET) >= 2 * s(ROW_HEIGHT), "{dpi} dpi");
+            // Room to spare: the cell takes all of it.
+            let h = s(500);
+            let (top, natural, reserve) = (s(20), s(200), s(12));
+            let spare = h - s(ADD_FOOTER) - s(ADD_LABEL) - reserve - top - natural;
+            assert!(spare > 0);
+            assert_eq!(fill_height(h, top, natural, reserve, dpi), least + spare);
+        }
+    }
+
+    #[test]
+    fn a_label_that_wraps_grows_its_window_by_its_extra_lines() {
+        crate::gui::native::tests::on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let font = ramp_font(96, BODY_PX, false);
+                for (value, wraps) in [
+                    ("Speed limit", false),
+                    (
+                        "The limit applies to each selected download separately, in kilobytes per second",
+                        true,
+                    ),
+                ] {
+                    let window = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    SetWindowPos(window, null_mut(), 0, 0, 300, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+                    let label = control(window, "STATIC", value, WS_CHILD, 0, 1);
+                    apply_font(label, font);
+                    let lines = fit_label_lines(window, label, font, 96, 1, ADD_PAD);
+                    assert_eq!(lines > 1, wraps, "{value}: {lines} lines");
+                    let mut frame: RECT = zeroed();
+                    GetWindowRect(window, &mut frame);
+                    assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
+                    // Measured again at its lines, the window stays as it is.
+                    assert_eq!(fit_label_lines(window, label, font, 96, lines, ADD_PAD), lines);
+                    GetWindowRect(window, &mut frame);
+                    assert_eq!(frame.bottom - frame.top, 200 + (lines - 1) * ADD_LABEL);
+                    DestroyWindow(window);
+                }
+                DeleteObject(font as HGDIOBJ);
+            }
+        });
+    }
+
+    #[test]
+    fn a_one_field_dialog_keeps_the_rhythm_and_ends_its_error_line_at_the_bar() {
+        use super::{one_field_height, one_field_rects, scale, ADD_FOOTER, RECT};
+        for dpi in [96, 120, 144] {
+            let s = |value: i32| scale(value, dpi);
+            for (lines, field_w) in [(1, None), (2, Some(140))] {
+                let width = s(480);
+                let [label, field, error] = one_field_rects(width, lines, field_w, dpi);
+                let height = |rect: RECT| rect.bottom - rect.top;
+                assert_eq!((label.left, label.top), (s(24), s(20)));
+                assert_eq!(height(label), s(20) * lines);
+                assert_eq!(field.top - label.bottom, s(8));
+                assert_eq!(height(field), s(32));
+                assert_eq!(
+                    field.right - field.left,
+                    field_w.map_or(width - 2 * s(24), s)
+                );
+                assert_eq!(error.top - field.bottom, s(12));
+                assert_eq!((label.right, error.right), (width - s(24), width - s(24)));
+                // The content height leaves the error line ending where the
+                // command bar starts.
+                assert_eq!(
+                    error.bottom,
+                    s(one_field_height(lines)) - s(ADD_FOOTER),
+                    "{dpi} dpi, {lines} lines"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reading_order_goes_row_by_row_from_the_start_side() {
+        use super::{reading_order, RECT};
+        let rect = |left, top, width, height| RECT {
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+        };
+        let rects = [
+            // An edit's text area and the taller button beside it.
+            rect(35, 158, 433, 19),
+            rect(481, 149, 102, 38),
+            // A check box under them.
+            rect(21, 272, 368, 32),
+            // The command bar, its start-side button last.
+            rect(195, 360, 150, 38),
+            rect(453, 360, 126, 38),
+            rect(21, 360, 172, 38),
+            rect(581, 360, 102, 38),
+        ];
+        assert_eq!(reading_order(&rects), vec![0, 1, 2, 5, 3, 4, 6]);
+    }
+
+    #[test]
+    fn tab_follows_the_reading_order_and_leaves_the_labels() {
+        crate::gui::native::tests::on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                for ex in [0, WS_EX_LAYOUTRTL] {
+                    let window = control(null_mut(), "STATIC", "", WS_POPUP, ex, 0);
+                    SetWindowPos(
+                        window,
+                        null_mut(),
+                        0,
+                        0,
+                        400,
+                        200,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    let mut made = Vec::new();
+                    // Created out of order: (left, top) in client coordinates.
+                    for (id, left, top) in [(3, 0, 100), (2, 200, 0), (9, 0, 70), (1, 0, 0)] {
+                        let style = if id == 9 {
+                            WS_CHILD
+                        } else {
+                            WS_CHILD | WS_TABSTOP
+                        };
+                        let child = control(window, "BUTTON", "", style, 0, id);
+                        SetWindowPos(
+                            child,
+                            null_mut(),
+                            left,
+                            top,
+                            80,
+                            30,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                        made.push(child);
+                    }
+                    tab_in_reading_order(window);
+                    let mut walk = Vec::new();
+                    let mut child = GetWindow(window, GW_CHILD);
+                    while !child.is_null() {
+                        walk.push(GetDlgCtrlID(child));
+                        child = GetWindow(child, GW_HWNDNEXT);
+                    }
+                    DestroyWindow(window);
+                    let stops: Vec<i32> = walk.iter().copied().filter(|&id| id != 9).collect();
+                    assert_eq!(stops, vec![1, 2, 3], "layout {ex:#x}: {walk:?}");
+                    assert!(walk.contains(&9));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn a_short_row_narrows_its_widest_labels_first_and_shares_the_rest() {
+        let row = [
+            (Width::Label(96), 150),
+            (Width::Label(160), 215),
+            (Width::Label(96), 230),
+            (Width::Fixed(165), 0),
+        ];
+        // Room for every label on one line.
+        assert_eq!(share_row(&row, 800), vec![150, 215, 230, 165]);
+        // 44 px short: the two widest narrow to the same width, the
+        // narrowest label and the fixed cell keep theirs.
+        assert_eq!(share_row(&row, 716), vec![150, 200, 200, 165]);
+        // Far too short: each label cell stops at its least.
+        assert_eq!(share_row(&row, 100), vec![96, 160, 96, 165]);
+        // Flexible cells split what the others leave, never below nothing.
+        let shared = [(Width::Flex, 0), (Width::Fixed(100), 0), (Width::Flex, 0)];
+        assert_eq!(share_row(&shared, 500), vec![200, 100, 200]);
+        assert_eq!(share_row(&shared, 50), vec![0, 100, 0]);
     }
 }

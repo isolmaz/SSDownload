@@ -209,6 +209,12 @@ pub struct AddRequest {
     pub live_from_start: bool,
 }
 impl AddRequest {
+    /// Whether the download starts as soon as it is added: it has no start time
+    /// in the future.
+    pub fn starts_now(&self) -> bool {
+        self.start_at
+            .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+    }
     /// Drops the session material a finished job no longer needs: request headers, session
     /// cookies, subtitle headers and captured page markup. Only a completed job forgets
     /// them; paused, failed and waiting jobs keep them for resume, renewal and reports.
@@ -412,6 +418,19 @@ pub struct Job {
     /// Order in which jobs were added; settles jobs created within the same second.
     #[serde(default)]
     pub sequence: u64,
+    /// The last `TransferProgress::ranges` of the job's transfer: kept through a pause or a
+    /// failure (the part file still holds those bytes) and through a source refresh that
+    /// keeps the bytes, `[(0, total)]` once the job is completed, and cleared when its bytes
+    /// are dropped (a restart from zero, a browser hand-over). An attempt that starts over
+    /// inside the transfer (a fall back to one connection, a stop as a part is set aside)
+    /// shows the earlier values until its first report, at most 200 ms. Never stored.
+    #[serde(skip)]
+    pub ranges: Option<Arc<[(u64, u64)]>>,
+    /// The last `TransferProgress::resumable` of the job's transfer: kept through a pause or
+    /// a failure, and cleared when its bytes are dropped or its source is replaced. Never
+    /// stored.
+    #[serde(skip)]
+    pub resumable: Option<bool>,
 }
 
 impl Job {
@@ -568,6 +587,8 @@ pub struct Settings {
     pub schedule_start: String,
     pub schedule_end: String,
     pub dark_mode: bool,
+    /// Look of the desktop windows: `modern` | `classic`. Read when the app starts.
+    pub theme: String,
     pub last_video_container: String,
     pub last_video_height: Option<u32>,
     pub usage_modes: UsageModes,
@@ -633,6 +654,12 @@ pub struct Settings {
     pub window_placement: Option<[i32; 5]>,
     /// Last top-left position of the media picker.
     pub picker_position: Option<[i32; 2]>,
+    /// Height of the main window's tab page in 96-dpi pixels; None keeps the default.
+    pub details_height: Option<i32>,
+    /// Main list columns the user hid, by key: state, progress, speed, remaining, location.
+    pub hidden_columns: Vec<String>,
+    /// Main list sort: column key and ascending; None keeps the queue order.
+    pub list_sort: Option<(String, bool)>,
 }
 
 /// Remembered media selection for one host. With `auto`, a handoff from this host
@@ -698,6 +725,7 @@ impl Default for Settings {
             schedule_start: "00:00".into(),
             schedule_end: "23:59".into(),
             dark_mode: false,
+            theme: "classic".into(),
             last_video_container: "mp4".into(),
             last_video_height: None,
             usage_modes: UsageModes::default(),
@@ -738,11 +766,20 @@ impl Default for Settings {
             site_media_defaults: Vec::new(),
             window_placement: None,
             picker_position: None,
+            details_height: None,
+            hidden_columns: Vec::new(),
+            list_sort: None,
         }
     }
 }
 
 impl Settings {
+    /// True only when the stored theme is `modern`: Classic is the default, and an
+    /// unknown value reads as the default.
+    pub fn modern_theme(&self) -> bool {
+        self.theme == "modern"
+    }
+
     /// The settings of a profile that has none stored yet: the defaults, in the Windows display
     /// language. `Default` stays Turkish, so a stored value that predates `ui_language` reads
     /// as it always did.
@@ -980,6 +1017,19 @@ pub struct TransferProgress {
     /// job shows the processing state rather than a nearly full download.
     #[serde(default)]
     pub processing: bool,
+    /// The bytes of the output that are in, as merged `[start, end)` ranges, while the transfer
+    /// runs over ranged connections: what earlier attempts kept and what each connection has
+    /// written since. At most 64 ranges: beyond that the narrowest gaps are closed, so a few
+    /// bytes not yet written show as written. `None` for a transfer that is not split into
+    /// ranges. Never stored.
+    #[serde(skip)]
+    pub ranges: Option<Arc<[(u64, u64)]>>,
+    /// Whether a later attempt keeps the bytes written so far: `Some(true)` when the
+    /// engine's resume rule holds for them (the server answers ranges and the source has an
+    /// identity the next attempt can check), `Some(false)` when that attempt starts over,
+    /// `None` while unknown. Never stored.
+    #[serde(skip)]
+    pub resumable: Option<bool>,
 }
 #[derive(Debug, Clone)]
 pub struct TransferResult {
@@ -1178,6 +1228,25 @@ mod tests {
     }
 
     #[test]
+    fn the_theme_is_classic_by_default_and_a_stored_modern_survives_a_round_trip() {
+        assert!(!super::Settings::default().modern_theme());
+        assert!(!super::Settings::first_run().modern_theme());
+        // A profile written before the theme setting existed.
+        let old: super::Settings = serde_json::from_str(r#"{"connections":4}"#).unwrap();
+        assert!(!old.modern_theme());
+        let modern = super::Settings {
+            theme: "modern".into(),
+            ..super::Settings::default()
+        };
+        let stored = serde_json::to_string(&modern).unwrap();
+        let loaded: super::Settings = serde_json::from_str(&stored).unwrap();
+        assert!(loaded.modern_theme());
+        // A value no build writes reads as the default.
+        let unknown: super::Settings = serde_json::from_str(r#"{"theme":"neon"}"#).unwrap();
+        assert!(!unknown.modern_theme());
+    }
+
+    #[test]
     fn an_unreadable_surface_value_reads_as_advanced() {
         // The stored value is a tolerant string: a profile written by any other
         // build must never quarantine the settings record over this field.
@@ -1274,6 +1343,8 @@ mod tests {
                 open_when_done: false,
                 live: false,
                 sequence: 0,
+                ranges: None,
+                resumable: None,
             }
         }
 
@@ -1481,6 +1552,12 @@ pub struct LogBatch {
 #[allow(clippy::large_enum_variant)]
 pub enum Action {
     Add {
+        request: AddRequest,
+    },
+    /// An add the browser extension handed over: the native host turns the
+    /// extension's add into this one, and the desktop opens the download window
+    /// of a single download that starts now.
+    BrowserAdd {
         request: AddRequest,
     },
     Pause {

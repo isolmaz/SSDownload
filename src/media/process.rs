@@ -495,6 +495,8 @@ impl LiveRecordingGauge {
             0
         };
         Some(TransferProgress {
+            ranges: None,
+            resumable: None,
             processing: false,
             downloaded: base.saturating_add(bytes),
             total: None,
@@ -651,6 +653,8 @@ impl DownloadGauge {
         let total = total.map(|total| total.saturating_add(self.base).saturating_add(self.done));
         let speed = self.speed(now);
         let update = TransferProgress {
+            ranges: None,
+            resumable: None,
             downloaded,
             total,
             speed,
@@ -870,6 +874,8 @@ pub(super) fn handle_machine_line(
     } else if line.starts_with(POSTPROCESS_PREFIX) {
         gauge.latest = None;
         progress(TransferProgress {
+            ranges: None,
+            resumable: None,
             downloaded: gauge.count(),
             total: None,
             speed: 0,

@@ -1367,6 +1367,15 @@ fn process_started_at(handle: HANDLE) -> Result<u64> {
     Ok(u64::from(created.dwLowDateTime) | (u64::from(created.dwHighDateTime) << 32))
 }
 
+/// An add from the extension is a download the user handed over from the browser.
+fn mark_browser_add(action: &mut Action) {
+    if let Action::Add { request } = action {
+        *action = Action::BrowserAdd {
+            request: std::mem::take(request),
+        };
+    }
+}
+
 fn bind_native_transfer_sender(action: &mut Action) -> Result<()> {
     let Action::BrowserTransfer {
         command:
@@ -1525,6 +1534,7 @@ fn serve_native_host(
                             snapshot: None,
                         },
                         Ok(()) => {
+                            mark_browser_add(action);
                             let include_media = matches!(
                                 action,
                                 Action::Inspect { .. } | Action::InspectStatus { .. }
@@ -2521,6 +2531,92 @@ mod tests {
             logged_events(&paths).is_empty(),
             "an uneventful host writes no session banner"
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// An add the extension hands over asks the running desktop for its download window once;
+    /// one scheduled for later and the same add from the command line ask for none, and the
+    /// extension cannot send the marked add itself.
+    #[test]
+    fn only_an_add_the_extension_hands_over_asks_for_its_download_window() {
+        let root = std::env::temp_dir().join(format!(
+            "ssdownload-bridge-job-view-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let app = App::open(paths.clone()).unwrap();
+        start(app.clone()).unwrap();
+        let host = |action: Action| {
+            let (result, mut replies) = run_host(
+                &paths,
+                &[],
+                &[WireRequest {
+                    version: PROTOCOL_VERSION,
+                    action: Some(action),
+                }],
+            );
+            result.expect("the host keeps serving");
+            assert_eq!(replies.len(), 1);
+            replies.remove(0)
+        };
+        // A closed loopback port: a download that starts now fails without leaving the machine.
+        let add = |name: &str, start_at: Option<i64>| AddRequest {
+            url: format!("http://127.0.0.1:9/{name}.zip"),
+            kind: crate::model::DownloadKind::File,
+            start_at,
+            ..Default::default()
+        };
+        let job_of = |name: &str| {
+            app.snapshot()
+                .jobs
+                .iter()
+                .find(|job| job.request.url.ends_with(&format!("/{name}.zip")))
+                .map(|job| job.id.clone())
+        };
+
+        let handed = host(Action::Add {
+            request: add("handed-over", None),
+        });
+        assert!(handed.ok, "{}", handed.message);
+        let job = job_of("handed-over").expect("the hand-over was added");
+        assert_eq!(app.take_job_views(), vec![job]);
+        assert!(
+            app.take_job_views().is_empty(),
+            "the window is asked for once"
+        );
+
+        let later = host(Action::Add {
+            request: add("later", Some(chrono::Utc::now().timestamp() + 3_600)),
+        });
+        assert!(later.ok, "{}", later.message);
+        assert!(job_of("later").is_some());
+        assert!(
+            app.take_job_views().is_empty(),
+            "a start scheduled for later opens no window"
+        );
+
+        let command_line = send(
+            &paths,
+            &Action::Add {
+                request: add("command-line", None),
+            },
+        )
+        .unwrap();
+        assert!(command_line.ok, "{}", command_line.message);
+        assert!(job_of("command-line").is_some());
+        assert!(
+            app.take_job_views().is_empty(),
+            "an add from the command line opens no window"
+        );
+
+        let forged = host(Action::BrowserAdd {
+            request: add("forged", None),
+        });
+        assert!(!forged.ok, "the extension cannot send the marked add");
+        assert!(job_of("forged").is_none());
+        assert!(app.take_job_views().is_empty());
+
+        app.shutdown();
         std::fs::remove_dir_all(root).ok();
     }
 

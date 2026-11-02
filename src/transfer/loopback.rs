@@ -626,6 +626,94 @@ fn a_fresh_download_adopts_the_validators_of_the_response_that_delivers_the_byte
 }
 
 #[test]
+fn a_one_connection_download_whose_answer_brings_the_identity_reports_what_the_next_attempt_does() {
+    // The HEAD names no identity; the GET's ETag is what the state keeps.
+    let size = MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(MIB),
+        head_bare: true,
+        ..Config::default()
+    });
+    let request = request_for(&server);
+    let directory = TempDir::new("adopted-identity");
+    let output = directory.0.join("payload.bin");
+    let control = TransferControl::default();
+    let cancel = control.clone();
+    let mut first = Vec::new();
+    let interrupted = fetch(&request, &output, &control, 1, 1, &mut |progress| {
+        first.push(progress.resumable);
+        if progress.downloaded > 0 {
+            cancel.cancel();
+        }
+    });
+    assert!(interrupted.is_err());
+    assert!(!first.is_empty());
+    // Nothing claims that the next attempt starts over: one connection asked no range, so
+    // whether the source answers ranges is unknown.
+    assert!(first.iter().all(Option::is_none), "{first:?}");
+
+    let mut second = Vec::new();
+    let result = fetch(
+        &request,
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |progress| second.push(progress.resumable),
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    server.wait_idle();
+    assert!(
+        server
+            .log()
+            .iter()
+            .any(|entry| entry.method == "GET" && entry.status == 206),
+        "the next attempt resumed"
+    );
+    assert!(!second.is_empty());
+    assert!(
+        second.iter().all(|value| *value == Some(true)),
+        "{second:?}"
+    );
+}
+
+#[test]
+fn a_segmented_download_that_falls_back_to_one_connection_reports_that_its_bytes_are_not_kept() {
+    // Every answer carries its own ETag: the ranges cannot be joined, the download goes on
+    // over one connection, and a later attempt would not find the same source again.
+    let size = 12 * MIB + 7;
+    let server = Server::start(Config {
+        size,
+        vary_etag: true,
+        throttle: Some(16 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("varying-etag-fallback");
+    let output = directory.0.join("payload.bin");
+    let mut events = Vec::new();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |progress| events.push(progress),
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    let single = events
+        .iter()
+        .rposition(|event| event.ranges.is_some())
+        .map_or(&events[..], |at| &events[at + 1..]);
+    assert!(!single.is_empty(), "no report over one connection");
+    for event in single {
+        assert_eq!(event.resumable, Some(false), "{event:?}");
+    }
+}
+
+#[test]
 fn the_state_of_an_interrupted_fresh_download_names_the_response_that_wrote_the_bytes() {
     let size = MIB;
     let server = Server::start(Config {

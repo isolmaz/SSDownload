@@ -2,6 +2,34 @@
 
 use super::*;
 
+/// The theme the app paints with, read once from the settings at startup: a
+/// change in Settings applies after a restart.
+#[cfg(not(test))]
+static MODERN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(not(test))]
+pub(super) fn set_modern(on: bool) {
+    MODERN.store(on, Ordering::Relaxed);
+}
+/// True for the Modern theme, false for Classic.
+#[cfg(not(test))]
+pub(super) fn modern() -> bool {
+    MODERN.load(Ordering::Relaxed)
+}
+// Tests run on parallel threads, each building its own windows: a test that
+// sets Modern sets it for its own thread only.
+#[cfg(test)]
+thread_local! {
+    static MODERN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(test)]
+pub(super) fn set_modern(on: bool) {
+    MODERN.with(|modern| modern.set(on));
+}
+#[cfg(test)]
+pub(super) fn modern() -> bool {
+    MODERN.with(std::cell::Cell::get)
+}
+
 /// The window property `apply_dark_mode` stamps on the window that owns a
 /// surface; painters read it instead of the settings snapshot, which arrives
 /// after the first frame.
@@ -193,11 +221,31 @@ pub(super) fn card_prop(name: &str) -> *const u16 {
         _ => DESCRIPTION.as_ptr(),
     }
 }
-/// Creates a font from the first face the system really provides.
+/// Creates a font from the first face the system really provides. The Classic
+/// theme draws its cards with the application font.
 pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &[&str]) -> HFONT {
+    if !modern() {
+        return make_font(dpi, points, weight);
+    }
+    face_font(
+        -((points * dpi as i32) / 72),
+        weight,
+        CLEARTYPE_QUALITY,
+        faces,
+    )
+    .unwrap_or_else(|| make_font(dpi, points, weight))
+}
+/// A font of `height` (CreateFontW units) in the first of `faces` that GDI
+/// really provides; `None` when every face would be substituted.
+pub(super) unsafe fn face_font(
+    height: i32,
+    weight: i32,
+    quality: FONT_QUALITY,
+    faces: &[&str],
+) -> Option<HFONT> {
     for face in faces {
         let font = CreateFontW(
-            -((points * dpi as i32) / 72),
+            height,
             0,
             0,
             0,
@@ -208,7 +256,7 @@ pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &
             DEFAULT_CHARSET as u32,
             OUT_DEFAULT_PRECIS as u32,
             CLIP_DEFAULT_PRECIS as u32,
-            CLEARTYPE_QUALITY as u32,
+            quality as u32,
             (DEFAULT_PITCH | FF_DONTCARE) as u32,
             wide(face).as_ptr(),
         );
@@ -218,15 +266,17 @@ pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &
         let dc = GetDC(null_mut());
         let previous = SelectObject(dc, font as HGDIOBJ);
         let mut name = [0u16; 64];
-        let len = GetTextFaceW(dc, name.len() as i32, name.as_mut_ptr()).max(0) as usize;
+        GetTextFaceW(dc, name.len() as i32, name.as_mut_ptr());
+        // The count GetTextFaceW returns includes the terminating NUL.
+        let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
         SelectObject(dc, previous);
         ReleaseDC(null_mut(), dc);
         if String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case(face) {
-            return font;
+            return Some(font);
         }
         DeleteObject(font as HGDIOBJ);
     }
-    make_font(dpi, points, weight)
+    None
 }
 /// A card font, created once per control and DPI and owned by that control.
 pub(super) unsafe fn card_font(
@@ -259,50 +309,51 @@ pub(super) unsafe fn card_font(
     SetPropW(hwnd, dpi_prop, dpi as usize as HANDLE);
     font
 }
-/// Vector icon for a card: a play triangle, a folder or a music note. Icon
+/// Vector icon for a card: a play triangle, a folder, a music note, or a
+/// window with square or rounded corners for the two themes. Icon
 /// fonts are not used because a font that is missing or substituted renders the
 /// private-use codepoint as a tofu box, which no size check can tell apart from
 /// a real glyph.
 pub(super) unsafe fn draw_card_glyph(dc: HDC, id: i32, origin: POINT, size: i32, colour: u32) {
-    let brush = CreateSolidBrush(colour);
-    if brush.is_null() {
-        return;
-    }
-    let previous = SelectObject(dc, brush as HGDIOBJ);
-    let unit = (size / 16).max(1);
-    let (x, y) = (origin.x, origin.y);
-    match id {
-        ID_WIZARD_FILE => {
-            // Folder: the tab first, then the body.
-            Rectangle(dc, x, y + 2 * unit, x + 6 * unit, y + 5 * unit);
-            Rectangle(dc, x, y + 4 * unit, x + 13 * unit, y + 12 * unit);
+    // A 16-unit grid. Straight edges land on whole pixels so they stay sharp;
+    // only curves and slopes are smoothed.
+    let unit = size as f32 / 16.0;
+    let at = |value: f32| (value * unit).round();
+    let edges =
+        |left: f32, top: f32, right: f32, bottom: f32| [at(left), at(top), at(right), at(bottom)];
+    let stroke = unit.round().max(1.0);
+    let shapes = match id {
+        // Folder: the tab, then the body.
+        ID_WIZARD_FILE => vec![
+            Shape::Rect(edges(1.0, 2.0, 7.0, 5.0), unit),
+            Shape::Rect(edges(1.0, 4.0, 15.0, 14.0), unit),
+        ],
+        // Note: head, stem and flag.
+        ID_WIZARD_AUDIO => vec![
+            Shape::Ellipse([2.0 * unit, 9.0 * unit, 8.5 * unit, 14.0 * unit]),
+            Shape::Rect(edges(7.0, 2.0, 8.5, 12.0), 0.0),
+            Shape::Rect(edges(8.5, 2.0, 13.0, 4.0), 0.0),
+        ],
+        // A window outline: a filled title bar and square corners for Classic,
+        // a title line and rounded corners for Modern.
+        ID_WIZARD_CLASSIC => vec![
+            Shape::Frame(edges(1.0, 2.0, 15.0, 14.0), 0.0, stroke),
+            Shape::Rect(edges(1.0, 2.0, 15.0, 5.0), 0.0),
+        ],
+        ID_WIZARD_MODERN => {
+            let frame = edges(1.0, 2.0, 15.0, 14.0);
+            vec![
+                Shape::Frame(frame, 3.0 * unit, stroke),
+                Shape::Rect([frame[0], at(5.0), frame[2], at(5.0) + stroke], 0.0),
+            ]
         }
-        ID_WIZARD_AUDIO => {
-            // Note: head, stem and flag.
-            Ellipse(dc, x + 2 * unit, y + 8 * unit, x + 8 * unit, y + 13 * unit);
-            Rectangle(dc, x + 7 * unit, y + 2 * unit, x + 9 * unit, y + 11 * unit);
-            Rectangle(dc, x + 9 * unit, y + 2 * unit, x + 13 * unit, y + 4 * unit);
-        }
-        _ => {
-            let mut triangle = [
-                POINT {
-                    x: x + 3 * unit,
-                    y: y + 2 * unit,
-                },
-                POINT {
-                    x: x + 13 * unit,
-                    y: y + 7 * unit,
-                },
-                POINT {
-                    x: x + 3 * unit,
-                    y: y + 12 * unit,
-                },
-            ];
-            Polygon(dc, triangle.as_mut_ptr(), triangle.len() as i32);
-        }
-    }
-    SelectObject(dc, previous);
-    DeleteObject(brush as HGDIOBJ);
+        _ => vec![Shape::Triangle([
+            (4.0 * unit, 2.5 * unit),
+            (13.5 * unit, 8.0 * unit),
+            (4.0 * unit, 13.5 * unit),
+        ])],
+    };
+    paint_shapes(dc, origin.x, origin.y, size, &shapes, colour);
 }
 /// Splits a card's own caption into its title and its explanation, so the
 /// window text automation reads stays the full sentence.
@@ -312,7 +363,83 @@ pub(super) fn card_text_parts(text: &str) -> (String, String) {
         None => (text.to_string(), String::new()),
     }
 }
+/// The points, weight and faces of a card's title or explanation font:
+/// Modern's type ramp, or Classic's Segoe UI.
+pub(super) fn card_font_spec(title: bool, modern: bool) -> (i32, i32, &'static [&'static str]) {
+    let language = crate::i18n::language();
+    match (title, modern) {
+        (true, true) => (10, 600, ramp_faces(language, false)),
+        (false, true) => (9, FW_NORMAL as i32, ramp_faces(language, true)),
+        (true, false) => (9, 600, &["Segoe UI Semibold", "Segoe UI"]),
+        (false, false) => (8, FW_NORMAL as i32, &["Segoe UI"]),
+    }
+}
+pub(super) unsafe fn card_title_font(hwnd: HWND) -> HFONT {
+    let (points, weight, faces) = card_font_spec(true, modern());
+    card_font(hwnd, "title-font", points, weight, faces)
+}
+pub(super) unsafe fn card_text_font(hwnd: HWND) -> HFONT {
+    let (points, weight, faces) = card_font_spec(false, modern());
+    card_font(hwnd, "text-font", points, weight, faces)
+}
+/// Where a card `width` pixels wide puts its title and, below it, an
+/// explanation `lines` lines tall: beside the glyph, from the top of the
+/// face, so the titles of a row line up whatever their explanations' length.
+/// Modern's face sits FOCUS_MARGIN inside the card and its title stops before
+/// the mark at the end of its line; Classic's face sits inside a one-pixel
+/// frame.
+pub(super) fn card_text_areas(width: i32, dpi: u32, modern: bool, lines: i32) -> (RECT, RECT) {
+    let s = |value: i32| scale(value, dpi);
+    let (face, pad, mark) = if modern {
+        (s(FOCUS_MARGIN), s(12), s(16) + s(8))
+    } else {
+        (1, s(10), 0)
+    };
+    let left = face + pad + s(20) + pad;
+    let right = width - face - pad;
+    let top = if modern { face } else { 0 } + s(CARD_PAD);
+    let title = RECT {
+        left,
+        top,
+        right: right - mark,
+        bottom: top + s(CARD_TITLE),
+    };
+    let text = RECT {
+        left,
+        top: title.bottom,
+        right,
+        bottom: title.bottom + lines * s(CARD_LINE),
+    };
+    (title, text)
+}
+/// How many lines `card`'s explanation wraps to on a card `width` pixels
+/// wide.
+pub(super) unsafe fn card_text_lines(card: HWND, width: i32) -> i32 {
+    let dpi = GetDpiForWindow(card).max(96);
+    let (_, area) = card_text_areas(width, dpi, modern(), 1);
+    let (_, text) = card_text_parts(&super::text(card));
+    let mut text: Vec<u16> = text.encode_utf16().collect();
+    let dc = GetDC(card);
+    let previous = SelectObject(dc, card_text_font(card) as HGDIOBJ);
+    let mut needed = RECT {
+        right: area.right - area.left,
+        ..zeroed()
+    };
+    draw_text(dc, &mut text, &mut needed, CARD_TEXT_FORMAT | DT_CALCRECT);
+    SelectObject(dc, previous);
+    ReleaseDC(card, dc);
+    let line = scale(CARD_LINE, dpi);
+    ((needed.bottom + line - 1) / line).max(1)
+}
+/// A card's title stays on one line and its explanation wraps; neither is
+/// shortened.
+pub(super) const CARD_TITLE_FORMAT: u32 = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX;
+pub(super) const CARD_TEXT_FORMAT: u32 = DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX;
 pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
+    if modern() {
+        paint_choice_card(hwnd, dc);
+        return;
+    }
     let mut rect: RECT = zeroed();
     GetClientRect(hwnd, &mut rect);
     let dpi = GetDpiForWindow(hwnd).max(96);
@@ -339,68 +466,36 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     SelectObject(dc, pen);
     SelectObject(dc, fill);
     SetBkMode(dc, TRANSPARENT as i32);
-    // Vector glyph on top, centred.
-    let glyph_size = scale(32, dpi);
+    // The glyph at the start of the title's line, then the title over the
+    // explanation.
+    let (title, description) = card_text_parts(&super::text(hwnd));
+    let lines = card_text_lines(hwnd, rect.right);
+    let (mut title_area, mut description_area) = card_text_areas(rect.right, dpi, false, lines);
+    let glyph_size = scale(20, dpi);
     draw_card_glyph(
         dc,
         GetDlgCtrlID(hwnd),
         POINT {
-            x: (padded.left + padded.right - glyph_size) / 2,
-            y: padded.top + scale(12, dpi),
+            x: padded.left + scale(10, dpi),
+            y: title_area.top + (scale(CARD_TITLE, dpi) - glyph_size) / 2,
         },
         glyph_size,
         face.glyph,
     );
-    // Title, then the explanation under it.
-    let mut buffer = [0u16; 512];
-    let len = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32).max(0) as usize;
-    let (title, description) = card_text_parts(&String::from_utf16_lossy(&buffer[..len]));
-    let mut title_wide = wide(&title);
-    let mut title_area = RECT {
-        left: padded.left + scale(8, dpi),
-        top: padded.top + scale(52, dpi),
-        right: padded.right - scale(8, dpi),
-        bottom: padded.bottom,
-    };
-    let title_font = SelectObject(
-        dc,
-        card_font(
-            hwnd,
-            "title-font",
-            11,
-            600,
-            &["Segoe UI Semibold", "Segoe UI"],
-        ) as HGDIOBJ,
-    );
+    let previous = SelectObject(dc, card_title_font(hwnd) as HGDIOBJ);
     SetTextColor(dc, face.title);
-    DrawTextW(
-        dc,
-        title_wide.as_mut_ptr(),
-        -1,
-        &mut title_area,
-        DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS,
-    );
-    SelectObject(dc, title_font);
-    let mut description_wide = wide(&description);
-    let mut description_area = RECT {
-        left: padded.left + scale(10, dpi),
-        top: padded.top + scale(76, dpi),
-        right: padded.right - scale(10, dpi),
-        bottom: padded.bottom - scale(8, dpi),
-    };
-    let description_font = SelectObject(
-        dc,
-        card_font(hwnd, "text-font", 8, FW_NORMAL as i32, &["Segoe UI"]) as HGDIOBJ,
-    );
+    let mut title: Vec<u16> = title.encode_utf16().collect();
+    draw_text(dc, &mut title, &mut title_area, CARD_TITLE_FORMAT);
+    SelectObject(dc, card_text_font(hwnd) as HGDIOBJ);
     SetTextColor(dc, face.description);
-    DrawTextW(
+    let mut description: Vec<u16> = description.encode_utf16().collect();
+    draw_text(
         dc,
-        description_wide.as_mut_ptr(),
-        -1,
+        &mut description,
         &mut description_area,
-        DT_CENTER | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL,
+        CARD_TEXT_FORMAT,
     );
-    SelectObject(dc, description_font);
+    SelectObject(dc, previous);
     if GetFocus() == hwnd {
         let mut focus = padded;
         focus.left += scale(3, dpi);
@@ -496,7 +591,8 @@ pub(super) unsafe fn tab_title(tabs: HWND, index: i32) -> [u16; 64] {
     buffer
 }
 pub(super) unsafe fn measure_tab_item(dlg: &DialogUi, item: *mut MEASUREITEMSTRUCT) -> bool {
-    if (*item).CtlID != S_TABS as u32 {
+    // Modern's tabs follow their labels (`size_selector_tabs`).
+    if (*item).CtlID != S_TABS as u32 || modern() {
         return false;
     }
     (*item).itemWidth = scale(120, dlg.dpi) as u32;
@@ -561,7 +657,7 @@ pub(super) unsafe fn call_previous(
 /// Paints the header cells: comctl32 keeps the themed header light even with
 /// the dark subtheme applied, and it answers the list's custom draw itself, so
 /// the whole client area is painted here.
-pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
+pub(super) unsafe fn paint_header_classic(hwnd: HWND, dc: HDC) {
     let mut client: RECT = zeroed();
     if GetClientRect(hwnd, &mut client) == 0 {
         return;
@@ -628,13 +724,244 @@ pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
     };
     FillRect(dc, &edge, palette_brush(DARK_BORDER));
 }
-pub(super) unsafe extern "system" fn header_proc(
+pub(super) unsafe extern "system" fn header_proc_classic(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
     if scheme_dark(hwnd) {
+        match msg {
+            WM_PAINT => {
+                let mut paint: PAINTSTRUCT = zeroed();
+                let dc = BeginPaint(hwnd, &mut paint);
+                paint_header_classic(hwnd, dc);
+                EndPaint(hwnd, &paint);
+                return 0;
+            }
+            WM_PRINTCLIENT => {
+                paint_header_classic(hwnd, wparam as HDC);
+                return 0;
+            }
+            WM_ERASEBKGND => return 1,
+            _ => {}
+        }
+    }
+    call_previous(hwnd, msg, wparam, lparam)
+}
+/// Paints the header cells flat on the card: comctl32 keeps the themed header
+/// light even with the dark subtheme applied, and it answers the list's custom
+/// draw itself, so the whole client area is painted here.
+pub(super) unsafe fn paint_header(hwnd: HWND, dc: HDC) {
+    if !modern() {
+        return paint_header_classic(hwnd, dc);
+    }
+    let mut client: RECT = zeroed();
+    if GetClientRect(hwnd, &mut client) == 0 {
+        return;
+    }
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let palette = main_palette(hwnd);
+    fill_colour(dc, &client, palette.card);
+    // SubtleFillColorSecondary and Tertiary on the card: hovered and pressed.
+    let dark = scheme_dark(hwnd);
+    let hot = header_state(hwnd, header_hot_prop());
+    let pressed = header_state(hwnd, header_pressed_prop());
+    let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
+    let previous = if font == 0 {
+        null_mut()
+    } else {
+        SelectObject(dc, font as HGDIOBJ)
+    };
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, palette.secondary);
+    // The sort direction is a 12 epx chevron at the sorted column's right end.
+    let chevrons = icon_font_px(dpi, 12);
+    let chevron_w = scale(20, dpi);
+    for index in 0..SendMessageW(hwnd, HDM_GETITEMCOUNT, 0, 0) as i32 {
+        let mut rect: RECT = zeroed();
+        if SendMessageW(
+            hwnd,
+            HDM_GETITEMRECT,
+            index as usize,
+            &mut rect as *mut _ as isize,
+        ) == 0
+        {
+            continue;
+        }
+        let mut title = [0u16; 128];
+        let mut item: HDITEMW = zeroed();
+        item.mask = HDI_TEXT | HDI_FORMAT;
+        item.pszText = title.as_mut_ptr();
+        item.cchTextMax = title.len() as i32;
+        SendMessageW(
+            hwnd,
+            HDM_GETITEMW,
+            index as usize,
+            &mut item as *mut _ as isize,
+        );
+        let state = if pressed == Some(index) {
+            Some(if dark { 0x0affffff } else { 0x06000000 })
+        } else if hot == Some(index) && pressed.is_none() {
+            Some(if dark { 0x0fffffff } else { 0x09000000 })
+        } else {
+            None
+        };
+        if let Some(fill) = state {
+            fill_colour(dc, &rect, over(fill, palette.card));
+        }
+        let mut text = rect;
+        // The first column's title starts over the names, past their glyph slot.
+        text.left += scale(if index == 0 { 8 + 16 + 8 } else { 8 }, dpi);
+        text.right -= scale(4, dpi);
+        let chevron = if item.fmt & HDF_SORTUP != 0 {
+            Some(0xe70eu16)
+        } else if item.fmt & HDF_SORTDOWN != 0 {
+            Some(0xe70d)
+        } else {
+            None
+        };
+        if let (Some(code), false) = (chevron, chevrons.is_null()) {
+            let mut mark = RECT {
+                left: text.right - chevron_w,
+                ..text
+            };
+            text.right = mark.left;
+            let font = SelectObject(dc, chevrons as HGDIOBJ);
+            DrawTextW(
+                dc,
+                &code,
+                1,
+                &mut mark,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+            SelectObject(dc, font);
+        }
+        DrawTextW(
+            dc,
+            title.as_mut_ptr(),
+            -1,
+            &mut text,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        let divider = RECT {
+            left: rect.right - 1,
+            top: rect.top + scale(8, dpi),
+            right: rect.right,
+            bottom: rect.bottom - scale(8, dpi),
+        };
+        fill_colour(dc, &divider, palette.stroke);
+    }
+    if !previous.is_null() {
+        SelectObject(dc, previous);
+    }
+    if !chevrons.is_null() {
+        DeleteObject(chevrons as HGDIOBJ);
+    }
+    // The header's bottom edge is what separates it from the rows.
+    let edge = RECT {
+        left: client.left,
+        top: client.bottom - 1,
+        right: client.right,
+        bottom: client.bottom,
+    };
+    fill_colour(dc, &edge, palette.stroke);
+}
+fn header_hot_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.HeaderHot"));
+    NAME.as_ptr()
+}
+fn header_pressed_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.HeaderPressed"));
+    NAME.as_ptr()
+}
+/// The header item a state property names; it stores the index plus one.
+unsafe fn header_state(hwnd: HWND, prop: *const u16) -> Option<i32> {
+    let value = GetPropW(hwnd, prop) as isize;
+    (value > 0).then(|| value as i32 - 1)
+}
+unsafe fn set_header_state(hwnd: HWND, prop: *const u16, index: Option<i32>) {
+    if header_state(hwnd, prop) == index {
+        return;
+    }
+    if let Some(index) = index {
+        SetPropW(hwnd, prop, (index as isize + 1) as HANDLE);
+    } else {
+        RemovePropW(hwnd, prop);
+    }
+    InvalidateRect(hwnd, null(), 0);
+}
+/// The item under a client point of the header, not counting its dividers.
+unsafe fn header_item_at(hwnd: HWND, lparam: LPARAM) -> Option<i32> {
+    let mut hit: HDHITTESTINFO = zeroed();
+    hit.pt = POINT {
+        x: loword(lparam as usize) as i16 as i32,
+        y: hiword(lparam as usize) as i16 as i32,
+    };
+    let index = SendMessageW(hwnd, HDM_HITTEST, 0, &mut hit as *mut _ as isize) as i32;
+    (index >= 0 && hit.flags & HHT_ONHEADER != 0).then_some(index)
+}
+pub(super) unsafe extern "system" fn header_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if !modern() {
+        return header_proc_classic(hwnd, msg, wparam, lparam);
+    }
+    // The control draws a pressed or hot item itself as the pointer acts, so
+    // the states are taken after it ran and the invalidation repaints over it.
+    match msg {
+        WM_MOUSEMOVE => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            if header_state(hwnd, header_hot_prop()).is_none() {
+                let mut track = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                TrackMouseEvent(&mut track);
+            }
+            set_header_state(hwnd, header_hot_prop(), header_item_at(hwnd, lparam));
+            return result;
+        }
+        WM_MOUSELEAVE => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            set_header_state(hwnd, header_hot_prop(), None);
+            return result;
+        }
+        WM_LBUTTONDOWN => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            set_header_state(hwnd, header_pressed_prop(), header_item_at(hwnd, lparam));
+            return result;
+        }
+        WM_LBUTTONUP | WM_CAPTURECHANGED => {
+            let result = call_previous(hwnd, msg, wparam, lparam);
+            set_header_state(hwnd, header_pressed_prop(), None);
+            return result;
+        }
+        WM_NCDESTROY => {
+            RemovePropW(hwnd, header_hot_prop());
+            RemovePropW(hwnd, header_pressed_prop());
+        }
+        _ => {}
+    }
+    if msg == HDM_LAYOUT {
+        // A 32 epx header, the height of a Fluent list header.
+        let result = call_previous(hwnd, msg, wparam, lparam);
+        let layout = &*(lparam as *const HDLAYOUT);
+        if !layout.prc.is_null() && !layout.pwpos.is_null() {
+            let wanted = scale(32, GetDpiForWindow(hwnd).max(96));
+            (*layout.prc).top += wanted - (*layout.pwpos).cy;
+            (*layout.pwpos).cy = wanted;
+        }
+        return result;
+    }
+    if !high_contrast() {
         match msg {
             WM_PAINT => {
                 let mut paint: PAINTSTRUCT = zeroed();
@@ -794,7 +1121,7 @@ pub(super) unsafe fn paint_list_cell(ui: &MainUi, draw: &NMLVCUSTOMDRAW) {
 /// so the default pass draws no lines there to leave alone.
 /// Fill of a row's progress cell: completed green, failed red, waiting grey, running blue.
 /// White text stays readable on every one of them, in both schemes.
-fn progress_colour(state: JobState) -> u32 {
+pub(super) fn progress_colour(state: JobState) -> u32 {
     match state {
         JobState::Completed => 0x107c10,
         JobState::Failed | JobState::Cancelled => 0x1c2bc4,
@@ -802,6 +1129,82 @@ fn progress_colour(state: JobState) -> u32 {
             0x6e6e6e
         }
         _ => 0xb85f00,
+    }
+}
+
+/// The pixel spans `[left, right)` of a bar `width` pixels wide that the byte
+/// ranges `[start, end)` of a `total`-byte file cover. A range narrower than a
+/// pixel still takes one, so a connection that has just begun shows.
+pub(super) fn segment_spans(parts: &[(u64, u64)], total: u64, width: i32) -> Vec<(i32, i32)> {
+    if total == 0 || width <= 0 {
+        return Vec::new();
+    }
+    let at = |byte: u64| (byte.min(total) as u128 * width as u128 / total as u128) as i32;
+    let mut spans: Vec<(i32, i32)> = Vec::new();
+    for &(start, end) in parts {
+        if end <= start {
+            continue;
+        }
+        let left = at(start).min(width - 1);
+        let right = at(end).max(left + 1);
+        match spans.last_mut() {
+            Some(last) if left <= last.1 => last.1 = last.1.max(right),
+            _ => spans.push((left, right)),
+        }
+    }
+    spans
+}
+
+/// Paints the job view's segment bar into `rect` of `dc`: a framed track the
+/// width of the file, with the parts that have arrived filled in the colour
+/// the main list gives the job's state.
+pub(super) unsafe fn paint_segment_bar(dlg: &DialogUi, view: &SegmentView, dc: HDC, rect: RECT) {
+    let state = view.state.unwrap_or(JobState::Queued);
+    let (back, track, frame, fill) = if high_contrast() {
+        (
+            GetSysColor(COLOR_WINDOW),
+            GetSysColor(COLOR_WINDOW),
+            GetSysColor(COLOR_WINDOWTEXT),
+            GetSysColor(COLOR_HIGHLIGHT),
+        )
+    } else if modern() {
+        let palette = card_palette(dlg.hwnd);
+        (
+            palette.card,
+            palette.control,
+            palette.control_stroke,
+            state_fill(&palette, state),
+        )
+    } else if dialog_is_dark(dlg) {
+        (
+            DARK_BACKGROUND,
+            DARK_SURFACE,
+            DARK_BORDER,
+            progress_colour(state),
+        )
+    } else {
+        (
+            GetSysColor(COLOR_WINDOW),
+            0xe6e6e6,
+            GetSysColor(COLOR_BTNSHADOW),
+            progress_colour(state),
+        )
+    };
+    fill_colour(dc, &rect, back);
+    if modern() && !high_contrast() {
+        round_rect(dc, &rect, scale(2, dlg.dpi), track, Some(frame));
+    } else {
+        fill_colour(dc, &rect, frame);
+        fill_colour(dc, &inflate(rect, -1, -1), track);
+    }
+    let inner = inflate(rect, -1, -1);
+    for (left, right) in segment_spans(&view.parts, view.total, inner.right - inner.left) {
+        let part = RECT {
+            left: inner.left + left,
+            right: inner.left + right,
+            ..inner
+        };
+        fill_colour(dc, &part, fill);
     }
 }
 
@@ -833,7 +1236,11 @@ pub(super) fn processing_sweep(clock: u64, width: i32) -> (i32, i32) {
 }
 
 /// Share of the progress cell to fill: finished and failed jobs fill all of it.
-fn progress_fraction(state: JobState, downloaded: u64, total: Option<u64>) -> Option<f64> {
+pub(super) fn progress_fraction(
+    state: JobState,
+    downloaded: u64,
+    total: Option<u64>,
+) -> Option<f64> {
     match (state, total) {
         (JobState::Completed | JobState::Failed | JobState::Cancelled, _) => Some(1.0),
         (_, Some(total)) if total > 0 => Some((downloaded as f64 / total as f64).min(1.0)),
@@ -1111,10 +1518,26 @@ pub(super) unsafe fn menu_strip(ui: &MainUi) -> Option<MenuStrip> {
     })
 }
 
-/// Fills the bar itself in the scheme's colours, with the edge that separates
-/// it from the client area. Shared by the strip repaint and the theme's own bar
-/// drawing, so both land on the same pixels.
-pub(super) unsafe fn fill_menu_bar(dc: HDC, strip: &MenuStrip) {
+/// True while the main window paints its menu bar itself. Modern: always,
+/// except in high contrast, where the system's bar keeps the system colours.
+/// Classic: in the dark scheme only.
+pub(super) unsafe fn menu_strip_painted(hwnd: HWND) -> bool {
+    if modern() {
+        !high_contrast()
+    } else {
+        scheme_dark(hwnd)
+    }
+}
+
+/// Fills the bar itself: Modern with the base layer, so title bar, menu bar
+/// and window read as one surface; Classic with the dark background and the
+/// edge that separates it from the client area. Shared by the strip repaint
+/// and the theme's own bar drawing, so both land on the same pixels.
+pub(super) unsafe fn fill_menu_bar(dc: HDC, strip: &MenuStrip, hwnd: HWND) {
+    if modern() {
+        fill_colour(dc, &strip.bar, main_palette(hwnd).base);
+        return;
+    }
     FillRect(dc, &strip.bar, palette_brush(DARK_BACKGROUND));
     let edge = RECT {
         left: strip.bar.left,
@@ -1125,14 +1548,14 @@ pub(super) unsafe fn fill_menu_bar(dc: HDC, strip: &MenuStrip) {
     FillRect(dc, &edge, palette_brush(DARK_BORDER));
 }
 
-/// The font the bar's captions are drawn with: the application font, which is
-/// also the font the menu carries, so the captions and the item boxes the shell
-/// measured agree.
+/// The font the bar's captions are drawn with: the font the menu carries, so
+/// the captions and the item boxes the shell measured agree.
 pub(super) unsafe fn menu_font(ui: &MainUi) -> HFONT {
-    if ui.font.is_null() {
+    let font = if modern() { ui.menu_font } else { ui.font };
+    if font.is_null() {
         SendMessageW(ui.hwnd, WM_GETFONT, 0, 0) as HFONT
     } else {
-        ui.font
+        font
     }
 }
 
@@ -1168,7 +1591,46 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
     let Some(strip) = menu_strip(ui) else {
         return;
     };
-    fill_menu_bar(dc, &strip);
+    // Classic draws the strip straight into the context.
+    if !modern() {
+        fill_menu_bar(dc, &strip, ui.hwnd);
+        draw_strip_items(ui, dc, menu, count, &strip);
+        return;
+    }
+    // Modern composes the strip off screen and copies it in one step, so the
+    // screen never shows the bar filled but without its captions.
+    let memory = CreateCompatibleDC(dc);
+    let bitmap = CreateCompatibleBitmap(dc, strip.bar.right, strip.bar.bottom);
+    if memory.is_null() || bitmap.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as HGDIOBJ);
+        }
+        if !memory.is_null() {
+            DeleteDC(memory);
+        }
+        return;
+    }
+    let previous = SelectObject(memory, bitmap as HGDIOBJ);
+    fill_menu_bar(memory, &strip, ui.hwnd);
+    draw_strip_items(ui, memory, menu, count, &strip);
+    BitBlt(
+        dc,
+        strip.bar.left,
+        strip.bar.top,
+        strip.bar.right - strip.bar.left,
+        strip.bar.bottom - strip.bar.top,
+        memory,
+        strip.bar.left,
+        strip.bar.top,
+        SRCCOPY,
+    );
+    SelectObject(memory, previous);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(memory);
+}
+
+/// Draws every item of the bar's menu into dc, the hot one highlighted.
+unsafe fn draw_strip_items(ui: &MainUi, dc: HDC, menu: HMENU, count: i32, strip: &MenuStrip) {
     for index in 0..count {
         let mut rect: RECT = zeroed();
         if GetMenuItemRect(ui.hwnd, menu, index as u32, &mut rect) == 0 {
@@ -1238,7 +1700,27 @@ pub(super) unsafe fn draw_menu_item(
     if length <= 0 {
         return;
     }
-    if hot {
+    // Classic draws the dark scheme's colours and a square highlight.
+    let (text_colour, disabled_colour) = if modern() {
+        let palette = main_palette(ui.hwnd);
+        (palette.text, palette.disabled)
+    } else {
+        (DARK_TEXT, DARK_MUTED)
+    };
+    if hot && modern() {
+        let highlight = RECT {
+            top: item.top + scale(2, ui.dpi),
+            bottom: item.bottom - scale(2, ui.dpi),
+            ..item
+        };
+        round_rect(
+            dc,
+            &highlight,
+            scale(CORNER, ui.dpi),
+            main_palette(ui.hwnd).hover,
+            None,
+        );
+    } else if hot {
         FillRect(dc, &item, palette_brush(DARK_SURFACE));
     }
     SetBkMode(dc, TRANSPARENT as i32);
@@ -1251,7 +1733,14 @@ pub(super) unsafe fn draw_menu_item(
     let (title, mnemonic) = split_mnemonic(&String::from_utf16_lossy(&label[..length as usize]));
     let state = GetMenuState(menu, index as u32, MF_BYPOSITION);
     let enabled = state & (MF_DISABLED | MF_GRAYED) == 0;
-    SetTextColor(dc, if enabled { DARK_TEXT } else { DARK_MUTED });
+    SetTextColor(
+        dc,
+        if enabled {
+            text_colour
+        } else {
+            disabled_colour
+        },
+    );
     let mut text = item;
     let mut wide_title = wide(&title);
     let mut title_size: SIZE = zeroed();
@@ -1304,7 +1793,7 @@ pub(super) unsafe fn draw_menu_item(
                     right: text_left + size.cx + letter_size.cx.max(scale(4, ui.dpi)),
                     bottom: top + thickness,
                 };
-                FillRect(dc, &underline, palette_brush(DARK_TEXT));
+                fill_colour(dc, &underline, text_colour);
             }
         }
     }
@@ -1364,7 +1853,7 @@ pub(super) unsafe fn track_nc_leave(hwnd: HWND) {
 
 /// The status bar keeps the system face colour, offers no text-colour message
 /// and drops the dark subtheme for the text, so dark mode paints its parts.
-pub(super) unsafe fn paint_status(hwnd: HWND, dc: HDC) {
+pub(super) unsafe fn paint_status_classic(hwnd: HWND, dc: HDC) {
     let mut client: RECT = zeroed();
     if GetClientRect(hwnd, &mut client) == 0 {
         return;
@@ -1447,13 +1936,87 @@ pub(super) unsafe fn paint_status(hwnd: HWND, dc: HDC) {
         }
     }
 }
+/// The Modern status line: secondary text on the base layer, lined up with
+/// the cards.
+pub(super) unsafe fn paint_status(hwnd: HWND, dc: HDC) {
+    if !modern() {
+        return paint_status_classic(hwnd, dc);
+    }
+    let mut client: RECT = zeroed();
+    if GetClientRect(hwnd, &mut client) == 0 {
+        return;
+    }
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let palette = main_palette(hwnd);
+    fill_colour(dc, &client, palette.base);
+    let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
+    let previous = if font == 0 {
+        null_mut()
+    } else {
+        SelectObject(dc, font as HGDIOBJ)
+    };
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, palette.secondary);
+    let parts = SendMessageW(hwnd, SB_GETPARTS, 0, 0).max(1);
+    for index in 0..parts {
+        let mut rect: RECT = zeroed();
+        if SendMessageW(
+            hwnd,
+            SB_GETRECT,
+            index as usize,
+            &mut rect as *mut _ as isize,
+        ) == 0
+        {
+            continue;
+        }
+        let length = SendMessageW(hwnd, SB_GETTEXTLENGTHW, index as usize, 0) & 0xFFFF;
+        if length > 0 {
+            let mut text = vec![0u16; length as usize + 1];
+            SendMessageW(
+                hwnd,
+                SB_GETTEXTW,
+                index as usize,
+                text.as_mut_ptr() as isize,
+            );
+            // The text lines up with the cards' left edge.
+            let mut area = rect;
+            area.left = area.left.max(client.left + scale(16, dpi));
+            area.right -= scale(16, dpi);
+            DrawTextW(
+                dc,
+                text.as_mut_ptr(),
+                length as i32,
+                &mut area,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
+        }
+        if index + 1 < parts {
+            let divider = RECT {
+                left: rect.right - 1,
+                top: rect.top + scale(2, dpi),
+                right: rect.right,
+                bottom: rect.bottom - scale(2, dpi),
+            };
+            fill_colour(dc, &divider, palette.stroke);
+        }
+    }
+    if !previous.is_null() {
+        SelectObject(dc, previous);
+    }
+}
 pub(super) unsafe extern "system" fn status_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if scheme_dark(hwnd) {
+    // Classic paints the bar only in the dark scheme, Modern in both.
+    let painted = if modern() {
+        !high_contrast()
+    } else {
+        scheme_dark(hwnd)
+    };
+    if painted {
         match msg {
             WM_PAINT => {
                 let mut paint: PAINTSTRUCT = zeroed();
@@ -1740,8 +2303,9 @@ pub(super) unsafe fn apply_dark_mode(hwnd: HWND, enabled: bool) {
     let theme = wide("DarkMode_Explorer");
     SetWindowTheme(hwnd, if enabled { theme.as_ptr() } else { null() }, null());
     EnumChildWindows(hwnd, Some(theme_child), enabled as LPARAM);
+    // Modern paints the job list itself (`refresh_main_surfaces`).
     let list = GetDlgItem(hwnd, ID_JOB_LIST);
-    if !list.is_null() {
+    if !list.is_null() && !modern() {
         let bg = if enabled {
             0x202020
         } else {
@@ -1839,6 +2403,10 @@ pub(super) unsafe fn paint_tabs(hwnd: HWND, dc: HDC) {
         return;
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
+    if modern() {
+        paint_selector_tabs(hwnd, dc, &client, dpi);
+        return;
+    }
     let palette = tab_palette(scheme_dark(hwnd));
     FillRect(dc, &client, palette.background);
     let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
@@ -1892,6 +2460,101 @@ pub(super) unsafe fn paint_tabs(hwnd: HWND, dc: HDC) {
         SelectObject(dc, previous);
     }
 }
+/// Modern's tabs in the WinUI SelectorBar look: labels on the main window's
+/// base layer or on a dialog's content card, the selected one in the primary
+/// text colour over a short accent pill, and a focus ring around it while the
+/// strip has the keyboard focus.
+unsafe fn paint_selector_tabs(hwnd: HWND, dc: HDC, client: &RECT, dpi: u32) {
+    let palette = main_palette(GetParent(hwnd));
+    let surface = if GetDlgCtrlID(hwnd) == ID_JOB_TABS {
+        palette.base
+    } else {
+        palette.card
+    };
+    fill_colour(dc, client, surface);
+    let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
+    let previous = if font == 0 {
+        null_mut()
+    } else {
+        SelectObject(dc, font as HGDIOBJ)
+    };
+    SetBkMode(dc, TRANSPARENT as i32);
+    let selected = SendMessageW(hwnd, TCM_GETCURSEL, 0, 0) as i32;
+    let focus_shown = GetFocus() == hwnd
+        && SendMessageW(hwnd, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0;
+    let hot = GetPropW(hwnd, tab_hot_prop()) as isize as i32 - 1;
+    for index in 0..SendMessageW(hwnd, TCM_GETITEMCOUNT, 0, 0) as i32 {
+        let mut rect: RECT = zeroed();
+        if SendMessageW(
+            hwnd,
+            TCM_GETITEMRECT,
+            index as usize,
+            &mut rect as *mut _ as isize,
+        ) == 0
+        {
+            continue;
+        }
+        // A hovered tab that is not the selected one gets the subtle fill.
+        let hovered = index == hot && index != selected;
+        if hovered && !high_contrast() {
+            round_rect(
+                dc,
+                &inflate(rect, -scale(2, dpi), -scale(2, dpi)),
+                scale(CORNER, dpi),
+                palette.hover,
+                None,
+            );
+        }
+        if index == selected && focus_shown {
+            focus_plate(
+                dc,
+                &inflate(rect, -scale(2, dpi), -scale(2, dpi)),
+                scale(CORNER, dpi),
+                dpi,
+                &palette,
+                surface,
+            );
+        }
+        let mut title = tab_title(hwnd, index);
+        let length = title.iter().position(|&c| c == 0).unwrap_or(title.len());
+        SetTextColor(
+            dc,
+            if index == selected || hovered {
+                palette.text
+            } else {
+                palette.secondary
+            },
+        );
+        // The label starts TAB_PAD in, so the layout can line the first one
+        // up with the page text.
+        let mut text = RECT {
+            left: rect.left + scale(TAB_PAD, dpi),
+            bottom: rect.bottom - scale(4, dpi),
+            ..rect
+        };
+        let label_w = label_width(dc, &String::from_utf16_lossy(&title[..length]));
+        DrawTextW(
+            dc,
+            title.as_mut_ptr(),
+            length as i32,
+            &mut text,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        if index == selected {
+            let centre = rect.left + scale(TAB_PAD, dpi) + label_w / 2;
+            let pill = RECT {
+                left: centre - scale(8, dpi),
+                top: rect.bottom - scale(7, dpi),
+                right: centre + scale(8, dpi),
+                bottom: rect.bottom - scale(4, dpi),
+            };
+            round_rect(dc, &pill, scale(1, dpi), palette.accent, None);
+        }
+    }
+    if !previous.is_null() {
+        SelectObject(dc, previous);
+    }
+}
 pub(super) unsafe extern "system" fn tabs_proc(
     hwnd: HWND,
     msg: u32,
@@ -1911,9 +2574,48 @@ pub(super) unsafe extern "system" fn tabs_proc(
             return 0;
         }
         WM_ERASEBKGND => return 1,
+        // Modern's focus ring follows the keyboard focus.
+        WM_SETFOCUS | WM_KILLFOCUS if modern() => {
+            InvalidateRect(hwnd, null(), 0);
+        }
+        // Modern's tabs show the one under the pointer.
+        WM_MOUSEMOVE if modern() => {
+            let mut hit = TCHITTESTINFO {
+                pt: POINT {
+                    x: loword(lparam as usize) as i16 as i32,
+                    y: hiword(lparam as usize) as i16 as i32,
+                },
+                flags: 0,
+            };
+            let index = SendMessageW(hwnd, TCM_HITTEST, 0, &mut hit as *mut _ as isize) as i32;
+            if index + 1 != GetPropW(hwnd, tab_hot_prop()) as isize as i32 {
+                SetPropW(hwnd, tab_hot_prop(), (index + 1) as isize as HANDLE);
+                let mut track = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                TrackMouseEvent(&mut track);
+                InvalidateRect(hwnd, null(), 0);
+            }
+        }
+        WM_MOUSELEAVE if modern() => {
+            RemovePropW(hwnd, tab_hot_prop());
+            InvalidateRect(hwnd, null(), 0);
+        }
+        WM_NCDESTROY => {
+            RemovePropW(hwnd, tab_hot_prop());
+        }
         _ => {}
     }
     call_previous(hwnd, msg, wparam, lparam)
+}
+/// The window property holding the hovered tab's index plus one.
+fn tab_hot_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.TabHot"));
+    NAME.as_ptr()
 }
 /// Progress bars keep the themed light fill in dark mode; the bar is painted
 /// here with the palette's surface and accent, border included.

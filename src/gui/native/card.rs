@@ -327,73 +327,62 @@ enum Glyph {
     Play,
 }
 
-/// Small line icons drawn with GDI, centred in `rect`; no icon font is needed.
+/// Small line icons drawn as smoothed vector shapes, centred in `rect`; no icon
+/// font is needed.
 unsafe fn draw_glyph(dc: HDC, glyph: Glyph, rect: RECT, colour: u32, dpi: u32) {
-    let cx = (rect.left + rect.right) / 2;
-    let cy = (rect.top + rect.bottom) / 2;
     let r = scale(5, dpi);
-    let pen = CreatePen(PS_SOLID, scale(2, dpi).max(1), colour);
-    let brush = CreateSolidBrush(colour);
-    let old_pen = SelectObject(dc, pen as HGDIOBJ);
-    let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    match glyph {
-        Glyph::Close => {
-            MoveToEx(dc, cx - r, cy - r, null_mut());
-            LineTo(dc, cx + r + 1, cy + r + 1);
-            MoveToEx(dc, cx + r, cy - r, null_mut());
-            LineTo(dc, cx - r - 1, cy + r + 1);
-        }
+    let half = r + 3;
+    // The centre lies on a pixel corner, so even strokes keep sharp straight
+    // edges. `e` is how far a glyph reaches from it.
+    let (c, r) = (half as f32, r as f32);
+    let e = r + 1.0;
+    let stroke = scale(2, dpi).max(1) as f32;
+    let shapes = match glyph {
+        Glyph::Close => vec![
+            Shape::Line((c - r, c - r), (c + r, c + r), stroke),
+            Shape::Line((c + r, c - r), (c - r, c + r), stroke),
+        ],
         Glyph::Pin | Glyph::Pinned => {
-            if matches!(glyph, Glyph::Pinned) {
-                SelectObject(dc, brush as HGDIOBJ);
-            }
-            Ellipse(dc, cx - r + 1, cy - r - 2, cx + r, cy + r - 3);
-            MoveToEx(dc, cx, cy + r - 3, null_mut());
-            LineTo(dc, cx, cy + r + 3);
+            let head = [c - e + 0.5, c - e - 2.0, c + e - 0.5, c + e - 3.0];
+            vec![
+                if matches!(glyph, Glyph::Pinned) {
+                    Shape::Ellipse(head)
+                } else {
+                    Shape::Ring(head, stroke)
+                },
+                Shape::Rect(
+                    [
+                        c - stroke / 2.0,
+                        head[3] - stroke,
+                        c + stroke / 2.0,
+                        c + e + 2.0,
+                    ],
+                    0.0,
+                ),
+            ]
         }
-        Glyph::Expand => {
-            Rectangle(dc, cx - r, cy - r, cx + r + 1, cy + r + 1);
-        }
+        Glyph::Expand => vec![Shape::Frame([c - e, c - e, c + e, c + e], 0.0, stroke)],
         Glyph::Pause => {
-            let width = scale(3, dpi);
-            let left = RECT {
-                left: cx - r,
-                top: cy - r,
-                right: cx - r + width,
-                bottom: cy + r + 1,
-            };
-            FillRect(dc, &left, brush);
-            let right = RECT {
-                left: cx + r + 1 - width,
-                top: cy - r,
-                right: cx + r + 1,
-                bottom: cy + r + 1,
-            };
-            FillRect(dc, &right, brush);
+            let width = scale(3, dpi) as f32;
+            vec![
+                Shape::Rect([c - e, c - e, c - e + width, c + e], 0.0),
+                Shape::Rect([c + e - width, c - e, c + e, c + e], 0.0),
+            ]
         }
-        Glyph::Play => {
-            SelectObject(dc, brush as HGDIOBJ);
-            let points = [
-                POINT {
-                    x: cx - r + 1,
-                    y: cy - r,
-                },
-                POINT {
-                    x: cx + r + 1,
-                    y: cy,
-                },
-                POINT {
-                    x: cx - r + 1,
-                    y: cy + r,
-                },
-            ];
-            Polygon(dc, points.as_ptr(), 3);
-        }
-    }
-    SelectObject(dc, old_pen);
-    SelectObject(dc, old_brush);
-    DeleteObject(pen as HGDIOBJ);
-    DeleteObject(brush as HGDIOBJ);
+        Glyph::Play => vec![Shape::Triangle([
+            (c - r, c - e),
+            (c + e + 1.0, c),
+            (c - r, c + e),
+        ])],
+    };
+    paint_shapes(
+        dc,
+        (rect.left + rect.right) / 2 - half,
+        (rect.top + rect.bottom) / 2 - half,
+        2 * half,
+        &shapes,
+        colour,
+    );
 }
 
 unsafe fn paint_card(card: &mut CardUi, dc: HDC) {
@@ -802,7 +791,46 @@ unsafe extern "system" fn card_proc(
 
 #[cfg(test)]
 mod tests {
-    use super::{shows, CardKind};
+    use super::{draw_glyph, on_white, shows, CardKind, Glyph, RECT};
+
+    #[test]
+    fn card_glyphs_smooth_their_slopes_and_curves_and_keep_straight_edges_sharp() {
+        let counts = |glyph, dpi| {
+            let pixels = unsafe {
+                on_white(24, |dc| {
+                    let rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 24,
+                        bottom: 24,
+                    };
+                    draw_glyph(dc, glyph, rect, 0, dpi)
+                })
+            };
+            let solid = pixels.iter().filter(|&&pixel| pixel == 0).count();
+            let blended = pixels
+                .iter()
+                .filter(|&&pixel| pixel != 0 && pixel != 0xffffff)
+                .count();
+            (solid, blended)
+        };
+        for dpi in [96, 144] {
+            for glyph in [Glyph::Close, Glyph::Pin, Glyph::Pinned, Glyph::Play] {
+                let (solid, blended) = counts(glyph, dpi);
+                assert!(
+                    solid > 0 && blended > 0,
+                    "{dpi}: {solid} solid, {blended} blended"
+                );
+            }
+            for glyph in [Glyph::Expand, Glyph::Pause] {
+                let (solid, blended) = counts(glyph, dpi);
+                assert!(
+                    solid > 0 && blended == 0,
+                    "{dpi}: {solid} solid, {blended} blended"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_card_minimized_from_one_download_stands_in_for_its_completion_card() {

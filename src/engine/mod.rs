@@ -511,6 +511,8 @@ impl Engine {
             .iter_mut()
             .filter(|job| job.state == JobState::Completed)
         {
+            // Ranges are never stored: a completed job read back has all its bytes.
+            job.ranges = Some(Arc::from([(0, job.total.unwrap_or(job.downloaded))]));
             if job.request.holds_session() {
                 job.request.forget_session();
                 forgotten.push(job.clone());
@@ -1167,6 +1169,8 @@ impl Actor {
             open_when_done: false,
             live: false,
             sequence,
+            ranges: None,
+            resumable: None,
         };
         if let Err(error) = self.store.save_job(&job) {
             let _ = crate::recovery::release(&job.path, &id);
@@ -2149,6 +2153,11 @@ impl Actor {
             updated.downloaded
         };
         updated.total = if active.restart { None } else { updated.total };
+        if active.restart {
+            updated.ranges = None;
+        }
+        // The new source's range support and identity are unknown until it is fetched.
+        updated.resumable = None;
         updated.phase = if updated.state == JobState::Scheduled {
             updated.state.label().into()
         } else if active.restart {
@@ -2639,6 +2648,8 @@ impl Actor {
         let restarted = restart && !handed_over;
         if restarted {
             job.downloaded = 0;
+            job.ranges = None;
+            job.resumable = None;
         }
         job.state = JobState::Downloading;
         job.phase = crate::i18n::ui(
@@ -2719,6 +2730,9 @@ impl Actor {
             .unwrap_or(job.downloaded);
         job.browser_transfer_authorized = true;
         job.downloaded = committed;
+        // The receiver's bytes are not the ones the app's own download placed.
+        job.ranges = None;
+        job.resumable = None;
         job.updated_at = Utc::now().timestamp();
         self.store.save_job(&job)?;
         self.jobs.insert(id.into(), job);
@@ -3409,6 +3423,8 @@ impl Actor {
                 job.total = value.total;
                 job.speed = value.speed;
                 job.eta = value.eta;
+                job.ranges = value.ranges;
+                job.resumable = value.resumable;
                 job.phase = stage.clone();
                 job.live = active.control.is_live();
                 job.state = if value.processing {
@@ -3676,6 +3692,7 @@ impl Actor {
                     .to_owned();
                 job.downloaded = result.bytes;
                 job.total = Some(result.bytes);
+                job.ranges = Some(Arc::from([(0, result.bytes)]));
                 job.speed = 0;
                 job.eta = Some(0);
                 job.state = JobState::Completed;
@@ -3929,6 +3946,7 @@ impl Actor {
                         job.path = done.path;
                         job.downloaded = done.bytes;
                         job.total = Some(done.bytes);
+                        job.ranges = Some(Arc::from([(0, done.bytes)]));
                         job.state = JobState::Completed;
                         job.phase =
                             crate::i18n::ui("Tamamlandı (kurtarıldı)", "Completed (recovered)")

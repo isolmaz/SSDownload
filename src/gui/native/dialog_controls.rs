@@ -119,8 +119,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Basit — indirme listesi, yeni indirme ve temel ayarlar",
-                    "Basic — downloads, new download and essential settings",
+                    "Basit — indirmeler ve temel ayarlar",
+                    "Basic — essential downloads and settings",
                 ),
                 ID_WIZARD_SIMPLE,
             );
@@ -128,10 +128,29 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Gelişmiş — kuyruk, klasör kuralları, site gezgini, eşitleme, günlükler",
-                    "Advanced — queues, folder rules, site crawler, sync, logs",
+                    "Gelişmiş — kuyruk, kurallar, gezgin, eşitleme, günlükler",
+                    "Advanced — queues, rules, crawler, sync, logs",
                 ),
                 ID_WIZARD_ADVANCED,
+            );
+            dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Tema:", "Theme:"), 0);
+            f.classic_card = dialog_card(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui(
+                    "Klasik — sade Windows görünümü",
+                    "Classic — the plain Windows look",
+                ),
+                ID_WIZARD_CLASSIC,
+            );
+            f.modern_card = dialog_card(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui(
+                    "Modern — Windows 11 görünümü",
+                    "Modern — the Windows 11 look",
+                ),
+                ID_WIZARD_MODERN,
             );
             dialog_label(
                 dlg.hwnd,
@@ -146,8 +165,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Video — MP4/MKV, kalite, ses parçası ve altyazı seçenekleri",
-                    "Video — MP4/MKV, quality, audio track and subtitle options",
+                    "Video — kalite, ses parçası, altyazı",
+                    "Video — quality, tracks, subtitles",
                 ),
                 ID_WIZARD_VIDEO,
             );
@@ -155,8 +174,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Dosya — normal dosya bağlantılarını güvenilir biçimde aktar",
-                    "File — reliably transfer regular file links",
+                    "Dosya — normal dosya bağlantıları",
+                    "File — regular file links",
                 ),
                 ID_WIZARD_FILE,
             );
@@ -164,13 +183,28 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Ses — video sayfalarından veya ses bağlantılarından yalnız sesi çıkar",
-                    "Audio — extract audio only from video pages or audio links",
+                    "Ses — sayfalardan yalnız ses",
+                    "Audio — audio only from pages and links",
                 ),
                 ID_WIZARD_AUDIO,
             );
+            // The running windows keep their theme, so a wizard opened from
+            // them says when its choice applies, as Settings does.
+            if !GetWindow(dlg.hwnd, GW_OWNER).is_null() {
+                f.note = dialog_label(
+                    dlg.hwnd,
+                    dlg.font,
+                    crate::i18n::ui(
+                        "Yeniden başlatınca geçerli olur",
+                        "Takes effect after a restart",
+                    ),
+                    0,
+                );
+            }
             set_check(f.simple_card, f.simple);
             set_check(f.advanced_card, !f.simple);
+            set_check(f.classic_card, !f.modern);
+            set_check(f.modern_card, f.modern);
             set_check(f.video, f.modes.video);
             set_check(f.file, f.modes.file);
             set_check(f.audio, f.modes.audio);
@@ -190,6 +224,11 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             );
             EnableWindow(f.start, wizard_start_enabled(f) as BOOL);
             SetFocus(f.simple_card);
+            // A wizard that opens before the main window has no main window
+            // timer to act on a quit request; it watches for one itself.
+            if GetWindow(dlg.hwnd, GW_OWNER).is_null() {
+                SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
+            }
         }
         DialogKind::Add(f) => {
             dialog_label(
@@ -239,6 +278,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.kind = dialog_combo(dlg.hwnd, dlg.font, D_KIND);
+            if modern() {
+                subclass(f.kind, combo_proc);
+            }
             let modes = dlg.app.snapshot().settings.usage_modes;
             f.kind_values.clear();
             if modes.allows(DownloadKind::Auto) {
@@ -291,6 +333,15 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 0,
             );
             f.schedule = dialog_edit(dlg.hwnd, dlg.font, D_SCHEDULE, false, false);
+            // Modern: cue banners in the empty fields.
+            if modern() {
+                for (index, (tr, en)) in ADD_CUES.iter().enumerate() {
+                    let cue = wide(crate::i18n::ui(tr, en));
+                    let edit = [f.filename, f.schedule][index];
+                    SendMessageW(edit, EM_SETCUEBANNER, 0, cue.as_ptr() as LPARAM);
+                    subclass(edit, cue_proc);
+                }
+            }
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -301,7 +352,11 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Devam / İndir", "Continue / Download"),
+                if modern() {
+                    crate::i18n::ui("İndir", "Download")
+                } else {
+                    crate::i18n::ui("Devam / İndir", "Continue / Download")
+                },
                 D_ADD_OK,
                 true,
             );
@@ -312,6 +367,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 D_CANCEL,
                 false,
             );
+            if modern() {
+                set_text(GetDlgItem(dlg.hwnd, D_ADD_OK), add_ok_label(f));
+            }
             if f.analyze_first && !f.initial.trim().is_empty() {
                 PostMessageW(dlg.hwnd, WM_COMMAND, D_ADD_ANALYZE as usize, 0);
             }
@@ -860,6 +918,22 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             );
             f.history = dialog_edit(dlg.hwnd, dlg.font, S_HISTORY, false, true);
             set_text(f.history, &f.value.history_days.to_string());
+            // Genel: the theme row. Its statics are created last so the label
+            // indexes above stay as they are.
+            f.theme_label = dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Tema:", "Theme:"), 0);
+            f.theme = dialog_combo(dlg.hwnd, dlg.font, S_THEME);
+            combo_add(f.theme, crate::i18n::ui("Klasik", "Classic"));
+            combo_add(f.theme, crate::i18n::ui("Modern", "Modern"));
+            combo_select(f.theme, f.value.modern_theme() as i32);
+            f.theme_note = dialog_label(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui(
+                    "Yeniden başlatınca geçerli olur",
+                    "Takes effect after a restart",
+                ),
+                0,
+            );
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -874,6 +948,13 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 D_CANCEL,
                 false,
             );
+            // Modern: WinUI boxes and tabs.
+            if modern() {
+                for combo in settings_combos(f) {
+                    subclass(combo, combo_proc);
+                }
+                size_selector_tabs(tabs, dlg.dpi);
+            }
             // Tab order follows the order the controls were created in, and the
             // General page's first row (level, language) and its checkboxes
             // were created after the advanced rows. Put the General page's
@@ -889,7 +970,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 f.connections,
             ];
             if simple {
-                order.extend([f.site_entries, f.startup, f.tray, f.notify, f.dark]);
+                order.extend([f.site_entries, f.startup, f.tray, f.notify, f.dark, f.theme]);
             } else {
                 order.extend([
                     f.mode_video,
@@ -900,6 +981,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                     f.tray,
                     f.notify,
                     f.dark,
+                    f.theme,
                     f.site_entries,
                     f.schedule,
                     f.start,
@@ -912,18 +994,28 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 GetDlgItem(dlg.hwnd, ID_SETTINGS_INSTALL_EXTENSION),
                 GetDlgItem(dlg.hwnd, ID_SETTINGS_REOPEN_WIZARD),
             ]);
-            let mut previous = tabs;
-            for control in order {
+            tab_order(tabs, &order);
+            if modern() {
+                // The surface of the pinned command bar and the error line: on
+                // top of the page, so the page scrolls under it. It takes no
+                // focus and no click.
+                let bar = control(
+                    dlg.hwnd,
+                    "STATIC",
+                    "",
+                    WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+                    0,
+                    S_BAR,
+                );
                 SetWindowPos(
-                    control,
-                    previous,
+                    bar,
+                    HWND_TOP,
                     0,
                     0,
                     0,
                     0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
-                previous = control;
             }
         }
         DialogKind::Tools(f) => {
@@ -998,7 +1090,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Kuyruklar:", "Queues:"),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, Q_LIST, LBS_NOTIFY as u32);
+            f.list = form_list(dlg.hwnd, dlg.font, Q_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Ad:", "Name:"), 0);
             f.name = dialog_edit(dlg.hwnd, dlg.font, Q_NAME, false, false);
             dialog_label(
@@ -1122,6 +1214,31 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                         .detail(format!("Kuyruk denetimleri yüklenemedi: {error:#}")),
                 );
             }
+            if modern() {
+                subclass(f.completion, combo_proc);
+                // Tab follows the rows Modern lays the fields out in.
+                let button = |id: i32| GetDlgItem(dlg.hwnd, id);
+                tab_order(
+                    f.list,
+                    &[
+                        f.name,
+                        button(Q_CREATE),
+                        button(Q_RENAME),
+                        button(Q_DELETE),
+                        f.concurrency,
+                        f.quota,
+                        f.delay,
+                        f.enabled,
+                        f.completion,
+                        button(Q_UPDATE),
+                        button(Q_MOVE_JOB),
+                        button(Q_CANCEL_COMPLETION),
+                        f.program,
+                        f.arguments,
+                        f.windows,
+                    ],
+                );
+            }
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
         DialogKind::Rules(f) => {
@@ -1134,7 +1251,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, R_LIST, LBS_NOTIFY as u32);
+            f.list = form_list(dlg.hwnd, dlg.font, R_LIST, LBS_NOTIFY as u32);
             dialog_label(
                 dlg.hwnd,
                 dlg.font,
@@ -1241,7 +1358,16 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 C_SCAN,
                 true,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, C_LIST, LBS_EXTENDEDSEL as u32);
+            // Modern's card names the result list; Classic keeps its layout.
+            if modern() {
+                dialog_label(
+                    dlg.hwnd,
+                    dlg.font,
+                    crate::i18n::ui("Bulunan adaylar", "Found candidates"),
+                    0,
+                );
+            }
+            f.list = form_list(dlg.hwnd, dlg.font, C_LIST, LBS_EXTENDEDSEL as u32);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1267,7 +1393,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 crate::i18n::ui("Eşitleme kayıtları:", "Sync policies:"),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, Y_LIST, LBS_NOTIFY as u32);
+            f.list = form_list(dlg.hwnd, dlg.font, Y_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, "URL:", 0);
             f.url = dialog_edit(dlg.hwnd, dlg.font, Y_URL, false, false);
             dialog_label(
@@ -1348,7 +1474,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, E_LIST, 0);
+            f.list = form_list(dlg.hwnd, dlg.font, E_LIST, 0);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1444,7 +1570,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, L_LIST, LBS_NOTIFY as u32);
+            f.list = form_list(dlg.hwnd, dlg.font, L_LIST, LBS_NOTIFY as u32);
             dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui("Sunucu:", "Host:"), 0);
             f.host = dialog_edit(dlg.hwnd, dlg.font, L_HOST, false, false);
             dialog_label(
@@ -1523,7 +1649,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.list = dialog_list(dlg.hwnd, dlg.font, J_LIST, 0);
+            f.list = form_list(dlg.hwnd, dlg.font, J_LIST, 0);
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1641,21 +1767,30 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.audio_tracks = control(
-                dlg.hwnd,
-                "LISTBOX",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | WS_VSCROLL
-                    | LBS_EXTENDEDSEL as u32
-                    | LBS_NOINTEGRALHEIGHT as u32
-                    | LBS_NOTIFY as u32,
-                WS_EX_CLIENTEDGE,
-                ID_MEDIA_AUDIO_TRACKS,
-            );
+            f.audio_tracks = if modern() {
+                modern_list(
+                    dlg.hwnd,
+                    dlg.font,
+                    ID_MEDIA_AUDIO_TRACKS,
+                    (LBS_EXTENDEDSEL | LBS_NOTIFY) as u32,
+                )
+            } else {
+                control(
+                    dlg.hwnd,
+                    "LISTBOX",
+                    "",
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | LBS_EXTENDEDSEL as u32
+                        | LBS_NOINTEGRALHEIGHT as u32
+                        | LBS_NOTIFY as u32,
+                    WS_EX_CLIENTEDGE,
+                    ID_MEDIA_AUDIO_TRACKS,
+                )
+            };
             apply_font(f.audio_tracks, dlg.font);
             dialog_label(
                 dlg.hwnd,
@@ -1666,20 +1801,29 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
-            f.subtitles = control(
-                dlg.hwnd,
-                "LISTBOX",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | WS_VSCROLL
-                    | LBS_EXTENDEDSEL as u32
-                    | LBS_NOINTEGRALHEIGHT as u32,
-                WS_EX_CLIENTEDGE,
-                ID_MEDIA_SUBTITLE_TRACKS,
-            );
+            f.subtitles = if modern() {
+                modern_list(
+                    dlg.hwnd,
+                    dlg.font,
+                    ID_MEDIA_SUBTITLE_TRACKS,
+                    LBS_EXTENDEDSEL as u32,
+                )
+            } else {
+                control(
+                    dlg.hwnd,
+                    "LISTBOX",
+                    "",
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | LBS_EXTENDEDSEL as u32
+                        | LBS_NOINTEGRALHEIGHT as u32,
+                    WS_EX_CLIENTEDGE,
+                    ID_MEDIA_SUBTITLE_TRACKS,
+                )
+            };
             apply_font(f.subtitles, dlg.font);
             dialog_label(
                 dlg.hwnd,
@@ -1719,19 +1863,23 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ID_MEDIA_EXTERNAL_ADD,
                 false,
             );
-            f.external_list = control(
-                dlg.hwnd,
-                "LISTBOX",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | WS_VSCROLL
-                    | LBS_NOINTEGRALHEIGHT as u32,
-                WS_EX_CLIENTEDGE,
-                ID_MEDIA_EXTERNAL_LIST,
-            );
+            f.external_list = if modern() {
+                modern_list(dlg.hwnd, dlg.font, ID_MEDIA_EXTERNAL_LIST, 0)
+            } else {
+                control(
+                    dlg.hwnd,
+                    "LISTBOX",
+                    "",
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | LBS_NOINTEGRALHEIGHT as u32,
+                    WS_EX_CLIENTEDGE,
+                    ID_MEDIA_EXTERNAL_LIST,
+                )
+            };
             apply_font(f.external_list, dlg.font);
             dialog_button(
                 dlg.hwnd,
@@ -1787,6 +1935,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             f.playlist_items = dialog_edit(dlg.hwnd, dlg.font, M_PLAYLIST_ITEMS, false, false);
             let cue = wide(crate::i18n::ui("öğeler: 1-10,15", "items: 1-10,15"));
             SendMessageW(f.playlist_items, EM_SETCUEBANNER, 1, cue.as_ptr() as LPARAM);
+            if modern() {
+                subclass(f.playlist_items, cue_proc);
+            }
             if let Some(items) = &f.base.playlist_items {
                 set_text(f.playlist_items, items);
             }
@@ -1872,15 +2023,69 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 D_CANCEL,
                 false,
             );
+            if modern() {
+                for combo in [f.kind, f.format, f.audio, f.external_kind, f.renew_job] {
+                    subclass(combo, combo_proc);
+                }
+            }
+            // Until the analysis loads, the picker shows what it is doing in
+            // place of a form it cannot fill yet.
+            f.prep_title = dialog_label(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("İndirme hazırlanıyor...", "Preparing the download..."),
+                0,
+            );
+            if f.title_font.is_null() {
+                let (points, weight, faces) = card_font_spec(true, modern());
+                f.title_font = make_face_font(dlg.dpi, points, weight, faces);
+            }
+            apply_font(f.prep_title, f.title_font);
+            f.prep_detail = dialog_label(dlg.hwnd, dlg.font, "", 0);
+            f.prep_bar = control(
+                dlg.hwnd,
+                "msctls_progress32",
+                "",
+                WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
+                0,
+                0,
+            );
+            SendMessageW(f.prep_bar, PBM_SETMARQUEE, 1, SWEEP_FRAME_MS as isize);
+            if modern() {
+                subclass(f.prep_bar, modern_progress_proc);
+            }
+            if !f.populated && !f.advanced {
+                hold_media_form(dlg.hwnd, dlg.error, f);
+            }
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
         DialogKind::Progress(f) => {
+            // Created in reading order, which is also the Tab order in Classic.
             f.summary = dialog_label(
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui("İndirme hazırlanıyor...", "Preparing the download..."),
                 P_SUMMARY,
             );
+            if f.title_font.is_null() {
+                let (points, weight, faces) = card_font_spec(true, modern());
+                f.title_font = make_face_font(dlg.dpi, points, weight, faces);
+            }
+            apply_font(f.summary, f.title_font);
+            dialog_button(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Küçült", "Minimize"),
+                P_MINI,
+                false,
+            );
+            dialog_check(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Üstte tut", "Keep on top"),
+                P_PIN,
+            );
+            f.source = dialog_label(dlg.hwnd, dlg.font, "", P_SOURCE);
             f.hint = dialog_label(
                 dlg.hwnd,
                 dlg.font,
@@ -1894,37 +2099,29 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             // at a time, and the detail below always describes the row that is
             // selected rather than an arbitrary first one. The rows report the
             // user's own selection back, which is why they carry LBS_NOTIFY.
-            f.list = control(
-                dlg.hwnd,
-                "LISTBOX",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | WS_VSCROLL
-                    | LBS_NOTIFY as u32
-                    | LBS_NOINTEGRALHEIGHT as u32,
-                WS_EX_CLIENTEDGE,
-                P_LIST,
-            );
+            f.list = if modern() {
+                modern_list(dlg.hwnd, dlg.font, P_LIST, LBS_NOTIFY as u32)
+            } else {
+                control(
+                    dlg.hwnd,
+                    "LISTBOX",
+                    "",
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | LBS_NOTIFY as u32
+                        | LBS_NOINTEGRALHEIGHT as u32,
+                    WS_EX_CLIENTEDGE,
+                    P_LIST,
+                )
+            };
             apply_font(f.list, dlg.font);
-            f.status = control(
-                dlg.hwnd,
-                "EDIT",
-                "",
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WS_BORDER
-                    | ES_MULTILINE as u32
-                    | ES_READONLY as u32
-                    | ES_AUTOVSCROLL as u32
-                    | WS_VSCROLL,
-                WS_EX_CLIENTEDGE,
-                P_STATUS,
-            );
-            apply_font(f.status, dlg.font);
+            for (index, (tr, en)) in JOB_FACTS.iter().enumerate() {
+                dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui(tr, en), 0);
+                f.facts[index] = dialog_label(dlg.hwnd, dlg.font, "—", P_FACTS + index as i32);
+            }
             f.progress = control(
                 dlg.hwnd,
                 "msctls_progress32",
@@ -1934,20 +2131,49 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 P_PROGRESS,
             );
             SendMessageW(f.progress, PBM_SETRANGE32, 0, 1000);
-            f.action = dialog_button(
+            f.segment_bar = control(
+                dlg.hwnd,
+                "STATIC",
+                "",
+                WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+                0,
+                P_SEGMENTS,
+            );
+            f.details_button = dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Duraklat", "Pause"),
-                P_ACTION,
+                details_label(f.details),
+                P_DETAILS,
                 false,
             );
-            f.cancel = dialog_button(
+            // Only a failed job has anything to report: the button is created
+            // hidden and the job view shows it with the failure itself.
+            f.report = dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("İptal et", "Cancel"),
-                P_CANCEL,
+                crate::i18n::ui("Hata bildir", "Report problem"),
+                P_REPORT,
                 false,
             );
+            ShowWindow(f.report, SW_HIDE);
+            f.status = control(
+                dlg.hwnd,
+                "EDIT",
+                "",
+                WS_CHILD
+                    | WS_TABSTOP
+                    | WS_BORDER
+                    | ES_MULTILINE as u32
+                    | ES_READONLY as u32
+                    | ES_AUTOVSCROLL as u32
+                    | WS_VSCROLL
+                    | if f.details { WS_VISIBLE } else { 0 },
+                WS_EX_CLIENTEDGE,
+                P_STATUS,
+            );
+            apply_font(f.status, dlg.font);
+            // The actions that leave the window open first, then the commit group, as the
+            // command row shows them.
             f.open_file = dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1962,18 +2188,19 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 P_OPEN_FOLDER,
                 false,
             );
-            dialog_button(
+            f.action = dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Küçült", "Minimize"),
-                P_MINI,
+                crate::i18n::ui("Duraklat", "Pause"),
+                P_ACTION,
                 false,
             );
-            dialog_check(
+            f.cancel = dialog_button(
                 dlg.hwnd,
                 dlg.font,
-                crate::i18n::ui("Üstte tut", "Keep on top"),
-                P_PIN,
+                crate::i18n::ui("İptal et", "Cancel"),
+                P_CANCEL,
+                false,
             );
             f.close = dialog_button(
                 dlg.hwnd,
@@ -1982,19 +2209,39 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 P_CLOSE,
                 false,
             );
-            // Only a failed job has anything to report: the button is created
-            // hidden and the job view shows it with the failure itself.
-            f.report = dialog_button(
-                dlg.hwnd,
-                dlg.font,
-                crate::i18n::ui("Hata bildir", "Report problem"),
-                P_REPORT,
-                false,
-            );
-            ShowWindow(f.report, SW_HIDE);
+            if modern() {
+                subclass(f.progress, modern_progress_proc);
+            }
             EnableWindow(f.open_file, 0);
             EnableWindow(f.open_folder, 0);
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
     }
 }
+
+/// The job view's facts, label and value, in the order they are listed.
+pub(super) const JOB_FACTS: [(&str, &str); 7] = [
+    ("Durum:", "Status:"),
+    ("Dosya boyutu:", "File size:"),
+    ("İndirilen:", "Downloaded:"),
+    ("Aktarım hızı:", "Transfer rate:"),
+    ("Kalan süre:", "Time left:"),
+    ("Sürdürme desteği:", "Resume support:"),
+    ("Bağlantılar:", "Connections:"),
+];
+
+/// The job view's details button: what pressing it does.
+pub(super) fn details_label(shown: bool) -> &'static str {
+    if shown {
+        crate::i18n::ui("Ayrıntıları gizle", "Hide details")
+    } else {
+        crate::i18n::ui("Ayrıntıları göster", "Show details")
+    }
+}
+
+/// What an empty file name and an empty start time mean, shown inside the
+/// empty fields of the New download dialog.
+const ADD_CUES: [(&str, &str); 2] = [
+    ("Sunucudan gelen ad", "Name from the server"),
+    ("Boş bırakılırsa hemen", "Right away when empty"),
+];

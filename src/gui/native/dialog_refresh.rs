@@ -7,6 +7,11 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
     let snapshot = dlg.app.snapshot();
     let dlg_ptr = dlg as *mut DialogUi;
     match &mut (*dlg_ptr).kind {
+        // Only the wizard that opens before the main window runs this timer.
+        DialogKind::Wizard(_) if snapshot.quit_requested => {
+            DestroyWindow(dlg.hwnd);
+            return;
+        }
         DialogKind::Queues(f) => refresh_completion_countdown(dlg.hwnd, f, &snapshot),
         DialogKind::Crawler(f) => {
             if let Some(receiver) = &f.pending {
@@ -147,77 +152,7 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                 DestroyWindow(dlg.hwnd);
                 return;
             }
-            refresh_media_renew_jobs(f, &snapshot);
-            let status = media_status_suffix(f, &snapshot);
-            // The report button is invisible, not merely disabled, while there
-            // is nothing to report, so the normal picker looks unchanged.
-            let failed = snapshot.inspect_error.is_some();
-            if f.report_shown != failed {
-                f.report_shown = failed;
-                layout_dialog(dlg);
-            }
-            if !failed {
-                // A report failure the user has read past is dropped as soon as
-                // the picker leaves the failed state.
-                f.report_error = None;
-            }
-            EnableWindow(GetDlgItem(dlg.hwnd, M_REPORT), failed as BOOL);
-            if snapshot.inspecting {
-                set_text(
-                    f.summary,
-                    &crate::i18n::ui_format!(
-                        "Video ve çözünürlükler hazırlanıyor.{status}",
-                        "Preparing videos and resolutions.{status}",
-                        status = status
-                    ),
-                );
-                EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
-            } else if let Some(info) = snapshot.media.as_ref() {
-                // Filled once, from the analysis of the generation this dialog
-                // was created for; the enable below also requires that state.
-                if !f.populated {
-                    populate_media(dlg.hwnd, f, info, &status);
-                    f.populated = true;
-                    let audio_allowed = f
-                        .kind_values
-                        .iter()
-                        .any(|(kind, _)| *kind == DownloadKind::Audio);
-                    EnableWindow(GetDlgItem(dlg.hwnd, M_MP3), audio_allowed as BOOL);
-                    if !f.thumbnail_requested {
-                        f.thumbnail_requested = true;
-                        if let Some(url) = info.thumbnail.clone() {
-                            load_thumbnail(dlg.hwnd, dlg.app.clone(), url);
-                        }
-                    }
-                    layout_dialog(dlg);
-                    if f.auto_queue {
-                        // "Bir daha sorma": the remembered choice goes straight to the queue.
-                        PostMessageW(dlg.hwnd, WM_COMMAND, M_QUEUE as usize, 0);
-                    }
-                }
-            } else {
-                set_text(
-                    f.summary,
-                    &crate::i18n::ui_format!(
-                        "Bu kaynak için indirilebilir video seçenekleri doğrulanamadı.{status}",
-                        "Downloadable video options could not be verified for this source.{status}",
-                        status = status
-                    ),
-                );
-                f.video_formats.clear();
-                EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
-                // A failed report keeps its own text on the line until the
-                // picker leaves this state; the inspection error would
-                // otherwise overwrite it on the next tick.
-                if let Some(error) = f
-                    .report_error
-                    .as_deref()
-                    .or(snapshot.inspect_error.as_deref())
-                {
-                    set_dialog_error(dlg.hwnd, dlg.error, error, null_mut());
-                }
-            }
-            update_media_queue_enabled(dlg.hwnd, f, &snapshot);
+            refresh_media(dlg, f, &snapshot);
         }
         DialogKind::Progress(f) => refresh_job_view(dlg.hwnd, dlg.error, f, &snapshot),
         DialogKind::Events(f) => refresh_event_list(f),
@@ -297,11 +232,7 @@ pub(super) unsafe fn refresh_job_view(
     let mut summary = String::new();
     if f.ids.len() == 1 {
         match job_view_job(snapshot, f) {
-            Some(job) => {
-                summary.push_str(&job.name);
-                summary.push_str(" — ");
-                summary.push_str(&state_label(job));
-            }
+            Some(job) => summary.push_str(&job.name),
             None => summary.push_str(crate::i18n::ui(
                 "İş artık kuyrukta değil",
                 "The job is no longer in the queue",
@@ -326,6 +257,29 @@ pub(super) unsafe fn refresh_job_view(
         }
     }
     set_text(f.summary, &summary);
+    let title = job_view_title(snapshot, &f.ids);
+    if text(hwnd) != title {
+        set_text(hwnd, &title);
+    }
+    let shown = job_view_job(snapshot, f);
+    set_text(f.source, &shown.map(job_source).unwrap_or_default());
+    let facts = shown.map(job_facts).unwrap_or_default();
+    for (value, fact) in f.facts.iter().zip(&facts) {
+        if text(*value) != *fact {
+            set_text(*value, fact);
+        }
+    }
+    let segments = shown.map(segment_view).unwrap_or_default();
+    if segments != f.segments {
+        f.segments = segments;
+        InvalidateRect(f.segment_bar, null(), 0);
+    }
+    // A failure shows its reason, which only the details hold, once.
+    let failed = shown.is_some_and(|job| job.state == JobState::Failed);
+    if failed && !f.failure_shown && !f.details {
+        toggle_job_details(hwnd, f);
+    }
+    f.failure_shown = failed;
 
     let mut detail = String::new();
     let action_label: &str;
@@ -343,20 +297,15 @@ pub(super) unsafe fn refresh_job_view(
             can_open = false;
         }
         Some(job) => {
-            detail.push_str(&crate::i18n::ui_format!(
-                "{0}\r\nDurum: {1}\r\nİlerleme: {2}\r\nHız: {3}\r\nKalan süre: {4}\r\n",
-                "{0}\r\nState: {1}\r\nProgress: {2}\r\nSpeed: {3}\r\nRemaining: {4}\r\n",
-                job.name,
-                state_label(job),
-                format_progress(job),
-                format_speed(job.speed),
-                format_eta(job.eta)
-            ));
-            if !job.phase.trim().is_empty() {
+            // What the facts above do not show: a phase the status leaves out
+            // (why a waiting download waits), the failure, and where the file
+            // is saved.
+            let phase = job.phase.trim();
+            if !phase.is_empty() && !job_status(job).ends_with(phase) {
                 detail.push_str(&crate::i18n::ui_format!(
                     "Aşama: {0}\r\n",
                     "Phase: {0}\r\n",
-                    job.phase
+                    phase
                 ));
             }
             if let Some(message) = job.error.as_deref() {
@@ -374,9 +323,17 @@ pub(super) unsafe fn refresh_job_view(
                     "Saved: {0}\r\n",
                     job.path.display()
                 ));
+                detail.truncate(detail.trim_end().len());
                 percent = 1000;
-            } else if let Some(total) = job.total.filter(|total| *total > 0) {
-                percent = ((job.downloaded.min(total) as u128 * 1000) / total as u128) as usize;
+            } else {
+                detail.push_str(&crate::i18n::ui_format!(
+                    "Kayıt yeri: {0}",
+                    "Save to: {0}",
+                    job.path.display()
+                ));
+                if let Some(total) = job.total.filter(|total| *total > 0) {
+                    percent = ((job.downloaded.min(total) as u128 * 1000) / total as u128) as usize;
+                }
             }
             processing = job.state == JobState::Processing;
             action_label = match job.state {
@@ -395,6 +352,10 @@ pub(super) unsafe fn refresh_job_view(
     let detail = display_text(snapshot.settings.debug_mode, &detail);
     if detail != f.rendered {
         set_text(f.status, &detail);
+        // Modern shows the status's scroll bar only while the text overflows.
+        if modern() {
+            sync_edit_scrollbar(f.status);
+        }
         f.rendered = detail;
     }
     if action_label != f.action_label {
@@ -418,8 +379,26 @@ pub(super) unsafe fn refresh_job_view(
             SWEEP_FRAME_MS as isize,
         );
     }
+    // A failed or cancelled job's bar is red and full, as in the main list.
+    let stopped = job_view_job(snapshot, f)
+        .is_some_and(|job| matches!(job.state, JobState::Failed | JobState::Cancelled));
     if !processing {
-        SendMessageW(f.progress, PBM_SETPOS, percent, 0);
+        SendMessageW(
+            f.progress,
+            PBM_SETPOS,
+            if stopped { 1000 } else { percent },
+            0,
+        );
+    }
+    if modern() {
+        set_progress_state(f.progress, job_view_job(snapshot, f).map(|job| job.state));
+    } else {
+        SendMessageW(
+            f.progress,
+            PBM_SETSTATE,
+            if stopped { PBST_ERROR } else { PBST_NORMAL } as usize,
+            0,
+        );
     }
     EnableWindow(f.action, can_control as BOOL);
     EnableWindow(f.cancel, can_cancel as BOOL);
@@ -485,6 +464,191 @@ pub(super) unsafe fn refresh_job_view(
 }
 pub(super) fn media_stream_present(codec: Option<&str>) -> bool {
     codec.is_some_and(|value| value != "none" && value != "unknown")
+}
+
+/// Shows the analysis of this picker's generation: what it is doing while it
+/// runs, the form once it has loaded, the error when it failed.
+pub(super) unsafe fn refresh_media(dlg: &DialogUi, f: &mut MediaFields, snapshot: &AppSnapshot) {
+    refresh_media_renew_jobs(f, snapshot);
+    let status = media_status_suffix(f, snapshot);
+    // The report button is invisible, not merely disabled, while there
+    // is nothing to report, so the normal picker looks unchanged.
+    let failed = snapshot.inspect_error.is_some();
+    if f.report_shown != failed {
+        f.report_shown = failed;
+        layout_dialog(dlg);
+    }
+    if !failed {
+        // A report failure the user has read past is dropped as soon as
+        // the picker leaves the failed state.
+        f.report_error = None;
+    }
+    EnableWindow(GetDlgItem(dlg.hwnd, M_REPORT), failed as BOOL);
+    if snapshot.inspecting {
+        set_text(
+            f.summary,
+            &crate::i18n::ui_format!(
+                "Video ve çözünürlükler hazırlanıyor.{status}",
+                "Preparing videos and resolutions.{status}",
+                status = status
+            ),
+        );
+        show_preparing(
+            dlg,
+            f,
+            crate::i18n::ui("İndirme hazırlanıyor...", "Preparing the download..."),
+            &crate::i18n::ui_format!(
+                "Video bilgileri kaynaktan alınıyor.{status}",
+                "Getting the video information from the source.{status}",
+                status = status
+            ),
+            true,
+        );
+        EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
+    } else if let Some(info) = snapshot.media.as_ref() {
+        // Filled once, from the analysis of the generation this dialog
+        // was created for; the enable below also requires that state.
+        if !f.populated {
+            // The form takes the preparing state's place in one repaint.
+            let shown = IsWindowVisible(dlg.hwnd) != 0;
+            if shown {
+                SendMessageW(dlg.hwnd, WM_SETREDRAW, 0, 0);
+            }
+            show_media_form(f);
+            populate_media(dlg.hwnd, f, info, &status);
+            f.populated = true;
+            let audio_allowed = f
+                .kind_values
+                .iter()
+                .any(|(kind, _)| *kind == DownloadKind::Audio);
+            EnableWindow(GetDlgItem(dlg.hwnd, M_MP3), audio_allowed as BOOL);
+            if !f.thumbnail_requested {
+                f.thumbnail_requested = true;
+                if let Some(url) = info.thumbnail.clone() {
+                    load_thumbnail(dlg.hwnd, dlg.app.clone(), url);
+                }
+            }
+            fit_media_picker(dlg);
+            layout_dialog(dlg);
+            if shown {
+                SendMessageW(dlg.hwnd, WM_SETREDRAW, 1, 0);
+                RedrawWindow(
+                    dlg.hwnd,
+                    null(),
+                    null_mut(),
+                    RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN,
+                );
+            }
+            if f.auto_queue {
+                // "Bir daha sorma": the remembered choice goes straight to the queue.
+                PostMessageW(dlg.hwnd, WM_COMMAND, M_QUEUE as usize, 0);
+            }
+        }
+    } else {
+        set_text(
+            f.summary,
+            &crate::i18n::ui_format!(
+                "Bu kaynak için indirilebilir video seçenekleri doğrulanamadı.{status}",
+                "Downloadable video options could not be verified for this source.{status}",
+                status = status
+            ),
+        );
+        // What the user can do with a failed analysis, then the same notes
+        // the summary carries.
+        let detail = if failed {
+            format!(
+                "{}{status}",
+                crate::i18n::ui(
+                    "Nedeni aşağıda. Hata bildir bunun için bir rapor yazar ve klasörünü açar.",
+                    "The reason is below. Report problem writes a report on it and opens its folder.",
+                )
+            )
+        } else {
+            status.trim_start().to_string()
+        };
+        show_preparing(
+            dlg,
+            f,
+            &crate::i18n::ui_format!(
+                "Bu kaynak için indirilebilir video seçenekleri doğrulanamadı.{status}",
+                "Downloadable video options could not be verified for this source.{status}",
+                status = ""
+            ),
+            &detail,
+            false,
+        );
+        f.video_formats.clear();
+        EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
+        // A failed report keeps its own text on the line until the
+        // picker leaves this state; the inspection error would
+        // otherwise overwrite it on the next tick.
+        if let Some(error) = f
+            .report_error
+            .as_deref()
+            .or(snapshot.inspect_error.as_deref())
+        {
+            set_dialog_error(dlg.hwnd, dlg.error, error, null_mut());
+        }
+    }
+    update_media_queue_enabled(dlg.hwnd, f, snapshot);
+}
+
+/// Puts `title` and `detail` in the picker's preparing state, with its bar
+/// moving while `moving` and hidden otherwise. Nothing changes once the form
+/// shows.
+unsafe fn show_preparing(dlg: &DialogUi, f: &MediaFields, title: &str, detail: &str, moving: bool) {
+    if f.held.is_empty() {
+        return;
+    }
+    let bar_shown = GetWindowLongW(f.prep_bar, GWL_STYLE) as u32 & WS_VISIBLE != 0;
+    if text(f.prep_title) == title && text(f.prep_detail) == detail && bar_shown == moving {
+        return;
+    }
+    set_text(f.prep_title, title);
+    set_text(f.prep_detail, detail);
+    ShowWindow(f.prep_bar, if moving { SW_SHOW } else { SW_HIDE });
+    SendMessageW(
+        f.prep_bar,
+        PBM_SETMARQUEE,
+        moving as usize,
+        SWEEP_FRAME_MS as isize,
+    );
+    layout_dialog(dlg);
+}
+
+/// Hides the picker's form behind its preparing state: every shown control
+/// but the preparing ones, Advanced options, Cancel and the error line.
+pub(super) unsafe fn hold_media_form(hwnd: HWND, error: HWND, f: &mut MediaFields) {
+    let kept = [
+        f.prep_title,
+        f.prep_detail,
+        f.prep_bar,
+        error,
+        GetDlgItem(hwnd, D_ADVANCED),
+        GetDlgItem(hwnd, D_CANCEL),
+    ];
+    let mut child = GetWindow(hwnd, GW_CHILD);
+    while !child.is_null() {
+        if !kept.contains(&child) && GetWindowLongW(child, GWL_STYLE) as u32 & WS_VISIBLE != 0 {
+            ShowWindow(child, SW_HIDE);
+            f.held.push(child);
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+}
+
+/// Ends the preparing state: its controls go and the form it held back shows.
+pub(super) unsafe fn show_media_form(f: &mut MediaFields) {
+    if f.held.is_empty() {
+        return;
+    }
+    SendMessageW(f.prep_bar, PBM_SETMARQUEE, 0, 0);
+    for control in [f.prep_title, f.prep_detail, f.prep_bar] {
+        ShowWindow(control, SW_HIDE);
+    }
+    for control in f.held.drain(..) {
+        ShowWindow(control, SW_SHOW);
+    }
 }
 
 /// Extra picker status lines: the browser session state this handoff carried and
@@ -1604,6 +1768,134 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
     })();
     let _ = std::fs::remove_dir_all(&folder);
     result
+}
+
+/// Where the job view's job comes from: the host of its address.
+pub(super) fn job_source(job: &Job) -> String {
+    let host = url::Url::parse(job.request.url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| job.request.url.trim().to_owned());
+    crate::i18n::ui_format!("Kaynak: {0}", "Source: {0}", host)
+}
+
+/// The values of `JOB_FACTS` for `job`, "—" where it has none.
+pub(super) fn job_facts(job: &Job) -> [String; JOB_FACTS.len()] {
+    let none = || "—".to_string();
+    let downloaded = match job.total.filter(|total| *total > 0) {
+        Some(total) => format!(
+            "{} ({:.1}%)",
+            format_bytes(job.downloaded),
+            job.downloaded.min(total) as f64 * 100.0 / total as f64
+        ),
+        None => format_bytes(job.downloaded),
+    };
+    let resume = match job.resumable {
+        Some(true) => crate::i18n::ui("Evet", "Yes").to_string(),
+        Some(false) => crate::i18n::ui("Hayır", "No").to_string(),
+        None => none(),
+    };
+    // The ranges stay from the last report while a job waits; only a running
+    // transfer has connections.
+    let connections = match (&job.ranges, job.total) {
+        (Some(ranges), Some(total)) if job.state == JobState::Downloading => {
+            unfinished_parts(ranges, total).to_string()
+        }
+        _ => none(),
+    };
+    [
+        job_status(job),
+        job.total.map(format_bytes).unwrap_or_else(none),
+        downloaded,
+        format_speed(job.speed),
+        format_eta(job.eta),
+        resume,
+        connections,
+    ]
+}
+
+/// The job view's status: `state_label`, except that a phase which already
+/// says what the state says ("Downloading media" while downloading) is shown
+/// alone instead of after the state. A phase repeats the state when one of its
+/// words holds the state's longest word, or the other way round. The longest
+/// word is the one naming the action: the others are auxiliaries such as
+/// "Wird" or "جارٍ" that every running state shares. Shorter phase words than
+/// four letters never match.
+pub(super) fn job_status(job: &Job) -> String {
+    let label = state_label(job);
+    let phase = job.phase.trim();
+    if label == job.state.label() {
+        return label;
+    }
+    let words = |text: &str| -> Vec<String> {
+        text.split_whitespace()
+            .map(|word| {
+                word.chars()
+                    .flat_map(char::to_lowercase)
+                    .filter(|c| c.is_alphanumeric())
+                    .collect::<String>()
+            })
+            .collect()
+    };
+    let Some(action) = words(job.state.label())
+        .into_iter()
+        .max_by_key(|word| word.chars().count())
+    else {
+        return label;
+    };
+    let repeats = words(phase).iter().any(|word| {
+        word.chars().count() >= 4 && (word.contains(&action) || action.contains(word.as_str()))
+    });
+    if repeats {
+        phase.to_string()
+    } else {
+        label
+    }
+}
+
+/// The parts of a `total`-byte file that the arrived ranges (sorted, apart)
+/// leave open: each is where a connection still has bytes to fetch.
+pub(super) fn unfinished_parts(ranges: &[(u64, u64)], total: u64) -> usize {
+    let mut next = 0;
+    let mut parts = 0;
+    for &(start, end) in ranges {
+        if start > next {
+            parts += 1;
+        }
+        next = next.max(end);
+    }
+    parts + usize::from(next < total)
+}
+
+/// What the segment bar shows for `job`: the ranges a segmented transfer
+/// reported, or one part from the start as far as it has come. A paused job
+/// keeps the ranges of its last report, which are the parts it has kept.
+pub(super) fn segment_view(job: &Job) -> SegmentView {
+    let total = match job.state {
+        JobState::Completed => job.total.unwrap_or(job.downloaded).max(1),
+        _ => job.total.unwrap_or(0),
+    };
+    let parts = match (&job.ranges, job.state) {
+        (_, JobState::Completed | JobState::Failed | JobState::Cancelled) => vec![(0, total)],
+        (Some(ranges), _) => ranges.to_vec(),
+        (None, _) => vec![(0, job.downloaded.min(total))],
+    };
+    SegmentView {
+        parts,
+        total,
+        state: Some(job.state),
+    }
+}
+
+/// Shows or hides the job view's status text and fits the window to it.
+pub(super) unsafe fn toggle_job_details(hwnd: HWND, f: &mut ProgressFields) {
+    f.details = !f.details;
+    set_text(f.details_button, details_label(f.details));
+    ShowWindow(f.status, if f.details { SW_SHOW } else { SW_HIDE });
+    let dlg = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DialogUi;
+    if !dlg.is_null() {
+        fit_job_view(&mut *dlg);
+    }
 }
 
 #[cfg(test)]

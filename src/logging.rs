@@ -637,18 +637,42 @@ pub fn job_timeline(job_id: &str, limit: usize) -> Vec<String> {
     read_job_timeline(&writer.logs.join("jobs"), job_id, limit)
 }
 
+/// The length and modification time of each file of a job's timeline, None for a missing one:
+/// while they stay the same, `job_timeline` reads the same lines.
+pub fn job_timeline_stamp(job_id: &str) -> Vec<Option<(u64, std::time::SystemTime)>> {
+    let Some(writer) = WRITER.get() else {
+        return Vec::new();
+    };
+    timeline_stamp(&writer.logs.join("jobs"), job_id)
+}
+
+fn timeline_stamp(dir: &Path, job_id: &str) -> Vec<Option<(u64, std::time::SystemTime)>> {
+    timeline_files(dir, job_id)
+        .iter()
+        .map(|file| {
+            let metadata = fs::metadata(file).ok()?;
+            Some((metadata.len(), metadata.modified().ok()?))
+        })
+        .collect()
+}
+
+/// A job timeline's live file and its rotated predecessor.
+fn timeline_files(dir: &Path, job_id: &str) -> [PathBuf; 2] {
+    let name = safe_name(job_id, 64);
+    [
+        dir.join(format!("job-{name}.jsonl")),
+        dir.join(format!("job-{name}.1.jsonl")),
+    ]
+}
+
 /// Reads one job timeline from `dir`. Rotated content is read after the live file, so the newest
 /// lines win when `limit` truncates the history.
 pub(crate) fn read_job_timeline(dir: &Path, job_id: &str, limit: usize) -> Vec<String> {
     if limit == 0 {
         return Vec::new();
     }
-    let name = safe_name(job_id, 64);
     let mut chosen: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    for file in [
-        dir.join(format!("job-{name}.jsonl")),
-        dir.join(format!("job-{name}.1.jsonl")),
-    ] {
+    for file in timeline_files(dir, job_id) {
         if chosen.len() >= limit {
             break;
         }
@@ -1282,6 +1306,31 @@ mod tests {
             std::env::temp_dir().join(format!("ssdownload-log-{name}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_job_timeline_stamp_changes_when_either_of_its_files_does() {
+        let dir = temp_dir("job-stamp");
+        let empty = timeline_stamp(&dir, "abc");
+        assert_eq!(empty, [None, None]);
+        fs::write(dir.join("job-abc.jsonl"), "one\n").unwrap();
+        let written = timeline_stamp(&dir, "abc");
+        assert_ne!(written, empty);
+        assert_eq!(timeline_stamp(&dir, "abc"), written);
+        // Another job's file leaves the stamp alone.
+        fs::write(dir.join("job-other.jsonl"), "x\n").unwrap();
+        assert_eq!(timeline_stamp(&dir, "abc"), written);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("job-abc.jsonl"))
+            .unwrap()
+            .write_all(b"two\n")
+            .unwrap();
+        let appended = timeline_stamp(&dir, "abc");
+        assert_ne!(appended, written);
+        fs::write(dir.join("job-abc.1.jsonl"), "rotated\n").unwrap();
+        assert_ne!(timeline_stamp(&dir, "abc"), appended);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

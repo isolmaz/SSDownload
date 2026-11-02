@@ -36,8 +36,8 @@ use windows_sys::Win32::{
             OleInitialize, OleUninitialize, RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop,
             DROPEFFECT_COPY, DROPEFFECT_NONE,
         },
-        SystemServices::SS_NOPREFIX,
-        Threading::AttachThreadInput,
+        SystemServices::{SS_NOPREFIX, SS_OWNERDRAW},
+        Threading::{AttachThreadInput, GetCurrentProcessId},
     },
     UI::{
         Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
@@ -63,6 +63,7 @@ mod dialog_commands;
 mod dialog_controls;
 mod dialog_layout;
 mod dialog_refresh;
+mod fluent;
 mod theme;
 use alert::*;
 use card::*;
@@ -70,6 +71,7 @@ use dialog_commands::*;
 use dialog_controls::*;
 use dialog_layout::*;
 use dialog_refresh::*;
+use fluent::*;
 use theme::*;
 
 const CLASS_MAIN: &str = crate::bridge::MAIN_WINDOW_CLASS;
@@ -340,6 +342,18 @@ pub const ID_FILTER: i32 = 1011;
 pub const ID_JOB_LIST: i32 = 1020;
 pub const ID_DETAILS: i32 = 1021;
 pub const ID_STATUS: i32 = 1022;
+pub const ID_JOB_TABS: i32 = 1023;
+/// The column menus' items: one id per column, from here.
+const ID_COLUMN_BASE: i32 = 1030;
+/// The View menu's sort items: one id per column, then the direction and the
+/// queue order.
+const ID_SORT_BASE: i32 = 1040;
+const ID_SORT_ASCENDING: i32 = 1046;
+const ID_SORT_DESCENDING: i32 = 1047;
+const ID_SORT_QUEUE: i32 = 1048;
+const ID_PAGE_LARGER: i32 = 1049;
+const ID_PAGE_SMALLER: i32 = 1050;
+const WM_FIT_COLUMNS: u32 = WM_APP + 42;
 pub const ID_PAUSE_ALL: i32 = 1101;
 pub const ID_RESUME_ALL: i32 = 1102;
 pub const ID_CLEAR_COMPLETED: i32 = 1103;
@@ -373,6 +387,8 @@ pub const ID_WIZARD_AUDIO: i32 = 2403;
 pub const ID_WIZARD_START: i32 = 2404;
 pub const ID_WIZARD_SIMPLE: i32 = 2405;
 pub const ID_WIZARD_ADVANCED: i32 = 2406;
+pub const ID_WIZARD_CLASSIC: i32 = 2407;
+pub const ID_WIZARD_MODERN: i32 = 2408;
 pub const ID_SETTINGS_MODE_VIDEO: i32 = 2411;
 pub const ID_SETTINGS_MODE_FILE: i32 = 2412;
 pub const ID_SETTINGS_MODE_AUDIO: i32 = 2413;
@@ -491,17 +507,41 @@ fn job_category(job: &Job) -> Option<Filter> {
 struct MainUi {
     app: App,
     hwnd: HWND,
+    /// Body text: commands, rows, tabs and the filter box.
     font: HFONT,
     details_font: HFONT,
+    /// Caption text: the status line and the column headers.
+    caption_font: HFONT,
+    /// The menu bar's font, sized like the system menu font the bar is measured with.
+    menu_font: HFONT,
+    /// The command icons' font; null when no icon font is installed.
+    icon_font: HFONT,
     icon: HICON,
     list: HWND,
+    /// The tab page: the text of the selected tab.
     details: HWND,
     search: HWND,
+    /// The search box's frame, which the window paints around the edit.
+    search_frame: std::cell::Cell<RECT>,
+    /// The tab page's card, which the window paints around the page text.
+    page_card: std::cell::Cell<RECT>,
+    /// True while the pointer is over the split, which then shows its grip.
+    split_hot: bool,
     filter: HWND,
     status: HWND,
+    /// Classic: the command buttons and the search label, in layout order.
     toolbar: Vec<HWND>,
+    /// The tabs over the page: details, log and error of the selected download.
+    tabs: HWND,
+    /// Names the command buttons while only their icons show.
+    tooltip: HWND,
+    /// True while the window is too narrow for the command labels.
+    labels_hidden: std::cell::Cell<bool>,
     visible_ids: Vec<String>,
     row_cache: HashMap<String, Vec<String>>,
+    /// The Job log tab's page with the job and the file stamps it was read
+    /// for: a refresh that finds the same stamps keeps the page.
+    job_log: std::cell::RefCell<Option<JobLogPage>>,
     taskbar_created: u32,
     snapshot: AppSnapshot,
     filter_value: Filter,
@@ -560,6 +600,18 @@ struct MainUi {
     hotkey_failed: bool,
     /// Rows being dragged to a new place in the queue order.
     dragging: Option<Vec<String>>,
+    /// The list's columns in display order, as indexes into `MAIN_COLUMNS`.
+    /// Name is always first.
+    columns: Vec<usize>,
+    /// Every column's width in pixels, hidden ones included.
+    column_widths: [i32; 6],
+    /// The view's sort: column index into `MAIN_COLUMNS` and ascending.
+    sort: Option<(usize, bool)>,
+    /// The tab page's height in 96-dpi pixels; the layout keeps it in range.
+    page_height: i32,
+    /// While the split between list and tabs is dragged: the pointer's offset
+    /// from the split's top edge.
+    splitting: Option<i32>,
     /// Filter entry counts last written into the filter box.
     filter_counts: Vec<usize>,
 }
@@ -653,6 +705,42 @@ fn offer_update_with(
 /// Başla still records completion, and Settings can reopen the wizard any time.
 fn wizard_auto_open_suppressed() -> bool {
     std::env::var_os("SSDOWNLOAD_SKIP_WIZARD").is_some_and(|value| value == "1")
+}
+
+/// Whether a start opens the first-run wizard before its main window: a
+/// profile that has not finished it, outside developer mode, on a start that
+/// shows the window. A start in the tray opens it when the window first shows.
+fn wizard_opens_first(settings: &Settings, start_hidden: bool, suppressed: bool) -> bool {
+    settings.onboarding_version < ONBOARDING_VERSION
+        && !settings.debug_mode
+        && !start_hidden
+        && !suppressed
+}
+
+/// The settings the wizard's Start saves over `stored`: the surface depth, the
+/// usage purposes (all of them for the simple depth), the theme and the
+/// finished onboarding.
+fn wizard_settings(stored: &Settings, simple: bool, modes: UsageModes, modern: bool) -> Settings {
+    let mut settings = stored.clone();
+    settings.usage_modes = if simple {
+        UsageModes {
+            video: true,
+            file: true,
+            audio: true,
+        }
+    } else {
+        modes
+    };
+    settings.ui_mode = if simple {
+        UiMode::Simple
+    } else {
+        UiMode::Advanced
+    }
+    .as_str()
+    .into();
+    settings.theme = if modern { "modern" } else { "classic" }.into();
+    settings.onboarding_version = ONBOARDING_VERSION;
+    settings
 }
 
 /// Plain informational update message (already up to date, feed errors).
@@ -1119,6 +1207,29 @@ unsafe fn owned_layout(ex_style: u32) -> u32 {
     }
 }
 
+/// Opens the first-run wizard when this start asks for it (see
+/// `wizard_opens_first`) and sets the theme the main window is built in, read
+/// after the wizard so that the theme it picks applies at once. A change made
+/// once the main window exists applies after a restart. `None` when a quit
+/// request ended the wizard: the app then exits without a main window.
+unsafe fn before_main_window(
+    app: &App,
+    start_hidden: bool,
+    suppressed: bool,
+) -> Option<AppSnapshot> {
+    let mut snapshot = app.snapshot();
+    if wizard_opens_first(&snapshot.settings, start_hidden, suppressed) {
+        set_modern(snapshot.settings.modern_theme());
+        show_usage_wizard(null_mut(), app.clone(), snapshot.settings.clone());
+        snapshot = app.snapshot();
+        if snapshot.quit_requested {
+            return None;
+        }
+    }
+    set_modern(snapshot.settings.modern_theme());
+    Some(snapshot)
+}
+
 pub fn run(app: App, start_hidden: bool) -> Result<()> {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1132,6 +1243,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
         let common = INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
             dwICC: ICC_LISTVIEW_CLASSES
+                | ICC_BAR_CLASSES
                 | ICC_PROGRESS_CLASS
                 | ICC_LINK_CLASS
                 | ICC_STANDARD_CLASSES
@@ -1152,25 +1264,48 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             .ok()
             .and_then(|result| result.capabilities)
             .is_some_and(|value| value.protocol >= 2 && value.capability_version >= 1);
-        let snapshot = app.snapshot();
         // uxtheme only honours the shell colour scheme when the process asked
         // for it before the first window exists, so the menu bar and the
         // themed controls match the stored setting from the very first frame.
-        dark_app_mode(snapshot.settings.dark_mode);
+        dark_app_mode(app.snapshot().settings.dark_mode);
+        let Some(snapshot) = before_main_window(&app, start_hidden, wizard_auto_open_suppressed())
+        else {
+            return Ok(());
+        };
         let state = Box::new(MainUi {
             app,
             hwnd: null_mut(),
             font: null_mut(),
             details_font: null_mut(),
+            caption_font: null_mut(),
+            menu_font: null_mut(),
+            icon_font: null_mut(),
             icon: null_mut(),
             list: null_mut(),
             details: null_mut(),
             search: null_mut(),
+            search_frame: std::cell::Cell::new(RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            }),
+            page_card: std::cell::Cell::new(RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            }),
+            split_hot: false,
             filter: null_mut(),
             status: null_mut(),
             toolbar: Vec::new(),
+            tabs: null_mut(),
+            tooltip: null_mut(),
+            labels_hidden: std::cell::Cell::new(false),
             visible_ids: Vec::new(),
             row_cache: HashMap::new(),
+            job_log: std::cell::RefCell::new(None),
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
             snapshot: snapshot.clone(),
             filter_value: Filter::All,
@@ -1214,6 +1349,29 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             hotkey_failed: false,
             dragging: None,
             filter_counts: Vec::new(),
+            // Classic shows every column in the queue order.
+            columns: if modern() {
+                visible_columns(&snapshot.settings.hidden_columns)
+            } else {
+                visible_columns(&[])
+            },
+            column_widths: [0; 6],
+            sort: snapshot
+                .settings
+                .list_sort
+                .as_ref()
+                .filter(|_| modern())
+                .and_then(|(key, ascending)| {
+                    COLUMN_KEYS
+                        .iter()
+                        .position(|candidate| candidate == key)
+                        .map(|column| (column, *ascending))
+                }),
+            page_height: snapshot
+                .settings
+                .details_height
+                .unwrap_or(DEFAULT_PAGE_HEIGHT),
+            splitting: None,
         });
         let raw = Box::into_raw(state);
         let hwnd = CreateWindowExW(
@@ -1256,9 +1414,6 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             PostMessageW(hwnd, WM_SHOW_TOUR, 0, 0);
         }
         UpdateWindow(hwnd);
-        if !start_hidden && (*raw).wizard_pending && !wizard_auto_open_suppressed() {
-            PostMessageW(hwnd, WM_SHOW_WIZARD, 0, 0);
-        }
         // Non-blocking scheduled update check (daily-gated, background thread).
         crate::update::startup_check((*raw).app.clone());
         // Policies older versions wrote block the extension; a developer run
@@ -1379,6 +1534,9 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             // modeless dialog's Ctrl+A / Ctrl+V would run the main window's list
             // commands instead of editing its own fields.
             let main_message = msg.hwnd.is_null() || GetAncestor(msg.hwnd, GA_ROOT) == hwnd;
+            if main_message && msg.message == WM_SYSCHAR && pause_access_key(hwnd, msg.wParam) {
+                continue;
+            }
             if !(main_message && !accel.is_null() && TranslateAcceleratorW(hwnd, accel, &msg) != 0)
                 && !dialog_message(hwnd, &msg)
             {
@@ -1518,6 +1676,21 @@ unsafe extern "system" fn main_proc(
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
     let ui = &mut *raw;
+    // Modern paints the main window's own layers in both schemes; the shared
+    // dark painter below covers Classic and the dialogs' surfaces.
+    match msg {
+        _ if !modern() => {}
+        WM_ERASEBKGND => {
+            paint_main_surfaces(ui, wparam as HDC);
+            return 1;
+        }
+        WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
+            if let Some(brush) = main_control_colour(ui, wparam as HDC, lparam as HWND) {
+                return brush;
+            }
+        }
+        _ => {}
+    }
     if let Some(value) = paint_theme(hwnd, msg, wparam, lparam) {
         return value;
     }
@@ -1531,10 +1704,10 @@ unsafe extern "system" fn main_proc(
     }
     match msg {
         WM_NCPAINT => {
-            // The default paints the frame and the light menu bar strip; the
-            // strip is repainted here so the whole bar follows the scheme.
+            // The default paints the frame and the system's menu bar strip; the
+            // strip is repainted here so the whole bar sits on the base layer.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if scheme_dark(hwnd) {
+            if menu_strip_painted(hwnd) {
                 paint_menu_strip(ui);
             }
             value
@@ -1544,7 +1717,7 @@ unsafe extern "system" fn main_proc(
             // menu bar included, and they do it outside WM_NCPAINT. The strip is
             // painted again on top so a focus change cannot leave the bar light.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if scheme_dark(hwnd) {
+            if menu_strip_painted(hwnd) {
                 paint_menu_strip(ui);
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
@@ -1564,7 +1737,7 @@ unsafe extern "system" fn main_proc(
                 // shell keeps it.
                 ui.menu_hot = -1;
             }
-            if scheme_dark(hwnd) {
+            if menu_strip_painted(hwnd) {
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
             0
@@ -1583,6 +1756,14 @@ unsafe extern "system" fn main_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        WM_INITMENUPOPUP if modern() => {
+            update_view_menu(ui);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_FIT_COLUMNS => {
+            fit_last_column(ui);
+            0
+        }
         WM_ENTERMENULOOP => {
             ui.menu_open = true;
             PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
@@ -1596,12 +1777,12 @@ unsafe extern "system" fn main_proc(
         WM_EXITMENULOOP => {
             ui.menu_open = false;
             ui.menu_hot = -1;
-            if scheme_dark(hwnd) {
+            if menu_strip_painted(hwnd) {
                 PostMessageW(hwnd, WM_PAINT_MENU, 0, 0);
             }
             0
         }
-        WM_UAHDRAWMENU if scheme_dark(hwnd) => {
+        WM_UAHDRAWMENU if menu_strip_painted(hwnd) => {
             // The theme asks for the bar's own drawing and hands over the
             // context it presents. That context is the only one the shell
             // blits, so the strip is drawn into it rather than into a window
@@ -1610,7 +1791,7 @@ unsafe extern "system" fn main_proc(
             paint_menu_strip_into(ui, ask.dc);
             1
         }
-        WM_UAHDRAWMENUITEM if scheme_dark(hwnd) => {
+        WM_UAHDRAWMENUITEM if menu_strip_painted(hwnd) => {
             // The same request for one item, with a DRAWITEMSTRUCT at the head
             // of the request; its hDC is the context to draw in.
             let ask = &*(lparam as *const DRAWITEMSTRUCT);
@@ -1623,7 +1804,7 @@ unsafe extern "system" fn main_proc(
             // is handled, so the strip keeps the hot item itself and lands on
             // top of it in the same message instead of flashing light.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if scheme_dark(hwnd) {
+            if menu_strip_painted(hwnd) {
                 track_nc_leave(hwnd);
                 let over_bar = loword(wparam) as u32 == HTMENU;
                 let menu = GetMenu(hwnd);
@@ -1639,10 +1820,17 @@ unsafe extern "system" fn main_proc(
                 } else {
                     -1
                 };
-                // Over the bar the shell has just painted its own light box, so
+                // Over an item the shell has just painted its own light box, so
                 // the strip lands on top of it even when the item did not
-                // change; elsewhere only a cleared highlight needs a repaint.
-                if over_bar || hot != ui.menu_hot {
+                // change. In Modern the empty part of the bar gets no box, so
+                // there, as everywhere else, only a changed highlight needs a
+                // repaint; Classic repaints anywhere over the bar.
+                let repaint = if modern() {
+                    over_bar && hot >= 0
+                } else {
+                    over_bar
+                };
+                if repaint || hot != ui.menu_hot {
                     ui.menu_hot = hot;
                     paint_menu_strip(ui);
                 }
@@ -1656,7 +1844,7 @@ unsafe extern "system" fn main_proc(
             // tracks, the cursor only left for the popup and the item keeps the
             // highlight the open menu gives it.
             let value = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if scheme_dark(hwnd) {
+            if menu_strip_painted(hwnd) {
                 if !ui.menu_open {
                     ui.menu_hot = -1;
                 }
@@ -1665,7 +1853,7 @@ unsafe extern "system" fn main_proc(
             value
         }
         WM_PAINT_MENU => {
-            if scheme_dark(hwnd) {
+            if menu_strip_painted(hwnd) {
                 RedrawWindow(
                     hwnd,
                     std::ptr::null_mut(),
@@ -1684,7 +1872,8 @@ unsafe extern "system" fn main_proc(
             // This arrives before WM_CREATE, so the DPI has to come from the
             // window, not from state that is filled in later.
             let dpi = GetDpiForWindow(hwnd).max(96);
-            let (x, y) = clamp_min_track(hwnd, dpi, 760, 560);
+            // Modern's split lets the window be lower.
+            let (x, y) = clamp_min_track(hwnd, dpi, 760, if modern() { 440 } else { 560 });
             info.ptMinTrackSize.x = x;
             info.ptMinTrackSize.y = y;
             0
@@ -1709,6 +1898,9 @@ unsafe extern "system" fn main_proc(
         }
         WM_SETTINGCHANGE => {
             apply_dark_mode(hwnd, ui.snapshot.settings.dark_mode);
+            if modern() {
+                refresh_main_surfaces(ui);
+            }
             0
         }
         WM_DISPLAYCHANGE => {
@@ -1737,6 +1929,28 @@ unsafe extern "system" fn main_proc(
         WM_COMMAND => {
             main_command(ui, loword(wparam) as i32, hiword(wparam));
             0
+        }
+        WM_DRAWITEM if modern() => {
+            let item = &*(lparam as *const DRAWITEMSTRUCT);
+            if item.CtlType == ODT_BUTTON {
+                draw_main_button(ui, item);
+                return 1;
+            }
+            if item.CtlType == ODT_COMBOBOX && item.CtlID == ID_FILTER as u32 {
+                draw_filter_item(ui, item);
+                return 1;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_MEASUREITEM if modern() => {
+            // Arrives while the filter box is created, before the window's DPI
+            // is recorded. The closed box's height is set by the layout.
+            let item = &mut *(lparam as *mut MEASUREITEMSTRUCT);
+            if item.CtlType == ODT_COMBOBOX && item.CtlID == ID_FILTER as u32 {
+                item.itemHeight = scale(FILTER_ITEM, GetDpiForWindow(hwnd).max(96)) as u32;
+                return 1;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_SHOW_WIZARD => {
             if ui.wizard_pending && IsWindowVisible(hwnd) != 0 {
@@ -1773,8 +1987,85 @@ unsafe extern "system" fn main_proc(
             show_tour(ui, false);
             0
         }
+        WM_SETCURSOR
+            if modern() && wparam as HWND == hwnd && loword(lparam as usize) as u32 == HTCLIENT =>
+        {
+            let mut point: POINT = zeroed();
+            GetCursorPos(&mut point);
+            ScreenToClient(hwnd, &mut point);
+            if PtInRect(&split_band(ui), point) != 0 {
+                SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
+                return 1;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_LBUTTONDOWN if modern() => {
+            let point = POINT {
+                x: loword(lparam as usize) as i16 as i32,
+                y: hiword(lparam as usize) as i16 as i32,
+            };
+            let band = split_band(ui);
+            if PtInRect(&band, point) != 0 {
+                ui.splitting = Some(point.y - band.top);
+                SetCapture(hwnd);
+                SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_MOUSEMOVE if ui.splitting.is_some() => {
+            let y = hiword(lparam as usize) as i16 as i32;
+            let band_top = y - ui.splitting.unwrap_or(0);
+            let geometry = split_geometry(ui);
+            let page = geometry.page_bottom - (band_top + geometry.above_page);
+            let page = page.clamp(geometry.min_page, geometry.max_page);
+            ui.page_height = page * 96 / ui.dpi.max(96) as i32;
+            // The cards and every control move with the split, and a fast drag
+            // keeps input queued ahead of any paint. A control moved on screen
+            // takes its old pixels along and counts them as painted, so moves
+            // would pile up stale copies: the layout moves them without
+            // drawing, and the whole window reaches the screen at its new
+            // layout before the next move is read.
+            layout_main(ui);
+            present_client(hwnd);
+            SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
+            0
+        }
+        WM_LBUTTONUP if ui.splitting.is_some() => {
+            ui.splitting = None;
+            ReleaseCapture();
+            save_list_view(ui);
+            0
+        }
         WM_MOUSEMOVE if ui.dragging.is_some() => {
             SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
+            0
+        }
+        WM_MOUSEMOVE if modern() => {
+            let point = POINT {
+                x: loword(lparam as usize) as i16 as i32,
+                y: hiword(lparam as usize) as i16 as i32,
+            };
+            let band = split_band(ui);
+            let hot = PtInRect(&band, point) != 0;
+            if hot != ui.split_hot {
+                ui.split_hot = hot;
+                if hot {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    TrackMouseEvent(&mut track);
+                }
+                InvalidateRect(hwnd, &band, 1);
+            }
+            0
+        }
+        WM_MOUSELEAVE if ui.split_hot => {
+            ui.split_hot = false;
+            InvalidateRect(hwnd, &split_band(ui), 1);
             0
         }
         WM_LBUTTONUP if ui.dragging.is_some() => {
@@ -1797,6 +2088,9 @@ unsafe extern "system" fn main_proc(
         }
         WM_CAPTURECHANGED => {
             ui.dragging = None;
+            if ui.splitting.take().is_some() {
+                save_list_view(ui);
+            }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_EXIT_AFTER_DIALOGS => {
@@ -1820,18 +2114,50 @@ unsafe extern "system" fn main_proc(
         WM_NOTIFY => {
             let hdr = &*(lparam as *const NMHDR);
             if hdr.hwndFrom == ui.list && hdr.code == NM_CUSTOMDRAW {
+                if modern() {
+                    return modern_list_custom_draw(ui, lparam);
+                }
                 if scheme_dark(ui.hwnd) {
                     return list_custom_draw(ui, lparam);
                 }
                 return light_list_custom_draw(ui, lparam);
             }
-            if hdr.hwndFrom == ui.list && hdr.code == LVN_BEGINDRAG {
+            if hdr.hwndFrom == ui.tooltip && hdr.code == TTN_GETDISPINFOW {
+                button_tooltip(lparam);
+                return 0;
+            }
+            if hdr.hwndFrom == ui.tabs && hdr.code == TCN_SELCHANGE {
+                update_details(ui);
+                return 0;
+            }
+            if modern() && hdr.hwndFrom == ui.list && hdr.code == LVN_COLUMNCLICK {
+                let view = (*(lparam as *const NMLISTVIEW)).iSubItem;
+                if let Some(&column) = ui.columns.get(view as usize) {
+                    set_sort(ui, next_sort(ui.sort, column));
+                }
+                return 0;
+            }
+            // The last column fills the list once the user has sized a column.
+            if modern()
+                && hdr.hwndFrom == list_header(ui)
+                && (hdr.code == HDN_ENDTRACKW || hdr.code == HDN_DIVIDERDBLCLICKW)
+            {
+                PostMessageW(hwnd, WM_FIT_COLUMNS, 0, 0);
+                return 0;
+            }
+            // A sorted view is not the queue order, so dropping rows there
+            // could not say where in the queue they belong.
+            if hdr.hwndFrom == ui.list && hdr.code == LVN_BEGINDRAG && ui.sort.is_none() {
                 let ids = selected_ids(ui);
                 if !ids.is_empty() {
                     ui.dragging = Some(ids);
                     SetCapture(hwnd);
                     SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
                 }
+                return 0;
+            }
+            if modern() && hdr.hwndFrom == ui.list && hdr.code == LVN_GETINFOTIPW {
+                cell_tip(ui, &mut *(lparam as *mut NMLVGETINFOTIPW));
                 return 0;
             }
             if hdr.hwndFrom == ui.list {
@@ -1917,8 +2243,24 @@ unsafe extern "system" fn main_proc(
             handle_tray(ui, loword(lparam as usize) as u32);
             0
         }
-        WM_CONTEXTMENU if wparam as HWND == ui.list => {
+        WM_CONTEXTMENU if !modern() && wparam as HWND == ui.list => {
             show_job_menu(ui, lparam);
+            0
+        }
+        WM_CONTEXTMENU
+            if modern() && (wparam as HWND == ui.list || wparam as HWND == list_header(ui)) =>
+        {
+            let point = POINT {
+                x: loword(lparam as usize) as i16 as i32,
+                y: hiword(lparam as usize) as i16 as i32,
+            };
+            let mut header: RECT = zeroed();
+            GetWindowRect(list_header(ui), &mut header);
+            if lparam != -1 && PtInRect(&header, point) != 0 {
+                show_column_menu(ui, point);
+            } else {
+                show_job_menu(ui, lparam);
+            }
             0
         }
         WM_QUERYENDSESSION => 1,
@@ -1973,11 +2315,16 @@ unsafe extern "system" fn main_proc(
                 DestroyIcon(ui.tray_icon);
                 ui.tray_icon = null_mut();
             }
-            if !ui.font.is_null() {
-                DeleteObject(ui.font);
-            }
-            if !ui.details_font.is_null() {
-                DeleteObject(ui.details_font);
+            for font in [
+                ui.font,
+                ui.details_font,
+                ui.caption_font,
+                ui.menu_font,
+                ui.icon_font,
+            ] {
+                if !font.is_null() {
+                    DeleteObject(font);
+                }
             }
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1986,13 +2333,129 @@ unsafe extern "system" fn main_proc(
     }
 }
 
+/// The Modern command buttons. Their access keys differ from each other and
+/// from the menu bar's in every language; the pause button's label follows the
+/// selection (`pause_button_label`).
 const MAIN_BUTTONS: [(i32, &str, &str); 5] = [
+    (ID_ADD, "Y&eni indirme", "&New download"),
+    (ID_SETTINGS, "&Ayarlar", "&Settings"),
+    (ID_PAUSE_RESUME, "Durakla&t", "&Pause"),
+    (ID_REMOVE, "&Kaldır", "Re&move"),
+    (ID_OPEN_FOLDER, "K&lasör", "F&older"),
+];
+/// The Classic command buttons: plain labels, the pause button naming both verbs.
+const CLASSIC_BUTTONS: [(i32, &str, &str); 5] = [
     (ID_ADD, "Yeni indirme", "New download"),
     (ID_SETTINGS, "Ayarlar", "Settings"),
     (ID_PAUSE_RESUME, "Duraklat / Sürdür", "Pause / Resume"),
     (ID_REMOVE, "Kaldır", "Remove"),
     (ID_OPEN_FOLDER, "Klasör", "Folder"),
 ];
+/// What the pause command does to a selection: every job it can act on is
+/// resumed when it is paused, failed or cancelled and paused otherwise, so a
+/// mixed selection toggles each job.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PauseVerb {
+    Pause,
+    Resume,
+    Both,
+}
+const PAUSE_VERBS: [PauseVerb; 3] = [PauseVerb::Pause, PauseVerb::Resume, PauseVerb::Both];
+/// The verb a selection's pause command applies; Pause when it acts on none.
+fn pause_verb(jobs: &[&Job]) -> PauseVerb {
+    let acting: Vec<&&Job> = jobs.iter().filter(|job| can_pause_or_resume(job)).collect();
+    let resuming = acting.iter().filter(|job| resumable(job.state)).count();
+    if acting.is_empty() || resuming == 0 {
+        PauseVerb::Pause
+    } else if resuming == acting.len() {
+        PauseVerb::Resume
+    } else {
+        PauseVerb::Both
+    }
+}
+/// The Modern pause button's label for what it will do to the selection.
+fn pause_button_label(verb: PauseVerb) -> &'static str {
+    match verb {
+        PauseVerb::Pause => crate::i18n::ui("Durakla&t", "&Pause"),
+        PauseVerb::Resume => crate::i18n::ui("&Sürdür", "&Resume"),
+        PauseVerb::Both => crate::i18n::ui("Durakla&t / Sürdür", "&Pause / Resume"),
+    }
+}
+/// Modern's pause button changes its label, and with it its access key, with
+/// the selection; it answers to the key of every label it can show, so a key
+/// that worked a moment ago still works. True when `key` clicked it.
+unsafe fn pause_access_key(main: HWND, key: WPARAM) -> bool {
+    let button = GetDlgItem(main, ID_PAUSE_RESUME);
+    if !modern() || button.is_null() || IsWindowVisible(button) == 0 || IsWindowEnabled(button) == 0
+    {
+        return false;
+    }
+    let Some(typed) = char::from_u32(key as u32) else {
+        return false;
+    };
+    let labels = PAUSE_VERBS.map(pause_button_label);
+    if pause_key_clicks(&text(button), &labels, typed) {
+        SendMessageW(button, BM_CLICK, 0, 0);
+        return true;
+    }
+    false
+}
+/// Whether `typed` is the access key of one of `labels` other than the
+/// `shown` one, which is the dialog manager's to handle.
+fn pause_key_clicks(shown: &str, labels: &[&str], typed: char) -> bool {
+    let typed = typed.to_lowercase().to_string();
+    let access = |label: &str| {
+        let (title, at) = split_mnemonic(label);
+        at.and_then(|at| title.chars().nth(at))
+            .map(|c| c.to_lowercase().to_string())
+    };
+    access(shown).as_ref() != Some(&typed)
+        && labels
+            .iter()
+            .any(|label| access(label).as_ref() == Some(&typed))
+}
+
+/// The pages under the list, in order: details, the job's own log, its error.
+const JOB_TABS: [(&str, &str); 3] = [
+    ("Ayrıntılar", "Details"),
+    ("İş günlüğü", "Job log"),
+    ("Hata ayrıntısı", "Error details"),
+];
+const JOB_LOG_PAGE: usize = 1;
+
+/// One job's Job log page and the stamps of the files it was read from.
+struct JobLogPage {
+    job: String,
+    stamp: Vec<Option<(u64, std::time::SystemTime)>>,
+    text: String,
+}
+
+/// The pages a level has tabs for. The job log follows the job log command:
+/// a level that refuses the command has no tab for it either.
+fn job_tab_pages(mode: UiMode) -> Vec<usize> {
+    (0..JOB_TABS.len())
+        .filter(|&page| page != JOB_LOG_PAGE || main_command_visible(mode, false, ID_JOB_LOG))
+        .collect()
+}
+
+/// Fills the tab strip with the pages of the current level, keeping the page
+/// that was shown under `previous` when the level still has it.
+unsafe fn fill_job_tabs(ui: &MainUi, previous: UiMode) {
+    let selected = SendMessageW(ui.tabs, TCM_GETCURSEL, 0, 0).max(0) as usize;
+    let shown = job_tab_pages(previous).get(selected).copied().unwrap_or(0);
+    SendMessageW(ui.tabs, TCM_DELETEALLITEMS, 0, 0);
+    let pages = job_tab_pages(ui.ui_mode);
+    let mut index = 0;
+    for (page, (tr, en)) in JOB_TABS.iter().enumerate() {
+        if pages.contains(&page) {
+            tab_item(ui.tabs, index, crate::i18n::ui(tr, en));
+            index += 1;
+        }
+    }
+    let index = pages.iter().position(|&page| page == shown).unwrap_or(0);
+    SendMessageW(ui.tabs, TCM_SETCURSEL, index, 0);
+    InvalidateRect(ui.tabs, null(), 0);
+}
 const MAIN_FILTERS: [(&str, &str); 9] = [
     ("Tümü", "All"),
     ("Etkin", "Active"),
@@ -2015,19 +2478,463 @@ const FILTER_VALUES: [Filter; 9] = [
     Filter::Archives,
     Filter::Programs,
 ];
+/// The list's columns with their Modern widths in epx.
 const MAIN_COLUMNS: [(&str, &str, i32); 6] = [
     ("Ad", "Name", 260),
     ("Durum", "State", 145),
-    ("İlerleme", "Progress", 170),
+    ("İlerleme", "Progress", 200),
     ("Hız", "Speed", 100),
     ("Kalan", "Remaining", 85),
-    ("Konum", "Location", 300),
+    ("Konum", "Location", 280),
 ];
+/// The Classic widths of `MAIN_COLUMNS`.
+const CLASSIC_COLUMN_WIDTHS: [i32; 6] = [260, 145, 170, 100, 85, 300];
+/// The names the settings store columns by, in `MAIN_COLUMNS` order.
+const COLUMN_KEYS: [&str; 6] = [
+    "name",
+    "state",
+    "progress",
+    "speed",
+    "remaining",
+    "location",
+];
+pub(super) const COL_NAME: usize = 0;
+const COL_STATE: usize = 1;
+pub(super) const COL_PROGRESS: usize = 2;
+pub(super) const COL_LOCATION: usize = 5;
+/// The tab page's height before the user moves the split, in epx.
+const DEFAULT_PAGE_HEIGHT: i32 = 148;
+
+/// Name and State always show: the state is the only text that says a job
+/// failed or waits.
+fn column_fixed(column: usize) -> bool {
+    column == COL_NAME || column == COL_STATE
+}
+
+/// The columns shown for a stored list of hidden ones.
+fn visible_columns(hidden: &[String]) -> Vec<usize> {
+    (0..MAIN_COLUMNS.len())
+        .filter(|&column| {
+            column_fixed(column) || !hidden.iter().any(|key| key == COLUMN_KEYS[column])
+        })
+        .collect()
+}
+
+/// The sort a click on `column`'s header gives: ascending, then descending,
+/// then the queue order again. Another column starts ascending.
+fn next_sort(current: Option<(usize, bool)>, column: usize) -> Option<(usize, bool)> {
+    match current {
+        Some((sorted, true)) if sorted == column => Some((column, false)),
+        Some((sorted, false)) if sorted == column => None,
+        _ => Some((column, true)),
+    }
+}
+
+/// The order a sorted list shows: the rows it already shows while the same
+/// jobs are listed, so rows hold still while their values change, and the
+/// fresh sort when jobs come or go or `resort` asks for it (a header click,
+/// another filter or search, F5).
+fn hold_order(previous: &[String], fresh: Vec<String>, resort: bool) -> Vec<String> {
+    let shown: HashSet<&str> = previous.iter().map(String::as_str).collect();
+    let same = previous.len() == fresh.len() && fresh.iter().all(|id| shown.contains(id.as_str()));
+    if same && !resort {
+        previous.to_vec()
+    } else {
+        fresh
+    }
+}
+
+/// Orders two jobs by a column's value, not its text: names and locations
+/// without case, the state in its lifecycle order, progress by the share
+/// done and then the bytes, speed in bytes per second, and the time left
+/// with unknown times last.
+fn compare_jobs(a: &Job, b: &Job, column: usize) -> std::cmp::Ordering {
+    match column {
+        COL_NAME => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        COL_STATE => (a.state as u8).cmp(&(b.state as u8)),
+        COL_PROGRESS => {
+            // The bytes downloaded of the total, not the bar's fill: a failed
+            // job's bar is full whatever it got.
+            let share = |job: &Job| match job.total {
+                Some(total) if total > 0 => job.downloaded as f64 / total as f64,
+                _ if job.state == JobState::Completed => 1.0,
+                _ => 0.0,
+            };
+            share(a)
+                .total_cmp(&share(b))
+                .then(a.downloaded.cmp(&b.downloaded))
+        }
+        3 => a.speed.cmp(&b.speed),
+        4 => a.eta.unwrap_or(u64::MAX).cmp(&b.eta.unwrap_or(u64::MAX)),
+        _ => a
+            .path
+            .to_string_lossy()
+            .to_lowercase()
+            .cmp(&b.path.to_string_lossy().to_lowercase()),
+    }
+}
+
+/// One column's title in the current language.
+fn column_label(column: usize) -> &'static str {
+    for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+        if index == column {
+            return crate::i18n::ui(tr, en);
+        }
+    }
+    ""
+}
+
+unsafe fn list_header(ui: &MainUi) -> HWND {
+    SendMessageW(ui.list, LVM_GETHEADER, 0, 0) as HWND
+}
+
+/// Records the width of every shown column, so a column keeps it while hidden.
+/// The last column only fills the list, so it keeps the width it had before.
+unsafe fn remember_column_widths(ui: &mut MainUi) {
+    let count = SendMessageW(list_header(ui), HDM_GETITEMCOUNT, 0, 0).max(0) as usize;
+    let last = ui.columns.len().saturating_sub(1);
+    for (view, &column) in ui.columns.iter().enumerate().take(count.min(last)) {
+        let width = SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, view, 0) as i32;
+        if width > 0 {
+            ui.column_widths[column] = width;
+        }
+    }
+}
+
+/// Gives the last column the width the other columns leave in the list, so
+/// no empty band follows it and the list scrolls sideways only when the
+/// other columns alone are wider than the list.
+unsafe fn fit_last_column(ui: &MainUi) {
+    let Some(last) = ui.columns.len().checked_sub(1) else {
+        return;
+    };
+    let mut client: RECT = zeroed();
+    GetClientRect(ui.list, &mut client);
+    let others: i32 = (0..last)
+        .map(|view| SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, view, 0) as i32)
+        .sum();
+    let width = (client.right - others).max(scale(LAST_COLUMN_MIN, ui.dpi));
+    if SendMessageW(ui.list, LVM_GETCOLUMNWIDTH, last, 0) as i32 != width {
+        SendMessageW(ui.list, LVM_SETCOLUMNWIDTH, last, width as isize);
+    }
+}
+/// The least the last column keeps when the others take the whole list.
+const LAST_COLUMN_MIN: i32 = 64;
+
+/// Puts `columns` into the list in order, each with its remembered width and
+/// its title. Name stays the list's first column; the others are removed and
+/// inserted again, which also empties their cells, so every row is written
+/// again on the next update.
+unsafe fn set_main_columns(ui: &mut MainUi, columns: Vec<usize>) {
+    remember_column_widths(ui);
+    let count = SendMessageW(list_header(ui), HDM_GETITEMCOUNT, 0, 0).max(0);
+    for _ in 1..count {
+        SendMessageW(ui.list, LVM_DELETECOLUMN, 1, 0);
+    }
+    ui.columns = columns;
+    for (view, &column) in ui.columns.iter().enumerate() {
+        let mut label = wide(column_label(column));
+        let item = LVCOLUMNW {
+            mask: LVCF_TEXT | LVCF_WIDTH | LVCF_FMT,
+            fmt: LVCFMT_LEFT,
+            cx: ui.column_widths[column],
+            pszText: label.as_mut_ptr(),
+            cchTextMax: label.len() as i32,
+            ..zeroed()
+        };
+        let message = if view == 0 && count > 0 {
+            LVM_SETCOLUMNW
+        } else {
+            LVM_INSERTCOLUMNW
+        };
+        SendMessageW(ui.list, message, view, &item as *const _ as isize);
+    }
+    ui.row_cache.clear();
+    show_sort_arrow(ui);
+    fit_last_column(ui);
+}
+
+/// Marks the sorted column's header with the sort direction.
+unsafe fn show_sort_arrow(ui: &MainUi) {
+    let header = list_header(ui);
+    for (view, &column) in ui.columns.iter().enumerate() {
+        let mut item: HDITEMW = zeroed();
+        item.mask = HDI_FORMAT;
+        SendMessageW(header, HDM_GETITEMW, view, &mut item as *mut _ as isize);
+        item.fmt &= !(HDF_SORTUP | HDF_SORTDOWN);
+        match ui.sort {
+            Some((sorted, true)) if sorted == column => item.fmt |= HDF_SORTUP,
+            Some((sorted, false)) if sorted == column => item.fmt |= HDF_SORTDOWN,
+            _ => {}
+        }
+        SendMessageW(header, HDM_SETITEMW, view, &item as *const _ as isize);
+    }
+}
+
+/// Stores the hidden columns, the sort and the tab page height with the
+/// window placement.
+unsafe fn save_list_view(ui: &MainUi) {
+    let mut settings = ui.app.snapshot().settings;
+    let hidden: Vec<String> = (0..MAIN_COLUMNS.len())
+        .filter(|column| !ui.columns.contains(column))
+        .map(|column| COLUMN_KEYS[column].to_string())
+        .collect();
+    let sort = ui
+        .sort
+        .map(|(column, ascending)| (COLUMN_KEYS[column].to_string(), ascending));
+    let height = Some(ui.page_height);
+    if settings.hidden_columns != hidden
+        || settings.list_sort != sort
+        || settings.details_height != height
+    {
+        settings.hidden_columns = hidden;
+        settings.list_sort = sort;
+        settings.details_height = height;
+        let _ = ui.app.update_settings_quiet(settings);
+    }
+}
+
+/// A check for every column, Name and State always on: the header's menu and
+/// the View menu's Columns submenu.
+unsafe fn column_menu(ui: &MainUi) -> HMENU {
+    let menu = CreatePopupMenu();
+    for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+        let shown = ui.columns.contains(&index);
+        AppendMenuW(
+            menu,
+            MF_STRING
+                | if shown { MF_CHECKED } else { 0 }
+                | if column_fixed(index) { MF_GRAYED } else { 0 },
+            ID_COLUMN_BASE as usize + index,
+            wide(crate::i18n::ui(tr, en)).as_ptr(),
+        );
+    }
+    menu
+}
+
+unsafe fn show_column_menu(ui: &mut MainUi, point: POINT) {
+    let menu = column_menu(ui);
+    let command = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+        point.x,
+        point.y,
+        0,
+        ui.hwnd,
+        null(),
+    ) as i32;
+    DestroyMenu(menu);
+    if command >= ID_COLUMN_BASE {
+        toggle_column(ui, (command - ID_COLUMN_BASE) as usize);
+    }
+}
+
+/// Shows or hides one column; Name and State stay.
+unsafe fn toggle_column(ui: &mut MainUi, column: usize) {
+    if column_fixed(column) || column >= MAIN_COLUMNS.len() {
+        return;
+    }
+    let mut columns = ui.columns.clone();
+    if let Some(position) = columns.iter().position(|&shown| shown == column) {
+        columns.remove(position);
+        // A hidden column cannot show which way the rows run.
+        if ui.sort.is_some_and(|(sorted, _)| sorted == column) {
+            ui.sort = None;
+        }
+    } else {
+        columns.push(column);
+        columns.sort_unstable();
+    }
+    set_main_columns(ui, columns);
+    save_list_view(ui);
+    update_rows(ui, true);
+}
+
+unsafe fn set_sort(ui: &mut MainUi, sort: Option<(usize, bool)>) {
+    ui.sort = sort;
+    show_sort_arrow(ui);
+    save_list_view(ui);
+    ui.row_cache.clear();
+    update_rows(ui, true);
+    update_details(ui);
+}
+
+/// The View menu's sort commands: a shown column keeps the direction, a
+/// direction keeps the column (Name while the rows are in queue order).
+unsafe fn sort_command(ui: &mut MainUi, id: i32) {
+    let column = ui.sort.map_or(COL_NAME, |(column, _)| column);
+    let ascending = ui.sort.is_none_or(|(_, ascending)| ascending);
+    let sort = match id {
+        ID_SORT_QUEUE => None,
+        ID_SORT_ASCENDING => Some((column, true)),
+        ID_SORT_DESCENDING => Some((column, false)),
+        _ => {
+            let chosen = (id - ID_SORT_BASE) as usize;
+            if !ui.columns.contains(&chosen) {
+                return;
+            }
+            Some((chosen, ascending))
+        }
+    };
+    set_sort(ui, sort);
+}
+
+/// One step of the View menu's larger and smaller details pane.
+const PAGE_STEP: i32 = 40;
+
+/// The tab page height one step up or down, inside what the window allows.
+unsafe fn resize_page(ui: &mut MainUi, larger: bool) {
+    let geometry = split_geometry(ui);
+    let step = if larger { PAGE_STEP } else { -PAGE_STEP };
+    let page = (scale(ui.page_height + step, ui.dpi)).clamp(geometry.min_page, geometry.max_page);
+    ui.page_height = page * 96 / ui.dpi.max(96) as i32;
+    layout_main(ui);
+    InvalidateRect(ui.hwnd, null(), 1);
+    save_list_view(ui);
+}
+
+/// Checks and enables the View menu's items for the current columns, sort
+/// and split.
+unsafe fn update_view_menu(ui: &MainUi) {
+    let menu = GetMenu(ui.hwnd);
+    if menu.is_null() {
+        return;
+    }
+    let set = |id: i32, checked: bool, enabled: bool| {
+        CheckMenuItem(
+            menu,
+            id as u32,
+            MF_BYCOMMAND | if checked { MF_CHECKED } else { MF_UNCHECKED },
+        );
+        EnableMenuItem(
+            menu,
+            id as u32,
+            MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
+        );
+    };
+    for column in 0..MAIN_COLUMNS.len() {
+        let shown = ui.columns.contains(&column);
+        set(ID_COLUMN_BASE + column as i32, shown, !column_fixed(column));
+        set(
+            ID_SORT_BASE + column as i32,
+            ui.sort.is_some_and(|(sorted, _)| sorted == column),
+            shown,
+        );
+    }
+    set(
+        ID_SORT_ASCENDING,
+        ui.sort.is_some_and(|(_, ascending)| ascending),
+        true,
+    );
+    set(
+        ID_SORT_DESCENDING,
+        ui.sort.is_some_and(|(_, ascending)| !ascending),
+        true,
+    );
+    set(ID_SORT_QUEUE, ui.sort.is_none(), true);
+    let geometry = split_geometry(ui);
+    let page = scale(ui.page_height, ui.dpi).clamp(geometry.min_page, geometry.max_page);
+    set(ID_PAGE_LARGER, false, page < geometry.max_page);
+    set(ID_PAGE_SMALLER, false, page > geometry.min_page);
+}
+
+/// The vertical space around the split: where the tab page ends, how much it
+/// may take, and what lies between the split and the page.
+struct SplitGeometry {
+    list_top: i32,
+    page_bottom: i32,
+    min_page: i32,
+    max_page: i32,
+    /// From the split's top edge to the page: the gap and the tab strip.
+    above_page: i32,
+    gap: i32,
+    tabs: i32,
+}
+
+unsafe fn split_geometry(ui: &MainUi) -> SplitGeometry {
+    let mut rect: RECT = zeroed();
+    GetClientRect(ui.hwnd, &mut rect);
+    let s = |value: i32| scale(value, ui.dpi);
+    let mut status: RECT = zeroed();
+    GetWindowRect(ui.status, &mut status);
+    let list_top = s(ROW_TOP) + s(ROW_HEIGHT) + s(ROW_BELOW);
+    let page_bottom = rect.bottom - (status.bottom - status.top) - s(8);
+    let (gap, tabs) = (s(SPLIT_GAP), s(TABS_HEIGHT));
+    let above_page = gap + tabs + s(4);
+    let min_page = s(MIN_PAGE_HEIGHT);
+    let max_page = (page_bottom - above_page - s(MIN_LIST_HEIGHT) - list_top).max(min_page);
+    SplitGeometry {
+        list_top,
+        page_bottom,
+        min_page,
+        max_page,
+        above_page,
+        gap,
+        tabs,
+    }
+}
+
+/// Prints the window and its controls into one bitmap and puts its client
+/// area on screen in a single blit, then drops the paints that are still
+/// pending. Painting the parent and then each control on screen lets a frame
+/// show a repaint half done.
+unsafe fn present_client(hwnd: HWND) {
+    let mut window: RECT = zeroed();
+    GetWindowRect(hwnd, &mut window);
+    let mut client: RECT = zeroed();
+    GetClientRect(hwnd, &mut client);
+    let mut origin = POINT { x: 0, y: 0 };
+    ClientToScreen(hwnd, &mut origin);
+    // Without DCX_CLIPCHILDREN the blit covers the controls as well.
+    let target = GetDCEx(hwnd, null_mut(), DCX_CACHE);
+    let memory = CreateCompatibleDC(target);
+    let bitmap = CreateCompatibleBitmap(
+        target,
+        window.right - window.left,
+        window.bottom - window.top,
+    );
+    let previous = SelectObject(memory, bitmap);
+    SendMessageW(
+        hwnd,
+        WM_PRINT,
+        memory as WPARAM,
+        (PRF_NONCLIENT | PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND) as LPARAM,
+    );
+    BitBlt(
+        target,
+        0,
+        0,
+        client.right,
+        client.bottom,
+        memory,
+        origin.x - window.left,
+        origin.y - window.top,
+        SRCCOPY,
+    );
+    SelectObject(memory, previous);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(hwnd, target);
+    RedrawWindow(hwnd, null(), null_mut(), RDW_VALIDATE | RDW_ALLCHILDREN);
+}
+
+/// The band between the list card and the tab strip that drags the split.
+unsafe fn split_band(ui: &MainUi) -> RECT {
+    let geometry = split_geometry(ui);
+    let page = scale(ui.page_height, ui.dpi).clamp(geometry.min_page, geometry.max_page);
+    let top = geometry.page_bottom - page - geometry.above_page;
+    let mut client: RECT = zeroed();
+    GetClientRect(ui.hwnd, &mut client);
+    RECT {
+        left: 0,
+        top,
+        right: client.right,
+        bottom: top + geometry.gap,
+    }
+}
 
 unsafe fn create_main_controls(ui: &mut MainUi) {
     ui.dpi = GetDpiForWindow(ui.hwnd).max(96);
-    ui.font = make_font(ui.dpi, 9, FW_NORMAL as i32);
-    ui.details_font = make_font(ui.dpi, 9, FW_NORMAL as i32);
     ui.icon = {
         let own = LoadIconW(GetModuleHandleW(null()), 101usize as *const u16);
         if own.is_null() {
@@ -2038,8 +2945,45 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     };
     SendMessageW(ui.hwnd, WM_SETICON, ICON_BIG as usize, ui.icon as isize);
     SendMessageW(ui.hwnd, WM_SETICON, ICON_SMALL as usize, ui.icon as isize);
+    if modern() {
+        create_modern_controls(ui);
+    } else {
+        create_classic_controls(ui);
+    }
+    update_profile_controls(ui);
+
+    DragAcceptFiles(ui.hwnd, 1);
+    let target = Box::into_raw(Box::new(DropTarget {
+        vtable: &DROP_TARGET_VTABLE,
+        refs: AtomicU32::new(1),
+        hwnd: ui.hwnd,
+    }));
+    if RegisterDragDrop(ui.hwnd, target.cast()) >= 0 {
+        ui.drop_target = target;
+    } else {
+        drop_release(target);
+    }
+    AddClipboardFormatListener(ui.hwnd);
+    add_tray(ui);
+    SetTimer(ui.hwnd, TIMER_REFRESH, 350, None);
+    apply_dark_mode(ui.hwnd, ui.snapshot.settings.dark_mode);
+    if modern() {
+        refresh_main_surfaces(ui);
+    }
+    layout_main(ui);
+    if modern() {
+        name_main_controls(ui);
+    }
+    refresh(ui, true);
+}
+
+/// The Classic main window: system buttons, a labelled search box, the
+/// filter, the grid list, the details box and the status bar with its grip.
+unsafe fn create_classic_controls(ui: &mut MainUi) {
+    ui.font = make_font(ui.dpi, 9, FW_NORMAL as i32);
+    ui.details_font = make_font(ui.dpi, 9, FW_NORMAL as i32);
     let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32;
-    for (id, tr, en) in MAIN_BUTTONS {
+    for (id, tr, en) in CLASSIC_BUTTONS {
         let h = control(
             ui.hwnd,
             "BUTTON",
@@ -2099,12 +3043,12 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
         0,
         (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP) as isize,
     );
-    for (index, (tr, en, width)) in MAIN_COLUMNS.iter().enumerate() {
+    for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
         let mut name_w = wide(crate::i18n::ui(tr, en));
         let column = LVCOLUMNW {
             mask: LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
             fmt: LVCFMT_LEFT,
-            cx: scale(*width, ui.dpi),
+            cx: scale(CLASSIC_COLUMN_WIDTHS[index], ui.dpi),
             pszText: name_w.as_mut_ptr(),
             cchTextMax: name_w.len() as i32,
             iSubItem: index as i32,
@@ -2157,25 +3101,172 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     let menu = create_main_menu(ui.ui_mode, ui.debug_mode);
     SendMessageW(menu as HWND, WM_SETFONT, ui.font as usize, 1);
     SetMenu(ui.hwnd, menu);
-    update_profile_controls(ui);
+}
 
-    DragAcceptFiles(ui.hwnd, 1);
-    let target = Box::into_raw(Box::new(DropTarget {
-        vtable: &DROP_TARGET_VTABLE,
-        refs: AtomicU32::new(1),
-        hwnd: ui.hwnd,
-    }));
-    if RegisterDragDrop(ui.hwnd, target.cast()) >= 0 {
-        ui.drop_target = target;
-    } else {
-        drop_release(target);
+/// The Modern main window: owner-drawn command buttons with icons, the search
+/// box and filter in the command row, the list and tab page cards, the tabs
+/// and the status line.
+unsafe fn create_modern_controls(ui: &mut MainUi) {
+    // Creation order is the Tab order: buttons, search, filter, list, tabs, page.
+    for (id, tr, en) in MAIN_BUTTONS {
+        let button = control(
+            ui.hwnd,
+            "BUTTON",
+            crate::i18n::ui(tr, en),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
+            0,
+            id,
+        );
+        subclass(button, button_proc);
     }
-    AddClipboardFormatListener(ui.hwnd);
-    add_tray(ui);
-    SetTimer(ui.hwnd, TIMER_REFRESH, 350, None);
-    apply_dark_mode(ui.hwnd, ui.snapshot.settings.dark_mode);
-    layout_main(ui);
-    refresh(ui, true);
+    create_button_tooltip(ui);
+    ui.search = control(
+        ui.hwnd,
+        "EDIT",
+        "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+        0,
+        ID_SEARCH,
+    );
+    let cue = wide(crate::i18n::ui("Ara", "Search"));
+    SendMessageW(ui.search, EM_SETCUEBANNER, 0, cue.as_ptr() as LPARAM);
+    subclass(ui.search, cue_proc);
+    // The open list's entries carry glyphs, so the window draws them.
+    ui.filter = control(
+        ui.hwnd,
+        "COMBOBOX",
+        "",
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | CBS_DROPDOWNLIST as u32
+            | CBS_OWNERDRAWFIXED as u32
+            | CBS_HASSTRINGS as u32
+            | WS_VSCROLL,
+        0,
+        ID_FILTER,
+    );
+    for (tr, en) in MAIN_FILTERS {
+        combo_add(ui.filter, crate::i18n::ui(tr, en));
+    }
+    combo_select(ui.filter, 0);
+    subclass(ui.filter, combo_proc);
+
+    ui.list = control(
+        ui.hwnd,
+        "SysListView32",
+        crate::i18n::ui("İndirme işleri", "Downloads"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS,
+        0,
+        ID_JOB_LIST,
+    );
+    SendMessageW(
+        ui.list,
+        LVM_SETEXTENDEDLISTVIEWSTYLE,
+        0,
+        // The info tip names a cell's text where Modern's painting cuts it
+        // short (`cell_tip`).
+        (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP | LVS_EX_INFOTIP) as isize,
+    );
+    for (index, (_, _, width)) in MAIN_COLUMNS.iter().enumerate() {
+        ui.column_widths[index] = scale(*width, ui.dpi);
+    }
+    let columns = ui.columns.clone();
+    set_main_columns(ui, columns);
+    ui.tabs = control(
+        ui.hwnd,
+        "SysTabControl32",
+        "",
+        // The strip paints itself with the Settings dialog's painter.
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_OWNERDRAWFIXED,
+        0,
+        ID_JOB_TABS,
+    );
+    fill_job_tabs(ui, ui.ui_mode);
+    subclass(ui.tabs, tabs_proc);
+    ui.details = control(
+        ui.hwnd,
+        "EDIT",
+        crate::i18n::ui("Bir iş seçin.", "Select a job."),
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | ES_MULTILINE as u32
+            | ES_READONLY as u32
+            | ES_AUTOVSCROLL as u32
+            | WS_VSCROLL,
+        0,
+        ID_DETAILS,
+    );
+    // The list header paints itself; the hook is installed here so the first
+    // frame already matches the scheme.
+    subclass(
+        SendMessageW(ui.list, LVM_GETHEADER, 0, 0) as HWND,
+        header_proc,
+    );
+    // No size grip: the window resizes from its edges.
+    ui.status = CreateStatusWindowW(
+        (WS_CHILD | WS_VISIBLE) as i32,
+        wide(crate::i18n::ui("Hazır", "Ready")).as_ptr(),
+        ui.hwnd,
+        ID_STATUS as u32,
+    );
+    subclass(ui.status, status_proc);
+    // A menu bar measures its items with the menu font, so the bar has to carry
+    // the same font the strip paints with; otherwise every caption outgrows its
+    // item rect and the last letter is clipped. `apply_main_metrics` sets it.
+    let menu = create_main_menu(ui.ui_mode, ui.debug_mode);
+    SetMenu(ui.hwnd, menu);
+    apply_main_metrics(ui);
+}
+
+/// Gives the controls without a label of their own a name for screen readers
+/// (the page text, the search box and the filter box), through
+/// IAccPropServices::SetHwndPropStr. The names stay with the windows.
+unsafe fn name_main_controls(ui: &MainUi) {
+    use windows_sys::core::GUID;
+    use windows_sys::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    const CLSID_ACC_PROP_SERVICES: GUID = GUID::from_u128(0xb5f8350b_0548_48b1_a6ee_88bd00b4a5e7);
+    const IID_IACC_PROP_SERVICES: GUID = GUID::from_u128(0x6e26e776_04f0_495d_80e4_3330352e3169);
+    const PROPID_ACC_NAME: GUID = GUID::from_u128(0x608d3df8_8128_4aa7_a428_f55e49267291);
+    const OBJID_CLIENT: i32 = -4;
+    type SetHwndPropStr =
+        unsafe extern "system" fn(*mut c_void, HWND, u32, u32, GUID, *const u16) -> i32;
+    let mut services: *mut c_void = null_mut();
+    if CoCreateInstance(
+        &CLSID_ACC_PROP_SERVICES,
+        null_mut(),
+        CLSCTX_INPROC_SERVER,
+        &IID_IACC_PROP_SERVICES,
+        &mut services,
+    ) < 0
+        || services.is_null()
+    {
+        return;
+    }
+    let vtable = *(services as *const *const usize);
+    let set: SetHwndPropStr = std::mem::transmute(*vtable.add(7));
+    let release: unsafe extern "system" fn(*mut c_void) -> u32 =
+        std::mem::transmute(*vtable.add(2));
+    for (control, name) in [
+        (ui.details, crate::i18n::ui("İş ayrıntıları", "Job details")),
+        (
+            ui.search,
+            crate::i18n::ui("İndirmelerde ara", "Search downloads"),
+        ),
+        (ui.filter, crate::i18n::ui("Filtre", "Filter")),
+    ] {
+        let name = wide(name);
+        set(
+            services,
+            control,
+            OBJID_CLIENT as u32,
+            0,
+            PROPID_ACC_NAME,
+            name.as_ptr(),
+        );
+    }
+    release(services);
 }
 
 /// Menu bar in the order standard Windows applications use. Mnemonics are
@@ -2300,6 +3391,63 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
         jobs as usize,
         wide(crate::i18n::ui("İ&ndirme", "&Downloads")).as_ptr(),
     );
+    if modern() {
+        // Checks and enabled states are set when the menu opens.
+        let view = CreatePopupMenu();
+        let columns = CreatePopupMenu();
+        let sort = CreatePopupMenu();
+        for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+            let label = crate::i18n::ui(tr, en);
+            append(columns, ID_COLUMN_BASE + index as i32, label);
+            append(sort, ID_SORT_BASE + index as i32, label);
+        }
+        AppendMenuW(sort, MF_SEPARATOR, 0, null());
+        append(
+            sort,
+            ID_SORT_ASCENDING,
+            crate::i18n::ui("&Artan", "&Ascending"),
+        );
+        append(
+            sort,
+            ID_SORT_DESCENDING,
+            crate::i18n::ui("A&zalan", "&Descending"),
+        );
+        AppendMenuW(sort, MF_SEPARATOR, 0, null());
+        append(
+            sort,
+            ID_SORT_QUEUE,
+            crate::i18n::ui("&Kuyruk sırası", "&Queue order"),
+        );
+        AppendMenuW(
+            view,
+            MF_POPUP,
+            columns as usize,
+            wide(crate::i18n::ui("&Sütunlar", "&Columns")).as_ptr(),
+        );
+        AppendMenuW(
+            view,
+            MF_POPUP,
+            sort as usize,
+            wide(crate::i18n::ui("Sı&rala", "&Sort by")).as_ptr(),
+        );
+        AppendMenuW(view, MF_SEPARATOR, 0, null());
+        append(
+            view,
+            ID_PAGE_LARGER,
+            crate::i18n::ui("Ayrıntı bölmesini &büyüt", "&Larger details pane"),
+        );
+        append(
+            view,
+            ID_PAGE_SMALLER,
+            crate::i18n::ui("Ayrıntı bölmesini &küçült", "S&maller details pane"),
+        );
+        AppendMenuW(
+            bar,
+            MF_POPUP,
+            view as usize,
+            wide(crate::i18n::ui("&Görünüm", "&View")).as_ptr(),
+        );
+    }
     let tools = CreatePopupMenu();
     if !mode.is_simple() {
         append(
@@ -2439,11 +3587,16 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
     if mode == ui.ui_mode && debug == ui.debug_mode && !language_changed && !update_changed {
         return;
     }
+    let previous_mode = ui.ui_mode;
     ui.ui_mode = mode;
     ui.debug_mode = debug;
     ui.update_version = update_version;
+    if modern() && (mode != previous_mode || language_changed) {
+        fill_job_tabs(ui, previous_mode);
+        ui.job_log.borrow_mut().take();
+    }
     let menu = create_main_menu(mode, debug);
-    SendMessageW(menu as HWND, WM_SETFONT, ui.font as usize, 1);
+    SendMessageW(menu as HWND, WM_SETFONT, menu_font(ui) as usize, 1);
     let previous = GetMenu(ui.hwnd);
     SetMenu(ui.hwnd, menu);
     if !previous.is_null() {
@@ -2454,7 +3607,12 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
             ui.hwnd,
             crate::i18n::ui(APP_TITLE, "SSDownload — Download Manager"),
         );
-        for (id, tr, en) in MAIN_BUTTONS {
+        let buttons = if modern() {
+            MAIN_BUTTONS
+        } else {
+            CLASSIC_BUTTONS
+        };
+        for (id, tr, en) in buttons {
             set_text(GetDlgItem(ui.hwnd, id), crate::i18n::ui(tr, en));
         }
         if let Some(label) = ui.toolbar.get(5) {
@@ -2470,14 +3628,19 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
         // the label update write them back.
         ui.filter_counts.clear();
         update_filter_labels(ui);
-        for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
-            let mut label = wide(crate::i18n::ui(tr, en));
-            let column = LVCOLUMNW {
-                mask: LVCF_TEXT,
-                pszText: label.as_mut_ptr(),
-                ..zeroed()
-            };
-            SendMessageW(ui.list, LVM_SETCOLUMNW, index, &column as *const _ as isize);
+        if modern() {
+            let columns = ui.columns.clone();
+            set_main_columns(ui, columns);
+        } else {
+            for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
+                let mut label = wide(crate::i18n::ui(tr, en));
+                let column = LVCOLUMNW {
+                    mask: LVCF_TEXT,
+                    pszText: label.as_mut_ptr(),
+                    ..zeroed()
+                };
+                SendMessageW(ui.list, LVM_SETCOLUMNW, index, &column as *const _ as isize);
+            }
         }
         set_text(ui.list, crate::i18n::ui("İndirme işleri", "Downloads"));
         if (owned_layout(0) != 0) != crate::i18n::right_to_left() {
@@ -2491,6 +3654,12 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
             );
         }
         ui.row_cache.clear();
+        if modern() {
+            name_main_controls(ui);
+            // Arabic and the other languages use different faces.
+            apply_main_metrics(ui);
+            update_details(ui);
+        }
         layout_main(ui);
         DrawMenuBar(ui.hwnd);
         InvalidateRect(ui.hwnd, null(), 1);
@@ -2582,6 +3751,29 @@ unsafe fn clamp_min_track(hwnd: HWND, dpi: u32, design_w: i32, design_h: i32) ->
 }
 
 unsafe fn update_main_dpi(ui: &mut MainUi) {
+    if !modern() {
+        return update_classic_dpi(ui);
+    }
+    let old_dpi = ui.dpi;
+    ui.dpi = GetDpiForWindow(ui.hwnd).max(96);
+    remember_column_widths(ui);
+    for width in ui.column_widths.iter_mut() {
+        *width = *width * ui.dpi as i32 / old_dpi.max(96) as i32;
+    }
+    for (view, &column) in ui.columns.iter().enumerate() {
+        SendMessageW(
+            ui.list,
+            LVM_SETCOLUMNWIDTH,
+            view,
+            ui.column_widths[column] as isize,
+        );
+    }
+    apply_main_metrics(ui);
+    layout_main(ui);
+    DrawMenuBar(ui.hwnd);
+}
+
+unsafe fn update_classic_dpi(ui: &mut MainUi) {
     let old_dpi = ui.dpi;
     ui.dpi = GetDpiForWindow(ui.hwnd).max(96);
     for col in 0..6 {
@@ -2617,6 +3809,16 @@ unsafe fn update_main_dpi(ui: &mut MainUi) {
 }
 
 unsafe fn layout_main(ui: &MainUi) {
+    if modern() {
+        layout_modern(ui);
+    } else {
+        layout_classic(ui);
+    }
+}
+
+/// Classic: the button row, the search row with its label and the filter,
+/// the list and the details box, with 10 px margins.
+unsafe fn layout_classic(ui: &MainUi) {
     let mut rect: RECT = zeroed();
     GetClientRect(ui.hwnd, &mut rect);
     let w = rect.right.max(scale(640, ui.dpi));
@@ -2687,6 +3889,125 @@ unsafe fn layout_main(ui: &MainUi) {
     SendMessageW(ui.status, WM_SIZE, 0, 0);
 }
 
+/// The command row on top (buttons left, search and filter right), the list card, the
+/// split, the tabs, the tab page card and the status line, on a 4 epx grid:
+/// 16 epx window margins and space around the command row, 8 epx between
+/// controls and at the split.
+unsafe fn layout_modern(ui: &MainUi) {
+    let mut rect: RECT = zeroed();
+    GetClientRect(ui.hwnd, &mut rect);
+    let s = |value: i32| scale(value, ui.dpi);
+    let w = rect.right.max(s(640));
+    let m = s(16);
+    let gap = s(8);
+    let top = s(ROW_TOP);
+    let row = s(ROW_HEIGHT);
+
+    let filter_w = s(160);
+    let filter_x = w - m - filter_w;
+    // Like a button, the box reaches FOCUS_MARGIN past its face for the ring.
+    let ring = s(FOCUS_MARGIN);
+    place_combo(
+        ui.filter,
+        inflate(
+            RECT {
+                left: filter_x,
+                top,
+                right: filter_x + filter_w,
+                bottom: top + row,
+            },
+            ring,
+            ring,
+        ),
+        ui.dpi,
+    );
+    // The search box gives way first: it shrinks to SEARCH_MIN before the
+    // buttons lose their labels, and the tooltip then carries the command names.
+    let room = filter_x - gap - m;
+    let row_width = |labels: bool| button_widths(ui, labels).iter().sum::<i32>() + gap * 4;
+    let labels = row_width(true) + gap + s(SEARCH_MIN) <= room;
+    let search_w = (room - row_width(labels) - gap).clamp(s(SEARCH_MIN), s(SEARCH_MAX));
+    let frame = RECT {
+        left: filter_x - gap - search_w,
+        top,
+        right: filter_x - gap,
+        bottom: top + row,
+    };
+    ui.search_frame.set(frame);
+    place_search(ui.search, frame, ui.dpi);
+    if ui.labels_hidden.replace(!labels) == labels {
+        for button in MAIN_BUTTONS {
+            InvalidateRect(GetDlgItem(ui.hwnd, button.0), null(), 0);
+        }
+    }
+    SendMessageW(ui.tooltip, TTM_ACTIVATE, !labels as usize, 0);
+    let mut x = m;
+    for ((id, _, _), width) in MAIN_BUTTONS.iter().zip(button_widths(ui, labels)) {
+        MoveWindow(
+            GetDlgItem(ui.hwnd, *id),
+            x - ring,
+            top - ring,
+            width + 2 * ring,
+            row + 2 * ring,
+            1,
+        );
+        x += width + gap;
+    }
+
+    let geometry = split_geometry(ui);
+    let (pad_x, pad_y) = (s(PAGE_PAD_X), s(PAGE_PAD_Y));
+    let page_h = s(ui.page_height).clamp(geometry.min_page, geometry.max_page);
+    let page_top = geometry.page_bottom - page_h;
+    let tabs_top = page_top - s(4) - geometry.tabs;
+    let list_bottom = tabs_top - geometry.gap;
+    let inset = s(LIST_INSET);
+    // A split drag repaints the whole window after each layout, so its moves
+    // leave the screen alone until then.
+    let repaint = ui.splitting.is_none() as i32;
+    MoveWindow(
+        ui.list,
+        m + inset,
+        geometry.list_top + inset,
+        w - 2 * m - 2 * inset,
+        list_bottom - geometry.list_top - 2 * inset,
+        repaint,
+    );
+    fit_last_column(ui);
+    // The first tab's label starts where the page text starts.
+    let text_x = m + pad_x + loword(SendMessageW(ui.details, EM_GETMARGINS, 0, 0) as usize) as i32;
+    let mut first: RECT = zeroed();
+    SendMessageW(ui.tabs, TCM_GETITEMRECT, 0, &mut first as *mut _ as isize);
+    let tabs_x = text_x - first.left - s(TAB_PAD);
+    MoveWindow(
+        ui.tabs,
+        tabs_x,
+        tabs_top,
+        w - m - tabs_x,
+        geometry.tabs,
+        repaint,
+    );
+    // The page shows whole lines; what is left over below them stays card.
+    let card = RECT {
+        left: m,
+        top: page_top,
+        right: w - m,
+        bottom: page_top + page_h,
+    };
+    ui.page_card.set(card);
+    let line = line_height(ui.details, ui.details_font).max(1);
+    let lines = ((page_h - 2 * pad_y) / line).max(1);
+    MoveWindow(
+        ui.details,
+        m + pad_x,
+        page_top + pad_y,
+        w - 2 * m - 2 * pad_x,
+        lines * line,
+        repaint,
+    );
+    SendMessageW(ui.status, WM_SIZE, 0, 0);
+    sync_details_scrollbar(ui);
+}
+
 /// Whether the current surface offers a main-window command. Mirrors
 /// `create_main_menu` so a hidden item is also refused when something other
 /// than the bar reaches it.
@@ -2740,6 +4061,11 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         ID_PAUSE_RESUME => pause_resume_selected(ui),
         ID_REMOVE => remove_selected(ui),
         ID_SELECT_ALL => select_all_jobs(ui),
+        id if (ID_COLUMN_BASE..ID_COLUMN_BASE + MAIN_COLUMNS.len() as i32).contains(&id) => {
+            toggle_column(ui, (id - ID_COLUMN_BASE) as usize)
+        }
+        id if (ID_SORT_BASE..=ID_SORT_QUEUE).contains(&id) => sort_command(ui, id),
+        ID_PAGE_LARGER | ID_PAGE_SMALLER => resize_page(ui, id == ID_PAGE_LARGER),
         ID_OPEN_FOLDER => open_selected_folder(ui),
         ID_OPEN_FILE => open_selected_file(ui),
         ID_SOURCE_REFRESH => begin_source_refresh(ui),
@@ -2973,6 +4299,19 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         ID_DIAGNOSTICS => dispatch(ui, Action::ExportDiagnostics),
         ID_EXIT => exit_app(ui),
         ID_SEARCH if notify_code as u32 == EN_CHANGE => refresh(ui, true),
+        ID_SEARCH
+            if modern()
+                && (notify_code as u32 == EN_SETFOCUS || notify_code as u32 == EN_KILLFOCUS) =>
+        {
+            // The frame's bottom line shows the focus.
+            InvalidateRect(ui.hwnd, &ui.search_frame.get(), 1);
+        }
+        // Modern: Escape in the search box clears it; the dialog manager turns
+        // the key into IDCANCEL.
+        IDCANCEL if modern() && GetFocus() == ui.search => {
+            set_text(ui.search, "");
+            refresh(ui, true);
+        }
         ID_FILTER if notify_code as u32 == CBN_SELCHANGE => {
             ui.filter_value = FILTER_VALUES
                 .get(combo_index(ui.filter).max(0) as usize)
@@ -2993,24 +4332,23 @@ unsafe fn main_command(ui: &mut MainUi, id: i32, notify_code: u16) {
         }
         1402 => show_about(ui),
         ID_SHOW_TOUR => show_tour(ui, true),
+        1403 if GetFocus() == ui.search => {
+            SendMessageW(ui.search, WM_PASTE, 0, 0);
+        }
         1403 => {
-            if GetFocus() == ui.search {
-                SendMessageW(ui.search, WM_PASTE, 0, 0);
+            let urls = clipboard_urls();
+            if urls.is_empty() {
+                message(
+                    ui.hwnd,
+                    crate::i18n::ui(
+                        "Panoda geçerli bir HTTP/HTTPS bağlantısı yok.",
+                        "The clipboard does not contain a valid HTTP/HTTPS link.",
+                    ),
+                    crate::i18n::ui("Panodan ekle", "Add from clipboard"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
             } else {
-                let urls = clipboard_urls();
-                if urls.is_empty() {
-                    message(
-                        ui.hwnd,
-                        crate::i18n::ui(
-                            "Panoda geçerli bir HTTP/HTTPS bağlantısı yok.",
-                            "The clipboard does not contain a valid HTTP/HTTPS link.",
-                        ),
-                        crate::i18n::ui("Panodan ekle", "Add from clipboard"),
-                        MB_OK | MB_ICONINFORMATION,
-                    );
-                } else {
-                    show_add_dialog(ui.hwnd, ui.app.clone(), urls.join("\r\n"), false);
-                }
+                show_add_dialog(ui.hwnd, ui.app.clone(), urls.join("\r\n"), false);
             }
         }
         1404 => {
@@ -3972,6 +5310,9 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
         ui.last_show_seq = snapshot.show_window_seq;
         show_main(ui);
     }
+    if !ui.exiting {
+        open_handed_over_job_views(ui.hwnd, &ui.app);
+    }
     let seen_messages = ui.seen_messages;
     for item in snapshot.messages.iter().filter(|m| m.id > seen_messages) {
         ui.seen_messages = ui.seen_messages.max(item.id);
@@ -3988,6 +5329,9 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     }
     if snapshot.settings.dark_mode != ui.snapshot.settings.dark_mode {
         apply_dark_mode(ui.hwnd, snapshot.settings.dark_mode);
+        if modern() {
+            refresh_main_surfaces(ui);
+        }
     }
     if snapshot.settings.clipboard_watch && !ui.snapshot.settings.clipboard_watch {
         handle_clipboard_change(ui);
@@ -4125,9 +5469,26 @@ unsafe fn update_status(ui: &MainUi) {
     }
 }
 
-/// Every selected row, in list order. The list is multi-select, so batch
-/// actions and the status line work from this set.
+/// Every selected row, in queue order whatever order the list shows. The list
+/// is multi-select, so batch actions and the status line work from this set,
+/// and a sorted view never changes what a command does.
 unsafe fn selected_ids(ui: &MainUi) -> Vec<String> {
+    in_queue_order(&ui.snapshot.jobs, selected_rows(ui))
+}
+
+/// `ids` in the order of `jobs`, the queue.
+fn in_queue_order(jobs: &[Job], mut ids: Vec<String>) -> Vec<String> {
+    let place: HashMap<&str, usize> = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| (job.id.as_str(), index))
+        .collect();
+    ids.sort_by_key(|id| place.get(id.as_str()).copied().unwrap_or(usize::MAX));
+    ids
+}
+
+/// Every selected row, in list order.
+unsafe fn selected_rows(ui: &MainUi) -> Vec<String> {
     let mut ids = Vec::new();
     let mut index =
         SendMessageW(ui.list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize) as i32;
@@ -4168,7 +5529,7 @@ fn matches_filter(job: &Job, filter: Filter) -> bool {
 }
 unsafe fn update_rows(ui: &mut MainUi, force: bool) {
     let query = search_key(text(ui.search).trim());
-    let jobs: Vec<&Job> = ui
+    let mut jobs: Vec<&Job> = ui
         .snapshot
         .jobs
         .iter()
@@ -4180,8 +5541,40 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
                     || search_key(&j.path.to_string_lossy()).contains(&query))
         })
         .collect();
+    // A stable sort: rows that compare equal keep their queue order.
+    if let Some((column, ascending)) = ui.sort {
+        jobs.sort_by(|a, b| {
+            let order = compare_jobs(a, b, column);
+            if ascending {
+                order
+            } else {
+                order.reverse()
+            }
+        });
+        // Rows keep their places while only their values change.
+        let fresh: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+        let held = hold_order(&ui.visible_ids, fresh, force);
+        let place: HashMap<&str, usize> = held
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect();
+        jobs.sort_by_key(|job| place.get(job.id.as_str()).copied().unwrap_or(usize::MAX));
+    }
     let ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
-    let prior = selected_ids(ui);
+    // List order, not queue order: when the job of the first selected row has
+    // left, Classic focuses no row.
+    let prior = selected_rows(ui);
+    // Modern keeps the focus on the job that had it; Classic gives it to the
+    // first selected row.
+    let focused = if modern() {
+        let index = SendMessageW(ui.list, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize);
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| ui.visible_ids.get(index).cloned())
+    } else {
+        None
+    };
     let rebuild = force || ids != ui.visible_ids;
     let mut changed = rebuild;
     // Deleting every item scrolls the list back to the top; the row that was on
@@ -4230,9 +5623,10 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
             job.path.to_string_lossy().into_owned(),
         ];
         let old = ui.row_cache.get(&job.id);
-        for (col, value) in cells.iter().enumerate() {
-            if old.and_then(|values| values.get(col)) != Some(value) {
-                set_list_cell(ui.list, index as i32, col as i32, value);
+        for (view, &column) in ui.columns.iter().enumerate() {
+            let value = &cells[column];
+            if old.and_then(|values| values.get(column)) != Some(value) {
+                set_list_cell(ui.list, index as i32, view as i32, value);
                 changed = true;
             }
         }
@@ -4241,11 +5635,15 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
     if rebuild {
         for (order, id) in prior.iter().enumerate() {
             if let Some(pos) = ui.visible_ids.iter().position(|v| v == id) {
+                let focus = match &focused {
+                    Some(focused) => focused == id,
+                    None => order == 0,
+                };
                 let item = LVITEMW {
                     mask: LVIF_STATE,
                     iItem: pos as i32,
                     iSubItem: 0,
-                    state: LVIS_SELECTED | if order == 0 { LVIS_FOCUSED } else { 0 },
+                    state: LVIS_SELECTED | if focus { LVIS_FOCUSED } else { 0 },
                     stateMask: LVIS_SELECTED | LVIS_FOCUSED,
                     pszText: null_mut(),
                     cchTextMax: 0,
@@ -4260,6 +5658,16 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
                 };
                 SendMessageW(ui.list, LVM_SETITEMSTATE, pos, &item as *const _ as isize);
             }
+        }
+        // A focused row that is not selected keeps the focus too.
+        if let Some(pos) = focused
+            .filter(|id| !prior.contains(id))
+            .and_then(|id| ui.visible_ids.iter().position(|v| *v == id))
+        {
+            let mut item: LVITEMW = zeroed();
+            item.state = LVIS_FOCUSED;
+            item.stateMask = LVIS_FOCUSED;
+            SendMessageW(ui.list, LVM_SETITEMSTATE, pos, &item as *const _ as isize);
         }
         // A new search or filter starts at the top; only a change made by the
         // engine keeps the user's place.
@@ -4282,6 +5690,10 @@ unsafe fn update_rows(ui: &mut MainUi, force: bool) {
         }
     }
     SendMessageW(ui.list, WM_SETREDRAW, 1, 0);
+    if rebuild && modern() {
+        // A changed row count can bring or take away the vertical scroll bar.
+        fit_last_column(ui);
+    }
     if changed {
         InvalidateRect(ui.list, null(), 0);
     }
@@ -4435,15 +5847,84 @@ unsafe fn update_details(ui: &MainUi) {
             MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
         );
     }
+    // Modern: the pause button names what it will do to the selection. Its
+    // width fits every label, so the row does not move.
+    if modern() {
+        let button = GetDlgItem(ui.hwnd, ID_PAUSE_RESUME);
+        let label = pause_button_label(pause_verb(&jobs));
+        if text(button) != label {
+            set_text(button, label);
+            InvalidateRect(button, null(), 0);
+        }
+    }
 
     if jobs.is_empty() {
-        set_text(
-            ui.details,
+        set_details(
+            ui,
             crate::i18n::ui(
                 "Bir indirme işi seçin. URL eklemek için Ctrl+N tuşlarına basın veya bağlantıyı pencereye sürükleyin.",
                 "Select a download job. Press Ctrl+N to add a URL or drag a link onto the window.",
             ),
         );
+        update_status(ui);
+        return;
+    }
+    // Classic has no tabs: its box always shows the details.
+    let tab = if modern() {
+        let selected = SendMessageW(ui.tabs, TCM_GETCURSEL, 0, 0).max(0) as usize;
+        job_tab_pages(ui.ui_mode)
+            .get(selected)
+            .copied()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if tab > 0 {
+        let page = match (tab, jobs.as_slice()) {
+            (_, [_, _, ..]) => {
+                crate::i18n::ui("Tek bir indirme seçin.", "Select a single download.").to_string()
+            }
+            (JOB_LOG_PAGE, [job]) => {
+                let stamp = crate::logging::job_timeline_stamp(&job.id);
+                let mut cache = ui.job_log.borrow_mut();
+                match &*cache {
+                    Some(page) if page.job == job.id && page.stamp == stamp => page.text.clone(),
+                    _ => {
+                        let lines = crate::logging::job_timeline(&job.id, 400);
+                        let text = if lines.is_empty() {
+                            crate::i18n::ui(
+                                "Bu indirme için henüz kayıt yok.",
+                                "No entries for this download yet.",
+                            )
+                            .to_string()
+                        } else {
+                            lines.join("\r\n")
+                        };
+                        *cache = Some(JobLogPage {
+                            job: job.id.clone(),
+                            stamp,
+                            text: text.clone(),
+                        });
+                        text
+                    }
+                }
+            }
+            (_, [job]) => match &job.error {
+                Some(error) => error.replace("\r\n", "\n").replace('\n', "\r\n"),
+                None => crate::i18n::ui(
+                    "Bu indirme için bir hata kaydedilmedi.",
+                    "No error was recorded for this download.",
+                )
+                .to_string(),
+            },
+            _ => String::new(),
+        };
+        let changed = text(ui.details) != page;
+        set_details(ui, &page);
+        // A changed log shows its newest lines.
+        if changed && tab == JOB_LOG_PAGE {
+            SendMessageW(ui.details, EM_LINESCROLL, 0, isize::MAX >> 1);
+        }
         update_status(ui);
         return;
     }
@@ -4462,8 +5943,8 @@ unsafe fn update_details(ui: &MainUi) {
             .collect::<Vec<_>>()
             .join(" · ");
         let speed: u64 = jobs.iter().map(|job| job.speed).sum();
-        set_text(
-            ui.details,
+        set_details(
+            ui,
             &format!(
                 "{} {}\r\n{}: {}\r\n{}: {}\r\n\r\n{}",
                 jobs.len(),
@@ -4506,8 +5987,17 @@ unsafe fn update_details(ui: &MainUi) {
         crate::i18n::ui("Konum", "Location"), job.path.display(),
         crate::i18n::ui("URL", "URL"), display_url(&job.request.url),
         job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), display_text(ui.snapshot.settings.debug_mode, short_error(job, error)))).unwrap_or_default());
-    set_text(ui.details, &body);
+    set_details(ui, &body);
     update_status(ui);
+}
+
+/// Writes the details text. Modern shows the page's scroll bar only while
+/// the text overflows; Classic keeps it.
+unsafe fn set_details(ui: &MainUi, value: &str) {
+    set_text(ui.details, value);
+    if modern() {
+        sync_details_scrollbar(ui);
+    }
 }
 
 /// Ctrl+A. Text controls keep their own select-all behavior, so the shortcut
@@ -4533,23 +6023,39 @@ unsafe fn select_all_jobs(ui: &mut MainUi) {
     update_details(ui);
 }
 
+fn resumable(state: JobState) -> bool {
+    matches!(
+        state,
+        JobState::Paused | JobState::Failed | JobState::Cancelled
+    )
+}
+
+/// What the pause command does to each selected job, in selection order: the
+/// id and true to resume it (paused, failed or cancelled), false to pause it.
+/// A job it cannot act on is left out.
+fn pause_resume_plan(jobs: &[&Job]) -> Vec<(String, bool)> {
+    jobs.iter()
+        .filter(|job| can_pause_or_resume(job))
+        .map(|job| (job.id.clone(), resumable(job.state)))
+        .collect()
+}
+
 unsafe fn pause_resume_selected(ui: &MainUi) {
-    let ids = selected_ids(ui);
     let snapshot = ui.app.snapshot();
-    for id in ids {
-        let Some(job) = snapshot.jobs.iter().find(|job| job.id == id) else {
-            continue;
-        };
-        if !can_pause_or_resume(job) {
-            continue;
-        }
-        match job.state {
-            JobState::Paused | JobState::Failed | JobState::Cancelled => {
-                dispatch(ui, Action::Resume { id })
-            }
-            JobState::Completed => {}
-            _ => dispatch(ui, Action::Pause { id }),
-        }
+    let ids = selected_ids(ui);
+    let jobs: Vec<&Job> = ids
+        .iter()
+        .filter_map(|id| snapshot.jobs.iter().find(|job| &job.id == id))
+        .collect();
+    for (id, resume) in pause_resume_plan(&jobs) {
+        dispatch(
+            ui,
+            if resume {
+                Action::Resume { id }
+            } else {
+                Action::Pause { id }
+            },
+        );
     }
 }
 unsafe fn remove_selected(ui: &MainUi) {
@@ -4874,6 +6380,34 @@ unsafe fn show_selected_job_log(ui: &MainUi) {
     }
 }
 
+/// Glyphs of the job menu's commands (Segoe Fluent Icons): OpenFile,
+/// FolderOpen, LightningBolt, Stop, Refresh, Copy, Download, Rename, Up,
+/// Down, Document, Error, Delete. Pause and resume take Pause or Play.
+const JOB_MENU_GLYPHS: [(i32, u16); 13] = [
+    (ID_OPEN_FILE, 0xe8e5),
+    (ID_OPEN_FOLDER, 0xe838),
+    (ID_START_NOW, 0xe945),
+    (ID_FINISH_RECORDING, 0xe71a),
+    (ID_SOURCE_REFRESH, 0xe895),
+    (ID_REDOWNLOAD, 0xe896),
+    (ID_COPY_URL, 0xe8c8),
+    (ID_RENAME, 0xe8ac),
+    (ID_MOVE_TOP, 0xe74a),
+    (ID_MOVE_BOTTOM, 0xe74b),
+    (ID_JOB_LOG, 0xe8a5),
+    (ID_JOB_ERROR, 0xe783),
+    (ID_REMOVE, 0xe74d),
+];
+
+/// Starts a new group in a menu: a separator after the last item, unless the
+/// menu is empty or already ends with one.
+unsafe fn separate(menu: HMENU) {
+    let last = GetMenuItemCount(menu) - 1;
+    if last >= 0 && GetMenuState(menu, last as u32, MF_BYPOSITION) & MF_SEPARATOR == 0 {
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    }
+}
+
 unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
     let mut point = POINT {
         x: loword(position as usize) as i16 as i32,
@@ -4942,10 +6476,51 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
         .iter()
         .filter_map(|id| snapshot.jobs.iter().find(|job| &job.id == id))
         .collect();
-    let (Some(first), count) = (jobs.first().copied(), jobs.len()) else {
+    let Some(first) = jobs.first().copied() else {
         return;
     };
     let menu = CreatePopupMenu();
+    let (error, glyphs) = if modern() {
+        modern_job_menu(ui, menu, &jobs)
+    } else {
+        (classic_job_menu(ui, menu, &jobs), Vec::new())
+    };
+    let command = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+        point.x,
+        point.y,
+        0,
+        ui.hwnd,
+        null(),
+    ) as i32;
+    DestroyMenu(menu);
+    for bitmap in glyphs {
+        DeleteObject(bitmap as HGDIOBJ);
+    }
+    PostMessageW(ui.hwnd, WM_NULL, 0, 0);
+    if command == ID_JOB_ERROR {
+        if let Some(error) = error {
+            message(
+                ui.hwnd,
+                &error,
+                crate::i18n::ui("Hata ayrıntısı", "Error details"),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    } else if command == ID_JOB_LOG {
+        show_job_log(ui.hwnd, ui.app.clone(), &first.id, &first.name);
+    } else if command != 0 {
+        main_command(ui, command, 0);
+    }
+}
+
+/// The Classic row menu: the commands in their plain order. Returns the
+/// job's error for Error details.
+unsafe fn classic_job_menu(ui: &MainUi, menu: HMENU, jobs: &[&Job]) -> Option<String> {
+    let (Some(first), count) = (jobs.first().copied(), jobs.len()) else {
+        return None;
+    };
     let mut error = None;
     if count == 1 {
         let job = first;
@@ -5183,31 +6758,270 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
             );
         }
     }
-    let command = TrackPopupMenu(
-        menu,
-        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-        point.x,
-        point.y,
-        0,
-        ui.hwnd,
-        null(),
-    ) as i32;
-    DestroyMenu(menu);
-    PostMessageW(ui.hwnd, WM_NULL, 0, 0);
-    if command == ID_JOB_ERROR {
-        if let Some(error) = error {
-            message(
-                ui.hwnd,
-                &error,
-                crate::i18n::ui("Hata ayrıntısı", "Error details"),
-                MB_OK | MB_ICONERROR,
+    error
+}
+
+/// The Modern row menu: the commands grouped with separators, their
+/// shortcuts and Segoe Fluent glyphs. Returns the job's error for Error
+/// details and the glyph bitmaps, which the caller deletes once the menu closed.
+unsafe fn modern_job_menu(
+    ui: &MainUi,
+    menu: HMENU,
+    jobs: &[&Job],
+) -> (Option<String>, Vec<HBITMAP>) {
+    let (Some(first), count) = (jobs.first().copied(), jobs.len()) else {
+        return (None, Vec::new());
+    };
+    let mut error = None;
+    // Pause, play, or the refresh arrows of a retry.
+    let mut pause_glyph = 0xe769u16;
+    // Groups: open, run, address and copy, queue place, diagnosis, removal.
+    if count == 1 {
+        let job = first;
+        if job.state == JobState::Completed && job.remove_requested.is_none() {
+            append(
+                menu,
+                ID_OPEN_FILE,
+                &format!("{}\tEnter", crate::i18n::ui("Aç", "Open")),
             );
         }
-    } else if command == ID_JOB_LOG {
-        show_job_log(ui.hwnd, ui.app.clone(), &first.id, &first.name);
-    } else if command != 0 {
-        main_command(ui, command, 0);
+        if job.remove_requested.is_none() {
+            append(
+                menu,
+                ID_OPEN_FOLDER,
+                crate::i18n::ui("Klasörde göster", "Show in folder"),
+            );
+        }
+        separate(menu);
+        if can_pause_or_resume(job) {
+            pause_glyph = match job.state {
+                JobState::Paused => 0xe768,
+                JobState::Failed | JobState::Cancelled => 0xe72c,
+                _ => 0xe769,
+            };
+            let label = match job.state {
+                JobState::Paused => crate::i18n::ui("Sürdür", "Resume"),
+                JobState::Failed | JobState::Cancelled => crate::i18n::ui("Yeniden dene", "Retry"),
+                JobState::AwaitingSource => crate::i18n::ui(
+                    "Yenilemeyi iptal et ve duraklat",
+                    "Cancel refresh and pause",
+                ),
+                _ => crate::i18n::ui("Duraklat", "Pause"),
+            };
+            append(menu, ID_PAUSE_RESUME, &format!("{label}\tSpace"));
+        }
+        if !job.state.is_terminal()
+            && job.remove_requested.is_none()
+            && matches!(
+                job.state,
+                JobState::Queued | JobState::Scheduled | JobState::Paused
+            )
+        {
+            append(
+                menu,
+                ID_START_NOW,
+                crate::i18n::ui("Hemen başlat", "Start now"),
+            );
+        }
+        if recording_live(job) {
+            append(
+                menu,
+                ID_FINISH_RECORDING,
+                crate::i18n::ui(
+                    "Canlı kaydı bitir ve kaydet",
+                    "Finish live recording and keep it",
+                ),
+            );
+        }
+        if source_refresh_available(job) {
+            append(
+                menu,
+                ID_SOURCE_REFRESH,
+                crate::i18n::ui("Kaynak adresini yenile...", "Refresh source address..."),
+            );
+        }
+        if !job.state.is_terminal() && job.remove_requested.is_none() {
+            AppendMenuW(
+                menu,
+                MF_STRING | if job.open_when_done { MF_CHECKED } else { 0 },
+                ID_OPEN_WHEN_DONE as usize,
+                wide(crate::i18n::ui("Tamamlanınca aç", "Open when done")).as_ptr(),
+            );
+        }
+        separate(menu);
+        append(
+            menu,
+            ID_COPY_URL,
+            crate::i18n::ui("Adresi kopyala", "Copy address"),
+        );
+        append(
+            menu,
+            ID_REDOWNLOAD,
+            crate::i18n::ui(
+                "Aynı klasöre yeniden indir",
+                "Download again to the same folder",
+            ),
+        );
+        if job.state == JobState::Completed && job.remove_requested.is_none() {
+            append(
+                menu,
+                ID_RENAME,
+                crate::i18n::ui("Yeniden adlandır...", "Rename..."),
+            );
+        }
+        separate(menu);
+        append(
+            menu,
+            ID_MOVE_TOP,
+            crate::i18n::ui("En üste taşı\tAlt+Home", "Move to top\tAlt+Home"),
+        );
+        append(
+            menu,
+            ID_MOVE_BOTTOM,
+            crate::i18n::ui("En alta taşı\tAlt+End", "Move to bottom\tAlt+End"),
+        );
+        if !ui.ui_mode.is_simple() && ui.snapshot.settings.queues.len() > 1 {
+            let queues = CreatePopupMenu();
+            for (index, queue) in ui.snapshot.settings.queues.iter().enumerate().take(64) {
+                let current = job.request.queue_id.as_deref() == Some(queue.id.as_str());
+                AppendMenuW(
+                    queues,
+                    MF_STRING | if current { MF_CHECKED } else { 0 },
+                    (ID_QUEUE_BASE + index as i32) as usize,
+                    // A queue named "Work & home" must not turn into a mnemonic.
+                    wide(&queue.display_name().replace('&', "&&")).as_ptr(),
+                );
+            }
+            AppendMenuW(
+                menu,
+                MF_POPUP,
+                queues as usize,
+                wide(crate::i18n::ui("Kuyruğa taşı", "Move to queue")).as_ptr(),
+            );
+        }
+        separate(menu);
+        if !ui.ui_mode.is_simple() {
+            append(
+                menu,
+                ID_JOB_LOG,
+                crate::i18n::ui("İş günlüğünü göster...", "Show job log..."),
+            );
+        }
+        error = job.error.clone();
+        if error.is_some() {
+            append(
+                menu,
+                ID_JOB_ERROR,
+                crate::i18n::ui("Hata ayrıntısı", "Error details"),
+            );
+        }
+        separate(menu);
+        if job.remove_requested.is_none() {
+            append(
+                menu,
+                ID_REMOVE,
+                &format!("{}\tDelete", crate::i18n::ui("Kaldır...", "Remove...")),
+            );
+        }
+    } else {
+        let openable = jobs
+            .iter()
+            .filter(|job| job.state == JobState::Completed && job.remove_requested.is_none())
+            .count();
+        if openable > 0 {
+            append(
+                menu,
+                ID_OPEN_FILE,
+                &format!("{} ({openable})\tEnter", crate::i18n::ui("Aç", "Open")),
+            );
+        }
+        let foldered = jobs
+            .iter()
+            .filter(|job| job.remove_requested.is_none())
+            .count();
+        if foldered > 0 {
+            append(
+                menu,
+                ID_OPEN_FOLDER,
+                &format!(
+                    "{} ({foldered})",
+                    crate::i18n::ui("Klasörde göster", "Show in folder")
+                ),
+            );
+        }
+        separate(menu);
+        // The command toggles each job it can act on, as the button does.
+        let acting = pause_resume_plan(jobs).len();
+        if acting > 0 {
+            let label = match pause_verb(jobs) {
+                PauseVerb::Resume => {
+                    pause_glyph = 0xe768;
+                    crate::i18n::ui("Sürdür", "Resume")
+                }
+                PauseVerb::Pause => crate::i18n::ui("Duraklat", "Pause"),
+                PauseVerb::Both => crate::i18n::ui("Duraklat / Sürdür", "Pause / Resume"),
+            };
+            append(menu, ID_PAUSE_RESUME, &format!("{label} ({acting})\tSpace"));
+        }
+        append(
+            menu,
+            ID_START_NOW,
+            &format!("{} ({count})", crate::i18n::ui("Hemen başlat", "Start now")),
+        );
+        let renewable = jobs
+            .iter()
+            .filter(|job| source_refresh_available(job))
+            .count();
+        if renewable > 0 {
+            append(
+                menu,
+                ID_SOURCE_REFRESH,
+                &format!(
+                    "{} ({renewable})",
+                    crate::i18n::ui("Kaynak adresini yenile...", "Refresh source address...")
+                ),
+            );
+        }
+        separate(menu);
+        append(
+            menu,
+            ID_COPY_URL,
+            &format!(
+                "{} ({count})",
+                crate::i18n::ui("Adresleri kopyala", "Copy addresses")
+            ),
+        );
+        separate(menu);
+        append(
+            menu,
+            ID_MOVE_TOP,
+            crate::i18n::ui("En üste taşı\tAlt+Home", "Move to top\tAlt+Home"),
+        );
+        append(
+            menu,
+            ID_MOVE_BOTTOM,
+            crate::i18n::ui("En alta taşı\tAlt+End", "Move to bottom\tAlt+End"),
+        );
+        separate(menu);
+        if foldered > 0 {
+            append(
+                menu,
+                ID_REMOVE,
+                &format!(
+                    "{} ({foldered})\tDelete",
+                    crate::i18n::ui("Kaldır...", "Remove...")
+                ),
+            );
+        }
     }
+    let last = GetMenuItemCount(menu) - 1;
+    if last >= 0 && GetMenuState(menu, last as u32, MF_BYPOSITION) & MF_SEPARATOR != 0 {
+        DeleteMenu(menu, last as u32, MF_BYPOSITION);
+    }
+    let mut table = JOB_MENU_GLYPHS.to_vec();
+    table.push((ID_PAUSE_RESUME, pause_glyph));
+    let glyphs = set_menu_glyphs(menu, ui.hwnd, ui.dpi, &table);
+    (error, glyphs)
 }
 
 unsafe fn add_tray(ui: &mut MainUi) {
@@ -5659,6 +7473,8 @@ const S_HOTKEY: i32 = 2138;
 const S_DOUBLE_CLICK: i32 = 2139;
 const S_HISTORY: i32 = 2140;
 const S_BATTERY_SAVER: i32 = 2141;
+const S_THEME: i32 = 2142;
+const S_BAR: i32 = 2143;
 const SP_EDIT: i32 = 2701;
 const RN_EDIT: i32 = 2703;
 const RN_OK: i32 = 2704;
@@ -5717,6 +7533,14 @@ const P_LIST: i32 = 2448;
 const P_HINT: i32 = 2449;
 /// "Hata bildir" on the job view: hidden while the watched job is fine.
 const P_REPORT: i32 = 2450;
+/// "Show details" / "Hide details": shows or hides the status text.
+const P_DETAILS: i32 = 2453;
+/// The bar that shows which parts of the file have arrived.
+const P_SEGMENTS: i32 = 2454;
+/// The source line under the file name.
+const P_SOURCE: i32 = 2455;
+/// The first of the values of `JOB_FACTS`, one id each in that order.
+const P_FACTS: i32 = 2456;
 
 struct AddFields {
     urls: HWND,
@@ -5734,11 +7558,21 @@ struct AddFields {
 struct WizardFields {
     modes: UsageModes,
     simple: bool,
+    modern: bool,
+    /// Lines the introduction wraps to.
+    intro_lines: i32,
+    /// Explanation lines the card rows need beyond one per row.
+    caption_lines: i32,
     video: HWND,
     file: HWND,
     audio: HWND,
     simple_card: HWND,
     advanced_card: HWND,
+    classic_card: HWND,
+    modern_card: HWND,
+    /// The restart note beside the theme heading; only a wizard opened while
+    /// the main window exists has one.
+    note: HWND,
     start: HWND,
 }
 struct SettingsFields {
@@ -5759,6 +7593,10 @@ struct SettingsFields {
     start: HWND,
     end: HWND,
     dark: HWND,
+    /// The theme box, its label and the note that it applies after a restart.
+    theme: HWND,
+    theme_label: HWND,
+    theme_note: HWND,
     mode_video: HWND,
     mode_file: HWND,
     mode_audio: HWND,
@@ -5824,6 +7662,8 @@ struct SpeedFields {
     ids: Vec<String>,
     initial: u64,
     edit: HWND,
+    /// The lines Modern gives the label: one until it is measured.
+    label_lines: i32,
 }
 struct RenameFields {
     id: String,
@@ -5918,6 +7758,24 @@ struct MediaFields {
     playlist_items: HWND,
     thumbnail: HWND,
     thumbnail_requested: bool,
+    /// What the picker shows until its analysis loads: a title, the line
+    /// under it and a moving bar.
+    prep_title: HWND,
+    prep_detail: HWND,
+    prep_bar: HWND,
+    /// The preparing title's semibold face; the window owns it.
+    title_font: HFONT,
+    /// The form's controls the preparing state hides. Empty once the form
+    /// shows, when the analysis loads or Advanced options opens.
+    held: Vec<HWND>,
+}
+
+impl Drop for MediaFields {
+    fn drop(&mut self) {
+        if !self.title_font.is_null() {
+            unsafe { DeleteObject(self.title_font as HGDIOBJ) };
+        }
+    }
 }
 /// The job view one queued handoff turns into. It watches the exact ids
 /// `Action::Add` returned, in the engine's own order: an unrelated job that
@@ -5939,7 +7797,19 @@ struct ProgressFields {
     rendered_rows: String,
     /// Last label of the pause/resume/retry button.
     action_label: String,
+    /// Whether the status text shows; it opens by itself once for a failure,
+    /// which `failure_shown` records.
+    details: bool,
+    failure_shown: bool,
+    /// What the segment bar shows now.
+    segments: SegmentView,
+    /// The file name's semibold face; the window owns it.
+    title_font: HFONT,
     summary: HWND,
+    source: HWND,
+    facts: [HWND; JOB_FACTS.len()],
+    segment_bar: HWND,
+    details_button: HWND,
     list: HWND,
     status: HWND,
     progress: HWND,
@@ -5950,6 +7820,55 @@ struct ProgressFields {
     close: HWND,
     hint: HWND,
     report: HWND,
+}
+
+impl ProgressFields {
+    fn new(ids: Vec<String>) -> Box<Self> {
+        Box::new(ProgressFields {
+            ids,
+            selected: 0,
+            raised: HashSet::new(),
+            rendered: String::new(),
+            rendered_rows: String::new(),
+            action_label: String::new(),
+            details: false,
+            failure_shown: false,
+            segments: SegmentView::default(),
+            title_font: null_mut(),
+            summary: null_mut(),
+            source: null_mut(),
+            facts: [null_mut(); JOB_FACTS.len()],
+            segment_bar: null_mut(),
+            details_button: null_mut(),
+            list: null_mut(),
+            status: null_mut(),
+            progress: null_mut(),
+            action: null_mut(),
+            cancel: null_mut(),
+            open_file: null_mut(),
+            open_folder: null_mut(),
+            close: null_mut(),
+            hint: null_mut(),
+            report: null_mut(),
+        })
+    }
+}
+
+impl Drop for ProgressFields {
+    fn drop(&mut self) {
+        if !self.title_font.is_null() {
+            unsafe { DeleteObject(self.title_font as HGDIOBJ) };
+        }
+    }
+}
+
+/// What the job view's segment bar draws: the parts of a `total`-byte file
+/// that have arrived, in the colour of the job's state.
+#[derive(Clone, Default, PartialEq)]
+struct SegmentView {
+    parts: Vec<(u64, u64)>,
+    total: u64,
+    state: Option<JobState>,
 }
 struct EventFields {
     list: HWND,
@@ -6316,6 +8235,7 @@ unsafe fn run_modal_at(
     SetForegroundWindow(hwnd);
     let mut msg: MSG = zeroed();
     let mut repost_quit = false;
+    let mut focus = null_mut();
     while IsWindow(hwnd) != 0 {
         let got = GetMessageW(&mut msg, null_mut(), 0, 0);
         if got <= 0 {
@@ -6329,10 +8249,13 @@ unsafe fn run_modal_at(
             break;
         }
         // The dialog manager hands the arrow keys to the focused control, so
-        // the scroll keys are taken here, on the wheel's own clamp.
+        // the scroll keys are taken here, on the wheel's own clamp. Modern
+        // leaves them to a control that uses them itself, such as a box or a
+        // text field.
         let dialog = &*raw;
         if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)
             && dialog.scroll_range.get() > 0
+            && !(modern() && wants_arrows(&msg))
         {
             let delta = scroll_delta_for_key(msg.wParam as u16, dialog.dpi);
             if delta != 0 {
@@ -6346,6 +8269,13 @@ unsafe fn run_modal_at(
         if !dialog_message(hwnd, &msg) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+        // A control that takes the focus scrolls into view, whether Tab or a
+        // click moved it there.
+        let now = GetFocus();
+        if now != focus && IsWindow(hwnd) != 0 {
+            focus = now;
+            scroll_into_view(&*raw, now);
         }
     }
     EnableWindow(owner, 1);
@@ -6433,6 +8363,24 @@ unsafe fn place_window_on(hwnd: HWND, origin: Option<[i32; 4]>) {
         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
     );
 }
+/// This process's main window, if it exists: an instance of another profile
+/// has one of the same class.
+unsafe fn own_main_window() -> HWND {
+    let class = wide(CLASS_MAIN);
+    let mut window = null_mut();
+    loop {
+        window = FindWindowExW(null_mut(), window, class.as_ptr(), null());
+        if window.is_null() {
+            return window;
+        }
+        let mut process = 0;
+        GetWindowThreadProcessId(window, &mut process);
+        if process == GetCurrentProcessId() {
+            return window;
+        }
+    }
+}
+
 unsafe fn center_window(hwnd: HWND, owner: HWND) {
     let mut wr: RECT = zeroed();
     if GetWindowRect(hwnd, &mut wr) == 0 {
@@ -6441,11 +8389,12 @@ unsafe fn center_window(hwnd: HWND, owner: HWND) {
     // An ownerless alert has no rectangle to centre on, and centring on an
     // empty one puts it in the desktop's top-left corner. The application's
     // main window is the surface the user is looking at, so it anchors those
-    // alerts as well as their monitor.
+    // alerts as well as their monitor. Before that window exists (the
+    // first-run wizard) the dialog stays on the monitor it opened on.
     let anchor = if !owner.is_null() && IsWindow(owner) != 0 {
         owner
     } else {
-        FindWindowW(wide(CLASS_MAIN).as_ptr(), null())
+        own_main_window()
     };
     let mut or: RECT = zeroed();
     let anchored = !anchor.is_null() && GetWindowRect(anchor, &mut or) != 0;
@@ -6479,25 +8428,42 @@ unsafe fn center_window(hwnd: HWND, owner: HWND) {
 
 /// First-run wizard: the surface depth is chosen first and the usage purposes
 /// are part of the advanced answer only, so a simple choice never confronts a
-/// new user with the detailed set.
+/// new user with the detailed set. The theme is chosen beside them. With no
+/// `owner` it opens before the main window, on the monitor that window was
+/// last on, if the profile has one.
 unsafe fn show_usage_wizard(owner: HWND, app: App, settings: Settings) {
     let simple = UiMode::parse(&settings.ui_mode).is_simple();
-    run_modal(
+    let (width, height) = (
+        WIZARD_WIDTH,
+        wizard_content_height(1, 0, modern()) + SETTINGS_FRAME + 3,
+    );
+    let origin = settings
+        .window_placement
+        .filter(|_| owner.is_null())
+        .map(|[left, top, right, bottom, _]| [left, top, right, bottom]);
+    run_modal_at(
         owner,
         app,
         crate::i18n::ui("SSDownload kurulumu", "SSDownload setup"),
-        576,
-        412,
+        width,
+        height,
         DialogKind::Wizard(WizardFields {
             modes: settings.usage_modes,
             simple,
+            modern: settings.modern_theme(),
+            intro_lines: 1,
+            caption_lines: 0,
             video: null_mut(),
             file: null_mut(),
             audio: null_mut(),
             simple_card: null_mut(),
             advanced_card: null_mut(),
+            classic_card: null_mut(),
+            modern_card: null_mut(),
+            note: null_mut(),
             start: null_mut(),
         }),
+        origin,
     );
 }
 
@@ -6530,7 +8496,7 @@ unsafe fn apply_settings_mode(dlg: &DialogUi, f: &SettingsFields) {
     resize_dialog(
         dlg.hwnd,
         dlg.dpi,
-        settings_logical_height(simple) + SETTINGS_FRAME,
+        settings_logical_height(modern(), simple) + SETTINGS_FRAME,
     );
     layout_dialog(dlg);
 }
@@ -6541,7 +8507,7 @@ unsafe fn show_add_dialog(owner: HWND, app: App, initial: String, analyze_first:
         app,
         crate::i18n::ui("Yeni indirme", "New download"),
         620,
-        ADD_DIALOG_HEIGHT,
+        add_window_height(false),
         DialogKind::Add(AddFields {
             urls: null_mut(),
             dir: null_mut(),
@@ -6559,25 +8525,122 @@ unsafe fn show_add_dialog(owner: HWND, app: App, initial: String, analyze_first:
 }
 /// Logical content height of the settings dialog for one surface depth: the
 /// rows that depth shows plus the shared button and error rows above the
-/// bottom edge. A simple dialog is the shorter one, because the rows it hides
-/// are not replaced by anything.
-fn settings_logical_height(simple: bool) -> i32 {
-    if simple {
-        372
+/// bottom edge. In Classic a simple dialog is the shorter one, because the
+/// rows it hides are not replaced by anything; Modern's simple page gives two
+/// toggles a row each and is as tall as the advanced one.
+fn settings_logical_height(modern: bool, simple: bool) -> i32 {
+    match (modern, simple) {
+        (true, _) => 624,
+        (false, true) => 398,
+        (false, false) => 424,
+    }
+}
+/// The settings dialog's width: Modern's 14 px text needs 7/6 of Classic's,
+/// and the theme row's note a little more.
+fn settings_width() -> i32 {
+    if modern() {
+        720
     } else {
-        398
+        560
     }
 }
 /// The frame of this dialog, measured once: the 346 logical content height it
 /// shipped with was a 385 window. A mode's window is its own height plus this,
 /// so neither mode opens with rows it does not have.
 const SETTINGS_FRAME: i32 = 39;
-/// The simple add dialog's window: its 292 logical content height plus the
-/// shared frame, with a few pixels so DPI rounding never shows a scroll bar.
-const ADD_DIALOG_HEIGHT: i32 = 292 + SETTINGS_FRAME + 3;
-/// Logical content height of the one-field dialogs: the label and the field,
-/// a gap, the error line and the button row. Their windows add the frame and a
-/// pixel, like every dialog here.
+/// The media picker's and the job view's window height: Modern's content
+/// within its frame, or Classic's window height.
+fn media_window_height(modern_content: i32, classic: i32) -> i32 {
+    if modern() {
+        modern_content + SETTINGS_FRAME + 3
+    } else {
+        classic
+    }
+}
+/// A list and form dialog's window: Modern's content size within its frame,
+/// Classic's fixed size.
+fn form_window(width: i32, height: i32) -> (i32, i32) {
+    if modern() {
+        (width, height + SETTINGS_FRAME + 3)
+    } else {
+        (700, 470)
+    }
+}
+/// The add dialog's logical content height without and with the advanced rows.
+fn add_content_height(advanced: bool) -> i32 {
+    match (modern(), advanced) {
+        (true, false) => ADD_HEIGHT,
+        (true, true) => ADD_ADVANCED_HEIGHT,
+        (false, false) => 292,
+        (false, true) => 372,
+    }
+}
+/// The add dialog's window height: the simple dialog's content height plus
+/// the shared frame, with a few pixels so DPI rounding never shows a scroll
+/// bar. Modern's advanced dialog is measured the same way; Classic's is 420.
+fn add_window_height(advanced: bool) -> i32 {
+    if advanced && !modern() {
+        420
+    } else {
+        add_content_height(advanced) + SETTINGS_FRAME + 3
+    }
+}
+
+/// A Settings window's fields for `value`, before its controls exist.
+fn settings_fields(value: Settings) -> SettingsFields {
+    SettingsFields {
+        opened: value.clone(),
+        value,
+        dir: null_mut(),
+        max_active: null_mut(),
+        connections: null_mut(),
+        media_fragments: null_mut(),
+        per_host: null_mut(),
+        speed: null_mut(),
+        retry: null_mut(),
+        clipboard: null_mut(),
+        tray: null_mut(),
+        startup: null_mut(),
+        notify: null_mut(),
+        schedule: null_mut(),
+        start: null_mut(),
+        end: null_mut(),
+        dark: null_mut(),
+        theme: null_mut(),
+        theme_label: null_mut(),
+        theme_note: null_mut(),
+        mode_video: null_mut(),
+        mode_file: null_mut(),
+        mode_audio: null_mut(),
+        browser_transfer: null_mut(),
+        update_check: null_mut(),
+        log_level: null_mut(),
+        log_hosts: null_mut(),
+        ui_mode: null_mut(),
+        site_entries: null_mut(),
+        ui_language: null_mut(),
+        proxy_mode: null_mut(),
+        proxy_url: null_mut(),
+        proxy_user: null_mut(),
+        proxy_pass: null_mut(),
+        speed_schedule: null_mut(),
+        speed_start: null_mut(),
+        speed_end: null_mut(),
+        speed_kib: null_mut(),
+        keep_awake: null_mut(),
+        sound: null_mut(),
+        takeover: null_mut(),
+        completion_card: null_mut(),
+        metered: null_mut(),
+        battery_saver: null_mut(),
+        hotkey: null_mut(),
+        double_click: null_mut(),
+        history: null_mut(),
+    }
+}
+/// Logical content height of Classic's one-field dialogs: the label and the
+/// field, a gap, the error line and the button row. Their windows add the
+/// frame and a pixel, like every dialog here.
 const SPEED_LOGICAL_HEIGHT: i32 = 145;
 const RENAME_LOGICAL_HEIGHT: i32 = 133;
 
@@ -6587,54 +8650,9 @@ unsafe fn show_settings_dialog(owner: HWND, app: App, value: Settings) {
         owner,
         app,
         crate::i18n::ui("SSDownload ayarları", "SSDownload settings"),
-        560,
-        settings_logical_height(simple) + SETTINGS_FRAME,
-        DialogKind::Settings(Box::new(SettingsFields {
-            opened: value.clone(),
-            value,
-            dir: null_mut(),
-            max_active: null_mut(),
-            connections: null_mut(),
-            media_fragments: null_mut(),
-            per_host: null_mut(),
-            speed: null_mut(),
-            retry: null_mut(),
-            clipboard: null_mut(),
-            tray: null_mut(),
-            startup: null_mut(),
-            notify: null_mut(),
-            schedule: null_mut(),
-            start: null_mut(),
-            end: null_mut(),
-            dark: null_mut(),
-            mode_video: null_mut(),
-            mode_file: null_mut(),
-            mode_audio: null_mut(),
-            browser_transfer: null_mut(),
-            update_check: null_mut(),
-            log_level: null_mut(),
-            log_hosts: null_mut(),
-            ui_mode: null_mut(),
-            site_entries: null_mut(),
-            ui_language: null_mut(),
-            proxy_mode: null_mut(),
-            proxy_url: null_mut(),
-            proxy_user: null_mut(),
-            proxy_pass: null_mut(),
-            speed_schedule: null_mut(),
-            speed_start: null_mut(),
-            speed_end: null_mut(),
-            speed_kib: null_mut(),
-            keep_awake: null_mut(),
-            sound: null_mut(),
-            takeover: null_mut(),
-            completion_card: null_mut(),
-            metered: null_mut(),
-            battery_saver: null_mut(),
-            hotkey: null_mut(),
-            double_click: null_mut(),
-            history: null_mut(),
-        })),
+        settings_width(),
+        settings_logical_height(modern(), simple) + SETTINGS_FRAME,
+        DialogKind::Settings(Box::new(settings_fields(value))),
     );
 }
 unsafe fn show_speed_limit(owner: HWND, app: App, ids: Vec<String>, initial: u64) {
@@ -6642,12 +8660,17 @@ unsafe fn show_speed_limit(owner: HWND, app: App, ids: Vec<String>, initial: u64
         owner,
         app,
         crate::i18n::ui("İndirme hız sınırı", "Download speed limit"),
-        420,
-        SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
+        if modern() { 480 } else { 420 },
+        if modern() {
+            one_field_height(1) + SETTINGS_FRAME + 3
+        } else {
+            SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1
+        },
         DialogKind::Speed(SpeedFields {
             ids,
             initial,
             edit: null_mut(),
+            label_lines: 1,
         }),
     );
 }
@@ -6656,8 +8679,12 @@ unsafe fn show_rename(owner: HWND, app: App, id: String, name: String) {
         owner,
         app,
         crate::i18n::ui("Yeniden adlandır", "Rename"),
-        460,
-        RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1,
+        if modern() { 520 } else { 460 },
+        if modern() {
+            one_field_height(1) + SETTINGS_FRAME + 3
+        } else {
+            RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1
+        },
         DialogKind::Rename(RenameFields {
             id,
             initial: name,
@@ -6667,37 +8694,29 @@ unsafe fn show_rename(owner: HWND, app: App, id: String, name: String) {
 }
 
 /// Opens a download's own window for already queued jobs (a card's "Büyüt").
+/// Opens the download window of `ids`, or brings forward the one already open
+/// for them: a job has one window.
 pub(super) unsafe fn open_job_view(owner: HWND, app: App, ids: Vec<String>) {
     if ids.is_empty() {
         return;
     }
-    let title = crate::i18n::ui("İndirme", "Download");
+    let open = owned_dialogs(owner).into_iter().find(|&hwnd| {
+        let state = dialog_state(hwnd);
+        !state.is_null() && matches!(&(*state).kind, DialogKind::Progress(f) if f.ids == ids)
+    });
+    if let Some(hwnd) = open {
+        activate_window(hwnd);
+        return;
+    }
+    let title = job_view_title(&app.snapshot(), &ids);
     show_modeless(
         owner,
         app,
         DialogRequest {
-            title,
-            width: 640,
-            height: 420,
-            kind: DialogKind::Progress(Box::new(ProgressFields {
-                ids,
-                selected: 0,
-                raised: HashSet::new(),
-                rendered: String::new(),
-                rendered_rows: String::new(),
-                action_label: String::new(),
-                summary: null_mut(),
-                list: null_mut(),
-                status: null_mut(),
-                progress: null_mut(),
-                action: null_mut(),
-                cancel: null_mut(),
-                open_file: null_mut(),
-                open_folder: null_mut(),
-                close: null_mut(),
-                hint: null_mut(),
-                report: null_mut(),
-            })),
+            title: &title,
+            width: if modern() { MEDIA_WIDTH } else { 640 },
+            height: media_window_height(PROGRESS_HEIGHT, 420),
+            kind: DialogKind::Progress(ProgressFields::new(ids)),
             origin: None,
             launch: None,
             modeless: true,
@@ -6705,14 +8724,22 @@ pub(super) unsafe fn open_job_view(owner: HWND, app: App, ids: Vec<String>) {
     );
 }
 
+/// Opens the download window of each single download the browser handed over.
+unsafe fn open_handed_over_job_views(owner: HWND, app: &App) {
+    for id in app.take_job_views() {
+        open_job_view(owner, app.clone(), vec![id]);
+    }
+}
+
 unsafe fn show_site_logins(owner: HWND, app: App) {
     let logins = app.snapshot().settings.site_logins;
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Site girişleri", "Site logins"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Logins(LoginFields {
             logins,
             list: null_mut(),
@@ -6736,12 +8763,13 @@ unsafe fn refresh_login_list(f: &LoginFields) {
     }
 }
 unsafe fn show_queue_manager(owner: HWND, app: App, job_id: Option<String>) {
+    let (width, height) = form_window(QUEUES_WIDTH, QUEUES_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Kuyruk yönetimi", "Queue manager"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Queues(QueueFields {
             list: null_mut(),
             ids: Vec::new(),
@@ -6760,12 +8788,13 @@ unsafe fn show_queue_manager(owner: HWND, app: App, job_id: Option<String>) {
     );
 }
 unsafe fn show_event_log(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Olay günlüğü", "Event log"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Events(EventFields {
             list: null_mut(),
             rendered: Vec::new(),
@@ -6778,12 +8807,13 @@ unsafe fn show_job_log(owner: HWND, app: App, job: &str, name: &str) {
     } else {
         crate::i18n::ui_format!("İş günlüğü - {name}", "Job log - {name}", name = name)
     };
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         &title,
-        700,
-        470,
+        width,
+        height,
         DialogKind::JobLog(JobLogFields {
             job: job.to_owned(),
             list: null_mut(),
@@ -6792,12 +8822,13 @@ unsafe fn show_job_log(owner: HWND, app: App, job: &str, name: &str) {
     );
 }
 unsafe fn show_rule_editor(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Klasör kuralları", "Folder rules"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Rules(RuleFields {
             list: null_mut(),
             ids: Vec::new(),
@@ -6812,12 +8843,13 @@ unsafe fn show_rule_editor(owner: HWND, app: App) {
     );
 }
 unsafe fn show_crawler(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Site bağlantılarını tara", "Scan site links"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Crawler(CrawlerFields {
             url: null_mut(),
             depth: null_mut(),
@@ -6830,12 +8862,13 @@ unsafe fn show_crawler(owner: HWND, app: App) {
     );
 }
 unsafe fn show_sync_manager(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Periyodik dosya eşitleme", "Periodic file sync"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Synchronization(SyncFields {
             list: null_mut(),
             ids: Vec::new(),
@@ -6947,8 +8980,8 @@ unsafe fn show_media_picker(
         app,
         DialogRequest {
             title: crate::i18n::ui("Biçim ve çözünürlük seç", "Choose format and resolution"),
-            width: 640,
-            height: 420,
+            width: if modern() { MEDIA_WIDTH } else { 640 },
+            height: media_window_height(MEDIA_HEIGHT, 420),
             kind: DialogKind::Media(Box::new(MediaFields {
                 base: base.clone(),
                 subtitle_none,
@@ -6992,6 +9025,11 @@ unsafe fn show_media_picker(
                 playlist_items: null_mut(),
                 thumbnail: null_mut(),
                 thumbnail_requested: false,
+                prep_title: null_mut(),
+                prep_detail: null_mut(),
+                prep_bar: null_mut(),
+                title_font: null_mut(),
+                held: Vec::new(),
             })),
             origin,
             launch,
@@ -7123,6 +9161,18 @@ unsafe extern "system" fn dialog_proc(
     (*raw).callbacks += 1;
     let _callback = DialogCallback(raw);
     let dlg = &mut *raw;
+    if msg == WM_DRAWITEM && wparam == P_SEGMENTS as usize {
+        let draw = &*(lparam as *const DRAWITEMSTRUCT);
+        if let DialogKind::Progress(f) = &dlg.kind {
+            paint_segment_bar(dlg, &f.segments, draw.hDC, draw.rcItem);
+        }
+        return 1;
+    }
+    if modern() {
+        if let Some(value) = modern_dialog_message(dlg, msg, wparam, lparam) {
+            return value;
+        }
+    }
     if let Some(value) = paint_theme(hwnd, msg, wparam, lparam) {
         return value;
     }
@@ -7178,6 +9228,10 @@ unsafe extern "system" fn dialog_proc(
                 let selected = SendMessageW(tabs, TCM_GETCURSEL, 0, 0).max(0) as usize;
                 dlg.tab.set(selected);
                 layout_dialog(dlg);
+                // The painted input frames of the page that left stay behind otherwise.
+                if modern() {
+                    InvalidateRect(hwnd, null(), 1);
+                }
             }
             0
         }
@@ -7310,6 +9364,13 @@ unsafe extern "system" fn dialog_proc(
     }
 }
 
+/// Fluent's field labels carry no colon, so Modern drops a trailing one.
+fn field_label(text: &str) -> &str {
+    text.trim_end()
+        .strip_suffix([':', '：'])
+        .map_or(text, str::trim_end)
+}
+
 unsafe fn dialog_label(parent: HWND, font: HFONT, label: &str, id: i32) -> HWND {
     let id = if id == 0 {
         5000 + child_statics(parent, null_mut()).len() as i32
@@ -7382,6 +9443,9 @@ unsafe fn dialog_check(parent: HWND, font: HFONT, label: &str, id: i32) -> HWND 
         0,
         id,
     );
+    if modern() {
+        hold_check_box(h);
+    }
     apply_font(h, font);
     h
 }
@@ -7396,6 +9460,9 @@ unsafe fn dialog_check_wrapped(parent: HWND, font: HFONT, label: &str, id: i32) 
         0,
         id,
     );
+    if modern() {
+        hold_check_box(h);
+    }
     apply_font(h, font);
     h
 }
@@ -7419,6 +9486,33 @@ unsafe fn dialog_list(parent: HWND, font: HFONT, id: i32, style: u32) -> HWND {
     );
     apply_font(h, font);
     h
+}
+
+/// Puts `controls` in the Tab order right after `first`, in the order given.
+unsafe fn tab_order(first: HWND, controls: &[HWND]) {
+    let mut previous = first;
+    for &control in controls {
+        SetWindowPos(
+            control,
+            previous,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        previous = control;
+    }
+}
+
+/// A list and form dialog's list box with the list box styles `style`, as
+/// `dialog_list` takes them: Modern paints its own.
+unsafe fn form_list(parent: HWND, font: HFONT, id: i32, style: u32) -> HWND {
+    if modern() {
+        modern_list(parent, font, id, style)
+    } else {
+        dialog_list(parent, font, id, style)
+    }
 }
 
 unsafe fn dialog_combo(parent: HWND, font: HFONT, id: i32) -> HWND {
@@ -7447,11 +9541,59 @@ unsafe fn create_error(dlg: &mut DialogUi) {
     dlg.error = dialog_label(dlg.hwnd, dlg.font, "", D_ERROR);
 }
 
+/// Modern's converted dialogs use the Windows 11 Body style; the others keep
+/// the classic dialog font.
+unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
+    if modern()
+        && matches!(
+            dlg.kind,
+            DialogKind::Add(_)
+                | DialogKind::Settings(_)
+                | DialogKind::Speed(_)
+                | DialogKind::Rename(_)
+                | DialogKind::Queues(_)
+                | DialogKind::Rules(_)
+                | DialogKind::Crawler(_)
+                | DialogKind::Synchronization(_)
+                | DialogKind::Logins(_)
+                | DialogKind::Events(_)
+                | DialogKind::JobLog(_)
+                | DialogKind::Media(_)
+                | DialogKind::Progress(_)
+                | DialogKind::Wizard(_)
+        )
+    {
+        ramp_font(dlg.dpi, BODY_PX, false)
+    } else {
+        make_font(dlg.dpi, 9, FW_NORMAL as i32)
+    }
+}
+
+/// A New download dialog button's face width: its label with 16 epx on each
+/// side, at least `least` epx.
+unsafe fn add_button_width(dlg: &DialogUi, id: i32, least: i32) -> i32 {
+    let label: Vec<u16> = text(GetDlgItem(dlg.hwnd, id)).encode_utf16().collect();
+    let dc = GetDC(dlg.hwnd);
+    let previous = SelectObject(dc, dlg.font as HGDIOBJ);
+    let mut size: SIZE = zeroed();
+    GetTextExtentPoint32W(dc, label.as_ptr(), label.len() as i32, &mut size);
+    SelectObject(dc, previous);
+    ReleaseDC(dlg.hwnd, dc);
+    (size.cx + scale(32, dlg.dpi)).max(scale(least, dlg.dpi))
+}
+
 unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     dlg.dpi = GetDpiForWindow(dlg.hwnd).max(96);
-    dlg.font = make_font(dlg.dpi, 9, FW_NORMAL as i32);
+    dlg.font = dialog_font(dlg);
     create_error(dlg);
     create_kind_controls(dlg);
+    if modern() {
+        prepare_modern_form(dlg);
+        fit_first_label(dlg);
+        fit_media_picker(dlg);
+    } else if matches!(dlg.kind, DialogKind::Wizard(_)) {
+        fit_first_label(dlg);
+    }
     apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
     layout_dialog(dlg);
     if let DialogKind::Rename(f) = &dlg.kind {
@@ -7464,6 +9606,8 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
         SendMessageW(f.edit, EM_SETSEL, 0, stem as isize);
     }
     dialog_timer(dlg);
+    // The job view fits its window once the file name and the facts are in.
+    fit_job_view(dlg);
 }
 
 /// Re-creates a window's controls for the kind it now is. A picker that has
@@ -7499,43 +9643,28 @@ unsafe fn release_thumbnail(thumbnail: HWND) {
 /// Turns a picker into the job view of the download it just queued: the window
 /// keeps its place, its handoff and its size, and its title names what it is
 /// now showing.
-unsafe fn begin_job_view(dlg: &mut DialogUi, job_ids: Vec<String>) {
-    let snapshot = dlg.app.snapshot();
-    let title = match job_ids.as_slice() {
+/// The download window's title: "Download — <file name>", "Download" while
+/// the name is not known yet, and the item count for a playlist's window.
+fn job_view_title(snapshot: &AppSnapshot, ids: &[String]) -> String {
+    match ids {
         [id] => snapshot
             .jobs
             .iter()
-            .find(|job| &job.id == id)
+            .find(|job| &job.id == id && !job.name.trim().is_empty())
             .map(|job| crate::i18n::ui_format!("İndirme — {0}", "Download — {0}", job.name))
             .unwrap_or_else(|| crate::i18n::ui("İndirme", "Download").to_string()),
         ids => crate::i18n::ui_format!("İndirme — {0} öğe", "Download — {0} items", ids.len()),
-    };
+    }
+}
+
+unsafe fn begin_job_view(dlg: &mut DialogUi, job_ids: Vec<String>) {
+    let title = job_view_title(&dlg.app.snapshot(), &job_ids);
     if let DialogKind::Media(f) = &dlg.kind {
         release_thumbnail(f.thumbnail);
     }
-    dlg.kind = DialogKind::Progress(Box::new(ProgressFields {
-        ids: job_ids,
-        selected: 0,
-        raised: HashSet::new(),
-        rendered: String::new(),
-        rendered_rows: String::new(),
-        action_label: String::new(),
-        summary: null_mut(),
-        list: null_mut(),
-        status: null_mut(),
-        progress: null_mut(),
-        action: null_mut(),
-        cancel: null_mut(),
-        open_file: null_mut(),
-        open_folder: null_mut(),
-        close: null_mut(),
-        hint: null_mut(),
-        report: null_mut(),
-    }));
+    dlg.kind = DialogKind::Progress(ProgressFields::new(job_ids));
     SetWindowTextW(dlg.hwnd, wide(&title).as_ptr());
-    // The picker may have been unfolded to its advanced geometry; the job view
-    // is one page, so it goes back to the size the window opens with.
-    resize_dialog(dlg.hwnd, dlg.dpi, 420);
+    // The window keeps its top and fits its height to the job view.
     rebuild_dialog_controls(dlg);
 }
 
@@ -7632,6 +9761,11 @@ unsafe fn populate_queue_fields(f: &QueueFields, queue: &QueuePolicy) -> anyhow:
     set_text(f.delay, &delay.to_string());
     set_text(f.program, &program);
     set_text(f.arguments, &args);
+    // A multiline edit sends no EN_CHANGE for WM_SETTEXT.
+    if modern() {
+        sync_edit_scrollbar(f.windows);
+        sync_edit_scrollbar(f.arguments);
+    }
     Ok(())
 }
 unsafe fn refresh_completion_countdown(hwnd: HWND, f: &QueueFields, snapshot: &AppSnapshot) {
@@ -7819,6 +9953,19 @@ unsafe fn place_static(
         place(label, visible, x, y, w, h);
     }
 }
+/// Whether the control a key goes to handles the arrow keys itself. The tab
+/// strip asks for them too, but there the keys scroll the page, as in Classic.
+unsafe fn wants_arrows(msg: &MSG) -> bool {
+    !window_class(msg.hwnd).eq_ignore_ascii_case("SysTabControl32")
+        && SendMessageW(
+            msg.hwnd,
+            WM_GETDLGCODE,
+            msg.wParam,
+            msg as *const MSG as isize,
+        ) as u32
+            & DLGC_WANTARROWS
+            != 0
+}
 /// The scroll step a key asks for, zero when the key is not a scroll key.
 fn scroll_delta_for_key(key: u16, dpi: u32) -> i32 {
     let step = scale(48, dpi);
@@ -7849,7 +9996,12 @@ unsafe fn paint_scroll_thumb(dlg: &DialogUi, dc: HDC) {
     let row = scale(DIALOG_ROW, dlg.dpi);
     let width = scale(4, dlg.dpi).max(2);
     let track_top = client.top + margin;
-    let track_bottom = (client.bottom - margin - row).max(track_top + width);
+    // A pinned command bar ends the page the thumb travels along.
+    let page_bottom = match page_end(dlg) {
+        Some(end) => end - margin,
+        None => client.bottom - margin - row,
+    };
+    let track_bottom = page_bottom.max(track_top + width);
     let track = track_bottom - track_top;
     let content = (client.bottom - client.top) + range;
     let height = ((track as i64 * (client.bottom - client.top) as i64) / content.max(1) as i64)
@@ -7870,7 +10022,11 @@ unsafe fn child_statics(parent: HWND, error: HWND) -> Vec<HWND> {
     let mut out = Vec::<HWND>::new();
     let mut child = GetWindow(parent, GW_CHILD);
     while !child.is_null() {
-        if window_class(child).eq_ignore_ascii_case("Static") && child != error {
+        // The surface under Modern Settings' pinned bar is no label.
+        if window_class(child).eq_ignore_ascii_case("Static")
+            && child != error
+            && GetDlgCtrlID(child) != S_BAR
+        {
             out.push(child);
         }
         child = GetWindow(child, GW_HWNDNEXT);
@@ -7886,7 +10042,7 @@ unsafe fn window_class(hwnd: HWND) -> String {
 }
 unsafe fn dialog_dpi(dlg: &mut DialogUi) {
     dlg.dpi = GetDpiForWindow(dlg.hwnd).max(96);
-    let f = make_font(dlg.dpi, 9, FW_NORMAL as i32);
+    let f = dialog_font(dlg);
     let mut child = GetWindow(dlg.hwnd, GW_CHILD);
     while !child.is_null() {
         apply_font(child, f);
@@ -7894,6 +10050,10 @@ unsafe fn dialog_dpi(dlg: &mut DialogUi) {
     }
     DeleteObject(dlg.font);
     dlg.font = f;
+    let tabs = GetDlgItem(dlg.hwnd, S_TABS);
+    if modern() && !tabs.is_null() {
+        size_selector_tabs(tabs, dlg.dpi);
+    }
     layout_dialog(dlg);
 }
 
@@ -7935,11 +10095,42 @@ fn valid_clock(value: &str) -> bool {
         && value[..2].parse::<u8>().is_ok_and(|h| h < 24)
         && value[3..].parse::<u8>().is_ok_and(|m| m < 60)
 }
-unsafe fn collect_add(
-    f: &AddFields,
-    single_required: bool,
-) -> std::result::Result<Vec<AddRequest>, (String, HWND)> {
-    let raw = text(f.urls);
+/// Whether New download's OK opens the format picker for these requests
+/// instead of adding them: one address that is not a direct file.
+fn add_opens_picker(requests: &[AddRequest]) -> bool {
+    matches!(requests, [request] if !direct_file_request(request))
+}
+/// Modern's label for New download's OK: the verb of what OK does once the
+/// other fields pass their checks. Only the links and the type decide it.
+unsafe fn add_ok_label(f: &AddFields) -> &'static str {
+    if add_links_open_picker(&text(f.urls), add_kind(f)) {
+        crate::i18n::ui("Devam", "Continue")
+    } else {
+        crate::i18n::ui("İndir", "Download")
+    }
+}
+fn add_links_open_picker(raw: &str, kind: DownloadKind) -> bool {
+    add_urls(raw).is_ok_and(|urls| {
+        let requests: Vec<AddRequest> = urls
+            .into_iter()
+            .map(|url| AddRequest {
+                url,
+                kind,
+                ..Default::default()
+            })
+            .collect();
+        add_opens_picker(&requests)
+    })
+}
+unsafe fn add_kind(f: &AddFields) -> DownloadKind {
+    f.kind_values
+        .get(combo_index(f.kind).max(0) as usize)
+        .copied()
+        .unwrap_or(DownloadKind::Auto)
+}
+/// The addresses in New download's links box: batch ranges expanded, each
+/// address once, in the order they appear.
+fn add_urls(raw: &str) -> std::result::Result<Vec<String>, String> {
     let mut urls = Vec::new();
     for line in raw.lines() {
         let line = line.trim();
@@ -7957,7 +10148,7 @@ unsafe fn collect_add(
                 continue;
             }
             Ok(None) => {}
-            Err(error) => return Err((error.to_string(), f.urls)),
+            Err(error) => return Err(error.to_string()),
         }
         if crate::validation::validate_url(line, false).is_ok() {
             urls.push(line.to_string());
@@ -7968,15 +10159,19 @@ unsafe fn collect_add(
     let mut seen = std::collections::HashSet::new();
     urls.retain(|url| seen.insert(url.clone()));
     if urls.is_empty() {
-        return Err((
-            crate::i18n::ui(
-                "En az bir geçerli HTTP/HTTPS/FTP URL girin.",
-                "Enter at least one valid HTTP/HTTPS/FTP URL.",
-            )
-            .to_string(),
-            f.urls,
-        ));
+        return Err(crate::i18n::ui(
+            "En az bir geçerli HTTP/HTTPS/FTP URL girin.",
+            "Enter at least one valid HTTP/HTTPS/FTP URL.",
+        )
+        .to_string());
     }
+    Ok(urls)
+}
+unsafe fn collect_add(
+    f: &AddFields,
+    single_required: bool,
+) -> std::result::Result<Vec<AddRequest>, (String, HWND)> {
+    let urls = add_urls(&text(f.urls)).map_err(|error| (error, f.urls))?;
     if single_required && urls.len() != 1 {
         return Err((
             crate::i18n::ui(
@@ -8061,11 +10256,7 @@ unsafe fn collect_add(
                 .timestamp(),
         )
     };
-    let kind = f
-        .kind_values
-        .get(combo_index(f.kind).max(0) as usize)
-        .copied()
-        .unwrap_or(DownloadKind::Auto);
+    let kind = add_kind(f);
     let dir = text(f.dir).trim().to_string();
     Ok(urls
         .into_iter()
@@ -8103,6 +10294,13 @@ unsafe fn resize_dialog(hwnd: HWND, dpi: u32, height: i32) {
     info.cbSize = size_of::<MONITORINFO>() as u32;
     if GetMonitorInfoW(monitor, &mut info) != 0 {
         let area = info.rcWork;
+        // In Modern a window taller than the work area stops at its height,
+        // as a new dialog does (`center_window`), and its page scrolls instead.
+        let tall = if modern() {
+            tall.min(area.bottom - area.top)
+        } else {
+            tall
+        };
         let x = ((rect.left + rect.right) / 2 - width / 2)
             .clamp(area.left, (area.right - width).max(area.left));
         let y = ((rect.top + rect.bottom) / 2 - tall / 2)
@@ -8226,6 +10424,172 @@ mod tests {
     }
 
     #[test]
+    fn the_wizard_saves_the_theme_it_was_given_with_its_other_answers() {
+        use super::wizard_settings;
+        use crate::model::{Settings, UiMode, UsageModes, ONBOARDING_VERSION};
+        let stored = Settings::first_run();
+        let video_only = UsageModes {
+            video: true,
+            file: false,
+            audio: false,
+        };
+        let modern = wizard_settings(&stored, false, video_only, true);
+        assert!(modern.modern_theme());
+        assert_eq!(modern.usage_modes, video_only);
+        assert_eq!(modern.ui_mode, UiMode::Advanced.as_str());
+        assert_eq!(modern.onboarding_version, ONBOARDING_VERSION);
+        // The saved profile reads the same theme back.
+        let stored_modern: Settings =
+            serde_json::from_str(&serde_json::to_string(&modern).unwrap()).unwrap();
+        assert!(stored_modern.modern_theme());
+
+        let classic = wizard_settings(&stored_modern, true, video_only, false);
+        assert!(!classic.modern_theme());
+        assert_eq!(classic.ui_mode, UiMode::Simple.as_str());
+        assert!(classic.usage_modes.video && classic.usage_modes.file && classic.usage_modes.audio);
+    }
+
+    #[test]
+    fn only_a_visible_first_start_opens_the_wizard_before_the_main_window() {
+        use super::wizard_opens_first;
+        use crate::model::{Settings, ONBOARDING_VERSION};
+        let new = Settings::first_run();
+        assert!(wizard_opens_first(&new, false, false));
+        assert!(
+            !wizard_opens_first(&new, true, false),
+            "a start in the tray"
+        );
+        assert!(
+            !wizard_opens_first(&new, false, true),
+            "the automated opt-out"
+        );
+        let developer = Settings {
+            debug_mode: true,
+            ..Settings::first_run()
+        };
+        assert!(!wizard_opens_first(&developer, false, false));
+        let finished = Settings {
+            onboarding_version: ONBOARDING_VERSION,
+            ..Settings::first_run()
+        };
+        assert!(!wizard_opens_first(&finished, false, false));
+        // A start that skips the wizard builds its windows in the stored
+        // theme, which a new profile has as Classic.
+        assert!(!new.modern_theme());
+    }
+
+    thread_local! {
+        /// What `first_start` does to the wizard once it is up.
+        static WIZARD_STEP: std::cell::Cell<Option<unsafe fn(super::HWND)>> =
+            const { std::cell::Cell::new(None) };
+        /// Whether a first-run wizard was found up, and whether it was still up
+        /// when `first_start` gave up on it.
+        static WIZARD_SEEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static WIZARD_STUCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// The first-run wizard of this thread, if one is up.
+    unsafe fn thread_wizard() -> Option<super::HWND> {
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, IsWindowVisible};
+        unsafe extern "system" fn find(hwnd: super::HWND, found: isize) -> super::BOOL {
+            let mut class = [0u16; 64];
+            let length = super::GetClassNameW(hwnd, class.as_mut_ptr(), 64) as usize;
+            if IsWindowVisible(hwnd) != 0
+                && String::from_utf16_lossy(&class[..length]) == super::CLASS_DIALOG
+            {
+                *(found as *mut super::HWND) = hwnd;
+                return 0;
+            }
+            1
+        }
+        let mut found: super::HWND = std::ptr::null_mut();
+        EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(find),
+            &mut found as *mut _ as isize,
+        );
+        (!found.is_null()).then_some(found)
+    }
+
+    /// A start of a profile that has not finished the wizard, on a private
+    /// desktop, in the Classic theme: `step` runs on the wizard once it is up. A wizard still up after 10 s is closed and counted as stuck.
+    /// Returns what `before_main_window` returned (whether the main window
+    /// would be built in Modern), the theme it set, and whether the wizard was
+    /// seen and was stuck.
+    fn first_start(step: unsafe fn(super::HWND)) -> (Option<bool>, bool, bool, bool) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyWindow, KillTimer, SetTimer};
+        unsafe extern "system" fn on_step(_: super::HWND, _: u32, id: usize, _: u32) {
+            KillTimer(std::ptr::null_mut(), id);
+            if let Some(wizard) = thread_wizard() {
+                WIZARD_SEEN.with(|seen| seen.set(true));
+                if let Some(step) = WIZARD_STEP.with(std::cell::Cell::get) {
+                    step(wizard);
+                }
+            }
+        }
+        unsafe extern "system" fn on_limit(_: super::HWND, _: u32, id: usize, _: u32) {
+            KillTimer(std::ptr::null_mut(), id);
+            if let Some(wizard) = thread_wizard() {
+                WIZARD_STUCK.with(|stuck| stuck.set(true));
+                DestroyWindow(wizard);
+            }
+        }
+        on_private_desktop(|| {
+            let root =
+                std::env::temp_dir().join(format!("ssdownload-first-{}", uuid::Uuid::new_v4()));
+            let app =
+                crate::app::App::open(crate::paths::AppPaths::new(root.clone()).unwrap()).unwrap();
+            let mut settings = crate::model::Settings::first_run();
+            settings.theme = "classic".into();
+            app.update_settings_quiet(settings).unwrap();
+            WIZARD_STEP.with(|cell| cell.set(Some(step)));
+            let result = unsafe {
+                super::register_classes().unwrap();
+                SetTimer(std::ptr::null_mut(), 0, 600, Some(on_step));
+                SetTimer(std::ptr::null_mut(), 0, 10_000, Some(on_limit));
+                super::before_main_window(&app, false, false)
+            };
+            let outcome = (
+                result.map(|snapshot| snapshot.settings.modern_theme()),
+                super::modern(),
+                WIZARD_SEEN.with(std::cell::Cell::get),
+                WIZARD_STUCK.with(std::cell::Cell::get),
+            );
+            app.shutdown();
+            let _ = std::fs::remove_dir_all(root);
+            outcome
+        })
+    }
+
+    #[test]
+    fn the_theme_the_first_run_wizard_picks_builds_the_main_window() {
+        unsafe fn pick_modern(wizard: super::HWND) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COMMAND};
+            SendMessageW(wizard, WM_COMMAND, super::ID_WIZARD_MODERN as usize, 0);
+            SendMessageW(wizard, WM_COMMAND, super::ID_WIZARD_START as usize, 0);
+        }
+        let (main_window, theme, seen, stuck) = first_start(pick_modern);
+        assert!(seen && !stuck, "the wizard came up and closed on Start");
+        assert_eq!(main_window, Some(true), "the main window is built");
+        assert!(theme, "in the Modern theme the wizard picked");
+    }
+
+    #[test]
+    fn a_quit_request_closes_the_first_run_wizard_and_builds_no_main_window() {
+        // `ssdownload --quit` while the wizard is up.
+        unsafe fn quit(wizard: super::HWND) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GWLP_USERDATA};
+            let dialog = GetWindowLongPtrW(wizard, GWLP_USERDATA) as *const super::DialogUi;
+            (*dialog).app.dispatch(crate::model::Action::Quit).unwrap();
+        }
+        let (main_window, _, seen, stuck) = first_start(quit);
+        assert!(seen, "the wizard came up");
+        assert!(!stuck, "the quit request closed it");
+        assert_eq!(main_window, None, "no main window is built");
+    }
+
+    #[test]
     fn a_page_instead_of_the_file_gets_the_sign_in_hint_whatever_language_recorded_it() {
         use crate::model::{AddRequest, Job, JobState};
         let failed = Job {
@@ -8256,6 +10620,8 @@ mod tests {
             open_when_done: false,
             live: false,
             sequence: 0,
+            ranges: None,
+            resumable: None,
         };
         let turkish = "SSD-NET-004 Kaynak dosya yerine bir oturum açma veya web sayfasıyla yanıt verdi. Dosyayı tarayıcıda indirin ya da eklentinin sağ tık menüsünden Bu site için oturum çerezlerine izin ver seçeneğini kullanıp bağlantıyı tarayıcıdan yeniden ekleyin (Bağlantıyı SSDownload ile indir).";
         let english = "SSD-NET-004 The source answered with a sign-in or web page instead of the file. Download it in the browser, or choose Allow session cookies for this site in the extension's context menu and add the link again from the browser (Download link with SSDownload).";
@@ -8312,6 +10678,8 @@ mod tests {
             open_when_done: false,
             live: false,
             sequence: 0,
+            ranges: None,
+            resumable: None,
         };
         let downloading = JobState::Downloading.label();
         assert_eq!(
@@ -8330,6 +10698,774 @@ mod tests {
             super::state_label(&job(JobState::Paused, "MP4")),
             JobState::Paused.label()
         );
+    }
+
+    #[test]
+    fn the_job_view_s_status_names_a_phase_that_repeats_the_state_once() {
+        use crate::model::JobState;
+        for language in ["en", "tr", "de", "es", "fr", "pt", "ar"] {
+            crate::i18n::with_language(language, || {
+                let mut job = sample_job("job", JobState::Downloading);
+                job.phase = crate::i18n::ui("Medya indiriliyor", "Downloading media").into();
+                assert_eq!(super::job_status(&job), job.phase, "{language}");
+                // A phase that adds something follows the state, as in the list.
+                job.phase = "MP4".into();
+                assert_eq!(
+                    super::job_status(&job),
+                    format!("{} — MP4", JobState::Downloading.label()),
+                    "{language}"
+                );
+                job.phase = "8 connections".into();
+                assert_eq!(
+                    super::job_status(&job),
+                    super::state_label(&job),
+                    "{language}"
+                );
+                // A short word inside the state's word ("in" in "Downloading") is no repeat.
+                job.phase = "in 8 parts".into();
+                assert_eq!(
+                    super::job_status(&job),
+                    super::state_label(&job),
+                    "{language}"
+                );
+                let mut processing = sample_job("job", JobState::Processing);
+                processing.phase = crate::i18n::ui("Medya indiriliyor", "Downloading media").into();
+                assert_eq!(
+                    super::job_status(&processing),
+                    super::state_label(&processing),
+                    "{language}: another state's phase"
+                );
+                // A waiting job's status is its state; the details hold the phase.
+                let mut queued = sample_job("job", JobState::Queued);
+                queued.phase = JobState::Queued.label().into();
+                assert_eq!(
+                    super::job_status(&queued),
+                    JobState::Queued.label(),
+                    "{language}"
+                );
+            });
+        }
+    }
+
+    fn sample_job(name: &str, state: crate::model::JobState) -> crate::model::Job {
+        crate::model::Job {
+            id: name.into(),
+            request: crate::model::AddRequest::default(),
+            name: name.into(),
+            state,
+            path: name.into(),
+            downloaded: 0,
+            total: None,
+            speed: 0,
+            eta: None,
+            error: None,
+            phase: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            attempts: 0,
+            work_dir: None,
+            remove_requested: None,
+            claim: None,
+            legacy_completed: false,
+            browser_transfer_authorized: false,
+            priority: 0,
+            force_start: false,
+            open_when_done: false,
+            live: false,
+            sequence: 0,
+            ranges: None,
+            resumable: None,
+        }
+    }
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// A segmented download of 200 MiB with two parts in: 30 MiB from the
+    /// start and 20 MiB from the middle.
+    fn segmented_job(state: crate::model::JobState) -> crate::model::Job {
+        let mut job = sample_job("job", state);
+        job.request.url = "https://files.example.org/path/file.bin?token=1".into();
+        job.total = Some(200 * MIB);
+        job.downloaded = 50 * MIB;
+        job.speed = MIB;
+        job.eta = Some(150);
+        job.resumable = Some(true);
+        job.ranges = Some(std::sync::Arc::from([
+            (0, 30 * MIB),
+            (100 * MIB, 120 * MIB),
+        ]));
+        job
+    }
+
+    #[test]
+    fn segment_spans_cover_the_parts_that_arrived() {
+        use super::segment_spans;
+        assert_eq!(
+            segment_spans(&[(0, 25), (50, 75)], 100, 100),
+            [(0, 25), (50, 75)]
+        );
+        assert_eq!(segment_spans(&[(0, 50), (50, 100)], 100, 10), [(0, 10)]);
+        // A part narrower than a pixel still shows.
+        assert_eq!(segment_spans(&[(10, 11)], 1000, 100), [(1, 2)]);
+        // Nothing past the end of the bar.
+        assert_eq!(segment_spans(&[(90, 200)], 100, 10), [(9, 10)]);
+        assert_eq!(segment_spans(&[(0, 10)], 0, 10), []);
+    }
+
+    #[test]
+    fn the_open_parts_of_a_file_are_counted_between_and_after_the_arrived_ones() {
+        use super::unfinished_parts;
+        assert_eq!(unfinished_parts(&[(0, 10), (20, 30)], 40), 2);
+        assert_eq!(unfinished_parts(&[(5, 10)], 10), 1);
+        assert_eq!(unfinished_parts(&[(0, 40)], 40), 0);
+        assert_eq!(unfinished_parts(&[], 40), 1);
+    }
+
+    #[test]
+    fn the_job_view_lists_its_facts_and_a_dash_for_what_it_does_not_know() {
+        use super::{format_bytes, format_speed, job_facts, job_source, state_label};
+        use crate::model::JobState;
+        let running = segmented_job(JobState::Downloading);
+        assert_eq!(
+            job_facts(&running),
+            [
+                state_label(&running),
+                format_bytes(200 * MIB),
+                format!("{} (25.0%)", format_bytes(50 * MIB)),
+                format_speed(MIB),
+                "00:02:30".to_string(),
+                crate::i18n::ui("Evet", "Yes").to_string(),
+                "2".to_string(),
+            ]
+        );
+        assert!(job_source(&running).ends_with("files.example.org"));
+        // The connections are the open parts, not the arrived ranges: one
+        // range with open bytes on both sides leaves two.
+        let mut middle = segmented_job(JobState::Downloading);
+        middle.ranges = Some(std::sync::Arc::from([(10 * MIB, 30 * MIB)]));
+        assert_eq!(job_facts(&middle)[6], "2");
+        // A transfer through a tool reports neither ranges nor resumability.
+        let mut media = sample_job("media", JobState::Downloading);
+        media.downloaded = 1000;
+        let facts = job_facts(&media);
+        assert_eq!(facts[1], "—", "no size");
+        assert_eq!(facts[2], format_bytes(1000));
+        assert_eq!(&facts[5..], ["—", "—"]);
+        // A source that refused a range, and a paused download's old ranges.
+        let mut single = segmented_job(JobState::Paused);
+        single.resumable = Some(false);
+        let facts = job_facts(&single);
+        assert_eq!(facts[5], crate::i18n::ui("Hayır", "No"));
+        assert_eq!(facts[6], "—", "a paused job has no connections");
+    }
+
+    #[test]
+    fn the_segment_bar_shows_the_reported_ranges_or_one_part_from_the_start() {
+        use super::segment_view;
+        use crate::model::JobState;
+        let running = segment_view(&segmented_job(JobState::Downloading));
+        assert_eq!(running.parts, [(0, 30 * MIB), (100 * MIB, 120 * MIB)]);
+        assert_eq!(running.total, 200 * MIB);
+        // A paused job keeps the ranges of its last report.
+        let paused = segment_view(&segmented_job(JobState::Paused));
+        assert_eq!(paused.parts, running.parts);
+        // Without ranges: as far as the download has come.
+        let mut tool = segmented_job(JobState::Downloading);
+        tool.ranges = None;
+        assert_eq!(segment_view(&tool).parts, [(0, 50 * MIB)]);
+        // A stopped or finished job fills the bar.
+        for state in [JobState::Failed, JobState::Cancelled, JobState::Completed] {
+            assert_eq!(
+                segment_view(&segmented_job(state)).parts,
+                [(0, 200 * MIB)],
+                "{state:?}"
+            );
+        }
+    }
+
+    /// The 0x00RRGGBB pixel a COLORREF paints.
+    fn pixel(colour: u32) -> u32 {
+        ((colour & 0xff) << 16) | (colour & 0xff00) | ((colour >> 16) & 0xff)
+    }
+
+    #[test]
+    fn the_segment_bar_fills_the_parts_and_a_failed_job_s_bar_end_to_end_in_both_themes() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let dlg = &*raw;
+                    let paint = |job: &crate::model::Job| {
+                        let view = segment_view(job);
+                        let pixels = fluent::on_white(100, |dc| {
+                            let bar = RECT {
+                                left: 0,
+                                top: 0,
+                                right: 100,
+                                bottom: 12,
+                            };
+                            paint_segment_bar(dlg, &view, dc, bar);
+                        });
+                        pixels[6 * 100..7 * 100].to_vec()
+                    };
+                    let fill = |state: JobState| {
+                        if in_modern {
+                            state_fill(&card_palette(hwnd), state)
+                        } else {
+                            progress_colour(state)
+                        }
+                    };
+                    // The inner 98 pixels stand for 200 MiB: 30 MiB is 14 of them.
+                    let running = paint(&segmented_job(JobState::Downloading));
+                    let blue = pixel(fill(JobState::Downloading));
+                    assert_eq!(running[1..15], [blue; 14], "modern {in_modern}");
+                    assert_ne!(running[20], blue, "modern {in_modern}: nothing in between");
+                    assert_eq!(running[50], blue, "modern {in_modern}: the middle part");
+                    assert_ne!(running[90], blue, "modern {in_modern}: nothing at the end");
+                    let failed = paint(&segmented_job(JobState::Failed));
+                    let red = pixel(fill(JobState::Failed));
+                    assert_eq!(failed[1..99], [red; 98], "modern {in_modern}");
+                    close_test_dialog(raw, hwnd, root);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn the_job_view_shows_its_details_on_request_or_once_a_job_fails_in_both_themes() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let error = (*raw).error;
+                    let mut snapshot = (*raw).app.snapshot();
+                    let mut show = |job: crate::model::Job| {
+                        snapshot.jobs = std::sync::Arc::new(vec![job]);
+                        if let DialogKind::Progress(f) = &mut (*raw).kind {
+                            refresh_job_view(hwnd, error, f, &snapshot);
+                        }
+                    };
+                    let height = || {
+                        let mut rect: RECT = zeroed();
+                        GetWindowRect(hwnd, &mut rect);
+                        rect.bottom - rect.top
+                    };
+                    let state = || match &(*raw).kind {
+                        DialogKind::Progress(f) => (
+                            GetWindowLongW(f.status, GWL_STYLE) as u32 & WS_VISIBLE != 0,
+                            text(f.details_button),
+                            text(f.facts[6]),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    show(segmented_job(JobState::Downloading));
+                    let (shown, label, connections) = state();
+                    assert!(!shown, "modern {in_modern}: the details start hidden");
+                    assert_eq!(label, details_label(false));
+                    assert_eq!(connections, "2", "modern {in_modern}");
+                    let closed = height();
+                    SendMessageW(hwnd, WM_COMMAND, P_DETAILS as usize, 0);
+                    let (shown, label, _) = state();
+                    assert!(shown, "modern {in_modern}: Show details shows them");
+                    assert_eq!(label, details_label(true));
+                    assert!(
+                        height() >= closed + scale(JOB_DETAILS, (*raw).dpi),
+                        "modern {in_modern}: the window makes room for them"
+                    );
+                    SendMessageW(hwnd, WM_COMMAND, P_DETAILS as usize, 0);
+                    assert!(!state().0, "modern {in_modern}: Hide details hides them");
+                    assert_eq!(height(), closed, "modern {in_modern}");
+                    // A failure opens them once; hidden again, they stay hidden.
+                    show(segmented_job(JobState::Failed));
+                    assert!(state().0, "modern {in_modern}: a failure shows its reason");
+                    if let DialogKind::Progress(f) = &(*raw).kind {
+                        assert_eq!(
+                            SendMessageW(f.progress, PBM_GETPOS, 0, 0),
+                            1000,
+                            "modern {in_modern}: the failed job's bar is full"
+                        );
+                    }
+                    SendMessageW(hwnd, WM_COMMAND, P_DETAILS as usize, 0);
+                    show(segmented_job(JobState::Failed));
+                    assert!(!state().0, "modern {in_modern}: the user hid them");
+                    close_test_dialog(raw, hwnd, root);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn the_job_view_s_command_row_keeps_its_commit_group_at_the_end_in_both_themes() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let error = (*raw).error;
+                    let mut snapshot = (*raw).app.snapshot();
+                    snapshot.jobs = std::sync::Arc::new(vec![segmented_job(JobState::Downloading)]);
+                    if let DialogKind::Progress(f) = &mut (*raw).kind {
+                        refresh_job_view(hwnd, error, f, &snapshot);
+                    }
+                    let row = [P_OPEN_FILE, P_OPEN_FOLDER, P_ACTION, P_CANCEL, P_CLOSE];
+                    let rect = |id: i32| {
+                        let mut rect: RECT = zeroed();
+                        GetWindowRect(GetDlgItem(hwnd, id), &mut rect);
+                        rect
+                    };
+                    let rects = row.map(rect);
+                    let walk: Vec<i32> = tab_walk(hwnd)
+                        .into_iter()
+                        .filter(|id| row.contains(id))
+                        .collect();
+                    let mut client: RECT = zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let mut right = POINT {
+                        x: client.right,
+                        y: 0,
+                    };
+                    ClientToScreen(hwnd, &mut right);
+                    let dpi = (*raw).dpi;
+                    let pad = scale(if in_modern { ADD_PAD } else { DIALOG_MARGIN }, dpi);
+                    close_test_dialog(raw, hwnd, root);
+                    assert!(
+                        rects.windows(2).all(|pair| pair[0].right <= pair[1].left),
+                        "modern {in_modern}: left to right in this order"
+                    );
+                    let gap = |a: usize, b: usize| rects[b].left - rects[a].right;
+                    assert!(
+                        gap(1, 2) > gap(2, 3) && gap(1, 2) > gap(3, 4),
+                        "modern {in_modern}: the commit group stands apart"
+                    );
+                    assert!(
+                        (right.x - pad - rects[4].right).abs() <= scale(FOCUS_MARGIN, dpi) + 1,
+                        "modern {in_modern}: Close ends the row"
+                    );
+                    assert_eq!(walk, row, "modern {in_modern}: Tab walks the row in order");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn the_job_view_is_titled_by_its_file_and_its_details_add_what_the_facts_do_not_show() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let error = (*raw).error;
+                    let mut snapshot = (*raw).app.snapshot();
+                    let mut show = |job: crate::model::Job| {
+                        snapshot.jobs = std::sync::Arc::new(vec![job]);
+                        if let DialogKind::Progress(f) = &mut (*raw).kind {
+                            refresh_job_view(hwnd, error, f, &snapshot);
+                        }
+                    };
+                    let details = || match &(*raw).kind {
+                        DialogKind::Progress(f) => text(f.status),
+                        _ => unreachable!(),
+                    };
+                    let save_to = |path: &str| {
+                        crate::i18n::ui_format!("Kayıt yeri: {0}", "Save to: {0}", path)
+                    };
+                    let mut unnamed = segmented_job(JobState::Downloading);
+                    unnamed.name = String::new();
+                    show(unnamed);
+                    assert_eq!(
+                        text(hwnd),
+                        crate::i18n::ui("İndirme", "Download"),
+                        "modern {in_modern}: no name yet"
+                    );
+                    let mut running = segmented_job(JobState::Downloading);
+                    running.name = "report.zip".into();
+                    show(running);
+                    assert_eq!(
+                        text(hwnd),
+                        crate::i18n::ui_format!("İndirme — {0}", "Download — {0}", "report.zip"),
+                        "modern {in_modern}"
+                    );
+                    // The facts already show the state, size, speed and time left.
+                    assert_eq!(details(), save_to("job"), "modern {in_modern}");
+                    let mut connecting = segmented_job(JobState::Downloading);
+                    connecting.phase = "8 connections".into();
+                    show(connecting);
+                    assert_eq!(
+                        details(),
+                        save_to("job"),
+                        "modern {in_modern}: the status shows it"
+                    );
+                    let mut media = segmented_job(JobState::Downloading);
+                    media.phase = crate::i18n::ui("Medya indiriliyor", "Downloading media").into();
+                    show(media.clone());
+                    assert_eq!(
+                        details(),
+                        save_to("job"),
+                        "modern {in_modern}: the status shows the phase alone"
+                    );
+                    match &(*raw).kind {
+                        DialogKind::Progress(f) => {
+                            assert_eq!(text(f.facts[0]), media.phase, "modern {in_modern}")
+                        }
+                        _ => unreachable!(),
+                    }
+                    let mut held = segmented_job(JobState::Queued);
+                    held.phase = "Metered connection: downloads are on hold".into();
+                    show(held);
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}{}",
+                            crate::i18n::ui_format!(
+                                "Aşama: {0}\r\n",
+                                "Phase: {0}\r\n",
+                                "Metered connection: downloads are on hold"
+                            ),
+                            save_to("job")
+                        ),
+                        "modern {in_modern}: why it waits"
+                    );
+                    let mut failed = segmented_job(JobState::Failed);
+                    failed.error = Some("the server closed the connection".into());
+                    show(failed);
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}{}",
+                            crate::i18n::ui_format!(
+                                "Hata: {message}\r\n",
+                                "Error: {message}\r\n",
+                                message = "the server closed the connection"
+                            ),
+                            save_to("job")
+                        ),
+                        "modern {in_modern}"
+                    );
+                    show(segmented_job(JobState::Completed));
+                    assert_eq!(
+                        details(),
+                        crate::i18n::ui_format!("Kayıt: {0}\r\n", "Saved: {0}\r\n", "job")
+                            .trim_end(),
+                        "modern {in_modern}"
+                    );
+                    // The status takes one line like the other facts.
+                    let tops = match &(*raw).kind {
+                        DialogKind::Progress(f) => f.facts.map(|value| {
+                            let mut rect: RECT = zeroed();
+                            GetWindowRect(GetWindow(value, GW_HWNDPREV), &mut rect);
+                            rect.top
+                        }),
+                        _ => unreachable!(),
+                    };
+                    close_test_dialog(raw, hwnd, root);
+                    assert_eq!(
+                        tops[1] - tops[0],
+                        tops[2] - tops[1],
+                        "modern {in_modern}: no gap after the status"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn jobs_sort_by_their_values_and_not_by_the_text_shown() {
+        use super::compare_jobs;
+        use crate::model::JobState;
+        use std::cmp::Ordering::{Greater, Less};
+        // Shown as "9.0 KB" and "10.0 MB": text order would put the larger first.
+        let mut small = sample_job("a", JobState::Downloading);
+        small.speed = 9 * 1024;
+        let mut large = sample_job("b", JobState::Downloading);
+        large.speed = 10 * 1024 * 1024;
+        assert_eq!(compare_jobs(&small, &large, 3), Less);
+        small.eta = Some(9 * 60);
+        large.eta = Some(70 * 60);
+        assert_eq!(compare_jobs(&small, &large, 4), Less);
+        // An unknown time left goes after every known one.
+        large.eta = None;
+        assert_eq!(compare_jobs(&large, &small, 4), Greater);
+        // The share done decides progress, then the bytes.
+        small.downloaded = 900;
+        small.total = Some(1000);
+        large.downloaded = 5000;
+        large.total = Some(100_000);
+        assert_eq!(compare_jobs(&small, &large, 2), Greater);
+        // A failed job counts what it downloaded, though its bar is full.
+        let failed_empty = sample_job("e", JobState::Failed);
+        assert_eq!(compare_jobs(&failed_empty, &large, 2), Less);
+        // States follow the lifecycle, not the alphabet of their labels.
+        let queued = sample_job("q", JobState::Queued);
+        let failed = sample_job("f", JobState::Failed);
+        assert_eq!(compare_jobs(&queued, &failed, 1), Less);
+        // Names and locations ignore case.
+        let upper = sample_job("Zebra", JobState::Queued);
+        let lower = sample_job("apple", JobState::Queued);
+        assert_eq!(compare_jobs(&upper, &lower, 0), Greater);
+        assert_eq!(compare_jobs(&upper, &lower, 5), Greater);
+    }
+
+    #[test]
+    fn the_pause_command_toggles_each_job_of_a_mixed_selection() {
+        use super::pause_resume_plan;
+        use crate::model::JobState;
+        let running = sample_job("r", JobState::Downloading);
+        let queued = sample_job("q", JobState::Queued);
+        let paused = sample_job("p", JobState::Paused);
+        let failed = sample_job("f", JobState::Failed);
+        let cancelled = sample_job("c", JobState::Cancelled);
+        let done = sample_job("d", JobState::Completed);
+        let mut removing = sample_job("x", JobState::Downloading);
+        removing.remove_requested = Some(false);
+        let plan = pause_resume_plan(&[
+            &running, &paused, &done, &queued, &failed, &cancelled, &removing,
+        ]);
+        let expected: Vec<(String, bool)> = vec![
+            ("r".into(), false),
+            ("p".into(), true),
+            ("q".into(), false),
+            ("f".into(), true),
+            ("c".into(), true),
+        ];
+        // Running and waiting jobs pause, stopped ones resume, in selection
+        // order; a finished job and one being removed are left alone.
+        assert_eq!(plan, expected);
+        assert!(pause_resume_plan(&[&done]).is_empty());
+    }
+
+    #[test]
+    fn a_selection_in_a_sorted_view_reaches_commands_in_queue_order() {
+        use super::{compare_jobs, in_queue_order, COL_NAME};
+        use crate::model::JobState;
+        let queue = vec![
+            sample_job("a", JobState::Queued),
+            sample_job("b", JobState::Queued),
+            sample_job("c", JobState::Queued),
+            sample_job("d", JobState::Queued),
+        ];
+        // The list sorted by name, descending: d, c, b, a.
+        let mut view: Vec<&crate::model::Job> = queue.iter().collect();
+        view.sort_by(|x, y| compare_jobs(x, y, COL_NAME).reverse());
+        let shown: Vec<String> = view.iter().map(|job| job.id.clone()).collect();
+        assert_eq!(shown, ["d", "c", "b", "a"]);
+        // Selecting d, b and a there gives Move to top, Copy addresses and
+        // Start now the queue's a, b, d, as in an unsorted list.
+        let selected = vec!["d".to_string(), "b".into(), "a".into()];
+        assert_eq!(in_queue_order(&queue, selected), ["a", "b", "d"]);
+        // A job the queue no longer has goes last instead of being dropped.
+        assert_eq!(
+            in_queue_order(&queue, vec!["gone".into(), "c".into()]),
+            ["c", "gone"]
+        );
+    }
+
+    #[test]
+    fn sorted_rows_hold_still_until_jobs_come_or_go_or_a_resort_is_asked_for() {
+        use super::hold_order;
+        let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let shown = ids(&["b", "a", "c"]);
+        // Faster speeds would put a first now: the rows stay as they are.
+        assert_eq!(hold_order(&shown, ids(&["a", "b", "c"]), false), shown);
+        // A header click, a filter or F5 sorts again.
+        assert_eq!(
+            hold_order(&shown, ids(&["a", "b", "c"]), true),
+            ids(&["a", "b", "c"])
+        );
+        // A job that comes or goes sorts again.
+        assert_eq!(
+            hold_order(&shown, ids(&["a", "d", "b", "c"]), false),
+            ids(&["a", "d", "b", "c"])
+        );
+        assert_eq!(
+            hold_order(&shown, ids(&["a", "c"]), false),
+            ids(&["a", "c"])
+        );
+        assert_eq!(
+            hold_order(&shown, ids(&["a", "b", "d"]), false),
+            ids(&["a", "b", "d"])
+        );
+    }
+
+    #[test]
+    fn new_download_opens_the_picker_only_for_one_address_that_is_not_a_file() {
+        use super::add_opens_picker;
+        use crate::model::{AddRequest, DownloadKind};
+        let request = |url: &str, kind: DownloadKind| AddRequest {
+            url: url.into(),
+            kind,
+            ..AddRequest::default()
+        };
+        let page = request("https://example.com/watch?v=1", DownloadKind::Auto);
+        let file = request("https://example.com/setup.zip", DownloadKind::Auto);
+        assert!(add_opens_picker(std::slice::from_ref(&page)));
+        assert!(add_opens_picker(&[request(
+            "https://example.com/a.zip",
+            DownloadKind::Video
+        )]));
+        assert!(!add_opens_picker(std::slice::from_ref(&file)));
+        assert!(!add_opens_picker(&[request(
+            "https://example.com/page",
+            DownloadKind::File
+        )]));
+        assert!(!add_opens_picker(&[page, file]));
+        assert!(!add_opens_picker(&[]));
+    }
+
+    #[test]
+    fn the_pause_button_answers_to_the_keys_of_its_other_labels() {
+        use super::pause_key_clicks;
+        let tr = ["Durakla&t", "&Sürdür", "Durakla&t / Sürdür"];
+        // Showing Resume: T (Pause) clicks; S is the dialog manager's.
+        assert!(pause_key_clicks("&Sürdür", &tr, 't'));
+        assert!(pause_key_clicks("&Sürdür", &tr, 'T'));
+        assert!(!pause_key_clicks("&Sürdür", &tr, 's'));
+        // Showing Pause: S (Resume) clicks, T does not.
+        assert!(pause_key_clicks("Durakla&t", &tr, 'S'));
+        assert!(!pause_key_clicks("Durakla&t", &tr, 't'));
+        assert!(!pause_key_clicks("Durakla&t", &tr, 'k'));
+        let en = ["&Pause", "&Resume", "&Pause / Resume"];
+        assert!(pause_key_clicks("&Pause / Resume", &en, 'r'));
+        assert!(!pause_key_clicks("&Pause / Resume", &en, 'p'));
+        assert!(!pause_key_clicks("&Resume", &en, 'x'));
+    }
+
+    #[test]
+    fn new_downloads_ok_label_reads_the_links_box_as_ok_does() {
+        use super::add_links_open_picker;
+        use crate::model::DownloadKind::{Auto, File, Video};
+        let page = "https://example.com/watch?v=1";
+        assert!(add_links_open_picker(page, Auto));
+        // The same address twice is one download.
+        assert!(add_links_open_picker(
+            &format!("{page}\r\n\r\n {page} "),
+            Auto
+        ));
+        // An address inside other text is found, as OK finds it.
+        assert!(add_links_open_picker(&format!("see {page} here"), Auto));
+        assert!(!add_links_open_picker(page, File));
+        assert!(add_links_open_picker(
+            "https://example.com/setup.zip",
+            Video
+        ));
+        assert!(!add_links_open_picker(
+            "https://example.com/setup.zip",
+            Auto
+        ));
+        assert!(!add_links_open_picker(
+            &format!("{page}\r\nhttps://example.com/watch?v=2"),
+            Auto
+        ));
+        assert!(!add_links_open_picker("not a link", Auto));
+        assert!(!add_links_open_picker("", Auto));
+    }
+
+    #[test]
+    fn modern_field_labels_drop_a_trailing_colon_only() {
+        use super::field_label;
+        assert_eq!(field_label("Arayüz düzeyi:"), "Arayüz düzeyi");
+        assert_eq!(
+            field_label("Niveau de l'interface :"),
+            "Niveau de l'interface"
+        );
+        assert_eq!(field_label("Niveau\u{a0}:"), "Niveau");
+        assert_eq!(field_label("Başlangıç (SS:DD):"), "Başlangıç (SS:DD)");
+        assert_eq!(field_label("المستوى:"), "المستوى");
+        assert_eq!(field_label("http://host:8080"), "http://host:8080");
+        assert_eq!(field_label("Video"), "Video");
+        assert_eq!(field_label(""), "");
+    }
+
+    #[test]
+    fn settings_fit_a_1080p_screen_at_150_percent_with_the_taskbar() {
+        use super::{scale, settings_logical_height, SETTINGS_FRAME};
+        // 1080 px less the 48 epx taskbar at 144 dpi.
+        let work_area = 1080 - scale(48, 144);
+        for modern in [false, true] {
+            for simple in [false, true] {
+                let window = scale(
+                    settings_logical_height(modern, simple) + SETTINGS_FRAME,
+                    144,
+                );
+                assert!(
+                    window <= work_area,
+                    "modern={modern} simple={simple}: {window}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_basic_level_has_no_job_log_tab_as_it_has_no_job_log_command() {
+        use super::{job_tab_pages, main_command_visible, UiMode, ID_JOB_LOG, JOB_LOG_PAGE};
+        assert!(!main_command_visible(UiMode::Simple, false, ID_JOB_LOG));
+        assert_eq!(job_tab_pages(UiMode::Simple), [0, 2]);
+        assert!(!job_tab_pages(UiMode::Simple).contains(&JOB_LOG_PAGE));
+        assert_eq!(job_tab_pages(UiMode::Advanced), [0, 1, 2]);
+    }
+
+    #[test]
+    fn the_pause_label_names_both_verbs_for_a_mixed_selection() {
+        use super::{pause_verb, PauseVerb};
+        use crate::model::JobState;
+        let running = sample_job("r", JobState::Downloading);
+        let paused = sample_job("p", JobState::Paused);
+        let failed = sample_job("f", JobState::Failed);
+        let done = sample_job("d", JobState::Completed);
+        assert_eq!(pause_verb(&[&running]), PauseVerb::Pause);
+        assert_eq!(pause_verb(&[&paused, &failed]), PauseVerb::Resume);
+        assert_eq!(pause_verb(&[&paused, &running]), PauseVerb::Both);
+        // A finished job counts for neither verb.
+        assert_eq!(pause_verb(&[&done, &paused]), PauseVerb::Resume);
+        assert_eq!(pause_verb(&[&done]), PauseVerb::Pause);
+        assert_eq!(pause_verb(&[]), PauseVerb::Pause);
+    }
+
+    #[test]
+    fn a_header_click_goes_ascending_descending_then_back_to_the_queue() {
+        use super::next_sort;
+        assert_eq!(next_sort(None, 3), Some((3, true)));
+        assert_eq!(next_sort(Some((3, true)), 3), Some((3, false)));
+        assert_eq!(next_sort(Some((3, false)), 3), None);
+        assert_eq!(next_sort(Some((3, false)), 1), Some((1, true)));
+    }
+
+    #[test]
+    fn stored_hidden_columns_never_hide_the_name_or_the_state() {
+        use super::visible_columns;
+        assert_eq!(visible_columns(&[]), [0, 1, 2, 3, 4, 5]);
+        let hidden = [
+            "name".to_string(),
+            "state".into(),
+            "speed".into(),
+            "unknown".into(),
+        ];
+        assert_eq!(visible_columns(&hidden), [0, 1, 2, 4, 5]);
     }
 
     #[test]
@@ -8448,31 +11584,730 @@ mod tests {
 
     #[test]
     fn dialog_labels_draw_an_ampersand_as_text() {
-        use super::{control, dialog_label, SS_NOPREFIX};
-        use std::ptr::null_mut;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DestroyWindow, GetWindowLongPtrW, GWL_STYLE, WS_POPUP,
-        };
+        on_private_desktop(|| {
+            use super::{control, dialog_label, SS_NOPREFIX};
+            use std::ptr::null_mut;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                DestroyWindow, GetWindowLongPtrW, GWL_STYLE, WS_POPUP,
+            };
 
-        unsafe {
-            let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
-            assert!(!parent.is_null(), "the hidden parent window is created");
-            let label = dialog_label(parent, null_mut(), "Tom & Jerry.mp4", 7);
-            let style = GetWindowLongPtrW(label, GWL_STYLE) as u32;
-            DestroyWindow(parent);
-            assert_ne!(
-                style & SS_NOPREFIX,
-                0,
-                "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
-            );
+            unsafe {
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                assert!(!parent.is_null(), "the hidden parent window is created");
+                let label = dialog_label(parent, null_mut(), "Tom & Jerry.mp4", 7);
+                let style = GetWindowLongPtrW(label, GWL_STYLE) as u32;
+                DestroyWindow(parent);
+                assert_ne!(
+                    style & SS_NOPREFIX,
+                    0,
+                    "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn the_scroll_keys_reach_the_page_unless_a_field_uses_the_arrows() {
+        on_private_desktop(|| {
+            use super::{control, wants_arrows, BS_PUSHBUTTON, VK_DOWN};
+            use std::ptr::null_mut;
+            use windows_sys::Win32::UI::Controls::{
+                InitCommonControlsEx, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
+            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                DestroyWindow, MSG, WM_KEYDOWN, WS_CHILD, WS_POPUP,
+            };
+
+            unsafe {
+                let common = INITCOMMONCONTROLSEX {
+                    dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+                    dwICC: ICC_TAB_CLASSES,
+                };
+                assert_ne!(InitCommonControlsEx(&common), 0);
+                let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                let edit = control(parent, "EDIT", "", WS_CHILD, 0, 1);
+                let tabs = control(parent, "SysTabControl32", "", WS_CHILD, 0, 2);
+                assert!(!tabs.is_null(), "the tab strip is created");
+                let button = control(
+                    parent,
+                    "BUTTON",
+                    "OK",
+                    WS_CHILD | BS_PUSHBUTTON as u32,
+                    0,
+                    3,
+                );
+                let down = |hwnd| MSG {
+                    hwnd,
+                    message: WM_KEYDOWN,
+                    wParam: VK_DOWN as usize,
+                    lParam: 1,
+                    ..std::mem::zeroed()
+                };
+                let (edit_keeps, tabs_keep, button_keeps) = (
+                    wants_arrows(&down(edit)),
+                    wants_arrows(&down(tabs)),
+                    wants_arrows(&down(button)),
+                );
+                DestroyWindow(parent);
+                assert!(edit_keeps, "a text field moves its caret with the arrows");
+                assert!(!tabs_keep, "the tab strip leaves the arrows to the page");
+                assert!(!button_keeps, "a button leaves the arrows to the page");
+            }
+        });
+    }
+
+    /// A dialog of `kind` created the way the app creates one, in Modern and
+    /// hidden, for a profile of its own. `close_test_dialog` releases it.
+    unsafe fn modern_test_dialog(
+        kind: super::DialogKind,
+        width: i32,
+        height: i32,
+    ) -> (*mut super::DialogUi, super::HWND, std::path::PathBuf) {
+        theme_test_dialog(true, kind, width, height)
+    }
+
+    /// `modern_test_dialog` in Modern when `in_modern` is true, else in Classic.
+    /// Only on a private desktop (`on_private_desktop`): a refresh can show
+    /// the dialog, and it must never reach the user's screen or keys.
+    unsafe fn theme_test_dialog(
+        in_modern: bool,
+        kind: super::DialogKind,
+        width: i32,
+        height: i32,
+    ) -> (*mut super::DialogUi, super::HWND, std::path::PathBuf) {
+        use super::*;
+        assert!(
+            current_desktop_name().starts_with("ssdownload-test-"),
+            "test dialogs are created on a private desktop"
+        );
+        set_modern(in_modern);
+        register_classes().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-gui-test-{}", uuid::Uuid::new_v4()));
+        let app = App::open(crate::paths::AppPaths::new(root.clone()).unwrap()).unwrap();
+        let (raw, hwnd) = create_dialog(
+            null_mut(),
+            app,
+            DialogRequest {
+                title: "test",
+                width,
+                height,
+                kind,
+                origin: None,
+                launch: None,
+                modeless: false,
+            },
+        )
+        .unwrap();
+        (raw, hwnd, root)
+    }
+
+    unsafe fn close_test_dialog(
+        raw: *mut super::DialogUi,
+        hwnd: super::HWND,
+        root: std::path::PathBuf,
+    ) {
+        super::DestroyWindow(hwnd);
+        drop(Box::from_raw(raw));
+        for _ in 0..10 {
+            if std::fs::remove_dir_all(&root).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
+    }
+
+    /// The ids of a window's shown tab stops in the order Tab walks them.
+    unsafe fn tab_walk(window: super::HWND) -> Vec<i32> {
+        use super::*;
+        let mut ids = Vec::new();
+        let mut child = GetWindow(window, GW_CHILD);
+        while !child.is_null() {
+            let style = GetWindowLongW(child, GWL_STYLE) as u32;
+            if style & WS_TABSTOP != 0 && style & WS_VISIBLE != 0 {
+                ids.push(GetDlgCtrlID(child));
+            }
+            child = GetWindow(child, GW_HWNDNEXT);
+        }
+        ids
+    }
+
+    unsafe fn window_height(window: super::HWND) -> i32 {
+        let mut frame: super::RECT = std::mem::zeroed();
+        super::GetWindowRect(window, &mut frame);
+        frame.bottom - frame.top
+    }
+
+    #[test]
+    fn modern_s_speed_limit_grows_by_the_lines_its_label_wraps_to() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                // Narrow enough that the label wraps in every language.
+                let height = one_field_height(1) + SETTINGS_FRAME + 3;
+                let (raw, hwnd, root) = modern_test_dialog(
+                    DialogKind::Speed(SpeedFields {
+                        ids: Vec::new(),
+                        initial: 0,
+                        edit: null_mut(),
+                        label_lines: 1,
+                    }),
+                    240,
+                    height,
+                );
+                let lines = match &(*raw).kind {
+                    DialogKind::Speed(f) => f.label_lines,
+                    _ => 0,
+                };
+                let (outer, design) = (window_height(hwnd), (*raw).design.1);
+                close_test_dialog(raw, hwnd, root);
+                assert!(lines > 1, "{lines} lines");
+                assert_eq!(outer, height + (lines - 1) * ADD_LABEL);
+                assert_eq!(design, height + (lines - 1) * ADD_LABEL);
+            }
+        });
+    }
+
+    /// A media picker that has not inspected its page yet.
+    fn blank_picker() -> super::DialogKind {
+        use super::*;
+        DialogKind::Media(Box::new(MediaFields {
+            base: AddRequest::default(),
+            subtitle_none: false,
+            session_consent: None,
+            summary: null_mut(),
+            name: null_mut(),
+            kind: null_mut(),
+            kind_values: Vec::new(),
+            format: null_mut(),
+            audio: null_mut(),
+            audio_tracks: null_mut(),
+            subtitles: null_mut(),
+            external_url: null_mut(),
+            external_language: null_mut(),
+            external_label: null_mut(),
+            external_kind: null_mut(),
+            external_default: null_mut(),
+            external_list: null_mut(),
+            full_verification: null_mut(),
+            playlist: null_mut(),
+            renew_job: null_mut(),
+            renew_restart: null_mut(),
+            renew_ids: Vec::new(),
+            video_formats: Vec::new(),
+            audio_values: Vec::new(),
+            info: MediaInfo::default(),
+            size: null_mut(),
+            subtitle_values: Vec::new(),
+            external_values: Vec::new(),
+            loaded_title: String::new(),
+            populated: false,
+            inspect_generation: 0,
+            advanced: false,
+            report_shown: false,
+            report_error: None,
+            host: String::new(),
+            auto_queue: false,
+            remember: null_mut(),
+            from_start: null_mut(),
+            from_start_offered: false,
+            playlist_items: null_mut(),
+            thumbnail: null_mut(),
+            thumbnail_requested: false,
+            prep_title: null_mut(),
+            prep_detail: null_mut(),
+            prep_bar: null_mut(),
+            title_font: null_mut(),
+            held: Vec::new(),
+        }))
+    }
+
+    #[test]
+    fn modern_s_picker_fits_its_window_to_its_rows_and_tabs_in_their_order() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                // The window size below is the Modern one.
+                set_modern(true);
+                let (raw, hwnd, root) = modern_test_dialog(
+                    blank_picker(),
+                    MEDIA_WIDTH,
+                    media_window_height(MEDIA_HEIGHT, 420),
+                );
+                let closed = window_height(hwnd);
+                SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+                let open = window_height(hwnd);
+                let scrolls = (*raw).scroll_range.get();
+                let mut work: RECT = zeroed();
+                SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut work as *mut RECT).cast(), 0);
+                let walk = tab_walk(hwnd);
+                SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+                let closed_again = window_height(hwnd);
+                let cue = playlist_field_proc(raw);
+                close_test_dialog(raw, hwnd, root);
+                // Modern draws the playlist field's hint itself.
+                assert_eq!(cue, cue_proc as *const () as isize);
+                assert!(
+                    open > closed,
+                    "the advanced rows grow the window: {closed} -> {open}"
+                );
+                assert_eq!(closed_again, closed);
+                assert!(
+                    scrolls == 0 || open >= work.bottom - work.top,
+                    "the open picker scrolls {scrolls} px in a {open} px window"
+                );
+                let at = |id: i32| walk.iter().position(|&walked| walked == id);
+                let before = |a: i32, b: i32| matches!((at(a), at(b)), (Some(a), Some(b)) if a < b);
+                // The playlist row sits above the verification row, and Advanced
+                // options at the start of the command bar.
+                assert!(before(M_PLAYLIST, ID_MEDIA_FULL_VERIFICATION), "{walk:?}");
+                assert!(before(D_ADVANCED, M_QUEUE), "{walk:?}");
+                assert!(before(M_QUEUE, D_CANCEL), "{walk:?}");
+            }
+        });
+    }
+
+    #[test]
+    fn modern_s_queue_manager_tabs_through_its_rows() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                set_modern(true);
+                let (width, height) = form_window(QUEUES_WIDTH, QUEUES_HEIGHT);
+                let (raw, hwnd, root) = modern_test_dialog(
+                    DialogKind::Queues(QueueFields {
+                        list: null_mut(),
+                        ids: Vec::new(),
+                        name: null_mut(),
+                        concurrency: null_mut(),
+                        completion: null_mut(),
+                        countdown: null_mut(),
+                        enabled: null_mut(),
+                        windows: null_mut(),
+                        quota: null_mut(),
+                        program: null_mut(),
+                        arguments: null_mut(),
+                        delay: null_mut(),
+                        job_id: None,
+                    }),
+                    width,
+                    height,
+                );
+                let walk = tab_walk(hwnd);
+                close_test_dialog(raw, hwnd, root);
+                // The list; the name and its buttons; the policy row; the
+                // completion row; the program row; Close.
+                let rows = [
+                    2501, 2502, Q_CREATE, Q_RENAME, Q_DELETE, 2503, 2514, 2517, 2512, 2504,
+                    Q_UPDATE, Q_MOVE_JOB, 2515, 2516, 2513, D_CANCEL,
+                ];
+                let walked: Vec<i32> = walk
+                    .iter()
+                    .copied()
+                    .filter(|id| rows.contains(id))
+                    .collect();
+                assert_eq!(walked, rows, "{walk:?}");
+            }
+        });
+    }
+
+    #[test]
+    fn modern_s_event_log_lists_its_lines_in_compact_rows() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                set_modern(true);
+                let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
+                let (raw, hwnd, root) = modern_test_dialog(
+                    DialogKind::Events(EventFields {
+                        list: null_mut(),
+                        rendered: Vec::new(),
+                    }),
+                    width,
+                    height,
+                );
+                let row = SendMessageW(GetDlgItem(hwnd, E_LIST), LB_GETITEMHEIGHT, 0, 0) as i32;
+                close_test_dialog(raw, hwnd, root);
+                assert_eq!(row, COMPACT_ROW);
+            }
+        });
+    }
+
+    /// The window procedure of a picker's playlist field.
+    unsafe fn playlist_field_proc(raw: *mut super::DialogUi) -> isize {
+        match &(*raw).kind {
+            super::DialogKind::Media(f) => {
+                super::GetWindowLongPtrW(f.playlist_items, super::GWLP_WNDPROC)
+            }
+            _ => 0,
+        }
+    }
+
+    /// A setup wizard with the advanced depth chosen, so all its cards show.
+    unsafe fn advanced_wizard(
+        in_modern: bool,
+    ) -> (*mut super::DialogUi, super::HWND, std::path::PathBuf) {
+        use super::*;
+        theme_test_dialog(
+            in_modern,
+            DialogKind::Wizard(WizardFields {
+                modes: crate::model::UsageModes::default(),
+                simple: false,
+                modern: in_modern,
+                intro_lines: 1,
+                caption_lines: 0,
+                video: null_mut(),
+                file: null_mut(),
+                audio: null_mut(),
+                simple_card: null_mut(),
+                advanced_card: null_mut(),
+                classic_card: null_mut(),
+                modern_card: null_mut(),
+                note: null_mut(),
+                start: null_mut(),
+            }),
+            WIZARD_WIDTH,
+            wizard_content_height(1, 0, in_modern) + SETTINGS_FRAME + 3,
+        )
+    }
+
+    #[test]
+    fn the_wizard_lays_its_cards_out_in_rows_and_tabs_through_them_in_both_themes() {
+        on_private_desktop(|| {
+            use super::*;
+            let cards = [
+                ID_WIZARD_SIMPLE,
+                ID_WIZARD_ADVANCED,
+                ID_WIZARD_CLASSIC,
+                ID_WIZARD_MODERN,
+                ID_WIZARD_VIDEO,
+                ID_WIZARD_FILE,
+                ID_WIZARD_AUDIO,
+            ];
+            // English has rows whose explanations wrap to different lengths.
+            for modern in [false, true] {
+                crate::i18n::with_language("en", || unsafe {
+                    let (raw, hwnd, root) = advanced_wizard(modern);
+                    let walk = tab_walk(hwnd);
+                    let mut client: RECT = zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let rects: Vec<RECT> = cards
+                        .iter()
+                        .chain(&[D_CANCEL, ID_WIZARD_START])
+                        .map(|&id| child_rect(hwnd, GetDlgItem(hwnd, id)))
+                        .collect();
+                    let titles: Vec<i32> = cards
+                        .iter()
+                        .map(|&id| title_top(GetDlgItem(hwnd, id), modern))
+                        .collect();
+                    close_test_dialog(raw, hwnd, root);
+                    // Row by row, then the buttons left to right: Start, then Cancel.
+                    let mut order = cards.to_vec();
+                    order.extend([ID_WIZARD_START, D_CANCEL]);
+                    assert_eq!(walk, order, "modern {modern}");
+                    let ring = if modern { FOCUS_MARGIN } else { 0 };
+                    for (index, rect) in rects.iter().enumerate() {
+                        assert!(
+                            rect.left >= 0
+                                && rect.top >= 0
+                                && rect.right <= client.right
+                                && rect.bottom <= client.bottom,
+                            "modern {modern}: {index} at {:?} outside {:?}",
+                            (rect.left, rect.top, rect.right, rect.bottom),
+                            (client.right, client.bottom)
+                        );
+                        if index < cards.len() {
+                            // One explanation line and whole further ones.
+                            let beyond = rect.bottom - rect.top - WIZARD_CARD - 2 * ring;
+                            assert!(beyond >= 0 && beyond % CARD_LINE == 0, "{index}: {beyond}");
+                        }
+                        for other in &rects[index + 1..] {
+                            let apart = rect.right <= other.left
+                                || other.right <= rect.left
+                                || rect.bottom <= other.top
+                                || other.bottom <= rect.top;
+                            // Modern's focus margins may touch, never its faces.
+                            let faces_apart = rect.right - ring <= other.left + ring
+                                || other.right - ring <= rect.left + ring
+                                || rect.bottom - ring <= other.top + ring
+                                || other.bottom - ring <= rect.top + ring;
+                            assert!(apart || faces_apart, "modern {modern}: {index} overlaps");
+                        }
+                    }
+                    // The depth, theme and purpose rows, one under the other, each
+                    // card as tall as the others of its row.
+                    assert!(rects[0].bottom <= rects[2].top && rects[2].bottom <= rects[4].top);
+                    for row in [&rects[0..2], &rects[2..4], &rects[4..7]] {
+                        assert!(row
+                            .iter()
+                            .all(|r| r.bottom - r.top == row[0].bottom - row[0].top));
+                    }
+                    // The titles of a row start on one line, whatever their
+                    // explanations' length; a round letter may reach a pixel above
+                    // a flat one.
+                    for row in [&titles[0..2], &titles[2..4], &titles[4..7]] {
+                        let (high, low) = (row.iter().min().unwrap(), row.iter().max().unwrap());
+                        assert!(*high > 0 && low - high <= 1, "modern {modern}: {titles:?}");
+                    }
+                });
+            }
+        });
+    }
+
+    /// The first pixel row of `card` with title ink: dark text in the column
+    /// where its title starts, beside the glyph, below the focus cues.
+    unsafe fn title_top(card: super::HWND, in_modern: bool) -> i32 {
+        use super::*;
+        let mut rect: RECT = zeroed();
+        GetClientRect(card, &mut rect);
+        let dpi = GetDpiForWindow(card).max(96);
+        let s = |value: i32| scale(value, dpi);
+        let left = if in_modern {
+            s(FOCUS_MARGIN) + s(12) + s(20) + s(12)
+        } else {
+            1 + s(10) + s(20) + s(10)
+        };
+        let size = rect.right.max(rect.bottom);
+        let pixels = on_white(size, |dc| draw_card(card, dc));
+        let dark = |pixel: u32| {
+            [pixel >> 16, pixel >> 8, pixel]
+                .iter()
+                .all(|c| c & 0xff < 0x80)
+        };
+        (s(5)..rect.bottom)
+            .find(|&y| (left..left + s(24)).any(|x| dark(pixels[(y * size + x) as usize])))
+            .unwrap_or(-1)
+    }
+
+    #[test]
+    fn the_wizard_s_cards_show_their_whole_text_in_every_language_at_96_and_144_dpi() {
+        on_private_desktop(|| {
+            use super::*;
+            let ids = [
+                ID_WIZARD_SIMPLE,
+                ID_WIZARD_ADVANCED,
+                ID_WIZARD_CLASSIC,
+                ID_WIZARD_MODERN,
+                ID_WIZARD_VIDEO,
+                ID_WIZARD_FILE,
+                ID_WIZARD_AUDIO,
+            ];
+            // The width `text` takes on one line, or its size wrapped at `width`.
+            let measure = |font: HFONT, text: &str, width: i32| unsafe {
+                let dc = GetDC(null_mut());
+                let previous = SelectObject(dc, font as HGDIOBJ);
+                let mut text: Vec<u16> = text.encode_utf16().collect();
+                let mut area = RECT {
+                    right: width,
+                    ..zeroed()
+                };
+                let format = if width == 0 {
+                    DT_SINGLELINE
+                } else {
+                    DT_WORDBREAK
+                };
+                draw_text(dc, &mut text, &mut area, format | DT_NOPREFIX | DT_CALCRECT);
+                SelectObject(dc, previous);
+                ReleaseDC(null_mut(), dc);
+                (area.right, area.bottom)
+            };
+            let mut cut = Vec::new();
+            for code in ["tr", "en", "ar", "de", "es", "fr", "pt"] {
+                for modern in [false, true] {
+                    crate::i18n::with_language(code, || unsafe {
+                        let (raw, hwnd, root) = advanced_wizard(modern);
+                        let system = GetDpiForWindow(hwnd).max(96);
+                        let mut client: RECT = zeroed();
+                        GetClientRect(hwnd, &mut client);
+                        let error = child_rect(hwnd, GetDlgItem(hwnd, D_ERROR));
+                        // Modern's command bar, or Classic's button row.
+                        let buttons = if modern {
+                            client.bottom - scale(ADD_FOOTER, system)
+                        } else {
+                            child_rect(hwnd, GetDlgItem(hwnd, D_CANCEL)).top
+                        };
+                        let cards: Vec<(String, RECT)> = ids
+                            .iter()
+                            .map(|&id| {
+                                let card = GetDlgItem(hwnd, id);
+                                (text(card), child_rect(hwnd, card))
+                            })
+                            .collect();
+                        close_test_dialog(raw, hwnd, root);
+                        // The window grew for the rows: they end, focus margin and all,
+                        // above the error line, and the error line above the buttons.
+                        if cards[6].1.bottom > error.top || error.bottom > buttons {
+                            cut.push(format!(
+                                "{code} modern {modern}: cards end at {}, the error line takes {}-{}, \
+                                 the buttons start at {buttons}",
+                                cards[6].1.bottom, error.top, error.bottom
+                            ));
+                        }
+                        let mut dpis = vec![system, 96, 144];
+                        dpis.sort();
+                        dpis.dedup();
+                        for dpi in dpis {
+                            let s = |value: i32| scale(value, dpi);
+                            // Modern's face sits inside the focus margin and keeps the
+                            // mark at the end of the title's line; Classic's sits
+                            // inside a one-pixel frame. The glyph is 20 epx between
+                            // two pads.
+                            let (face, pad, mark) = if modern {
+                                (s(FOCUS_MARGIN), s(12), s(16) + s(8))
+                            } else {
+                                (1, s(10), 0)
+                            };
+                            let font = |title: bool| {
+                                let (points, weight, faces) = card_font_spec(title, modern);
+                                make_face_font(dpi, points, weight, faces)
+                            };
+                            let (title_font, text_font) = (font(true), font(false));
+                            for (whole, rect) in &cards {
+                                // Cards laid out at another DPI are as wide in epx.
+                                let width = (rect.right - rect.left) * dpi as i32 / system as i32;
+                                let room = width - 2 * face - 3 * pad - s(20);
+                                let (title, caption) = card_text_parts(whole);
+                                let (title_width, _) = measure(title_font, &title, 0);
+                                let (caption_width, caption_height) =
+                                    measure(text_font, &caption, room);
+                                let lines = (caption_height + s(CARD_LINE) - 1) / s(CARD_LINE);
+                                // At the window's own DPI the card is as tall as its text.
+                                let fits = dpi != system
+                                    || 2 * s(CARD_PAD) + s(CARD_TITLE) + caption_height
+                                        <= rect.bottom - rect.top - 2 * face;
+                                if title_width > room - mark
+                                    || caption_width > room
+                                    || lines > 2
+                                    || !fits
+                                {
+                                    cut.push(format!(
+                                        "{code} modern {modern} {dpi} dpi: {whole:?} in {room} px: \
+                                         title {title_width}, explanation {caption_width}x{caption_height}"
+                                    ));
+                                }
+                            }
+                            DeleteObject(title_font as HGDIOBJ);
+                            DeleteObject(text_font as HGDIOBJ);
+                        }
+                    });
+                }
+            }
+            assert!(cut.is_empty(), "{cut:#?}");
+        });
+    }
+
+    #[test]
+    fn classic_s_picker_keeps_its_creation_order_and_its_plain_playlist_field() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let (raw, hwnd, root) = theme_test_dialog(false, blank_picker(), 640, 420);
+                SendMessageW(hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+                let walk = tab_walk(hwnd);
+                let field = playlist_field_proc(raw);
+                close_test_dialog(raw, hwnd, root);
+                let at = |id: i32| walk.iter().position(|&walked| walked == id);
+                // Advanced options, then the commit row as it reads: Download,
+                // Download as MP3, Cancel.
+                let order = [D_ADVANCED, M_QUEUE, M_MP3, D_CANCEL].map(at);
+                assert!(
+                    order.iter().all(Option::is_some)
+                        && order.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{walk:?}"
+                );
+                assert_ne!(field, cue_proc as *const () as isize);
+            }
+        });
+    }
+
+    #[test]
+    fn the_settings_theme_box_reads_and_stores_classic_first_then_modern() {
+        on_private_desktop(|| {
+            use super::*;
+            for modern in [false, true] {
+                for (stored, shown) in [("classic", 0), ("modern", 1), ("", 0)] {
+                    unsafe {
+                        let value = Settings {
+                            theme: stored.into(),
+                            download_dir: std::env::temp_dir(),
+                            ..Settings::default()
+                        };
+                        let simple = UiMode::parse(&value.ui_mode).is_simple();
+                        let (raw, hwnd, root) = theme_test_dialog(
+                            modern,
+                            DialogKind::Settings(Box::new(settings_fields(value))),
+                            settings_width(),
+                            settings_logical_height(modern, simple) + SETTINGS_FRAME,
+                        );
+                        let mut saved = Vec::new();
+                        let mut opened = -1;
+                        if let DialogKind::Settings(f) = &(*raw).kind {
+                            opened = combo_index(f.theme);
+                            for pick in [0, 1] {
+                                combo_select(f.theme, pick);
+                                saved.push(collect_settings(f).map(|value| value.theme).ok());
+                            }
+                        }
+                        close_test_dialog(raw, hwnd, root);
+                        assert_eq!(opened, shown, "modern {modern}, stored {stored:?}");
+                        assert_eq!(
+                            saved,
+                            [Some("classic".to_string()), Some("modern".to_string())]
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn modern_s_job_view_gives_its_bar_the_state_of_its_job() {
+        on_private_desktop(|| {
+            use super::*;
+            use crate::model::JobState;
+            unsafe {
+                let (raw, hwnd, root) = modern_test_dialog(
+                    DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                    MEDIA_WIDTH,
+                    media_window_height(PROGRESS_HEIGHT, 420),
+                );
+                let mut snapshot = (*raw).app.snapshot();
+                let error = (*raw).error;
+                let mut shown = Vec::new();
+                for state in [
+                    JobState::Downloading,
+                    JobState::Failed,
+                    JobState::Paused,
+                    JobState::Cancelled,
+                    JobState::Completed,
+                ] {
+                    snapshot.jobs = std::sync::Arc::new(vec![sample_job("job", state)]);
+                    if let DialogKind::Progress(f) = &mut (*raw).kind {
+                        refresh_job_view(hwnd, error, f, &snapshot);
+                        shown.push(progress_state(f.progress));
+                    }
+                }
+                close_test_dialog(raw, hwnd, root);
+                assert_eq!(
+                    shown,
+                    [
+                        JobState::Downloading,
+                        JobState::Failed,
+                        JobState::Paused,
+                        JobState::Cancelled,
+                        JobState::Completed,
+                    ]
+                    .map(Some)
+                );
+            }
+        });
     }
 
     /// Runs `body` on a fresh thread attached to a private desktop. A dialog's
     /// controls take the focus when they are created, which makes the dialog the
     /// foreground window of the process; on a private desktop that never
     /// reaches the keys the user is typing.
-    fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+    pub(super) fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
         use std::ptr::null;
         use windows_sys::Win32::Foundation::{GetLastError, GENERIC_ALL};
         use windows_sys::Win32::System::StationsAndDesktops::{
@@ -8737,6 +12572,7 @@ mod tests {
             ids: Vec::new(),
             initial: 0,
             edit: std::ptr::null_mut(),
+            label_lines: 1,
         })
     }
 
@@ -8857,26 +12693,7 @@ mod tests {
     }
 
     fn progress_kind() -> super::DialogKind {
-        use std::ptr::null_mut;
-        super::DialogKind::Progress(Box::new(super::ProgressFields {
-            ids: Vec::new(),
-            selected: 0,
-            raised: std::collections::HashSet::new(),
-            rendered: String::new(),
-            rendered_rows: String::new(),
-            action_label: String::new(),
-            summary: null_mut(),
-            list: null_mut(),
-            status: null_mut(),
-            progress: null_mut(),
-            action: null_mut(),
-            cancel: null_mut(),
-            open_file: null_mut(),
-            open_folder: null_mut(),
-            close: null_mut(),
-            hint: null_mut(),
-            report: null_mut(),
-        }))
+        super::DialogKind::Progress(super::ProgressFields::new(Vec::new()))
     }
 
     fn media_kind() -> super::DialogKind {
@@ -8924,6 +12741,11 @@ mod tests {
             playlist_items: null_mut(),
             thumbnail: null_mut(),
             thumbnail_requested: false,
+            prep_title: null_mut(),
+            prep_detail: null_mut(),
+            prep_bar: null_mut(),
+            title_font: null_mut(),
+            held: Vec::new(),
         }))
     }
 
@@ -9042,6 +12864,284 @@ mod tests {
         });
     }
 
+    /// Whether a control of a dialog is shown, from its style: a hidden test
+    /// dialog reports every control invisible.
+    fn shown(control: super::HWND) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE, WS_VISIBLE};
+        unsafe { GetWindowLongW(control, GWL_STYLE) as u32 & WS_VISIBLE != 0 }
+    }
+
+    /// Runs `body` in English on a media picker of each theme that has not
+    /// loaded its analysis, with the snapshot it is refreshed from.
+    fn with_preparing_picker(body: fn(&HiddenDialog, bool, crate::model::AppSnapshot)) {
+        for in_modern in [false, true] {
+            let themed = move || {
+                super::set_modern(in_modern);
+                media_kind()
+            };
+            with_dialog(themed, 640, 420, |dialog| {
+                crate::i18n::with_language("en", || {
+                    let snapshot = dialog.app().snapshot();
+                    body(dialog, in_modern, snapshot)
+                })
+            });
+        }
+    }
+
+    /// The picker controls a loaded analysis fills in and the preparing state
+    /// hides.
+    unsafe fn picker_form(dialog: &HiddenDialog) -> Vec<super::HWND> {
+        use super::{DialogKind, M_MP3, M_QUEUE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+        let DialogKind::Media(f) = dialog.kind() else {
+            unreachable!()
+        };
+        vec![
+            f.summary,
+            f.name,
+            f.kind,
+            f.format,
+            f.remember,
+            GetDlgItem(dialog.hwnd, M_QUEUE),
+            GetDlgItem(dialog.hwnd, M_MP3),
+        ]
+    }
+
+    #[test]
+    fn the_picker_prepares_in_place_of_its_form_until_the_analysis_loads() {
+        with_preparing_picker(|dialog, in_modern, mut snapshot| unsafe {
+            use super::{
+                child_rect, refresh_media, text, DialogKind, D_ADVANCED, D_CANCEL, M_QUEUE,
+                PBS_MARQUEE,
+            };
+            use crate::model::{MediaFormat, MediaInfo};
+            use windows_sys::Win32::Foundation::RECT;
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetDlgItem, GetWindowLongW, GetWindowRect, GWL_STYLE,
+            };
+            let edges = |rect: RECT| (rect.left, rect.top, rect.right, rect.bottom);
+            let dlg = &*dialog.raw;
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            snapshot.inspecting = true;
+            refresh_media(dlg, f, &snapshot);
+            assert_eq!(
+                text(f.prep_title),
+                "Preparing the download...",
+                "modern {in_modern}"
+            );
+            assert!(
+                text(f.prep_detail).starts_with("Getting the video information from the source."),
+                "modern {in_modern}: {}",
+                text(f.prep_detail)
+            );
+            for control in [f.prep_title, f.prep_detail, f.prep_bar] {
+                assert!(
+                    shown(control),
+                    "modern {in_modern}: the preparing state shows"
+                );
+            }
+            assert_ne!(
+                GetWindowLongW(f.prep_bar, GWL_STYLE) as u32 & PBS_MARQUEE,
+                0,
+                "modern {in_modern}: the bar moves"
+            );
+            for control in picker_form(dialog) {
+                assert!(
+                    !shown(control),
+                    "modern {in_modern}: the empty form is hidden"
+                );
+            }
+            let cancel = GetDlgItem(dialog.hwnd, D_CANCEL);
+            for control in [GetDlgItem(dialog.hwnd, D_ADVANCED), cancel] {
+                assert!(shown(control), "modern {in_modern}: the button row stays");
+            }
+            let at = |control| child_rect(dialog.hwnd, control);
+            assert!(
+                at(f.prep_title).bottom <= at(f.prep_detail).top
+                    && at(f.prep_detail).bottom <= at(f.prep_bar).top
+                    && at(f.prep_bar).bottom <= at(cancel).top,
+                "modern {in_modern}: the title, its line and the bar read down to the buttons"
+            );
+            let place = |window| {
+                let mut rect: RECT = std::mem::zeroed();
+                GetWindowRect(window, &mut rect);
+                edges(rect)
+            };
+            let (window, button) = (place(dialog.hwnd), place(cancel));
+
+            snapshot.inspecting = false;
+            snapshot.media = Some(MediaInfo {
+                title: "Clip".into(),
+                formats: vec![MediaFormat {
+                    id: "18".into(),
+                    extension: "mp4".into(),
+                    height: Some(360),
+                    video_codec: Some("avc1".into()),
+                    audio_codec: Some("mp4a".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            refresh_media(dlg, f, &snapshot);
+            assert!(f.populated, "modern {in_modern}");
+            for control in [f.prep_title, f.prep_detail, f.prep_bar] {
+                assert!(
+                    !shown(control),
+                    "modern {in_modern}: the preparing state is gone"
+                );
+            }
+            for control in picker_form(dialog) {
+                assert!(shown(control), "modern {in_modern}: the form shows");
+            }
+            assert_ne!(
+                IsWindowEnabled(GetDlgItem(dialog.hwnd, M_QUEUE)),
+                0,
+                "modern {in_modern}: the loaded analysis can be downloaded"
+            );
+            assert_eq!(
+                place(dialog.hwnd),
+                window,
+                "modern {in_modern}: the window stays"
+            );
+            assert_eq!(place(cancel), button, "modern {in_modern}: Cancel stays");
+        });
+    }
+
+    #[test]
+    fn a_failed_analysis_shows_its_error_and_the_report_action_in_the_preparing_state() {
+        with_preparing_picker(|dialog, in_modern, mut snapshot| unsafe {
+            use super::{child_rect, refresh_media, text, DialogKind, M_REPORT};
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+            let dlg = &*dialog.raw;
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            snapshot.inspecting = true;
+            refresh_media(dlg, f, &snapshot);
+            snapshot.inspecting = false;
+            snapshot.inspect_error = Some("The site refused the request.".into());
+            refresh_media(dlg, f, &snapshot);
+            assert_eq!(
+                text(f.prep_title),
+                "Downloadable video options could not be verified for this source.",
+                "modern {in_modern}"
+            );
+            assert!(
+                text(f.prep_detail).starts_with("The reason is below. Report problem"),
+                "modern {in_modern}: {}",
+                text(f.prep_detail)
+            );
+            assert!(
+                shown(f.prep_title) && shown(f.prep_detail),
+                "modern {in_modern}"
+            );
+            assert!(
+                !shown(f.prep_bar),
+                "modern {in_modern}: nothing is moving any more"
+            );
+            let error = dialog.error_line();
+            assert_eq!(
+                text(error),
+                "The site refused the request.",
+                "modern {in_modern}"
+            );
+            assert!(shown(error), "modern {in_modern}: the reason shows");
+            let report = GetDlgItem(dialog.hwnd, M_REPORT);
+            assert!(
+                shown(report) && IsWindowEnabled(report) != 0,
+                "modern {in_modern}: the failure can be reported"
+            );
+            for control in picker_form(dialog) {
+                assert!(!shown(control), "modern {in_modern}: no empty form is left");
+            }
+            let at = |control| child_rect(dialog.hwnd, control);
+            assert!(
+                at(f.prep_detail).bottom <= at(error).top && at(error).bottom <= at(report).top,
+                "modern {in_modern}: the reason is below the line and above its action"
+            );
+        });
+    }
+
+    #[test]
+    fn a_preparing_picker_starts_nothing_and_closes_on_escape_or_cancel() {
+        with_preparing_picker(|dialog, in_modern, mut snapshot| unsafe {
+            use super::{refresh_media, text, DialogKind, D_CANCEL, M_QUEUE};
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetDlgItem, SendMessageW, BM_CLICK, WM_COMMAND,
+            };
+            let dlg = &*dialog.raw;
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            snapshot.inspecting = true;
+            refresh_media(dlg, f, &snapshot);
+            let prep_title = f.prep_title;
+            assert!(
+                press(dialog, VK_RETURN),
+                "modern {in_modern}: Enter is handled"
+            );
+            assert!(
+                dialog.is_open(),
+                "modern {in_modern}: Enter did not close the picker"
+            );
+            SendMessageW(dialog.hwnd, WM_COMMAND, M_QUEUE as usize, 0);
+            assert!(dialog.is_open(), "modern {in_modern}");
+            assert_eq!(
+                text(dialog.error_line()),
+                "A download cannot start before the analysis loads into this window.",
+                "modern {in_modern}: a posted Download is refused"
+            );
+            assert!(
+                dialog.app().snapshot().jobs.is_empty(),
+                "modern {in_modern}: nothing was queued"
+            );
+            assert!(shown(prep_title), "modern {in_modern}: still preparing");
+            if in_modern {
+                assert!(press(dialog, VK_ESCAPE), "Escape is handled");
+            } else {
+                SendMessageW(GetDlgItem(dialog.hwnd, D_CANCEL), BM_CLICK, 0, 0);
+            }
+            assert!(!dialog.is_open(), "modern {in_modern}: the picker closed");
+        });
+    }
+
+    #[test]
+    fn advanced_options_open_the_form_before_the_analysis_loads() {
+        with_preparing_picker(|dialog, in_modern, mut snapshot| unsafe {
+            use super::{refresh_media, DialogKind, D_ADVANCED, M_RENEW};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetDlgItem, SendMessageW, WM_COMMAND,
+            };
+            let dlg = &*dialog.raw;
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            snapshot.inspecting = true;
+            refresh_media(dlg, f, &snapshot);
+            SendMessageW(dialog.hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            // The source of a pending job can be refreshed without the analysis.
+            for control in picker_form(dialog)
+                .into_iter()
+                .chain([f.renew_job, GetDlgItem(dialog.hwnd, M_RENEW)])
+            {
+                assert!(shown(control), "modern {in_modern}: the form shows");
+            }
+            refresh_media(dlg, f, &snapshot);
+            for control in [f.prep_title, f.prep_detail, f.prep_bar] {
+                assert!(!shown(control), "modern {in_modern}: and stays");
+            }
+            assert!(shown(f.name), "modern {in_modern}");
+        });
+    }
+
     #[test]
     fn enter_in_the_external_subtitle_fields_adds_the_subtitle() {
         use super::{set_text, DialogKind};
@@ -9105,6 +13205,131 @@ mod tests {
                 unsafe { text(dialog.error_line()) }.is_empty(),
                 "Continue was not pressed"
             );
+        });
+    }
+
+    /// The download windows open for the job `id`.
+    fn job_windows(id: &str) -> Vec<super::HWND> {
+        unsafe {
+            super::owned_dialogs(std::ptr::null_mut())
+                .into_iter()
+                .filter(|&hwnd| {
+                    let state = super::dialog_state(hwnd);
+                    !state.is_null()
+                        && matches!(&(*state).kind, super::DialogKind::Progress(f) if f.ids == [id])
+                })
+                .collect()
+        }
+    }
+
+    /// New download's OK with `links` and `schedule` typed in; returns the app
+    /// and the ids of the jobs it added.
+    fn add_from_new_download(
+        dialog: &HiddenDialog,
+        links: &str,
+        schedule: &str,
+    ) -> (crate::app::App, Vec<String>) {
+        use super::{set_text, DialogKind, D_ADD_OK};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_COMMAND};
+
+        let DialogKind::Add(f) = dialog.kind() else {
+            unreachable!()
+        };
+        unsafe {
+            set_text(f.urls, links);
+            set_text(f.schedule, schedule);
+            SendMessageW(dialog.hwnd, WM_COMMAND, D_ADD_OK as usize, 0);
+        }
+        assert!(!dialog.is_open(), "OK added the downloads");
+        let app = dialog.app().clone();
+        let ids = app
+            .snapshot()
+            .jobs
+            .iter()
+            .map(|job| job.id.clone())
+            .collect();
+        (app, ids)
+    }
+
+    #[test]
+    fn new_download_with_one_link_that_starts_now_opens_one_download_window() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            // A closed loopback port: the download fails without leaving the machine.
+            let (app, ids) = add_from_new_download(dialog, "http://127.0.0.1:9/one.zip", "");
+            let [id] = ids.as_slice() else {
+                panic!("one download was added: {ids:?}")
+            };
+            let windows = job_windows(id);
+            assert_eq!(windows.len(), 1, "the download has one window");
+            unsafe { super::open_job_view(std::ptr::null_mut(), app, vec![id.clone()]) };
+            assert_eq!(
+                job_windows(id),
+                windows,
+                "opening it again brings the same window forward"
+            );
+            for hwnd in windows {
+                unsafe { DestroyWindow(hwnd) };
+            }
+        });
+    }
+
+    #[test]
+    fn new_download_with_several_links_or_a_later_start_opens_no_download_window() {
+        for (links, schedule) in [
+            ("http://127.0.0.1:9/a.zip\r\nhttp://127.0.0.1:9/b.zip", ""),
+            ("http://127.0.0.1:9/later.zip", "2099-01-01 10:00"),
+        ] {
+            with_dialog(add_kind, 620, 340, |dialog| {
+                let (_, ids) = add_from_new_download(dialog, links, schedule);
+                assert!(!ids.is_empty(), "the downloads were added");
+                for id in &ids {
+                    assert!(job_windows(id).is_empty(), "{links} {schedule}: no window");
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn a_browser_hand_over_opens_one_download_window_and_other_adds_none() {
+        use crate::model::{Action, AddRequest, DownloadKind};
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
+
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let app = dialog.app().clone();
+            let request = |name: &str| AddRequest {
+                url: format!("http://127.0.0.1:9/{name}.zip"),
+                kind: DownloadKind::File,
+                ..Default::default()
+            };
+            let handed = app
+                .dispatch_result(Action::BrowserAdd {
+                    request: request("handed-over"),
+                })
+                .unwrap()
+                .job_ids;
+            let plain = app
+                .dispatch_result(Action::Add {
+                    request: request("plain"),
+                })
+                .unwrap()
+                .job_ids;
+            unsafe { super::open_handed_over_job_views(std::ptr::null_mut(), &app) };
+            let windows = job_windows(&handed[0]);
+            assert_eq!(windows.len(), 1, "the hand-over has one window");
+            assert!(job_windows(&plain[0]).is_empty(), "a plain add has none");
+            app.dispatch(Action::ResumeAll).unwrap();
+            app.dispatch(Action::RetryFailed).unwrap();
+            unsafe { super::open_handed_over_job_views(std::ptr::null_mut(), &app) };
+            assert_eq!(job_windows(&handed[0]), windows, "it opens once");
+            assert!(
+                job_windows(&plain[0]).is_empty(),
+                "resuming or retrying opens no window"
+            );
+            for hwnd in windows {
+                unsafe { DestroyWindow(hwnd) };
+            }
         });
     }
 
@@ -9545,11 +13770,17 @@ mod tests {
                 audio: true,
             },
             simple,
+            modern: super::modern(),
+            intro_lines: 1,
+            caption_lines: 0,
             video: null_mut(),
             file: null_mut(),
             audio: null_mut(),
             simple_card: null_mut(),
             advanced_card: null_mut(),
+            classic_card: null_mut(),
+            modern_card: null_mut(),
+            note: null_mut(),
             start: null_mut(),
         })
     }
@@ -9582,58 +13813,285 @@ mod tests {
         })
     }
 
+    /// The visible part of every control of a dialog that scrolls under a
+    /// pinned bar, in client coordinates: its rectangle cut by its window
+    /// region, if it has one. Pinned controls and hidden ones are left out.
+    unsafe fn page_parts(dlg: &super::DialogUi) -> Vec<(super::HWND, super::RECT)> {
+        use super::*;
+        let pinned = pinned_controls(dlg);
+        let mut parts = Vec::new();
+        let mut child = GetWindow(dlg.hwnd, GW_CHILD);
+        while !child.is_null() {
+            if !pinned.contains(&child) && GetWindowLongW(child, GWL_STYLE) as u32 & WS_VISIBLE != 0
+            {
+                let mut rect = child_rect(dlg.hwnd, child);
+                let mut region: RECT = zeroed();
+                if GetWindowRgnBox(child, &mut region) != RGN_ERROR {
+                    rect.bottom = rect.top + region.bottom.min(rect.bottom - rect.top);
+                }
+                parts.push((child, rect));
+            }
+            child = GetWindow(child, GW_HWNDNEXT);
+        }
+        parts
+    }
+
+    #[test]
+    fn modern_settings_on_a_short_screen_scroll_their_page_under_a_pinned_command_bar() {
+        use super::*;
+        for dark in [false, true] {
+            with_themed_dialog(
+                dark,
+                || {
+                    super::set_modern(true);
+                    settings_kind(crate::model::UiMode::Advanced)
+                },
+                720,
+                420,
+                |dialog| unsafe {
+                    let dlg = &*dialog.raw;
+                    let mut client: RECT = zeroed();
+                    GetClientRect(dialog.hwnd, &mut client);
+                    let footer = client.bottom - scale(ADD_FOOTER, dlg.dpi);
+                    let end = page_end(dlg).expect("Modern Settings pin their command bar");
+                    let range = dlg.scroll_range.get();
+                    assert!(range > 0, "dark {dark}: the page is taller than the window");
+                    let edges = |rect: RECT| (rect.left, rect.top, rect.right, rect.bottom);
+                    let at = |id: i32| edges(child_rect(dialog.hwnd, GetDlgItem(dialog.hwnd, id)));
+                    let save = at(S_OK);
+                    let cancel = at(D_CANCEL);
+                    let error = edges(child_rect(dialog.hwnd, dlg.error));
+                    // The surface under the bar and the error line spans the window's
+                    // width from the end of the page down, on top of every control.
+                    assert_eq!(
+                        at(S_BAR),
+                        (0, end, client.right, client.bottom),
+                        "dark {dark}"
+                    );
+                    assert_eq!(
+                        GetWindow(dialog.hwnd, GW_CHILD),
+                        GetDlgItem(dialog.hwnd, S_BAR),
+                        "dark {dark}: the surface is the topmost control"
+                    );
+                    assert!(
+                        save.1 >= footer && save.3 <= client.bottom && error.1 >= end,
+                        "dark {dark}: Save on the bar and the error line under the page"
+                    );
+                    let check = |at_: &str| {
+                        // The bar and the error line stay where they are.
+                        assert_eq!(at(S_OK), save, "dark {dark}, {at_}: Save");
+                        assert_eq!(at(D_CANCEL), cancel, "dark {dark}, {at_}: Cancel");
+                        assert_eq!(
+                            edges(child_rect(dialog.hwnd, dlg.error)),
+                            error,
+                            "dark {dark}, {at_}: the error line"
+                        );
+                        assert_eq!(page_end(dlg), Some(end), "dark {dark}, {at_}");
+                        // Nothing of the page shows under its end or past the right edge.
+                        let parts = page_parts(dlg);
+                        assert!(parts.len() > 20, "dark {dark}, {at_}: the page's controls");
+                        for (control, part) in parts {
+                            let id = GetDlgCtrlID(control);
+                            // The surface on top clips what the page paints.
+                            assert!(
+                                GetWindowLongW(control, GWL_STYLE) as u32 & WS_CLIPSIBLINGS != 0,
+                                "dark {dark}, {at_}: control {id} is not clipped by the surface"
+                            );
+                            assert!(
+                                part.bottom <= end || part.bottom <= part.top,
+                                "dark {dark}, {at_}: control {id} shows down to {} past the page's end at {end}",
+                                part.bottom
+                            );
+                            assert!(
+                                part.right <= client.right,
+                                "dark {dark}, {at_}: control {id} reaches {} past {}",
+                                part.right,
+                                client.right
+                            );
+                        }
+                    };
+                    check("the top");
+                    let palette = main_palette(dialog.hwnd);
+                    let card = card_palette(dialog.hwnd).card;
+                    // What the window paints under the pinned surface: the card down to
+                    // the bar, its stroke, then the bar. The frame of a field that
+                    // scrolled half under the surface is not painted there, nor is the
+                    // dark scheme's scroll thumb. Frames are painted for shown fields
+                    // only, so the window is shown (on the test's private desktop).
+                    ShowWindow(dialog.hwnd, SW_SHOWNA);
+                    let expected = |y: i32| {
+                        if y < footer {
+                            card
+                        } else if y == footer {
+                            palette.stroke
+                        } else {
+                            palette.base
+                        }
+                    };
+                    let DialogKind::Settings(f) = &dlg.kind else {
+                        unreachable!()
+                    };
+                    let straddle = settings_inputs(f)
+                        .into_iter()
+                        .filter(|&input| GetWindowLongW(input, GWL_STYLE) as u32 & WS_VISIBLE != 0)
+                        .map(|input| child_rect(dialog.hwnd, input).top - (end - 2))
+                        .find(|offset| (0..=range).contains(offset))
+                        .expect("a field can be scrolled to the page's end");
+                    let stray_under_page = |offset: i32| {
+                        dlg.scroll_y.set(offset);
+                        layout_dialog(dlg);
+                        let screen = GetDC(null_mut());
+                        let dc = CreateCompatibleDC(screen);
+                        let bitmap = CreateCompatibleBitmap(screen, client.right, client.bottom);
+                        ReleaseDC(null_mut(), screen);
+                        let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                        SendMessageW(dialog.hwnd, WM_ERASEBKGND, dc as usize, 0);
+                        paint_scroll_thumb(dlg, dc);
+                        let stray = (end..client.bottom)
+                            .flat_map(|y| (0..client.right).map(move |x| (x, y)))
+                            .filter(|&(x, y)| GetPixel(dc, x, y) != expected(y))
+                            .count();
+                        SelectObject(dc, previous);
+                        DeleteObject(bitmap as HGDIOBJ);
+                        DeleteDC(dc);
+                        stray
+                    };
+                    assert_eq!(
+                        stray_under_page(straddle),
+                        0,
+                        "dark {dark}: a field's frame"
+                    );
+                    assert_eq!(stray_under_page(range), 0, "dark {dark}: the page's end");
+                    // The surface paints the same, around the pinned controls on it.
+                    let bar = GetDlgItem(dialog.hwnd, S_BAR);
+                    let (width, height) = (client.right, client.bottom - end);
+                    let screen = GetDC(null_mut());
+                    let dc = CreateCompatibleDC(screen);
+                    let bitmap = CreateCompatibleBitmap(screen, width, height);
+                    ReleaseDC(null_mut(), screen);
+                    let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                    let untouched = 0x00ff00ff;
+                    let brush = CreateSolidBrush(untouched);
+                    FillRect(
+                        dc,
+                        &RECT {
+                            left: 0,
+                            top: 0,
+                            right: width,
+                            bottom: height,
+                        },
+                        brush,
+                    );
+                    DeleteObject(brush as HGDIOBJ);
+                    SendMessageW(bar, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+                    let on_bar: Vec<(i32, i32, i32, i32)> = [
+                        GetDlgItem(dialog.hwnd, S_OK),
+                        GetDlgItem(dialog.hwnd, D_CANCEL),
+                        GetDlgItem(dialog.hwnd, ID_SETTINGS_REOPEN_WIZARD),
+                        dlg.error,
+                    ]
+                    .into_iter()
+                    .filter(|&control| IsWindowVisible(control) != 0)
+                    .map(|control| edges(child_rect(dialog.hwnd, control)))
+                    .collect();
+                    assert!(
+                        on_bar.len() >= 3,
+                        "dark {dark}: the bar's buttons are shown"
+                    );
+                    let inside = |rect: (i32, i32, i32, i32), x: i32, y: i32| {
+                        x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3
+                    };
+                    let mut wrong = 0;
+                    let mut kept = 0;
+                    for y in end..client.bottom {
+                        for x in 0..width {
+                            let pixel = GetPixel(dc, x, y - end);
+                            if on_bar.iter().any(|&rect| inside(rect, x, y)) {
+                                kept += usize::from(pixel == untouched);
+                            } else if pixel != expected(y) {
+                                wrong += 1;
+                            }
+                        }
+                    }
+                    SelectObject(dc, previous);
+                    DeleteObject(bitmap as HGDIOBJ);
+                    DeleteDC(dc);
+                    assert_eq!(wrong, 0, "dark {dark}: the surface's own pixels");
+                    let pinned_area = on_bar
+                        .iter()
+                        .map(|r| ((r.2 - r.0) * (r.3 - r.1)) as usize)
+                        .sum::<usize>();
+                    assert_eq!(
+                        kept, pinned_area,
+                        "dark {dark}: the pinned controls are left alone"
+                    );
+                    dlg.scroll_y.set(range);
+                    layout_dialog(dlg);
+                    assert_eq!(dlg.scroll_y.get(), range, "dark {dark}");
+                    check("the end");
+                    // The focus brings a control into view, below and above.
+                    dlg.scroll_y.set(0);
+                    layout_dialog(dlg);
+                    let lowest = page_parts(dlg)
+                        .into_iter()
+                        .map(|(control, _)| control)
+                        .max_by_key(|&control| child_rect(dialog.hwnd, control).bottom)
+                        .unwrap();
+                    assert!(
+                        child_rect(dialog.hwnd, lowest).bottom > end,
+                        "dark {dark}: the last control starts past the page's end"
+                    );
+                    scroll_into_view(dlg, lowest);
+                    let shown = child_rect(dialog.hwnd, lowest);
+                    assert!(
+                        shown.top >= 0 && shown.bottom <= end,
+                        "dark {dark}: the focused control at {}..{} ends above {end}",
+                        shown.top,
+                        shown.bottom
+                    );
+                    check("the focus");
+                    let tabs = GetDlgItem(dialog.hwnd, S_TABS);
+                    scroll_into_view(dlg, tabs);
+                    assert!(
+                        child_rect(dialog.hwnd, tabs).top >= 0,
+                        "dark {dark}: the tabs scroll back into view"
+                    );
+                    check("the focus back up");
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn classic_settings_on_a_short_screen_scroll_their_buttons_with_the_page_as_on_main() {
+        use super::*;
+        with_themed_dialog(
+            false,
+            || {
+                super::set_modern(false);
+                settings_kind(crate::model::UiMode::Advanced)
+            },
+            560,
+            300,
+            |dialog| unsafe {
+                let dlg = &*dialog.raw;
+                assert!(pinned_controls(dlg).is_empty());
+                assert!(dlg.scroll_range.get() > 0);
+                let save = child_rect(dialog.hwnd, GetDlgItem(dialog.hwnd, S_OK));
+                dlg.scroll_y.set(dlg.scroll_range.get());
+                layout_dialog(dlg);
+                let scrolled = child_rect(dialog.hwnd, GetDlgItem(dialog.hwnd, S_OK));
+                assert_eq!(scrolled.top, save.top - dlg.scroll_range.get());
+            },
+        );
+    }
+
     fn settings_kind(mode: crate::model::UiMode) -> super::DialogKind {
-        use std::ptr::null_mut;
         let value = crate::model::Settings {
             ui_mode: mode.as_str().into(),
             ..crate::model::Settings::default()
         };
-        super::DialogKind::Settings(Box::new(super::SettingsFields {
-            opened: value.clone(),
-            value,
-            dir: null_mut(),
-            max_active: null_mut(),
-            connections: null_mut(),
-            media_fragments: null_mut(),
-            per_host: null_mut(),
-            speed: null_mut(),
-            retry: null_mut(),
-            clipboard: null_mut(),
-            tray: null_mut(),
-            startup: null_mut(),
-            notify: null_mut(),
-            schedule: null_mut(),
-            start: null_mut(),
-            end: null_mut(),
-            dark: null_mut(),
-            mode_video: null_mut(),
-            mode_file: null_mut(),
-            mode_audio: null_mut(),
-            browser_transfer: null_mut(),
-            update_check: null_mut(),
-            log_level: null_mut(),
-            log_hosts: null_mut(),
-            ui_mode: null_mut(),
-            site_entries: null_mut(),
-            ui_language: null_mut(),
-            proxy_mode: null_mut(),
-            proxy_url: null_mut(),
-            proxy_user: null_mut(),
-            proxy_pass: null_mut(),
-            speed_schedule: null_mut(),
-            speed_start: null_mut(),
-            speed_end: null_mut(),
-            speed_kib: null_mut(),
-            keep_awake: null_mut(),
-            sound: null_mut(),
-            takeover: null_mut(),
-            completion_card: null_mut(),
-            metered: null_mut(),
-            battery_saver: null_mut(),
-            hotkey: null_mut(),
-            double_click: null_mut(),
-            history: null_mut(),
-        }))
+        super::DialogKind::Settings(Box::new(super::settings_fields(value)))
     }
 
     /// Answers the "Delete ...?" box of the dialogs on this thread.
@@ -10022,11 +14480,11 @@ mod tests {
     fn the_error_line_of_every_dialog_has_its_own_space() {
         use super::{
             CrawlerFields, DialogKind, EventFields, JobLogFields, LoginFields, MediaFields,
-            ProgressFields, QueueFields, RuleFields, SyncFields, ToolsFields, ADD_DIALOG_HEIGHT,
-            RENAME_LOGICAL_HEIGHT, SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT,
+            ProgressFields, QueueFields, RuleFields, SyncFields, ToolsFields,
+            RENAME_LOGICAL_HEIGHT, SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT, WIZARD_WIDTH,
         };
         use crate::model::{AddRequest, MediaInfo};
-        use std::{collections::HashSet, ptr::null_mut};
+        use std::ptr::null_mut;
 
         fn add(advanced: bool) -> DialogKind {
             match add_kind() {
@@ -10081,6 +14539,11 @@ mod tests {
                 playlist_items: null_mut(),
                 thumbnail: null_mut(),
                 thumbnail_requested: false,
+                prep_title: null_mut(),
+                prep_detail: null_mut(),
+                prep_bar: null_mut(),
+                title_font: null_mut(),
+                held: Vec::new(),
             }))
         }
         type Case = (
@@ -10089,19 +14552,26 @@ mod tests {
             i32,
             i32,
         );
+        let wizard_height =
+            super::wizard_content_height(1, 0, super::modern()) + SETTINGS_FRAME + 3;
         let cases: Vec<Case> = vec![
-            ("wizard, simple", Box::new(|| wizard_kind(true)), 576, 412),
+            (
+                "wizard, simple",
+                Box::new(|| wizard_kind(true)),
+                WIZARD_WIDTH,
+                wizard_height,
+            ),
             (
                 "wizard, advanced",
                 Box::new(|| wizard_kind(false)),
-                576,
-                412,
+                WIZARD_WIDTH,
+                wizard_height,
             ),
             (
                 "new download",
                 Box::new(|| add(false)),
                 620,
-                ADD_DIALOG_HEIGHT,
+                super::add_window_height(false),
             ),
             ("new download, advanced", Box::new(|| add(true)), 620, 420),
             (
@@ -10229,27 +14699,7 @@ mod tests {
             ("media picker", Box::new(media), 640, 420),
             (
                 "job view",
-                Box::new(|| {
-                    DialogKind::Progress(Box::new(ProgressFields {
-                        ids: vec!["job".into()],
-                        selected: 0,
-                        raised: HashSet::new(),
-                        rendered: String::new(),
-                        rendered_rows: String::new(),
-                        action_label: String::new(),
-                        summary: null_mut(),
-                        list: null_mut(),
-                        status: null_mut(),
-                        progress: null_mut(),
-                        action: null_mut(),
-                        cancel: null_mut(),
-                        open_file: null_mut(),
-                        open_folder: null_mut(),
-                        close: null_mut(),
-                        hint: null_mut(),
-                        report: null_mut(),
-                    }))
-                }),
+                Box::new(|| DialogKind::Progress(ProgressFields::new(vec!["job".into()]))),
                 640,
                 420,
             ),
@@ -10283,15 +14733,15 @@ mod tests {
 
     #[test]
     fn the_error_line_of_settings_has_its_own_space_on_every_tab() {
-        use super::{settings_logical_height, SETTINGS_FRAME};
+        use super::{modern, settings_logical_height, settings_width, SETTINGS_FRAME};
         use crate::model::UiMode;
 
         let mut crowded = Vec::new();
         for (mode, tabs) in [(UiMode::Simple, 1), (UiMode::Advanced, 4)] {
-            let height = settings_logical_height(mode.is_simple()) + SETTINGS_FRAME;
+            let height = settings_logical_height(modern(), mode.is_simple()) + SETTINGS_FRAME;
             let over = with_dialog(
                 move || settings_kind(mode),
-                560,
+                settings_width(),
                 height,
                 |dialog| {
                     (0..tabs)
@@ -10594,7 +15044,12 @@ mod tests {
             GetClientRect, GetDlgCtrlID, GetDlgItem, GetNextDlgTabItem,
         };
 
-        let shown = shown_controls(dialog.hwnd);
+        // The surface under Modern Settings' pinned bar holds the row; it is
+        // not one of its controls.
+        let shown: Vec<Shown> = shown_controls(dialog.hwnd)
+            .into_iter()
+            .filter(|control| control.id != super::S_BAR)
+            .collect();
         let mut commit: Vec<&Shown> = Vec::new();
         for id in case
             .affirmative
@@ -10634,7 +15089,13 @@ mod tests {
         };
         ClientToScreen(dialog.hwnd, &mut near);
         ClientToScreen(dialog.hwnd, &mut far);
-        let margin = super::scale(super::DIALOG_MARGIN, (*dialog.raw).dpi);
+        let dpi = (*dialog.raw).dpi;
+        // A Modern button's window reaches its focus ring past the face.
+        let margin = if super::modern() {
+            super::scale(super::ADD_PAD, dpi) - super::scale(super::FOCUS_MARGIN, dpi)
+        } else {
+            super::scale(super::DIALOG_MARGIN, dpi)
+        };
         let edge = if mirrored {
             closer.rect.left - near.x.min(far.x)
         } else {
@@ -10729,8 +15190,8 @@ mod tests {
     #[test]
     fn the_commit_row_of_every_dialog_follows_the_windows_order() {
         use super::{
-            settings_logical_height, DialogKind, ADD_DIALOG_HEIGHT, C_SCAN, D_ADD_OK, D_CANCEL,
-            E_CLOSE, ID_WIZARD_START, J_CLOSE, L_ADD, L_SAVE, M_MP3, M_QUEUE,
+            add_window_height, settings_logical_height, settings_width, DialogKind, C_SCAN,
+            D_ADD_OK, D_CANCEL, E_CLOSE, ID_WIZARD_START, J_CLOSE, L_ADD, L_SAVE, M_MP3, M_QUEUE,
             RENAME_LOGICAL_HEIGHT, RN_OK, R_SAVE, SETTINGS_FRAME, SPEED_LOGICAL_HEIGHT, SP_OK,
             S_OK, Y_SAVE,
         };
@@ -10757,6 +15218,15 @@ mod tests {
                 other => other,
             }
         }
+        fn media_loaded() -> DialogKind {
+            match media_kind() {
+                DialogKind::Media(mut f) => {
+                    f.populated = true;
+                    DialogKind::Media(f)
+                }
+                other => other,
+            }
+        }
         fn failed_analysis(dialog: &HiddenDialog) {
             unsafe {
                 if let DialogKind::Media(f) = &mut (*dialog.raw).kind {
@@ -10766,232 +15236,262 @@ mod tests {
             }
         }
         let nothing: fn(&HiddenDialog) = |_| {};
-        let basic_height = settings_logical_height(true) + SETTINGS_FRAME;
-        let advanced_height = settings_logical_height(false) + SETTINGS_FRAME;
-        fn case(
-            name: &'static str,
-            make: fn() -> DialogKind,
-            (width, height): (i32, i32),
-            (affirmative, closer): (Option<i32>, i32),
-            default: Option<i32>,
-            prepare: fn(&HiddenDialog),
-        ) -> CommitCase {
-            CommitCase {
-                name,
-                make,
-                width,
-                height,
-                affirmative,
-                also: &[],
-                closer,
-                default,
-                prepare,
-            }
-        }
-        let cases = [
-            case(
-                "wizard, basic",
-                || wizard_kind(true),
-                (576, 412),
-                (Some(ID_WIZARD_START), D_CANCEL),
-                Some(ID_WIZARD_START),
-                nothing,
-            ),
-            case(
-                "wizard, advanced",
-                || wizard_kind(false),
-                (576, 412),
-                (Some(ID_WIZARD_START), D_CANCEL),
-                Some(ID_WIZARD_START),
-                nothing,
-            ),
-            case(
-                "new download",
-                add_kind,
-                (620, ADD_DIALOG_HEIGHT),
-                (Some(D_ADD_OK), D_CANCEL),
-                Some(D_ADD_OK),
-                nothing,
-            ),
-            case(
-                "new download, advanced",
-                add_advanced,
-                (620, 420),
-                (Some(D_ADD_OK), D_CANCEL),
-                Some(D_ADD_OK),
-                nothing,
-            ),
-            case(
-                "settings, basic",
-                || settings_kind(UiMode::Simple),
-                (560, basic_height),
-                (Some(S_OK), D_CANCEL),
-                Some(S_OK),
-                nothing,
-            ),
-            case(
-                "settings, general",
-                || settings_kind(UiMode::Advanced),
-                (560, advanced_height),
-                (Some(S_OK), D_CANCEL),
-                Some(S_OK),
-                nothing,
-            ),
-            case(
-                "settings, advanced tab",
-                || settings_kind(UiMode::Advanced),
-                (560, advanced_height),
-                (Some(S_OK), D_CANCEL),
-                Some(S_OK),
-                |d| d.show_tab(1),
-            ),
-            case(
-                "settings, network tab",
-                || settings_kind(UiMode::Advanced),
-                (560, advanced_height),
-                (Some(S_OK), D_CANCEL),
-                Some(S_OK),
-                |d| d.show_tab(2),
-            ),
-            case(
-                "settings, behaviour tab",
-                || settings_kind(UiMode::Advanced),
-                (560, advanced_height),
-                (Some(S_OK), D_CANCEL),
-                Some(S_OK),
-                |d| d.show_tab(3),
-            ),
-            case(
-                "speed limit",
-                speed_kind,
-                (420, SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1),
-                (Some(SP_OK), D_CANCEL),
-                Some(SP_OK),
-                nothing,
-            ),
-            case(
-                "rename",
-                rename_kind,
-                (460, RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1),
-                (Some(RN_OK), D_CANCEL),
-                Some(RN_OK),
-                nothing,
-            ),
-            case(
-                "site logins",
-                logins_kind,
-                (700, 470),
-                (Some(L_SAVE), D_CANCEL),
-                Some(L_ADD),
-                nothing,
-            ),
-            case(
-                "media picker",
-                media_kind,
-                (640, 420),
-                (Some(M_QUEUE), D_CANCEL),
-                Some(M_QUEUE),
-                nothing,
-            )
-            .also(&[M_MP3]),
-            case(
-                "media picker, advanced",
-                media_advanced,
-                (640, 730),
-                (Some(M_QUEUE), D_CANCEL),
-                Some(M_QUEUE),
-                nothing,
-            )
-            .also(&[M_MP3]),
-            case(
-                "media picker, failed analysis",
-                media_kind,
-                (640, 420),
-                (Some(M_QUEUE), D_CANCEL),
-                Some(M_QUEUE),
-                failed_analysis,
-            ),
-            case(
-                "queues",
-                queues_kind,
-                (700, 470),
-                (None, D_CANCEL),
-                None,
-                nothing,
-            ),
-            case(
-                "folder rules",
-                rules_kind,
-                (700, 470),
-                (None, D_CANCEL),
-                Some(R_SAVE),
-                nothing,
-            ),
-            case(
-                "site crawler",
-                crawler_kind,
-                (700, 470),
-                (None, D_CANCEL),
-                Some(C_SCAN),
-                nothing,
-            ),
-            case(
-                "file sync",
-                sync_kind,
-                (700, 470),
-                (None, D_CANCEL),
-                Some(Y_SAVE),
-                nothing,
-            ),
-            case(
-                "event log",
-                events_kind,
-                (700, 470),
-                (None, E_CLOSE),
-                None,
-                nothing,
-            ),
-            case(
-                "job log",
-                job_log_kind,
-                (700, 470),
-                (None, J_CLOSE),
-                None,
-                nothing,
-            ),
-            case(
-                "media tools",
-                tools_kind,
-                (700, 470),
-                (None, D_CANCEL),
-                None,
-                nothing,
-            ),
-        ];
-
         let mut wrong = Vec::new();
-        for case in cases {
-            let found = with_dialog(case.make, case.width, case.height, |dialog| unsafe {
-                (case.prepare)(dialog);
-                let mut found = commit_row_problems(dialog, &case, false);
-                let style = GetWindowLongPtrW(dialog.hwnd, GWL_EXSTYLE);
-                SetWindowLongPtrW(dialog.hwnd, GWL_EXSTYLE, style | WS_EX_LAYOUTRTL as isize);
-                super::layout_dialog(&*dialog.raw);
-                let mirrored = commit_row_problems(dialog, &case, true);
-                found.extend(
-                    mirrored
-                        .into_iter()
-                        .map(|problem| format!("mirrored: {problem}")),
-                );
-                found
-            });
-            if !found.is_empty() {
-                wrong.push((case.name, found));
+        for in_modern in [false, true] {
+            // The sizes below are each theme's own, read on this thread.
+            super::set_modern(in_modern);
+            let basic_height = settings_logical_height(in_modern, true) + SETTINGS_FRAME;
+            let advanced_height = settings_logical_height(in_modern, false) + SETTINGS_FRAME;
+            let settings_width = settings_width();
+            fn case(
+                name: &'static str,
+                make: fn() -> DialogKind,
+                (width, height): (i32, i32),
+                (affirmative, closer): (Option<i32>, i32),
+                default: Option<i32>,
+                prepare: fn(&HiddenDialog),
+            ) -> CommitCase {
+                CommitCase {
+                    name,
+                    make,
+                    width,
+                    height,
+                    affirmative,
+                    also: &[],
+                    closer,
+                    default,
+                    prepare,
+                }
+            }
+            let cases = [
+                case(
+                    "wizard, basic",
+                    || wizard_kind(true),
+                    (576, 412),
+                    (Some(ID_WIZARD_START), D_CANCEL),
+                    Some(ID_WIZARD_START),
+                    nothing,
+                ),
+                case(
+                    "wizard, advanced",
+                    || wizard_kind(false),
+                    (576, 412),
+                    (Some(ID_WIZARD_START), D_CANCEL),
+                    Some(ID_WIZARD_START),
+                    nothing,
+                ),
+                case(
+                    "new download",
+                    add_kind,
+                    (620, add_window_height(false)),
+                    (Some(D_ADD_OK), D_CANCEL),
+                    Some(D_ADD_OK),
+                    nothing,
+                ),
+                case(
+                    "new download, advanced",
+                    add_advanced,
+                    (620, add_window_height(true)),
+                    (Some(D_ADD_OK), D_CANCEL),
+                    Some(D_ADD_OK),
+                    nothing,
+                ),
+                case(
+                    "settings, basic",
+                    || settings_kind(UiMode::Simple),
+                    (settings_width, basic_height),
+                    (Some(S_OK), D_CANCEL),
+                    Some(S_OK),
+                    nothing,
+                ),
+                case(
+                    "settings, general",
+                    || settings_kind(UiMode::Advanced),
+                    (settings_width, advanced_height),
+                    (Some(S_OK), D_CANCEL),
+                    Some(S_OK),
+                    nothing,
+                ),
+                case(
+                    "settings, advanced tab",
+                    || settings_kind(UiMode::Advanced),
+                    (settings_width, advanced_height),
+                    (Some(S_OK), D_CANCEL),
+                    Some(S_OK),
+                    |d| d.show_tab(1),
+                ),
+                case(
+                    "settings, network tab",
+                    || settings_kind(UiMode::Advanced),
+                    (settings_width, advanced_height),
+                    (Some(S_OK), D_CANCEL),
+                    Some(S_OK),
+                    |d| d.show_tab(2),
+                ),
+                case(
+                    "settings, behaviour tab",
+                    || settings_kind(UiMode::Advanced),
+                    (settings_width, advanced_height),
+                    (Some(S_OK), D_CANCEL),
+                    Some(S_OK),
+                    |d| d.show_tab(3),
+                ),
+                case(
+                    "speed limit",
+                    speed_kind,
+                    (420, SPEED_LOGICAL_HEIGHT + SETTINGS_FRAME + 1),
+                    (Some(SP_OK), D_CANCEL),
+                    Some(SP_OK),
+                    nothing,
+                ),
+                case(
+                    "rename",
+                    rename_kind,
+                    (460, RENAME_LOGICAL_HEIGHT + SETTINGS_FRAME + 1),
+                    (Some(RN_OK), D_CANCEL),
+                    Some(RN_OK),
+                    nothing,
+                ),
+                case(
+                    "site logins",
+                    logins_kind,
+                    (700, 470),
+                    (Some(L_SAVE), D_CANCEL),
+                    Some(L_ADD),
+                    nothing,
+                ),
+                case(
+                    "media picker, preparing",
+                    media_kind,
+                    (640, 420),
+                    (None, D_CANCEL),
+                    None,
+                    nothing,
+                ),
+                case(
+                    "media picker, preparing a failed analysis",
+                    media_kind,
+                    (640, 420),
+                    (None, D_CANCEL),
+                    None,
+                    failed_analysis,
+                ),
+                case(
+                    "media picker",
+                    media_loaded,
+                    (640, 420),
+                    (Some(M_QUEUE), D_CANCEL),
+                    Some(M_QUEUE),
+                    nothing,
+                )
+                .also(&[M_MP3]),
+                case(
+                    "media picker, advanced",
+                    media_advanced,
+                    (640, 730),
+                    (Some(M_QUEUE), D_CANCEL),
+                    Some(M_QUEUE),
+                    nothing,
+                )
+                .also(&[M_MP3]),
+                case(
+                    "media picker, failed analysis, advanced",
+                    media_advanced,
+                    (640, 730),
+                    (Some(M_QUEUE), D_CANCEL),
+                    Some(M_QUEUE),
+                    failed_analysis,
+                ),
+                case(
+                    "queues",
+                    queues_kind,
+                    (700, 470),
+                    (None, D_CANCEL),
+                    None,
+                    nothing,
+                ),
+                case(
+                    "folder rules",
+                    rules_kind,
+                    (700, 470),
+                    (None, D_CANCEL),
+                    Some(R_SAVE),
+                    nothing,
+                ),
+                case(
+                    "site crawler",
+                    crawler_kind,
+                    (700, 470),
+                    (None, D_CANCEL),
+                    Some(C_SCAN),
+                    nothing,
+                ),
+                case(
+                    "file sync",
+                    sync_kind,
+                    (700, 470),
+                    (None, D_CANCEL),
+                    Some(Y_SAVE),
+                    nothing,
+                ),
+                case(
+                    "event log",
+                    events_kind,
+                    (700, 470),
+                    (None, E_CLOSE),
+                    None,
+                    nothing,
+                ),
+                case(
+                    "job log",
+                    job_log_kind,
+                    (700, 470),
+                    (None, J_CLOSE),
+                    None,
+                    nothing,
+                ),
+                case(
+                    "media tools",
+                    tools_kind,
+                    (700, 470),
+                    (None, D_CANCEL),
+                    None,
+                    nothing,
+                ),
+            ];
+
+            for case in cases {
+                // Media tools keeps Classic's layout in Modern too, with Classic's margin.
+                if in_modern && case.name == "media tools" {
+                    continue;
+                }
+                let make = case.make;
+                let themed = move || {
+                    super::set_modern(in_modern);
+                    make()
+                };
+                let found = with_dialog(themed, case.width, case.height, |dialog| unsafe {
+                    (case.prepare)(dialog);
+                    let mut found = commit_row_problems(dialog, &case, false);
+                    let style = GetWindowLongPtrW(dialog.hwnd, GWL_EXSTYLE);
+                    SetWindowLongPtrW(dialog.hwnd, GWL_EXSTYLE, style | WS_EX_LAYOUTRTL as isize);
+                    super::layout_dialog(&*dialog.raw);
+                    let mirrored = commit_row_problems(dialog, &case, true);
+                    found.extend(
+                        mirrored
+                            .into_iter()
+                            .map(|problem| format!("mirrored: {problem}")),
+                    );
+                    found
+                });
+                if !found.is_empty() {
+                    wrong.push((in_modern, case.name, found));
+                }
             }
         }
         assert!(
             wrong.is_empty(),
-            "dialogs whose commit row is not in the Windows order: {wrong:#?}"
+            "dialogs (modern, name) whose commit row is not in the Windows order: {wrong:#?}"
         );
     }
 
@@ -12445,8 +16945,20 @@ mod tests {
             settings_kind(UiMode::Simple)
         }
 
+        /// A picker whose analysis has loaded: the preparing state hides the
+        /// form and its check boxes until then.
+        fn media_loaded() -> native::DialogKind {
+            match super::media_kind() {
+                native::DialogKind::Media(mut f) => {
+                    f.populated = true;
+                    native::DialogKind::Media(f)
+                }
+                other => other,
+            }
+        }
+
         fn settings_height(simple: bool) -> i32 {
-            native::settings_logical_height(simple) + native::SETTINGS_FRAME
+            native::settings_logical_height(native::modern(), simple) + native::SETTINGS_FRAME
         }
 
         /// A memory device context over a 32-bit bitmap whose pixels are read
@@ -12738,7 +17250,7 @@ mod tests {
                 case("folder rules", super::rules_kind, 700, 470, 1),
                 case("file sync", super::sync_kind, 700, 470, 1),
                 case("saved logins", super::logins_kind, 700, 470, 1),
-                case("media picker", super::media_kind, 640, 420, 1),
+                case("media picker", media_loaded, 640, 420, 1),
                 case("job view", super::progress_kind, 700, 470, 1),
             ]
         }
