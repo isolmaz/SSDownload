@@ -1052,6 +1052,62 @@ fn the_user_sees_the_final_error_line_of_a_failed_download_not_its_traceback() {
 }
 
 #[test]
+fn a_run_that_crashed_without_an_error_line_gives_the_last_exception_of_its_traceback() {
+    let crash = "Traceback (most recent call last):\n  \
+          File \"yt_dlp\\YoutubeDL.py\", line 1700, in extract_info\n    \
+            ie_result = ie.extract(url)\n  \
+          File \"yt_dlp\\extractor\\common.py\", line 760, in extract\n    \
+            return self._real_extract(url)\n\
+        KeyError: 'formats'";
+    assert_eq!(final_error_text(crash), "KeyError: 'formats'");
+    // The progress lines before the crash are not the reason.
+    assert_eq!(
+        final_error_text(&format!(
+            "[generic] Extracting URL: https://page.example/watch\n{crash}"
+        )),
+        "KeyError: 'formats'"
+    );
+    // Of chained tracebacks the last one is the exception the run ended with.
+    assert_eq!(
+        final_error_text(&format!(
+            "{crash}\n\nDuring handling of the above exception, another exception occurred:\n\n\
+             Traceback (most recent call last):\n  \
+               File \"yt_dlp\\__init__.py\", line 1000, in main\n\
+             RuntimeError: gave up"
+        )),
+        "RuntimeError: gave up"
+    );
+}
+
+#[test]
+fn a_stored_download_failure_still_names_its_stage_in_every_language() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    // The tool's line alone reads as a failed media segment.
+    let summary = "ERROR: fragment 3 not found";
+    assert_eq!(
+        classify_download_error(summary, &request).0,
+        "medya parçası"
+    );
+    for info in crate::i18n::LANGUAGES {
+        for (stage, _) in FAILURE_STAGES {
+            let stored = crate::i18n::with_language(info.code, || {
+                download_failure_message(stage, true, summary)
+            });
+            assert!(!stored.contains("[ssdownload-stage"), "{stored}");
+            assert_eq!(
+                classify_download_error(&stored, &request).0,
+                stage,
+                "{}: {stored}",
+                info.code
+            );
+        }
+    }
+}
+
+#[test]
 fn chained_tracebacks_and_an_error_line_in_their_last_exception_are_not_the_failure() {
     let stderr = "[download] Destination: media.f1.mp4\n\
         ERROR: unable to download video data: HTTP Error 404: Not Found\n\
@@ -1071,7 +1127,7 @@ fn chained_tracebacks_and_an_error_line_in_their_last_exception_are_not_the_fail
         \n\
         Traceback (most recent call last):\n  \
           File \"yt_dlp\\__init__.py\", line 1000, in main\n\
-        yt_dlp.utils.DownloadError: ERROR: unable to download video data: HTTP Error 404: Not Found\n\
+        yt_dlp.utils.DownloadError: ERROR: the download was given up\n\
         [ssdownload-stage=media_segment]";
     assert_eq!(
         final_error_text(stderr),

@@ -874,7 +874,7 @@ pub(crate) fn download(
                     }
                     bail!(
                         "{}",
-                        crate::i18n::ui_format!("{0} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {1}/1): {2}", "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}", failure_stage_label(phase), u8::from(compatibility_retry), summary)
+                        download_failure_message(phase, compatibility_retry, &summary)
                     );
                 }
                 break;
@@ -1627,20 +1627,26 @@ fn non_debug_lines(text: &str) -> String {
 }
 
 /// The failure a user can act on: from the last `ERROR:` line to the end, bounded, without the
-/// Python traceback the tool prints after it and the app's own stage notes. The whole output is
-/// kept in the log only.
+/// Python traceback the tool prints after it and the app's own stage notes; when the tool
+/// crashed and printed no `ERROR:` line, the exception line that ended its last traceback. The
+/// whole output is kept in the log only.
 fn final_error_text(text: &str) -> String {
-    let text = without_tracebacks(text);
+    let (text, exception) = without_tracebacks(text);
     let text = text.trim();
-    let start = text.rfind("ERROR:").unwrap_or(0);
-    bounded_tail(text[start..].trim(), 2048)
+    match (text.rfind("ERROR:"), exception) {
+        (Some(start), _) => bounded_tail(text[start..].trim(), 2048),
+        (None, Some(exception)) => bounded_tail(exception, 2048),
+        (None, None) => bounded_tail(text, 2048),
+    }
 }
 
 /// The text without Python tracebacks (`Traceback (most recent call last):`, its frames, the
 /// exception line that ends it and the notes that chain tracebacks), without frames printed on
-/// their own (a stack under an `ERROR:` line), and without the lines of [`DownloadFailureStages`].
-/// A traceback can end in `yt_dlp.utils.DownloadError: ERROR: ...`, which is not the failure.
-fn without_tracebacks(text: &str) -> String {
+/// their own (a stack under an `ERROR:` line), and without the lines of [`DownloadFailureStages`];
+/// with it, the exception line that ended the last traceback. A traceback can end in
+/// `yt_dlp.utils.DownloadError: ERROR: ...`, which is not the failure when an `ERROR:` line
+/// precedes it.
+fn without_tracebacks(text: &str) -> (String, Option<&str>) {
     #[derive(PartialEq)]
     enum Trace {
         Outside,
@@ -1651,6 +1657,7 @@ fn without_tracebacks(text: &str) -> String {
     }
     let mut trace = Trace::Outside;
     let mut kept = Vec::new();
+    let mut exception = None;
     for line in text.lines() {
         let trimmed = line.trim();
         let indented = line.starts_with([' ', '\t']);
@@ -1659,6 +1666,7 @@ fn without_tracebacks(text: &str) -> String {
         }
         if trace == Trace::Header {
             trace = Trace::Outside;
+            exception = Some(trimmed);
             continue;
         }
         trace = Trace::Outside;
@@ -1673,7 +1681,7 @@ fn without_tracebacks(text: &str) -> String {
             kept.push(line);
         }
     }
-    kept.join("\n")
+    (kept.join("\n"), exception)
 }
 
 /// yt-dlp drops DRM formats and, when nothing else remains, ends with an `ERROR: ... This video
@@ -1870,6 +1878,8 @@ pub(crate) fn classify_download_error(
     };
     // An access/TLS failure must not erase which part of the media graph failed.
     let phase = if let Some(phase) = marked_download_failure_phase(&lower) {
+        phase
+    } else if let Some(phase) = named_download_failure_stage(error) {
         phase
     } else if lower.contains("subtitle") || lower.contains("altyazı") {
         "altyazı"
@@ -2140,6 +2150,36 @@ fn failure_stage_label(stage: &str) -> &'static str {
         }
     }
     crate::i18n::ui("medya kaynağı", "media source")
+}
+
+/// The message of a download that stopped in `phase`, a stage [`classify_download_error`] returns.
+fn download_failure_message(phase: &str, compatibility_retry: bool, summary: &str) -> String {
+    crate::i18n::ui_format!(
+        "{0} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {1}/1): {2}",
+        "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}",
+        failure_stage_label(phase),
+        u8::from(compatibility_retry),
+        summary
+    )
+}
+
+/// The stage a [`download_failure_message`] names, read in whichever interface language wrote
+/// it: the stored message carries the stage by its label only.
+fn named_download_failure_stage(error: &str) -> Option<&'static str> {
+    crate::i18n::ui_templates!(
+        "{0} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {1}/1): {2}",
+        "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}"
+    )
+    .into_iter()
+    .find_map(|template| {
+        let (before, rest) = template.split_once("{0}")?;
+        let after = &rest[..rest.find('{')?];
+        FAILURE_STAGES.into_iter().find_map(|(tr, en)| {
+            crate::i18n::wordings(tr, en)
+                .any(|stage| error.contains(&format!("{before}{stage}{after}")))
+                .then_some(tr)
+        })
+    })
 }
 
 fn marked_download_failure_phase(error: &str) -> Option<&'static str> {
