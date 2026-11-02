@@ -2448,6 +2448,41 @@ fn an_http_error_in_a_media_tool_message_is_retried_by_the_rule_of_a_typed_statu
 }
 
 #[test]
+fn a_curl_error_in_a_media_tool_message_is_retried_by_the_rule_of_a_typed_one() {
+    for code in 1..=99 {
+        let typed = anyhow::Error::new(curl::Error::new(code));
+        let media = anyhow!(
+            "Media analysis failed: ERROR: [generic] Unable to download: curl: ({code}) Whatever"
+        );
+        assert_eq!(
+            retryable_error(&media),
+            retryable_error(&typed),
+            "curl {code}"
+        );
+    }
+    // The failure of the analysis of a source whose server closed the connection without a reply.
+    assert!(retryable_error(&anyhow!(
+        "Media analysis failed: ERROR: [generic] Unable to download webpage: \
+         curl: (52) Empty reply from server"
+    )));
+    assert!(retryable_error(&anyhow!(
+        "ERROR: [generic] Unable to download webpage: ('Connection aborted.', \
+         RemoteDisconnected('Remote end closed connection without response'))"
+    )));
+    // What the server answered for good stays permanent.
+    assert!(!retryable_error(&anyhow!(
+        "Media analysis failed: curl: (22) The requested URL returned error: 404"
+    )));
+    assert!(!retryable_error(&anyhow!(
+        "Media analysis failed: ERROR: Unsupported URL: https://example.test/page"
+    )));
+    // Only a code in parentheses is one.
+    assert!(!retryable_error(&anyhow!(
+        "curl: (52 Empty reply, curl: 52, curl: ()"
+    )));
+}
+
+#[test]
 fn a_failed_attempt_leads_its_message_with_the_network_code_of_the_failure() {
     let request = AddRequest {
         url: "https://files.example.test/a".into(),
