@@ -16,6 +16,8 @@ struct Source {
     audio_seconds: u32,
     /// Answers 404 to this file's first requests.
     failing: Option<(&'static str, usize)>,
+    /// Closes the connection of this file's first requests without a reply.
+    dropped: Option<(&'static str, usize)>,
     /// Holds every segment response this long, so a test can act mid-download.
     segment_delay: Duration,
     /// A tag added to both media playlists.
@@ -35,6 +37,7 @@ struct Server {
     site: PathBuf,
     requests: Mutex<Vec<String>>,
     failing: Option<(&'static str, usize)>,
+    dropped: Option<(&'static str, usize)>,
     segment_delay: Duration,
 }
 
@@ -165,6 +168,7 @@ impl Fixture {
             site,
             requests: Mutex::new(Vec::new()),
             failing: source.failing,
+            dropped: source.dropped,
             segment_delay: source.segment_delay,
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -329,6 +333,12 @@ impl Server {
                 requests.push(name.clone());
                 requests.iter().filter(|served| **served == name).count()
             };
+            if self
+                .dropped
+                .is_some_and(|(file, times)| file == name && count <= times)
+            {
+                return;
+            }
             if name.ends_with(".ts") {
                 thread::sleep(self.segment_delay);
             }
@@ -445,6 +455,30 @@ fn a_source_with_a_longer_audio_playlist_downloads_both_streams_at_once() {
     let (first_audio, _) = fixture.span("a");
     let (_, last_video) = fixture.span("v");
     assert!(first_audio < last_video, "{first_audio} {last_video}");
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_server_that_drops_the_connection_once_at_the_analysis_fails_that_attempt_retryably() {
+    let fixture = Fixture::new(Source {
+        video_seconds: 4,
+        audio_seconds: 4,
+        dropped: Some(("master.m3u8", 1)),
+        ..Source::default()
+    });
+
+    let first = fixture
+        .download(&TransferControl::default(), 4)
+        .expect_err("the first attempt");
+
+    assert!(
+        crate::engine::retryable_error(&first),
+        "not retried: {first:#}"
+    );
+    let output = fixture
+        .download(&TransferControl::default(), 4)
+        .unwrap_or_else(|error| panic!("the retry failed after: {first:#}\n{error:#}"));
+    assert!((fixture.stream_seconds(&output, "video") - 4.0).abs() < 0.5);
 }
 
 #[test]

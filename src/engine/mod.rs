@@ -5249,7 +5249,29 @@ fn http_status_in_text(message: &str) -> Option<u32> {
     })
 }
 
-fn retryable_error(error: &anyhow::Error) -> bool {
+/// The curl errors that a connection or the server's way of answering can cause again later:
+/// a refused or unresolvable connection, a transfer cut short, a timeout, an empty reply, a
+/// failed send or receive, a failed resumption.
+fn retryable_curl_code(code: i32) -> bool {
+    matches!(code, 5 | 6 | 7 | 18 | 28 | 52 | 55 | 56 | 92)
+}
+
+/// The codes of the curl errors a tool prints in its message (`curl: (52) Empty reply from
+/// server`), in a message that has already been lowercased.
+fn curl_codes_in_text(message: &str) -> impl Iterator<Item = i32> + '_ {
+    message
+        .match_indices("curl: (")
+        .filter_map(|(index, needle)| {
+            let rest = &message[index + needle.len()..];
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            rest[digits..]
+                .starts_with(')')
+                .then(|| rest[..digits].parse().ok())
+                .flatten()
+        })
+}
+
+pub(crate) fn retryable_error(error: &anyhow::Error) -> bool {
     if transfer::http_status(error).is_some_and(retryable_status) {
         return true;
     }
@@ -5272,13 +5294,14 @@ fn retryable_error(error: &anyhow::Error) -> bool {
             }
         }
         if let Some(error) = cause.downcast_ref::<curl::Error>() {
-            return matches!(error.code(), 5 | 6 | 7 | 18 | 28 | 52 | 55 | 56 | 92);
+            return retryable_curl_code(error.code());
         }
     }
     let message = format!("{error:#}").to_lowercase();
     // yt-dlp fragment and webpage failures surface as "HTTP Error <code>" after exhausting
     // its own retries; they get the same job-level retry as a typed status.
     http_status_in_text(&message).is_some_and(retryable_status)
+        || curl_codes_in_text(&message).any(retryable_curl_code)
         || [
             // Local proxy saturation and tunnel failures surface verbatim from
             // the child's urllib stack; they are transient by construction.
@@ -5288,6 +5311,8 @@ fn retryable_error(error: &anyhow::Error) -> bool {
             "timed out",
             "temporary failure",
             "connection reset",
+            // Python's wording of an empty reply, as curl's is `curl: (52)`.
+            "remote end closed connection without response",
         ]
         .iter()
         .any(|needle| message.contains(needle))
