@@ -268,6 +268,7 @@ static AR: &[(&str, &str)] = &[
     ("Exact host:", "المضيف الدقيق:"),
     ("Exactly one audio track can be selected for audio-only output.", "يمكن اختيار مسار صوتي واحد فقط عند إخراج الصوت وحده."),
     ("Exit", "خروج"),
+    ("Expand", "توسيع"),
     ("Experimental browser transfer is not enabled for this profile.", "النقل التجريبي عبر المتصفح غير مفعّل لهذا الملف الشخصي."),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle fields", "لا يمكن استخدام اختيار الترجمة الصريح مع حقول الترجمة القديمة"),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle selection", "لا يمكن استخدام اختيار الترجمة الصريح مع اختيار الترجمة القديم"),
@@ -512,6 +513,7 @@ static AR: &[(&str, &str)] = &[
     ("Per-server limit (1–16):", "حد الخادم (1–16):"),
     ("Periodic check enabled", "تم تفعيل الفحص الدوري"),
     ("Periodic file sync", "المزامنة الدورية للملفات"),
+    ("Pin", "تثبيت"),
     ("Play a sound when a download completes", "تشغيل صوت عند اكتمال التنزيل"),
     ("Play the video on the page and try again", "شغّل الفيديو في الصفحة ثم حاول مرة أخرى"),
     ("Playlist items must be in the form 1-10,15", "يجب أن تكون عناصر قائمة التشغيل بالصيغة 1-10,15"),
@@ -1340,6 +1342,7 @@ static AR: &[(&str, &str)] = &[
     ("Unknown error", "خطأ غير معروف"),
     ("Unknown error code", "رمز خطأ غير معروف"),
     ("Unlimited", "غير محدود"),
+    ("Unpin", "إلغاء التثبيت"),
     ("Unsafe redirect rejected", "تم رفض إعادة توجيه غير آمنة"),
     ("Unsupported or unprotected queue record", "سجل قائمة انتظار غير مدعوم أو غير محمي"),
     ("Unsupported proxy type", "نوع خادم وكيل غير مدعوم"),
@@ -1713,6 +1716,7 @@ static ES: &[(&str, &str)] = &[
     ("Exact host:", "Host exacto:"),
     ("Exactly one audio track can be selected for audio-only output.", "Solo se puede seleccionar exactamente una pista de audio para la salida de solo audio."),
     ("Exit", "Salir"),
+    ("Expand", "Expandir"),
     ("Experimental browser transfer is not enabled for this profile.", "La transferencia experimental desde el navegador no está activada para este perfil."),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle fields", "La selección explícita de subtítulos no se puede usar junto con los campos de subtítulos antiguos"),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle selection", "La selección explícita de subtítulos no se puede usar junto con la selección de subtítulos antigua"),
@@ -1957,6 +1961,7 @@ static ES: &[(&str, &str)] = &[
     ("Per-server limit (1–16):", "Límite por servidor (1–16):"),
     ("Periodic check enabled", "Revisión periódica"),
     ("Periodic file sync", "Sincronización periódica de archivos"),
+    ("Pin", "Anclar"),
     ("Play a sound when a download completes", "Reproducir un sonido cuando termine una descarga"),
     ("Play the video on the page and try again", "Reproducir el vídeo de la página y volver a intentarlo"),
     ("Playlist items must be in the form 1-10,15", "Los elementos de la lista de reproducción deben tener el formato 1-10,15"),
@@ -2785,6 +2790,7 @@ static ES: &[(&str, &str)] = &[
     ("Unknown error", "Error desconocido"),
     ("Unknown error code", "Código de error desconocido"),
     ("Unlimited", "Ilimitado"),
+    ("Unpin", "Desanclar"),
     ("Unsafe redirect rejected", "Redirección no segura rechazada"),
     ("Unsupported or unprotected queue record", "Registro de cola no admitido o no protegido"),
     ("Unsupported proxy type", "Tipo de proxy no admitido"),
@@ -3158,6 +3164,7 @@ static PT: &[(&str, &str)] = &[
     ("Exact host:", "Host exato:"),
     ("Exactly one audio track can be selected for audio-only output.", "Exatamente uma faixa de áudio pode ser selecionada para a saída somente de áudio."),
     ("Exit", "Sair"),
+    ("Expand", "Expandir"),
     ("Experimental browser transfer is not enabled for this profile.", "A transferência experimental pelo navegador não está ativada para este perfil."),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle fields", "A seleção explícita de legendas não pode ser usada junto com os campos de legenda legados"),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle selection", "A seleção explícita de legendas não pode ser usada junto com a seleção de legendas legada"),
@@ -3402,6 +3409,7 @@ static PT: &[(&str, &str)] = &[
     ("Per-server limit (1–16):", "Limite por servidor (1–16):"),
     ("Periodic check enabled", "Verif. periódica ativa"),
     ("Periodic file sync", "Sincronização periódica de arquivos"),
+    ("Pin", "Fixar"),
     ("Play a sound when a download completes", "Tocar um som quando um download for concluído"),
     ("Play the video on the page and try again", "Reproduza o vídeo na página e tente novamente"),
     ("Playlist items must be in the form 1-10,15", "Os itens da playlist devem estar no formato 1-10,15"),
@@ -4230,6 +4238,7 @@ static PT: &[(&str, &str)] = &[
     ("Unknown error", "Erro desconhecido"),
     ("Unknown error code", "Código de erro desconhecido"),
     ("Unlimited", "Ilimitado"),
+    ("Unpin", "Desafixar"),
     ("Unsafe redirect rejected", "Redirecionamento inseguro rejeitado"),
     ("Unsupported or unprotected queue record", "Registro de fila não suportado ou não protegido"),
     ("Unsupported proxy type", "Tipo de proxy não suportado"),
@@ -4603,6 +4612,7 @@ static FR: &[(&str, &str)] = &[
     ("Exact host:", "Hôte exact :"),
     ("Exactly one audio track can be selected for audio-only output.", "Une seule piste audio peut être sélectionnée pour une sortie audio uniquement."),
     ("Exit", "Quitter"),
+    ("Expand", "Développer"),
     ("Experimental browser transfer is not enabled for this profile.", "Le transfert expérimental par le navigateur n'est pas activé pour ce profil."),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle fields", "La sélection explicite de sous-titres ne peut pas être utilisée avec les anciens champs de sous-titres"),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle selection", "La sélection explicite de sous-titres ne peut pas être utilisée avec l'ancienne sélection de sous-titres"),
@@ -4847,6 +4857,7 @@ static FR: &[(&str, &str)] = &[
     ("Per-server limit (1–16):", "Limite par serveur (1–16) :"),
     ("Periodic check enabled", "Vérification périodique"),
     ("Periodic file sync", "Synchronisation périodique des fichiers"),
+    ("Pin", "Épingler"),
     ("Play a sound when a download completes", "Jouer un son à la fin d'un téléchargement"),
     ("Play the video on the page and try again", "Lisez la vidéo sur la page et réessayez"),
     ("Playlist items must be in the form 1-10,15", "Les éléments de la liste de lecture doivent être au format 1-10,15"),
@@ -5675,6 +5686,7 @@ static FR: &[(&str, &str)] = &[
     ("Unknown error", "Erreur inconnue"),
     ("Unknown error code", "Code d'erreur inconnu"),
     ("Unlimited", "Illimité"),
+    ("Unpin", "Détacher"),
     ("Unsafe redirect rejected", "Redirection non sûre refusée"),
     ("Unsupported or unprotected queue record", "Enregistrement de file d'attente non pris en charge ou non protégé"),
     ("Unsupported proxy type", "Type de proxy non pris en charge"),
@@ -6048,6 +6060,7 @@ static DE: &[(&str, &str)] = &[
     ("Exact host:", "Genauer Host:"),
     ("Exactly one audio track can be selected for audio-only output.", "Für die reine Audioausgabe kann genau eine Audiospur ausgewählt werden."),
     ("Exit", "Beenden"),
+    ("Expand", "Erweitern"),
     ("Experimental browser transfer is not enabled for this profile.", "Die experimentelle Browser-Übertragung ist für dieses Profil nicht aktiviert."),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle fields", "Die ausdrückliche Untertitelauswahl kann nicht zusammen mit den älteren Untertitelfeldern verwendet werden"),
     ("Explicit subtitle selection cannot be used together with the legacy subtitle selection", "Die ausdrückliche Untertitelauswahl kann nicht zusammen mit der älteren Untertitelauswahl verwendet werden"),
@@ -6292,6 +6305,7 @@ static DE: &[(&str, &str)] = &[
     ("Per-server limit (1–16):", "Limit pro Server (1–16):"),
     ("Periodic check enabled", "Regelmäßig prüfen"),
     ("Periodic file sync", "Regelmäßige Dateisynchronisierung"),
+    ("Pin", "Anheften"),
     ("Play a sound when a download completes", "Ton abspielen, wenn ein Download abgeschlossen ist"),
     ("Play the video on the page and try again", "Spielen Sie das Video auf der Seite ab und versuchen Sie es erneut"),
     ("Playlist items must be in the form 1-10,15", "Playlist-Elemente müssen im Format 1-10,15 angegeben werden"),
@@ -7120,6 +7134,7 @@ static DE: &[(&str, &str)] = &[
     ("Unknown error", "Unbekannter Fehler"),
     ("Unknown error code", "Unbekannter Fehlercode"),
     ("Unlimited", "Unbegrenzt"),
+    ("Unpin", "Nicht mehr anheften"),
     ("Unsafe redirect rejected", "Unsichere Weiterleitung abgelehnt"),
     ("Unsupported or unprotected queue record", "Nicht unterstützter oder ungeschützter Warteschlangendatensatz"),
     ("Unsupported proxy type", "Nicht unterstützter Proxy-Typ"),
@@ -7455,6 +7470,9 @@ macro_rules! __ui_template_ar {
     ("Old tool files kept: {error}") => {
         "تم الاحتفاظ بملفات الأدوات القديمة: {error}"
     };
+    ("Pause: {0}") => {
+        "إيقاف مؤقت: {0}"
+    };
     ("Pending job: {0} · use Advanced options to refresh the source") => {
         "مهمة معلّقة: {0} · استخدم الخيارات المتقدمة لتحديث المصدر"
     };
@@ -7487,6 +7505,9 @@ macro_rules! __ui_template_ar {
     };
     ("Resolutions seen in the analysis: {list}") => {
         "الدقات الظاهرة في التحليل: {list}"
+    };
+    ("Resume: {0}") => {
+        "استئناف: {0}"
     };
     ("Retrying in {0} seconds") => {
         "إعادة المحاولة بعد {0} ث"
@@ -8324,6 +8345,9 @@ macro_rules! __ui_template_es {
     ("Old tool files kept: {error}") => {
         "Se conservaron los archivos antiguos de herramientas: {error}"
     };
+    ("Pause: {0}") => {
+        "Pausar: {0}"
+    };
     ("Pending job: {0} · use Advanced options to refresh the source") => {
         "Tarea pendiente: {0} · actualizar el origen en Opciones avanzadas"
     };
@@ -8356,6 +8380,9 @@ macro_rules! __ui_template_es {
     };
     ("Resolutions seen in the analysis: {list}") => {
         "Resoluciones detectadas en el análisis: {list}"
+    };
+    ("Resume: {0}") => {
+        "Reanudar: {0}"
     };
     ("Retrying in {0} seconds") => {
         "Reintentando en {0} segundos"
@@ -9193,6 +9220,9 @@ macro_rules! __ui_template_pt {
     ("Old tool files kept: {error}") => {
         "Arquivos antigos de ferramentas mantidos: {error}"
     };
+    ("Pause: {0}") => {
+        "Pausar: {0}"
+    };
     ("Pending job: {0} · use Advanced options to refresh the source") => {
         "Tarefa pendente: {0} · use Opções avançadas para atualizar a fonte"
     };
@@ -9225,6 +9255,9 @@ macro_rules! __ui_template_pt {
     };
     ("Resolutions seen in the analysis: {list}") => {
         "Resoluções encontradas na análise: {list}"
+    };
+    ("Resume: {0}") => {
+        "Retomar: {0}"
     };
     ("Retrying in {0} seconds") => {
         "Nova tentativa em {0} segundos"
@@ -10062,6 +10095,9 @@ macro_rules! __ui_template_fr {
     ("Old tool files kept: {error}") => {
         "Anciens fichiers d'outils conservés : {error}"
     };
+    ("Pause: {0}") => {
+        "Pause : {0}"
+    };
     ("Pending job: {0} · use Advanced options to refresh the source") => {
         "Tâche en attente : {0} · utilisez les options avancées pour actualiser la source"
     };
@@ -10094,6 +10130,9 @@ macro_rules! __ui_template_fr {
     };
     ("Resolutions seen in the analysis: {list}") => {
         "Résolutions relevées lors de l'analyse : {list}"
+    };
+    ("Resume: {0}") => {
+        "Reprendre : {0}"
     };
     ("Retrying in {0} seconds") => {
         "Nouvelle tentative dans {0} secondes"
@@ -10931,6 +10970,9 @@ macro_rules! __ui_template_de {
     ("Old tool files kept: {error}") => {
         "Alte Werkzeugdateien wurden behalten: {error}"
     };
+    ("Pause: {0}") => {
+        "Pausieren: {0}"
+    };
     ("Pending job: {0} · use Advanced options to refresh the source") => {
         "Ausstehender Auftrag: {0} · Erweiterte Optionen verwenden, um die Quelle zu aktualisieren"
     };
@@ -10963,6 +11005,9 @@ macro_rules! __ui_template_de {
     };
     ("Resolutions seen in the analysis: {list}") => {
         "In der Analyse gefundene Auflösungen: {list}"
+    };
+    ("Resume: {0}") => {
+        "Fortsetzen: {0}"
     };
     ("Retrying in {0} seconds") => {
         "Neuer Versuch in {0} Sekunden"
