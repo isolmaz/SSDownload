@@ -120,10 +120,21 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             }
         }
         if let Some(max) = request.max_height {
-            if streams.iter().any(|s| {
-                s["codec_type"] == "video" && s["height"].as_u64().is_some_and(|h| h > max as u64)
-            }) {
-                bail!(crate::i18n::ui("Medya doğrulaması: istenen çözünürlük bu kaynakta kullanılamıyor", "Media verification: the requested resolution is not available from this source"));
+            let above = streams
+                .iter()
+                .filter(|s| s["codec_type"] == "video")
+                .filter_map(|s| s["height"].as_u64())
+                .find(|height| *height > max as u64);
+            if let Some(height) = above {
+                bail!(
+                    "{}",
+                    crate::i18n::ui_format!(
+                        "Medya doğrulaması: video {height} piksel yüksekliğinde, istenen {max} sınırını aşıyor",
+                        "Media verification: the video is {height} pixels high, above the requested limit of {max}",
+                        height = height,
+                        max = max
+                    )
+                );
             }
         }
     }

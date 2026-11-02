@@ -425,7 +425,7 @@
   "Media verification: the external subtitle language/order does not match the selected track": "Medienprüfung: Sprache oder Reihenfolge des externen Untertitels stimmen nicht mit der ausgewählten Spur überein",
   "Media verification: the output could not be read": "Medienprüfung: Die Ausgabe konnte nicht gelesen werden",
   "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)": "Medienprüfung: Die Ausgabedauer stimmt nicht mit der Quelle überein (Toleranz für frühes Ende {tolerance:.3} s; spätes Ende {0:.3} s)",
-  "Media verification: the requested resolution is not available from this source": "Medienprüfung: Die gewünschte Auflösung ist für diese Quelle nicht verfügbar",
+  "Media verification: the video is {height} pixels high, above the requested limit of {max}": "Medienprüfung: Das Video ist {height} Pixel hoch und liegt über dem gewünschten Limit von {max}",
   "Media verification: the sampled start/middle/end section could not be decoded": "Medienprüfung: Der stichprobenartig geprüfte Abschnitt am Anfang, in der Mitte oder am Ende konnte nicht dekodiert werden",
   "Media verification: the file's content ({0}) does not match its .{1} extension": "Medienprüfung: Der Inhalt der Datei ({0}) passt nicht zur Dateiendung .{1}",
   "Media verification: the selected HDR/dynamic range could not be verified in the output": "Medienprüfung: Der ausgewählte HDR- bzw. Dynamikbereich konnte in der Ausgabe nicht geprüft werden",
