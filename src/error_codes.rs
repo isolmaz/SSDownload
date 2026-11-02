@@ -100,19 +100,21 @@ define! {
     TOL_004 => "SSD-TOL-004", "tools", "source", Error, Update, false, "Araç sürümü desteklenmiyor", "The tool version is not supported", "The installed tool version is older than the supported minimum.";
     TOL_005 => "SSD-TOL-005", "tools", "source", Error, Settings, false, "Medya araçlarının yolu Windows'un programlar için izin verdiği 259 karakterden uzun; profili daha kısa bir klasöre taşıyın ve SSDownload'ı --data-dir ile o klasörü göstererek başlatın", "The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "FFmpeg, FFprobe or Deno is too deep in the data folder for yt-dlp to start it; yt-dlp then runs without it and can leave a stream in the wrong container.";
     NET_001 => "SSD-NET-001", "network", "source", Error, Retry, true, "Alan adı çözümlenemedi (DNS)", "Name resolution failed (DNS)", "Name resolution failed for the target host.";
-    NET_002 => "SSD-NET-002", "network", "source", Error, Retry, true, "TLS sertifika doğrulaması başarısız", "TLS certificate validation failed", "The TLS handshake or certificate validation failed.";
-    NET_003 => "SSD-NET-003", "network", "source", Error, Retry, true, "Proxy tüneli kurulamadı", "The proxy tunnel could not be established", "The proxy CONNECT tunnel was refused or reset.";
+    NET_002 => "SSD-NET-002", "network", "source", Error, Settings, false, "Güvenli (TLS) bağlantı kurulamadı", "The secure connection (TLS) could not be established", "The TLS handshake or the certificate check failed. Not retried: the same secure connection is refused again.";
+    NET_003 => "SSD-NET-003", "network", "source", Error, Retry, true, "Proxy tüneli kurulamadı", "The proxy tunnel could not be established", "The proxy's name could not be resolved, or the handshake or CONNECT tunnel through the proxy was refused or reset.";
     NET_004 => "SSD-NET-004", "network", "source", Error, Settings, false, "Dosya yerine bir web sayfası (örneğin oturum açma sayfası) geldi", "A web page (such as a sign-in page) arrived instead of the file", "A file request that a redirect led to a web page the server does not send as an attachment (a sign-in page, for example) fails instead of saving the page. The request lacks the session, so repeating it unchanged gets the same page.";
     NET_005 => "SSD-NET-005", "network", "source", Error, Refresh, false, "Kaynak bulunamadı (404)", "Resource not found (404)", "The origin answered 404 for the requested resource.";
     NET_006 => "SSD-NET-006", "network", "source", Warn, Retry, true, "Sunucu meşgul (429/503)", "Server busy (429/503)", "The origin asked the client to slow down; the governor reduces concurrency.";
-    NET_007 => "SSD-NET-007", "network", "source", Error, Retry, true, "Bağlantı zaman aşımına uğradı", "The connection timed out", "A connect or transfer timeout expired, or the server answered 408 Request Timeout.";
+    NET_007 => "SSD-NET-007", "network", "source", Error, Retry, true, "Bağlantı zaman aşımına uğradı", "The connection timed out", "A connect or transfer timeout expired.";
     NET_008 => "SSD-NET-008", "network", "source", Error, Retry, true, "Bağlantı karşı tarafça sıfırlandı", "The connection was reset by the peer", "The peer aborted the connection mid-transfer.";
     NET_009 => "SSD-NET-009", "network", "segment", Error, Retry, true, "Aralık (range) isteği kabul edilmedi", "The range request was not accepted", "The server refused the byte range used for segmented transfer.";
     NET_010 => "SSD-NET-010", "network", "source", Warn, Settings, true, "Yerel hız sınırı etkin", "A local speed limit is in effect", "A configured speed limit is slowing the transfer down.";
     NET_011 => "SSD-NET-011", "network", "source", Error, Retry, true, "Sunucuya ulaşılamadı", "The server could not be reached", "The connection was refused, or no route to the server's address exists.";
     NET_012 => "SSD-NET-012", "network", "source", Error, Refresh, false, "Sunucu erişimi reddetti (401/403)", "The server refused access (401/403)", "The origin answered 401 or 403: the address expired, or the file needs a session or a permission. Not retried.";
-    NET_013 => "SSD-NET-013", "network", "source", Error, Retry, true, "Sunucu isteği işleyemedi (5xx)", "The server failed to handle the request (5xx)", "The origin answered with a 5xx status other than 503, which is NET-006. All of them are retried but 501.";
+    NET_013 => "SSD-NET-013", "network", "source", Error, Retry, true, "Sunucu isteği işleyemedi (5xx)", "The server failed to handle the request (5xx)", "The origin answered with a 5xx status other than 501, which is NET-016, and 503, which is NET-006. All of them are retried.";
     NET_014 => "SSD-NET-014", "network", "source", Error, Refresh, false, "Sunucu isteği reddetti (4xx)", "The server rejected the request (4xx)", "The origin answered with a 4xx status other than 401, 403, 404, 408 and 429; 400 and 410 are among them. Not retried.";
+    NET_015 => "SSD-NET-015", "network", "source", Error, Retry, true, "Sunucu isteği beklerken zaman aşımına uğradı (408)", "The server timed out waiting for the request (408)", "The origin answered 408 Request Timeout: it gave up waiting for the request. Retried.";
+    NET_016 => "SSD-NET-016", "network", "source", Error, Unsupported, false, "Sunucu bu isteği desteklemiyor (501)", "The server does not support the request (501)", "The origin answered 501 Not Implemented. Not retried.";
     TRF_001 => "SSD-TRF-001", "transfer", "segment", Error, Retry, true, "Medya parçası indirilemedi", "A media segment could not be downloaded", "A fragment or segment request failed after its retries.";
     TRF_002 => "SSD-TRF-002", "transfer", "validation", Error, Retry, true, "Parçalar birleştirilemedi", "The parts could not be merged", "Muxing the downloaded parts failed.";
     TRF_003 => "SSD-TRF-003", "transfer", "validation", Error, Retry, true, "Boyut veya SHA-256 doğrulaması başarısız", "Size or SHA-256 verification failed", "The finished file did not match its expected size or digest.";
@@ -247,7 +249,9 @@ mod tests {
         assert_eq!(owner(MED_007), Owner::Site);
         assert_eq!(owner(MED_008), Owner::Site);
         assert_eq!(owner(EXT_007), Owner::Observation);
-        for site in [NET_005, NET_006, NET_012, NET_013, NET_014] {
+        for site in [
+            NET_005, NET_006, NET_012, NET_013, NET_014, NET_015, NET_016,
+        ] {
             assert_eq!(owner(site), Owner::Site);
         }
         assert_eq!(owner(MED_006), Owner::App);
@@ -393,9 +397,8 @@ pub fn owner(code: Code) -> Owner {
     match code.0 {
         "SSD-MED-003" | "SSD-MED-004" => Owner::Drm,
         "SSD-MED-007" | "SSD-MED-008" | "SSD-EXT-010" => Owner::Site,
-        "SSD-NET-005" | "SSD-NET-006" | "SSD-NET-012" | "SSD-NET-013" | "SSD-NET-014" => {
-            Owner::Site
-        }
+        "SSD-NET-005" | "SSD-NET-006" | "SSD-NET-012" | "SSD-NET-013" | "SSD-NET-014"
+        | "SSD-NET-015" | "SSD-NET-016" => Owner::Site,
         "SSD-EXT-007" => Owner::Observation,
         _ => Owner::App,
     }

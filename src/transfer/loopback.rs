@@ -3200,7 +3200,8 @@ fn a_status_that_fails_the_download_is_reported_with_the_network_code_of_its_cla
         (410, NET_014),
         (403, NET_012),
         (401, NET_012),
-        (408, NET_007),
+        (408, NET_015),
+        (501, NET_016),
         (500, NET_013),
         (502, NET_013),
         (503, NET_006),
@@ -3265,8 +3266,9 @@ fn a_server_that_does_not_speak_tls_fails_an_https_download_with_the_tls_code() 
 
 #[test]
 fn a_name_that_does_not_resolve_is_reported_as_a_dns_failure() {
-    // `.invalid` never resolves (RFC 6761).
-    let error = failed_fetch("http://no-such-host.invalid/payload.bin".into());
+    // A label of 64 bytes cannot be put in a DNS query (the limit is 63), so libcurl fails at once
+    // and locally: no resolver, not even one that answers every name, is asked.
+    let error = failed_fetch(format!("http://{}.invalid/payload.bin", "a".repeat(64)));
     assert_eq!(
         network_code(&error),
         Some(crate::error_codes::NET_001),

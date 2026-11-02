@@ -2094,6 +2094,48 @@ fn a_failed_attempt_leads_its_message_with_the_network_code_of_the_failure() {
 }
 
 #[test]
+fn the_registry_says_what_the_engine_does_with_each_failure_that_has_a_network_code() {
+    use crate::error_codes::definition;
+    let retried = |code: crate::error_codes::Code| definition(code).unwrap().retryable;
+    for status in 400..=599 {
+        let error = anyhow::Error::new(transfer::HttpStatusError { status });
+        let code = transfer::network_code(&error).expect("every 4xx and 5xx has a code");
+        assert_eq!(
+            retried(code),
+            retryable_error(&error),
+            "HTTP {status}: {code:?}"
+        );
+    }
+    for curl in [
+        curl_sys::CURLE_COULDNT_RESOLVE_HOST,
+        curl_sys::CURLE_COULDNT_RESOLVE_PROXY,
+        97,
+        curl_sys::CURLE_COULDNT_CONNECT,
+        curl_sys::CURLE_OPERATION_TIMEDOUT,
+        curl_sys::CURLE_SSL_CONNECT_ERROR,
+        curl_sys::CURLE_SSL_CIPHER,
+        curl_sys::CURLE_PEER_FAILED_VERIFICATION,
+        curl_sys::CURLE_SSL_ISSUER_ERROR,
+        curl_sys::CURLE_SSL_PINNEDPUBKEYNOTMATCH,
+        curl_sys::CURLE_SSL_INVALIDCERTSTATUS,
+        curl_sys::CURLE_GOT_NOTHING,
+        curl_sys::CURLE_SEND_ERROR,
+        curl_sys::CURLE_RECV_ERROR,
+        curl_sys::CURLE_PARTIAL_FILE,
+        curl_sys::CURLE_HTTP2,
+        curl_sys::CURLE_HTTP2_STREAM,
+    ] {
+        let error = anyhow::Error::new(curl::Error::new(curl));
+        let code = transfer::network_code(&error).expect("a network failure has a code");
+        assert_eq!(
+            retried(code),
+            retryable_error(&error),
+            "curl error {curl}: {code:?}"
+        );
+    }
+}
+
+#[test]
 fn a_file_locked_by_another_program_is_retried_but_other_access_errors_are_not() {
     let locked = |code| {
         anyhow::Error::new(std::io::Error::from_raw_os_error(code))

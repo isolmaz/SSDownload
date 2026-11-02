@@ -5276,7 +5276,10 @@ fn retryable_error(error: &anyhow::Error) -> bool {
             }
         }
         if let Some(error) = cause.downcast_ref::<curl::Error>() {
-            return matches!(error.code(), 5 | 6 | 7 | 18 | 28 | 52 | 55 | 56 | 92);
+            return matches!(
+                error.code(),
+                5 | 6 | 7 | 16 | 18 | 28 | 52 | 55 | 56 | 92 | 97
+            );
         }
     }
     let message = format!("{error:#}").to_lowercase();
