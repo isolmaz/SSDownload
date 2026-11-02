@@ -405,23 +405,23 @@ pub(crate) fn publish(
     )
 }
 /// Names in a work folder that are not a download's result: the owner marker, temporaries of
-/// `atomic_write`, the media workspace, the transfer's part, state and segment files, and the
-/// browser transfer's folder with the archives it makes of earlier runs.
+/// `atomic_write`, the media workspace, the transfer's part, state and segment files, the
+/// output a browser transfer stages while it remuxes, and the archives the browser transfer
+/// makes of earlier runs. The live `browser-transfer` folder is none of them: it keeps
+/// `adopt_finished` from adopting anything.
 fn is_work_artifact(name: &str) -> bool {
     name == ".job"
         || name == ".ssdownload-work"
         || (name.starts_with('.') && name.ends_with(".tmp"))
         || name.contains(".ssdownload.")
-        || name.starts_with("browser-transfer")
+        || name.starts_with(".browser-mux-")
+        || name.starts_with("browser-transfer-previous-")
 }
 
-/// The name of a file without its extension and without the number that
-/// `output::numbered` adds, in lower case: `Movie (2).mkv` and `movie.mp4` have the same stem.
-fn result_stem(name: &str) -> String {
-    let path = Path::new(name);
-    let stem = crate::output::without_real_extension(path);
-    let stem = stem.to_string_lossy().to_lowercase();
-    match stem
+/// `name` in lower case without the number that `output::numbered` adds: `Movie (2)` is `movie`.
+fn without_number(name: &str) -> String {
+    let name = name.to_lowercase();
+    match name
         .strip_suffix(')')
         .and_then(|rest| rest.rsplit_once(" ("))
     {
@@ -430,8 +430,15 @@ fn result_stem(name: &str) -> String {
         {
             base.to_owned()
         }
-        _ => stem,
+        _ => name,
     }
+}
+
+/// The name of a file without its extension and without its number: `Movie (2).mkv` and
+/// `movie.mp4` have the same stem.
+fn result_stem(name: &str) -> String {
+    let path = crate::output::without_real_extension(Path::new(name));
+    without_number(&path.to_string_lossy())
 }
 
 /// Whether the downloader of `job` can leave a file called `name` as its result. When the
@@ -439,10 +446,13 @@ fn result_stem(name: &str) -> String {
 /// the media container; otherwise the server names the file.
 fn is_possible_result(job: &Job, name: &str) -> bool {
     job.request.filename.is_none()
-        || job
-            .path
-            .file_name()
-            .is_some_and(|own| result_stem(&own.to_string_lossy()) == result_stem(name))
+        || job.path.file_name().is_some_and(|own| {
+            let own = own.to_string_lossy();
+            let stem = result_stem(name);
+            // The last dot of a title without an extension ("Talk v2.0") reads as an extension, but
+            // the container's extension is added to the whole name ("Talk v2.0.mp4").
+            stem == result_stem(&own) || stem == without_number(&own)
+        })
 }
 
 /// Publishes the finished result of a download that stopped before `publish` wrote its journal
@@ -451,7 +461,9 @@ fn is_possible_result(job: &Job, name: &str) -> bool {
 /// result, `recovered` finds nothing and the download would start over. The result is the one
 /// regular file of the work folder that the job's downloader can have left (`is_possible_result`)
 /// and that is not an artifact of the transfer. Nothing is adopted when the folder holds
-/// anything else, a folder included. The caller has checked the folder with `prepare_work`.
+/// anything else, a folder included. The `browser-transfer` folder is one: its receiver puts the
+/// file in the work folder first and verifies it after, so a file beside the folder may have
+/// failed that verification. The caller has checked the folder with `prepare_work`.
 pub(crate) fn adopt_finished(paths: &AppPaths, job: &Job) -> Result<Option<TransferResult>> {
     let Some(work) = &job.work_dir else {
         return Ok(None);
@@ -619,17 +631,10 @@ pub(crate) fn forget(paths: &AppPaths, id: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::{AddRequest, JobState};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture() -> (AppPaths, PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "ssdownload-recovery-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-recovery-test-{}", uuid::Uuid::new_v4()));
         let paths = AppPaths::new(root.clone()).unwrap();
         fs::create_dir_all(root.join("out")).unwrap();
         (paths, root)
@@ -784,21 +789,65 @@ mod tests {
     }
 
     #[test]
-    fn a_file_beside_the_folders_of_a_browser_transfer_is_published() {
+    fn a_file_beside_the_live_folder_of_a_browser_transfer_is_left_to_its_receiver() {
         let (paths, root) = fixture();
-        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        let (mut job, result) = stopped_before_the_journal(&root, "movie.mp4", b"unverified");
         let work = job.work_dir.clone().unwrap();
-        fs::create_dir_all(work.join("browser-transfer")).unwrap();
+        // The receiver places the file in the work folder and verifies it after; a file that
+        // failed the check stays there beside the receiver's folder.
+        let live = work.join("browser-transfer");
+        fs::create_dir_all(&live).unwrap();
+        fs::write(live.join("stream-00000000.bin"), b"unverified").unwrap();
         fs::create_dir_all(work.join(format!(
             "browser-transfer-previous-{}",
             uuid::Uuid::new_v4()
         )))
         .unwrap();
 
+        for filename in [None, Some("movie.mp4".to_owned())] {
+            job.request.filename = filename;
+            assert!(adopt_finished(&paths, &job).unwrap().is_none());
+            assert!(result.exists() && !job.path.exists());
+            assert!(recovered(&paths, &job.id).unwrap().is_none());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_file_beside_only_the_archives_of_a_browser_transfer_is_published() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        let work = job.work_dir.clone().unwrap();
+        for _ in 0..2 {
+            fs::create_dir_all(work.join(format!(
+                "browser-transfer-previous-{}",
+                uuid::Uuid::new_v4()
+            )))
+            .unwrap();
+        }
+
         let adopted = adopt_finished(&paths, &job).unwrap().unwrap();
         assert_eq!(adopted.path, job.path);
         assert_eq!(fs::read(&job.path).unwrap(), b"movie bytes");
         assert!(!result.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_output_a_stopped_remux_staged_is_never_published() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"unused");
+        let work = job.work_dir.clone().unwrap();
+        fs::remove_file(&result).unwrap();
+        // `place_browser_file` writes the remuxed copy under this name before it renames it to the
+        // job's name; the request leaves the file's name to the server, so any name is possible.
+        let staged = work.join(format!(".browser-mux-{}.mp4", uuid::Uuid::new_v4()));
+        fs::write(&staged, b"half a file").unwrap();
+
+        assert!(job.request.filename.is_none());
+        assert!(adopt_finished(&paths, &job).unwrap().is_none());
+        assert!(staged.exists() && !job.path.exists());
+        assert!(recovered(&paths, &job.id).unwrap().is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -830,6 +879,39 @@ mod tests {
             &|stem| format!("{} (1).mp4", stem.to_uppercase()),
             &|stem| format!("{stem}.mkv"),
             &|stem| format!("{stem} (12).webm"),
+        ];
+        for (index, found) in accepted.into_iter().enumerate() {
+            let adopted = adopt(10 + index, found).unwrap_or_else(|| panic!("name {index}"));
+            assert_eq!(adopted.bytes, 5);
+            assert!(adopted.path.exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_title_with_a_dot_and_no_extension_is_published_under_its_container() {
+        let (paths, root) = fixture();
+        // The title's last dot reads as the extension `.0`; the container's extension follows it.
+        let adopt = |index: usize, found: &dyn Fn(&str) -> String| {
+            let title = format!("Talk v{index}.0");
+            let (mut job, result) = stopped_before_the_journal(&root, &title, b"bytes");
+            job.request.filename = Some(title.clone());
+            fs::rename(&result, result.with_file_name(found(&title))).unwrap();
+            adopt_finished(&paths, &job).unwrap()
+        };
+        let rejected: [&dyn Fn(&str) -> String; 3] = [
+            &|title| format!("my {title}.mp4"),
+            &|title| format!("{title}1.mp4"),
+            &|title| format!("{title} (x).mp4"),
+        ];
+        for (index, found) in rejected.into_iter().enumerate() {
+            assert!(adopt(index, found).is_none(), "rejected name {index}");
+        }
+        let accepted: [&dyn Fn(&str) -> String; 4] = [
+            &|title| format!("{title}.mp4"),
+            &|title| format!("{} (2).mkv", title.to_uppercase()),
+            &|title| title.to_owned(),
+            &|title| format!("{}.mp4", title.trim_end_matches(".0")),
         ];
         for (index, found) in accepted.into_iter().enumerate() {
             let adopted = adopt(10 + index, found).unwrap_or_else(|| panic!("name {index}"));
