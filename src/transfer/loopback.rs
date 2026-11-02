@@ -3288,6 +3288,124 @@ fn file_request(url: String) -> AddRequest {
     }
 }
 
+/// The error of a download from `url` that fails.
+fn failed_fetch(url: String) -> anyhow::Error {
+    let directory = TempDir::new("network-code");
+    fetch(
+        &file_request(url),
+        &directory.0.join("payload.bin"),
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap_err()
+}
+
+/// A server that accepts `connections` connections, answers each with `reply` (after reading
+/// what the client sent first, if there is a reply) and closes it. Returns its port.
+fn closing_server(reply: Option<&'static [u8]>, connections: usize) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for _ in 0..connections {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            if let Some(reply) = reply {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let _ = stream.read(&mut [0u8; 1024]);
+                let _ = stream.write_all(reply);
+            }
+        }
+    });
+    port
+}
+
+#[test]
+fn a_status_that_fails_the_download_is_reported_with_the_network_code_of_its_class() {
+    use crate::error_codes::*;
+    for (status, code) in [
+        (404, NET_005),
+        (410, NET_014),
+        (403, NET_012),
+        (401, NET_012),
+        (408, NET_015),
+        (501, NET_016),
+        (500, NET_013),
+        (502, NET_013),
+        (503, NET_006),
+        (429, NET_006),
+    ] {
+        let server = Server::start(Config {
+            size: MIB,
+            scripted: vec![
+                Scripted {
+                    status,
+                    retry_after: None
+                };
+                8
+            ],
+            ..Config::default()
+        });
+        let error = failed_fetch(server.url("/payload.bin"));
+        assert_eq!(network_code(&error), Some(code), "HTTP {status}: {error:#}");
+        assert_eq!(http_status(&error), Some(u32::from(status)));
+    }
+}
+
+#[test]
+fn a_connection_that_is_refused_is_reported_as_the_server_not_being_reached() {
+    // A port that nothing listens on.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let error = failed_fetch(format!("http://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_011),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_server_that_closes_the_connection_without_an_answer_is_reported_as_a_reset_connection() {
+    // The HEAD gets nothing, then the ranged GET that takes its place gets nothing either.
+    let port = closing_server(None, 4);
+    let error = failed_fetch(format!("http://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_008),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_server_that_does_not_speak_tls_fails_an_https_download_with_the_tls_code() {
+    let port = closing_server(
+        Some(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+        4,
+    );
+    let error = failed_fetch(format!("https://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_002),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_name_that_does_not_resolve_is_reported_as_a_dns_failure() {
+    // A label of 64 bytes cannot be put in a DNS query (the limit is 63), so libcurl fails at once
+    // and locally: no resolver, not even one that answers every name, is asked.
+    let error = failed_fetch(format!("http://{}.invalid/payload.bin", "a".repeat(64)));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_001),
+        "{error:#}"
+    );
+}
+
 /// A server that sends the web page `kind` instead of a file: what a sign-in redirect ends on.
 fn page_server(size: u64, kind: &str) -> Server {
     Server::start(Config {
