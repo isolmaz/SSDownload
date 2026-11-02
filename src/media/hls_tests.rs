@@ -537,6 +537,83 @@ fn video_segments_that_end_with_a_parameter_set_merge_with_every_picture_and_no_
 
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
+fn joined_segments_are_repaired_where_their_packets_call_for_it_and_the_copy_is_read_back() {
+    let control = TransferControl::default();
+    let tools =
+        tools::verified_toolchain(&shared_profile(), &control).expect("the installed media tools");
+    let timeout = Duration::from_secs(120);
+    let request = AddRequest {
+        kind: DownloadKind::Video,
+        container: Some("mkv".into()),
+        ..AddRequest::default()
+    };
+    for trailing_parameter_set in [false, true] {
+        let fixture = Fixture::new(Source {
+            video_seconds: 6,
+            audio_seconds: 6,
+            trailing_parameter_set,
+            ..Source::default()
+        });
+        let join = |prefix: &str| {
+            let joined = fixture.root.join(format!("{prefix}.joined.ts"));
+            let segments = (0..)
+                .map(|index| fixture.server.site.join(format!("{prefix}{index}.ts")))
+                .take_while(|path| path.exists())
+                .map(|path| fs::read(path).unwrap())
+                .collect::<Vec<_>>();
+            fs::write(&joined, segments.concat()).unwrap();
+            joined
+        };
+        let streams = [("video", join("v")), ("audio", join("a"))].map(|(role, path)| {
+            crate::browser_transfer::StreamFile {
+                path,
+                role: role.into(),
+                format_id: None,
+                language: None,
+            }
+        });
+        let staged = fixture.root.join("merged.mkv");
+
+        // The merge fails as it is exactly where the segments end with a parameter set.
+        let plain = run_capture(
+            &tools.ffmpeg,
+            &browser_mux_args(&request, &streams, &staged, false),
+            b"",
+            timeout,
+            &control,
+        )
+        .unwrap();
+        assert_eq!(
+            plain.status.success() && plain.stderr.trim().is_empty(),
+            !trailing_parameter_set,
+            "{}",
+            plain.stderr
+        );
+        let _ = fs::remove_file(&staged);
+
+        let mut run = |executable: &Path, args: &[String]| {
+            run_capture(executable, args, b"", timeout, &control)
+        };
+        let packets = video_packets(&streams[0].path, 0, &tools.ffprobe, &mut run)
+            .unwrap()
+            .expect("the packets of the joined segments");
+        assert_eq!(repair_applies(&packets), trailing_parameter_set);
+
+        let reason = merge_streams(&request, &streams, &staged, timeout, &tools, &control).unwrap();
+        assert_eq!(
+            reason, None,
+            "trailing parameter set: {trailing_parameter_set}"
+        );
+        let merged = video_packets(&staged, 0, &tools.ffprobe, &mut run)
+            .unwrap()
+            .expect("the packets of the copy");
+        assert_eq!(merged.len(), 150);
+        assert!(times_hold(&merged));
+    }
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
 fn a_failing_segment_is_retried_alone_without_restarting_its_stream() {
     let fixture = Fixture::new(Source {
         video_seconds: 12,

@@ -1080,23 +1080,21 @@ pub(crate) fn mux_browser_streams(
         }
     }
     let staged = parent.join(format!(".browser-mux-{}.tmp", uuid::Uuid::new_v4()));
-    let args = browser_mux_args(request, streams, &staged);
-    let result = run_capture(
-        &tools.ffmpeg,
-        &args,
-        b"",
+    if let Some(reason) = merge_streams(
+        request,
+        streams,
+        &staged,
         Duration::from_secs(10 * 60),
+        &tools,
         control,
-    )?;
-    if !merged_cleanly(&result) {
-        let _ = fs::remove_file(&staged);
+    )? {
         crate::bail_code!(
             crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Tarayıcı medya akışları kayıpsız birleştirilemedi: {0}",
                 "The browser media streams could not be merged losslessly: {0}",
-                bounded_tail(&result.stderr, 4096)
+                reason
             )
         );
     }
@@ -1214,10 +1212,12 @@ pub(crate) fn place_browser_file(
 /// last segment's parameter set comes as a packet of its own that holds no picture.
 ///
 /// `noise` leaves out a packet without a time that is no keyframe and under 32 bytes (a parameter
-/// set or a delimiter; a coded picture is not left out, and then the merge fails as it would
-/// without this). `setts` gives a packet without a time its decoding time plus the delay the
-/// stream starts with: the keyframe of a closed group of pictures is shown as the first of the
-/// group, so it keeps the delay of the first one.
+/// set or a delimiter). `setts` gives a packet without a time its decoding time plus the delay the
+/// stream starts with. That is the time of a picture only when it is shown at that delay after it
+/// is decoded, as the keyframe of a closed group of pictures is. A keyframe that pictures follow
+/// in decoding order and precede in time (an open group of pictures) and a picture that is no
+/// keyframe get a wrong time, so [`merge_streams`] repairs a video only where [`repair_applies`]
+/// and publishes the copy only where [`times_hold`].
 const TS_VIDEO_REPAIR: &str = "noise=drop='eq(pts,nopts)*not(key)*lt(size,32)',setts=pts='if(eq(PTS,NOPTS),DTS+STARTPTS-STARTDTS,PTS)'";
 
 /// Whether the file is MPEG-TS: its packets are 188 bytes, each starting with the sync byte.
@@ -1229,9 +1229,175 @@ fn is_mpeg_ts(path: &Path) -> bool {
         && [0, 188, 376].iter().all(|at| head[*at] == 0x47)
 }
 
-/// Whether a merge ran without a failure: FFmpeg succeeded and printed nothing at error level
-/// but the parsers' remark about a parameter set without a picture, the packet that
-/// [`TS_VIDEO_REPAIR`] leaves out.
+/// A packet of a video stream, as `ffprobe` lists it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VideoPacket {
+    pts: Option<i64>,
+    dts: Option<i64>,
+    size: u64,
+    key: bool,
+}
+
+/// The packets `ffprobe -show_entries packet=pts,dts,size,flags -of csv=p=0` lists, one line
+/// `pts,dts,size,flags` each, `N/A` for a time the packet lacks and a `K` among the flags of a
+/// keyframe; `None` for a line of another shape.
+fn parse_video_packets(listing: &str) -> Option<Vec<VideoPacket>> {
+    let time = |field: &str| match field {
+        "N/A" => Some(None),
+        field => field.parse().ok().map(Some),
+    };
+    listing
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let mut fields = line.split(',');
+            Some(VideoPacket {
+                pts: time(fields.next()?)?,
+                dts: time(fields.next()?)?,
+                size: fields.next()?.parse().ok()?,
+                key: fields.next()?.contains('K'),
+            })
+        })
+        .collect()
+}
+
+/// Runs a tool with its arguments and captures what it printed.
+type RunTool<'a> = &'a mut dyn FnMut(&Path, &[String]) -> Result<process::Captured>;
+
+/// The packets of the `index`th video stream of `path`; `None` where they could not be listed.
+fn video_packets(
+    path: &Path,
+    index: usize,
+    ffprobe: &Path,
+    run: RunTool,
+) -> Result<Option<Vec<VideoPacket>>> {
+    let args = [
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-select_streams",
+        &format!("v:{index}"),
+        "-show_entries",
+        "packet=pts,dts,size,flags",
+        "-of",
+        "csv=p=0",
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain([path.to_string_lossy().into_owned()])
+    .collect::<Vec<_>>();
+    let listed = run(ffprobe, &args)?;
+    Ok(listed
+        .status
+        .success()
+        .then(|| parse_video_packets(&String::from_utf8_lossy(&listed.stdout)))
+        .flatten())
+}
+
+/// Whether [`TS_VIDEO_REPAIR`] gives the pictures their times: some packet has none, and every
+/// one without a time is a keyframe or under 32 bytes, as the repair assumes. A large packet that
+/// is no keyframe (a picture of a PES packet that holds several) has a time of its own that the
+/// repair cannot know.
+fn repair_applies(packets: &[VideoPacket]) -> bool {
+    let mut timeless = packets
+        .iter()
+        .filter(|packet| packet.pts.is_none())
+        .peekable();
+    timeless.peek().is_some() && timeless.all(|packet| packet.key || packet.size < 32)
+}
+
+/// Whether every picture of a video has a time, no two share one, and the decoding times rise.
+fn times_hold(packets: &[VideoPacket]) -> bool {
+    let mut shown = HashSet::new();
+    packets
+        .iter()
+        .all(|packet| packet.pts.is_some_and(|pts| shown.insert(pts)))
+        && packets
+            .windows(2)
+            .all(|pair| pair[0].dts.zip(pair[1].dts).is_none_or(|(a, b)| a < b))
+}
+
+/// Copies the streams into `staged` without re-encoding. `None`: it is there. `Some(reason)`:
+/// it is not, and `reason` says why.
+///
+/// A copy of MPEG-TS video that fails is made once more with [`TS_VIDEO_REPAIR`], where the
+/// packets of every such video show that the repair gives it the right times, and the copy is
+/// kept only where it passes [`times_hold`]; a video the repair cannot be trusted with fails
+/// with the reason of the first copy.
+fn merge_streams(
+    request: &AddRequest,
+    streams: &[crate::browser_transfer::StreamFile],
+    staged: &Path,
+    timeout: Duration,
+    tools: &tools::VerifiedTools,
+    control: &TransferControl,
+) -> Result<Option<String>> {
+    merge_streams_with(request, streams, staged, tools, &mut |executable, args| {
+        run_capture(executable, args, b"", timeout, control)
+    })
+}
+
+fn merge_streams_with(
+    request: &AddRequest,
+    streams: &[crate::browser_transfer::StreamFile],
+    staged: &Path,
+    tools: &tools::VerifiedTools,
+    run: RunTool,
+) -> Result<Option<String>> {
+    let plain = run(
+        &tools.ffmpeg,
+        &browser_mux_args(request, streams, staged, false),
+    )?;
+    if plain.status.success() && plain.stderr.trim().is_empty() {
+        return Ok(None);
+    }
+    let _ = fs::remove_file(staged);
+    let failed = Some(bounded_tail(&plain.stderr, 4096));
+    let transport_streams = streams
+        .iter()
+        .filter(|stream| stream.role == "video")
+        .enumerate()
+        .filter(|(_, stream)| is_mpeg_ts(&stream.path))
+        .map(|(index, stream)| (index, stream.path.as_path()))
+        .collect::<Vec<_>>();
+    if transport_streams.is_empty() {
+        return Ok(failed);
+    }
+    for (_, path) in &transport_streams {
+        let packets = video_packets(path, 0, &tools.ffprobe, run)?;
+        if !packets.as_deref().is_some_and(repair_applies) {
+            return Ok(failed);
+        }
+    }
+    let repaired = run(
+        &tools.ffmpeg,
+        &browser_mux_args(request, streams, staged, true),
+    )?;
+    if !merged_cleanly(&repaired) {
+        let _ = fs::remove_file(staged);
+        return Ok(Some(bounded_tail(&repaired.stderr, 4096)));
+    }
+    for (index, _) in &transport_streams {
+        let packets = video_packets(staged, *index, &tools.ffprobe, run)?;
+        if !packets.as_deref().is_some_and(times_hold) {
+            let _ = fs::remove_file(staged);
+            return Ok(Some(
+                crate::i18n::ui(
+                    "Görüntünün zamanları güvenle onarılamadı; dosya yayınlanmadı",
+                    "The times of the video could not be restored reliably, so the file was not published",
+                )
+                .into(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a merge with [`TS_VIDEO_REPAIR`] ran without a failure: FFmpeg succeeded and printed
+/// nothing at error level but the parsers' remark about a parameter set without a picture, the
+/// packet that the repair leaves out. Without the repair that packet is in the copy.
 fn merged_cleanly(result: &process::Captured) -> bool {
     result.status.success() && only_parameter_set_remarks(&result.stderr)
 }
@@ -1257,6 +1423,7 @@ fn browser_mux_args(
     request: &AddRequest,
     streams: &[crate::browser_transfer::StreamFile],
     staged: &Path,
+    repair: bool,
 ) -> Vec<String> {
     let audios = streams
         .iter()
@@ -1293,7 +1460,7 @@ fn browser_mux_args(
     args.extend(["-c:v".into(), "copy".into(), "-c:a".into(), "copy".into()]);
     let videos = streams.iter().filter(|stream| stream.role == "video");
     for (index, video) in videos.enumerate() {
-        if is_mpeg_ts(&video.path) {
+        if repair && is_mpeg_ts(&video.path) {
             args.extend([format!("-bsf:v:{index}"), TS_VIDEO_REPAIR.into()]);
         }
     }
@@ -3150,14 +3317,14 @@ mod output_validation_tests {
         let mut info = MediaInfo::default();
         let mut probe = json!({"streams":[
             {"codec_type":"video","codec_name":"h264","start_time":"0","duration":"5604.5"},
-            {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"5603.09"}
+            {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"5602.7"}
         ],"format":{"start_time":"0","duration":"5604.5"}});
         assert!(validate_probe(&probe, &request, &info).is_err());
         let mut source = PinnedMediaSource {
             inspection: json!({}),
             manifests: vec![PinnedManifest {
                 marker: "selected".into(),
-                body: "#EXTM3U\n#EXTINF:1.25,\nsegment.ts\n#EXT-X-ENDLIST\n".into(),
+                body: "#EXTM3U\n#EXTINF:1.75,\nsegment.ts\n#EXT-X-ENDLIST\n".into(),
             }],
             dash_formats: Vec::new(),
         };
@@ -3170,6 +3337,104 @@ mod output_validation_tests {
         info.duration_tolerance = Some(1.5);
         probe["streams"][1]["duration"] = json!(5600.0);
         assert!(validate_probe(&probe, &request, &info).is_err());
+    }
+
+    /// What ffprobe reports for a 20 s progressive MP4 (H.264 and AAC at 44.1 kHz, made with
+    /// FFmpeg) whose audio was cut to `audio_seconds`; the container lasts as long as its longest
+    /// stream.
+    fn progressive_mp4_probe(audio_seconds: f64) -> Value {
+        json!({"streams":[
+            {"index":0,"codec_type":"video","codec_name":"h264","height":180,"time_base":"1/12800",
+             "start_pts":0,"start_time":"0.000000","duration_ts":256000,"duration":"20.000000"},
+            {"index":1,"codec_type":"audio","codec_name":"aac","time_base":"1/44100",
+             "start_pts":0,"start_time":"0.000000",
+             "duration_ts":(audio_seconds * 44100.0).round() as u64,
+             "duration":format!("{audio_seconds:.6}")}
+        ],"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","start_time":"0.000000",
+                    "duration":format!("{:.6}", audio_seconds.max(20.0))}})
+    }
+
+    #[test]
+    fn a_progressive_file_whose_audio_stops_a_little_before_its_picture_passes() {
+        let request = AddRequest {
+            kind: DownloadKind::Video,
+            expected_audio: Some(true),
+            ..Default::default()
+        };
+        let info = MediaInfo {
+            duration: Some(20.0),
+            ..Default::default()
+        };
+        for audio_seconds in [20.0, 19.3, 18.6] {
+            let probe = progressive_mp4_probe(audio_seconds);
+            validate_probe(&probe, &request, &info)
+                .unwrap_or_else(|error| panic!("{audio_seconds} s of audio: {error:#}"));
+        }
+    }
+
+    #[test]
+    fn a_lost_or_repeated_stretch_of_audio_still_fails_the_stream_lengths() {
+        let request = AddRequest {
+            kind: DownloadKind::Video,
+            expected_audio: Some(true),
+            ..Default::default()
+        };
+        let info = MediaInfo::default();
+        // 15.0 s: the audio lacks a 5 s stretch, at the end or in the middle (the rest moved up);
+        // 18.0 s: a 2 s hole; 25.0 s: a 5 s stretch repeated.
+        for audio_seconds in [15.0, 18.0, 25.0] {
+            let probe = progressive_mp4_probe(audio_seconds);
+            let error = validate_probe(&probe, &request, &info)
+                .expect_err(&format!("{audio_seconds} s of audio"));
+            assert_eq!(
+                crate::error_codes::code_of(&error),
+                Some(crate::error_codes::TRF_012),
+                "{error:#}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("ses akışı 1: {audio_seconds:.1} sn")),
+                "{error:#}"
+            );
+        }
+        // A source with fragment timing is held to that timing.
+        let info = MediaInfo {
+            duration_tolerance: Some(0.5),
+            ..Default::default()
+        };
+        assert!(validate_probe(&progressive_mp4_probe(19.3), &request, &info).is_err());
+    }
+
+    #[test]
+    fn audio_extracted_from_a_file_with_short_audio_may_end_before_the_source_duration() {
+        let request = AddRequest {
+            kind: DownloadKind::Audio,
+            audio_format: Some("mp3".into()),
+            ..Default::default()
+        };
+        let info = MediaInfo {
+            duration: Some(20.0),
+            ..Default::default()
+        };
+        // ffprobe of the MP3 that FFmpeg made from the audio of a 20 s file whose audio lasts
+        // 19.3 s: the encoder delay moves the start by 25 ms, the length is the audio's.
+        let mp3 = |seconds: f64| {
+            json!({"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3",
+                "time_base":"1/14112000","start_pts":353600,"start_time":"0.025057",
+                "duration":format!("{seconds:.6}")}],
+              "format":{"format_name":"mp3","start_time":"0.025057",
+                "duration":format!("{seconds:.6}")}})
+        };
+        validate_probe(&mp3(19.3), &request, &info).unwrap();
+        validate_probe(&mp3(18.6), &request, &info).unwrap();
+        let error = validate_probe(&mp3(15.0), &request, &info).unwrap_err();
+        assert!(
+            error.to_string().contains("erken bitiş toleransı 1.500 sn"),
+            "{error:#}"
+        );
+        // The tolerance for a late end does not change.
+        assert!(validate_probe(&mp3(22.0), &request, &info).is_err());
     }
 
     #[test]

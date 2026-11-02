@@ -111,7 +111,7 @@ fn only_the_remark_about_a_parameter_set_without_a_picture_is_no_merge_failure()
 }
 
 #[test]
-fn the_video_of_joined_ts_segments_is_repaired_by_the_merge_and_nothing_else_is() {
+fn only_a_merge_that_asks_for_the_repair_gets_the_filters_and_only_for_mpeg_ts_video() {
     let root = std::env::temp_dir().join(format!("ssdownload-mux-test-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
     let transport_stream = root.join("video.part");
@@ -140,25 +140,377 @@ fn the_video_of_joined_ts_segments_is_repaired_by_the_merge_and_nothing_else_is(
         container: Some("mkv".into()),
         ..AddRequest::default()
     };
-    let repair = |video: &Path| {
+    let filters = |video: &Path, repair: bool| {
         let args = browser_mux_args(
             &request,
             &[stream(video, "video"), stream(&audio_stream, "audio")],
             Path::new("out.tmp"),
+            repair,
         );
         args.iter()
             .position(|argument| argument.starts_with("-bsf"))
             .map(|at| (args[at].clone(), args[at + 1].clone()))
     };
 
-    assert_eq!(
-        repair(&transport_stream),
-        Some(("-bsf:v:0".to_string(), TS_VIDEO_REPAIR.to_string()))
+    let (option, value) = filters(&transport_stream, true).expect("the repair");
+    assert_eq!(option, "-bsf:v:0");
+    assert!(
+        value.contains("noise=") && value.contains("setts="),
+        "{value}"
     );
-    assert_eq!(repair(&other), None);
-    assert_eq!(repair(&unsynced), None);
-    assert_eq!(repair(&root.join("missing.part")), None);
+    assert_eq!(filters(&transport_stream, false), None);
+    assert_eq!(filters(&other, true), None);
+    assert_eq!(filters(&unsynced, true), None);
+    assert_eq!(filters(&root.join("missing.part"), true), None);
     fs::remove_dir_all(root).unwrap();
+}
+
+/// What `ffprobe -show_entries packet=pts,dts,size,flags -of csv=p=0` listed for the video of
+/// MPEG-TS segments that end with a parameter set, and a keyframe whose pictures follow it in
+/// decoding order and are shown before it (an open group of pictures). The segments ended at
+/// the keyframe and at the last line, the parameter set that is a packet of its own.
+const OPEN_GOP_SEGMENTS: &str = "291600,288000,768,___\n\
+306000,291600,1640,___\n\
+298800,295200,852,___\n\
+302400,298800,792,___\n\
+N/A,N/A,5151,K__\n\
+309600,306000,769,___\n\
+327600,309600,1840,___\n\
+1206000,1202400,769,___\n\
+N/A,N/A,10,___";
+
+/// The same video copied with [`TS_VIDEO_REPAIR`] (packets 44 to 58), and as the video really is.
+const OPEN_GOP_REPAIRED: &str = "1720,1640,1069,___\n\
+1680,1680,752,___\n\
+1760,1720,768,___\n\
+1920,1760,1640,___\n\
+1840,1800,852,___\n\
+1880,1840,792,___\n\
+1960,1880,5152,K__\n\
+1960,1920,769,___\n\
+2160,1960,1840,___\n\
+2080,1960,1235,___\n\
+2040,2040,782,___\n\
+2120,2080,963,___\n\
+2320,2120,1571,___\n\
+2240,2160,1073,___\n\
+2200,2200,886,___";
+const OPEN_GOP_AS_IT_IS: &str = "1720,1640,1069,___\n\
+1680,1680,752,___\n\
+1760,1720,768,___\n\
+1920,1760,1640,___\n\
+1840,1800,852,___\n\
+1880,1840,792,___\n\
+2000,1880,5142,K__\n\
+1960,1920,769,___\n\
+2160,1960,1840,___\n\
+2080,2000,1235,___\n\
+2040,2040,782,___\n\
+2120,2080,963,___\n\
+2320,2120,1571,___\n\
+2240,2160,1073,___\n\
+2200,2200,886,___";
+
+#[test]
+fn a_packet_listing_is_read_as_ffprobe_prints_it() {
+    assert_eq!(
+        parse_video_packets("N/A,N/A,5151,K__\n-7200,-3600,10,__C,\n\n12,N/A,0,KD_"),
+        Some(vec![
+            VideoPacket {
+                pts: None,
+                dts: None,
+                size: 5151,
+                key: true
+            },
+            VideoPacket {
+                pts: Some(-7200),
+                dts: Some(-3600),
+                size: 10,
+                key: false
+            },
+            VideoPacket {
+                pts: Some(12),
+                dts: None,
+                size: 0,
+                key: true
+            },
+        ])
+    );
+    assert_eq!(parse_video_packets(""), Some(Vec::new()));
+    for broken in [
+        "1,2,3",
+        "x,2,3,K__",
+        "1,2,-3,K__",
+        "1,2,K__,3",
+        "1.5,2,3,___",
+    ] {
+        assert_eq!(parse_video_packets(broken), None, "{broken}");
+    }
+}
+
+#[test]
+fn the_repair_is_made_only_where_every_packet_without_a_time_is_a_keyframe_or_a_leftover() {
+    let source = parse_video_packets(OPEN_GOP_SEGMENTS).unwrap();
+    assert!(repair_applies(&source));
+    let timeless = |at: usize| source[at].pts.is_none();
+    assert_eq!(
+        (0..source.len()).filter(|at| timeless(*at)).count(),
+        2,
+        "a keyframe and the packet of a parameter set"
+    );
+    // A picture of a PES packet that holds several has a time the repair cannot know.
+    let with_a_large_picture = OPEN_GOP_SEGMENTS.replace("N/A,N/A,10,___", "N/A,N/A,900,___");
+    assert!(!repair_applies(
+        &parse_video_packets(&with_a_large_picture).unwrap()
+    ));
+    let with_a_small_leftover = OPEN_GOP_SEGMENTS.replace("N/A,N/A,5151,K__", "N/A,N/A,31,___");
+    assert!(repair_applies(
+        &parse_video_packets(&with_a_small_leftover).unwrap()
+    ));
+    let just_at_the_limit = OPEN_GOP_SEGMENTS.replace("N/A,N/A,5151,K__", "N/A,N/A,32,___");
+    assert!(!repair_applies(
+        &parse_video_packets(&just_at_the_limit).unwrap()
+    ));
+    // Nothing to repair.
+    let timed = OPEN_GOP_SEGMENTS
+        .lines()
+        .filter(|line| !line.starts_with("N/A"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!repair_applies(&parse_video_packets(&timed).unwrap()));
+    assert!(!repair_applies(&[]));
+}
+
+/// The tools a merge starts, scripted: FFmpeg's copy of the streams without and with the repair
+/// (exit code and what it printed), and the packets `ffprobe` lists for the source video and for
+/// the copy (nothing: it cannot read the file). Gives the outcome of `merge_streams_with`, the
+/// runs in the order they were made and whether a file remains where the copy is staged.
+fn scripted_merge(
+    transport_stream: bool,
+    plain: (u32, &str),
+    repaired: (u32, &str),
+    source: &str,
+    copy: &str,
+) -> (Option<String>, Vec<&'static str>, bool) {
+    use std::os::windows::process::ExitStatusExt;
+    let root = std::env::temp_dir().join(format!("ssdownload-merge-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let video = root.join("video.part");
+    fs::write(
+        &video,
+        vec![if transport_stream { 0x47 } else { 0x1a }; 188 * 3],
+    )
+    .unwrap();
+    let audio = root.join("audio.part");
+    fs::write(&audio, vec![0x47; 188 * 3]).unwrap();
+    let staged = root.join("merged.tmp");
+    let streams = [("video", &video), ("audio", &audio)].map(|(role, path)| {
+        crate::browser_transfer::StreamFile {
+            path: path.clone(),
+            role: role.into(),
+            format_id: None,
+            language: None,
+        }
+    });
+    let tools = tools::VerifiedTools::staged(
+        "yt-dlp".into(),
+        "deno".into(),
+        "ffmpeg".into(),
+        "ffprobe".into(),
+    );
+    let captured = |code: u32, stdout: &str, stderr: &str| process::Captured {
+        status: std::process::ExitStatus::from_raw(code),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: stderr.to_owned(),
+    };
+    let request = AddRequest {
+        kind: DownloadKind::Video,
+        container: Some("mkv".into()),
+        ..AddRequest::default()
+    };
+    let mut runs = Vec::new();
+    let outcome = merge_streams_with(&request, &streams, &staged, &tools, &mut |tool, args| {
+        if tool == Path::new("ffmpeg") {
+            let repairing = args.iter().any(|argument| argument.starts_with("-bsf"));
+            runs.push(if repairing {
+                "repaired copy"
+            } else {
+                "plain copy"
+            });
+            // FFmpeg leaves the file it was writing behind.
+            fs::write(&staged, b"copy").unwrap();
+            let (code, stderr) = if repairing { repaired } else { plain };
+            return Ok(captured(code, "", stderr));
+        }
+        let of_the_copy = args.last().map(Path::new) == Some(staged.as_path());
+        runs.push(if of_the_copy {
+            "packets of the copy"
+        } else {
+            "packets of the source"
+        });
+        let listing = if of_the_copy { copy } else { source };
+        Ok(captured(u32::from(listing.is_empty()), listing, ""))
+    })
+    .unwrap();
+    let remains = staged.exists();
+    fs::remove_dir_all(root).unwrap();
+    (outcome, runs, remains)
+}
+
+const PARAMETER_SET_REMARK: &str =
+    "[h264 @ 000001f0ee3a6980] missing picture in access unit with size 10";
+const UNKNOWN_TIMESTAMP: &str =
+    "[matroska @ 00000233baee1700] Can't write packet with unknown timestamp";
+
+#[test]
+fn a_merge_that_succeeds_as_it_is_is_not_repaired() {
+    let (outcome, runs, remains) = scripted_merge(true, (0, ""), (1, "unused"), "", "");
+    assert_eq!(outcome, None);
+    assert_eq!(runs, ["plain copy"]);
+    assert!(remains);
+}
+
+#[test]
+fn a_merge_that_fails_is_repaired_only_where_the_video_is_mpeg_ts_and_its_packets_allow_it() {
+    // No MPEG-TS video: the reason of the failure.
+    let (outcome, runs, remains) = scripted_merge(
+        false,
+        (1, UNKNOWN_TIMESTAMP),
+        (0, ""),
+        OPEN_GOP_SEGMENTS,
+        "",
+    );
+    assert_eq!(outcome.as_deref(), Some(UNKNOWN_TIMESTAMP));
+    assert_eq!(runs, ["plain copy"]);
+    assert!(!remains);
+
+    // A large picture without a time is not one the repair can give its time.
+    let large = OPEN_GOP_SEGMENTS.replace("N/A,N/A,10,___", "N/A,N/A,900,___");
+    let (outcome, runs, remains) = scripted_merge(
+        true,
+        (1, UNKNOWN_TIMESTAMP),
+        (0, ""),
+        &large,
+        OPEN_GOP_AS_IT_IS,
+    );
+    assert_eq!(outcome.as_deref(), Some(UNKNOWN_TIMESTAMP));
+    assert_eq!(runs, ["plain copy", "packets of the source"]);
+    assert!(!remains);
+
+    // Packets that cannot be listed.
+    let (outcome, runs, remains) =
+        scripted_merge(true, (1, UNKNOWN_TIMESTAMP), (0, ""), "", OPEN_GOP_AS_IT_IS);
+    assert_eq!(outcome.as_deref(), Some(UNKNOWN_TIMESTAMP));
+    assert_eq!(runs, ["plain copy", "packets of the source"]);
+    assert!(!remains);
+}
+
+#[test]
+fn a_repaired_copy_is_published_only_where_the_times_of_its_video_hold() {
+    // The parser's remark about the parameter set that is a packet of its own is a failure of the
+    // copy as it is, because that packet is in the file.
+    for plain in [(1, UNKNOWN_TIMESTAMP), (0, PARAMETER_SET_REMARK)] {
+        let (outcome, runs, remains) = scripted_merge(
+            true,
+            plain,
+            (0, PARAMETER_SET_REMARK),
+            OPEN_GOP_SEGMENTS,
+            OPEN_GOP_AS_IT_IS,
+        );
+        assert_eq!(outcome, None, "{plain:?}");
+        assert_eq!(
+            runs,
+            [
+                "plain copy",
+                "packets of the source",
+                "repaired copy",
+                "packets of the copy"
+            ]
+        );
+        assert!(remains);
+    }
+
+    // The keyframe of an open group of pictures came out at the wrong time.
+    let (outcome, runs, remains) = scripted_merge(
+        true,
+        (1, UNKNOWN_TIMESTAMP),
+        (0, PARAMETER_SET_REMARK),
+        OPEN_GOP_SEGMENTS,
+        OPEN_GOP_REPAIRED,
+    );
+    assert!(
+        outcome
+            .as_deref()
+            .is_some_and(|reason| reason.contains("zamanları güvenle onarılamadı")),
+        "{outcome:?}"
+    );
+    assert_eq!(runs.last(), Some(&"packets of the copy"));
+    assert!(!remains);
+
+    // A copy whose packets cannot be read back is not trusted either.
+    let (outcome, _, remains) = scripted_merge(
+        true,
+        (1, UNKNOWN_TIMESTAMP),
+        (0, PARAMETER_SET_REMARK),
+        OPEN_GOP_SEGMENTS,
+        "",
+    );
+    assert!(outcome.is_some());
+    assert!(!remains);
+
+    // A repaired copy that fails is reported by what FFmpeg printed for it.
+    let (outcome, runs, remains) = scripted_merge(
+        true,
+        (1, UNKNOWN_TIMESTAMP),
+        (1, "Error muxing a packet"),
+        OPEN_GOP_SEGMENTS,
+        OPEN_GOP_AS_IT_IS,
+    );
+    assert_eq!(outcome.as_deref(), Some("Error muxing a packet"));
+    assert_eq!(
+        runs,
+        ["plain copy", "packets of the source", "repaired copy"]
+    );
+    assert!(!remains);
+}
+
+#[test]
+fn the_times_of_a_repaired_open_group_of_pictures_do_not_hold() {
+    let repaired = parse_video_packets(OPEN_GOP_REPAIRED).unwrap();
+    let as_it_is = parse_video_packets(OPEN_GOP_AS_IT_IS).unwrap();
+    // The keyframe is shown at 1960 instead of 2000, where a picture that follows it in
+    // decoding order is shown, and the next decoding time repeats.
+    assert!(!times_hold(&repaired));
+    assert!(times_hold(&as_it_is));
+    // Each way a copy can be wrong on its own.
+    let same_pts = as_it_is
+        .iter()
+        .map(|packet| VideoPacket {
+            pts: packet.pts.map(|pts| if pts == 2000 { 1960 } else { pts }),
+            ..*packet
+        })
+        .collect::<Vec<_>>();
+    assert!(!times_hold(&same_pts));
+    let no_pts = as_it_is
+        .iter()
+        .map(|packet| VideoPacket {
+            pts: packet.pts.filter(|pts| *pts != 2000),
+            ..*packet
+        })
+        .collect::<Vec<_>>();
+    assert!(!times_hold(&no_pts));
+    let same_dts = as_it_is
+        .iter()
+        .map(|packet| VideoPacket {
+            dts: packet.dts.map(|dts| if dts == 2000 { 1960 } else { dts }),
+            ..*packet
+        })
+        .collect::<Vec<_>>();
+    assert!(!times_hold(&same_dts));
+    // A container that stores no decoding time for its first pictures is no fault.
+    let mut without_dts = parse_video_packets(OPEN_GOP_AS_IT_IS).unwrap();
+    without_dts[0].dts = None;
+    assert!(times_hold(&without_dts));
 }
 
 #[test]
@@ -728,6 +1080,42 @@ fn published_name_keeps_dots_that_belong_to_the_title() {
         .publish(&output, false, &HashSet::new(), Some(&staged))
         .unwrap();
     assert_eq!(published, root.join("Python 3.12 guide.mkv"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_published_playlist_item_never_keeps_a_bidirectional_control_from_its_title() {
+    let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("list");
+    let request = AddRequest {
+        url: "https://example.test/playlist".into(),
+        kind: DownloadKind::Video,
+        playlist: true,
+        ..AddRequest::default()
+    };
+    let plan = OutputPlan::new(&output, &request, None).unwrap();
+    let titled = plan.workspace.join("001 - invoice\u{202e}4pm.mp4");
+    let plain = plan.workspace.join("002 - Second.mp4");
+    fs::write(&titled, b"first").unwrap();
+    fs::write(&plain, b"second").unwrap();
+    let completed = HashSet::from([
+        titled.canonicalize().unwrap(),
+        plain.canonicalize().unwrap(),
+    ]);
+
+    let published = plan.publish(&output, true, &completed, None).unwrap();
+
+    let mut names = fs::read_dir(&published)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["001 - invoice_4pm.mp4", "002 - Second.mp4"]);
+    assert_eq!(
+        fs::read(published.join("001 - invoice_4pm.mp4")).unwrap(),
+        b"first"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1686,7 +2074,7 @@ fn every_ffmpeg_input_carries_its_own_protocol_whitelist() {
         stream("audio.bin", "audio"),
         stream("subtitle.bin", "subtitle"),
     ];
-    let mux = browser_mux_args(&request, &streams, Path::new("out.tmp"));
+    let mux = browser_mux_args(&request, &streams, Path::new("out.tmp"), false);
     assert_each_input_is_guarded(&mux, "file,crypto,data", 3);
 
     let subtitles = [PathBuf::from("s0.txt"), PathBuf::from("s1.txt")];

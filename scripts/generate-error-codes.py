@@ -60,6 +60,13 @@ pub fn coded_default(code: Code) -> anyhow::Error {
     coded(code, definition(code).map(|entry| crate::i18n::ui(entry.message_tr, entry.message_en)).unwrap_or_else(|| crate::i18n::ui("Bilinmeyen hata", "Unknown error")))
 }
 
+/// Puts the registry code and message in front of an error chain, so the stored text starts with
+/// the code and the original causes follow it.
+pub fn with_code(error: anyhow::Error, code: Code) -> anyhow::Error {
+    let message = definition(code).map(|entry| crate::i18n::ui(entry.message_tr, entry.message_en)).unwrap_or_default();
+    error.context(CodedError::new(code, message))
+}
+
 /// The code carried by an error chain, if any.
 pub fn code_of(error: &anyhow::Error) -> Option<Code> {
     if let Some(coded) = error.downcast_ref::<CodedError>() {
@@ -106,6 +113,8 @@ pub fn owner(code: Code) -> Owner {
     match code.0 {
         "SSD-MED-003" | "SSD-MED-004" => Owner::Drm,
         "SSD-MED-007" | "SSD-MED-008" | "SSD-EXT-010" => Owner::Site,
+        "SSD-NET-005" | "SSD-NET-006" | "SSD-NET-012" | "SSD-NET-013" | "SSD-NET-014"
+        | "SSD-NET-015" | "SSD-NET-016" => Owner::Site,
         "SSD-EXT-007" => Owner::Observation,
         _ => Owner::App,
     }
@@ -265,14 +274,14 @@ CODES = [
      "Alan adı çözümlenemedi (DNS)",
      "Name resolution failed (DNS)",
      "Name resolution failed for the target host."),
-    ("NET-002", "network", "source", "error", "retry", True,
-     "TLS sertifika doğrulaması başarısız",
-     "TLS certificate validation failed",
-     "The TLS handshake or certificate validation failed."),
+    ("NET-002", "network", "source", "error", "settings", False,
+     "Güvenli (TLS) bağlantı kurulamadı",
+     "The secure connection (TLS) could not be established",
+     "The TLS handshake or the certificate check failed. Not retried: the same secure connection is refused again."),
     ("NET-003", "network", "source", "error", "retry", True,
      "Proxy tüneli kurulamadı",
      "The proxy tunnel could not be established",
-     "The proxy CONNECT tunnel was refused or reset."),
+     "The proxy's name could not be resolved, or the handshake or CONNECT tunnel through the proxy was refused or reset."),
     ("NET-004", "network", "source", "error", "settings", False,
      "Dosya yerine bir web sayfası (örneğin oturum açma sayfası) geldi",
      "A web page (such as a sign-in page) arrived instead of the file",
@@ -301,15 +310,39 @@ CODES = [
      "Yerel hız sınırı etkin",
      "A local speed limit is in effect",
      "A configured speed limit is slowing the transfer down."),
+    ("NET-011", "network", "source", "error", "retry", True,
+     "Sunucuya ulaşılamadı",
+     "The server could not be reached",
+     "The connection was refused, or no route to the server's address exists."),
+    ("NET-012", "network", "source", "error", "refresh", False,
+     "Sunucu erişimi reddetti (401/403)",
+     "The server refused access (401/403)",
+     "The origin answered 401 or 403: the address expired, or the file needs a session or a permission. Not retried."),
+    ("NET-013", "network", "source", "error", "retry", True,
+     "Sunucu isteği işleyemedi (5xx)",
+     "The server failed to handle the request (5xx)",
+     "The origin answered with a 5xx status other than 501, which is NET-016, and 503, which is NET-006. All of them are retried."),
+    ("NET-014", "network", "source", "error", "refresh", False,
+     "Sunucu isteği reddetti (4xx)",
+     "The server rejected the request (4xx)",
+     "The origin answered with a 4xx status other than 401, 403, 404, 408 and 429; 400 and 410 are among them. Not retried."),
+    ("NET-015", "network", "source", "error", "retry", True,
+     "Sunucu isteği beklerken zaman aşımına uğradı (408)",
+     "The server timed out waiting for the request (408)",
+     "The origin answered 408 Request Timeout: it gave up waiting for the request. Retried."),
+    ("NET-016", "network", "source", "error", "unsupported", False,
+     "Sunucu bu isteği desteklemiyor (501)",
+     "The server does not support the request (501)",
+     "The origin answered 501 Not Implemented. Not retried."),
     # --- transfer ------------------------------------------------------------------
     ("TRF-001", "transfer", "segment", "error", "retry", True,
      "Medya parçası indirilemedi",
      "A media segment could not be downloaded",
      "A fragment or segment request failed after its retries."),
-    ("TRF-002", "transfer", "validation", "error", "retry", True,
+    ("TRF-002", "transfer", "validation", "error", "retry", False,
      "Parçalar birleştirilemedi",
      "The parts could not be merged",
-     "Muxing the downloaded parts failed."),
+     "Copying the downloaded streams into one file failed, or the times of a repaired MPEG-TS video could not be trusted. The job is not retried by itself."),
     ("TRF-003", "transfer", "validation", "error", "retry", True,
      "Boyut veya SHA-256 doğrulaması başarısız",
      "Size or SHA-256 verification failed",
@@ -646,6 +679,9 @@ def rust() -> str:
         "        assert_eq!(owner(MED_007), Owner::Site);",
         "        assert_eq!(owner(MED_008), Owner::Site);",
         "        assert_eq!(owner(EXT_007), Owner::Observation);",
+        "        for site in [NET_005, NET_006, NET_012, NET_013, NET_014, NET_015, NET_016] {",
+        "            assert_eq!(owner(site), Owner::Site);",
+        "        }",
         "        assert_eq!(owner(MED_006), Owner::App);",
         "        assert_eq!(Owner::App.as_str(), \"app\");",
         "        assert_eq!(Owner::Drm.as_str(), \"drm\");",
@@ -659,6 +695,16 @@ def rust() -> str:
         "        assert_eq!(code_of_text(&error), Some(code));",
         "        assert_eq!(from_text(\"bilinmeyen bir hata\"), None);",
         "        assert_eq!(from_text(\"SSD-XXX-999 yabancı kod\"), None);",
+        "    }",
+        "",
+        "    #[test]",
+        "    fn a_code_added_to_an_error_chain_leads_its_stored_text() {",
+        '        let error = with_code(anyhow::anyhow!("inner cause").context("outer"), NET_001);',
+        "        assert_eq!(code_of(&error), Some(NET_001));",
+        '        let text = format!("{error:#}");',
+        '        assert!(text.starts_with("SSD-NET-001 "), "{text}");',
+        '        assert!(text.ends_with(": outer: inner cause"), "{text}");',
+        "        assert_eq!(from_text(&text), Some(NET_001));",
         "    }",
         "",
         "    #[test]",
