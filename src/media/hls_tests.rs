@@ -574,6 +574,37 @@ fn a_paused_download_resumes_after_the_segments_it_already_has() {
 }
 
 #[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_retry_after_an_attempt_that_never_reached_its_source_starts_fresh() {
+    // The video playlist does not answer twice: the first attempt cannot take the source's
+    // evidence and its download fails before a single segment is written. The retry finds the
+    // job folder with nothing but the files the app writes first.
+    let fixture = Fixture::new(Source {
+        video_seconds: 6,
+        audio_seconds: 6,
+        failing: Some(("video.m3u8", 2)),
+        ..Source::default()
+    });
+    let first = fixture
+        .download(&TransferControl::default(), 4)
+        .expect_err("the first attempt");
+    let work = fixture.folder.join(".ssdownload-work");
+    let mut left = Vec::new();
+    for folder in fs::read_dir(&work).unwrap() {
+        for file in fs::read_dir(folder.unwrap().path()).unwrap() {
+            left.push(file.unwrap().file_name().into_string().unwrap());
+        }
+    }
+    left.sort();
+    assert_eq!(left, [".owner", ".request"], "{first:#}");
+
+    let output = fixture
+        .download(&TransferControl::default(), 4)
+        .unwrap_or_else(|error| panic!("the retry failed after: {first:#}\n{error:#}"));
+    assert!((fixture.stream_seconds(&output, "video") - 6.0).abs() < 0.5);
+}
+
+#[test]
 #[ignore = "needs the installed media tools and waits out yt-dlp's fragment retries (~5 min)"]
 fn a_playlist_the_app_does_not_download_itself_keeps_its_finished_video_through_yt_dlp() {
     // A tag the native downloader does not know leaves the source to yt-dlp. yt-dlp tries a
