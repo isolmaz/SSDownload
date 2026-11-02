@@ -7,6 +7,7 @@ use curl::easy::List;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     cell::RefCell,
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -415,6 +416,10 @@ pub(crate) struct RemoteInfo {
     /// A redirect led to `url`, so a web page answering there is a sign-in or interstitial page
     /// and not the file. `download` clears it for a requested name that is a page's.
     refuse_page: bool,
+    /// The name the file is saved under unless the answer names it (see `final_name`), which
+    /// `download` sets. With the answer it decides whether a page that no redirect led to is
+    /// the file (`page_named_as_file`).
+    job_name: Option<String>,
     /// The SHA-256 (hex) that the answer to the probe published in `Repr-Digest`.
     repr_digest: Option<String>,
 }
@@ -1192,6 +1197,10 @@ fn download_http_from(
     if is_html_name(output) {
         remote.refuse_page = false;
     }
+    remote.job_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned);
     if remote.refuse_page && is_web_page(remote.content_type.as_deref(), remote.attachment) {
         return Err(page_instead_of_file());
     }
@@ -1793,6 +1802,53 @@ fn http_to_file(
     let mut throttle_started = Instant::now();
     let mut throttle_cost = 0u64;
 
+    // Writes bytes of the body to the part file; `false` when that failed.
+    let mut write_data = |data: &[u8]| {
+        if sink.written == 0 && matches!(expected, ExpectedResponse::Full) {
+            // The state has to describe the bytes before the first one is written.
+            let adopted = adopt_full_response(remote, &write_response.borrow());
+            if adopted.etag != remote.etag
+                || adopted.last_modified != remote.last_modified
+                || adopted.total != remote.total
+            {
+                if let Err(error) = sink.adopt(single_state(request, &adopted, 0)) {
+                    *write_error.borrow_mut() = Some(std::io::Error::other(error));
+                    return false;
+                }
+            }
+        }
+        if let Err(error) = sink.write(data) {
+            *write_error.borrow_mut() = Some(error);
+            return false;
+        }
+        throttle(
+            control,
+            divisor,
+            &mut throttle_started,
+            &mut throttle_cost,
+            data.len() as u64,
+        );
+        let now = Instant::now();
+        if now.duration_since(last_report) >= Duration::from_millis(200) {
+            let elapsed = now.duration_since(last_report).as_secs_f64().max(0.001);
+            let current = offset.saturating_add(sink.written);
+            let speed = ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64;
+            let total = expected_total(expected, &write_response.borrow(), remote);
+            progress(TransferProgress {
+                processing: false,
+                downloaded: current,
+                total,
+                speed,
+                eta: eta(total, current, speed),
+                phase: crate::i18n::ui("İndiriliyor", "Downloading").into(),
+            });
+            last_report = now;
+            last_bytes = current;
+        }
+        true
+    };
+    let mut gate = PageGate::default();
+
     easy.progress(true).map_err(anyhow::Error::from)?;
     let perform_result = {
         let mut transfer = easy.transfer();
@@ -1803,7 +1859,7 @@ fn http_to_file(
             })
             .map_err(anyhow::Error::from)?;
         transfer
-            .write_function(|data| {
+            .write_function(|received| {
                 if control.stop_requested() {
                     return Ok(0);
                 }
@@ -1812,48 +1868,15 @@ fn http_to_file(
                 {
                     return Ok(0);
                 }
-                if sink.written == 0 && matches!(expected, ExpectedResponse::Full) {
-                    // The state has to describe the bytes before the first one is written.
-                    let adopted = adopt_full_response(remote, &write_response.borrow());
-                    if adopted.etag != remote.etag
-                        || adopted.last_modified != remote.last_modified
-                        || adopted.total != remote.total
-                    {
-                        if let Err(error) = sink.adopt(single_state(request, &adopted, 0)) {
-                            *write_error.borrow_mut() = Some(std::io::Error::other(error));
-                            return Ok(0);
-                        }
-                    }
+                // Only a body from its first byte can be looked at.
+                let taken = gate.take(received, || {
+                    offset == 0 && page_named_as_file(request, &write_response.borrow(), remote)
+                });
+                match taken {
+                    Taken::Held => Ok(received.len()),
+                    Taken::Page => Ok(0),
+                    Taken::Free(data) => Ok(if write_data(&data) { received.len() } else { 0 }),
                 }
-                if let Err(error) = sink.write(data) {
-                    *write_error.borrow_mut() = Some(error);
-                    return Ok(0);
-                }
-                throttle(
-                    control,
-                    divisor,
-                    &mut throttle_started,
-                    &mut throttle_cost,
-                    data.len() as u64,
-                );
-                let now = Instant::now();
-                if now.duration_since(last_report) >= Duration::from_millis(200) {
-                    let elapsed = now.duration_since(last_report).as_secs_f64().max(0.001);
-                    let current = offset.saturating_add(sink.written);
-                    let speed = ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64;
-                    let total = expected_total(expected, &write_response.borrow(), remote);
-                    progress(TransferProgress {
-                        processing: false,
-                        downloaded: current,
-                        total,
-                        speed,
-                        eta: eta(total, current, speed),
-                        phase: crate::i18n::ui("İndiriliyor", "Downloading").into(),
-                    });
-                    last_report = now;
-                    last_bytes = current;
-                }
-                Ok(data.len())
             })
             .map_err(anyhow::Error::from)?;
         transfer
@@ -1861,6 +1884,11 @@ fn http_to_file(
             .map_err(anyhow::Error::from)?;
         transfer.perform()
     };
+    if perform_result.is_ok() && !control.stop_requested() {
+        if let Some(rest) = gate.finish() {
+            write_data(&rest);
+        }
+    }
 
     let headers = response.borrow().clone();
     if control.stop_requested() {
@@ -1912,7 +1940,7 @@ fn http_to_file(
             Ok(()) => Err(AttemptFailure::RangeRejected),
         };
     }
-    if page_refused(&headers, remote) {
+    if page_refused(&headers, remote) || gate.page {
         return Err(AttemptFailure::Other(page_instead_of_file()));
     }
     if identity_changed(&headers, expected, remote) {
@@ -3305,7 +3333,7 @@ impl DynamicRangeWorker<'_> {
                         return Ok(0);
                     }
                     if !response_allows_remote_body(&write_response.borrow(), expected, remote)
-                        || page_refused(&write_response.borrow(), remote)
+                        || ranged_page_refused(request, &write_response.borrow(), remote)
                     {
                         return Ok(0);
                     }
@@ -3401,7 +3429,7 @@ impl DynamicRangeWorker<'_> {
                 Ok(()) => Err(AttemptFailure::RangeRejected),
             };
         }
-        if page_refused(&headers, remote) {
+        if ranged_page_refused(request, &headers, remote) {
             return Err(AttemptFailure::Other(page_instead_of_file()));
         }
         if identity_changed(&headers, expected, remote) {
@@ -4139,6 +4167,7 @@ fn probe_http(
             attachment: headers.attachment,
             filename: headers.filename,
             refuse_page: redirects > 0,
+            job_name: None,
             repr_digest: headers.repr_digest.as_deref().and_then(digest::repr_sha256),
         });
     }
@@ -4187,6 +4216,7 @@ fn probe_ftp(
         attachment: false,
         filename: None,
         refuse_page: false,
+        job_name: None,
         repr_digest: None,
     })
 }
@@ -4262,6 +4292,11 @@ fn verify_range_support(
     }
     if !fresh && validators_changed(&headers, remote) {
         return Err(AttemptFailure::ResourceChanged);
+    }
+    if page_named_as_file(request, &headers, remote) {
+        // One byte cannot be looked at. The transfer over one connection reads the start of the
+        // body and decides.
+        return Ok(None);
     }
     let known_total = headers
         .content_range
@@ -5254,7 +5289,7 @@ fn is_html_name(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            ["htm", "html", "xhtml"]
+            ["htm", "html", "xhtml", "shtml", "mhtml"]
                 .iter()
                 .any(|html| extension.eq_ignore_ascii_case(html))
         })
@@ -5267,6 +5302,146 @@ fn page_refused(headers: &ResponseHeaders, remote: &RemoteInfo) -> bool {
     remote.refuse_page
         && (200..300).contains(&headers.status)
         && is_web_page(headers.content_type.as_deref(), headers.attachment)
+}
+
+/// Whether the answer to a request that no redirect led through is a web page that stands in for
+/// a file: the page is not an attachment and the name the file is saved under, the one the
+/// answer's `Content-Disposition` gives when the job's name is not fixed (`final_name`), has the
+/// extension of a file that is not a page's. A name that is a page's, or has no such extension,
+/// takes the page.
+fn page_named_as_file(
+    request: &AddRequest,
+    headers: &ResponseHeaders,
+    remote: &RemoteInfo,
+) -> bool {
+    if !(200..300).contains(&headers.status)
+        || !is_web_page(headers.content_type.as_deref(), headers.attachment)
+    {
+        return false;
+    }
+    let suggested = headers
+        .filename
+        .as_deref()
+        .or(remote.filename.as_deref())
+        .filter(|_| request.filename.is_none())
+        .map(|name| crate::engine::safe_filename(name, "download"));
+    suggested
+        .or_else(|| remote.job_name.clone())
+        .is_some_and(|name| !is_html_name(Path::new(&name)) && names_a_file(&name))
+}
+
+/// Whether a ranged answer is a page that is not the file. A ranged transfer begins only after
+/// an answer that was no such page, and a range from the middle of a file has no start to look
+/// at, so the page's type and the name decide.
+fn ranged_page_refused(
+    request: &AddRequest,
+    headers: &ResponseHeaders,
+    remote: &RemoteInfo,
+) -> bool {
+    page_refused(headers, remote) || page_named_as_file(request, headers, remote)
+}
+
+/// How many bytes from the start of a body show whether it is a web page.
+const PAGE_SNIFF_BYTES: usize = 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+enum Sniffed {
+    Page,
+    File,
+    /// What came so far could still become either.
+    Undecided,
+}
+
+/// Whether `start`, the first bytes of a body, is a web page: after a byte order mark and white
+/// space it opens with a tag that a page begins with. A text, CSV, JSON or XML file does not.
+fn sniff_page(start: &[u8]) -> Sniffed {
+    const BOM: &[u8] = b"\xEF\xBB\xBF";
+    const TAGS: [&[u8]; 6] = [
+        b"<!doctype html",
+        b"<html",
+        b"<head",
+        b"<body",
+        b"<script",
+        b"<title",
+    ];
+    if !start.is_empty() && start.len() < BOM.len() && BOM.starts_with(start) {
+        return Sniffed::Undecided;
+    }
+    let body = start.strip_prefix(BOM).unwrap_or(start).trim_ascii_start();
+    if TAGS
+        .iter()
+        .any(|tag| body.len() >= tag.len() && body[..tag.len()].eq_ignore_ascii_case(tag))
+    {
+        Sniffed::Page
+    } else if TAGS
+        .iter()
+        .any(|tag| body.len() < tag.len() && tag[..body.len()].eq_ignore_ascii_case(body))
+    {
+        Sniffed::Undecided
+    } else {
+        Sniffed::File
+    }
+}
+
+/// Holds back the start of the body of a page that is named as a file until its first bytes show
+/// whether it is a page: a file served with a page's type is no page and is saved, and a page
+/// is refused before a byte of it is written.
+#[derive(Default)]
+struct PageGate {
+    checked: bool,
+    holding: bool,
+    held: Vec<u8>,
+    page: bool,
+}
+
+enum Taken<'a> {
+    Held,
+    Page,
+    Free(Cow<'a, [u8]>),
+}
+
+impl PageGate {
+    /// What the first `PAGE_SNIFF_BYTES` held tell, however the body was cut into pieces.
+    fn verdict(&self) -> Sniffed {
+        sniff_page(&self.held[..self.held.len().min(PAGE_SNIFF_BYTES)])
+    }
+
+    /// Takes the next bytes of the body. `candidate` is asked once, at the first bytes, whether
+    /// the body is one to look at.
+    fn take<'a>(&mut self, received: &'a [u8], candidate: impl FnOnce() -> bool) -> Taken<'a> {
+        if !self.checked {
+            self.checked = true;
+            self.holding = candidate();
+        }
+        if !self.holding {
+            return Taken::Free(Cow::Borrowed(received));
+        }
+        self.held.extend_from_slice(received);
+        match self.verdict() {
+            Sniffed::Undecided if self.held.len() < PAGE_SNIFF_BYTES => Taken::Held,
+            Sniffed::Page => {
+                self.page = true;
+                Taken::Page
+            }
+            _ => {
+                self.holding = false;
+                Taken::Free(Cow::Owned(std::mem::take(&mut self.held)))
+            }
+        }
+    }
+
+    /// The body has ended: the bytes held back so far are all of it, or `None` when they are a
+    /// page.
+    fn finish(&mut self) -> Option<Vec<u8>> {
+        if !std::mem::take(&mut self.holding) {
+            return None;
+        }
+        if self.verdict() == Sniffed::Page {
+            self.page = true;
+            return None;
+        }
+        Some(std::mem::take(&mut self.held)).filter(|held| !held.is_empty())
+    }
 }
 
 fn page_instead_of_file() -> anyhow::Error {
@@ -5586,6 +5761,7 @@ mod tests {
             attachment: false,
             filename: None,
             refuse_page: false,
+            job_name: None,
             repr_digest: None,
         }
     }
@@ -6096,6 +6272,8 @@ mod tests {
             "a.htm",
             "a.html",
             "a.xhtml",
+            "a.shtml",
+            "a.mhtml",
             "A.HTML",
             "page (1).Htm",
             "x.y.html",
@@ -6153,6 +6331,219 @@ mod tests {
                 &redirected
             ));
         }
+    }
+
+    #[test]
+    fn a_page_is_a_file_when_the_name_it_is_saved_under_says_so() {
+        let page = |disposition: Option<&str>| ResponseHeaders {
+            status: 200,
+            content_type: Some("text/html".into()),
+            filename: disposition.map(str::to_owned),
+            ..Default::default()
+        };
+        let job = |name: &str| RemoteInfo {
+            job_name: Some(name.to_owned()),
+            ..remote_with_etag(None)
+        };
+        let typed = |name: &str| AddRequest {
+            filename: Some(name.to_owned()),
+            ..local_request("https://example.test/download".into())
+        };
+        let untyped = local_request("https://example.test/download".into());
+
+        // The job's name, when no answer names the file.
+        assert!(page_named_as_file(
+            &untyped,
+            &page(None),
+            &job("report.pdf")
+        ));
+        assert!(page_named_as_file(&untyped, &page(None), &job("setup.EXE")));
+        assert!(!page_named_as_file(&untyped, &page(None), &job("download")));
+        assert!(!page_named_as_file(&untyped, &page(None), &job("v1.2")));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(None),
+            &job("page.html")
+        ));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(None),
+            &job("page.mhtml")
+        ));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(None),
+            &remote_with_etag(None)
+        ));
+
+        // The name the answer suggests wins over the job's name when the name is not fixed.
+        assert!(page_named_as_file(
+            &untyped,
+            &page(Some("report.pdf")),
+            &job("download")
+        ));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(Some("saved.html")),
+            &job("report.pdf")
+        ));
+        // The probe's suggestion counts when the answer itself has none, and the answer's wins.
+        let probed = RemoteInfo {
+            filename: Some("report.pdf".into()),
+            ..job("download")
+        };
+        assert!(page_named_as_file(&untyped, &page(None), &probed));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(Some("saved.html")),
+            &probed
+        ));
+        // A suggestion is cleaned like any file name before its extension is read.
+        assert!(page_named_as_file(
+            &untyped,
+            &page(Some("dir\\report.pdf. ")),
+            &job("download")
+        ));
+
+        // A name the user or the browser fixed ignores what the answer suggests.
+        assert!(page_named_as_file(
+            &typed("report.pdf"),
+            &page(Some("saved.html")),
+            &job("report.pdf")
+        ));
+        assert!(!page_named_as_file(
+            &typed("saved.html"),
+            &page(Some("report.pdf")),
+            &job("saved.html")
+        ));
+        assert!(!page_named_as_file(
+            &typed("download"),
+            &page(Some("report.pdf")),
+            &job("download")
+        ));
+
+        // Only a web page that is not an attachment is in question.
+        let mut other = page(None);
+        other.content_type = Some("application/pdf".into());
+        assert!(!page_named_as_file(&untyped, &other, &job("report.pdf")));
+        other.content_type = Some("text/html".into());
+        other.attachment = true;
+        assert!(!page_named_as_file(&untyped, &other, &job("report.pdf")));
+        for status in [0, 302, 404, 503] {
+            let mut error = page(None);
+            error.status = status;
+            assert!(
+                !page_named_as_file(&untyped, &error, &job("report.pdf")),
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_start_of_a_body_is_a_page_only_when_it_opens_like_one() {
+        for page in [
+            "<!DOCTYPE html><html>",
+            "<!doctype HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\">",
+            "<html>",
+            "<HTML lang=en>",
+            "<head><title>x</title>",
+            "<body>",
+            "<script>location='/login'</script>",
+            "<title>Sign in</title>",
+            "\u{feff}<html>",
+            "  \r\n\t<html>",
+            "\u{feff} \n<!DOCTYPE html>",
+        ] {
+            assert_eq!(sniff_page(page.as_bytes()), Sniffed::Page, "{page:?}");
+        }
+        for file in [
+            "id,name\n1,a\n",
+            "hello",
+            "{\"html\": \"<html>\"}",
+            "<?xml version=\"1.0\"?><html/>",
+            "<feed/>",
+            "<!-- <html> -->",
+            "x<html>",
+            "%PDF-1.7",
+            "PK\u{3}\u{4}",
+        ] {
+            assert_eq!(sniff_page(file.as_bytes()), Sniffed::File, "{file:?}");
+        }
+        assert_eq!(sniff_page(&[0xFF, 0xFE, b'<']), Sniffed::File);
+        // What could still become a tag or a byte order mark waits for more bytes.
+        for start in [
+            "",
+            " ",
+            "\n\n",
+            "<",
+            "<!doc",
+            "<!doctype htm",
+            "<htm",
+            "<scr",
+            "\u{feff}",
+        ] {
+            assert_eq!(
+                sniff_page(start.as_bytes()),
+                Sniffed::Undecided,
+                "{start:?}"
+            );
+        }
+        assert_eq!(sniff_page(&[0xEF]), Sniffed::Undecided);
+        assert_eq!(sniff_page(&[0xEF, 0xBB]), Sniffed::Undecided);
+        assert_eq!(sniff_page(&[0xEF, 0xBB, 0x41]), Sniffed::File);
+    }
+
+    #[test]
+    fn the_gate_decides_on_the_start_of_the_body_however_it_arrives() {
+        let run = |chunks: &[&[u8]], candidate: bool| {
+            let mut gate = PageGate::default();
+            let mut passed = Vec::new();
+            for chunk in chunks {
+                match gate.take(chunk, || candidate) {
+                    Taken::Held => {}
+                    Taken::Page => return (true, passed),
+                    Taken::Free(bytes) => passed.extend_from_slice(&bytes),
+                }
+            }
+            match gate.finish() {
+                Some(rest) => passed.extend_from_slice(&rest),
+                None if gate.page => return (true, passed),
+                None => {}
+            }
+            (false, passed)
+        };
+        let bytes = |text: &str| text.as_bytes().to_vec();
+        // A page is stopped however its opening is cut up, and nothing of it is passed on.
+        let page = b"  <!DOCTYPE html><html><body>Sign in</body></html>";
+        for cut in 1..page.len() {
+            let (refused, passed) = run(&[&page[..cut], &page[cut..]], true);
+            assert!(refused && passed.is_empty(), "cut at {cut}");
+        }
+        let byte_by_byte = page.chunks(1).collect::<Vec<_>>();
+        assert!(run(&byte_by_byte, true).0);
+        // A file is passed on whole, whether the first bytes decide it or the end of the body does.
+        for body in [
+            "id,name\n1,a\n",
+            "<",
+            "<!doc",
+            "  ",
+            "<?xml version=\"1.0\"?><a/>",
+        ] {
+            let one = body.as_bytes().chunks(1).collect::<Vec<_>>();
+            assert_eq!(run(&one, true), (false, bytes(body)), "{body:?}");
+            assert_eq!(
+                run(&[body.as_bytes()], true),
+                (false, bytes(body)),
+                "{body:?}"
+            );
+        }
+        // A body that stays undecided is passed on once the window is full.
+        let blank = " ".repeat(PAGE_SNIFF_BYTES + 10);
+        let (refused, passed) = run(&[blank.as_bytes()], true);
+        assert!(!refused && passed == blank.as_bytes());
+        // Nothing is looked at unless asked.
+        assert_eq!(run(&[&page[..]], false), (false, page.to_vec()));
+        assert_eq!(run(&[], true), (false, Vec::new()));
     }
 
     #[test]

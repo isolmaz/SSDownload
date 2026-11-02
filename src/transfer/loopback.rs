@@ -3415,6 +3415,27 @@ fn page_server(size: u64, kind: &str) -> Server {
     })
 }
 
+/// How a sign-in page opens.
+const PAGE_START: &[u8] = b"<!DOCTYPE html><html><head><title>Sign in</title></head><body>";
+
+/// The body of a server with the `body_start` given: the pattern with `start` over its first bytes.
+fn body_starting(start: &[u8], size: u64) -> Vec<u8> {
+    let mut body = pattern(1, size);
+    body[..start.len()].copy_from_slice(start);
+    body
+}
+
+/// A server whose answers are web pages of `size` bytes that open like a page, of the content
+/// type `kind`.
+fn opened_page_server(size: u64, kind: &str) -> Server {
+    Server::start(Config {
+        size,
+        content_type: Some(kind.into()),
+        body_start: PAGE_START.to_vec(),
+        ..Config::default()
+    })
+}
+
 /// A server whose `GET` is redirected to `target`, as a sign-in redirect would be; its `HEAD` is
 /// answered itself, as a file's metadata would.
 fn redirecting_get(target: String, size: u64) -> Server {
@@ -3700,6 +3721,355 @@ fn a_page_that_is_reached_without_a_redirect_is_still_saved() {
     )
     .unwrap();
     assert_eq!(fs::read(result.path).unwrap(), pattern(1, size));
+}
+
+/// Downloads from `server` into a file called `name`, as a job added with that name, or with an
+/// address that ends in it, does.
+fn fetch_into(server: &Server, name: &str, connections: u8) -> (Result<TransferResult>, TempDir) {
+    let directory = TempDir::new("direct-page");
+    let result = fetch(
+        &file_request(server.url("/file")),
+        &directory.0.join(name),
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    );
+    (result, directory)
+}
+
+#[test]
+fn a_page_that_answers_for_a_file_of_another_type_is_refused_without_a_redirect() {
+    for name in ["report.pdf", "setup.EXE", "archive.tar.gz", "photo.jpg"] {
+        for kind in [
+            "text/html",
+            "application/xhtml+xml",
+            "Text/HTML; charset=utf-8",
+        ] {
+            let page = opened_page_server(4_000, kind);
+            let directory = TempDir::new("direct-page-refused");
+            let output = directory.0.join(name);
+            let error = fetch(
+                &file_request(page.url("/file")),
+                &output,
+                &TransferControl::default(),
+                1,
+                1,
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert_page_refused(&error, &output);
+            page.wait_idle();
+            assert_eq!(
+                data_gets(&page.log()).count(),
+                1,
+                "{name} {kind}: {:?}",
+                page.log()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_page_is_recognised_by_how_it_opens_whatever_the_rest_of_it_is() {
+    let starts: [&[u8]; 4] = [
+        PAGE_START,
+        b"\xEF\xBB\xBF\r\n  <HTML lang=en>",
+        b"<script>location='/login'</script>",
+        b"<title>Sign in</title>",
+    ];
+    for start in starts {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            body_start: start.to_vec(),
+            ..Config::default()
+        });
+        let directory = TempDir::new("direct-page-opening");
+        let output = directory.0.join("report.pdf");
+        let error = fetch(
+            &file_request(page.url("/file")),
+            &output,
+            &TransferControl::default(),
+            1,
+            1,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+    }
+}
+
+#[test]
+fn a_file_served_with_a_page_type_is_saved_when_its_bytes_are_no_page() {
+    for (name, start) in [
+        ("data.csv", "id,name\n1,a\n"),
+        ("notes.txt", "hello"),
+        ("data.json", "{\"html\": \"<html>\"}\n"),
+        ("feed.xml", "<?xml version=\"1.0\"?><html/>"),
+        ("tiny.txt", "<"),
+        ("blank.txt", "\n"),
+    ] {
+        // The whole body fits the part that is looked at, and a body that is longer.
+        for size in [start.len() as u64, 4_000] {
+            let server = Server::start(Config {
+                size,
+                content_type: Some("text/html".into()),
+                body_start: start.as_bytes().to_vec(),
+                ..Config::default()
+            });
+            let (result, _directory) = fetch_into(&server, name, 1);
+            let path = result
+                .unwrap_or_else(|error| panic!("{name} {size}: {error:#}"))
+                .path;
+            assert_eq!(
+                fs::read(path).unwrap(),
+                body_starting(start.as_bytes(), size),
+                "{name} {size}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_large_file_served_with_a_page_type_is_downloaded_over_one_connection_because_one_byte_cannot_be_looked_at(
+) {
+    let size = 6 * MIB;
+    let server = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        body_start: b"id,name\n".to_vec(),
+        ..Config::default()
+    });
+    let (result, _directory) = fetch_into(&server, "data.csv", 4);
+    assert_eq!(
+        fs::read(result.unwrap().path).unwrap(),
+        body_starting(b"id,name\n", size)
+    );
+    server.wait_idle();
+    assert_eq!(data_gets(&server.log()).count(), 1, "{:?}", server.log());
+}
+
+#[test]
+fn a_resumed_download_of_a_file_served_with_a_page_type_continues_where_it_stopped() {
+    // The bytes that were kept are not the start of the body, which is all that can be looked at:
+    // what the rest of the body opens with, even a page's tag, decides nothing.
+    let size = MIB;
+    let held = 300_001usize;
+    let mut lead = vec![b'x'; held + 16];
+    lead[held..held + 6].copy_from_slice(b"<html>");
+    let server = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        body_start: lead.clone(),
+        ..Config::default()
+    });
+    let directory = TempDir::new("resume-mistyped");
+    let output = directory.0.join("data.csv");
+    fs::write(part_path(&output), &pattern(1, size)[..held]).unwrap();
+    fs::write(
+        state_path(&output),
+        previous_release_state(&server, size, false, "[]"),
+    )
+    .unwrap();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    let mut expected = pattern(1, size)[..held].to_vec();
+    expected.extend_from_slice(&body_starting(&lead, size)[held..]);
+    assert_eq!(fs::read(result.path).unwrap(), expected);
+    server.wait_idle();
+    let log = server.log();
+    let gets = log
+        .iter()
+        .filter(|entry| entry.method == "GET")
+        .collect::<Vec<_>>();
+    assert_eq!(gets.len(), 1, "{log:?}");
+    assert_eq!(gets[0].range, Some(format!("bytes={held}-")));
+}
+
+#[test]
+fn a_page_that_only_the_head_answer_announces_is_not_the_file_the_get_delivers() {
+    // The HEAD (request 0) says page; every GET says file.
+    for (size, connections) in [(4_000, 1), (6 * MIB, 4)] {
+        let server = Server::start(Config {
+            size,
+            content_type: Some("text/html".into()),
+            content_type_from: Some((1, "application/pdf".into())),
+            ..Config::default()
+        });
+        let (result, _directory) = fetch_into(&server, "report.pdf", connections);
+        assert_eq!(
+            fs::read(result.unwrap().path).unwrap(),
+            pattern(1, size),
+            "{size} bytes over {connections}"
+        );
+    }
+}
+
+#[test]
+fn the_name_a_page_would_be_saved_under_decides_whether_it_is_the_file() {
+    let size = 4_000;
+    let suggesting = |name: &str| {
+        Server::start(Config {
+            size,
+            content_type: Some("text/html".into()),
+            content_disposition: Some(format!("inline; filename=\"{name}\"")),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        })
+    };
+    // The server names a page as a file and the job's own name is no file's.
+    let server = suggesting("report.pdf");
+    let directory = TempDir::new("suggested-file");
+    let output = directory.0.join("download");
+    let error = fetch(
+        &file_request(server.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+
+    // The server names the page as a page, whatever the address ends in.
+    let server = suggesting("saved.html");
+    let (result, _directory) = fetch_into(&server, "report.pdf", 1);
+    let path = result.unwrap().path;
+    assert_eq!(path.file_name().unwrap(), "saved.html");
+    assert_eq!(fs::read(path).unwrap(), body_starting(PAGE_START, size));
+
+    // A name the user or the browser chose is not the server's to change.
+    let directory = TempDir::new("typed-file");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &AddRequest {
+            filename: Some("report.pdf".into()),
+            ..file_request(server.url("/file"))
+        },
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+}
+
+#[test]
+fn a_page_is_saved_when_the_name_is_a_pages_or_names_no_file_type() {
+    let size = 4_000;
+    for name in [
+        "page.html",
+        "page.HTM",
+        "page.xhtml",
+        "page.shtml",
+        "page.mhtml",
+        "page (1).html",
+        "download",
+        "v1.2",
+        "2024.11",
+        "Mr. Robot",
+    ] {
+        let page = page_server(size, "text/html");
+        let (result, _directory) = fetch_into(&page, name, 1);
+        let path = result
+            .unwrap_or_else(|error| panic!("{name}: {error:#}"))
+            .path;
+        assert_eq!(fs::read(path).unwrap(), pattern(1, size), "{name}");
+    }
+}
+
+#[test]
+fn a_page_sent_as_an_attachment_is_saved_whatever_the_name_asked_for() {
+    let size = 4_000;
+    let page = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        content_disposition: Some("attachment; filename=\"saved.bin\"".into()),
+        ..Config::default()
+    });
+    let (result, _directory) = fetch_into(&page, "report.pdf", 1);
+    assert_eq!(fs::read(result.unwrap().path).unwrap(), pattern(1, size));
+}
+
+#[test]
+fn a_page_the_transfer_meets_after_a_probe_that_saw_a_file_is_not_written_under_the_name_of_a_file()
+{
+    // The probe's HEAD (request 0) sees the file; the GET (request 1) answers with the page.
+    let page = Server::start(Config {
+        size: 4_000,
+        content_type: Some("application/octet-stream".into()),
+        content_type_from: Some((1, "text/html".into())),
+        body_start: PAGE_START.to_vec(),
+        ..Config::default()
+    });
+    let directory = TempDir::new("direct-get-page");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &file_request(page.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+    page.wait_idle();
+    assert!(
+        page.log().iter().any(|entry| entry.method == "GET"),
+        "the transfer should have reached the page: {:?}",
+        page.log()
+    );
+}
+
+#[test]
+fn a_page_in_the_range_support_probe_or_a_ranged_transfer_is_not_written_by_any_connection_of_a_file(
+) {
+    // Request 0 is the HEAD, request 1 the one-byte probe, the later ones are the ranges.
+    for page_from in [1, 2] {
+        let page = Server::start(Config {
+            size: 6 * MIB,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((page_from, "text/html".into())),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        });
+        let directory = TempDir::new("direct-ranged-page");
+        let output = directory.0.join("archive.zip");
+        forget_writes();
+        let error = fetch(
+            &file_request(page.url("/file")),
+            &output,
+            &TransferControl::default(),
+            4,
+            4,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+        assert!(writes().is_empty(), "{page_from}: {:?}", writes());
+        page.wait_idle();
+        // A page in the probe is looked at by the transfer over one connection, which asks for
+        // the whole file; a page in the ranges is refused by the first range that meets it.
+        let gets = data_gets(&page.log()).cloned().collect::<Vec<_>>();
+        assert!(!gets.is_empty(), "{page_from}: {:?}", page.log());
+        assert_eq!(
+            gets.iter().all(|entry| entry.range.is_none()),
+            page_from == 1,
+            "{page_from}: {gets:?}"
+        );
+    }
 }
 
 /// The answer that sends a request for `from` on to `to`, as the link of a download page does.

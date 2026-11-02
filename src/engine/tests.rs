@@ -3810,6 +3810,8 @@ mod retry_budget {
     };
 
     const MIB: u64 = 1024 * 1024;
+    /// How a sign-in page opens.
+    const PAGE_START: &[u8] = b"<!DOCTYPE html><html><head><title>Sign in</title></head><body>";
 
     fn engine_with_retry_limit(root: &Path, retry_limit: u8) -> Engine {
         let engine = Engine::open(AppPaths::new(root.to_path_buf()).unwrap()).unwrap();
@@ -4012,6 +4014,85 @@ mod retry_budget {
         engine.shutdown();
     }
 
+    #[test]
+    fn a_file_job_answered_with_a_page_at_the_address_of_a_file_fails_at_once_and_is_neither_retried_nor_sent_to_a_refresh(
+    ) {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-direct-page");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        // A job with a page to refresh from goes to the refresh on an authorization failure.
+        let id = engine
+            .add(AddRequest {
+                page_url: Some("https://page.example.test/watch".into()),
+                ..file_request(page.url("/report.pdf"), &root.0.join("out"))
+            })
+            .unwrap()
+            .remove(0);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        let error = job.error.as_deref().unwrap();
+        assert!(error.starts_with("SSD-NET-004 "), "{error}");
+        assert_eq!(job.attempts, 0);
+        assert!(!job.path.exists());
+        assert_eq!(attempts_made(&page), 1);
+        // The one GET is the one that shows the page.
+        assert_eq!(
+            page.log()
+                .iter()
+                .filter(|entry| entry.method == "GET")
+                .count(),
+            1
+        );
+        engine.shutdown();
+    }
+
+    /// The name decides whether a page is the file: one the user or the browser gave wins over
+    /// the address, and a name that is a page's or names no file type saves the page as before.
+    #[test]
+    fn the_name_of_the_job_decides_whether_a_page_without_a_redirect_is_the_file() {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        });
+        let root = TempDir::new("direct-page-names");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        let outcome = |name: Option<&str>, address: &str| {
+            let id = engine
+                .add(AddRequest {
+                    filename: name.map(str::to_owned),
+                    ..file_request(page.url(address), &root.0.join("out"))
+                })
+                .unwrap()
+                .remove(0);
+            let job = finished_job(&engine, &id);
+            let code = job
+                .error
+                .as_deref()
+                .and_then(|error| error.split(' ').next())
+                .map(str::to_owned);
+            (job.state, code)
+        };
+        let refused = (JobState::Failed, Some("SSD-NET-004".to_owned()));
+        let saved = (JobState::Completed, None);
+        // A name from the user or the browser.
+        assert_eq!(outcome(Some("report.pdf"), "/download"), refused);
+        assert_eq!(outcome(Some("saved.html"), "/report.pdf"), saved);
+        // The last part of the address.
+        assert_eq!(outcome(None, "/setup.exe"), refused);
+        assert_eq!(outcome(None, "/download"), saved);
+        assert_eq!(outcome(None, "/page.html"), saved);
+        assert_eq!(outcome(None, "/releases/v1.2"), saved);
+        engine.shutdown();
+    }
+
     /// What the extension is told, sampled from the add until the job ends.
     fn statuses_until_the_job_ends(
         engine: &Engine,
@@ -4121,6 +4202,82 @@ mod retry_budget {
                     page.log()
                 );
             }
+        }
+        engine.shutdown();
+    }
+
+    /// A page at the address of a file is handed back to the browser like a page a redirect led
+    /// to: no moment reports received bytes, and the job ends with `SSD-NET-004`.
+    #[test]
+    fn a_job_refused_for_a_page_at_the_address_of_a_file_never_reports_received_bytes() {
+        const PAGE: u64 = 400_000;
+        let probe_sees_page = Server::start(Config {
+            size: PAGE,
+            content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
+            throttle: Some(100_000),
+            ..Config::default()
+        });
+        let get_sees_page = Server::start(Config {
+            size: PAGE,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((1, "text/html".into())),
+            body_start: PAGE_START.to_vec(),
+            throttle: Some(100_000),
+            ..Config::default()
+        });
+        let ranges_see_page = Server::start(Config {
+            size: 6 * MIB,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((2, "text/html".into())),
+            throttle: Some(MIB),
+            ..Config::default()
+        });
+        let root = TempDir::new("add-status-direct-page");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        for (index, (label, source)) in [
+            ("the HEAD shows a page", &probe_sees_page),
+            ("the transfer meets the page", &get_sees_page),
+            ("every range is answered with the page", &ranges_see_page),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request_id = format!("takeover-{index}");
+            engine
+                .add(AddRequest {
+                    request_id: Some(request_id.clone()),
+                    ..file_request(source.url("/report.pdf"), &root.0.join("out"))
+                })
+                .unwrap();
+            let seen = statuses_until_the_job_ends(&engine, &request_id);
+            assert!(
+                seen.iter().all(|status| status.found && !status.received),
+                "{label}: {seen:?}"
+            );
+            let last = seen.last().unwrap();
+            assert_eq!(last.state, Some(JobState::Failed), "{label}: {last:?}");
+            assert_eq!(last.error_code.as_deref(), Some("SSD-NET-004"), "{label}");
+            let job = engine
+                .snapshot()
+                .jobs
+                .iter()
+                .find(|job| job.request.request_id.as_deref() == Some(request_id.as_str()))
+                .unwrap()
+                .clone();
+            assert_eq!(job.downloaded, 0, "{label}");
+            assert!(!job.path.exists(), "{label}: the page was published");
+            source.wait_idle();
+            // The page is refused at its first bytes, which only a GET shows.
+            assert!(
+                source
+                    .log()
+                    .iter()
+                    .any(|entry| entry.method == "GET"
+                        && entry.range.as_deref() != Some("bytes=0-0")),
+                "{label}: {:?}",
+                source.log()
+            );
         }
         engine.shutdown();
     }
