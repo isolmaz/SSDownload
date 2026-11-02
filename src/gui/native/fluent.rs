@@ -106,7 +106,7 @@ fn luminance(colour: u32) -> f64 {
         + 0.0722 * channel((colour >> 16) & 0xff)
 }
 /// The WCAG contrast ratio of two COLORREFs.
-fn contrast(a: u32, b: u32) -> f64 {
+pub(super) fn contrast(a: u32, b: u32) -> f64 {
     let (a, b) = (luminance(a), luminance(b));
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
@@ -237,6 +237,12 @@ static ACCENT: AtomicU64 = AtomicU64::new(0);
 /// The palette the main window paints with right now: Fluent in either scheme,
 /// system colours while high contrast is on.
 pub(super) unsafe fn main_palette(hwnd: HWND) -> MainPalette {
+    scheme_palette(scheme_dark(hwnd))
+}
+
+/// `main_palette` for the scheme `dark` names, for a window that has not
+/// been stamped with its scheme.
+pub(super) unsafe fn scheme_palette(dark: bool) -> MainPalette {
     if !high_contrast() {
         let packed = ACCENT.load(Ordering::Relaxed);
         let accent = if packed == 0 {
@@ -247,7 +253,7 @@ pub(super) unsafe fn main_palette(hwnd: HWND) -> MainPalette {
                 light2: packed as u32 & 0x00ff_ffff,
             }
         };
-        return fluent_palette(scheme_dark(hwnd), accent);
+        return fluent_palette(dark, accent);
     }
     let window = GetSysColor(COLOR_WINDOW);
     let text = GetSysColor(COLOR_WINDOWTEXT);
@@ -433,13 +439,18 @@ pub(super) fn ramp_faces(language: Language, caption: bool) -> &'static [&'stati
 }
 /// A type ramp font `px` effective pixels high.
 pub(super) unsafe fn ramp_font(dpi: u32, px: i32, caption: bool) -> HFONT {
+    ramp_font_weight(dpi, px, caption, FW_NORMAL as i32)
+}
+/// A type ramp font `px` effective pixels high in the given weight: the
+/// semibold of the Body strong style, for instance.
+pub(super) unsafe fn ramp_font_weight(dpi: u32, px: i32, caption: bool, weight: i32) -> HFONT {
     face_font(
         -scale(px, dpi),
-        FW_NORMAL as i32,
+        weight,
         CLEARTYPE_QUALITY,
         ramp_faces(crate::i18n::language(), caption),
     )
-    .unwrap_or_else(|| make_font(dpi, px * 3 / 4, FW_NORMAL as i32))
+    .unwrap_or_else(|| make_font(dpi, px * 3 / 4, weight))
 }
 /// Body: commands, rows, tabs and the tab page (14/20 epx).
 pub(super) const BODY_PX: i32 = 14;
@@ -2137,13 +2148,19 @@ pub(super) unsafe fn paint_shapes(
 /// `draw` run on a white `size` square DIB, as 0x00RRGGBB pixels.
 #[cfg(test)]
 pub(super) unsafe fn on_white(size: i32, draw: impl FnOnce(HDC)) -> Vec<u32> {
+    on_white_rect(size, size, draw)
+}
+
+/// `draw` run on a white `width` by `height` DIB, as 0x00RRGGBB pixels.
+#[cfg(test)]
+pub(super) unsafe fn on_white_rect(width: i32, height: i32, draw: impl FnOnce(HDC)) -> Vec<u32> {
     let screen = GetDC(null_mut());
     let dc = CreateCompatibleDC(screen);
     ReleaseDC(null_mut(), screen);
     let mut info: BITMAPINFO = zeroed();
     info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-    info.bmiHeader.biWidth = size;
-    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
@@ -2154,13 +2171,13 @@ pub(super) unsafe fn on_white(size: i32, draw: impl FnOnce(HDC)) -> Vec<u32> {
     let area = RECT {
         left: 0,
         top: 0,
-        right: size,
-        bottom: size,
+        right: width,
+        bottom: height,
     };
     fill_colour(dc, &area, 0xffffff);
     draw(dc);
     GdiFlush();
-    let pixels = std::slice::from_raw_parts(bits as *const u32, (size * size) as usize)
+    let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
         .iter()
         .map(|pixel| pixel & 0xffffff)
         .collect();

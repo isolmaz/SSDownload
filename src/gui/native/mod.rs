@@ -2519,6 +2519,12 @@ fn column_fixed(column: usize) -> bool {
     column == COL_NAME || column == COL_STATE
 }
 
+/// Whether the Modern menus of the columns start the group of the ones that can be
+/// switched at `column`: they stay apart from the ones that are always shown.
+fn column_group_starts(column: usize) -> bool {
+    column > 0 && column_fixed(column - 1) && !column_fixed(column)
+}
+
 /// The columns shown for a stored list of hidden ones.
 fn visible_columns(hidden: &[String]) -> Vec<usize> {
     (0..MAIN_COLUMNS.len())
@@ -2704,10 +2710,13 @@ unsafe fn save_list_view(ui: &MainUi) {
 
 /// A check for every column, Name and State always on: the header's menu and
 /// the View menu's Columns submenu.
-unsafe fn column_menu(ui: &MainUi) -> HMENU {
+unsafe fn column_menu(columns: &[usize]) -> HMENU {
     let menu = CreatePopupMenu();
     for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
-        let shown = ui.columns.contains(&index);
+        if modern() && column_group_starts(index) {
+            separate(menu);
+        }
+        let shown = columns.contains(&index);
         AppendMenuW(
             menu,
             MF_STRING
@@ -2721,7 +2730,7 @@ unsafe fn column_menu(ui: &MainUi) -> HMENU {
 }
 
 unsafe fn show_column_menu(ui: &mut MainUi, point: POINT) {
-    let menu = column_menu(ui);
+    let menu = column_menu(&ui.columns);
     let command = TrackPopupMenu(
         menu,
         TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
@@ -3406,6 +3415,9 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
         let sort = CreatePopupMenu();
         for (index, (tr, en, _)) in MAIN_COLUMNS.iter().enumerate() {
             let label = crate::i18n::ui(tr, en);
+            if column_group_starts(index) {
+                AppendMenuW(columns, MF_SEPARATOR, 0, null());
+            }
             append(columns, ID_COLUMN_BASE + index as i32, label);
             append(sort, ID_SORT_BASE + index as i32, label);
         }
@@ -7102,9 +7114,37 @@ unsafe fn notify(ui: &MainUi, title: &str, body: &str, error: bool) -> bool {
     Shell_NotifyIconW(NIM_MODIFY, &data);
     true
 }
+/// Glyphs of the tray menu's commands in the Modern theme (Segoe Fluent Icons):
+/// OpenInNewWindow, BackToWindow, Add, Paste, Bulleted list, Pause, Play,
+/// Settings, Sync, Download, FolderOpen and Cancel. The commands that carry a
+/// check mark have none.
+const TRAY_MENU_GLYPHS: [(i32, u16); 12] = [
+    (ID_TRAY_SHOW, 0xe8a7),
+    (ID_MINI_PANEL, 0xe73f),
+    (ID_TRAY_ADD, 0xe710),
+    (ID_TRAY_CLIPBOARD, 0xe77f),
+    (ID_BATCH, 0xe8fd),
+    (ID_TRAY_PAUSE, 0xe769),
+    (ID_TRAY_RESUME, 0xe768),
+    (ID_SETTINGS, 0xe713),
+    (ID_UPDATE_CHECK, 0xe895),
+    (ID_INSTALL_UPDATE, 0xe896),
+    (ID_TRAY_FOLDER, 0xe838),
+    (ID_EXIT, 0xe711),
+];
+
+/// The glyph bitmaps of the tray menu's items in the Modern theme; Classic's menu has none.
+unsafe fn tray_menu_glyphs(menu: HMENU, hwnd: HWND, dpi: u32) -> Vec<HBITMAP> {
+    if modern() {
+        set_menu_glyphs(menu, hwnd, dpi, &TRAY_MENU_GLYPHS)
+    } else {
+        Vec::new()
+    }
+}
+
 /// The tray's right-click menu: the everyday actions without opening the window.
-unsafe fn tray_menu(ui: &MainUi) -> HMENU {
-    let settings = &ui.snapshot.settings;
+/// `quiet` is whether notifications are muted for the hour.
+unsafe fn tray_menu(settings: &Settings, quiet: bool) -> HMENU {
     let menu = CreatePopupMenu();
     append(
         menu,
@@ -7193,7 +7233,6 @@ unsafe fn tray_menu(ui: &MainUi) -> HMENU {
         ))
         .as_ptr(),
     );
-    let quiet = ui.quiet_until.is_some_and(|until| until > Instant::now());
     AppendMenuW(
         menu,
         MF_STRING | if quiet { MF_CHECKED } else { 0 },
@@ -7250,7 +7289,9 @@ unsafe fn handle_tray(ui: &mut MainUi, event: u32) {
         }
         WM_LBUTTONUP | WM_LBUTTONDBLCLK | NIN_SELECT | NIN_KEYSELECT => show_main(ui),
         WM_RBUTTONUP | WM_CONTEXTMENU => {
-            let menu = tray_menu(ui);
+            let quiet = ui.quiet_until.is_some_and(|until| until > Instant::now());
+            let menu = tray_menu(&ui.snapshot.settings, quiet);
+            let glyphs = tray_menu_glyphs(menu, ui.hwnd, ui.dpi);
             let mut p: POINT = zeroed();
             GetCursorPos(&mut p);
             SetForegroundWindow(ui.hwnd);
@@ -7264,6 +7305,9 @@ unsafe fn handle_tray(ui: &mut MainUi, event: u32) {
                 null(),
             ) as i32;
             DestroyMenu(menu);
+            for bitmap in glyphs {
+                DeleteObject(bitmap as HGDIOBJ);
+            }
             PostMessageW(ui.hwnd, WM_NULL, 0, 0);
             if cmd != 0 {
                 if IsWindowEnabled(ui.hwnd) == 0 && !tray_command_runs_under_modal(cmd) {
@@ -10738,7 +10782,7 @@ mod tests {
         }
     }
 
-    fn sample_job(name: &str, state: crate::model::JobState) -> crate::model::Job {
+    pub(super) fn sample_job(name: &str, state: crate::model::JobState) -> crate::model::Job {
         crate::model::Job {
             id: name.into(),
             request: crate::model::AddRequest::default(),
@@ -11503,6 +11547,169 @@ mod tests {
         }
         assert!(tray_command_runs_under_modal(ID_TRAY_PAUSE));
         assert!(tray_command_runs_under_modal(ID_EXIT));
+    }
+
+    /// One item of a menu.
+    struct Entry {
+        id: i32,
+        separator: bool,
+        grayed: bool,
+        checked: bool,
+        submenu: super::HMENU,
+        bitmap: bool,
+    }
+
+    /// The items of `menu`, top level only.
+    unsafe fn entries(menu: super::HMENU) -> Vec<Entry> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetMenuItemCount, GetMenuItemInfoW, MENUITEMINFOW, MFS_CHECKED, MFS_GRAYED,
+            MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STATE, MIIM_SUBMENU,
+        };
+        (0..GetMenuItemCount(menu))
+            .map(|index| {
+                let mut info: MENUITEMINFOW = std::mem::zeroed();
+                info.cbSize = std::mem::size_of::<MENUITEMINFOW>() as u32;
+                info.fMask = MIIM_BITMAP | MIIM_FTYPE | MIIM_ID | MIIM_STATE | MIIM_SUBMENU;
+                assert_ne!(GetMenuItemInfoW(menu, index as u32, 1, &mut info), 0);
+                Entry {
+                    id: info.wID as i32,
+                    separator: info.fType & MFT_SEPARATOR != 0,
+                    grayed: info.fState & MFS_GRAYED != 0,
+                    checked: info.fState & MFS_CHECKED != 0,
+                    submenu: info.hSubMenu,
+                    bitmap: !info.hbmpItem.is_null(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_modern_tray_menu_has_a_glyph_on_each_command_without_a_check_and_classic_has_none() {
+        use super::{
+            tray_menu, tray_menu_glyphs, ID_TRAY_QUIET, ID_TRAY_SHUTDOWN, TRAY_MENU_GLYPHS,
+        };
+        use windows_sys::Win32::Graphics::Gdi::DeleteObject;
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyMenu;
+
+        for language in ["tr", "en"] {
+            crate::i18n::with_language(language, || {
+                for in_modern in [false, true] {
+                    for dpi in [96, 144] {
+                        super::set_modern(in_modern);
+                        let context = format!("{language} modern={in_modern} dpi={dpi}");
+                        unsafe {
+                            let menu = tray_menu(&crate::model::Settings::default(), false);
+                            let bitmaps = tray_menu_glyphs(menu, std::ptr::null_mut(), dpi);
+                            let items = entries(menu);
+                            // The checks, which carry their own mark, and the submenu's
+                            // arrow leave the glyph column empty.
+                            let glyph = |item: &Entry| {
+                                in_modern
+                                    && !item.separator
+                                    && item.submenu.is_null()
+                                    && item.id != ID_TRAY_SHUTDOWN
+                                    && item.id != ID_TRAY_QUIET
+                            };
+                            for item in &items {
+                                assert_eq!(
+                                    item.bitmap,
+                                    glyph(item),
+                                    "{context}: command {}",
+                                    item.id
+                                );
+                            }
+                            assert_eq!(
+                                bitmaps.len(),
+                                items.iter().filter(|item| glyph(item)).count(),
+                                "{context}"
+                            );
+                            // Each command of the table is in the menu, but for the update
+                            // one that is not on offer.
+                            for (id, _) in TRAY_MENU_GLYPHS {
+                                let listed = items.iter().any(|item| item.id == id);
+                                assert!(
+                                    listed || id == super::ID_INSTALL_UPDATE,
+                                    "{context}: command {id} has a glyph but no item"
+                                );
+                            }
+                            DestroyMenu(menu);
+                            for bitmap in bitmaps {
+                                DeleteObject(bitmap as _);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    /// The menu under `menu` that lists the columns.
+    unsafe fn columns_menu(menu: super::HMENU) -> Option<super::HMENU> {
+        let items = entries(menu);
+        if items.iter().any(|item| item.id == super::ID_COLUMN_BASE) {
+            return Some(menu);
+        }
+        items
+            .iter()
+            .filter(|item| !item.submenu.is_null())
+            .find_map(|item| columns_menu(item.submenu))
+    }
+
+    #[test]
+    fn the_modern_column_menus_set_the_columns_that_stay_apart_from_the_ones_that_switch() {
+        use super::{column_fixed, column_menu, create_main_menu, ID_COLUMN_BASE, MAIN_COLUMNS};
+        use crate::model::UiMode;
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyMenu;
+
+        let shown = [0usize, 1, 2, 4];
+        for language in ["tr", "en"] {
+            crate::i18n::with_language(language, || unsafe {
+                // The header's menu in both themes, and the View menu that only Modern has.
+                for in_modern in [false, true] {
+                    super::set_modern(in_modern);
+                    let header = column_menu(&shown);
+                    let main = create_main_menu(UiMode::Advanced, false);
+                    let view = columns_menu(main);
+                    assert_eq!(
+                        view.is_some(),
+                        in_modern,
+                        "{language}: the View menu is Modern's"
+                    );
+                    for menu in std::iter::once(header).chain(view) {
+                        let items = entries(menu);
+                        let context = format!("{language} modern={in_modern}");
+                        let columns: Vec<_> = items.iter().filter(|item| !item.separator).collect();
+                        assert_eq!(columns.len(), MAIN_COLUMNS.len(), "{context}");
+                        let separators: Vec<_> = items
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, item)| item.separator)
+                            .map(|(position, _)| position)
+                            .collect();
+                        // Modern's header menu and View menu set the always-shown columns
+                        // apart; Classic's header menu is one list.
+                        let apart = (0..MAIN_COLUMNS.len()).filter(|&c| column_fixed(c)).count();
+                        assert_eq!(
+                            separators,
+                            if in_modern { vec![apart] } else { vec![] },
+                            "{context}"
+                        );
+                        for (index, column) in columns.iter().enumerate() {
+                            assert_eq!(column.id, ID_COLUMN_BASE + index as i32, "{context}");
+                        }
+                    }
+                    // The header's menu is built with its states.
+                    let items = entries(header);
+                    for (index, column) in items.iter().filter(|item| !item.separator).enumerate() {
+                        let context = format!("{language} modern={in_modern} column {index}");
+                        assert_eq!(column.grayed, column_fixed(index), "{context}");
+                        assert_eq!(column.checked, shown.contains(&index), "{context}");
+                    }
+                    DestroyMenu(header);
+                    DestroyMenu(main);
+                }
+            });
+        }
     }
 
     #[test]
