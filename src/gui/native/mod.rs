@@ -8454,7 +8454,7 @@ mod tests {
             DestroyWindow, GetWindowLongPtrW, GWL_STYLE, WS_POPUP,
         };
 
-        unsafe {
+        on_private_desktop(|| unsafe {
             let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
             assert!(!parent.is_null(), "the hidden parent window is created");
             let label = dialog_label(parent, null_mut(), "Tom & Jerry.mp4", 7);
@@ -8465,7 +8465,7 @@ mod tests {
                 0,
                 "a label without SS_NOPREFIX draws \"Tom  Jerry.mp4\""
             );
-        }
+        });
     }
 
     /// Runs `body` on a fresh thread attached to a private desktop. A dialog's
