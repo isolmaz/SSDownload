@@ -637,6 +637,90 @@ fn a_server_that_drops_the_connection_on_head_is_downloaded_over_several_connect
     );
 }
 
+/// Makes the probes that the current test thread starts wait `head` for a `HEAD` and `get` for a
+/// ranged `GET`.
+fn probe_waits(head: Duration, get: Duration) {
+    TEST_PROBE_TIMEOUTS.with(|timeouts| timeouts.set(Some((head, get))));
+}
+
+#[test]
+fn a_server_that_never_answers_head_is_downloaded_after_the_short_wait_for_it() {
+    let size = 24 * MIB + 12_345;
+    let server = Server::start(Config {
+        size,
+        head_hung: true,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("head-hung");
+    let output = directory.0.join("payload.bin");
+    // The wait for the `GET` is far longer than the one for the `HEAD`, so that it shows which of
+    // the two ended the `HEAD`.
+    probe_waits(Duration::from_millis(300), Duration::from_secs(20));
+    forget_writes();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    // One attempt: the HEAD that nothing answered, then the one-byte ranged GET in its place.
+    assert_eq!(log[0].method, "HEAD");
+    assert!(log[0].answered.is_none());
+    assert_eq!(log.iter().filter(|e| e.method == "HEAD").count(), 1);
+    assert_eq!(log[1].method, "GET");
+    assert_eq!(log[1].range.as_deref(), Some("bytes=0-0"));
+    let waited = log[1].arrived.duration_since(log[0].arrived);
+    assert!(
+        waited >= Duration::from_millis(250) && waited < Duration::from_secs(10),
+        "the HEAD was given up on after {waited:?}"
+    );
+    assert_tiles(delivered(&log, size), size);
+}
+
+#[test]
+fn a_server_that_hangs_on_head_and_on_the_ranged_get_fails_after_one_wait_for_each() {
+    let server = Server::start(Config {
+        size: 5 * MIB,
+        head_hung: true,
+        first_byte_delay: Some(Duration::from_secs(3)),
+        ..Config::default()
+    });
+    probe_waits(Duration::from_millis(200), Duration::from_millis(500));
+    let began = Instant::now();
+    let error = prepare_auto(
+        &request_for(&server),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("The server information could not be retrieved")
+            || format!("{error:#}").contains("Sunucu bilgileri alınamadı"),
+        "{error:#}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        began.elapsed()
+    );
+    let log = server.log();
+    assert_eq!(
+        log.iter()
+            .map(|entry| (entry.method.as_str(), entry.range.as_deref()))
+            .collect::<Vec<_>>(),
+        [("HEAD", None), ("GET", Some("bytes=0-0"))]
+    );
+}
+
 #[test]
 fn a_probe_whose_head_is_dropped_takes_the_size_and_validators_from_the_ranged_get() {
     let size = 5 * MIB + 3;
