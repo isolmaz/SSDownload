@@ -397,9 +397,13 @@ pub(super) unsafe fn refresh_job_view(
         set_text(f.status, &detail);
         f.rendered = detail;
     }
+    // The width of a button follows its text, so a new text or a button that
+    // appears is laid out again.
+    let mut relayout = false;
     if action_label != f.action_label {
         set_text(f.action, action_label);
         f.action_label = action_label.to_string();
+        relayout = true;
     }
     // The work after the download has no size: a full bar would look finished, so the bar
     // moves instead.
@@ -429,8 +433,18 @@ pub(super) unsafe fn refresh_job_view(
     // not merely disabled - for every other state of the watched job.
     let reportable = job_view_job(snapshot, f)
         .is_some_and(|job| job.state == JobState::Failed || job.error.is_some());
+    let was_shown = GetWindowLongPtrW(f.report, GWL_STYLE) as u32 & WS_VISIBLE != 0;
     ShowWindow(f.report, if reportable { SW_SHOW } else { SW_HIDE });
     EnableWindow(f.report, reportable as BOOL);
+    if reportable != was_shown {
+        relayout = true;
+    }
+    if relayout {
+        let dlg = dialog_state(hwnd);
+        if !dlg.is_null() {
+            layout_dialog(&*dlg);
+        }
+    }
 
     // A playlist keeps its own rows in step with the same state the detail
     // shows, so several items can be followed at once. The rows are rewritten
