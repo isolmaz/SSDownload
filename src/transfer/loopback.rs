@@ -10,6 +10,9 @@ use crate::test_http::{
 
 const MIB: u64 = 1024 * 1024;
 const NEVER: Duration = Duration::from_secs(3600);
+/// How long a test waits for something that happens however slow the machine is. Only a hang
+/// reaches it; a test whose outcome depends on how fast the machine is does not use it.
+const HANG_GUARD: Duration = Duration::from_secs(180);
 
 fn request_for(server: &Server) -> AddRequest {
     AddRequest {
@@ -1761,9 +1764,9 @@ fn the_number_of_checkpoints_follows_the_cadence_not_the_number_of_leases() {
 fn the_cadence_alone_triggers_a_checkpoint_that_records_bytes_the_part_file_holds() {
     let size = 20 * MIB;
     for (connections, interval, bytes) in [
-        (2u8, NEVER, MIB),
+        (2u8, NEVER, 64 * 1024),
         (2, Duration::from_millis(50), u64::MAX),
-        (1, NEVER, MIB),
+        (1, NEVER, 64 * 1024),
         (1, Duration::from_millis(50), u64::MAX),
     ] {
         let label = format!("{connections} connection(s), {interval:?} or {bytes} bytes");
@@ -1780,8 +1783,9 @@ fn the_cadence_alone_triggers_a_checkpoint_that_records_bytes_the_part_file_hold
         let state_file = state_path(&output);
         let mut observed = None;
         let cycles_before = checkpoint_cycles();
-        // The download takes seconds at this rate, so a checkpoint that the cadence alone
-        // triggers has to come before it ends.
+        // The download is held at a rate that cannot end it before the checkpoint that the
+        // cadence alone triggers has been recorded and observed.
+        control.set_speed_limit(HELD_RATE);
         let result = fetch(
             &request_for(&server),
             &output,
@@ -2059,14 +2063,15 @@ fn a_segmented_download_stopped_after_its_final_record_failed_resumes_from_the_p
         throttle: Some(4 * MIB),
         ..Config::default()
     });
-    // One periodic cycle records, and the record is held from then on: the cycle at the end
-    // cannot write it. The download is stopped by the report that comes right before the file is
-    // published.
-    checkpoint_every(NEVER, 4 * MIB);
+    // A periodic cycle records, and the record is held from then on: the cycle at the end cannot
+    // write it. The download is held at a rate that cannot end it first until the record is held,
+    // and is stopped by the report that comes right before the file is published.
+    checkpoint_every(Duration::from_millis(100), u64::MAX);
     let directory = TempDir::new("stopped-after-final-record");
     let output = directory.0.join("payload.bin");
     let state_file = state_path(&output);
     let control = TransferControl::default();
+    control.set_speed_limit(HELD_RATE);
     let cancel = control.clone();
     let mut held = None;
     let mut observed = None;
@@ -2082,6 +2087,7 @@ fn a_segmented_download_stopped_after_its_final_record_failed_resumes_from_the_p
                 held = Some(hold_against_replacement(&state_file));
                 // The record that stays, read with the part file as it is while it is held.
                 observed = read_state(&state_file).zip(fs::read(part_path(&output)).ok());
+                control.set_speed_limit(0);
             }
             if progress.phase == completing {
                 cancel.cancel();
@@ -5371,9 +5377,11 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
         }),
         ..Config::default()
     });
+    // The other job keeps the slot it takes for longer than any machine needs for the whole
+    // download, so the download ends first however fast the machine is.
     let rival = Server::start(Config {
         size: 64 * MIB,
-        throttle: Some(2 * MIB),
+        throttle: Some(HELD_RATE),
         ..Config::default()
     });
     let network = NetworkGovernor::new(2);
@@ -5404,7 +5412,7 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
         // The other job starts as soon as the download reports its first bytes, while it holds
         // both slots, so it has to wait for one.
         first_rx
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(HANG_GUARD)
             .expect("the download reported no bytes");
         scope.spawn(|| {
             let result = download(
@@ -5418,7 +5426,7 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
             );
             rival_tx.send(result.is_ok()).unwrap();
         });
-        let outcome = done_rx.recv_timeout(Duration::from_secs(25));
+        let outcome = done_rx.recv_timeout(HANG_GUARD);
         let rival_ended = rival_rx.try_recv().is_ok();
         rival_control.cancel();
         let result = outcome
@@ -6608,28 +6616,37 @@ fn a_lookup_limit_under_a_millisecond_sends_no_lookup() {
 #[test]
 fn a_stop_during_a_digest_lookup_ends_the_download_at_once_and_publishes_nothing() {
     let size = 2 * MIB + 11;
-    let server = slow_lookups(size, Duration::from_secs(5));
+    // The server answers the lookup after a minute, which is also all the time the lookup gets,
+    // so a download that does not stop at once ends a minute after the stop.
+    let server = slow_lookups(size, Duration::from_secs(60));
     let directory = TempDir::new("digest-stop-lookup");
     let output = directory.0.join("payload.bin");
     let request = request_for(&server);
     let control = TransferControl::default();
     forget_verified();
-    let started = Instant::now();
-    let error = thread::scope(|scope| {
-        scope.spawn(|| {
-            for _ in 0..2000 {
-                if !server.lookups().is_empty() {
-                    control.pause();
-                    break;
+    let stopped = std::sync::Mutex::new(None);
+    let error = with_lookup_limit(Duration::from_secs(60), || {
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..2000 {
+                    if !server.lookups().is_empty() {
+                        *stopped.lock().unwrap() = Some(Instant::now());
+                        control.pause();
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
                 }
-                thread::sleep(Duration::from_millis(5));
-            }
-        });
-        fetch(&request, &output, &control, 1, 1, &mut |_| {}).unwrap_err()
+            });
+            fetch(&request, &output, &control, 1, 1, &mut |_| {}).unwrap_err()
+        })
     });
-    let waited = started.elapsed();
+    let waited = stopped
+        .lock()
+        .unwrap()
+        .expect("the lookup never reached the server")
+        .elapsed();
     assert!(!is_trf_003(&error), "{error:#}");
-    assert!(waited < Duration::from_secs(3), "{waited:?}");
+    assert!(waited < Duration::from_secs(30), "{waited:?}");
     assert!(!output.exists());
     assert!(part_path(&output).exists());
     assert_eq!(verified_by(), []);
@@ -6654,12 +6671,14 @@ fn a_download_whose_host_has_no_free_connection_for_a_lookup_is_published_unveri
     let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let releasing = held.clone();
     thread::spawn(move || {
-        thread::sleep(Duration::from_secs(12));
+        thread::sleep(Duration::from_secs(60));
         releasing.lock().unwrap().clear();
     });
     let completing = crate::i18n::ui("Tamamlanıyor", "Completing");
     forget_verified();
-    let started = Instant::now();
+    // The wait is measured from the moment the bytes are in, so that the time the download itself
+    // takes does not count.
+    let mut bytes_in = None;
     let result = with_lookup_limit(Duration::from_secs(1), || {
         download(
             &request_for(&server),
@@ -6670,6 +6689,7 @@ fn a_download_whose_host_has_no_free_connection_for_a_lookup_is_published_unveri
             None,
             &mut |progress| {
                 if progress.phase == completing {
+                    bytes_in.get_or_insert_with(Instant::now);
                     let mut held = held.lock().unwrap();
                     while let Some(lease) = governor.try_acquire_host("127.0.0.1".into()) {
                         held.push(lease);
@@ -6678,12 +6698,14 @@ fn a_download_whose_host_has_no_free_connection_for_a_lookup_is_published_unveri
             },
         )
     });
-    let waited = started.elapsed();
+    let waited = bytes_in.expect("the bytes never came in").elapsed();
     assert!(!held.lock().unwrap().is_empty(), "no slot was taken");
     assert_published(result, &directory, 1, size);
     assert_eq!(verified_by(), []);
     assert_eq!(server.lookups().len(), 0);
-    assert!(waited < Duration::from_secs(6), "{waited:?}");
+    // The lookup gives up after its limit of 1 s; the default is 15 s and the slots are free again
+    // after 60 s.
+    assert!(waited < Duration::from_secs(10), "{waited:?}");
 }
 
 const BENCH_SIZE: u64 = 128 * MIB;
