@@ -7839,6 +7839,9 @@ macro_rules! __ui_template_ar {
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "تم حفظ تحديث المصدر، لكن سجل عمل الوسائط لم يكتمل بعد: {error:#}"
     };
+    ("The streams could not be merged within {0} seconds") => {
+        "تعذّر دمج البثوث خلال {0} ث"
+    };
     ("The subprocess did not respond within {0} s") => {
         "لم تستجب العملية الفرعية خلال {0} ث"
     };
@@ -8704,6 +8707,9 @@ macro_rules! __ui_template_es {
     };
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "La actualización del origen se ha guardado, pero el registro de trabajo multimedia aún no está terminado: {error:#}"
+    };
+    ("The streams could not be merged within {0} seconds") => {
+        "No se han podido combinar los flujos en {0} segundos"
     };
     ("The subprocess did not respond within {0} s") => {
         "El subproceso no ha respondido en {0} s"
@@ -9571,6 +9577,9 @@ macro_rules! __ui_template_pt {
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "A atualização da fonte foi salva, mas o registro de trabalho de mídia ainda não foi concluído: {error:#}"
     };
+    ("The streams could not be merged within {0} seconds") => {
+        "Não foi possível mesclar os fluxos em {0} segundos"
+    };
     ("The subprocess did not respond within {0} s") => {
         "O subprocesso não respondeu em {0} s"
     };
@@ -10437,6 +10446,9 @@ macro_rules! __ui_template_fr {
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "L'actualisation de la source a été enregistrée mais l'enregistrement du travail média n'est pas encore terminé : {error:#}"
     };
+    ("The streams could not be merged within {0} seconds") => {
+        "Les flux n'ont pas pu être fusionnés dans les {0} secondes"
+    };
     ("The subprocess did not respond within {0} s") => {
         "Le sous-processus n'a pas répondu dans les {0} s"
     };
@@ -11302,6 +11314,9 @@ macro_rules! __ui_template_de {
     };
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "Die Quellaktualisierung wurde gespeichert, der Medienarbeitsdatensatz ist aber noch nicht abgeschlossen: {error:#}"
+    };
+    ("The streams could not be merged within {0} seconds") => {
+        "Die Streams konnten nicht innerhalb von {0} Sekunden zusammengeführt werden"
     };
     ("The subprocess did not respond within {0} s") => {
         "Der Unterprozess hat nicht innerhalb von {0} s geantwortet"

@@ -1213,7 +1213,7 @@ pub(crate) fn place_browser_file(
 /// in decoding order and precede in time (an open group of pictures) gets a wrong time unless it
 /// is shown as long after it is decoded as the first picture is, and a picture that is no
 /// keyframe gets a wrong time, so [`merge_streams`] repairs a video only where [`repair_applies`]
-/// and publishes the copy only where [`times_hold`].
+/// and publishes the copy only where [`times_hold`] and [`repaired_pictures_keep_the_step`].
 const TS_VIDEO_REPAIR: &str = "noise=drop='eq(pts,nopts)*not(key)*lt(size,32)',setts=pts='if(eq(PTS,NOPTS),DTS+STARTPTS-STARTDTS,PTS)'";
 
 /// Whether the file is MPEG-TS: its packets are 188 bytes, each starting with the sync byte.
@@ -1337,13 +1337,71 @@ fn times_hold(packets: &[VideoPacket]) -> bool {
             .all(|pair| pair[0].dts.zip(pair[1].dts).is_none_or(|(a, b)| a < b))
 }
 
+/// Whether two distances between neighbouring pictures are one step: they differ by no more than
+/// the rounding to the clock's ticks (a tick) and an eighth of the shorter.
+fn same_step(a: i64, b: i64) -> bool {
+    a.abs_diff(b) <= 1 + (a.min(b) / 8).unsigned_abs()
+}
+
+/// Whether every picture of `copy` that had no time in `source` (the video before
+/// [`TS_VIDEO_REPAIR`]) lies on the step of the pictures around it.
+///
+/// FFmpeg guesses the decoding time of a packet without a time from the packet before it: its
+/// time plus its duration. That is the time of the picture only where nothing lies between the two.
+/// Where the stream has a gap at the start of a segment, the picture lands before the gap while the
+/// pictures after it keep their own times, so no two pictures come close together and
+/// [`times_hold`] passes it, yet it is shown at a wrong time. In the order the pictures are
+/// shown, the distance from such a picture to the one before it or to the one after it then
+/// differs from the distance beside it ([`same_step`]). The step is read from the neighbours, not
+/// from the whole video, so that a video whose frame rate changes is judged where it changes.
+///
+/// A copy that does not hold the packets of `source` less the ones the repair leaves out cannot be
+/// matched to it and is refused.
+fn repaired_pictures_keep_the_step(source: &[VideoPacket], copy: &[VideoPacket]) -> bool {
+    let kept = source
+        .iter()
+        .filter(|packet| !(packet.pts.is_none() && !packet.key && packet.size < 32));
+    if kept.clone().count() != copy.len() {
+        return false;
+    }
+    let Some(mut shown) = copy
+        .iter()
+        .map(|packet| packet.pts)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    shown.sort_unstable();
+    let steps = shown
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect::<Vec<_>>();
+    let step_at = |at: Option<usize>| at.and_then(|at| steps.get(at)).copied();
+    let like_beyond = |step: Option<usize>, beyond: Option<usize>| {
+        step_at(step)
+            .zip(step_at(beyond))
+            .is_none_or(|(step, beyond)| same_step(step, beyond))
+    };
+    kept.zip(copy)
+        .filter(|(before, _)| before.pts.is_none())
+        .all(|(_, repaired)| {
+            repaired
+                .pts
+                .and_then(|pts| shown.binary_search(&pts).ok())
+                .is_some_and(|at| {
+                    like_beyond(at.checked_sub(1), at.checked_sub(2))
+                        && like_beyond(Some(at), Some(at + 1))
+                })
+        })
+}
+
 /// Copies the streams into `staged` without re-encoding. `None`: it is there. `Some(reason)`:
 /// it is not, and `reason` says why.
 ///
 /// A copy of MPEG-TS video that fails is made once more with [`TS_VIDEO_REPAIR`], where the
 /// packets of every such video show that the repair gives it the right times, and the copy is
-/// kept only where it passes [`times_hold`]; a video the repair cannot be trusted with fails
-/// with the reason of the first copy.
+/// kept only where it passes [`times_hold`] and [`repaired_pictures_keep_the_step`]; a video the
+/// repair cannot be trusted with fails with the reason of the first copy.
 fn merge_streams(
     request: &AddRequest,
     streams: &[crate::browser_transfer::StreamFile],
@@ -1354,7 +1412,25 @@ fn merge_streams(
 ) -> Result<Option<String>> {
     merge_streams_with(request, streams, staged, tools, &mut |executable, args| {
         run_capture(executable, args, b"", timeout, control)
+            .map_err(|error| unfinished_merge(error, timeout))
     })
+}
+
+/// The error of a merge tool that did not finish within `timeout`, which names the merge and not
+/// a media analysis. Any other error, such as a stop, is kept.
+fn unfinished_merge(error: anyhow::Error, timeout: Duration) -> anyhow::Error {
+    if crate::error_codes::code_of(&error) == Some(crate::error_codes::MED_011) {
+        crate::error_codes::coded(
+            crate::error_codes::TRF_002,
+            crate::i18n::ui_format!(
+                "Akışlar {0} saniye içinde birleştirilemedi",
+                "The streams could not be merged within {0} seconds",
+                timeout.as_secs()
+            ),
+        )
+    } else {
+        error
+    }
 }
 
 fn merge_streams_with(
@@ -1383,10 +1459,11 @@ fn merge_streams_with(
     if transport_streams.is_empty() {
         return Ok(failed);
     }
+    let mut sources = Vec::new();
     for (_, path) in &transport_streams {
-        let packets = video_packets(path, 0, &tools.ffprobe, run)?;
-        if !packets.as_deref().is_some_and(repair_applies) {
-            return Ok(failed);
+        match video_packets(path, 0, &tools.ffprobe, run)? {
+            Some(packets) if repair_applies(&packets) => sources.push(packets),
+            _ => return Ok(failed),
         }
     }
     let repaired = run(
@@ -1397,9 +1474,12 @@ fn merge_streams_with(
         let _ = fs::remove_file(staged);
         return Ok(Some(bounded_tail(&repaired.stderr, 4096)));
     }
-    for (index, _) in &transport_streams {
+    for ((index, _), source) in transport_streams.iter().zip(&sources) {
         let packets = video_packets(staged, *index, &tools.ffprobe, run)?;
-        if !packets.as_deref().is_some_and(times_hold) {
+        if !packets
+            .as_deref()
+            .is_some_and(|copy| times_hold(copy) && repaired_pictures_keep_the_step(source, copy))
+        {
             let _ = fs::remove_file(staged);
             return Ok(Some(
                 crate::i18n::ui(

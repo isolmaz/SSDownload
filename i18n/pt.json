@@ -1726,5 +1726,6 @@
   "No stable release of Deno {0}.x was found": "Nenhuma versão estável do Deno {0}.x foi encontrada",
   "No suitable stable yt-dlp release was found": "Nenhuma versão estável adequada do yt-dlp foi encontrada",
   "FFmpeg did not generate the test clip ({0}): {1}": "O FFmpeg não gerou o clipe de teste ({0}): {1}",
-  "exit code {0}": "código de saída {0}"
+  "exit code {0}": "código de saída {0}",
+  "The streams could not be merged within {0} seconds": "Não foi possível mesclar os fluxos em {0} segundos"
 }

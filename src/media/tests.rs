@@ -168,16 +168,24 @@ fn only_a_merge_that_asks_for_the_repair_gets_the_filters_and_only_for_mpeg_ts_v
 
 /// What `ffprobe -show_entries packet=pts,dts,size,flags -of csv=p=0` listed for the video of
 /// MPEG-TS segments that end with a parameter set, and a keyframe whose pictures follow it in
-/// decoding order and are shown before it (an open group of pictures). The segments ended at
-/// the keyframe and at the last line, the parameter set that is a packet of its own.
-const OPEN_GOP_SEGMENTS: &str = "291600,288000,768,___\n\
+/// decoding order and are shown before it (an open group of pictures): the fifteen packets the two
+/// copies below hold, whose keyframe has no time, and the parameter set of the last segment, a
+/// packet of its own.
+const OPEN_GOP_SEGMENTS: &str = "288000,280800,1069,___\n\
+284400,284400,752,___\n\
+291600,288000,768,___\n\
 306000,291600,1640,___\n\
 298800,295200,852,___\n\
 302400,298800,792,___\n\
 N/A,N/A,5151,K__\n\
 309600,306000,769,___\n\
 327600,309600,1840,___\n\
-1206000,1202400,769,___\n\
+320400,313200,1235,___\n\
+316800,316800,782,___\n\
+324000,320400,963,___\n\
+342000,324000,1571,___\n\
+334800,327600,1073,___\n\
+331200,331200,886,___\n\
 N/A,N/A,10,___";
 
 /// The same video copied with [`TS_VIDEO_REPAIR`] (packets 44 to 58), and as the video really is.
@@ -211,6 +219,89 @@ const OPEN_GOP_AS_IT_IS: &str = "1720,1640,1069,___\n\
 2320,2120,1571,___\n\
 2240,2160,1073,___\n\
 2200,2200,886,___";
+
+/// The listing for a closed group of pictures (23.976 pictures a second, coded with B-pyramid):
+/// seventeen packets around a segment start, whose keyframe has no time, and the parameter set of
+/// the last segment, a packet of its own.
+const CLOSED_GOP_SEGMENTS: &str = "460084,460084,979,___\n\
+467592,463838,926,___\n\
+475099,467592,1821,___\n\
+490114,471346,2009,___\n\
+482607,475099,1277,___\n\
+478853,478853,849,___\n\
+486361,482607,838,___\n\
+N/A,N/A,4576,K__\n\
+508883,490114,2038,___\n\
+501376,493868,1159,___\n\
+497622,497622,894,___\n\
+505129,501376,847,___\n\
+512637,505129,1628,___\n\
+523898,508883,1824,___\n\
+516391,512637,850,___\n\
+520144,516391,769,___\n\
+527652,520144,1665,___\n\
+N/A,N/A,8,___";
+
+/// The packets of [`CLOSED_GOP_SEGMENTS`] after [`TS_VIDEO_REPAIR`], in a Matroska file. The
+/// keyframe lies on the step of the pictures around it.
+const CLOSED_GOP_REPAIRED: &str = "3629,3629,979,___\n\
+3712,3670,926,___\n\
+3795,3712,1821,___\n\
+3962,3754,2009,___\n\
+3879,3795,1277,___\n\
+3837,3837,849,___\n\
+3921,3879,838,___\n\
+4004,3921,4576,K__\n\
+4171,3962,2038,___\n\
+4087,4004,1159,___\n\
+4046,4046,894,___\n\
+4129,4087,847,___\n\
+4213,4129,1628,___\n\
+4338,4171,1824,___\n\
+4254,4213,850,___\n\
+4296,4254,769,___\n\
+4379,4296,1665,___";
+
+/// The packets of a stream like [`CLOSED_GOP_SEGMENTS`] whose times jump by 0.46 seconds at the
+/// segment start.
+const GAP_SEGMENTS: &str = "460084,460084,970,___\n\
+467592,463838,988,___\n\
+475099,467592,2188,___\n\
+490114,471346,3321,___\n\
+482607,475099,1746,___\n\
+478853,478853,1069,___\n\
+486361,482607,1396,___\n\
+N/A,N/A,4751,K__\n\
+550174,490114,2077,___\n\
+542667,535159,1162,___\n\
+538913,538913,911,___\n\
+546421,542667,877,___\n\
+553928,546421,1695,___\n\
+565189,550174,1841,___\n\
+557682,553928,913,___\n\
+561436,557682,765,___\n\
+568943,561436,1628,___\n\
+N/A,N/A,8,___";
+
+/// [`GAP_SEGMENTS`] after [`TS_VIDEO_REPAIR`]: the keyframe has the time FFmpeg guesses from the
+/// picture before it, 4004, and not its own, 4463, so the next picture is shown 501 after it.
+const GAP_REPAIRED: &str = "3629,3629,970,___\n\
+3712,3670,988,___\n\
+3795,3712,2188,___\n\
+3962,3754,3321,___\n\
+3879,3795,1746,___\n\
+3837,3837,1069,___\n\
+3921,3879,1396,___\n\
+4004,3921,4751,K__\n\
+4630,3962,2077,___\n\
+4546,4004,1162,___\n\
+4505,4505,911,___\n\
+4588,4546,877,___\n\
+4671,4588,1695,___\n\
+4796,4630,1841,___\n\
+4713,4671,913,___\n\
+4755,4713,765,___\n\
+4838,4755,1628,___";
 
 #[test]
 fn a_packet_listing_is_read_as_ffprobe_prints_it() {
@@ -481,6 +572,84 @@ fn a_repaired_copy_is_published_only_where_the_times_of_its_video_hold() {
 }
 
 #[test]
+fn a_repaired_copy_is_not_published_where_a_picture_lies_off_the_step_of_the_stream() {
+    let merge = |segments, copy| {
+        scripted_merge(
+            true,
+            (1, UNKNOWN_TIMESTAMP),
+            (0, PARAMETER_SET_REMARK),
+            segments,
+            copy,
+        )
+    };
+    let (outcome, runs, remains) = merge(CLOSED_GOP_SEGMENTS, CLOSED_GOP_REPAIRED);
+    assert_eq!(outcome, None);
+    assert_eq!(runs.last(), Some(&"packets of the copy"));
+    assert!(remains);
+
+    let (outcome, runs, remains) = merge(GAP_SEGMENTS, GAP_REPAIRED);
+    assert!(
+        outcome
+            .as_deref()
+            .is_some_and(|reason| reason.contains("zamanları güvenle onarılamadı")),
+        "{outcome:?}"
+    );
+    assert_eq!(runs.last(), Some(&"packets of the copy"));
+    assert!(!remains);
+}
+
+#[test]
+fn a_merge_tool_that_runs_out_of_time_reports_the_merge_and_not_an_analysis() {
+    let root = std::env::temp_dir().join(format!("ssdownload-merge-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let streams = [("video", "video.part"), ("audio", "audio.part")].map(|(role, name)| {
+        let path = root.join(name);
+        fs::write(&path, vec![0x47; 188 * 3]).unwrap();
+        crate::browser_transfer::StreamFile {
+            path,
+            role: role.into(),
+            format_id: None,
+            language: None,
+        }
+    });
+    // A script that runs far longer than the budgets below stands in for FFmpeg.
+    let slow_ffmpeg = root.join("ffmpeg.cmd");
+    fs::write(&slow_ffmpeg, "@ping -n 10 127.0.0.1 >nul\r\n").unwrap();
+    let tools = tools::VerifiedTools::staged(
+        "yt-dlp".into(),
+        "deno".into(),
+        slow_ffmpeg,
+        "ffprobe".into(),
+    );
+    let request = AddRequest {
+        kind: DownloadKind::Video,
+        container: Some("mkv".into()),
+        ..AddRequest::default()
+    };
+    let staged = root.join("merged.tmp");
+    let merge = |timeout: Duration, control: &TransferControl| {
+        merge_streams(&request, &streams, &staged, timeout, &tools, control)
+            .expect_err("the merge must fail")
+    };
+
+    let timed_out = merge(Duration::from_millis(50), &TransferControl::default());
+    assert_eq!(code_of(&timed_out), Some(crate::error_codes::TRF_002));
+    let text = timed_out.to_string();
+    assert!(
+        text.contains("birleştirilemedi") && !text.contains("analiz"),
+        "{text}"
+    );
+
+    // A pause or cancel keeps its own error.
+    let cancelled = TransferControl::default();
+    cancelled.cancel();
+    let stopped = merge(Duration::from_secs(60), &cancelled);
+    assert_eq!(code_of(&stopped), None);
+    assert!(stopped.to_string().contains("durduruldu"), "{stopped}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn the_times_of_a_repaired_open_group_of_pictures_do_not_hold() {
     let repaired = parse_video_packets(OPEN_GOP_REPAIRED).unwrap();
     let as_it_is = parse_video_packets(OPEN_GOP_AS_IT_IS).unwrap();
@@ -542,6 +711,113 @@ fn the_times_of_a_repaired_open_group_of_pictures_do_not_hold() {
     let mut without_dts = parse_video_packets(OPEN_GOP_AS_IT_IS).unwrap();
     without_dts[0].dts = None;
     assert!(times_hold(&without_dts));
+}
+
+fn listed(listing: &str) -> Vec<VideoPacket> {
+    parse_video_packets(listing).unwrap()
+}
+
+/// The packets of a video without reordering whose pictures are shown at `times`, as listed before
+/// and after the repair that gave the pictures at `repaired` their time. Those are keyframes.
+fn repair_of(times: &[i64], repaired: &[usize]) -> (Vec<VideoPacket>, Vec<VideoPacket>) {
+    let packet = |at: usize, timed: bool| VideoPacket {
+        pts: timed.then_some(times[at]),
+        dts: timed.then_some(times[at]),
+        size: 800,
+        key: repaired.contains(&at),
+    };
+    (
+        (0..times.len())
+            .map(|at| packet(at, !repaired.contains(&at)))
+            .collect(),
+        (0..times.len()).map(|at| packet(at, true)).collect(),
+    )
+}
+
+#[test]
+fn a_repaired_picture_must_lie_on_the_step_of_the_pictures_around_it() {
+    // The keyframe of a closed group of pictures lies on its slot, though the distances between
+    // pictures are 41 or 42 where the frame rate does not divide the clock.
+    let closed = listed(CLOSED_GOP_REPAIRED);
+    assert!(times_hold(&closed));
+    assert!(repaired_pictures_keep_the_step(
+        &listed(CLOSED_GOP_SEGMENTS),
+        &closed
+    ));
+
+    // The stream jumps by 0.46 s at the segment start. The keyframe took the time after the
+    // picture before it, 459 ms early, and the pictures after it kept theirs: no two pictures
+    // come close together, so the times hold, but the picture after the keyframe is shown
+    // 501 later and the keyframe is not at its place.
+    let gap = listed(GAP_REPAIRED);
+    assert!(times_hold(&gap));
+    assert!(!repaired_pictures_keep_the_step(
+        &listed(GAP_SEGMENTS),
+        &gap
+    ));
+    // With the keyframe at its own time the jump lies before it instead. A jump on either side of
+    // a repaired picture is refused: the repair cannot tell it from a wrong guess.
+    let own_time = listed(&GAP_REPAIRED.replace("4004,3921,4751,K__", "4463,3921,4751,K__"));
+    assert!(times_hold(&own_time));
+    assert!(!repaired_pictures_keep_the_step(
+        &listed(GAP_SEGMENTS),
+        &own_time
+    ));
+
+    // A copy that is not the repaired source cannot be matched to it.
+    assert!(!repaired_pictures_keep_the_step(
+        &listed(GAP_SEGMENTS),
+        &gap[1..]
+    ));
+    let with_one_more = [closed.clone(), vec![closed[0]]].concat();
+    assert!(!repaired_pictures_keep_the_step(
+        &listed(CLOSED_GOP_SEGMENTS),
+        &with_one_more
+    ));
+    let mut untimed = closed.clone();
+    untimed[3].pts = None;
+    assert!(!repaired_pictures_keep_the_step(
+        &listed(CLOSED_GOP_SEGMENTS),
+        &untimed
+    ));
+}
+
+#[test]
+fn the_step_of_a_repaired_picture_is_read_from_the_pictures_beside_it() {
+    // 23.976 pictures a second on the clock of MPEG-TS: distances of 3753 and 3754 ticks.
+    let rounded = (0..60)
+        .map(|picture| (f64::from(picture) * 3753.75).round() as i64)
+        .collect::<Vec<_>>();
+    let (source, copy) = repair_of(&rounded, &[20, 40]);
+    assert!(repaired_pictures_keep_the_step(&source, &copy));
+
+    // The frame rate changes at the repaired picture, from 40 ms to 33 ms a picture. The picture
+    // lies where the rate before it puts it and the rate after it goes on from there, so neither
+    // side contradicts it, though the steps before it differ from the usual 33.
+    let mut slower_then_faster = (0..=10).map(|picture| picture * 40).collect::<Vec<_>>();
+    slower_then_faster.extend((1..=30).map(|picture| 400 + picture * 33));
+    let (source, copy) = repair_of(&slower_then_faster, &[10]);
+    assert!(repaired_pictures_keep_the_step(&source, &copy));
+
+    // The same video where the rate changed one picture earlier: the repair put the picture at
+    // 400 (40 after the one before it) and the next picture is at 426, 26 after it, where 33
+    // follow everywhere else.
+    let mut guessed = (0..=10).map(|picture| picture * 40).collect::<Vec<_>>();
+    guessed.extend((0..30).map(|picture| 426 + picture * 33));
+    let (source, copy) = repair_of(&guessed, &[10]);
+    assert!(!repaired_pictures_keep_the_step(&source, &copy));
+
+    // A picture with a neighbour on one side only, and a video of one picture, have nothing to
+    // contradict them.
+    for repaired in [vec![0], vec![1], vec![0, 1]] {
+        let (source, copy) = repair_of(&[0, 40], &repaired);
+        assert!(
+            repaired_pictures_keep_the_step(&source, &copy),
+            "{repaired:?}"
+        );
+    }
+    let (source, copy) = repair_of(&[0], &[0]);
+    assert!(repaired_pictures_keep_the_step(&source, &copy));
 }
 
 #[test]
