@@ -3256,6 +3256,59 @@ mod output_validation_tests {
     }
 
     #[test]
+    fn audio_from_a_source_without_a_picture_may_not_end_before_the_source_duration() {
+        let request = AddRequest {
+            kind: DownloadKind::Audio,
+            audio_format: Some("mp3".into()),
+            ..Default::default()
+        };
+        let format = |id: &str, video_codec: &str| MediaFormat {
+            id: id.into(),
+            video_codec: Some(video_codec.into()),
+            audio_codec: Some("aac".into()),
+            ..Default::default()
+        };
+        let source = |formats: Vec<MediaFormat>| MediaInfo {
+            duration: Some(20.0),
+            formats,
+            ..Default::default()
+        };
+        // ffprobe of an MP3 that lasts 19.3 s.
+        let mp3 = json!({"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3",
+            "time_base":"1/14112000","start_pts":353600,"start_time":"0.025057",
+            "duration":"19.300000"}],
+          "format":{"format_name":"mp3","start_time":"0.025057","duration":"19.300000"}});
+
+        // Every format of the source lacks a picture: the audio is held to the tolerance.
+        let audio_only = source(vec![format("140", "none"), format("251", "none")]);
+        let error = validate_probe(&mp3, &request, &audio_only).unwrap_err();
+        assert!(
+            error.to_string().contains("erken bitiş toleransı 0.500 sn"),
+            "{error:#}"
+        );
+        // One format with a picture, or formats that do not say, keep the allowance.
+        validate_probe(
+            &mp3,
+            &request,
+            &source(vec![format("140", "none"), format("137", "avc1.640028")]),
+        )
+        .unwrap();
+        let mut unsaid = format("0", "none");
+        unsaid.video_codec = None;
+        validate_probe(&mp3, &request, &source(vec![unsaid])).unwrap();
+        // The tolerance itself does not move for an audio-only source.
+        validate_probe(
+            &json!({"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3",
+                "time_base":"1/14112000","start_pts":353600,"start_time":"0.025057",
+                "duration":"19.700000"}],
+              "format":{"format_name":"mp3","start_time":"0.025057","duration":"19.700000"}}),
+            &request,
+            &audio_only,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn audio_extracted_from_a_file_with_short_audio_may_end_before_the_source_duration() {
         let request = AddRequest {
             kind: DownloadKind::Audio,
