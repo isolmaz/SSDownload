@@ -1831,9 +1831,14 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
 /// The narrowest the window may be, and the shortest: its design size, what
 /// fitting its text has added, and the scroll bar's width while the bar takes
 /// room from the client area, so the rows keep the width they are laid out for.
+/// The width never exceeds the monitor's work area, which the window cannot.
 pub(super) unsafe fn dialog_min_track(dlg: &DialogUi, dpi: u32) -> (i32, i32) {
     let (x, y) = clamp_min_track(dlg.hwnd, dpi, dlg.design.0 + dlg.grown.get(), dlg.design.1);
-    (x + scroll_bar_width(dlg, dpi), y)
+    let x = x + scroll_bar_width(dlg, dpi);
+    (
+        work_area(dlg.hwnd).map_or(x, |work| x.min(work.right - work.left)),
+        y,
+    )
 }
 
 /// The width the scroll bar takes from the client area, zero while it is
@@ -2077,38 +2082,58 @@ unsafe fn fit_text(dlg: &DialogUi, limits: (i32, i32)) -> i32 {
 }
 
 /// Widens the window by `extra` client pixels, as far as its monitor allows,
-/// and remembers it so the window cannot be shrunk back below what its rows
-/// need.
+/// and remembers the width its rows need so the window cannot be shrunk back
+/// below it. That width is rounded down so the minimum never exceeds the
+/// window.
 unsafe fn widen_dialog(dlg: &DialogUi, extra: i32) {
     let mut frame: RECT = zeroed();
     GetWindowRect(dlg.hwnd, &mut frame);
-    let room = work_area(dlg).map_or(extra, |work| {
-        work.right - work.left - (frame.right - frame.left)
-    });
+    let width = frame.right - frame.left;
+    let room = work_area(dlg.hwnd).map_or(extra, |work| work.right - work.left - width);
     let by = extra.min(room);
     if by <= 0 {
         return;
     }
-    dlg.grown
-        .set(dlg.grown.get() + (by * 96 + dlg.dpi as i32 - 1) / dlg.dpi as i32);
-    set_width(dlg, &frame, frame.right - frame.left + by);
+    let needed = width + extra - scroll_bar_width(dlg, dlg.dpi);
+    dlg.grown.set(
+        dlg.grown
+            .get()
+            .max((needed as i64 * 96 / dlg.dpi as i64) as i32 - dlg.design.0),
+    );
+    set_width(dlg, &frame, width + by);
 }
 
-unsafe fn work_area(dlg: &DialogUi) -> Option<RECT> {
+#[cfg(test)]
+thread_local! {
+    /// The work area of the monitor the windows of this thread stand on, instead
+    /// of the real one: a test machine has the monitors it has.
+    pub(super) static WORK_AREA: std::cell::Cell<Option<RECT>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) unsafe fn work_area(hwnd: HWND) -> Option<RECT> {
+    #[cfg(test)]
+    if let Some(area) = WORK_AREA.with(std::cell::Cell::get) {
+        return Some(area);
+    }
     let mut monitor: MONITORINFO = zeroed();
     monitor.cbSize = size_of::<MONITORINFO>() as u32;
     (GetMonitorInfoW(
-        MonitorFromWindow(dlg.hwnd, MONITOR_DEFAULTTONEAREST),
+        MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
         &mut monitor,
     ) != 0)
         .then_some(monitor.rcWork)
 }
 
-/// Gives the window `width`, and moves it left when its right edge would leave
-/// the monitor's work area.
+/// Gives the window `width`, and moves it left when this pushes its right edge
+/// out of the work area it stood inside; a window that already reached beyond
+/// the work area stays where it is.
 unsafe fn set_width(dlg: &DialogUi, frame: &RECT, width: i32) {
-    let left = work_area(dlg).map_or(frame.left, |work| {
-        frame.left.min(work.right - width).max(work.left)
+    let left = work_area(dlg.hwnd).map_or(frame.left, |work| {
+        if frame.right <= work.right && frame.left + width > work.right {
+            (work.right - width).max(work.left)
+        } else {
+            frame.left
+        }
     });
     SetWindowPos(
         dlg.hwnd,

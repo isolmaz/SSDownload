@@ -2566,13 +2566,10 @@ unsafe fn update_profile_controls(ui: &MainUi) {
 /// window could not shrink below would push the title bar and the buttons out
 /// of reach. A small margin keeps the frame grabbable.
 unsafe fn clamp_min_track(hwnd: HWND, dpi: u32, design_w: i32, design_h: i32) -> (i32, i32) {
-    let mut monitor: MONITORINFO = zeroed();
-    monitor.cbSize = size_of::<MONITORINFO>() as u32;
-    let from = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     let (mut area_w, mut area_h) = (i32::MAX, i32::MAX);
-    if !from.is_null() && GetMonitorInfoW(from, &mut monitor) != 0 {
-        area_w = monitor.rcWork.right - monitor.rcWork.left;
-        area_h = monitor.rcWork.bottom - monitor.rcWork.top;
+    if let Some(work) = work_area(hwnd) {
+        area_w = work.right - work.left;
+        area_h = work.bottom - work.top;
     }
     let margin = scale(16, dpi);
     (
@@ -7155,7 +7152,7 @@ unsafe extern "system" fn dialog_proc(
             // The resize lays the dialog out, which has to use the new DPI and
             // fonts: with the old ones its rows look too wide for the window
             // and the window is widened.
-            dialog_font(dlg);
+            refresh_dialog_fonts(dlg);
             SetWindowPos(
                 hwnd,
                 null_mut(),
@@ -7893,12 +7890,12 @@ unsafe fn window_class(hwnd: HWND) -> String {
     String::from_utf16_lossy(&name[..len])
 }
 unsafe fn dialog_dpi(dlg: &mut DialogUi) {
-    dialog_font(dlg);
+    refresh_dialog_fonts(dlg);
     layout_dialog(dlg);
 }
 
 /// Takes the window's DPI and gives every control the font for it.
-unsafe fn dialog_font(dlg: &mut DialogUi) {
+unsafe fn refresh_dialog_fonts(dlg: &mut DialogUi) {
     dlg.dpi = GetDpiForWindow(dlg.hwnd).max(96);
     let f = make_font(dlg.dpi, 9, FW_NORMAL as i32);
     let mut child = GetWindow(dlg.hwnd, GW_CHILD);
@@ -13251,14 +13248,10 @@ mod tests {
                 ClientToScreen, DrawTextW, GetDC, ReleaseDC, SelectObject, DT_CALCRECT,
                 DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK,
             },
-            UI::{
-                HiDpi::GetDpiForWindow,
-                WindowsAndMessaging::{
-                    GetClientRect, GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect,
-                    SendMessageW, SetWindowLongPtrW, ShowWindow, BS_TYPEMASK, GWL_EXSTYLE,
-                    GWL_STYLE, GW_CHILD, GW_HWNDNEXT, SW_SHOW, WM_GETFONT, WS_EX_LAYOUTRTL,
-                    WS_VISIBLE,
-                },
+            UI::WindowsAndMessaging::{
+                GetClientRect, GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect,
+                SendMessageW, SetWindowLongPtrW, ShowWindow, BS_TYPEMASK, GWL_EXSTYLE, GWL_STYLE,
+                GW_CHILD, GW_HWNDNEXT, SW_SHOW, WM_GETFONT, WS_EX_LAYOUTRTL, WS_VISIBLE,
             },
         };
 
@@ -13489,11 +13482,10 @@ mod tests {
         }
 
         /// What of the window's push buttons and labels does not show its whole
-        /// text: a button narrower than its text and the padding around it, a
+        /// text: a button narrower than its text and the padding around it at `dpi`, a
         /// label that needs more lines than its rectangle has height for.
-        unsafe fn clipped(parent: native::HWND) -> Vec<String> {
-            let padding =
-                native::scale(native::BUTTON_TEXT_PADDING, GetDpiForWindow(parent).max(96));
+        unsafe fn clipped(parent: native::HWND, dpi: u32) -> Vec<String> {
+            let padding = native::scale(native::BUTTON_TEXT_PADDING, dpi);
             let mut problems = Vec::new();
             for control in shown(parent) {
                 let (width, height) = (
@@ -13592,15 +13584,47 @@ mod tests {
             })
         }
 
+        /// Gives the dialog the scale, the fonts and the size of its design at
+        /// `dpi`, as it stands on a monitor at that scale.
+        unsafe fn at_dpi(dialog: &HiddenDialog, case: &Case, dpi: u32) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+            };
+            let ui = &mut *dialog.raw;
+            let mut frame: RECT = zeroed();
+            GetWindowRect(ui.hwnd, &mut frame);
+            ui.dpi = dpi;
+            let font = native::make_font(dpi, 9, 400);
+            let mut child = GetWindow(ui.hwnd, GW_CHILD);
+            while !child.is_null() {
+                native::apply_font(child, font);
+                child = GetWindow(child, GW_HWNDNEXT);
+            }
+            windows_sys::Win32::Graphics::Gdi::DeleteObject(ui.font as _);
+            ui.font = font;
+            SetWindowPos(
+                ui.hwnd,
+                null_mut(),
+                frame.left,
+                frame.top,
+                native::scale(case.width, dpi),
+                native::scale(case.height, dpi),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+
         #[test]
-        fn every_dialog_fits_its_buttons_and_labels_in_every_language_and_scheme() {
+        fn every_dialog_fits_its_buttons_and_labels_in_every_language_scheme_and_scale() {
             let mut wrong = Vec::new();
             for info in crate::i18n::LANGUAGES.iter() {
-                for dark in [false, true] {
+                for (dark, dpi) in [(false, 96), (true, 96), (false, 144)] {
                     let found = in_language(info.code, || {
                         let mut found = Vec::new();
                         for case in cases() {
                             let dialog = dialog(&case, dark);
+                            if dpi != 96 {
+                                unsafe { at_dpi(&dialog, &case, dpi) };
+                            }
                             (case.prepare)(&dialog);
                             unsafe {
                                 assert!(
@@ -13608,8 +13632,9 @@ mod tests {
                                     "{} has push buttons to look at",
                                     case.name
                                 );
-                                for problem in
-                                    clipped(dialog.hwnd).into_iter().chain(crowded(dialog.hwnd))
+                                for problem in clipped(dialog.hwnd, (*dialog.raw).dpi)
+                                    .into_iter()
+                                    .chain(crowded(dialog.hwnd))
                                 {
                                     found.push(format!("{}: {problem}", case.name));
                                 }
@@ -13619,7 +13644,7 @@ mod tests {
                     });
                     wrong.extend(found.into_iter().map(|problem| {
                         format!(
-                            "{} / {}: {problem}",
+                            "{} / {} / {dpi} dpi: {problem}",
                             info.code,
                             if dark { "dark" } else { "light" }
                         )
@@ -13679,8 +13704,9 @@ mod tests {
                                     limits.ptMinTrackSize.x
                                 ));
                             }
-                            for problem in
-                                clipped(short.hwnd).into_iter().chain(crowded(short.hwnd))
+                            for problem in clipped(short.hwnd, (*short.raw).dpi)
+                                .into_iter()
+                                .chain(crowded(short.hwnd))
                             {
                                 found.push(format!("{}: {problem}", case.name));
                             }
@@ -13788,7 +13814,9 @@ mod tests {
                                 }
                             }
                         }
-                        for problem in clipped(dialog.hwnd).into_iter().chain(crowded(dialog.hwnd))
+                        for problem in clipped(dialog.hwnd, (*dialog.raw).dpi)
+                            .into_iter()
+                            .chain(crowded(dialog.hwnd))
                         {
                             found.push(format!("{}, mirrored: {problem}", case.name));
                         }
@@ -13889,7 +13917,7 @@ mod tests {
                         answer_alert(open, |alert, buttons| {
                             assert!(!buttons.is_empty(), "{name}: the alert has its buttons");
                             let alert = alert as native::HWND;
-                            let mut problems = unsafe { clipped(alert) };
+                            let mut problems = unsafe { clipped(alert, dpi) };
                             problems.extend(unsafe { crowded(alert) });
                             found.lock().unwrap().extend(
                                 problems
@@ -13982,7 +14010,7 @@ mod tests {
                                 .any(|control| control.hwnd == report),
                             "the report button is shown"
                         );
-                        clipped(dialog.hwnd)
+                        clipped(dialog.hwnd, (*dialog.raw).dpi)
                             .into_iter()
                             .chain(crowded(dialog.hwnd))
                             .collect::<Vec<_>>()
@@ -14065,9 +14093,7 @@ mod tests {
 
         #[test]
         fn a_dialog_that_changes_its_dpi_keeps_the_width_it_is_designed_for() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED,
-            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::WM_DPICHANGED;
 
             let mut wrong = Vec::new();
             for (code, name, dark) in [
@@ -14084,28 +14110,10 @@ mod tests {
                         let before = window_widths(dialog.hwnd);
                         let mut frame: RECT = zeroed();
                         GetWindowRect(dialog.hwnd, &mut frame);
-                        let ui = &mut *dialog.raw;
 
-                        // The dialog as it stands on a monitor at 144 dpi: that
-                        // scale, the fonts for it, and the size of its design.
-                        ui.dpi = 144;
-                        let font = native::make_font(144, 9, 400);
-                        let mut child = GetWindow(ui.hwnd, GW_CHILD);
-                        while !child.is_null() {
-                            native::apply_font(child, font);
-                            child = GetWindow(child, GW_HWNDNEXT);
-                        }
-                        windows_sys::Win32::Graphics::Gdi::DeleteObject(ui.font as _);
-                        ui.font = font;
-                        SetWindowPos(
-                            ui.hwnd,
-                            null_mut(),
-                            frame.left,
-                            frame.top,
-                            native::scale(case.width, 144),
-                            native::scale(case.height, 144),
-                            SWP_NOZORDER | SWP_NOACTIVATE,
-                        );
+                        // The dialog as it stands on a monitor at 144 dpi.
+                        at_dpi(&dialog, &case, 144);
+                        let ui = &mut *dialog.raw;
                         if ui.grown.get() != 0 {
                             return vec![format!(
                                 "{name}: the dialog is {} wider than designed before the change",
@@ -14245,7 +14253,7 @@ mod tests {
                         after - before,
                         "the window remembers by how much it was widened"
                     );
-                    let problems: Vec<_> = clipped(dialog.hwnd)
+                    let problems: Vec<_> = clipped(dialog.hwnd, (*dialog.raw).dpi)
                         .into_iter()
                         .chain(crowded(dialog.hwnd))
                         .collect();
@@ -14278,6 +14286,351 @@ mod tests {
                     );
                 }
             });
+        }
+
+        /// The closing button of the rename dialog.
+        unsafe fn cancel_of(dialog: &HiddenDialog) -> native::HWND {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(dialog.hwnd, native::D_CANCEL)
+        }
+
+        /// A text for the closing button that no row of the dialog has room for.
+        fn long_text(times: usize) -> String {
+            "A very long label for the closing button ".repeat(times)
+        }
+
+        /// The rename dialog with its closing button given `text`, placed by
+        /// `place` (which gets the width of the window and answers where its
+        /// left edge goes) on a screen whose first monitor is `work`: the
+        /// window before and after the layout.
+        fn widened(work: RECT, text: &str, place: impl FnOnce(i32) -> i32 + Send) -> (RECT, RECT) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            };
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "rename")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                unsafe {
+                    native::WORK_AREA.with(|area| area.set(Some(work)));
+                    let mut before: RECT = zeroed();
+                    GetWindowRect(dialog.hwnd, &mut before);
+                    SetWindowPos(
+                        dialog.hwnd,
+                        null_mut(),
+                        place(before.right - before.left),
+                        before.top,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    GetWindowRect(dialog.hwnd, &mut before);
+                    native::set_text(cancel_of(&dialog), text);
+                    native::layout_dialog(&*dialog.raw);
+                    let mut after: RECT = zeroed();
+                    GetWindowRect(dialog.hwnd, &mut after);
+                    native::WORK_AREA.with(|area| area.set(None));
+                    (before, after)
+                }
+            })
+        }
+
+        #[test]
+        fn a_dialog_is_moved_left_only_when_widening_it_pushes_it_off_its_monitor() {
+            // Two monitors side by side, 0..1920 and 1920..3840: a window
+            // belongs to the one it is nearest to.
+            let work = RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1040,
+            };
+            let text = long_text(2);
+
+            let (before, after) = widened(work, &text, |_| 1500);
+            assert!(before.right > work.right, "the window spans both monitors");
+            assert!(after.right - after.left > before.right - before.left);
+            assert_eq!(
+                after.left, before.left,
+                "a window that spans two monitors stays where it is"
+            );
+
+            let (before, after) = widened(work, &text, |_| -100);
+            assert!(after.right - after.left > before.right - before.left);
+            assert_eq!(
+                after.left, -100,
+                "a window that overhangs the left edge stays where it is"
+            );
+
+            let (before, after) = widened(work, &text, |width| work.right - width - 10);
+            assert!(after.right - after.left > before.right - before.left);
+            assert_eq!(
+                after.right, work.right,
+                "a window that would leave the monitor ends at its edge"
+            );
+        }
+
+        #[test]
+        fn a_label_squeezed_by_a_wider_button_keeps_the_width_of_its_text() {
+            use windows_sys::Win32::{
+                Graphics::Gdi::ScreenToClient,
+                UI::WindowsAndMessaging::{MoveWindow, WS_CHILD},
+            };
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "rename")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                unsafe {
+                    let ui = &*dialog.raw;
+                    let dpi = ui.dpi;
+                    let (gap, row) = (
+                        native::scale(native::DIALOG_GAP, dpi),
+                        native::scale(native::DIALOG_ROW, dpi),
+                    );
+                    let cancel = cancel_of(&dialog);
+                    let text = "Cancel the rename and close this window";
+                    let (cancel_text, _) = extent(cancel, text, DT_SINGLELINE, 0);
+                    let ok = shown(dialog.hwnd)
+                        .into_iter()
+                        .find(|control| control.id == native::RN_OK)
+                        .unwrap();
+                    let cancel_now = shown(dialog.hwnd)
+                        .into_iter()
+                        .find(|control| control.hwnd == cancel)
+                        .unwrap();
+                    let wanted = cancel_text + native::scale(native::BUTTON_TEXT_PADDING, dpi)
+                        - (cancel_now.rect.right - cancel_now.rect.left);
+                    assert!(wanted > 0, "the closing button has to grow");
+
+                    // A one-line label in the row of the buttons, with room
+                    // for its text and half of what the button takes. Its id
+                    // sorts after the dialog's own labels, which the layout
+                    // places by order.
+                    let label = native::control(
+                        dialog.hwnd,
+                        "STATIC",
+                        "Renaming",
+                        WS_CHILD | WS_VISIBLE | native::SS_NOPREFIX,
+                        0,
+                        99_999,
+                    );
+                    native::apply_font(label, ui.font);
+                    let (needs, _) = extent(label, "Renaming", DT_SINGLELINE, 0);
+                    let mut corner = POINT {
+                        x: ok.rect.left,
+                        y: ok.rect.top,
+                    };
+                    ScreenToClient(dialog.hwnd, &mut corner);
+                    let margin = native::scale(native::DIALOG_MARGIN, dpi);
+                    let width = needs + wanted / 2;
+                    assert!(
+                        margin + width + gap <= corner.x,
+                        "the label stands left of the button"
+                    );
+                    MoveWindow(label, margin, corner.y, width, row, 1);
+
+                    native::set_text(cancel, text);
+                    native::layout_dialog(ui);
+                    let label = shown(dialog.hwnd)
+                        .into_iter()
+                        .find(|control| control.hwnd == label)
+                        .unwrap();
+                    let now = label.rect.right - label.rect.left;
+                    assert!(
+                        now < width,
+                        "the label was squeezed from {width} px to {now} px"
+                    );
+                    let problems: Vec<_> = clipped(dialog.hwnd, ui.dpi)
+                        .into_iter()
+                        .chain(crowded(dialog.hwnd))
+                        .collect();
+                    assert!(problems.is_empty(), "{problems:?}");
+                    assert!(now >= needs, "the label is {now} px wide, its text {needs}");
+                }
+            });
+        }
+
+        /// Gives the window the narrowest width it may be given, and returns
+        /// its width, that narrowest width and what the rows have asked for.
+        unsafe fn shrunk(dialog: &HiddenDialog) -> (i32, i32, i32) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+            };
+            let mut frame: RECT = zeroed();
+            GetWindowRect(dialog.hwnd, &mut frame);
+            let (_, least) = window_widths(dialog.hwnd);
+            SetWindowPos(
+                dialog.hwnd,
+                null_mut(),
+                0,
+                0,
+                least,
+                frame.bottom - frame.top,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            let (width, least) = window_widths(dialog.hwnd);
+            (width, least, (*dialog.raw).grown.get())
+        }
+
+        #[test]
+        fn a_window_as_wide_as_its_monitor_asks_for_the_same_width_however_often_it_shrinks() {
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "rename")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                unsafe {
+                    let work = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 640,
+                        bottom: 1040,
+                    };
+                    native::WORK_AREA.with(|area| area.set(Some(work)));
+                    native::set_text(cancel_of(&dialog), &long_text(4));
+                    native::layout_dialog(&*dialog.raw);
+                    let (width, _) = window_widths(dialog.hwnd);
+                    assert_eq!(
+                        width,
+                        work.right - work.left,
+                        "the window fills the monitor"
+                    );
+                    let asked = (*dialog.raw).grown.get();
+                    for round in 1..=4 {
+                        let (width, least, grown) = shrunk(&dialog);
+                        assert_eq!(
+                            width,
+                            work.right - work.left,
+                            "round {round}: widened again to the monitor's width"
+                        );
+                        assert!(
+                            least <= width,
+                            "round {round}: the window cannot be shrunk below {least} px, it is {width} px"
+                        );
+                        assert_eq!(grown, asked, "round {round}: what the rows ask for");
+                    }
+
+                    native::WORK_AREA.with(|area| area.set(None));
+                }
+            });
+        }
+
+        #[test]
+        fn the_scroll_bar_does_not_widen_a_window_beyond_its_monitor() {
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "rename")
+                    .unwrap();
+                let short = Case {
+                    height: case.height * 3 / 5,
+                    ..case
+                };
+                let dialog = dialog(&short, false);
+                unsafe {
+                    let work = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 640,
+                        bottom: 1040,
+                    };
+                    native::WORK_AREA.with(|area| area.set(Some(work)));
+                    native::set_text(cancel_of(&dialog), &long_text(4));
+                    native::layout_dialog(&*dialog.raw);
+                    assert!(
+                        (*dialog.raw).scroll_range.get() > 0,
+                        "the window is too short for its content"
+                    );
+                    let (width, least) = window_widths(dialog.hwnd);
+                    native::WORK_AREA.with(|area| area.set(None));
+                    assert!(
+                        width <= work.right - work.left && least <= width,
+                        "the window is {width} px and cannot be shrunk below {least} px on a work area {} px wide",
+                        work.right - work.left
+                    );
+                }
+            });
+        }
+
+        #[test]
+        fn a_widened_window_is_at_least_as_wide_as_its_minimum_at_any_scale_and_with_the_scroll_bar(
+        ) {
+            let work = RECT {
+                left: 0,
+                top: 0,
+                right: 3000,
+                bottom: 1040,
+            };
+            // The window, its minimum and whether the scroll bar shows, with
+            // the closing button given `times` times the long text.
+            let state = |dpi: u32, times: usize, too_short: bool| {
+                in_language("en", || {
+                    let rename = cases()
+                        .into_iter()
+                        .find(|case| case.name == "rename")
+                        .unwrap();
+                    let case = Case {
+                        height: if too_short {
+                            rename.height * 3 / 5
+                        } else {
+                            rename.height
+                        },
+                        ..rename
+                    };
+                    let dialog = dialog(&case, false);
+                    unsafe {
+                        native::WORK_AREA.with(|area| area.set(Some(work)));
+                        if dpi != 96 {
+                            at_dpi(&dialog, &case, dpi);
+                        }
+                        native::set_text(cancel_of(&dialog), &long_text(times));
+                        native::layout_dialog(&*dialog.raw);
+                        let mut frame: RECT = zeroed();
+                        GetWindowRect(dialog.hwnd, &mut frame);
+                        let (least, _) = native::dialog_min_track(&*dialog.raw, dpi);
+                        let bar = (*dialog.raw).scroll_range.get() > 0;
+                        native::WORK_AREA.with(|area| area.set(None));
+                        (frame.right - frame.left, least, bar)
+                    }
+                })
+            };
+            let mut wrong = Vec::new();
+            for dpi in [96, 120, 144, 168, 192] {
+                for times in 2..=5 {
+                    let (tall, tall_least, tall_bar) = state(dpi, times, false);
+                    let (short, short_least, short_bar) = state(dpi, times, true);
+                    let what = format!("{dpi} dpi, text x{times}");
+                    if tall_bar || !short_bar {
+                        wrong.push(format!(
+                            "{what}: the scroll bar shows: {tall_bar} / {short_bar}"
+                        ));
+                    }
+                    for (name, width, least) in
+                        [("tall", tall, tall_least), ("short", short, short_least)]
+                    {
+                        if least > width {
+                            wrong.push(format!(
+                                "{what}, {name}: the window is {width} px, its minimum {least} px"
+                            ));
+                        }
+                    }
+                    // The scroll bar takes room, so the window grows by exactly
+                    // that much and no more.
+                    let bar = unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                            windows_sys::Win32::UI::WindowsAndMessaging::SM_CXVSCROLL,
+                        )
+                    };
+                    if dpi == 96 && short - tall != bar {
+                        wrong.push(format!("{what}: the window is {tall} px, {short} px with the scroll bar of {bar} px"));
+                    }
+                }
+            }
+            assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
         }
     }
 }
