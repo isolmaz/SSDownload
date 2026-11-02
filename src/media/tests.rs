@@ -2011,6 +2011,7 @@ fn live_gauge_measures_the_growing_part_file_while_it_is_open() {
         .expect("the first sample is immediate");
     assert_eq!(first.downloaded, 100 + 4096);
     assert_eq!(first.total, None);
+    assert_eq!(first.phase_name, "downloading media");
     assert!(
         gauge.sample(100, at(500)).is_none(),
         "samples are at most once per second"
@@ -3258,13 +3259,20 @@ fn the_processing_state_comes_from_the_tool_stage_not_the_phase_text() {
         process::handle_machine_line(
             &line,
             Instant::now(),
-            &mut |value| seen.push(value.processing),
+            &mut |value| seen.push((value.processing, value.phase_name)),
             &mut completed,
             &mut last_path,
             &mut gauge,
         );
     }
-    assert_eq!(seen, [false, true, true]);
+    assert_eq!(
+        seen,
+        [
+            (false, "downloading media"),
+            (true, "processing media"),
+            (true, "processing with ffmpeg")
+        ]
+    );
 }
 
 /// Plays a tool's progress lines into the monitor's gauge on a clock the test moves, waking the
@@ -3772,9 +3780,9 @@ fn a_post_processor_marker_on_stderr_reaches_the_progress() {
     assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
     let phase = crate::i18n::ui("FFmpeg ile işleniyor", "Processing with FFmpeg");
     assert!(
-        updates
-            .iter()
-            .any(|update| update.processing && update.phase == phase),
+        updates.iter().any(|update| update.processing
+            && update.phase == phase
+            && update.phase_name == "processing with ffmpeg"),
         "{updates:?}"
     );
 }

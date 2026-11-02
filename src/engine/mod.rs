@@ -207,10 +207,10 @@ fn known(value: Option<u64>) -> String {
     value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
 }
 
-/// The state of a download as the job log states it when it changes.
-fn stage_detail(state: JobState, progress: &TransferProgress) -> String {
+/// The state and phase of a download as the job log states them when either changes.
+fn stage_detail(state: JobState, phase_name: &str, progress: &TransferProgress) -> String {
     format!(
-        "state={} total={}",
+        "state={} phase={phase_name} total={}",
         state_name(state),
         known(progress.total)
     )
@@ -268,6 +268,8 @@ struct ActiveJob {
     last_persist: Instant,
     /// Last time a periodic progress sample was written to the event log.
     last_log: Instant,
+    /// The phase the job log last stated for this attempt.
+    phase_name: &'static str,
     /// Start of the current attempt, reported as the age of a progress sample.
     attempt_started: Instant,
     /// Started through "Hemen başlat": exempt from the concurrency limits.
@@ -3482,7 +3484,12 @@ impl Actor {
                 } else {
                     JobState::Downloading
                 };
-                let stage_changed = job.state != state;
+                let phase_name = if value.phase_name.is_empty() {
+                    state_name(state)
+                } else {
+                    value.phase_name
+                };
+                let stage_changed = job.state != state || active.phase_name != phase_name;
                 job.downloaded = value.downloaded;
                 job.total = value.total;
                 job.speed = value.speed;
@@ -3512,11 +3519,12 @@ impl Actor {
                     active.last_persist = Instant::now();
                 }
                 if stage_changed {
+                    active.phase_name = phase_name;
                     crate::logging::record_job(
                         &id,
                         crate::logging::Event::info("job.stage")
                             .host(source_host_of(job))
-                            .detail(stage_detail(job.state, &value)),
+                            .detail(stage_detail(job.state, phase_name, &value)),
                     );
                 } else if active.last_log.elapsed() >= Duration::from_secs(15) {
                     active.last_log = Instant::now();
@@ -4296,6 +4304,7 @@ impl Actor {
                 desired: DesiredStop::None,
                 last_persist: Instant::now(),
                 last_log: Instant::now(),
+                phase_name: "",
                 attempt_started: Instant::now(),
                 forced,
             },

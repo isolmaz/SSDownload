@@ -3366,13 +3366,13 @@ fn the_details_of_job_log_lines_are_english_and_free_of_debug_output_in_every_la
                 "{language}"
             );
             assert_eq!(
-                stage_detail(JobState::Downloading, &known),
-                "state=downloading total=456",
+                stage_detail(JobState::Downloading, "downloading media", &known),
+                "state=downloading phase=downloading media total=456",
                 "{language}"
             );
             assert_eq!(
-                stage_detail(JobState::Processing, &unknown),
-                "state=processing total=unknown",
+                stage_detail(JobState::Processing, "processing", &unknown),
+                "state=processing phase=processing total=unknown",
                 "{language}"
             );
             assert_eq!(
@@ -3430,8 +3430,8 @@ fn a_job_that_runs_to_the_end_writes_english_job_log_lines() {
         stages
             .iter()
             .skip(1)
-            .all(|stage| stage.starts_with("state=downloading total=")
-                || stage.starts_with("state=processing total=")),
+            .all(|stage| stage.starts_with("state=downloading phase=")
+                || stage.starts_with("state=processing phase=")),
         "{stages:?}"
     );
     for event in &events {
@@ -3443,6 +3443,91 @@ fn a_job_that_runs_to_the_end_writes_english_job_log_lines() {
             event.event
         );
     }
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// The job log is how a slow or failed download is diagnosed afterwards, and its stage lines are
+/// the timeline: one line for every change of phase, none for a count or a percentage that moves
+/// inside a phase, and the same English whatever text the interface shows.
+#[test]
+fn every_phase_change_of_a_running_job_writes_one_english_job_log_line() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-engine-log-phases-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/held.bin".into(), vec![5; 4096], true)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(file_request(server.url("/held.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the worker to wait for the body", || {
+        server
+            .hits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|hit| hit == "/held.bin")
+    });
+
+    let reports = std::cell::Cell::new(0);
+    let report = |phase_name: &'static str, processing: bool, phase: String| {
+        reports.set(reports.get() + 1);
+        send_to_the_worker(&engine, &|generation| WorkerEvent::Progress {
+            id: id.clone(),
+            generation,
+            value: TransferProgress {
+                downloaded: reports.get(),
+                total: Some(1000),
+                phase: phase.clone(),
+                phase_name,
+                processing,
+                ..TransferProgress::default()
+            },
+        });
+    };
+    for connections in [8, 8, 6] {
+        report("downloading", false, format!("{connections} bağlantı"));
+    }
+    report(
+        "retrying with fewer connections",
+        false,
+        "HTTP 429; 5 sn sonra 4 bağlantıyla yeniden denenecek".into(),
+    );
+    report("downloading", false, "4 bağlantı".into());
+    for percent in 0..=100 {
+        report(
+            "converting audio",
+            true,
+            format!("Ses MP3 biçimine dönüştürülüyor: %{percent}"),
+        );
+    }
+    // A phase without a name of its own is logged under the name of its state.
+    report("", true, "Bitiriliyor".into());
+
+    let stages = |id: &str| {
+        crate::logging::recorded_job_events(id)
+            .into_iter()
+            .filter(|event| event.event == "job.stage")
+            .map(|event| event.detail.unwrap_or_default())
+            .collect::<Vec<_>>()
+    };
+    wait_until("the last report to be handled", || {
+        shown_job(&engine, &id).downloaded == reports.get()
+    });
+    assert_eq!(
+        stages(&id),
+        [
+            "state=connecting attempt=1",
+            "state=downloading phase=downloading total=1000",
+            "state=downloading phase=retrying with fewer connections total=1000",
+            "state=downloading phase=downloading total=1000",
+            "state=processing phase=converting audio total=1000",
+            "state=processing phase=processing total=1000",
+        ]
+    );
+
+    server.release();
+    wait_until("the job", || job_state(&engine, &id) == JobState::Completed);
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
 }

@@ -1050,15 +1050,54 @@ fn a_retry_notice_does_not_report_the_head_length_as_the_size() {
         &TransferControl::default(),
         1,
         1,
-        &mut |progress| notices.push((progress.total, progress.phase.to_string())),
+        &mut |progress| notices.push(progress),
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     let retry = notices
         .iter()
-        .find(|(_, phase)| phase.contains("429"))
+        .find(|progress| progress.phase.contains("429"))
         .unwrap_or_else(|| panic!("no retry notice in {notices:?}"));
-    assert_eq!(retry.0, None);
+    assert_eq!(retry.total, None);
+    assert_eq!(retry.phase_name, "retrying with one connection");
+}
+
+/// The job log names every phase of a download in English; a report without a name would be
+/// logged under its state.
+#[test]
+fn every_report_of_a_download_names_its_phase() {
+    for (connections, size) in [(1, MIB), (4, 9 * MIB)] {
+        let server = Server::start(Config {
+            size,
+            ..Config::default()
+        });
+        let directory = TempDir::new("phase-names");
+        let output = directory.0.join("payload.bin");
+        let mut names = Vec::new();
+        fetch(
+            &request_for(&server),
+            &output,
+            &TransferControl::default(),
+            connections,
+            connections,
+            &mut |progress| names.push(progress.phase_name),
+        )
+        .unwrap();
+        assert!(
+            names
+                .iter()
+                .all(|name| ["downloading", "completing"].contains(name)),
+            "{connections} connection(s): {names:?}"
+        );
+        // The last report of a download over several connections says that it completes; a single
+        // connection reports it is downloading until it is done.
+        let last = if connections == 1 {
+            "downloading"
+        } else {
+            "completing"
+        };
+        assert_eq!(names.last(), Some(&last), "{connections} connection(s)");
+    }
 }
 
 #[test]
