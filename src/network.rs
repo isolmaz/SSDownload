@@ -619,6 +619,10 @@ struct CurlSocketState {
     scope: CurlScope,
     control: TransferControl,
     connect_timeout_ms: AtomicU64,
+    /// The latest connection attempt of the pre-connect callback ran out of `connect_timeout_ms`.
+    /// libcurl is only handed a socket it could not get then, and reports that it could not
+    /// connect. Every attempt starts with the flag cleared.
+    connect_timed_out: AtomicBool,
     // The first permit is acquired before libcurl starts its timers, then
     // transferred to the first actual socket opened by this Easy.
     primed: Mutex<Option<ConnectionLease>>,
@@ -652,6 +656,7 @@ impl GovernedEasy {
             scope,
             control,
             connect_timeout_ms: AtomicU64::new(DEFAULT_CURL_CONNECT_TIMEOUT.as_millis() as u64),
+            connect_timed_out: AtomicBool::new(false),
             primed: Mutex::new(first_socket),
             sockets: Mutex::new(HashMap::new()),
             failure: Mutex::new(None),
@@ -683,6 +688,22 @@ impl GovernedEasy {
             .connect_timeout_ms
             .store(milliseconds.max(1), Ordering::Release);
         self.easy_mut().connect_timeout(timeout)
+    }
+
+    /// The error a failed transfer reports: a connect that ran out of time in the pre-connect
+    /// callback is the timeout it was, not libcurl's "could not connect".
+    pub(crate) fn reported_error(&self, error: curl::Error) -> curl::Error {
+        if error.is_couldnt_connect()
+            && self
+                .callbacks
+                .state
+                .connect_timed_out
+                .load(Ordering::Acquire)
+        {
+            curl::Error::new(curl_sys::CURLE_OPERATION_TIMEDOUT)
+        } else {
+            error
+        }
     }
 
     pub(crate) fn network_error(&self) -> Option<String> {
@@ -814,6 +835,7 @@ extern "C" fn curl_open_socket(
             return curl_sys::CURL_SOCKET_BAD;
         }
         let state = &*(data as *const CurlSocketState);
+        state.connect_timed_out.store(false, Ordering::Release);
         if purpose != curl_sys::CURLSOCKTYPE_IPCXN {
             state.fail(crate::i18n::ui(
                 "libcurl desteklenmeyen bir soket türü istedi",
@@ -861,7 +883,11 @@ extern "C" fn curl_open_socket(
         }
         let socket = socket as curl_sys::curl_socket_t;
         if state.preconnects_http() {
-            match state.connect_before_curl(socket, address) {
+            let connected = state.connect_before_curl(socket, address);
+            if connected == Err(WSAETIMEDOUT) {
+                state.connect_timed_out.store(true, Ordering::Release);
+            }
+            match connected {
                 Ok(()) => entry.preconnected = true,
                 Err(error) => {
                     // libcurl has not received this descriptor, so this close
@@ -2724,5 +2750,89 @@ mod tests {
             None,
             "a deadline in the past"
         );
+    }
+
+    /// What libcurl says when `perform` fails for `url` with the pre-connect callback allowed
+    /// `connect_timeout_ms` to connect, and the error the download reports for it.
+    fn connect_failure(url: &url::Url, connect_timeout_ms: u64) -> (curl::Error, anyhow::Error) {
+        let governor = NetworkGovernor::new(1);
+        let mut easy = governor
+            .easy_for_url(url, &TransferControl::default())
+            .unwrap();
+        easy.url(url.as_str()).unwrap();
+        easy.callbacks
+            .state
+            .connect_timeout_ms
+            .store(connect_timeout_ms, std::sync::atomic::Ordering::Release);
+        let error = easy.perform().unwrap_err();
+        let reported = crate::transfer::governed_transport_error(&easy, error.clone(), "test");
+        (error, reported)
+    }
+
+    #[test]
+    fn a_connect_that_runs_out_of_time_in_the_pre_connect_callback_is_reported_as_a_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = url::Url::parse(&format!(
+            "http://127.0.0.1:{}/",
+            listener.local_addr().unwrap().port()
+        ))
+        .unwrap();
+
+        let (libcurl, reported) = connect_failure(&url, 0);
+        assert!(libcurl.is_couldnt_connect(), "{libcurl}");
+        assert_eq!(
+            crate::transfer::network_code(&reported),
+            Some(crate::error_codes::NET_007),
+            "{reported:#}"
+        );
+    }
+
+    #[test]
+    fn a_refused_connect_is_still_a_failed_connect() {
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = url::Url::parse(&format!(
+            "http://127.0.0.1:{}/",
+            closed.local_addr().unwrap().port()
+        ))
+        .unwrap();
+        drop(closed);
+
+        let (libcurl, reported) = connect_failure(&url, 15_000);
+        assert!(libcurl.is_couldnt_connect(), "{libcurl}");
+        assert_eq!(
+            crate::transfer::network_code(&reported),
+            Some(crate::error_codes::NET_011),
+            "{reported:#}"
+        );
+    }
+
+    #[test]
+    fn a_connect_that_fails_without_a_timeout_after_one_that_timed_out_is_not_a_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = url::Url::parse(&format!(
+            "http://127.0.0.1:{}/",
+            listener.local_addr().unwrap().port()
+        ))
+        .unwrap();
+        let control = TransferControl::default();
+        let mut easy = NetworkGovernor::new(1)
+            .easy_for_url(&url, &control)
+            .unwrap();
+        easy.url(url.as_str()).unwrap();
+        easy.callbacks
+            .state
+            .connect_timeout_ms
+            .store(0, std::sync::atomic::Ordering::Release);
+
+        let timed_out = easy.perform().unwrap_err();
+        assert!(timed_out.is_couldnt_connect(), "{timed_out}");
+        assert!(easy.reported_error(timed_out).is_operation_timedout());
+
+        // The next attempt is stopped before it connects: no connect ran out of time.
+        control.cancel();
+        let stopped = easy.perform().unwrap_err();
+        assert!(stopped.is_couldnt_connect(), "{stopped}");
+        let reported = easy.reported_error(stopped);
+        assert!(reported.is_couldnt_connect(), "{reported}");
     }
 }

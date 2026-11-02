@@ -118,12 +118,55 @@ test("a resumed run still continues the stored part with the file itself", async
   assert.equal(h.commands.find(command => command.command === "chunk").offset, 100);
 });
 
+test("a resumed run does not look at the start of the answer, which begins in the middle of the file", async () => {
+  const request = { kind: "file", filename: "report.pdf" };
+  const answer = () => served({ status: 206, type: "text/html", body: "<html>tail", headers: { "content-range": "bytes 100-109/110", etag: "\"v1\"" } });
+  const resume = { stream_id: 1, offset: 100, next_sequence: 3, sealed: false, etag: "\"v1\"", client_checkpoint: { v: 1, kind: "direct", sha: hash100, offset: 100 } };
+  const resumed = relayContentHarness({ request, resume, answer });
+  await resumed.run();
+  assert.equal(resumed.fetched[0].range, "bytes=100-");
+  assert.deepEqual(resumed.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"]);
+  assert.equal(Buffer.from(resumed.commands.find(command => command.command === "chunk").data, "base64").toString(), "<html>tail");
+
+  const fresh = relayContentHarness({ request, answer: () => served({ type: "text/html", body: "<html>tail" }) });
+  await fresh.run();
+  assert.deepEqual(fresh.names(), ["begin_request", "end_request", "failed"], "the same bytes at the start of a fresh run are a page");
+});
+
+test("a fresh run refuses a page that answers for a name with another file type's extension, redirected or not", async () => {
+  const cases = [
+    ["the job's own name", { kind: "file", filename: "report.pdf", url: "https://files.example/download" }],
+    ["the name of the address", { kind: "file", url: "https://files.example/dir/setup.EXE?token=1" }],
+    ["the job's own name over a page's address", { kind: "file", filename: "data.zip", url: "https://files.example/saved.html" }],
+    ["a name in another script", { kind: "file", url: "https://files.example/dir/report.%D0%BF%D0%B4%D1%84" }],
+    ["an extension with vowel signs, which are letters to the application", { kind: "file", url: "https://files.example/dir/report.%E0%A4%AA%E0%A4%BE%E0%A4%A0" }],
+    ["an encoded dot", { kind: "file", url: "https://files.example/dir/report%2Epdf" }],
+    ["a name that ends in a dot", { kind: "file", filename: "report.pdf." }],
+    ["an address that ends in a dot", { kind: "file", url: "https://files.example/dir/report.pdf." }],
+    ["a name with a path in front", { kind: "file", filename: "dir/report.pdf" }],
+  ];
+  for (const [label, request] of cases) for (const redirected of [false, true]) {
+    const h = relayContentHarness({ request, answer: () => served({ type: "text/html", redirected }) });
+    await h.run();
+    assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"], `${label} redirected=${redirected}`);
+    if (redirected) assert.ok(h.cancelled(), `${label}: the page body is not read`);
+  }
+});
+
 test("a page is still saved when the application would save it", async () => {
   const cases = [
     ["an attachment", { kind: "file" }, { disposition: "attachment; filename=\"report.html\"", redirected: true }],
+    ["an attachment under another file type's name", { kind: "file", filename: "report.pdf" }, { disposition: "attachment", redirected: false }],
     ["a file named as a page", { kind: "file", filename: "saved.html" }, { redirected: true }],
     ["a file the address names as a page", { kind: "file", url: "https://files.example/dir/saved.html?token=1" }, { redirected: true }],
+    ["a file named as a page, whatever the spelling", { kind: "file", filename: "saved.SHTML" }, { redirected: false }],
+    ["a file named as a web archive", { kind: "file", filename: "saved.mhtml" }, { redirected: false }],
     ["the page a file job points at directly", { kind: "file" }, { redirected: false }],
+    ["an address that names no file type", { kind: "file", url: "https://files.example/dir/download?id=a.pdf" }, { redirected: false }],
+    ["an address that ends in a version number", { kind: "file", url: "https://files.example/releases/v1.2" }, { redirected: false }],
+    ["an address whose last part is encoded text without a dot", { kind: "file", url: "https://files.example/dir/%D0%BF%D0%B4%D1%84" }, { redirected: false }],
+    ["an address with an escape that is not text", { kind: "file", url: "https://files.example/dir/report.pd%ZZf" }, { redirected: false }],
+    ["a name that ends in a version number and a space", { kind: "file", filename: "v1.2 " }, { redirected: false }],
     ["an unspecified job kind", { kind: "auto" }, { redirected: false }],
   ];
   for (const [label, request, serve] of cases) {
@@ -131,6 +174,55 @@ test("a page is still saved when the application would save it", async () => {
     await h.run();
     assert.deepEqual(h.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"], label);
     assert.equal(Buffer.from(h.commands.find(command => command.command === "chunk").data, "base64").toString(), PAGE, label);
+  }
+});
+
+test("a page that opens like one is refused before the run opens a stream, whatever follows its opening", async () => {
+  for (const body of ["<!DOCTYPE html><p>x", String.fromCharCode(0xFEFF) + "\r\n\t<HTML>", "<script>location='/login'</script>", "<title>Sign in</title>", "<head>", "<body>"]) {
+    const h = relayContentHarness({ request: { kind: "file", filename: "report.pdf" }, answer: () => served({ type: "text/html", body }) });
+    await h.run();
+    assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"], JSON.stringify(body));
+    assert.match(h.commands.at(-1).error, /web page instead of the file/);
+  }
+});
+
+test("a file that the server labels as a page is written when its bytes are no page", async () => {
+  for (const [filename, body] of [["data.csv", "id,name\n1,a\n"], ["notes.txt", "hello"], ["data.json", "{\"html\": \"<html>\"}"],
+    ["feed.xml", "<?xml version=\"1.0\"?><feed/>"], ["tiny.txt", "<"], ["empty.txt", ""]]) {
+    const h = relayContentHarness({ request: { kind: "file", filename }, answer: () => served({ type: "text/html", body }) });
+    await h.run();
+    const chunks = h.commands.filter(command => command.command === "chunk");
+    assert.deepEqual(h.names(), body ? ["begin_request", "open", "chunk", "end_request", "seal", "finish"] : ["begin_request", "open", "end_request", "seal", "finish"], filename);
+    assert.equal(chunks.map(chunk => Buffer.from(chunk.data, "base64").toString()).join(""), body, filename);
+  }
+});
+
+// The application tests the same cases against its own copy of the rule (`sniff_page`).
+const SNIFF_CASES = JSON.parse(fs.readFileSync(path.join(__dirname, "page-sniff-cases.json"), "utf8"));
+
+test("the start of a body is a page for the relay exactly where it is one for the application", async () => {
+  for (const [group, refused] of [["page", true], ["file", false], ["undecided", false]]) {
+    assert.ok(SNIFF_CASES[group].length > 0, group);
+    for (const body of SNIFF_CASES[group]) {
+      const h = relayContentHarness({ request: { kind: "file", filename: "report.pdf" }, answer: () => served({ type: "text/html", body }) });
+      await h.run();
+      const label = `${group}: ${JSON.stringify(body)}`;
+      if (refused) assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"], label);
+      else {
+        assert.equal(h.names().at(-1), "finish", label);
+        const written = h.commands.filter(command => command.command === "chunk").map(chunk => Buffer.from(chunk.data, "base64").toString()).join("");
+        assert.equal(written, body, label);
+      }
+    }
+  }
+});
+
+test("a file that opens like a page after the first 1024 bytes is written, as the application writes it", async () => {
+  for (const body of [" ".repeat(1024) + "<html>", "<?xml version=\"1.0\"?><!--" + "x".repeat(1024) + "--><html>"]) {
+    const h = relayContentHarness({ request: { kind: "file", filename: "report.pdf" }, answer: () => served({ type: "text/html", body }) });
+    await h.run();
+    assert.deepEqual(h.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"]);
+    assert.equal(Buffer.from(h.commands.find(command => command.command === "chunk").data, "base64").toString(), body);
   }
 });
 

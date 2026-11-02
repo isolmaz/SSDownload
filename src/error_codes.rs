@@ -84,8 +84,8 @@ define! {
     MED_004 => "SSD-MED-004", "media", "discovery", Error, Unsupported, false, "Liste DRM korumalı bir öğe içeriyor", "The playlist contains a DRM protected entry", "A playlist entry is DRM protected and cannot be handled safely.";
     MED_005 => "SSD-MED-005", "media", "discovery", Error, Report, false, "Adres geçersiz veya desteklenmiyor", "The address is invalid or unsupported", "The address could not be parsed or did not pass the supported-scheme check.";
     MED_006 => "SSD-MED-006", "media", "discovery", Error, Retry, true, "Medya çözümleyici (extractor) hata verdi", "The media extractor failed", "The extractor child process failed; its verbatim error is attached to the log.";
-    MED_007 => "SSD-MED-007", "media", "discovery", Error, OpenPage, true, "Site bot koruması veya erişim engeli bildirdi (403)", "The site reported bot protection or an access block (403)", "The origin answered 401/403 or a bot check; opening the page in the browser usually clears it.";
-    MED_008 => "SSD-MED-008", "media", "discovery", Error, OpenPage, false, "Medya bölge kısıtlı, kaldırılmış veya oturum gerektiriyor", "The media is geo restricted, removed, or requires sign-in", "The extractor reported geo restriction, removal or a sign-in requirement.";
+    MED_007 => "SSD-MED-007", "media", "discovery", Error, OpenPage, true, "Site bot koruması veya erişim engeli bildirdi (403)", "The site reported bot protection or an access block (403)", "The origin answered 401/403 or a bot check, or the final error line of the media tool's analysis or download is a 403; opening the page in the browser usually clears it.";
+    MED_008 => "SSD-MED-008", "media", "discovery", Error, OpenPage, false, "Medya bölge kısıtlı, kaldırılmış veya oturum gerektiriyor", "The media is geo restricted, removed, or requires sign-in", "The extractor reported geo restriction, removal or a sign-in requirement, in the analysis or in the download.";
     MED_009 => "SSD-MED-009", "media", "validation", Warn, Unsupported, false, "Canlı yayın desteği sınırlı", "Live stream support is limited", "The media is live; a live capture is outside the supported contract.";
     MED_010 => "SSD-MED-010", "media", "discovery", Warn, Refresh, true, "Bu oynatıcının medya isteği yakalanamadı", "This player's media request could not be captured", "The player never produced an observable media request (MSE/blob); the page address is used instead.";
     MED_011 => "SSD-MED-011", "media", "discovery", Error, Retry, true, "Medya analizi zaman aşımına uğradı", "Media analysis timed out", "The extractor did not answer within the analysis budget.";
@@ -94,23 +94,30 @@ define! {
     MED_014 => "SSD-MED-014", "media", "validation", Error, Settings, false, "Seçilen kalite veya kapsayıcı bu kaynakla uyumsuz", "The selected quality or container is incompatible with this source", "The requested container/quality cannot be produced from the available formats.";
     MED_015 => "SSD-MED-015", "media", "manifest", Error, Refresh, true, "Seçilen kalite indirme anında kaynakta bulunamadı", "The selected quality is no longer available at the source", "The manifest no longer offers the analyzed quality when it is resolved again for the download.";
     MED_016 => "SSD-MED-016", "media", "validation", Error, Report, false, "Seçilen ses dil etiketi çıktıya yazılamadı", "The selected audio language tag could not be written to the output", "The output container could not carry the selected audio language tag, so the marked language cannot be verified.";
+    MED_017 => "SSD-MED-017", "media", "segment", Error, Retry, true, "Medya aracı indirmeyi tamamlayamadı", "The media tool could not finish the download", "yt-dlp stopped while downloading the selected streams, for a reason that no other code names; its last error line follows the code and the whole output is in the log. The job retries it by itself only when that line shows a status or a connection failure that a retry can clear.";
     TOL_001 => "SSD-TOL-001", "tools", "source", Error, Settings, true, "Gerekli medya bileşenleri kurulu değil", "Required media components are not installed", "A managed tool is missing from the active tools version.";
     TOL_002 => "SSD-TOL-002", "tools", "source", Error, Retry, true, "Araç bütünlük doğrulaması başarısız", "Tool integrity verification failed", "The tool archive or executable did not match its recorded hash.";
     TOL_003 => "SSD-TOL-003", "tools", "source", Error, Retry, true, "Araç başlatılamadı", "The tool could not be started", "The tool process could not be spawned or its job assignment failed.";
     TOL_004 => "SSD-TOL-004", "tools", "source", Error, Update, false, "Araç sürümü desteklenmiyor", "The tool version is not supported", "The installed tool version is older than the supported minimum.";
     TOL_005 => "SSD-TOL-005", "tools", "source", Error, Settings, false, "Medya araçlarının yolu Windows'un programlar için izin verdiği 259 karakterden uzun; profili daha kısa bir klasöre taşıyın ve SSDownload'ı --data-dir ile o klasörü göstererek başlatın", "The media tools' path is longer than the 259 characters Windows allows for programs; move the profile to a shorter folder and start SSDownload with --data-dir pointing at it", "FFmpeg, FFprobe or Deno is too deep in the data folder for yt-dlp to start it; yt-dlp then runs without it and can leave a stream in the wrong container.";
     NET_001 => "SSD-NET-001", "network", "source", Error, Retry, true, "Alan adı çözümlenemedi (DNS)", "Name resolution failed (DNS)", "Name resolution failed for the target host.";
-    NET_002 => "SSD-NET-002", "network", "source", Error, Retry, true, "TLS sertifika doğrulaması başarısız", "TLS certificate validation failed", "The TLS handshake or certificate validation failed.";
-    NET_003 => "SSD-NET-003", "network", "source", Error, Retry, true, "Proxy tüneli kurulamadı", "The proxy tunnel could not be established", "The proxy CONNECT tunnel was refused or reset.";
-    NET_004 => "SSD-NET-004", "network", "source", Error, Settings, false, "Dosya yerine bir web sayfası (örneğin oturum açma sayfası) geldi", "A web page (such as a sign-in page) arrived instead of the file", "A file request that a redirect led to a web page the server does not send as an attachment (a sign-in page, for example) fails instead of saving the page. The request lacks the session, so repeating it unchanged gets the same page.";
+    NET_002 => "SSD-NET-002", "network", "source", Error, Settings, false, "Güvenli (TLS) bağlantı kurulamadı", "The secure connection (TLS) could not be established", "The TLS handshake or the certificate check failed. Not retried: the same secure connection is refused again.";
+    NET_003 => "SSD-NET-003", "network", "source", Error, Retry, true, "Proxy tüneli kurulamadı", "The proxy tunnel could not be established", "The proxy's name could not be resolved, or the handshake or CONNECT tunnel through the proxy was refused or reset.";
+    NET_004 => "SSD-NET-004", "network", "source", Error, Settings, false, "Dosya yerine bir web sayfası (örneğin oturum açma sayfası) geldi", "A web page (such as a sign-in page) arrived instead of the file", "A file request fails instead of saving a web page that the server does not send as an attachment: a page that a redirect led to (a sign-in page, for example), or a page that opens like one (an HTML comment, a tag from the WHATWG MIME Sniffing list for HTML, or an XML declaration followed by an html document; the rule is relaxed from the standard's, see docs/GUIDE.md, Sign-in pages) when the file's name has the extension of another file type. The request lacks the session, so repeating it unchanged gets the same page.";
     NET_005 => "SSD-NET-005", "network", "source", Error, Refresh, false, "Kaynak bulunamadı (404)", "Resource not found (404)", "The origin answered 404 for the requested resource.";
     NET_006 => "SSD-NET-006", "network", "source", Warn, Retry, true, "Sunucu meşgul (429/503)", "Server busy (429/503)", "The origin asked the client to slow down; the governor reduces concurrency.";
     NET_007 => "SSD-NET-007", "network", "source", Error, Retry, true, "Bağlantı zaman aşımına uğradı", "The connection timed out", "A connect or transfer timeout expired.";
     NET_008 => "SSD-NET-008", "network", "source", Error, Retry, true, "Bağlantı karşı tarafça sıfırlandı", "The connection was reset by the peer", "The peer aborted the connection mid-transfer.";
     NET_009 => "SSD-NET-009", "network", "segment", Error, Retry, true, "Aralık (range) isteği kabul edilmedi", "The range request was not accepted", "The server refused the byte range used for segmented transfer.";
     NET_010 => "SSD-NET-010", "network", "source", Warn, Settings, true, "Yerel hız sınırı etkin", "A local speed limit is in effect", "A configured speed limit is slowing the transfer down.";
+    NET_011 => "SSD-NET-011", "network", "source", Error, Retry, true, "Sunucuya ulaşılamadı", "The server could not be reached", "The connection was refused, or no route to the server's address exists.";
+    NET_012 => "SSD-NET-012", "network", "source", Error, Refresh, false, "Sunucu erişimi reddetti (401/403)", "The server refused access (401/403)", "The origin answered 401 or 403: the address expired, or the file needs a session or a permission. Not retried.";
+    NET_013 => "SSD-NET-013", "network", "source", Error, Retry, true, "Sunucu isteği işleyemedi (5xx)", "The server failed to handle the request (5xx)", "The origin answered with a 5xx status other than 501, which is NET-016, and 503, which is NET-006. All of them are retried.";
+    NET_014 => "SSD-NET-014", "network", "source", Error, Refresh, false, "Sunucu isteği reddetti (4xx)", "The server rejected the request (4xx)", "The origin answered with a 4xx status other than 401, 403, 404, 408 and 429; 400 and 410 are among them. Not retried.";
+    NET_015 => "SSD-NET-015", "network", "source", Error, Retry, true, "Sunucu isteği beklerken zaman aşımına uğradı (408)", "The server timed out waiting for the request (408)", "The origin answered 408 Request Timeout: it gave up waiting for the request. Retried.";
+    NET_016 => "SSD-NET-016", "network", "source", Error, Unsupported, false, "Sunucu bu isteği desteklemiyor (501)", "The server does not support the request (501)", "The origin answered 501 Not Implemented. Not retried.";
     TRF_001 => "SSD-TRF-001", "transfer", "segment", Error, Retry, true, "Medya parçası indirilemedi", "A media segment could not be downloaded", "A fragment or segment request failed after its retries.";
-    TRF_002 => "SSD-TRF-002", "transfer", "validation", Error, Retry, true, "Parçalar birleştirilemedi", "The parts could not be merged", "Muxing the downloaded parts failed.";
+    TRF_002 => "SSD-TRF-002", "transfer", "validation", Error, Retry, false, "Parçalar birleştirilemedi", "The parts could not be merged", "Copying the downloaded streams into one file failed, or the times of a repaired MPEG-TS video could not be trusted. The job is not retried by itself.";
     TRF_003 => "SSD-TRF-003", "transfer", "validation", Error, Retry, true, "Boyut veya SHA-256 doğrulaması başarısız", "Size or SHA-256 verification failed", "The finished file did not match its expected size or digest.";
     TRF_004 => "SSD-TRF-004", "transfer", "output", Error, Retry, true, "Çıktı yayınlanamadı", "The output could not be published", "The final atomic publication step failed.";
     TRF_005 => "SSD-TRF-005", "transfer", "output", Error, Retry, true, "Hedef dosya kilitli", "The destination file is locked", "The destination is locked by another process.";
@@ -243,6 +250,11 @@ mod tests {
         assert_eq!(owner(MED_007), Owner::Site);
         assert_eq!(owner(MED_008), Owner::Site);
         assert_eq!(owner(EXT_007), Owner::Observation);
+        for site in [
+            NET_005, NET_006, NET_012, NET_013, NET_014, NET_015, NET_016,
+        ] {
+            assert_eq!(owner(site), Owner::Site);
+        }
         assert_eq!(owner(MED_006), Owner::App);
         assert_eq!(Owner::App.as_str(), "app");
         assert_eq!(Owner::Drm.as_str(), "drm");
@@ -256,6 +268,16 @@ mod tests {
         assert_eq!(code_of_text(&error), Some(code));
         assert_eq!(from_text("bilinmeyen bir hata"), None);
         assert_eq!(from_text("SSD-XXX-999 yabancı kod"), None);
+    }
+
+    #[test]
+    fn a_code_added_to_an_error_chain_leads_its_stored_text() {
+        let error = with_code(anyhow::anyhow!("inner cause").context("outer"), NET_001);
+        assert_eq!(code_of(&error), Some(NET_001));
+        let text = format!("{error:#}");
+        assert!(text.starts_with("SSD-NET-001 "), "{text}");
+        assert!(text.ends_with(": outer: inner cause"), "{text}");
+        assert_eq!(from_text(&text), Some(NET_001));
     }
 
     #[test]
@@ -321,6 +343,15 @@ pub fn coded_default(code: Code) -> anyhow::Error {
     )
 }
 
+/// Puts the registry code and message in front of an error chain, so the stored text starts with
+/// the code and the original causes follow it.
+pub fn with_code(error: anyhow::Error, code: Code) -> anyhow::Error {
+    let message = definition(code)
+        .map(|entry| crate::i18n::ui(entry.message_tr, entry.message_en))
+        .unwrap_or_default();
+    error.context(CodedError::new(code, message))
+}
+
 /// The code carried by an error chain, if any.
 pub fn code_of(error: &anyhow::Error) -> Option<Code> {
     if let Some(coded) = error.downcast_ref::<CodedError>() {
@@ -367,6 +398,8 @@ pub fn owner(code: Code) -> Owner {
     match code.0 {
         "SSD-MED-003" | "SSD-MED-004" => Owner::Drm,
         "SSD-MED-007" | "SSD-MED-008" | "SSD-EXT-010" => Owner::Site,
+        "SSD-NET-005" | "SSD-NET-006" | "SSD-NET-012" | "SSD-NET-013" | "SSD-NET-014"
+        | "SSD-NET-015" | "SSD-NET-016" => Owner::Site,
         "SSD-EXT-007" => Owner::Observation,
         _ => Owner::App,
     }
