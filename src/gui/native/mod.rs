@@ -8882,12 +8882,13 @@ unsafe fn show_sync_manager(owner: HWND, app: App) {
 }
 
 unsafe fn show_tools_dialog(owner: HWND, app: App) {
+    let (width, height) = form_window(FORM_WIDTH, FORM_HEIGHT);
     run_modal(
         owner,
         app,
         crate::i18n::ui("Medya araçları", "Media tools"),
-        700,
-        470,
+        width,
+        height,
         DialogKind::Tools(ToolsFields {
             status: null_mut(),
             progress: null_mut(),
@@ -12802,6 +12803,91 @@ mod tests {
     }
 
     #[test]
+    fn modern_s_media_tools_lay_their_report_bar_and_buttons_down_the_card() {
+        use super::{
+            child_rect, modern_progress_proc, scale, text, DialogKind, ADD_FOOTER, ADD_PAD,
+            D_CANCEL, FOCUS_MARGIN, FORM_HEIGHT, FORM_WIDTH, SETTINGS_FRAME, T_BROWSER, T_INSTALL,
+            T_UPDATE,
+        };
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, GetDlgItem, GetWindow, GetWindowLongPtrW, GetWindowLongW, GWLP_WNDPROC,
+            GWL_STYLE, GW_HWNDPREV, WS_BORDER,
+        };
+        let themed = || {
+            super::set_modern(true);
+            tools_kind()
+        };
+        with_dialog(
+            themed,
+            FORM_WIDTH,
+            FORM_HEIGHT + SETTINGS_FRAME + 3,
+            |dialog| unsafe {
+                let DialogKind::Tools(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                let dpi = (*dialog.raw).dpi;
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(dialog.hwnd, &mut client);
+                let at = |control| child_rect(dialog.hwnd, control);
+                let label = GetWindow(f.status, GW_HWNDPREV);
+                assert!(
+                    !text(label).is_empty() && !text(label).ends_with(':'),
+                    "the caption reads as a Modern label: {}",
+                    text(label)
+                );
+                assert_eq!(
+                    GetWindowLongW(f.status, GWL_STYLE) as u32 & WS_BORDER,
+                    0,
+                    "the report is text on the card"
+                );
+                assert_eq!(
+                    GetWindowLongPtrW(f.progress, GWLP_WNDPROC),
+                    modern_progress_proc as *const () as isize,
+                    "the bar is the Modern bar"
+                );
+                let (status, bar) = (at(f.status), at(f.progress));
+                let buttons =
+                    [T_INSTALL, T_UPDATE, T_BROWSER].map(|id| at(GetDlgItem(dialog.hwnd, id)));
+                let footer = client.bottom - scale(ADD_FOOTER, dpi);
+                assert!(
+                    at(label).bottom <= status.top && status.bottom <= bar.top,
+                    "the caption, the report and the bar read down the card"
+                );
+                for pair in buttons.windows(2) {
+                    assert!(
+                        pair[0].right <= pair[1].left && pair[0].top == pair[1].top,
+                        "the actions sit in one row, left to right"
+                    );
+                }
+                assert!(
+                    bar.bottom <= buttons[0].top && buttons[0].bottom <= footer,
+                    "the actions sit under the bar on the card"
+                );
+                let ring = scale(FOCUS_MARGIN, dpi);
+                assert_eq!(
+                    status.left,
+                    scale(ADD_PAD, dpi),
+                    "the report starts at the card's padding"
+                );
+                assert_eq!(bar.left, status.left);
+                assert_eq!(bar.right, status.right);
+                assert_eq!(buttons[0].left + ring, status.left);
+                let close = at(GetDlgItem(dialog.hwnd, D_CANCEL));
+                assert!(
+                    close.top >= footer && close.bottom <= client.bottom,
+                    "Close is on the command bar"
+                );
+                assert_eq!(
+                    close.right - ring,
+                    client.right - scale(ADD_PAD, dpi),
+                    "Close ends the command bar"
+                );
+            },
+        );
+    }
+
+    #[test]
     fn enter_in_the_media_tools_dialog_installs_nothing() {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
 
@@ -15461,10 +15547,6 @@ mod tests {
             ];
 
             for case in cases {
-                // Media tools keeps Classic's layout in Modern too, with Classic's margin.
-                if in_modern && case.name == "media tools" {
-                    continue;
-                }
                 let make = case.make;
                 let themed = move || {
                     super::set_modern(in_modern);

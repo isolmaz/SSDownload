@@ -15,6 +15,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         DialogKind::Settings(f) => {
             settings_logical_height(modern(), UiMode::parse(&f.value.ui_mode).is_simple())
         }
+        DialogKind::Tools(_) if modern() => FORM_HEIGHT,
         DialogKind::Tools(_) => 425,
         DialogKind::Queues(_) if modern() => QUEUES_HEIGHT,
         DialogKind::Rules(_) | DialogKind::Crawler(_) | DialogKind::Synchronization(_)
@@ -812,6 +813,31 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     row,
                 );
             }
+        }
+        DialogKind::Tools(f) if modern() => {
+            let label = child_statics(dlg.hwnd, dlg.error)
+                .first()
+                .copied()
+                .unwrap_or(null_mut());
+            let bar = Cell {
+                height: scale(JOB_BAR, dlg.dpi),
+                ..field(null_mut(), f.progress, Width::Flex, dlg.dpi)
+            };
+            form_rows(
+                dlg,
+                h,
+                &[
+                    &[field(label, f.status, Width::Flex, dlg.dpi).fill()],
+                    &[bar],
+                    &[
+                        button_cell(dlg, T_INSTALL),
+                        button_cell(dlg, T_UPDATE),
+                        button_cell(dlg, T_BROWSER),
+                    ],
+                ],
+                0,
+            );
+            command_bar(dlg, h, &[(D_CANCEL, 96)]);
         }
         DialogKind::Tools(f) => {
             let labels = child_statics(dlg.hwnd, dlg.error);

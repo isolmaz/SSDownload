@@ -1053,6 +1053,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 T_PROGRESS,
             );
             SendMessageW(f.progress, PBM_SETRANGE32, 0, 100);
+            if modern() {
+                subclass(f.progress, modern_progress_proc);
+            }
             f.install = dialog_button(
                 dlg.hwnd,
                 dlg.font,

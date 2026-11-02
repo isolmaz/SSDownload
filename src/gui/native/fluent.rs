@@ -2410,9 +2410,7 @@ const INPUT_PAD_TOP: i32 = 6;
 /// sunken border (the dialog paints their frames) and its field labels their
 /// trailing colon, as Fluent writes them.
 pub(super) unsafe fn prepare_modern_form(dlg: &DialogUi) {
-    let Some(form) = modern_form(&dlg.kind) else {
-        return;
-    };
+    let form = modern_form(&dlg.kind);
     for edit in form.inputs.into_iter().chain(form.texts) {
         flatten_edit(edit);
     }
@@ -2805,9 +2803,9 @@ struct ModernForm {
     hint: HWND,
 }
 
-unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
+unsafe fn modern_form(kind: &DialogKind) -> ModernForm {
     match kind {
-        DialogKind::Add(f) => Some(ModernForm {
+        DialogKind::Add(f) => ModernForm {
             inputs: add_inputs(f).to_vec(),
             lists: vec![],
             texts: Vec::new(),
@@ -2815,8 +2813,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: D_ADD_OK,
             card_buttons: &[D_BROWSE],
             hint: null_mut(),
-        }),
-        DialogKind::Settings(f) => Some(ModernForm {
+        },
+        DialogKind::Settings(f) => ModernForm {
             inputs: settings_inputs(f).to_vec(),
             lists: vec![],
             texts: Vec::new(),
@@ -2835,8 +2833,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
                 ID_SETTINGS_INSTALL_EXTENSION,
             ],
             hint: f.theme_note,
-        }),
-        DialogKind::Speed(f) => Some(ModernForm {
+        },
+        DialogKind::Speed(f) => ModernForm {
             inputs: vec![f.edit],
             lists: vec![],
             texts: Vec::new(),
@@ -2844,8 +2842,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: SP_OK,
             card_buttons: &[],
             hint: null_mut(),
-        }),
-        DialogKind::Rename(f) => Some(ModernForm {
+        },
+        DialogKind::Rename(f) => ModernForm {
             inputs: vec![f.edit],
             lists: vec![],
             texts: Vec::new(),
@@ -2853,8 +2851,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: RN_OK,
             card_buttons: &[],
             hint: null_mut(),
-        }),
-        DialogKind::Queues(f) => Some(ModernForm {
+        },
+        DialogKind::Queues(f) => ModernForm {
             inputs: queue_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2877,8 +2875,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
                 Q_CANCEL_COMPLETION,
             ],
             hint: f.countdown,
-        }),
-        DialogKind::Rules(f) => Some(ModernForm {
+        },
+        DialogKind::Rules(f) => ModernForm {
             inputs: rule_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2886,8 +2884,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: R_SAVE,
             card_buttons: &[R_NEW, R_SAVE, R_REMOVE],
             hint: null_mut(),
-        }),
-        DialogKind::Crawler(f) => Some(ModernForm {
+        },
+        DialogKind::Crawler(f) => ModernForm {
             inputs: crawler_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2895,8 +2893,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: C_SCAN,
             card_buttons: &[C_SCAN],
             hint: null_mut(),
-        }),
-        DialogKind::Synchronization(f) => Some(ModernForm {
+        },
+        DialogKind::Synchronization(f) => ModernForm {
             inputs: sync_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2904,8 +2902,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: Y_SAVE,
             card_buttons: &[Y_NEW, Y_SAVE, Y_REMOVE, Y_RUN],
             hint: null_mut(),
-        }),
-        DialogKind::Media(f) => Some(ModernForm {
+        },
+        DialogKind::Media(f) => ModernForm {
             inputs: vec![
                 f.name,
                 f.external_url,
@@ -2928,8 +2926,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: M_QUEUE,
             card_buttons: &[ID_MEDIA_EXTERNAL_ADD, ID_MEDIA_EXTERNAL_REMOVE, M_RENEW],
             hint: f.size,
-        }),
-        DialogKind::Progress(f) => Some(ModernForm {
+        },
+        DialogKind::Progress(f) => ModernForm {
             inputs: Vec::new(),
             lists: vec![f.list],
             texts: vec![f.status],
@@ -2947,8 +2945,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: 0,
             card_buttons: &[P_MINI, P_DETAILS, P_REPORT],
             hint: f.hint,
-        }),
-        DialogKind::Events(f) => Some(ModernForm {
+        },
+        DialogKind::Events(f) => ModernForm {
             inputs: Vec::new(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2956,8 +2954,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: 0,
             card_buttons: &[E_OPEN, E_PACKAGE],
             hint: null_mut(),
-        }),
-        DialogKind::JobLog(f) => Some(ModernForm {
+        },
+        DialogKind::JobLog(f) => ModernForm {
             inputs: Vec::new(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2965,8 +2963,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: 0,
             card_buttons: &[J_COPY, J_OPEN],
             hint: null_mut(),
-        }),
-        DialogKind::Logins(f) => Some(ModernForm {
+        },
+        DialogKind::Logins(f) => ModernForm {
             inputs: login_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2974,8 +2972,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: L_SAVE,
             card_buttons: &[L_ADD, L_REMOVE],
             hint: null_mut(),
-        }),
-        DialogKind::Wizard(f) => Some(ModernForm {
+        },
+        DialogKind::Wizard(f) => ModernForm {
             inputs: Vec::new(),
             lists: vec![],
             texts: Vec::new(),
@@ -2983,8 +2981,17 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: ID_WIZARD_START,
             card_buttons: &[],
             hint: f.note,
-        }),
-        _ => None,
+        },
+        DialogKind::Tools(f) => ModernForm {
+            inputs: Vec::new(),
+            lists: vec![],
+            texts: vec![f.status],
+            buttons: &[T_INSTALL, T_UPDATE, T_BROWSER, D_CANCEL],
+            // No button is the default (Enter installs nothing), so none looks like one.
+            primary: 0,
+            card_buttons: &[T_INSTALL, T_UPDATE, T_BROWSER],
+            hint: null_mut(),
+        },
     }
 }
 
@@ -3018,7 +3025,7 @@ pub(super) unsafe fn modern_dialog_message(
     ) {
         return None;
     }
-    let form = modern_form(&dlg.kind)?;
+    let form = modern_form(&dlg.kind);
     let palette = main_palette(dlg.hwnd);
     match msg {
         // The frame's padding belongs to its field: a click there goes to the
@@ -4827,31 +4834,8 @@ mod tests {
     }
 
     #[test]
-    fn only_the_dialogs_modern_lays_out_lose_their_label_colons() {
+    fn modern_labels_lose_their_colon_but_the_error_line_keeps_its_own() {
         crate::gui::native::tests::on_private_desktop(|| unsafe {
-            let tools = DialogKind::Tools(ToolsFields {
-                status: null_mut(),
-                progress: null_mut(),
-                install: null_mut(),
-                update: null_mut(),
-                last_render: String::new(),
-            });
-            let rules = DialogKind::Rules(RuleFields {
-                list: null_mut(),
-                ids: Vec::new(),
-                host: null_mut(),
-                dir: null_mut(),
-                subdomains: null_mut(),
-                file: null_mut(),
-                video: null_mut(),
-                audio: null_mut(),
-                priority: null_mut(),
-            });
-            assert!(
-                modern_form(&tools).is_none(),
-                "the media tools keep Classic's form"
-            );
-            assert!(modern_form(&rules).is_some());
             let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
             let label = control(parent, "STATIC", "Host:", WS_CHILD, 0, 1);
             let error = control(parent, "STATIC", "Failed:", WS_CHILD, 0, 2);
@@ -4869,7 +4853,7 @@ mod tests {
     #[test]
     fn the_job_view_has_no_accent_button() {
         let kind = DialogKind::Progress(ProgressFields::new(vec!["job".into()]));
-        let form = unsafe { modern_form(&kind) }.expect("the job view is a Modern form");
+        let form = unsafe { modern_form(&kind) };
         assert!(
             !form.buttons.contains(&form.primary),
             "no button looks like a default one"

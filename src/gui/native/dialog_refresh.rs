@@ -127,6 +127,10 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             }
             if body != f.last_render {
                 set_text(f.status, &body);
+                // Modern shows the report's scroll bar only while the text overflows.
+                if modern() {
+                    sync_edit_scrollbar(f.status);
+                }
                 f.last_render = body;
             }
             EnableWindow(f.install, (!snapshot.installing_tools) as BOOL);
