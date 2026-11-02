@@ -7418,8 +7418,8 @@ macro_rules! __ui_template_ar {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "التحقق من الوسائط: بث {stream} مدته {length:.1} ث، وقائمة مصدره تعلن {declared} ث (مقطع مفقود أو مكرر)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "التحقق من الوسائط: الفيديو {0:.1} ث، والصوت {1} {2:.1} ث؛ أطوال البث لا تتطابق (مقطع مفقود أو مكرر)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "التحقق من الوسائط: الفيديو {0:.1} ث، وتدفق الصوت {1}: {2:.1} ث؛ أطوال البث لا تتطابق (مقطع مفقود أو مكرر)."
     };
     ("Missing value for {flag}") => {
         "القيمة مفقودة لـ {flag}"
@@ -8281,8 +8281,8 @@ macro_rules! __ui_template_es {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Verificación de medios: el flujo {stream} dura {length:.1} s, pero su lista de origen declara {declared} s (fragmento que falta o duplicado)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "Verificación de medios: vídeo {0:.1} s, audio {1} {2:.1} s; las duraciones de los flujos no coinciden (fragmento que falta o duplicado)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "Verificación de medios: vídeo {0:.1} s, flujo de audio {1}: {2:.1} s; las duraciones de los flujos no coinciden (fragmento que falta o duplicado)."
     };
     ("Missing value for {flag}") => {
         "Falta el valor de {flag}"
@@ -9144,8 +9144,8 @@ macro_rules! __ui_template_pt {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Verificação de mídia: o fluxo {stream} dura {length:.1} s, mas sua playlist de origem declara {declared} s (segmento ausente ou duplicado)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "Verificação de mídia: vídeo {0:.1} s, áudio {1} {2:.1} s; as durações dos fluxos não correspondem (segmento ausente ou duplicado)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "Verificação de mídia: vídeo {0:.1} s, fluxo de áudio {1}: {2:.1} s; as durações dos fluxos não correspondem (segmento ausente ou duplicado)."
     };
     ("Missing value for {flag}") => {
         "Valor ausente para {flag}"
@@ -10007,8 +10007,8 @@ macro_rules! __ui_template_fr {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Vérification du média : le flux {stream} dure {length:.1} s, sa liste de lecture source indique {declared} s (fragment manquant ou dupliqué)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "Vérification du média : vidéo {0:.1} s, audio {1} {2:.1} s ; les durées des flux ne correspondent pas (fragment manquant ou dupliqué)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "Vérification du média : vidéo {0:.1} s, flux audio {1} : {2:.1} s ; les durées des flux ne correspondent pas (fragment manquant ou dupliqué)."
     };
     ("Missing value for {flag}") => {
         "Valeur manquante pour {flag}"
@@ -10870,8 +10870,8 @@ macro_rules! __ui_template_de {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Medienprüfung: Der Stream {stream} dauert {length:.1} s, seine Quell-Playlist gibt {declared} s an (fehlendes oder doppeltes Fragment)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "Medienprüfung: Video {0:.1} s, Audio {1} {2:.1} s; die Stream-Längen stimmen nicht überein (fehlendes oder doppeltes Fragment)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "Medienprüfung: Video {0:.1} s, Audiostream {1}: {2:.1} s; die Stream-Längen stimmen nicht überein (fehlendes oder doppeltes Fragment)."
     };
     ("Missing value for {flag}") => {
         "Fehlender Wert für {flag}"
