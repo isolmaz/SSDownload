@@ -1880,14 +1880,20 @@ fn a_capture_that_outlives_its_budget_reports_the_timeout_code() {
     );
 }
 
+/// How long a test waits for something that happens however slow the machine is. Only a hang
+/// reaches it.
+const HANG_GUARD: Duration = Duration::from_secs(180);
+
 /// PowerShell starts `ping` as a grandchild and records its process id in `pid_file`. The
 /// owned job holds the whole tree, so ending the tool must end the grandchild as well. The path
 /// reaches the script through the environment: PowerShell also ends a single-quoted string at a
-/// typographic quote, which a user name in the temp path can hold.
+/// typographic quote, which a user name in the temp path can hold. The grandchild pings for ten
+/// minutes, longer than any machine takes to start PowerShell and read the file, and the job ends
+/// it with the tool.
 fn spawn_tool_with_grandchild(pid_file: &Path) -> (RunningDownload, u32) {
     let variable = format!("SSDOWNLOAD_TEST_PID_FILE_{}", uuid::Uuid::new_v4().simple());
     let script = format!(
-        "$p = Start-Process -FilePath ping.exe -ArgumentList '-n','20','127.0.0.1' -WindowStyle Hidden -PassThru; \
+        "$p = Start-Process -FilePath ping.exe -ArgumentList '-n','600','127.0.0.1' -WindowStyle Hidden -PassThru; \
          Set-Content -LiteralPath $env:{variable} -Value $p.Id; $p.WaitForExit()"
     );
     let args = vec![
@@ -1897,16 +1903,24 @@ fn spawn_tool_with_grandchild(pid_file: &Path) -> (RunningDownload, u32) {
         script,
     ];
     std::env::set_var(&variable, pid_file);
-    let running =
+    let mut running =
         RunningDownload::spawn_with_proxy(Path::new("powershell.exe"), &args, b"", None).unwrap();
     std::env::remove_var(&variable);
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let pid = loop {
-        if let Some(pid) = fs::read_to_string(pid_file)
+    let recorded = || {
+        fs::read_to_string(pid_file)
             .ok()
             .and_then(|text| text.trim().parse::<u32>().ok())
-        {
+    };
+    let deadline = Instant::now() + HANG_GUARD;
+    let pid = loop {
+        if let Some(pid) = recorded() {
             break pid;
+        }
+        // The script records the id before it waits for the grandchild, so a tool that has ended
+        // without it never will.
+        if let Some(status) = running.child.try_wait().unwrap() {
+            break recorded()
+                .unwrap_or_else(|| panic!("the tool ended with {status} without a grandchild"));
         }
         assert!(
             Instant::now() < deadline,
@@ -1932,7 +1946,7 @@ fn process_is_running(pid: u32) -> bool {
 }
 
 fn assert_tool_tree_ended(grandchild: u32) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_GUARD;
     while process_is_running(grandchild) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
     }

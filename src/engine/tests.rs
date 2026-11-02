@@ -3321,6 +3321,26 @@ fn renaming_a_completed_file_replaces_bidirectional_controls() {
     assert_eq!(on_disk, ["_txt.exe"]);
 }
 
+/// The tests of a process share one cookie-jar folder. An engine that opens in one of them must
+/// not sweep the jars of the downloads that run in the others.
+#[test]
+fn opening_an_engine_leaves_the_cookie_jars_of_other_tests_alone() {
+    let jar = crate::paths::cookie_jar_dir()
+        .unwrap()
+        .join(format!("ssdownload-cookie-{}.txt", Uuid::new_v4()));
+    fs::write(&jar, b"# Netscape HTTP Cookie File\n").unwrap();
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-jars-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let kept = jar.is_file();
+    engine.shutdown();
+    fs::remove_file(&jar).ok();
+    fs::remove_dir_all(root).unwrap();
+    assert!(
+        kept,
+        "opening the engine swept a cookie jar it does not own"
+    );
+}
+
 fn job_state(engine: &Engine, id: &str) -> JobState {
     engine
         .snapshot()
@@ -5994,6 +6014,11 @@ mod holds {
             switch(&sensors, battery_saver, false);
             wait_until("both downloads to start", || {
                 job_state(&engine, &live).is_active() && job_state(&engine, &other).is_active()
+            });
+            // A job is active before its request is sent: the count below is final only once
+            // the server has served the recording.
+            wait_until("the server to serve both downloads", || {
+                requests(&server, "/live.bin") > 0 && requests(&server, "/other.bin") > 0
             });
             switch(&sensors, battery_saver, true);
             wait_until("the hold to send the other job back", || {
