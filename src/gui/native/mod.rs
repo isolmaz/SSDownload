@@ -43,8 +43,8 @@ use windows_sys::Win32::{
         Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
         Controls::*,
         HiDpi::{
-            GetDpiForSystem, GetDpiForWindow, SetProcessDpiAwarenessContext,
-            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            GetDpiForSystem, GetDpiForWindow, GetSystemMetricsForDpi,
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
         Input::KeyboardAndMouse::{
             EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, RegisterHotKey, ReleaseCapture,
@@ -7141,7 +7141,7 @@ unsafe extern "system" fn dialog_proc(
             // comes from the window itself. The layout anchors its right-hand
             // columns, so shrinking below the design size would hide fields.
             let dpi = GetDpiForWindow(hwnd).max(96);
-            let (x, y) = clamp_min_track(hwnd, dpi, dlg.design.0 + dlg.grown.get(), dlg.design.1);
+            let (x, y) = dialog_min_track(dlg, dpi);
             info.ptMinTrackSize.x = x;
             info.ptMinTrackSize.y = y;
             0
@@ -13616,6 +13616,74 @@ mod tests {
                         )
                     }));
                 }
+            }
+            assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
+        }
+
+        /// A window shorter than its content shows the scroll bar, which takes
+        /// room from the client area: the rows are laid out for the width the
+        /// dialog is designed with, so the window grows by the bar's width.
+        #[test]
+        fn a_dialog_too_short_for_its_content_keeps_the_width_its_rows_are_laid_out_for() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{MINMAXINFO, WM_GETMINMAXINFO};
+            let mut wrong = Vec::new();
+            for info in crate::i18n::LANGUAGES.iter() {
+                let found = in_language(info.code, || {
+                    let mut found = Vec::new();
+                    for case in cases() {
+                        let tall = dialog(&case, false);
+                        (case.prepare)(&tall);
+                        let short_case = Case {
+                            height: case.height * 3 / 5,
+                            ..case
+                        };
+                        let short = dialog(&short_case, false);
+                        (short_case.prepare)(&short);
+                        unsafe {
+                            let (left, right) = client_span(tall.hwnd);
+                            let (short_left, short_right) = client_span(short.hwnd);
+                            if (*short.raw).scroll_range.get() == 0 {
+                                found.push(format!("{}: no scroll bar to look at", case.name));
+                            }
+                            if short_right - short_left != right - left {
+                                found.push(format!(
+                                    "{}: the client area is {} px wide, {} px with the whole height",
+                                    case.name,
+                                    short_right - short_left,
+                                    right - left
+                                ));
+                            }
+                            let mut frame: RECT = zeroed();
+                            GetWindowRect(short.hwnd, &mut frame);
+                            let mut limits: MINMAXINFO = zeroed();
+                            SendMessageW(
+                                short.hwnd,
+                                WM_GETMINMAXINFO,
+                                0,
+                                &mut limits as *mut MINMAXINFO as isize,
+                            );
+                            if limits.ptMinTrackSize.x != frame.right - frame.left {
+                                found.push(format!(
+                                    "{}: the window is {} px wide, its minimum {} px",
+                                    case.name,
+                                    frame.right - frame.left,
+                                    limits.ptMinTrackSize.x
+                                ));
+                            }
+                            for problem in
+                                clipped(short.hwnd).into_iter().chain(crowded(short.hwnd))
+                            {
+                                found.push(format!("{}: {problem}", case.name));
+                            }
+                        }
+                    }
+                    found
+                });
+                wrong.extend(
+                    found
+                        .into_iter()
+                        .map(|problem| format!("{}: {problem}", info.code)),
+                );
             }
             assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
         }

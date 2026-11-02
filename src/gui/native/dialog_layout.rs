@@ -1796,6 +1796,10 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
         }
     }
     if w > 0 && IsIconic(dlg.hwnd) == 0 {
+        widen_for_scroll_bar(dlg);
+        if dlg.layout_pass.get() != pass {
+            return;
+        }
         let outside = fit_text(dlg, (m, w - m));
         if outside > 0 {
             widen_dialog(dlg, outside);
@@ -1821,6 +1825,45 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             );
             child = GetWindow(child, GW_HWNDNEXT);
         }
+    }
+}
+
+/// The narrowest the window may be, and the shortest: its design size, what
+/// fitting its text has added, and the scroll bar's width while the bar takes
+/// room from the client area, so the rows keep the width they are laid out for.
+pub(super) unsafe fn dialog_min_track(dlg: &DialogUi, dpi: u32) -> (i32, i32) {
+    let (x, y) = clamp_min_track(dlg.hwnd, dpi, dlg.design.0 + dlg.grown.get(), dlg.design.1);
+    (x + scroll_bar_width(dlg, dpi), y)
+}
+
+/// The width the scroll bar takes from the client area, zero while it is
+/// hidden: the dark scheme never shows it.
+unsafe fn scroll_bar_width(dlg: &DialogUi, dpi: u32) -> i32 {
+    if dlg.scroll_range.get() > 0 && !dialog_is_dark(dlg) {
+        GetSystemMetricsForDpi(SM_CXVSCROLL, dpi)
+    } else {
+        0
+    }
+}
+
+/// Widens the window by the scroll bar's width when it appears.
+unsafe fn widen_for_scroll_bar(dlg: &DialogUi) {
+    if scroll_bar_width(dlg, dlg.dpi) == 0 {
+        return;
+    }
+    let mut frame: RECT = zeroed();
+    GetWindowRect(dlg.hwnd, &mut frame);
+    let (least, _) = dialog_min_track(dlg, dlg.dpi);
+    if frame.right - frame.left < least {
+        SetWindowPos(
+            dlg.hwnd,
+            null_mut(),
+            0,
+            0,
+            least,
+            frame.bottom - frame.top,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
