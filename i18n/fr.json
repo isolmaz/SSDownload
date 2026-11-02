@@ -743,7 +743,7 @@
   "Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):": "Limite de vitesse pour le ou les {0} téléchargement(s) sélectionné(s) (KiB/s, 0 = limite globale) :",
   "Start": "Démarrer",
   "Start (HH:MM):": "Début (HH:MM) :",
-  "Start at Windows sign-in": "Démarrer à l'ouverture de session Windows",
+  "Start at Windows sign-in": "Démarrer avec Windows",
   "Start now": "Démarrer maintenant",
   "Start:": "Début :",
   "Starting URL:": "URL de départ :",

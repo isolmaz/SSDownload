@@ -10,7 +10,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
     let w = r.right;
     let actual_height = r.bottom;
     let logical_height = match &dlg.kind {
-        DialogKind::Wizard(_) => 372,
+        DialogKind::Wizard(_) => WIZARD_LOGICAL_HEIGHT,
         DialogKind::Add(f) => {
             if f.advanced {
                 372
@@ -90,6 +90,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 scale(18, dlg.dpi),
                 advanced,
             );
+            // These are a third as wide, so their explanation takes a line more.
             let cards = [f.video, f.file, f.audio];
             let card_w = (w - 2 * m - 2 * card_gap) / 3;
             let top = heading_y + scale(22, dlg.dpi);
@@ -100,7 +101,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                     m + index as i32 * (card_w + card_gap),
                     top,
                     card_w,
-                    card_h,
+                    card_h + scale(WIZARD_PURPOSE_EXTRA, dlg.dpi),
                 );
             }
             MoveWindow(
@@ -1851,6 +1852,41 @@ unsafe fn scroll_bar_width(dlg: &DialogUi, dpi: u32) -> i32 {
     }
 }
 
+/// Scrolls the dialog just far enough for the control that holds the focus to
+/// show completely, a margin away from the edge it came in from. A control taller
+/// than the window shows its top.
+pub(super) unsafe fn reveal_focus(dlg: &DialogUi) {
+    if dlg.scroll_range.get() <= 0 {
+        return;
+    }
+    let mut control = GetFocus();
+    while !control.is_null() && GetParent(control) != dlg.hwnd {
+        control = GetParent(control);
+    }
+    if control.is_null() {
+        return;
+    }
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let mut rect: RECT = zeroed();
+    GetWindowRect(control, &mut rect);
+    MapWindowPoints(null_mut(), dlg.hwnd, (&mut rect as *mut RECT).cast(), 2);
+    let margin = scale(DIALOG_GAP, dlg.dpi);
+    let tall = rect.bottom - rect.top > client.bottom - 2 * margin;
+    let by = if rect.top < 0 || (rect.bottom > client.bottom && tall) {
+        rect.top - margin
+    } else if rect.bottom > client.bottom {
+        rect.bottom + margin - client.bottom
+    } else {
+        0
+    };
+    if by != 0 {
+        dlg.scroll_y
+            .set(dlg.scroll_y.get().saturating_add(by).max(0));
+        layout_dialog(dlg);
+    }
+}
+
 /// Widens the window by the scroll bar's width when it appears.
 unsafe fn widen_for_scroll_bar(dlg: &DialogUi) {
     if scroll_bar_width(dlg, dlg.dpi) == 0 {
@@ -1877,11 +1913,37 @@ struct Fitted {
     placed: (i32, i32),
     /// The width its text needs; zero for a control that is not fitted to its text.
     need: i32,
-    /// A label: it takes the room its row has inside the dialog and never widens
-    /// the window.
+    /// A label or a check box: it takes the room its row has inside the dialog
+    /// and never widens the window.
     label: bool,
     /// The narrowest it can be squeezed to.
     least: i32,
+}
+
+/// The width a check box or radio button needs for its box and its text, as
+/// the system measures it; zero when it cannot say.
+unsafe fn ideal_width(button: HWND) -> i32 {
+    let mut size: SIZE = zeroed();
+    if SendMessageW(
+        button,
+        BCM_GETIDEALSIZE,
+        0,
+        (&mut size as *mut SIZE) as LPARAM,
+    ) != 0
+    {
+        size.cx
+    } else {
+        0
+    }
+}
+
+/// A check box or radio button that shows its text on one line.
+fn one_line_check(style: u32) -> bool {
+    let kind = (style & BS_TYPEMASK as u32) as i32;
+    matches!(
+        kind,
+        BS_CHECKBOX | BS_AUTOCHECKBOX | BS_RADIOBUTTON | BS_AUTORADIOBUTTON
+    ) && style & (BS_PUSHLIKE | BS_MULTILINE) as u32 == 0
 }
 
 unsafe fn fitted_controls(dlg: &DialogUi) -> Vec<Fitted> {
@@ -1914,11 +1976,19 @@ unsafe fn fitted_controls(dlg: &DialogUi) -> Vec<Fitted> {
         let (y, h) = (corners[0].y, corners[1].y - corners[0].y);
         if w > 0 && h > 0 {
             let class = window_class(child);
-            let label = class.eq_ignore_ascii_case("Static");
+            let mut label = class.eq_ignore_ascii_case("Static");
             let (need, least) = if class.eq_ignore_ascii_case("Button") {
                 let kind = style & BS_TYPEMASK as u32;
                 let push = kind == BS_PUSHBUTTON as u32 || kind == BS_DEFPUSHBUTTON as u32;
-                (if push { text_width(child) + padding } else { 0 }, w)
+                if push {
+                    (text_width(child) + padding, w)
+                } else if one_line_check(style) {
+                    label = true;
+                    let need = ideal_width(child);
+                    (need, need.min(w))
+                } else {
+                    (0, w)
+                }
             } else if label {
                 let single_line = style & 0x1f <= 2 && h <= scale(DIALOG_ROW, dlg.dpi);
                 let need = if single_line { text_width(child) } else { 0 };
@@ -2028,12 +2098,13 @@ fn widen(
     (outside, outside_row, moved)
 }
 
-/// Makes every push button and one-line label as wide as its text needs,
-/// keeping the rows they stand in aligned: a control grows on the side that
-/// costs its row least, and what is in the way is squeezed or moved over. Only
-/// a push button may make the dialog grow. A label, which often shows what the
-/// user typed or what a source called its file, takes what its row can give
-/// inside `limits`, after the buttons, and stays cut where that is not enough.
+/// Makes every push button, one-line label and one-line check box as wide as
+/// its text needs, keeping the rows they stand in aligned: a control grows on
+/// the side that costs its row least, and what is in the way is squeezed or
+/// moved over. Only a push button may make the dialog grow. A label, which often
+/// shows what the user typed or what a source called its file, and a check box
+/// take what their row can give inside `limits`, after the buttons, and stay cut
+/// where that is not enough.
 /// Returns how much wider the client area has to be for the buttons to stay
 /// inside `limits`, zero when they fit.
 unsafe fn fit_text(dlg: &DialogUi, limits: (i32, i32)) -> i32 {
