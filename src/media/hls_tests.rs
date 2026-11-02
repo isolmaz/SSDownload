@@ -29,6 +29,8 @@ struct Source {
     /// Segments of this many seconds instead of 2, each listed as lasting exactly that long, the
     /// shorter last one too.
     listed_seconds: Option<u32>,
+    /// Every video segment ends with a parameter set after its last picture.
+    trailing_parameter_set: bool,
 }
 
 struct Server {
@@ -60,6 +62,55 @@ fn shared_profile() -> AppPaths {
         .join("SSDownload")
         .join("tools");
     paths
+}
+
+/// Appends the picture parameter set libopenh264 writes to the last picture of every video
+/// segment in `site` (`v0.ts`, `v1.ts`, ...), as a packet that continues the last PES. The
+/// continuity counters of the video are numbered again over all segments, as one muxer wrote them.
+fn end_video_segments_with_a_parameter_set(site: &Path) {
+    const PACKET: usize = 188;
+    let parameter_set = [0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80];
+    let mut counter = 0u8;
+    for index in 0.. {
+        let path = site.join(format!("v{index}.ts"));
+        let Ok(data) = fs::read(&path) else { break };
+        let pid_of = |packet: &[u8]| (u16::from(packet[1] & 0x1f) << 8) | u16::from(packet[2]);
+        let payload_of = |packet: &[u8]| {
+            let start = if packet[3] & 0x20 != 0 {
+                5 + packet[4] as usize
+            } else {
+                4
+            };
+            packet.get(start..).unwrap_or_default().to_vec()
+        };
+        let video = data
+            .chunks(PACKET)
+            .find(|packet| {
+                packet[1] & 0x40 != 0 && payload_of(packet).starts_with(&[0, 0, 1, 0xe0])
+            })
+            .map(pid_of)
+            .expect("a video PES");
+        let mut packets = data.chunks(PACKET).map(<[u8]>::to_vec).collect::<Vec<_>>();
+        let last = packets
+            .iter()
+            .rposition(|packet| pid_of(packet) == video)
+            .unwrap();
+        let mut stuffing = vec![0x47, (video >> 8) as u8, video as u8, 0x30];
+        let adaptation = PACKET - 5 - parameter_set.len();
+        stuffing.push(adaptation as u8);
+        stuffing.push(0);
+        stuffing.resize(PACKET - parameter_set.len(), 0xff);
+        stuffing.extend(parameter_set);
+        packets.insert(last + 1, stuffing);
+        for packet in packets
+            .iter_mut()
+            .filter(|packet| pid_of(packet) == video && packet[3] & 0x10 != 0)
+        {
+            packet[3] = (packet[3] & 0xf0) | counter;
+            counter = (counter + 1) & 0x0f;
+        }
+        fs::write(&path, packets.concat()).unwrap();
+    }
 }
 
 impl Drop for Fixture {
@@ -155,6 +206,9 @@ impl Fixture {
                 "audio.m3u8",
                 "a%d.ts",
             );
+            if source.trailing_parameter_set {
+                end_video_segments_with_a_parameter_set(&site);
+            }
             "#EXTM3U\n#EXT-X-VERSION:3\n\
              #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"Turkish\",LANGUAGE=\"tr\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\"\n\
              #EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=320x180,CODECS=\"avc1.42c00d,mp4a.40.2\",AUDIO=\"aud\"\n\
@@ -278,6 +332,21 @@ impl Fixture {
             .map(|(position, _)| position)
             .collect::<Vec<_>>();
         (positions[0], positions[positions.len() - 1])
+    }
+
+    /// The number of packets in the output's video stream.
+    fn video_packets(&self, output: &Path) -> u64 {
+        let tools = tools::verified_toolchain(&self.paths, &TransferControl::default()).unwrap();
+        let probe = std::process::Command::new(&tools.ffprobe)
+            .args(["-v", "error", "-select_streams", "v", "-count_packets"])
+            .args(["-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"])
+            .arg(output)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse()
+            .unwrap()
     }
 
     fn stream_seconds(&self, output: &Path, kind: &str) -> f64 {
@@ -445,6 +514,25 @@ fn a_source_with_a_longer_audio_playlist_downloads_both_streams_at_once() {
     let (first_audio, _) = fixture.span("a");
     let (_, last_video) = fixture.span("v");
     assert!(first_audio < last_video, "{first_audio} {last_video}");
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn video_segments_that_end_with_a_parameter_set_merge_with_every_picture_and_no_other() {
+    // The parser hands the trailing parameter set of the last segment over as a packet of its
+    // own, without a picture.
+    let fixture = Fixture::new(Source {
+        video_seconds: 8,
+        audio_seconds: 8,
+        trailing_parameter_set: true,
+        ..Source::default()
+    });
+    let output = fixture
+        .download(&TransferControl::default(), 4)
+        .unwrap_or_else(|error| panic!("{error:#}"));
+
+    assert_eq!(fixture.video_packets(&output), 200);
+    assert!((fixture.stream_seconds(&output, "video") - 8.0).abs() < 0.1);
 }
 
 #[test]

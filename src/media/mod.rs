@@ -1088,9 +1088,10 @@ pub(crate) fn mux_browser_streams(
         Duration::from_secs(10 * 60),
         control,
     )?;
-    if !result.status.success() || !result.stderr.trim().is_empty() {
+    if !merged_cleanly(&result) {
         let _ = fs::remove_file(&staged);
-        bail!(
+        crate::bail_code!(
+            crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Tarayıcı medya akışları kayıpsız birleştirilemedi: {0}",
@@ -1184,7 +1185,8 @@ pub(crate) fn place_browser_file(
     )?;
     if !result.status.success() || !result.stderr.trim().is_empty() {
         let _ = fs::remove_file(&staged);
-        bail!(
+        crate::bail_code!(
+            crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Tarayıcı medya akışları kayıpsız birleştirilemedi: {0}",
@@ -1202,6 +1204,52 @@ pub(crate) fn place_browser_file(
     }
     let _ = fs::remove_file(source);
     Ok(())
+}
+
+/// Bitstream filters for the video of joined MPEG-TS segments.
+///
+/// A segment can end with a parameter set after its last picture. The parser of H.264 and HEVC
+/// hands it over as the start of the next picture, so once the segments are joined the first
+/// picture of every later segment comes without a time, which a container cannot store, and the
+/// last segment's parameter set comes as a packet of its own that holds no picture.
+///
+/// `noise` leaves out a packet without a time that is no keyframe and under 32 bytes (a parameter
+/// set or a delimiter; a coded picture is not left out, and then the merge fails as it would
+/// without this). `setts` gives a packet without a time its decoding time plus the delay the
+/// stream starts with: the keyframe of a closed group of pictures is shown as the first of the
+/// group, so it keeps the delay of the first one.
+const TS_VIDEO_REPAIR: &str = "noise=drop='eq(pts,nopts)*not(key)*lt(size,32)',setts=pts='if(eq(PTS,NOPTS),DTS+STARTPTS-STARTDTS,PTS)'";
+
+/// Whether the file is MPEG-TS: its packets are 188 bytes, each starting with the sync byte.
+fn is_mpeg_ts(path: &Path) -> bool {
+    let mut head = [0u8; 377];
+    fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut head))
+        .is_ok()
+        && [0, 188, 376].iter().all(|at| head[*at] == 0x47)
+}
+
+/// Whether a merge ran without a failure: FFmpeg succeeded and printed nothing at error level
+/// but the parsers' remark about a parameter set without a picture, the packet that
+/// [`TS_VIDEO_REPAIR`] leaves out.
+fn merged_cleanly(result: &process::Captured) -> bool {
+    result.status.success() && only_parameter_set_remarks(&result.stderr)
+}
+
+fn only_parameter_set_remarks(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .all(is_parameter_set_remark)
+}
+
+/// `[h264 @ 000001a927f34780] missing picture in access unit with size 7`
+fn is_parameter_set_remark(line: &str) -> bool {
+    line.strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .and_then(|(_, text)| text.strip_prefix("missing picture in access unit with size "))
+        .is_some_and(|size| !size.is_empty() && size.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// FFmpeg arguments that copy the browser's stream files into one container.
@@ -1243,6 +1291,12 @@ fn browser_mux_args(
         args.extend(["-map".into(), format!("{index}:{specifier}")]);
     }
     args.extend(["-c:v".into(), "copy".into(), "-c:a".into(), "copy".into()]);
+    let videos = streams.iter().filter(|stream| stream.role == "video");
+    for (index, video) in videos.enumerate() {
+        if is_mpeg_ts(&video.path) {
+            args.extend([format!("-bsf:v:{index}"), TS_VIDEO_REPAIR.into()]);
+        }
+    }
     if subtitle_count > 0 {
         args.extend([
             "-c:s".into(),
@@ -1744,16 +1798,24 @@ fn fragment_concurrency(requested: Option<u8>, per_host_limit: u8, restarts: u32
         .to_string()
 }
 
+/// Whether a lowercased text has a word that starts with `prefix` (`ssl` in `SSLError`,
+/// `[SSL: CERTIFICATE_VERIFY_FAILED]`; not the one in `lossless`).
+fn has_word_starting_with(lower: &str, prefix: &str) -> bool {
+    lower
+        .match_indices(prefix)
+        .any(|(at, _)| !lower[..at].ends_with(|before: char| before.is_alphabetic()))
+}
+
 fn network_media_failure(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     lower.contains("http error")
         || lower.contains("forbidden")
         || lower.contains("certificate")
-        || lower.contains("tls")
-        || lower.contains("ssl")
+        || has_word_starting_with(&lower, "tls")
+        || has_word_starting_with(&lower, "ssl")
         || lower.contains("resolve host")
         || lower.contains("name or service not known")
-        || lower.contains("dns")
+        || has_word_starting_with(&lower, "dns")
         || lower.contains("timed out")
         || lower.contains("timeout")
         // Local proxy tunnel saturation/failure; transient by construction.
@@ -1787,11 +1849,16 @@ pub(crate) fn classify_download_error(
     request: &AddRequest,
 ) -> (&'static str, &'static str) {
     let lower = failure_reading(error);
-    let kind = if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+    let kind = if lower.contains("could not be merged") {
+        "merge"
+    } else if lower.contains("certificate")
+        || has_word_starting_with(&lower, "tls")
+        || has_word_starting_with(&lower, "ssl")
+    {
         "tls"
     } else if lower.contains("resolve host")
         || lower.contains("name or service not known")
-        || lower.contains("dns")
+        || has_word_starting_with(&lower, "dns")
     {
         "dns"
     } else if [

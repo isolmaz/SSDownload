@@ -25,6 +25,143 @@ fn each_fragment_restart_halves_the_parallelism_down_to_one() {
 }
 
 #[test]
+fn a_failed_lossless_merge_is_a_merge_failure_not_a_tls_one() {
+    // "losslessly" holds the letters "ssl".
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    let observed = "The video and audio streams could not be merged losslessly: [matroska @ \
+                    00000233baee1700] Can't write packet with unknown timestamp";
+    assert_eq!(
+        classify_download_error(observed, &request),
+        ("medya kaynağı", "merge")
+    );
+    // Whatever language wrote the text, the code names the failure.
+    let turkish = format!(
+        "{} Görüntü ve ses akışları kayıpsız birleştirilemedi: [matroska @ 00000233baee1700] \
+         Can't write packet with unknown timestamp",
+        crate::error_codes::TRF_002
+    );
+    assert_eq!(
+        classify_download_error(&turkish, &request),
+        ("medya kaynağı", "merge")
+    );
+    assert!(!network_media_failure(observed));
+}
+
+#[test]
+fn secure_connection_and_name_failures_keep_their_kind() {
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    for (observed, kind) in [
+        (
+            "ERROR: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed",
+            "tls",
+        ),
+        ("SSLError(1, '[SSL: WRONG_VERSION_NUMBER]')", "tls"),
+        (
+            "ssl.SSLEOFError: EOF occurred in violation of protocol",
+            "tls",
+        ),
+        (
+            "curl: (35) TLS connect error: tlsv1 alert protocol version",
+            "tls",
+        ),
+        ("curl: (6) Could not resolve host: cdn.example", "dns"),
+        ("DNS lookup failed for cdn.example", "dns"),
+        ("socket.gaierror: dnserror", "dns"),
+    ] {
+        assert_eq!(
+            classify_download_error(observed, &request).1,
+            kind,
+            "{observed}"
+        );
+        assert!(network_media_failure(observed), "{observed}");
+    }
+    // Letters of these words inside other words are no connection failure.
+    let lossless = "the lossless copy of the audio stream failed";
+    assert!(!network_media_failure(lossless));
+    assert_eq!(classify_download_error(lossless, &request).1, "other");
+}
+
+#[test]
+fn only_the_remark_about_a_parameter_set_without_a_picture_is_no_merge_failure() {
+    assert!(only_parameter_set_remarks(""));
+    assert!(only_parameter_set_remarks(
+        "[h264 @ 000001a927f34780] missing picture in access unit with size 7\r\n\
+         [hevc @ 000001ace65e0b40] missing picture in access unit with size 8\r\n"
+    ));
+    for failure in [
+        "[matroska @ 00000233baee1700] Can't write packet with unknown timestamp",
+        "[h264 @ 000001a927f34780] missing picture in access unit with size seven",
+        "[h264 @ 000001a927f34780] missing picture in access unit with size 7 of 9",
+        "missing picture in access unit with size 7",
+        "[h264 @ 000001a927f34780] no frame!",
+    ] {
+        assert!(!only_parameter_set_remarks(failure), "{failure}");
+        // Together with the tolerated remark it still fails.
+        let mixed = format!(
+            "[h264 @ 000001a927f34780] missing picture in access unit with size 7\n{failure}"
+        );
+        assert!(!only_parameter_set_remarks(&mixed), "{mixed}");
+    }
+}
+
+#[test]
+fn the_video_of_joined_ts_segments_is_repaired_by_the_merge_and_nothing_else_is() {
+    let root = std::env::temp_dir().join(format!("ssdownload-mux-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let transport_stream = root.join("video.part");
+    let mut packets = vec![0u8; 188 * 3];
+    for packet in packets.chunks_mut(188) {
+        packet[0] = 0x47;
+    }
+    fs::write(&transport_stream, &packets).unwrap();
+    let audio_stream = root.join("audio.part");
+    fs::write(&audio_stream, &packets).unwrap();
+    let other = root.join("other.part");
+    fs::write(&other, vec![0x1a; 188 * 3]).unwrap();
+    // A sync byte at the start alone is not a transport stream.
+    let unsynced = root.join("unsynced.part");
+    let mut start = vec![0u8; 188 * 3];
+    start[0] = 0x47;
+    fs::write(&unsynced, start).unwrap();
+    let stream = |path: &Path, role: &str| crate::browser_transfer::StreamFile {
+        path: path.to_path_buf(),
+        role: role.into(),
+        format_id: None,
+        language: None,
+    };
+    let request = AddRequest {
+        kind: DownloadKind::Video,
+        container: Some("mkv".into()),
+        ..AddRequest::default()
+    };
+    let repair = |video: &Path| {
+        let args = browser_mux_args(
+            &request,
+            &[stream(video, "video"), stream(&audio_stream, "audio")],
+            Path::new("out.tmp"),
+        );
+        args.iter()
+            .position(|argument| argument.starts_with("-bsf"))
+            .map(|at| (args[at].clone(), args[at + 1].clone()))
+    };
+
+    assert_eq!(
+        repair(&transport_stream),
+        Some(("-bsf:v:0".to_string(), TS_VIDEO_REPAIR.to_string()))
+    );
+    assert_eq!(repair(&other), None);
+    assert_eq!(repair(&unsynced), None);
+    assert_eq!(repair(&root.join("missing.part")), None);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn proxy_tunnel_failures_count_as_network_media_failures() {
     let observed = "[download] Got error: ('Unable to connect to proxy', \
             OSError('Tunnel connection failed: 503 Service Unavailable')). \

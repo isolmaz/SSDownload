@@ -343,9 +343,10 @@ fn merge(
         Duration::from_secs((bytes / (20 << 20)).max(10 * 60)),
         control,
     )?;
-    if !result.status.success() || !result.stderr.trim().is_empty() {
+    if !merged_cleanly(&result) {
         let _ = fs::remove_file(&staged);
-        bail!(
+        crate::bail_code!(
+            crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Görüntü ve ses akışları kayıpsız birleştirilemedi: {0}",
