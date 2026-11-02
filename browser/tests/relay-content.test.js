@@ -123,12 +123,18 @@ test("a fresh run refuses a page that answers for a name with another file type'
     ["the job's own name", { kind: "file", filename: "report.pdf", url: "https://files.example/download" }],
     ["the name of the address", { kind: "file", url: "https://files.example/dir/setup.EXE?token=1" }],
     ["the job's own name over a page's address", { kind: "file", filename: "data.zip", url: "https://files.example/saved.html" }],
+    ["a name in another script", { kind: "file", url: "https://files.example/dir/report.%D0%BF%D0%B4%D1%84" }],
+    ["an extension with vowel signs, which are letters to the application", { kind: "file", url: "https://files.example/dir/report.%E0%A4%AA%E0%A4%BE%E0%A4%A0" }],
+    ["an encoded dot", { kind: "file", url: "https://files.example/dir/report%2Epdf" }],
+    ["a name that ends in a dot", { kind: "file", filename: "report.pdf." }],
+    ["an address that ends in a dot", { kind: "file", url: "https://files.example/dir/report.pdf." }],
+    ["a name with a path in front", { kind: "file", filename: "dir/report.pdf" }],
   ];
   for (const [label, request] of cases) for (const redirected of [false, true]) {
     const h = relayContentHarness({ request, answer: () => served({ type: "text/html", redirected }) });
     await h.run();
     assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"], `${label} redirected=${redirected}`);
-    assert.ok(h.cancelled(), label);
+    if (redirected) assert.ok(h.cancelled(), `${label}: the page body is not read`);
   }
 });
 
@@ -143,6 +149,9 @@ test("a page is still saved when the application would save it", async () => {
     ["the page a file job points at directly", { kind: "file" }, { redirected: false }],
     ["an address that names no file type", { kind: "file", url: "https://files.example/dir/download?id=a.pdf" }, { redirected: false }],
     ["an address that ends in a version number", { kind: "file", url: "https://files.example/releases/v1.2" }, { redirected: false }],
+    ["an address whose last part is encoded text without a dot", { kind: "file", url: "https://files.example/dir/%D0%BF%D0%B4%D1%84" }, { redirected: false }],
+    ["an address with an escape that is not text", { kind: "file", url: "https://files.example/dir/report.pd%ZZf" }, { redirected: false }],
+    ["a name that ends in a version number and a space", { kind: "file", filename: "v1.2 " }, { redirected: false }],
     ["an unspecified job kind", { kind: "auto" }, { redirected: false }],
   ];
   for (const [label, request, serve] of cases) {
@@ -151,6 +160,34 @@ test("a page is still saved when the application would save it", async () => {
     assert.deepEqual(h.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"], label);
     assert.equal(Buffer.from(h.commands.find(command => command.command === "chunk").data, "base64").toString(), PAGE, label);
   }
+});
+
+test("a page that opens like one is refused before the run opens a stream, whatever follows its opening", async () => {
+  for (const body of ["<!DOCTYPE html><p>x", String.fromCharCode(0xFEFF) + "\r\n\t<HTML>", "<script>location='/login'</script>", "<title>Sign in</title>", "<head>", "<body>"]) {
+    const h = relayContentHarness({ request: { kind: "file", filename: "report.pdf" }, answer: () => served({ type: "text/html", body }) });
+    await h.run();
+    assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"], JSON.stringify(body));
+    assert.match(h.commands.at(-1).error, /web page instead of the file/);
+  }
+});
+
+test("a file that the server labels as a page is written when its bytes are no page", async () => {
+  for (const [filename, body] of [["data.csv", "id,name\n1,a\n"], ["notes.txt", "hello"], ["data.json", "{\"html\": \"<html>\"}"],
+    ["feed.xml", "<?xml version=\"1.0\"?><html/>"], ["tiny.txt", "<"], ["empty.txt", ""]]) {
+    const h = relayContentHarness({ request: { kind: "file", filename }, answer: () => served({ type: "text/html", body }) });
+    await h.run();
+    const chunks = h.commands.filter(command => command.command === "chunk");
+    assert.deepEqual(h.names(), body ? ["begin_request", "open", "chunk", "end_request", "seal", "finish"] : ["begin_request", "open", "end_request", "seal", "finish"], filename);
+    assert.equal(chunks.map(chunk => Buffer.from(chunk.data, "base64").toString()).join(""), body, filename);
+  }
+});
+
+test("a file that opens like a page after a long run of white space is written, as the application writes it", async () => {
+  const body = " ".repeat(1024) + "<html>";
+  const h = relayContentHarness({ request: { kind: "file", filename: "report.pdf" }, answer: () => served({ type: "text/html", body }) });
+  await h.run();
+  assert.deepEqual(h.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"]);
+  assert.equal(Buffer.from(h.commands.find(command => command.command === "chunk").data, "base64").toString(), body);
 });
 
 test("a redirected answer that is not a page is written as before", async () => {

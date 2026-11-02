@@ -3526,6 +3526,8 @@ mod retry_budget {
     };
 
     const MIB: u64 = 1024 * 1024;
+    /// How a sign-in page opens.
+    const PAGE_START: &[u8] = b"<!DOCTYPE html><html><head><title>Sign in</title></head><body>";
 
     fn engine_with_retry_limit(root: &Path, retry_limit: u8) -> Engine {
         let engine = Engine::open(AppPaths::new(root.to_path_buf()).unwrap()).unwrap();
@@ -3697,6 +3699,7 @@ mod retry_budget {
         let page = Server::start(Config {
             size: 4_000,
             content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
             ..Config::default()
         });
         let root = TempDir::new("retry-direct-page");
@@ -3717,7 +3720,14 @@ mod retry_budget {
         assert_eq!(job.attempts, 0);
         assert!(!job.path.exists());
         assert_eq!(attempts_made(&page), 1);
-        assert!(page.log().iter().all(|entry| entry.method == "HEAD"));
+        // The one GET is the one that shows the page.
+        assert_eq!(
+            page.log()
+                .iter()
+                .filter(|entry| entry.method == "GET")
+                .count(),
+            1
+        );
         engine.shutdown();
     }
 
@@ -3728,6 +3738,7 @@ mod retry_budget {
         let page = Server::start(Config {
             size: 4_000,
             content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
             ..Config::default()
         });
         let root = TempDir::new("direct-page-names");
@@ -3882,6 +3893,7 @@ mod retry_budget {
         let probe_sees_page = Server::start(Config {
             size: PAGE,
             content_type: Some("text/html".into()),
+            body_start: PAGE_START.to_vec(),
             throttle: Some(100_000),
             ..Config::default()
         });
@@ -3889,6 +3901,7 @@ mod retry_budget {
             size: PAGE,
             content_type: Some("application/octet-stream".into()),
             content_type_from: Some((1, "text/html".into())),
+            body_start: PAGE_START.to_vec(),
             throttle: Some(100_000),
             ..Config::default()
         });
@@ -3902,7 +3915,7 @@ mod retry_budget {
         let root = TempDir::new("add-status-direct-page");
         let engine = engine_with_retry_limit(&root.0, 3);
         for (index, (label, source)) in [
-            ("the probe sees the page", &probe_sees_page),
+            ("the HEAD shows a page", &probe_sees_page),
             ("the transfer meets the page", &get_sees_page),
             ("every range is answered with the page", &ranges_see_page),
         ]
@@ -3934,13 +3947,13 @@ mod retry_budget {
             assert_eq!(job.downloaded, 0, "{label}");
             assert!(!job.path.exists(), "{label}: the page was published");
             source.wait_idle();
-            assert_eq!(
+            // The page is refused at its first bytes, which only a GET shows.
+            assert!(
                 source
                     .log()
                     .iter()
                     .any(|entry| entry.method == "GET"
                         && entry.range.as_deref() != Some("bytes=0-0")),
-                index > 0,
                 "{label}: {:?}",
                 source.log()
             );

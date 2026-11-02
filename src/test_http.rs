@@ -235,6 +235,8 @@ pub struct Config {
     pub content_type_from: Option<(usize, String)>,
     /// `Content-Disposition` of every such answer.
     pub content_disposition: Option<String>,
+    /// The first bytes of every body version, in place of the pattern's.
+    pub body_start: Vec<u8>,
     /// Header lines added to every `HEAD` and `GET` answer that carries the file's headers.
     pub extra_headers: Vec<String>,
     /// Header lines added to the `HEAD` answer only.
@@ -298,6 +300,7 @@ impl Default for Config {
             content_type: None,
             content_type_from: None,
             content_disposition: None,
+            body_start: Vec::new(),
             extra_headers: Vec::new(),
             head_extra_headers: Vec::new(),
             head_statuses: Vec::new(),
@@ -1390,14 +1393,22 @@ fn answer(
         .filter(|&(stalled, after)| place == Some(stalled) && after < sent)
         .map(|(_, after)| after);
     let body = &shared.body_bytes;
+    let lead = config.body_start.as_slice();
     let delivered = match stall {
         Some(after) => {
-            write_body(stream, body, reply.version, start, after, rate)
+            write_body(stream, body, (reply.version, lead), start, after, rate)
                 && match wait_for_takeover(shared, stream, position, start, start + length) {
                     None => false,
                     Some(taken) if config.hold_at_takeover => {
                         let until = taken.saturating_sub(start + after);
-                        if write_body(stream, body, reply.version, start + after, until, rate) {
+                        if write_body(
+                            stream,
+                            body,
+                            (reply.version, lead),
+                            start + after,
+                            until,
+                            rate,
+                        ) {
                             hold(shared, stream);
                         }
                         false
@@ -1405,7 +1416,7 @@ fn answer(
                     Some(_) => write_body(
                         stream,
                         body,
-                        reply.version,
+                        (reply.version, lead),
                         start + after,
                         sent - after,
                         rate,
@@ -1415,17 +1426,19 @@ fn answer(
         None => {
             let burst = config.burst.min(sent);
             let (after, rest) = (start + burst, sent - burst);
-            write_body(stream, body, reply.version, start, burst, None)
-                && write_body(stream, body, reply.version, after, rest, rate)
+            write_body(stream, body, (reply.version, lead), start, burst, None)
+                && write_body(stream, body, (reply.version, lead), after, rest, rate)
         }
     };
     delivered && sent == length && !reply.close
 }
 
+/// Sends `length` body bytes from `start`: body `version` of the pattern, except that its first
+/// bytes are `lead` when that is given.
 fn write_body(
     stream: &mut TcpStream,
     counter: &AtomicU64,
-    version: u8,
+    (version, lead): (u8, &[u8]),
     start: u64,
     length: u64,
     rate: Option<u64>,
@@ -1440,6 +1453,13 @@ fn write_body(
     while sent < length {
         let count = (length - sent).min(chunk_size as u64) as usize;
         fill(version, start + sent, &mut chunk[..count]);
+        if let Some(from) = usize::try_from(start + sent)
+            .ok()
+            .filter(|from| *from < lead.len())
+        {
+            let covered = (lead.len() - from).min(count);
+            chunk[..covered].copy_from_slice(&lead[from..from + covered]);
+        }
         if stream.write_all(&chunk[..count]).is_err() {
             return false;
         }
