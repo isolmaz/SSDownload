@@ -8422,9 +8422,15 @@ mod tests {
                 for entry in crate::error_codes::TABLE {
                     let error = format!("{} {}", entry.code, "the whole text of the failure");
                     let line = super::error_summary(&failed, &error);
-                    let message = crate::i18n::ui(entry.message_tr, entry.message_en);
+                    let label = crate::error_codes::labelled_message(entry.code);
                     assert!(
-                        line.starts_with(&format!("{} {message}", entry.code)),
+                        label.len() > entry.code.to_string().len() + 1,
+                        "{} / {}: the code has a message",
+                        info.code,
+                        entry.code
+                    );
+                    assert!(
+                        line.starts_with(&label),
                         "{} / {}: {line}",
                         info.code,
                         entry.code
