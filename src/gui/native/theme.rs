@@ -1829,6 +1829,8 @@ pub(super) const D_ERROR: i32 = 2098;
 pub(super) const DIALOG_MARGIN: i32 = 12;
 pub(super) const DIALOG_GAP: i32 = 8;
 pub(super) const DIALOG_ROW: i32 = 24;
+/// The room a push button keeps around its text, both sides together.
+pub(super) const BUTTON_TEXT_PADDING: i32 = 20;
 /// Paints the whole tab strip: background, titles and the selected underline.
 /// The control's own paint draws a themed band under the items, which shows as
 /// a dark line on the light dialog, so the strip is painted here in both
