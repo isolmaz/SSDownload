@@ -217,12 +217,13 @@ test("the start of a body is a page for the relay exactly where it is one for th
   }
 });
 
-test("a file that opens like a page after a long run of white space is written, as the application writes it", async () => {
-  const body = " ".repeat(1024) + "<html>";
-  const h = relayContentHarness({ request: { kind: "file", filename: "report.pdf" }, answer: () => served({ type: "text/html", body }) });
-  await h.run();
-  assert.deepEqual(h.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"]);
-  assert.equal(Buffer.from(h.commands.find(command => command.command === "chunk").data, "base64").toString(), body);
+test("a file that opens like a page after the first 1024 bytes is written, as the application writes it", async () => {
+  for (const body of [" ".repeat(1024) + "<html>", "<?xml version=\"1.0\"?><!--" + "x".repeat(1024) + "--><html>"]) {
+    const h = relayContentHarness({ request: { kind: "file", filename: "report.pdf" }, answer: () => served({ type: "text/html", body }) });
+    await h.run();
+    assert.deepEqual(h.names(), ["begin_request", "open", "chunk", "end_request", "seal", "finish"]);
+    assert.equal(Buffer.from(h.commands.find(command => command.command === "chunk").data, "base64").toString(), body);
+  }
 });
 
 test("a redirected answer that is not a page is written as before", async () => {

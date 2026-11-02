@@ -31,7 +31,22 @@
     "<?xml version=\"1.0\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\">",
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\n<html xmlns=\"http://www.w3.org/1999/xhtml\">",
     "<?xml version=\"1.0\"?>\n<!-- sign in -->\n <!-- again -->\n<HTML>",
-    "\ufeff<?xml version=\"1.0\"?><html>"
+    "\ufeff<?xml version=\"1.0\"?><html>",
+    "<html\t>",
+    "<html\n>",
+    "<html\f>",
+    "<html\r>",
+    "<html >",
+    "\t<html>",
+    "\n<html>",
+    "\r<html>",
+    " <html>",
+    "<!DocType Html>",
+    "<!---->",
+    "<?xml?><html>",
+    "<?xml version=\"1.0\"?><?xml-stylesheet href=\"a.xsl\"?><html>",
+    "<?xml version=\"1.0\"?>\n<?xml-stylesheet href=\"a.xsl\"?>\n<!-- c -->\n<?pi?>\f<!DOCTYPE html>",
+    "<?xml version=\"1.0\"?>\f<html>"
   ],
   "file": [
     "id,name\n1,a\n",
@@ -66,7 +81,19 @@
     "<?xml version=\"1.0\"?><!DOCTYPE htmlx>",
     "<?xml version=\"1.0\"?><!DOCTYPE svg><svg/>",
     "<?xml version=\"1.0\"?><!-- html --><rss/>",
-    "<?xml-stylesheet href=\"a.xsl\"?><rss/>"
+    "<?xml-stylesheet href=\"a.xsl\"?><rss/>",
+    "\u000b<html>",
+    "\u00a0<html>",
+    "\u0000<html>",
+    "<html\u000b>",
+    "<html\u0000>",
+    "<html\u00a0>",
+    "\ufeff\ufeff<html>",
+    " \ufeff<html>",
+    "<\u017fcript>",
+    "<?xml version=\"1.0\"?>\u000b<html>",
+    "<?xml version=\"1.0\"?><?xml-stylesheet href=\"a.xsl\"?><rss/>",
+    "<?xml version=\"1.0\"?><?pi?><!DOCTYPE svg>"
   ],
   "undecided": [
     "",
@@ -95,6 +122,9 @@
     "<?xml version=\"1.0\"?><ht",
     "<?xml version=\"1.0\"?><html",
     "<?xml version=\"1.0\"?><!doctype html",
-    "<?xml version=\"1.0\"?><!-- sign in"
+    "<?xml version=\"1.0\"?><!-- sign in",
+    "<?xml version=\"1.0\"?><?",
+    "<?xml version=\"1.0\"?><?xml-stylesheet href=\"a.xsl\"",
+    "<?xml version=\"1.0\"?><?pi?><ht"
   ]
 }

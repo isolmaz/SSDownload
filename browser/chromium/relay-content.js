@@ -619,6 +619,10 @@
   // byte order mark and white space, a comment, a tag from the WHATWG MIME Sniffing standard's
   // list for text/html (its name ends at white space, `/` or `>`, so `<header` is none) or an XML
   // declaration that an `html` document follows. A body that could still become one is no page.
+  // The rule differs from the standard in three ways, because the server has declared a page
+  // already and only the file's own bytes are in question: a tag name also ends at the other
+  // white space and `/`, as the HTML tokenizer ends it; `<!--` needs no byte after it; and a byte
+  // order mark before the first tag is skipped. The XHTML case is not in the standard.
   const PAGE_OPENINGS = ["<!doctype html", "<html", "<head", "<script", "<iframe", "<h1", "<div", "<font", "<table", "<a", "<style", "<title", "<b", "<body", "<br", "<p"];
   const TAG_NAME_END = "\t\n\f\r />";
   const PAGE = 1, UNDECIDED = 0, FILE = -1;
@@ -641,8 +645,8 @@
 
   const strongest = verdicts => verdicts.includes(PAGE) ? PAGE : verdicts.includes(UNDECIDED) ? UNDECIDED : FILE;
 
-  // Whether `body`, an XML document, is an XHTML page: after its declaration, white space and
-  // comments, the document type or the root element is `html`.
+  // Whether `body`, an XML document, is an XHTML page: after its declaration, white space,
+  // comments and processing instructions, the document type or the root element is `html`.
   function xhtmlPage(body) {
     const declared = beginsWith(body, "<?xml");
     if (declared !== PAGE) return declared;
@@ -651,12 +655,13 @@
     let rest = body.slice(end + 2);
     for (;;) {
       rest = rest.replace(/^[\t\n\f\r ]+/, "");
-      const comment = beginsWith(rest, "<!--");
-      if (comment === FILE) break;
-      if (comment === UNDECIDED) return UNDECIDED;
-      const close = rest.indexOf("-->", 4);
-      if (close < 0) return UNDECIDED;
-      rest = rest.slice(close + 3);
+      const [open, close] = beginsWith(rest, "<!--") === FILE ? ["<?", "?>"] : ["<!--", "-->"];
+      const opens = beginsWith(rest, open);
+      if (opens === FILE) break;
+      if (opens === UNDECIDED) return UNDECIDED;
+      const closed = rest.indexOf(close, open.length);
+      if (closed < 0) return UNDECIDED;
+      rest = rest.slice(closed + close.length);
     }
     return strongest([beginsWithTag(rest, "<!doctype html"), beginsWithTag(rest, "<html")]);
   }

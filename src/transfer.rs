@@ -5353,8 +5353,10 @@ enum Sniffed {
 }
 
 /// The tags that open a page in the WHATWG MIME Sniffing standard's list for `text/html`, and the
-/// doctype. The standard ends a tag name at a space or `>`; the HTML tokenizer also ends it at
-/// the other white space and `/`, which a page may use (`<html\n lang=en>`).
+/// doctype. The rule differs from the standard in three ways, because the server has declared a
+/// page already and only the file's own bytes are in question: a tag name also ends at the other
+/// white space and `/`, as the HTML tokenizer ends it; `<!--` needs no byte after it; and a byte
+/// order mark before the first tag is skipped.
 const PAGE_OPENINGS: [&[u8]; 16] = [
     b"<!doctype html",
     b"<html",
@@ -5420,8 +5422,9 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// Whether `body`, an XML document, is an XHTML page: after its declaration, white space and
-/// comments, the document type or the root element is `html`.
+/// Whether `body`, an XML document, is an XHTML page: after its declaration, white space,
+/// comments and processing instructions, the document type or the root element is `html`. The
+/// standard has no such rule.
 fn xhtml_page(body: &[u8]) -> Sniffed {
     match begins_with(body, b"<?xml") {
         Sniffed::Page => {}
@@ -5433,13 +5436,18 @@ fn xhtml_page(body: &[u8]) -> Sniffed {
     let mut rest = &body[end + 2..];
     loop {
         rest = rest.trim_ascii_start();
-        match begins_with(rest, b"<!--") {
-            Sniffed::Page => match find(&rest[4..], b"-->") {
-                Some(end) => rest = &rest[4 + end + 3..],
+        let (open, close) = if begins_with(rest, b"<!--") == Sniffed::File {
+            (&b"<?"[..], &b"?>"[..])
+        } else {
+            (&b"<!--"[..], &b"-->"[..])
+        };
+        match begins_with(rest, open) {
+            Sniffed::File => break,
+            Sniffed::Undecided => return Sniffed::Undecided,
+            Sniffed::Page => match find(&rest[open.len()..], close) {
+                Some(end) => rest = &rest[open.len() + end + close.len()..],
                 None => return Sniffed::Undecided,
             },
-            Sniffed::Undecided => return Sniffed::Undecided,
-            Sniffed::File => break,
         }
     }
     strongest([
@@ -5450,7 +5458,7 @@ fn xhtml_page(body: &[u8]) -> Sniffed {
 
 /// Whether `start`, the first bytes of a body, is a web page: after a byte order mark and white
 /// space it opens with a comment, one of the tags in `PAGE_OPENINGS`, or an XML declaration that
-/// an `html` document follows. A text, CSV, JSON or XML file does not.
+/// an `html` document follows (`xhtml_page`). A text, CSV, JSON or XML file does not.
 fn sniff_page(start: &[u8]) -> Sniffed {
     const BOM: &[u8] = b"\xEF\xBB\xBF";
     if !start.is_empty() && start.len() < BOM.len() && BOM.starts_with(start) {
@@ -6593,6 +6601,13 @@ mod tests {
         let blank = " ".repeat(PAGE_SNIFF_BYTES + 10);
         let (refused, passed) = run(&[blank.as_bytes()], true);
         assert!(!refused && passed == blank.as_bytes());
+        // So is a body whose XHTML prologue does not end within the window.
+        let long = format!(
+            "<?xml version=\"1.0\"?><!--{}--><html>",
+            "x".repeat(PAGE_SNIFF_BYTES)
+        );
+        let (refused, passed) = run(&[long.as_bytes()], true);
+        assert!(!refused && passed == long.as_bytes());
         // Nothing is looked at unless asked.
         assert_eq!(run(&[&page[..]], false), (false, page.to_vec()));
         assert_eq!(run(&[], true), (false, Vec::new()));
