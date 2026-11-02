@@ -180,49 +180,7 @@ fn inspect_document_with_tools(
         )?;
     }
     if !captured.status.success() {
-        let detail = useful_error(&captured.stderr, &secrets.redactions);
-        // The extractor text stays verbatim; the code tells the user (and support) which
-        // stage failed without hiding the original diagnostic.
-        if drm_protected(&captured.stderr) {
-            crate::logging::record(crate::logging::Event::failure(
-                "inspect.drm",
-                crate::error_codes::MED_003,
-                detail,
-            ));
-            crate::bail_code!(crate::error_codes::MED_003);
-        }
-        if is_forbidden(&detail) {
-            crate::logging::record(crate::logging::Event::failure(
-                "inspect.blocked",
-                crate::error_codes::MED_007,
-                detail.clone(),
-            ));
-            crate::bail_code!(crate::error_codes::MED_007, "{detail}");
-        }
-        if site_access_blocked(&captured.stderr) {
-            let short = useful_error(&final_error_text(&captured.stderr), &secrets.redactions);
-            crate::logging::record(crate::logging::Event::failure(
-                "inspect.access",
-                crate::error_codes::MED_008,
-                detail,
-            ));
-            crate::bail_code!(crate::error_codes::MED_008, "{short}");
-        }
-        crate::logging::record(crate::logging::Event::failure(
-            "inspect.failed",
-            crate::error_codes::MED_006,
-            detail,
-        ));
-        let short = useful_error(&final_error_text(&captured.stderr), &secrets.redactions);
-        crate::bail_code!(
-            crate::error_codes::MED_006,
-            "{}",
-            crate::i18n::ui_format!(
-                "Medya analizi başarısız: {detail}",
-                "Media analysis failed: {detail}",
-                detail = short
-            )
-        );
+        return Err(inspection_failure(&captured.stderr, &secrets.redactions));
     }
     if captured.stdout.len() > MAX_INSPECT_OUTPUT {
         crate::bail_code!(
@@ -242,6 +200,50 @@ fn inspect_document_with_tools(
     let info = media_info_from_json(&value)?;
     validate_single_selection(&info, request.playlist)?;
     Ok((value, info))
+}
+
+/// The error of an analysis whose tool failed. The user sees the tool's final error text; the
+/// log keeps its whole output. The code tells the user (and support) which stage failed.
+pub(crate) fn inspection_failure(stderr: &str, redactions: &[String]) -> anyhow::Error {
+    let detail = useful_error(stderr, redactions);
+    let short = useful_error(&final_error_text(stderr), redactions);
+    if drm_protected(stderr) {
+        crate::logging::record(crate::logging::Event::failure(
+            "inspect.drm",
+            crate::error_codes::MED_003,
+            detail,
+        ));
+        return crate::error_codes::coded_default(crate::error_codes::MED_003);
+    }
+    if is_forbidden(&short) {
+        crate::logging::record(crate::logging::Event::failure(
+            "inspect.blocked",
+            crate::error_codes::MED_007,
+            detail,
+        ));
+        return crate::error_codes::coded(crate::error_codes::MED_007, short);
+    }
+    if site_access_blocked(stderr) {
+        crate::logging::record(crate::logging::Event::failure(
+            "inspect.access",
+            crate::error_codes::MED_008,
+            detail,
+        ));
+        return crate::error_codes::coded(crate::error_codes::MED_008, short);
+    }
+    crate::logging::record(crate::logging::Event::failure(
+        "inspect.failed",
+        crate::error_codes::MED_006,
+        detail,
+    ));
+    crate::error_codes::coded(
+        crate::error_codes::MED_006,
+        crate::i18n::ui_format!(
+            "Medya analizi başarısız: {detail}",
+            "Media analysis failed: {detail}",
+            detail = short
+        ),
+    )
 }
 
 /// How long an analysis answers the download of the same source: long enough to pick a
@@ -858,24 +860,16 @@ pub(crate) fn download(
                             crate::i18n::ui_format!("Seçilen kalite indirme anında kaynağın listesinde yok; kaynak yenilenmiş olabilir. Kaynağı yeniden çözümleyip var olan bir kaliteyi seçin. {0}", "The selected quality was not in the source's list at download time; the source may have been refreshed. Analyze the source again and pick an available quality. {0}", available_qualities(&info))
                         );
                     }
-                    let visible = non_debug_lines(&error);
-                    let phase = classify_download_error(
-                        &useful_error(&visible, &secrets.redactions),
-                        request,
-                    )
-                    .0;
-                    let summary = useful_error(&final_error_text(&visible), &secrets.redactions);
                     crate::logging::record_job(
                         job_id,
                         crate::logging::Event::warn("download.failed_output").detail(redacted),
                     );
-                    if site_access_blocked(&visible) {
-                        crate::bail_code!(crate::error_codes::MED_008, "{summary}");
-                    }
-                    bail!(
-                        "{}",
-                        download_failure_message(phase, compatibility_retry, &summary)
-                    );
+                    return Err(download_failure(
+                        &non_debug_lines(&error),
+                        request,
+                        compatibility_retry,
+                        &secrets.redactions,
+                    ));
                 }
                 break;
             }
@@ -2150,6 +2144,31 @@ fn failure_stage_label(stage: &str) -> &'static str {
         }
     }
     crate::i18n::ui("medya kaynağı", "media source")
+}
+
+/// The error of a download whose tool failed, from the tool's output without its `[debug]` trace:
+/// the origin's refusal (`SSD-MED-008`, `SSD-MED-007` for a 403) or `SSD-MED-017`, with the
+/// tool's final error text.
+pub(crate) fn download_failure(
+    visible: &str,
+    request: &AddRequest,
+    compatibility_retry: bool,
+    redactions: &[String],
+) -> anyhow::Error {
+    let phase = classify_download_error(&useful_error(visible, redactions), request).0;
+    let summary = useful_error(&final_error_text(visible), redactions);
+    if site_access_blocked(visible) {
+        return crate::error_codes::coded(crate::error_codes::MED_008, summary);
+    }
+    let code = if is_forbidden(&summary) {
+        crate::error_codes::MED_007
+    } else {
+        crate::error_codes::MED_017
+    };
+    crate::error_codes::coded(
+        code,
+        download_failure_message(phase, compatibility_retry, &summary),
+    )
 }
 
 /// The message of a download that stopped in `phase`, a stage [`classify_download_error`] returns.

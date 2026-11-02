@@ -2096,6 +2096,74 @@ fn errors_redact_url_and_header_secrets() {
 }
 
 #[test]
+fn a_failed_media_run_is_read_by_its_final_error_line_and_keeps_its_code() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        page_url: Some("https://example.test/watch".into()),
+        ..AddRequest::default()
+    };
+    let download = |output: &str| {
+        transfer_failure(
+            &request,
+            crate::media::download_failure(output, &request, true, &[]),
+        )
+    };
+
+    // A 403 waits for a renewed source and is not retried.
+    let blocked = download("ERROR: unable to download video data: HTTP Error 403: Forbidden");
+    assert!(
+        blocked.message.starts_with("SSD-MED-007 "),
+        "{}",
+        blocked.message
+    );
+    assert!(blocked.source_refresh);
+    assert!(!blocked.retryable);
+
+    // A busy server is retried; the code of a download failure does not hide the reason.
+    let busy =
+        download("ERROR: unable to download video data: HTTP Error 503: Service Unavailable");
+    assert!(busy.message.starts_with("SSD-MED-017 "), "{}", busy.message);
+    assert!(busy.retryable);
+    assert!(!busy.source_refresh);
+
+    // A missing file is neither.
+    let missing = download("ERROR: unable to download video data: HTTP Error 404: Not Found");
+    assert!(
+        missing.message.starts_with("SSD-MED-017 "),
+        "{}",
+        missing.message
+    );
+    assert!(!missing.retryable);
+    assert!(!missing.source_refresh);
+
+    // A status the tool met on the way, before the error that ended the run, decides nothing.
+    let earlier = download(
+        "WARNING: HTTP Error 503: Service Unavailable. Retrying (1/3)\n\
+         ERROR: unable to download video data: HTTP Error 404: Not Found",
+    );
+    assert!(!earlier.retryable);
+
+    // An analysis the origin refused has the same 403 for the source refresh.
+    let analysis = transfer_failure(
+        &request,
+        crate::media::inspection_failure(
+            "[debug] Command-line config: ['-v']\n\
+             ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden",
+            &[],
+        ),
+    );
+    assert!(
+        analysis.message.starts_with("SSD-MED-007 "),
+        "{}",
+        analysis.message
+    );
+    assert!(analysis.message.contains("HTTP Error 403: Forbidden"));
+    assert!(!analysis.message.contains("[debug]"));
+    assert!(analysis.source_refresh);
+    assert!(!analysis.retryable);
+}
+
+#[test]
 fn proxy_tunnel_failures_are_retryable() {
     // Reproduces the observed fragment-stage failure: the local proxy
     // answered CONNECT with 503 and the child's urllib stack reported it

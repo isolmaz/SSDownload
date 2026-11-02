@@ -27,6 +27,7 @@ const ERROR_CODES = {
   "SSD-MED-014": { area: "media", stage: "validation", severity: "error", action: "settings", retryable: false },
   "SSD-MED-015": { area: "media", stage: "manifest", severity: "error", action: "refresh", retryable: true },
   "SSD-MED-016": { area: "media", stage: "validation", severity: "error", action: "report", retryable: false },
+  "SSD-MED-017": { area: "media", stage: "segment", severity: "error", action: "retry", retryable: true },
   "SSD-TOL-001": { area: "tools", stage: "source", severity: "error", action: "settings", retryable: true },
   "SSD-TOL-002": { area: "tools", stage: "source", severity: "error", action: "retry", retryable: true },
   "SSD-TOL-003": { area: "tools", stage: "source", severity: "error", action: "retry", retryable: true },

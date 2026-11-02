@@ -248,6 +248,10 @@ CODES = [
      "Seçilen ses dil etiketi çıktıya yazılamadı",
      "The selected audio language tag could not be written to the output",
      "The output container could not carry the selected audio language tag, so the marked language cannot be verified."),
+    ("MED-017", "media", "segment", "error", "retry", True,
+     "Medya aracı indirmeyi tamamlayamadı",
+     "The media tool could not finish the download",
+     "yt-dlp stopped while downloading the selected streams, for a reason that no other code names; its last error line follows the code and the whole output is in the log. The job retries it by itself only when that line shows a status or a connection failure that a retry can clear."),
     # --- tools ---------------------------------------------------------------------
     ("TOL-001", "tools", "source", "error", "settings", True,
      "Gerekli medya bileşenleri kurulu değil",
