@@ -1985,7 +1985,7 @@ unsafe fn fitted_controls(dlg: &DialogUi) -> Vec<Fitted> {
                 } else if one_line_check(style) {
                     label = true;
                     let need = ideal_width(child);
-                    (need, need.min(w))
+                    (need, if need > 0 { need.min(w) } else { w })
                 } else {
                     (0, w)
                 }
@@ -2193,6 +2193,37 @@ pub(super) unsafe fn work_area(hwnd: HWND) -> Option<RECT> {
         &mut monitor,
     ) != 0)
         .then_some(monitor.rcWork)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The whole of a second monitor next to the one `WORK_AREA` stands for.
+    pub(super) static OTHER_MONITOR: std::cell::Cell<Option<RECT>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether `rect` reaches a monitor other than the one `hwnd` stands on.
+pub(super) unsafe fn reaches_another_monitor(hwnd: HWND, rect: &RECT) -> bool {
+    #[cfg(test)]
+    if WORK_AREA.with(std::cell::Cell::get).is_some() {
+        return OTHER_MONITOR
+            .with(std::cell::Cell::get)
+            .is_some_and(|other| {
+                let mut common: RECT = zeroed();
+                IntersectRect(&mut common, rect, &other) != 0
+            });
+    }
+    let home = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    [
+        (rect.left, rect.top),
+        (rect.right - 1, rect.top),
+        (rect.left, rect.bottom - 1),
+        (rect.right - 1, rect.bottom - 1),
+    ]
+    .into_iter()
+    .any(|(x, y)| {
+        let monitor = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL);
+        !monitor.is_null() && monitor != home
+    })
 }
 
 /// Gives the window `width`, and moves it left when this pushes its right edge

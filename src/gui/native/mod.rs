@@ -8130,21 +8130,20 @@ unsafe fn resize_dialog(hwnd: HWND, dpi: u32, height: i32) {
     let width = rect.right - rect.left;
     let tall = scale(height, dpi);
     // The dialog keeps the centre of its current monitor: a handoff picker
-    // stays on the browser's monitor when its advanced rows open. It moves only
-    // when the new height would take it out of the work area it stood inside;
-    // a window that spans two monitors or reaches beyond the work area keeps
-    // its place.
+    // stays on the browser's monitor when its advanced rows open. It is pulled
+    // back into that monitor's work area, unless it reaches onto another
+    // monitor: a window that spans two monitors keeps its place.
     if let Some(area) = work_area(hwnd) {
-        let y = (rect.top + rect.bottom) / 2 - tall / 2;
-        let y = if rect.top >= area.top && rect.bottom <= area.bottom {
-            y.clamp(area.top, (area.bottom - tall).max(area.top))
-        } else {
-            y
-        };
+        let mut x = rect.left;
+        let mut y = (rect.top + rect.bottom) / 2 - tall / 2;
+        if !reaches_another_monitor(hwnd, &rect) {
+            x = x.clamp(area.left, (area.right - width).max(area.left));
+            y = y.clamp(area.top, (area.bottom - tall).max(area.top));
+        }
         SetWindowPos(
             hwnd,
             null_mut(),
-            rect.left,
+            x,
             y,
             width,
             tall,
@@ -13280,11 +13279,11 @@ mod tests {
             UI::{
                 Controls::BCM_GETIDEALSIZE,
                 WindowsAndMessaging::{
-                    GetClientRect, GetDlgCtrlID, GetWindow, GetWindowLongPtrW, GetWindowRect,
-                    SendMessageW, SetWindowLongPtrW, ShowWindow, BS_AUTOCHECKBOX,
+                    CallWindowProcW, GetClientRect, GetDlgCtrlID, GetWindow, GetWindowLongPtrW,
+                    GetWindowRect, SendMessageW, SetWindowLongPtrW, ShowWindow, BS_AUTOCHECKBOX,
                     BS_AUTORADIOBUTTON, BS_CHECKBOX, BS_MULTILINE, BS_PUSHLIKE, BS_RADIOBUTTON,
-                    BS_TYPEMASK, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, SW_SHOW,
-                    WM_GETFONT, WS_EX_LAYOUTRTL, WS_VISIBLE,
+                    BS_TYPEMASK, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT,
+                    SW_SHOW, WM_GETFONT, WS_EX_LAYOUTRTL, WS_VISIBLE,
                 },
             },
         };
@@ -14009,6 +14008,68 @@ mod tests {
         const LONG_CHECK_BOX_TEXT: &str =
             "Keep this window above every other window while the download runs, and also when it is minimised";
 
+        /// The window procedure the check box of the next test had before it
+        /// stopped answering `BCM_GETIDEALSIZE`.
+        static MEASURING_PROC: std::sync::atomic::AtomicIsize =
+            std::sync::atomic::AtomicIsize::new(0);
+
+        unsafe extern "system" fn cannot_measure(
+            hwnd: native::HWND,
+            message: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> isize {
+            if message == BCM_GETIDEALSIZE {
+                return 0;
+            }
+            let proc = MEASURING_PROC.load(std::sync::atomic::Ordering::SeqCst);
+            CallWindowProcW(
+                std::mem::transmute::<isize, windows_sys::Win32::UI::WindowsAndMessaging::WNDPROC>(
+                    proc,
+                ),
+                hwnd,
+                message,
+                wparam,
+                lparam,
+            )
+        }
+
+        #[test]
+        fn a_check_box_the_system_cannot_measure_keeps_its_width_beside_a_wide_button() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "job view")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                unsafe {
+                    let pin = GetDlgItem(dialog.hwnd, native::P_PIN);
+                    let mini = GetDlgItem(dialog.hwnd, native::P_MINI);
+                    let width_of = |hwnd| {
+                        let control = shown(dialog.hwnd)
+                            .into_iter()
+                            .find(|control| control.hwnd == hwnd)
+                            .unwrap();
+                        control.rect.right - control.rect.left
+                    };
+                    let before = width_of(pin);
+                    MEASURING_PROC.store(
+                        GetWindowLongPtrW(pin, GWLP_WNDPROC),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    SetWindowLongPtrW(pin, GWLP_WNDPROC, cannot_measure as usize as isize);
+                    native::set_text(mini, "A caption far longer than the button that shows it");
+                    native::layout_dialog(&*dialog.raw);
+                    assert_eq!(
+                        width_of(pin),
+                        before,
+                        "the check box keeps the width the layout gave it"
+                    );
+                }
+            });
+        }
+
         #[test]
         fn a_check_box_grows_to_its_text_and_does_not_widen_the_window() {
             use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
@@ -14056,9 +14117,11 @@ mod tests {
 
         /// The rename dialog placed by `place` (which gets the size of the window and
         /// answers where its top left corner goes) on a screen whose first monitor is
-        /// `work`, then resized to a height of `height`: the window before and after.
+        /// `work`, with `other` as a second monitor next to it, then resized to a
+        /// height of `height`: the window before and after.
         fn resized(
             work: RECT,
+            other: Option<RECT>,
             place: impl FnOnce(i32, i32) -> (i32, i32) + Send,
             height: i32,
         ) -> (RECT, RECT) {
@@ -14073,6 +14136,7 @@ mod tests {
                 let dialog = dialog(&case, false);
                 unsafe {
                     native::WORK_AREA.with(|area| area.set(Some(work)));
+                    native::OTHER_MONITOR.with(|area| area.set(other));
                     let mut before: RECT = zeroed();
                     GetWindowRect(dialog.hwnd, &mut before);
                     let (x, y) = place(before.right - before.left, before.bottom - before.top);
@@ -14090,28 +14154,40 @@ mod tests {
                     let mut after: RECT = zeroed();
                     GetWindowRect(dialog.hwnd, &mut after);
                     native::WORK_AREA.with(|area| area.set(None));
+                    native::OTHER_MONITOR.with(|area| area.set(None));
                     (before, after)
                 }
             })
         }
 
         #[test]
-        fn a_dialog_that_changes_height_moves_only_when_it_would_leave_the_work_area_it_stood_inside(
+        fn a_dialog_that_changes_height_is_pulled_back_into_its_work_area_unless_it_spans_two_monitors(
         ) {
-            // Two monitors side by side, 0..1920 and 1920..3840: a window
-            // belongs to the one it is nearest to.
+            // Two monitors side by side, 0..1920 and 1920..3840, or one.
             let work = RECT {
                 left: 0,
                 top: 0,
                 right: 1920,
                 bottom: 1040,
             };
+            let right = RECT {
+                left: 1920,
+                top: 0,
+                right: 3840,
+                bottom: 1080,
+            };
+            let left = RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1080,
+            };
             let taller = 500;
             let centred = |before: RECT, after: RECT| {
                 (before.top + before.bottom) / 2 - (after.bottom - after.top) / 2
             };
 
-            let (before, after) = resized(work, |_, _| (1500, 300), taller);
+            let (before, after) = resized(work, Some(right), |_, _| (1500, 300), taller);
             assert!(before.right > work.right, "the window spans both monitors");
             assert!(after.bottom - after.top > before.bottom - before.top);
             assert_eq!(
@@ -14121,22 +14197,32 @@ mod tests {
             );
             assert_eq!(after.top, centred(before, after), "it keeps its centre");
 
-            let (before, after) = resized(work, |_, _| (-100, 300), taller);
+            let (before, after) = resized(work, Some(left), |_, _| (-100, 300), taller);
             assert_eq!(
                 after.left, -100,
-                "a window that overhangs the left edge stays"
+                "a window that overhangs onto the monitor on the left stays"
             );
             assert_eq!(after.top, centred(before, after));
 
-            let (before, after) = resized(work, |_, _| (400, -50), taller);
+            let (_, after) = resized(work, Some(right), |_, _| (-100, 300), taller);
             assert_eq!(
-                after.top,
-                centred(before, after),
-                "a window that overhangs the top edge keeps its centre"
+                after.left, 0,
+                "a window that overhangs the left edge with no monitor there is pulled back"
             );
 
-            let (before, after) =
-                resized(work, |_, height| (400, work.bottom - height - 10), taller);
+            let (before, after) = resized(work, None, |_, _| (400, -50), taller);
+            assert!(after.bottom - after.top > before.bottom - before.top);
+            assert_eq!(
+                after.top, work.top,
+                "a window that overhangs the top edge is pulled back"
+            );
+
+            let (before, after) = resized(
+                work,
+                None,
+                |_, height| (400, work.bottom - height - 10),
+                taller,
+            );
             assert!(after.bottom - after.top > before.bottom - before.top);
             assert_eq!(after.left, before.left);
             assert_eq!(
@@ -14144,16 +14230,33 @@ mod tests {
                 "a window that would leave the monitor ends at its edge"
             );
 
-            let (before, after) =
-                resized(work, |_, height| (400, work.bottom - height / 2), taller);
+            let (before, after) = resized(
+                work,
+                None,
+                |_, height| (400, work.bottom - height / 2),
+                taller,
+            );
             assert!(
                 before.bottom > work.bottom,
                 "the window reaches below the work area"
             );
             assert_eq!(
+                after.bottom, work.bottom,
+                "a window below the taskbar of a single monitor is pulled back above it"
+            );
+            assert_eq!(after.left, before.left);
+
+            let (before, after) = resized(
+                work,
+                Some(right),
+                |_, height| (1500, work.bottom - height / 2),
+                taller,
+            );
+            assert!(before.bottom > work.bottom);
+            assert_eq!(
                 after.top,
                 centred(before, after),
-                "a window that reaches below the work area keeps its centre"
+                "a window that spans two monitors is not pulled up"
             );
         }
 
