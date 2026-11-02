@@ -3596,6 +3596,29 @@ fn a_version_number_at_the_end_of_a_redirect_target_names_nothing() {
 }
 
 #[test]
+fn a_version_number_at_the_end_of_the_requested_address_names_no_file() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/stable/2024.11", 302, "/files/app-2024.11.msi"),
+            redirect_document("/download/1.2", 302, "/files/app-1.2.zip"),
+            redirect_document("/v2.0", 302, "/files/tool-2.0.exe"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/stable/2024.11", "app-2024.11.msi"),
+            ("/download/1.2", "app-1.2.zip"),
+            ("/v2.0", "tool-2.0.exe"),
+        ],
+    );
+}
+
+#[test]
 fn the_name_the_user_chose_and_the_content_disposition_win_over_the_name_a_redirect_led_to() {
     let size = 4_000;
     let documents = vec![redirect_document("/get", 302, "/files/from-address.bin")];
@@ -3693,6 +3716,20 @@ fn a_download_over_one_connection_is_named_after_the_address_that_answered_it() 
         saved_as(&file_request(source.url("/get")), size),
         "Archive.bin"
     );
+}
+
+#[test]
+fn a_download_over_one_connection_falls_back_to_the_name_of_the_address_the_probe_ended_at() {
+    // The probe ends at a named file; the transfer is sent on from there to an address without
+    // an extension.
+    let size = 4_000;
+    let blob = Server::start(Config {
+        size,
+        ..Config::default()
+    });
+    let named = redirecting_get(blob.url("/blob/abc123"), size);
+    let source = redirecting(named.url("/files/app.exe"));
+    assert_eq!(saved_as(&file_request(source.url("/get")), size), "app.exe");
 }
 
 #[test]

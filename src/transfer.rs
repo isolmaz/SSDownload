@@ -5218,7 +5218,8 @@ pub(crate) fn throttle(
 /// The path a finished download is published at. A name the user chose or the browser handed
 /// over stays. Otherwise the name comes from the `Content-Disposition` of the answer that
 /// delivered the file (`response`) or of the probe, then from the file name of `source`, the
-/// address the bytes came from, and failing both from `output`, the name the job was added with.
+/// address the bytes came from, or of the address the probe ended at, and failing all from
+/// `output`, the name the job was added with.
 fn final_name(
     output: &Path,
     request: &AddRequest,
@@ -5231,6 +5232,7 @@ fn final_name(
             .and_then(|headers| headers.filename.clone())
             .or_else(|| remote.filename.clone())
             .or_else(|| redirected_file_name(request, source))
+            .or_else(|| redirected_file_name(request, &remote.url))
         {
             return output.with_file_name(crate::engine::safe_filename(&name, "download"));
         }
@@ -5239,22 +5241,26 @@ fn final_name(
 }
 
 /// The last path segment of `source`, the address a download's redirects led to, when the
-/// requested address names no file and that segment does. A last segment with a file extension
-/// (`report.pdf`) is a name already, so nothing a redirect leads to replaces it. The extension
-/// of the segment that is taken has a letter in it: the `.2` of `v1.2` is a version, not a type.
+/// requested address names no file and that segment does. A segment names a file when its
+/// extension has a letter in it: the `.2` of `v1.2` is a version, not a type. A requested
+/// segment that names a file (`report.pdf`) is a name already, so nothing a redirect leads to
+/// replaces it.
 fn redirected_file_name(request: &AddRequest, source: &Url) -> Option<String> {
     let requested = validate_source_url(&request.url)
         .ok()
         .and_then(|url| url_file_name(&url));
-    if requested.is_some_and(|name| crate::output::real_extension(Path::new(&name)).is_some()) {
+    if requested.is_some_and(|name| names_a_file(&name)) {
         return None;
     }
     let name = url_file_name(source)?;
-    crate::output::real_extension(Path::new(&name))?
-        .chars()
-        .any(char::is_alphabetic)
-        .then_some(name)
+    names_a_file(&name).then_some(name)
 }
+
+fn names_a_file(name: &str) -> bool {
+    crate::output::real_extension(Path::new(name))
+        .is_some_and(|extension| extension.chars().any(char::is_alphabetic))
+}
+
 /// Decodes `%XX` escapes; `None` when an escape is malformed or the bytes are not UTF-8.
 fn percent_decode_utf8(value: &str) -> Option<String> {
     let input = value.as_bytes();
