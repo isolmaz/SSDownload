@@ -404,8 +404,9 @@ pub(crate) struct RemoteInfo {
     /// The answer that `content_type` belongs to was sent as an attachment.
     attachment: bool,
     filename: Option<String>,
-    /// A redirect led to `url`, so a web page answering there is a sign-in or interstitial page
-    /// and not the file. `download` clears it for a requested name that is a page's.
+    /// A web page answering is a sign-in or interstitial page and not the file: a redirect led
+    /// to `url`, or the job's name has the extension of a file that is not a page. `download`
+    /// sets and clears it by that name.
     refuse_page: bool,
     /// The SHA-256 (hex) that the answer to the probe published in `Repr-Digest`.
     repr_digest: Option<String>,
@@ -1126,6 +1127,12 @@ fn download_http_from(
         .unwrap_or_else(|| probe_http(request, url, control, network))?;
     if is_html_name(output) {
         remote.refuse_page = false;
+    } else if output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(names_a_file)
+    {
+        remote.refuse_page = true;
     }
     if remote.refuse_page && is_web_page(remote.content_type.as_deref(), remote.attachment) {
         return Err(page_instead_of_file());
@@ -5154,7 +5161,7 @@ fn is_html_name(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            ["htm", "html", "xhtml"]
+            ["htm", "html", "xhtml", "shtml", "mhtml"]
                 .iter()
                 .any(|html| extension.eq_ignore_ascii_case(html))
         })
@@ -5916,6 +5923,8 @@ mod tests {
             "a.htm",
             "a.html",
             "a.xhtml",
+            "a.shtml",
+            "a.mhtml",
             "A.HTML",
             "page (1).Htm",
             "x.y.html",

@@ -118,12 +118,31 @@ test("a resumed run still continues the stored part with the file itself", async
   assert.equal(h.commands.find(command => command.command === "chunk").offset, 100);
 });
 
+test("a fresh run refuses a page that answers for a name with another file type's extension, redirected or not", async () => {
+  const cases = [
+    ["the job's own name", { kind: "file", filename: "report.pdf", url: "https://files.example/download" }],
+    ["the name of the address", { kind: "file", url: "https://files.example/dir/setup.EXE?token=1" }],
+    ["the job's own name over a page's address", { kind: "file", filename: "data.zip", url: "https://files.example/saved.html" }],
+  ];
+  for (const [label, request] of cases) for (const redirected of [false, true]) {
+    const h = relayContentHarness({ request, answer: () => served({ type: "text/html", redirected }) });
+    await h.run();
+    assert.deepEqual(h.names(), ["begin_request", "end_request", "failed"], `${label} redirected=${redirected}`);
+    assert.ok(h.cancelled(), label);
+  }
+});
+
 test("a page is still saved when the application would save it", async () => {
   const cases = [
     ["an attachment", { kind: "file" }, { disposition: "attachment; filename=\"report.html\"", redirected: true }],
+    ["an attachment under another file type's name", { kind: "file", filename: "report.pdf" }, { disposition: "attachment", redirected: false }],
     ["a file named as a page", { kind: "file", filename: "saved.html" }, { redirected: true }],
     ["a file the address names as a page", { kind: "file", url: "https://files.example/dir/saved.html?token=1" }, { redirected: true }],
+    ["a file named as a page, whatever the spelling", { kind: "file", filename: "saved.SHTML" }, { redirected: false }],
+    ["a file named as a web archive", { kind: "file", filename: "saved.mhtml" }, { redirected: false }],
     ["the page a file job points at directly", { kind: "file" }, { redirected: false }],
+    ["an address that names no file type", { kind: "file", url: "https://files.example/dir/download?id=a.pdf" }, { redirected: false }],
+    ["an address that ends in a version number", { kind: "file", url: "https://files.example/releases/v1.2" }, { redirected: false }],
     ["an unspecified job kind", { kind: "auto" }, { redirected: false }],
   ];
   for (const [label, request, serve] of cases) {

@@ -3454,6 +3454,154 @@ fn a_page_that_is_reached_without_a_redirect_is_still_saved() {
     assert_eq!(fs::read(result.path).unwrap(), pattern(1, size));
 }
 
+/// Downloads from `server` into a file called `name`, as a job added with that name, or with an
+/// address that ends in it, does.
+fn fetch_into(server: &Server, name: &str, connections: u8) -> (Result<TransferResult>, TempDir) {
+    let directory = TempDir::new("direct-page");
+    let result = fetch(
+        &file_request(server.url("/file")),
+        &directory.0.join(name),
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    );
+    (result, directory)
+}
+
+#[test]
+fn a_page_that_answers_for_a_file_of_another_type_is_refused_without_a_redirect() {
+    for name in ["report.pdf", "setup.EXE", "archive.tar.gz", "photo.jpg"] {
+        for kind in [
+            "text/html",
+            "application/xhtml+xml",
+            "Text/HTML; charset=utf-8",
+        ] {
+            let page = page_server(4_000, kind);
+            let directory = TempDir::new("direct-page-refused");
+            let output = directory.0.join(name);
+            let error = fetch(
+                &file_request(page.url("/file")),
+                &output,
+                &TransferControl::default(),
+                1,
+                1,
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert_page_refused(&error, &output);
+            page.wait_idle();
+            assert!(
+                page.log().iter().all(|entry| entry.method == "HEAD"),
+                "{name} {kind}: {:?}",
+                page.log()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_page_is_saved_when_the_name_is_a_pages_or_names_no_file_type() {
+    let size = 4_000;
+    for name in [
+        "page.html",
+        "page.HTM",
+        "page.xhtml",
+        "page.shtml",
+        "page.mhtml",
+        "page (1).html",
+        "download",
+        "v1.2",
+        "2024.11",
+        "Mr. Robot",
+    ] {
+        let page = page_server(size, "text/html");
+        let (result, _directory) = fetch_into(&page, name, 1);
+        let path = result
+            .unwrap_or_else(|error| panic!("{name}: {error:#}"))
+            .path;
+        assert_eq!(fs::read(path).unwrap(), pattern(1, size), "{name}");
+    }
+}
+
+#[test]
+fn a_page_sent_as_an_attachment_is_saved_whatever_the_name_asked_for() {
+    let size = 4_000;
+    let page = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        content_disposition: Some("attachment; filename=\"saved.bin\"".into()),
+        ..Config::default()
+    });
+    let (result, _directory) = fetch_into(&page, "report.pdf", 1);
+    assert_eq!(fs::read(result.unwrap().path).unwrap(), pattern(1, size));
+}
+
+#[test]
+fn a_page_the_transfer_meets_after_a_probe_that_saw_a_file_is_not_written_under_the_name_of_a_file()
+{
+    // The probe's HEAD (request 0) sees the file; the GET (request 1) answers with the page.
+    let page = Server::start(Config {
+        size: 4_000,
+        content_type: Some("application/octet-stream".into()),
+        content_type_from: Some((1, "text/html".into())),
+        ..Config::default()
+    });
+    let directory = TempDir::new("direct-get-page");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &file_request(page.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+    page.wait_idle();
+    assert!(
+        page.log().iter().any(|entry| entry.method == "GET"),
+        "the transfer should have reached the page: {:?}",
+        page.log()
+    );
+}
+
+#[test]
+fn a_page_in_the_range_support_probe_or_a_ranged_transfer_is_not_written_by_any_connection_of_a_file(
+) {
+    // Request 0 is the HEAD, request 1 the one-byte probe, the later ones are the ranges.
+    for page_from in [1, 2] {
+        let page = Server::start(Config {
+            size: 6 * MIB,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((page_from, "text/html".into())),
+            ..Config::default()
+        });
+        let directory = TempDir::new("direct-ranged-page");
+        let output = directory.0.join("archive.zip");
+        forget_writes();
+        let error = fetch(
+            &file_request(page.url("/file")),
+            &output,
+            &TransferControl::default(),
+            4,
+            4,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+        assert!(writes().is_empty(), "{page_from}: {:?}", writes());
+        page.wait_idle();
+        assert_eq!(
+            data_gets(&page.log()).count() > 0,
+            page_from == 2,
+            "{page_from}: {:?}",
+            page.log()
+        );
+    }
+}
+
 /// The answer that sends a request for `from` on to `to`, as the link of a download page does.
 fn redirect_document(from: &str, status: u16, to: &str) -> Document {
     Document {
