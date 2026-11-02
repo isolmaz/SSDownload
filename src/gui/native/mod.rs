@@ -16152,6 +16152,12 @@ mod tests {
     /// How many pixels of `window` inside the screen rectangle of `area` are exactly `rgb`,
     /// as the window draws itself.
     fn pixels_of(window: usize, area: usize, rgb: [u8; 3]) -> usize {
+        pixels_in(window, screen_rect(area), rgb)
+    }
+
+    /// How many pixels of `window` inside the screen rectangle `area` are exactly `rgb`,
+    /// as the window draws itself.
+    fn pixels_in(window: usize, area: windows_sys::Win32::Foundation::RECT, rgb: [u8; 3]) -> usize {
         use windows_sys::Win32::{
             Graphics::Gdi::{
                 CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
@@ -16190,7 +16196,6 @@ mod tests {
             DeleteDC(memory);
             ReleaseDC(std::ptr::null_mut(), screen);
 
-            let area = screen_rect(area);
             let mut count = 0;
             for y in (area.top - frame.top).max(0)..(area.bottom - frame.top).min(height) {
                 for x in (area.left - frame.left).max(0)..(area.right - frame.left).min(width) {
@@ -16291,6 +16296,256 @@ mod tests {
                 post_key(alert, VK_ESCAPE);
             });
         }
+    }
+
+    #[test]
+    fn a_modern_alert_shows_its_message_on_the_card_and_its_buttons_on_the_command_bar() {
+        use super::{
+            main_palette, ramp_font, scale, ADD_FOOTER, ADD_PAD, ALERT_BODY_ID, BODY_PX,
+            FOCUS_MARGIN,
+        };
+        use windows_sys::Win32::{
+            Foundation::{POINT, RECT},
+            Graphics::Gdi::{ClientToScreen, DeleteObject, GetObjectW, HGDIOBJ, LOGFONTW},
+            UI::{
+                HiDpi::GetDpiForWindow,
+                Input::KeyboardAndMouse::VK_ESCAPE,
+                WindowsAndMessaging::{
+                    DestroyWindow, GetClientRect, GetDlgCtrlID, SendMessageW, SetPropW,
+                    MB_ICONQUESTION, WM_GETFONT, WS_POPUP,
+                },
+            },
+        };
+
+        let logfont = |font: HGDIOBJ| unsafe {
+            let mut out: LOGFONTW = std::mem::zeroed();
+            GetObjectW(
+                font,
+                std::mem::size_of::<LOGFONTW>() as i32,
+                &mut out as *mut LOGFONTW as *mut _,
+            );
+            (out.lfHeight, out.lfFaceName)
+        };
+        let rgb = |colour: u32| [colour as u8, (colour >> 8) as u8, (colour >> 16) as u8];
+        for dark in [false, true] {
+            let offer = || {
+                with_common_controls_6(|| unsafe {
+                    super::set_modern(true);
+                    // The scheme of an alert is the one of its owner.
+                    let owner = super::control(std::ptr::null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    if dark {
+                        SetPropW(owner, super::dark_prop(), 1usize as _);
+                    }
+                    let answer = super::run_alert_linked(
+                        owner,
+                        "Update now?",
+                        "Update",
+                        MB_ICONQUESTION,
+                        Some(&OFFER_BUTTONS),
+                        Some(super::AlertLink {
+                            label: "What's new in 9.9.9".into(),
+                            target: "https://releases.example/v9.9.9".into(),
+                            open: |_| true,
+                            failure: String::new(),
+                        }),
+                    );
+                    DestroyWindow(owner);
+                    answer
+                })
+            };
+            answer_alert(offer, |alert, buttons| unsafe {
+                let dpi = GetDpiForWindow(alert as _);
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(alert as _, &mut client);
+                let mut origin = POINT { x: 0, y: 0 };
+                ClientToScreen(alert as _, &mut origin);
+                let bar = origin.y + client.bottom - scale(ADD_FOOTER, dpi);
+                let children = alert_children(alert);
+                let body = children
+                    .iter()
+                    .find(|child| GetDlgCtrlID(child.0 as _) == ALERT_BODY_ID)
+                    .expect("the alert has a body")
+                    .0;
+                let link = children
+                    .iter()
+                    .find(|child| child.1 == "SysLink")
+                    .expect("the alert has a link")
+                    .0;
+                let icon = children
+                    .iter()
+                    .find(|child| {
+                        child.1.eq_ignore_ascii_case("Static")
+                            && GetDlgCtrlID(child.0 as _) != ALERT_BODY_ID
+                    })
+                    .expect("the alert has an icon")
+                    .0;
+                for (what, window) in [("body", body), ("link", link)] {
+                    assert!(
+                        screen_rect(window).bottom <= bar,
+                        "the {what} is on the card above the command bar"
+                    );
+                }
+                let expected = {
+                    let font = ramp_font(dpi, BODY_PX, false);
+                    let read = logfont(font as HGDIOBJ);
+                    DeleteObject(font as HGDIOBJ);
+                    read
+                };
+                for (what, window) in [
+                    ("body", body),
+                    ("link", link),
+                    ("button", buttons[0].handle),
+                ] {
+                    assert_eq!(
+                        logfont(SendMessageW(window as _, WM_GETFONT, 0, 0) as HGDIOBJ),
+                        expected,
+                        "the {what} is in the Body style"
+                    );
+                }
+
+                assert_eq!(
+                    alert_order(buttons).0,
+                    OFFER_BUTTONS.map(|(id, _)| id).to_vec(),
+                    "the buttons keep their order"
+                );
+                let ring = scale(FOCUS_MARGIN, dpi);
+                let mut faces: Vec<_> = buttons
+                    .iter()
+                    .map(|button| {
+                        let window = screen_rect(button.handle);
+                        RECT {
+                            left: window.left + ring,
+                            top: window.top + ring,
+                            right: window.right - ring,
+                            bottom: window.bottom - ring,
+                        }
+                    })
+                    .collect();
+                faces.sort_by_key(|face| face.left);
+                for face in &faces {
+                    assert!(face.top > bar, "the buttons sit on the command bar");
+                    assert_eq!(
+                        face.bottom,
+                        origin.y + client.bottom - scale(ADD_PAD, dpi),
+                        "the buttons end one padding above the bottom"
+                    );
+                    assert!(
+                        face.right - face.left >= scale(96, dpi),
+                        "a button is at least as wide as a Modern dialog's"
+                    );
+                }
+                for pair in faces.windows(2) {
+                    assert!(pair[0].right < pair[1].left, "the buttons do not overlap");
+                }
+                assert_eq!(
+                    faces.last().unwrap().right,
+                    origin.x + client.right - scale(ADD_PAD, dpi),
+                    "the last button ends the command bar at its padding"
+                );
+
+                let palette = main_palette(alert as _);
+                let default = buttons
+                    .iter()
+                    .find(|button| button.default)
+                    .expect("the alert has a default button");
+                assert_eq!(default.id, OFFER_BUTTONS[0].0);
+                let left = origin.x + client.left;
+                let free = RECT {
+                    left,
+                    top: bar + 1,
+                    right: faces[0].left - ring,
+                    bottom: origin.y + client.bottom,
+                };
+                let free_pixels = ((free.right - free.left) * (free.bottom - free.top)) as usize;
+                let line = |top| RECT {
+                    left,
+                    top,
+                    right: origin.x + client.right,
+                    bottom: top + 1,
+                };
+                let width = client.right as usize;
+                let mut drawn = (0, 0, 0, 0, 0);
+                let mut edges = (0, 0);
+                let mut around_icon = 0;
+                for _ in 0..40 {
+                    edges = (
+                        pixels_in(alert, line(bar - 1), rgb(palette.card)),
+                        pixels_in(alert, line(bar), rgb(palette.stroke)),
+                    );
+                    around_icon = pixels_of(alert, icon, rgb(palette.card));
+                    drawn = (
+                        pixels_of(alert, body, rgb(palette.card)),
+                        pixels_in(alert, free, rgb(palette.base)),
+                        pixels_of(alert, default.handle, rgb(palette.accent)),
+                        pixels_of(alert, link, rgb(palette.accent)),
+                        buttons
+                            .iter()
+                            .filter(|button| !button.default)
+                            .map(|button| pixels_of(alert, button.handle, rgb(palette.accent)))
+                            .sum::<usize>(),
+                    );
+                    if drawn.0 >= 100
+                        && drawn.1 == free_pixels
+                        && drawn.2 >= 100
+                        && drawn.3 >= 40
+                        && edges == (width, width)
+                        && around_icon >= 64
+                    {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                assert!(drawn.0 >= 100, "the message is on the card: {drawn:?}");
+                assert_eq!(
+                    drawn.1, free_pixels,
+                    "the command bar is in the base colour: {drawn:?}"
+                );
+                assert_eq!(
+                    edges,
+                    (width, width),
+                    "the card ends on the command bar's top line: {edges:?}"
+                );
+                assert!(
+                    drawn.2 >= 100,
+                    "the default button is the accent button: {drawn:?}"
+                );
+                assert!(drawn.3 >= 40, "the link is in the accent colour: {drawn:?}");
+                assert_eq!(
+                    drawn.4, 0,
+                    "only the default button is filled with the accent: {drawn:?}"
+                );
+                assert!(
+                    around_icon >= 64,
+                    "the icon's corners are on the card (dark: {dark}): {around_icon}"
+                );
+                post_key(alert, VK_ESCAPE);
+            });
+        }
+    }
+
+    #[test]
+    fn a_modern_alert_answers_like_a_classic_one() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_ICONQUESTION};
+
+        let offer = || {
+            with_common_controls_6(|| unsafe {
+                super::set_modern(true);
+                super::run_alert_buttons(
+                    std::ptr::null_mut(),
+                    "Body",
+                    "Title",
+                    MB_ICONQUESTION,
+                    Some(&OFFER_BUTTONS),
+                )
+            })
+        };
+        assert_eq!(alert_answer(offer, click_button(0)), Some(IDYES));
+        assert_eq!(alert_answer(offer, click_button(1)), Some(100));
+        assert_eq!(
+            alert_answer(offer, press_escape),
+            Some(IDNO),
+            "Escape is the last button"
+        );
     }
 
     #[test]
