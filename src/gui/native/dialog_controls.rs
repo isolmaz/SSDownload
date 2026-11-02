@@ -2028,6 +2028,35 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                     subclass(combo, combo_proc);
                 }
             }
+            // Until the analysis loads, the picker shows what it is doing in
+            // place of a form it cannot fill yet.
+            f.prep_title = dialog_label(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("İndirme hazırlanıyor...", "Preparing the download..."),
+                0,
+            );
+            if f.title_font.is_null() {
+                let (points, weight, faces) = card_font_spec(true, modern());
+                f.title_font = make_face_font(dlg.dpi, points, weight, faces);
+            }
+            apply_font(f.prep_title, f.title_font);
+            f.prep_detail = dialog_label(dlg.hwnd, dlg.font, "", 0);
+            f.prep_bar = control(
+                dlg.hwnd,
+                "msctls_progress32",
+                "",
+                WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
+                0,
+                0,
+            );
+            SendMessageW(f.prep_bar, PBM_SETMARQUEE, 1, SWEEP_FRAME_MS as isize);
+            if modern() {
+                subclass(f.prep_bar, modern_progress_proc);
+            }
+            if !f.populated && !f.advanced {
+                hold_media_form(dlg.hwnd, dlg.error, f);
+            }
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);
         }
         DialogKind::Progress(f) => {

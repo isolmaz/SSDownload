@@ -1121,6 +1121,7 @@ static AR: &[(&str, &str)] = &[
     ("The range could not be written to disk", "تعذّرت كتابة النطاق على القرص"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "ملف خريطة النطاقات المتفرقة مفقود أو قصير؛ ستبدأ المحاولة التالية التنزيل من البداية"),
     ("The range request was not accepted", "لم يُقبل طلب النطاق (range)"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "السبب أدناه. يكتب «الإبلاغ عن مشكلة» تقريرًا عنه ويفتح مجلده."),
     ("The record folder is missing", "مجلد السجل مفقود"),
     ("The redirect address has no host name", "عنوان إعادة التوجيه لا يحتوي على اسم مضيف"),
     ("The redirect target is invalid", "هدف إعادة التوجيه غير صالح"),
@@ -2602,6 +2603,7 @@ static ES: &[(&str, &str)] = &[
     ("The range could not be written to disk", "No se pudo escribir el rango en el disco"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "Falta o es demasiado corto el archivo disperso del mapa de rangos; el siguiente intento reinicia la descarga desde el principio"),
     ("The range request was not accepted", "La solicitud de rango no fue aceptada"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "El motivo aparece abajo. «Informar de un problema» escribe un informe sobre él y abre su carpeta."),
     ("The record folder is missing", "Falta la carpeta de registros"),
     ("The redirect address has no host name", "La dirección de redirección no tiene nombre de host"),
     ("The redirect target is invalid", "El destino de redirección no es válido"),
@@ -4083,6 +4085,7 @@ static PT: &[(&str, &str)] = &[
     ("The range could not be written to disk", "Não foi possível gravar o intervalo no disco"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "O arquivo esparso do mapa de intervalos está ausente ou incompleto; a próxima tentativa reinicia o download desde o início"),
     ("The range request was not accepted", "A solicitação de intervalo (range) não foi aceita"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "O motivo está abaixo. “Relatar problema” grava um relatório sobre ele e abre a pasta."),
     ("The record folder is missing", "A pasta de registros está ausente"),
     ("The redirect address has no host name", "O endereço de redirecionamento não tem nome de host"),
     ("The redirect target is invalid", "O destino do redirecionamento é inválido"),
@@ -5564,6 +5567,7 @@ static FR: &[(&str, &str)] = &[
     ("The range could not be written to disk", "La plage n'a pas pu être écrite sur le disque"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "Le fichier épars de la carte des plages est absent ou trop court ; la prochaine tentative recommence le téléchargement depuis le début"),
     ("The range request was not accepted", "La requête de plage (range) n'a pas été acceptée"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "La raison figure ci-dessous. « Signaler un problème » rédige un rapport à ce sujet et ouvre son dossier."),
     ("The record folder is missing", "Le dossier des enregistrements est manquant"),
     ("The redirect address has no host name", "L'adresse de redirection ne contient pas de nom d'hôte"),
     ("The redirect target is invalid", "La cible de redirection est invalide"),
@@ -7045,6 +7049,7 @@ static DE: &[(&str, &str)] = &[
     ("The range could not be written to disk", "Der Bereich konnte nicht auf den Datenträger geschrieben werden"),
     ("The range map's sparse file is missing or short; the next attempt restarts the download from the beginning", "Die Sparse-Datei der Bereichszuordnung fehlt oder ist zu kurz; der nächste Versuch startet den Download von vorn"),
     ("The range request was not accepted", "Die Bereichsanfrage (Range) wurde nicht akzeptiert"),
+    ("The reason is below. Report problem writes a report on it and opens its folder.", "Der Grund steht unten. „Problem melden“ schreibt einen Bericht dazu und öffnet seinen Ordner."),
     ("The record folder is missing", "Der Datensatzordner fehlt"),
     ("The redirect address has no host name", "Die Weiterleitungsadresse enthält keinen Hostnamen"),
     ("The redirect target is invalid", "Das Weiterleitungsziel ist ungültig"),
@@ -7550,6 +7555,9 @@ macro_rules! __ui_template_ar {
     };
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "تقرير الفشل جاهز. المجلد: {0} · ZIP: {1}"
+    };
+    ("Getting the video information from the source.{status}") => {
+        "جارٍ جلب معلومات الفيديو من المصدر.{status}"
     };
     ("GitHub returned HTTP {status}: {0}") => {
         "أعاد GitHub الرمز HTTP {status}: {0}"
@@ -8411,6 +8419,9 @@ macro_rules! __ui_template_es {
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "Informe de error listo. Carpeta: {0} · ZIP: {1}"
     };
+    ("Getting the video information from the source.{status}") => {
+        "Obteniendo la información del vídeo desde el origen.{status}"
+    };
     ("GitHub returned HTTP {status}: {0}") => {
         "GitHub devolvió HTTP {status}: {0}"
     };
@@ -9270,6 +9281,9 @@ macro_rules! __ui_template_pt {
     };
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "Relatório de falha pronto. Pasta: {0} · ZIP: {1}"
+    };
+    ("Getting the video information from the source.{status}") => {
+        "Obtendo as informações do vídeo da fonte.{status}"
     };
     ("GitHub returned HTTP {status}: {0}") => {
         "O GitHub retornou HTTP {status}: {0}"
@@ -10131,6 +10145,9 @@ macro_rules! __ui_template_fr {
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "Rapport d'erreur prêt. Dossier : {0} · ZIP : {1}"
     };
+    ("Getting the video information from the source.{status}") => {
+        "Récupération des informations vidéo depuis la source.{status}"
+    };
     ("GitHub returned HTTP {status}: {0}") => {
         "GitHub a renvoyé HTTP {status} : {0}"
     };
@@ -10990,6 +11007,9 @@ macro_rules! __ui_template_de {
     };
     ("Failure report ready. Folder: {0} · ZIP: {1}") => {
         "Fehlerbericht bereit. Ordner: {0} · ZIP: {1}"
+    };
+    ("Getting the video information from the source.{status}") => {
+        "Die Videoinformationen werden von der Quelle abgerufen.{status}"
     };
     ("GitHub returned HTTP {status}: {0}") => {
         "GitHub hat HTTP {status} zurückgegeben: {0}"

@@ -1760,5 +1760,7 @@
   "Connections:": "Verbindungen:",
   "Show details": "Details anzeigen",
   "Hide details": "Details ausblenden",
-  "Source: {0}": "Quelle: {0}"
+  "Source: {0}": "Quelle: {0}",
+  "Getting the video information from the source.{status}": "Die Videoinformationen werden von der Quelle abgerufen.{status}",
+  "The reason is below. Report problem writes a report on it and opens its folder.": "Der Grund steht unten. „Problem melden“ schreibt einen Bericht dazu und öffnet seinen Ordner."
 }

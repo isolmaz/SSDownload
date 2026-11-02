@@ -7744,6 +7744,24 @@ struct MediaFields {
     playlist_items: HWND,
     thumbnail: HWND,
     thumbnail_requested: bool,
+    /// What the picker shows until its analysis loads: a title, the line
+    /// under it and a moving bar.
+    prep_title: HWND,
+    prep_detail: HWND,
+    prep_bar: HWND,
+    /// The preparing title's semibold face; the window owns it.
+    title_font: HFONT,
+    /// The form's controls the preparing state hides. Empty once the form
+    /// shows, when the analysis loads or Advanced options opens.
+    held: Vec<HWND>,
+}
+
+impl Drop for MediaFields {
+    fn drop(&mut self) {
+        if !self.title_font.is_null() {
+            unsafe { DeleteObject(self.title_font as HGDIOBJ) };
+        }
+    }
 }
 /// The job view one queued handoff turns into. It watches the exact ids
 /// `Action::Add` returned, in the engine's own order: an unrelated job that
@@ -8993,6 +9011,11 @@ unsafe fn show_media_picker(
                 playlist_items: null_mut(),
                 thumbnail: null_mut(),
                 thumbnail_requested: false,
+                prep_title: null_mut(),
+                prep_detail: null_mut(),
+                prep_bar: null_mut(),
+                title_font: null_mut(),
+                held: Vec::new(),
             })),
             origin,
             launch,
@@ -11777,6 +11800,11 @@ mod tests {
             playlist_items: null_mut(),
             thumbnail: null_mut(),
             thumbnail_requested: false,
+            prep_title: null_mut(),
+            prep_detail: null_mut(),
+            prep_bar: null_mut(),
+            title_font: null_mut(),
+            held: Vec::new(),
         }))
     }
 
@@ -12699,6 +12727,11 @@ mod tests {
             playlist_items: null_mut(),
             thumbnail: null_mut(),
             thumbnail_requested: false,
+            prep_title: null_mut(),
+            prep_detail: null_mut(),
+            prep_bar: null_mut(),
+            title_font: null_mut(),
+            held: Vec::new(),
         }))
     }
 
@@ -12814,6 +12847,284 @@ mod tests {
             );
             assert!(press(dialog, VK_ESCAPE), "Escape is handled by the dialog");
             assert!(!dialog.is_open(), "Escape still closes the dialog");
+        });
+    }
+
+    /// Whether a control of a dialog is shown, from its style: a hidden test
+    /// dialog reports every control invisible.
+    fn shown(control: super::HWND) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE, WS_VISIBLE};
+        unsafe { GetWindowLongW(control, GWL_STYLE) as u32 & WS_VISIBLE != 0 }
+    }
+
+    /// Runs `body` in English on a media picker of each theme that has not
+    /// loaded its analysis, with the snapshot it is refreshed from.
+    fn with_preparing_picker(body: fn(&HiddenDialog, bool, crate::model::AppSnapshot)) {
+        for in_modern in [false, true] {
+            let themed = move || {
+                super::set_modern(in_modern);
+                media_kind()
+            };
+            with_dialog(themed, 640, 420, |dialog| {
+                crate::i18n::with_language("en", || {
+                    let snapshot = dialog.app().snapshot();
+                    body(dialog, in_modern, snapshot)
+                })
+            });
+        }
+    }
+
+    /// The picker controls a loaded analysis fills in and the preparing state
+    /// hides.
+    unsafe fn picker_form(dialog: &HiddenDialog) -> Vec<super::HWND> {
+        use super::{DialogKind, M_MP3, M_QUEUE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+        let DialogKind::Media(f) = dialog.kind() else {
+            unreachable!()
+        };
+        vec![
+            f.summary,
+            f.name,
+            f.kind,
+            f.format,
+            f.remember,
+            GetDlgItem(dialog.hwnd, M_QUEUE),
+            GetDlgItem(dialog.hwnd, M_MP3),
+        ]
+    }
+
+    #[test]
+    fn the_picker_prepares_in_place_of_its_form_until_the_analysis_loads() {
+        with_preparing_picker(|dialog, in_modern, mut snapshot| unsafe {
+            use super::{
+                child_rect, refresh_media, text, DialogKind, D_ADVANCED, D_CANCEL, M_QUEUE,
+                PBS_MARQUEE,
+            };
+            use crate::model::{MediaFormat, MediaInfo};
+            use windows_sys::Win32::Foundation::RECT;
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetDlgItem, GetWindowLongW, GetWindowRect, GWL_STYLE,
+            };
+            let edges = |rect: RECT| (rect.left, rect.top, rect.right, rect.bottom);
+            let dlg = &*dialog.raw;
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            snapshot.inspecting = true;
+            refresh_media(dlg, f, &snapshot);
+            assert_eq!(
+                text(f.prep_title),
+                "Preparing the download...",
+                "modern {in_modern}"
+            );
+            assert!(
+                text(f.prep_detail).starts_with("Getting the video information from the source."),
+                "modern {in_modern}: {}",
+                text(f.prep_detail)
+            );
+            for control in [f.prep_title, f.prep_detail, f.prep_bar] {
+                assert!(
+                    shown(control),
+                    "modern {in_modern}: the preparing state shows"
+                );
+            }
+            assert_ne!(
+                GetWindowLongW(f.prep_bar, GWL_STYLE) as u32 & PBS_MARQUEE,
+                0,
+                "modern {in_modern}: the bar moves"
+            );
+            for control in picker_form(dialog) {
+                assert!(
+                    !shown(control),
+                    "modern {in_modern}: the empty form is hidden"
+                );
+            }
+            let cancel = GetDlgItem(dialog.hwnd, D_CANCEL);
+            for control in [GetDlgItem(dialog.hwnd, D_ADVANCED), cancel] {
+                assert!(shown(control), "modern {in_modern}: the button row stays");
+            }
+            let at = |control| child_rect(dialog.hwnd, control);
+            assert!(
+                at(f.prep_title).bottom <= at(f.prep_detail).top
+                    && at(f.prep_detail).bottom <= at(f.prep_bar).top
+                    && at(f.prep_bar).bottom <= at(cancel).top,
+                "modern {in_modern}: the title, its line and the bar read down to the buttons"
+            );
+            let place = |window| {
+                let mut rect: RECT = std::mem::zeroed();
+                GetWindowRect(window, &mut rect);
+                edges(rect)
+            };
+            let (window, button) = (place(dialog.hwnd), place(cancel));
+
+            snapshot.inspecting = false;
+            snapshot.media = Some(MediaInfo {
+                title: "Clip".into(),
+                formats: vec![MediaFormat {
+                    id: "18".into(),
+                    extension: "mp4".into(),
+                    height: Some(360),
+                    video_codec: Some("avc1".into()),
+                    audio_codec: Some("mp4a".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            refresh_media(dlg, f, &snapshot);
+            assert!(f.populated, "modern {in_modern}");
+            for control in [f.prep_title, f.prep_detail, f.prep_bar] {
+                assert!(
+                    !shown(control),
+                    "modern {in_modern}: the preparing state is gone"
+                );
+            }
+            for control in picker_form(dialog) {
+                assert!(shown(control), "modern {in_modern}: the form shows");
+            }
+            assert_ne!(
+                IsWindowEnabled(GetDlgItem(dialog.hwnd, M_QUEUE)),
+                0,
+                "modern {in_modern}: the loaded analysis can be downloaded"
+            );
+            assert_eq!(
+                place(dialog.hwnd),
+                window,
+                "modern {in_modern}: the window stays"
+            );
+            assert_eq!(place(cancel), button, "modern {in_modern}: Cancel stays");
+        });
+    }
+
+    #[test]
+    fn a_failed_analysis_shows_its_error_and_the_report_action_in_the_preparing_state() {
+        with_preparing_picker(|dialog, in_modern, mut snapshot| unsafe {
+            use super::{child_rect, refresh_media, text, DialogKind, M_REPORT};
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem;
+            let dlg = &*dialog.raw;
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            snapshot.inspecting = true;
+            refresh_media(dlg, f, &snapshot);
+            snapshot.inspecting = false;
+            snapshot.inspect_error = Some("The site refused the request.".into());
+            refresh_media(dlg, f, &snapshot);
+            assert_eq!(
+                text(f.prep_title),
+                "Downloadable video options could not be verified for this source.",
+                "modern {in_modern}"
+            );
+            assert!(
+                text(f.prep_detail).starts_with("The reason is below. Report problem"),
+                "modern {in_modern}: {}",
+                text(f.prep_detail)
+            );
+            assert!(
+                shown(f.prep_title) && shown(f.prep_detail),
+                "modern {in_modern}"
+            );
+            assert!(
+                !shown(f.prep_bar),
+                "modern {in_modern}: nothing is moving any more"
+            );
+            let error = dialog.error_line();
+            assert_eq!(
+                text(error),
+                "The site refused the request.",
+                "modern {in_modern}"
+            );
+            assert!(shown(error), "modern {in_modern}: the reason shows");
+            let report = GetDlgItem(dialog.hwnd, M_REPORT);
+            assert!(
+                shown(report) && IsWindowEnabled(report) != 0,
+                "modern {in_modern}: the failure can be reported"
+            );
+            for control in picker_form(dialog) {
+                assert!(!shown(control), "modern {in_modern}: no empty form is left");
+            }
+            let at = |control| child_rect(dialog.hwnd, control);
+            assert!(
+                at(f.prep_detail).bottom <= at(error).top && at(error).bottom <= at(report).top,
+                "modern {in_modern}: the reason is below the line and above its action"
+            );
+        });
+    }
+
+    #[test]
+    fn a_preparing_picker_starts_nothing_and_closes_on_escape_or_cancel() {
+        with_preparing_picker(|dialog, in_modern, mut snapshot| unsafe {
+            use super::{refresh_media, text, DialogKind, D_CANCEL, M_QUEUE};
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetDlgItem, SendMessageW, BM_CLICK, WM_COMMAND,
+            };
+            let dlg = &*dialog.raw;
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            snapshot.inspecting = true;
+            refresh_media(dlg, f, &snapshot);
+            let prep_title = f.prep_title;
+            assert!(
+                press(dialog, VK_RETURN),
+                "modern {in_modern}: Enter is handled"
+            );
+            assert!(
+                dialog.is_open(),
+                "modern {in_modern}: Enter did not close the picker"
+            );
+            SendMessageW(dialog.hwnd, WM_COMMAND, M_QUEUE as usize, 0);
+            assert!(dialog.is_open(), "modern {in_modern}");
+            assert_eq!(
+                text(dialog.error_line()),
+                "A download cannot start before the analysis loads into this window.",
+                "modern {in_modern}: a posted Download is refused"
+            );
+            assert!(
+                dialog.app().snapshot().jobs.is_empty(),
+                "modern {in_modern}: nothing was queued"
+            );
+            assert!(shown(prep_title), "modern {in_modern}: still preparing");
+            if in_modern {
+                assert!(press(dialog, VK_ESCAPE), "Escape is handled");
+            } else {
+                SendMessageW(GetDlgItem(dialog.hwnd, D_CANCEL), BM_CLICK, 0, 0);
+            }
+            assert!(!dialog.is_open(), "modern {in_modern}: the picker closed");
+        });
+    }
+
+    #[test]
+    fn advanced_options_open_the_form_before_the_analysis_loads() {
+        with_preparing_picker(|dialog, in_modern, mut snapshot| unsafe {
+            use super::{refresh_media, DialogKind, D_ADVANCED, M_RENEW};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetDlgItem, SendMessageW, WM_COMMAND,
+            };
+            let dlg = &*dialog.raw;
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            snapshot.inspecting = true;
+            refresh_media(dlg, f, &snapshot);
+            SendMessageW(dialog.hwnd, WM_COMMAND, D_ADVANCED as usize, 0);
+            let DialogKind::Media(f) = &mut (*dialog.raw).kind else {
+                unreachable!()
+            };
+            // The source of a pending job can be refreshed without the analysis.
+            for control in picker_form(dialog)
+                .into_iter()
+                .chain([f.renew_job, GetDlgItem(dialog.hwnd, M_RENEW)])
+            {
+                assert!(shown(control), "modern {in_modern}: the form shows");
+            }
+            refresh_media(dlg, f, &snapshot);
+            for control in [f.prep_title, f.prep_detail, f.prep_bar] {
+                assert!(!shown(control), "modern {in_modern}: and stays");
+            }
+            assert!(shown(f.name), "modern {in_modern}");
         });
     }
 
@@ -14214,6 +14525,11 @@ mod tests {
                 playlist_items: null_mut(),
                 thumbnail: null_mut(),
                 thumbnail_requested: false,
+                prep_title: null_mut(),
+                prep_detail: null_mut(),
+                prep_bar: null_mut(),
+                title_font: null_mut(),
+                held: Vec::new(),
             }))
         }
         type Case = (
@@ -14888,6 +15204,15 @@ mod tests {
                 other => other,
             }
         }
+        fn media_loaded() -> DialogKind {
+            match media_kind() {
+                DialogKind::Media(mut f) => {
+                    f.populated = true;
+                    DialogKind::Media(f)
+                }
+                other => other,
+            }
+        }
         fn failed_analysis(dialog: &HiddenDialog) {
             unsafe {
                 if let DialogKind::Media(f) = &mut (*dialog.raw).kind {
@@ -15022,8 +15347,24 @@ mod tests {
                     nothing,
                 ),
                 case(
-                    "media picker",
+                    "media picker, preparing",
                     media_kind,
+                    (640, 420),
+                    (None, D_CANCEL),
+                    None,
+                    nothing,
+                ),
+                case(
+                    "media picker, preparing a failed analysis",
+                    media_kind,
+                    (640, 420),
+                    (None, D_CANCEL),
+                    None,
+                    failed_analysis,
+                ),
+                case(
+                    "media picker",
+                    media_loaded,
                     (640, 420),
                     (Some(M_QUEUE), D_CANCEL),
                     Some(M_QUEUE),
@@ -15040,9 +15381,9 @@ mod tests {
                 )
                 .also(&[M_MP3]),
                 case(
-                    "media picker, failed analysis",
-                    media_kind,
-                    (640, 420),
+                    "media picker, failed analysis, advanced",
+                    media_advanced,
+                    (640, 730),
                     (Some(M_QUEUE), D_CANCEL),
                     Some(M_QUEUE),
                     failed_analysis,

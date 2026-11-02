@@ -1760,5 +1760,7 @@
   "Connections:": "الاتصالات:",
   "Show details": "إظهار التفاصيل",
   "Hide details": "إخفاء التفاصيل",
-  "Source: {0}": "المصدر: {0}"
+  "Source: {0}": "المصدر: {0}",
+  "Getting the video information from the source.{status}": "جارٍ جلب معلومات الفيديو من المصدر.{status}",
+  "The reason is below. Report problem writes a report on it and opens its folder.": "السبب أدناه. يكتب «الإبلاغ عن مشكلة» تقريرًا عنه ويفتح مجلده."
 }

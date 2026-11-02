@@ -152,78 +152,7 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                 DestroyWindow(dlg.hwnd);
                 return;
             }
-            refresh_media_renew_jobs(f, &snapshot);
-            let status = media_status_suffix(f, &snapshot);
-            // The report button is invisible, not merely disabled, while there
-            // is nothing to report, so the normal picker looks unchanged.
-            let failed = snapshot.inspect_error.is_some();
-            if f.report_shown != failed {
-                f.report_shown = failed;
-                layout_dialog(dlg);
-            }
-            if !failed {
-                // A report failure the user has read past is dropped as soon as
-                // the picker leaves the failed state.
-                f.report_error = None;
-            }
-            EnableWindow(GetDlgItem(dlg.hwnd, M_REPORT), failed as BOOL);
-            if snapshot.inspecting {
-                set_text(
-                    f.summary,
-                    &crate::i18n::ui_format!(
-                        "Video ve çözünürlükler hazırlanıyor.{status}",
-                        "Preparing videos and resolutions.{status}",
-                        status = status
-                    ),
-                );
-                EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
-            } else if let Some(info) = snapshot.media.as_ref() {
-                // Filled once, from the analysis of the generation this dialog
-                // was created for; the enable below also requires that state.
-                if !f.populated {
-                    populate_media(dlg.hwnd, f, info, &status);
-                    f.populated = true;
-                    let audio_allowed = f
-                        .kind_values
-                        .iter()
-                        .any(|(kind, _)| *kind == DownloadKind::Audio);
-                    EnableWindow(GetDlgItem(dlg.hwnd, M_MP3), audio_allowed as BOOL);
-                    if !f.thumbnail_requested {
-                        f.thumbnail_requested = true;
-                        if let Some(url) = info.thumbnail.clone() {
-                            load_thumbnail(dlg.hwnd, dlg.app.clone(), url);
-                        }
-                    }
-                    fit_media_picker(dlg);
-                    layout_dialog(dlg);
-                    if f.auto_queue {
-                        // "Bir daha sorma": the remembered choice goes straight to the queue.
-                        PostMessageW(dlg.hwnd, WM_COMMAND, M_QUEUE as usize, 0);
-                    }
-                }
-            } else {
-                set_text(
-                    f.summary,
-                    &crate::i18n::ui_format!(
-                        "Bu kaynak için indirilebilir video seçenekleri doğrulanamadı.{status}",
-                        "Downloadable video options could not be verified for this source.{status}",
-                        status = status
-                    ),
-                );
-                f.video_formats.clear();
-                EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
-                // A failed report keeps its own text on the line until the
-                // picker leaves this state; the inspection error would
-                // otherwise overwrite it on the next tick.
-                if let Some(error) = f
-                    .report_error
-                    .as_deref()
-                    .or(snapshot.inspect_error.as_deref())
-                {
-                    set_dialog_error(dlg.hwnd, dlg.error, error, null_mut());
-                }
-            }
-            update_media_queue_enabled(dlg.hwnd, f, &snapshot);
+            refresh_media(dlg, f, &snapshot);
         }
         DialogKind::Progress(f) => refresh_job_view(dlg.hwnd, dlg.error, f, &snapshot),
         DialogKind::Events(f) => refresh_event_list(f),
@@ -535,6 +464,191 @@ pub(super) unsafe fn refresh_job_view(
 }
 pub(super) fn media_stream_present(codec: Option<&str>) -> bool {
     codec.is_some_and(|value| value != "none" && value != "unknown")
+}
+
+/// Shows the analysis of this picker's generation: what it is doing while it
+/// runs, the form once it has loaded, the error when it failed.
+pub(super) unsafe fn refresh_media(dlg: &DialogUi, f: &mut MediaFields, snapshot: &AppSnapshot) {
+    refresh_media_renew_jobs(f, snapshot);
+    let status = media_status_suffix(f, snapshot);
+    // The report button is invisible, not merely disabled, while there
+    // is nothing to report, so the normal picker looks unchanged.
+    let failed = snapshot.inspect_error.is_some();
+    if f.report_shown != failed {
+        f.report_shown = failed;
+        layout_dialog(dlg);
+    }
+    if !failed {
+        // A report failure the user has read past is dropped as soon as
+        // the picker leaves the failed state.
+        f.report_error = None;
+    }
+    EnableWindow(GetDlgItem(dlg.hwnd, M_REPORT), failed as BOOL);
+    if snapshot.inspecting {
+        set_text(
+            f.summary,
+            &crate::i18n::ui_format!(
+                "Video ve çözünürlükler hazırlanıyor.{status}",
+                "Preparing videos and resolutions.{status}",
+                status = status
+            ),
+        );
+        show_preparing(
+            dlg,
+            f,
+            crate::i18n::ui("İndirme hazırlanıyor...", "Preparing the download..."),
+            &crate::i18n::ui_format!(
+                "Video bilgileri kaynaktan alınıyor.{status}",
+                "Getting the video information from the source.{status}",
+                status = status
+            ),
+            true,
+        );
+        EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
+    } else if let Some(info) = snapshot.media.as_ref() {
+        // Filled once, from the analysis of the generation this dialog
+        // was created for; the enable below also requires that state.
+        if !f.populated {
+            // The form takes the preparing state's place in one repaint.
+            let shown = IsWindowVisible(dlg.hwnd) != 0;
+            if shown {
+                SendMessageW(dlg.hwnd, WM_SETREDRAW, 0, 0);
+            }
+            show_media_form(f);
+            populate_media(dlg.hwnd, f, info, &status);
+            f.populated = true;
+            let audio_allowed = f
+                .kind_values
+                .iter()
+                .any(|(kind, _)| *kind == DownloadKind::Audio);
+            EnableWindow(GetDlgItem(dlg.hwnd, M_MP3), audio_allowed as BOOL);
+            if !f.thumbnail_requested {
+                f.thumbnail_requested = true;
+                if let Some(url) = info.thumbnail.clone() {
+                    load_thumbnail(dlg.hwnd, dlg.app.clone(), url);
+                }
+            }
+            fit_media_picker(dlg);
+            layout_dialog(dlg);
+            if shown {
+                SendMessageW(dlg.hwnd, WM_SETREDRAW, 1, 0);
+                RedrawWindow(
+                    dlg.hwnd,
+                    null(),
+                    null_mut(),
+                    RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN,
+                );
+            }
+            if f.auto_queue {
+                // "Bir daha sorma": the remembered choice goes straight to the queue.
+                PostMessageW(dlg.hwnd, WM_COMMAND, M_QUEUE as usize, 0);
+            }
+        }
+    } else {
+        set_text(
+            f.summary,
+            &crate::i18n::ui_format!(
+                "Bu kaynak için indirilebilir video seçenekleri doğrulanamadı.{status}",
+                "Downloadable video options could not be verified for this source.{status}",
+                status = status
+            ),
+        );
+        // What the user can do with a failed analysis, then the same notes
+        // the summary carries.
+        let detail = if failed {
+            format!(
+                "{}{status}",
+                crate::i18n::ui(
+                    "Nedeni aşağıda. Hata bildir bunun için bir rapor yazar ve klasörünü açar.",
+                    "The reason is below. Report problem writes a report on it and opens its folder.",
+                )
+            )
+        } else {
+            status.trim_start().to_string()
+        };
+        show_preparing(
+            dlg,
+            f,
+            &crate::i18n::ui_format!(
+                "Bu kaynak için indirilebilir video seçenekleri doğrulanamadı.{status}",
+                "Downloadable video options could not be verified for this source.{status}",
+                status = ""
+            ),
+            &detail,
+            false,
+        );
+        f.video_formats.clear();
+        EnableWindow(GetDlgItem(dlg.hwnd, M_QUEUE), 0);
+        // A failed report keeps its own text on the line until the
+        // picker leaves this state; the inspection error would
+        // otherwise overwrite it on the next tick.
+        if let Some(error) = f
+            .report_error
+            .as_deref()
+            .or(snapshot.inspect_error.as_deref())
+        {
+            set_dialog_error(dlg.hwnd, dlg.error, error, null_mut());
+        }
+    }
+    update_media_queue_enabled(dlg.hwnd, f, snapshot);
+}
+
+/// Puts `title` and `detail` in the picker's preparing state, with its bar
+/// moving while `moving` and hidden otherwise. Nothing changes once the form
+/// shows.
+unsafe fn show_preparing(dlg: &DialogUi, f: &MediaFields, title: &str, detail: &str, moving: bool) {
+    if f.held.is_empty() {
+        return;
+    }
+    let bar_shown = GetWindowLongW(f.prep_bar, GWL_STYLE) as u32 & WS_VISIBLE != 0;
+    if text(f.prep_title) == title && text(f.prep_detail) == detail && bar_shown == moving {
+        return;
+    }
+    set_text(f.prep_title, title);
+    set_text(f.prep_detail, detail);
+    ShowWindow(f.prep_bar, if moving { SW_SHOW } else { SW_HIDE });
+    SendMessageW(
+        f.prep_bar,
+        PBM_SETMARQUEE,
+        moving as usize,
+        SWEEP_FRAME_MS as isize,
+    );
+    layout_dialog(dlg);
+}
+
+/// Hides the picker's form behind its preparing state: every shown control
+/// but the preparing ones, Advanced options, Cancel and the error line.
+pub(super) unsafe fn hold_media_form(hwnd: HWND, error: HWND, f: &mut MediaFields) {
+    let kept = [
+        f.prep_title,
+        f.prep_detail,
+        f.prep_bar,
+        error,
+        GetDlgItem(hwnd, D_ADVANCED),
+        GetDlgItem(hwnd, D_CANCEL),
+    ];
+    let mut child = GetWindow(hwnd, GW_CHILD);
+    while !child.is_null() {
+        if !kept.contains(&child) && GetWindowLongW(child, GWL_STYLE) as u32 & WS_VISIBLE != 0 {
+            ShowWindow(child, SW_HIDE);
+            f.held.push(child);
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+}
+
+/// Ends the preparing state: its controls go and the form it held back shows.
+pub(super) unsafe fn show_media_form(f: &mut MediaFields) {
+    if f.held.is_empty() {
+        return;
+    }
+    SendMessageW(f.prep_bar, PBM_SETMARQUEE, 0, 0);
+    for control in [f.prep_title, f.prep_detail, f.prep_bar] {
+        ShowWindow(control, SW_HIDE);
+    }
+    for control in f.held.drain(..) {
+        ShowWindow(control, SW_SHOW);
+    }
 }
 
 /// Extra picker status lines: the browser session state this handoff carried and

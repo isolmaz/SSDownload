@@ -1225,6 +1225,9 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
         },
         DialogKind::Media(f) => match id {
             D_ADVANCED => {
+                // The form's advanced fields work before the analysis loads,
+                // so opening them ends the preparing state.
+                show_media_form(f);
                 f.advanced = !f.advanced;
                 if modern() {
                     fit_media_picker(dlg);

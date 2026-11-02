@@ -1625,6 +1625,7 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
                 row,
             );
         }
+        DialogKind::Media(f) if !f.held.is_empty() => layout_media_preparing(dlg, f, h),
         DialogKind::Media(f) if modern() => {
             let s = |value: i32| scale(value, dlg.dpi);
             let x = s(ADD_PAD);
@@ -2563,8 +2564,57 @@ unsafe fn bar_start(dlg: &DialogUi, h: i32, buttons: &[(i32, i32)]) {
 unsafe fn media_labels(dlg: &DialogUi, f: &MediaFields) -> Vec<HWND> {
     child_statics(dlg.hwnd, dlg.error)
         .into_iter()
-        .filter(|value| *value != f.thumbnail && *value != f.size)
+        .filter(|value| ![f.thumbnail, f.size, f.prep_title, f.prep_detail].contains(value))
         .collect()
+}
+
+/// The picker before its analysis loads: the title, the line under it and
+/// the moving bar from the top, and Advanced options, the report action and
+/// Cancel where the form has them.
+unsafe fn layout_media_preparing(dlg: &DialogUi, f: &MediaFields, h: i32) {
+    let s = |value: i32| scale(value, dlg.dpi);
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let (x, mut y) = if modern() {
+        (s(ADD_PAD), s(ADD_TOP))
+    } else {
+        (s(DIALOG_MARGIN), s(DIALOG_MARGIN))
+    };
+    let room = client.right - 2 * x;
+    let title_h = wrapped_height(f.prep_title, f.title_font, dlg.dpi, room);
+    MoveWindow(f.prep_title, x, y, room, title_h, 1);
+    y += title_h + s(4);
+    let detail_h = wrapped_height(f.prep_detail, dlg.font, dlg.dpi, room);
+    MoveWindow(f.prep_detail, x, y, room, detail_h, 1);
+    y += detail_h + s(DIALOG_GAP);
+    MoveWindow(f.prep_bar, x, y, room, s(JOB_BAR), 1);
+    let report = GetDlgItem(dlg.hwnd, M_REPORT);
+    if modern() {
+        ShowWindow(report, if f.report_shown { SW_SHOW } else { SW_HIDE });
+        move_id(
+            dlg.hwnd,
+            D_ERROR,
+            x,
+            h - s(ADD_FOOTER) - s(ADD_LABEL),
+            room,
+            s(ADD_LABEL),
+        );
+        bar_start(
+            dlg,
+            h,
+            &[
+                (D_ADVANCED, advanced_width(dlg)),
+                (M_REPORT, add_button_width(dlg, M_REPORT, 96)),
+            ],
+        );
+        command_bar(dlg, h, &[(D_CANCEL, 96)]);
+    } else {
+        let (m, row) = (s(DIALOG_MARGIN), s(DIALOG_ROW));
+        let by = h - m - row;
+        move_id(dlg.hwnd, D_ADVANCED, m, by, s(185), row);
+        place(report, f.report_shown, m + s(197), by, s(112), row);
+        move_id(dlg.hwnd, D_CANCEL, client.right - m - s(92), by, s(92), row);
+    }
 }
 
 /// The Modern media picker's rows under its summary: the choices it always
