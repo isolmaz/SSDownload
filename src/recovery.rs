@@ -406,16 +406,15 @@ pub(crate) fn publish(
 }
 /// Names in a work folder that are not a download's result: the owner marker, temporaries of
 /// `atomic_write`, the media workspace, the transfer's part, state and segment files, the
-/// output a browser transfer stages while it remuxes, and the archives the browser transfer
-/// makes of earlier runs. The live `browser-transfer` folder is none of them: it keeps
-/// `adopt_finished` from adopting anything.
+/// output a browser transfer stages while it remuxes. The `browser-transfer` folder and its
+/// `browser-transfer-previous-<uuid>` archives are none of them: they keep `adopt_finished`
+/// from adopting anything.
 fn is_work_artifact(name: &str) -> bool {
     name == ".job"
         || name == ".ssdownload-work"
         || (name.starts_with('.') && name.ends_with(".tmp"))
         || name.contains(".ssdownload.")
         || name.starts_with(".browser-mux-")
-        || name.starts_with("browser-transfer-previous-")
 }
 
 /// `name` in lower case without the number that `output::numbered` adds: `Movie (2)` is `movie`.
@@ -463,7 +462,9 @@ fn is_possible_result(job: &Job, name: &str) -> bool {
 /// and that is not an artifact of the transfer. Nothing is adopted when the folder holds
 /// anything else, a folder included. The `browser-transfer` folder is one: its receiver puts the
 /// file in the work folder first and verifies it after, so a file beside the folder may have
-/// failed that verification. The caller has checked the folder with `prepare_work`.
+/// failed that verification. So is a `browser-transfer-previous-<uuid>` archive: a restart
+/// archives the folder before it moves the earlier output into it, so a file beside an archive
+/// can be the output the restart discards. The caller has checked the folder with `prepare_work`.
 pub(crate) fn adopt_finished(paths: &AppPaths, job: &Job) -> Result<Option<TransferResult>> {
     let Some(work) = &job.work_dir else {
         return Ok(None);
@@ -798,11 +799,6 @@ mod tests {
         let live = work.join("browser-transfer");
         fs::create_dir_all(&live).unwrap();
         fs::write(live.join("stream-00000000.bin"), b"unverified").unwrap();
-        fs::create_dir_all(work.join(format!(
-            "browser-transfer-previous-{}",
-            uuid::Uuid::new_v4()
-        )))
-        .unwrap();
 
         for filename in [None, Some("movie.mp4".to_owned())] {
             job.request.filename = filename;
@@ -814,22 +810,26 @@ mod tests {
     }
 
     #[test]
-    fn a_file_beside_only_the_archives_of_a_browser_transfer_is_published() {
+    fn the_output_a_restart_of_a_browser_transfer_discards_is_not_published() {
         let (paths, root) = fixture();
-        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        let (mut job, result) = stopped_before_the_journal(&root, "movie.mp4", b"old output");
         let work = job.work_dir.clone().unwrap();
-        for _ in 0..2 {
-            fs::create_dir_all(work.join(format!(
-                "browser-transfer-previous-{}",
-                uuid::Uuid::new_v4()
-            )))
-            .unwrap();
-        }
+        // A restart renames the transfer's folder to an archive, creates the folder again and
+        // only then moves the earlier output into the archive; a stop between the first two
+        // steps leaves the output beside the archive.
+        let archive = work.join(format!(
+            "browser-transfer-previous-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&archive).unwrap();
+        fs::write(archive.join("stream-00000000.bin"), b"old output").unwrap();
 
-        let adopted = adopt_finished(&paths, &job).unwrap().unwrap();
-        assert_eq!(adopted.path, job.path);
-        assert_eq!(fs::read(&job.path).unwrap(), b"movie bytes");
-        assert!(!result.exists());
+        for filename in [None, Some("movie.mp4".to_owned())] {
+            job.request.filename = filename;
+            assert!(adopt_finished(&paths, &job).unwrap().is_none());
+            assert!(result.exists() && !job.path.exists());
+            assert!(recovered(&paths, &job.id).unwrap().is_none());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
