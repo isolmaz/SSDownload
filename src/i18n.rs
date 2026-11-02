@@ -219,6 +219,25 @@ macro_rules! ui_format {
 }
 pub use crate::ui_format;
 
+/// The Turkish and English templates of a `ui_format!` call with every other language's
+/// translation of the English one, for reading back a text written while another language was
+/// active.
+#[macro_export]
+macro_rules! ui_templates {
+    ($tr:tt, $en:tt $(,)?) => {
+        [
+            $tr,
+            $en,
+            $crate::__ui_template_ar!($en),
+            $crate::__ui_template_es!($en),
+            $crate::__ui_template_pt!($en),
+            $crate::__ui_template_fr!($en),
+            $crate::__ui_template_de!($en),
+        ]
+    };
+}
+pub use crate::ui_templates;
+
 /// The `ui_language` value for a Windows language ID: the language whose primary identifier
 /// it carries in its low ten bits, English for one the app does not offer.
 fn language_of_langid(langid: u16) -> &'static str {

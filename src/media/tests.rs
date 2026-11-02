@@ -631,6 +631,145 @@ fn direct_mp4_uses_a_generic_downloadable_selector() {
     );
 }
 
+/// The analysis of a wiki file page: formats with audio, a video-only one and a "source" of
+/// unknown codecs, under an address that ends in a media extension.
+fn file_page_analysis() -> MediaInfo {
+    media_info_from_json(&json!({"formats":[
+        {"format_id":"0","ext":"webm","width":426,"height":178,"vcodec":"vp9","acodec":"opus"},
+        {"format_id":"1","ext":"mov","width":640,"height":268,"vcodec":"mp4v","acodec":"none"},
+        {"format_id":"2","ext":"webm","width":854,"height":358,"vcodec":"vp9","acodec":"opus"},
+        {"format_id":"3","ext":"webm","width":1920,"height":804,"vcodec":"vp9","acodec":"opus"},
+        {"format_id":"source","ext":"webm","width":2048,"height":858,"filesize":81781205}
+    ]}))
+    .unwrap()
+}
+
+fn selected_ids(request: &AddRequest, info: &MediaInfo) -> Vec<String> {
+    selected_formats(request, info)
+        .into_iter()
+        .map(|format| format.id.clone())
+        .collect()
+}
+
+#[test]
+fn a_page_address_ending_in_a_media_extension_keeps_the_height_limit() {
+    let info = file_page_analysis();
+    for container in [None, Some("mkv")] {
+        let request = AddRequest {
+            url: "https://commons.example/wiki/File:Spring.webm".into(),
+            kind: DownloadKind::Video,
+            container: container.map(str::to_string),
+            max_height: Some(358),
+            ..AddRequest::default()
+        };
+        assert_eq!(
+            selected_ids(&request, &info),
+            ["2"],
+            "{container:?}: {}",
+            format_selector(&request, &info).unwrap()
+        );
+    }
+}
+
+#[test]
+fn a_height_limit_does_not_turn_a_source_with_audio_into_a_silent_video() {
+    // The only MP4-compatible format at 358 p or below is video-only, and the formats with audio
+    // are VP9 and Opus: MP4 cannot hold them, and the answer is to choose MKV.
+    let request = AddRequest {
+        url: "https://commons.example/wiki/File:Spring.webm".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        max_height: Some(358),
+        ..AddRequest::default()
+    };
+    let error = format_selector(&request, &file_page_analysis()).unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::MED_014),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_file_the_analysis_lists_once_is_still_downloaded_as_it_is() {
+    let info = media_info_from_json(&json!({"formats":[{"format_id":"0","ext":"mp4"}]})).unwrap();
+    let request = AddRequest {
+        url: "https://media.example/clip.mp4".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        max_height: Some(720),
+        ..AddRequest::default()
+    };
+    assert_eq!(
+        format_selector(&request, &info).unwrap(),
+        "best[ext=mp4]/best"
+    );
+}
+
+#[test]
+fn a_format_without_a_height_is_taken_under_a_limit_only_when_no_known_height_fits() {
+    let info = media_info_from_json(&json!({"formats":[
+        {"format_id":"unknown","ext":"mp4","vcodec":"avc1","acodec":"aac"},
+        {"format_id":"known","ext":"mp4","height":360,"vcodec":"avc1","acodec":"aac"}
+    ]}))
+    .unwrap();
+    let request = |maximum| AddRequest {
+        url: "https://video.example/watch/1".into(),
+        kind: DownloadKind::Video,
+        max_height: Some(maximum),
+        ..AddRequest::default()
+    };
+    assert_eq!(selected_ids(&request(480), &info), ["known"]);
+    assert_eq!(selected_ids(&request(240), &info), ["unknown"]);
+}
+
+#[test]
+fn the_strict_height_filters_come_before_the_loose_ones_in_the_selector() {
+    // yt-dlp takes the first alternative of `a/b` that matches a format, so the order is what
+    // keeps a format without a height behind every format with one. The app's own selection
+    // model sorts unknown heights last whatever the order.
+    let request = AddRequest {
+        url: "https://video.example/watch/1".into(),
+        kind: DownloadKind::Video,
+        max_height: Some(480),
+        ..AddRequest::default()
+    };
+    let with_audio = media_info_from_json(&json!({"formats":[
+        {"format_id":"a","ext":"mp4","height":360,"vcodec":"avc1","acodec":"aac"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        format_selector(&request, &with_audio).unwrap(),
+        "bestvideo[height<=480]+bestaudio/best[height<=480]/\
+         bestvideo[height<=?480]+bestaudio/best[height<=?480]"
+    );
+    let silent = media_info_from_json(&json!({"formats":[
+        {"format_id":"v","ext":"mp4","height":360,"vcodec":"avc1","acodec":"none"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        format_selector(&request, &silent).unwrap(),
+        "bestvideo[height<=480]/best[height<=480]/bestvideo[height<=?480]/best[height<=?480]"
+    );
+}
+
+#[test]
+fn a_video_above_the_limit_is_reported_with_its_height() {
+    let request = AddRequest {
+        kind: DownloadKind::Video,
+        max_height: Some(358),
+        ..AddRequest::default()
+    };
+    let probe = json!({"streams":[
+        {"codec_type":"video","codec_name":"vp9","height":858},
+        {"codec_type":"audio","codec_name":"opus"}
+    ],"format":{"duration":"10"}});
+    let error = validate_probe(&probe, &request, &MediaInfo::default())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("858") && error.contains("358"), "{error}");
+}
+
 #[test]
 fn unicode_audio_format_id_is_selected_without_rewriting() {
     let id = "audio_1-Türkçe_Ses";
@@ -1037,6 +1176,116 @@ fn media_publication_moves_only_the_final_file_out_of_private_workspace() {
     assert_eq!(published, root.join("chosen-name.mp4"));
     assert_eq!(fs::read(&published).unwrap(), b"test media");
     assert!(!plan.workspace.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn source_evidence() -> MediaSourceEvidence {
+    MediaSourceEvidence {
+        selection: "selection".into(),
+        request_context_sha256: "context".into(),
+        live: false,
+        items: Vec::new(),
+    }
+}
+
+/// A job folder after an attempt that failed before its source was known: only the files
+/// `OutputPlan::new` writes first.
+fn folder_of_an_early_failure(request: &AddRequest) -> (PathBuf, PathBuf, PathBuf) {
+    let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("film");
+    let plan = OutputPlan::new(&output, request, None).unwrap();
+    let mut files = fs::read_dir(&plan.workspace)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, [".owner", ".request"]);
+    (root, output, plan.workspace)
+}
+
+fn hls_request() -> AddRequest {
+    AddRequest {
+        url: "https://example.test/master.m3u8".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        ..AddRequest::default()
+    }
+}
+
+#[test]
+fn a_retry_that_finds_only_the_files_of_an_early_failure_starts_fresh() {
+    let request = hls_request();
+    let (root, output, _) = folder_of_an_early_failure(&request);
+    let evidence = source_evidence();
+
+    let plan = OutputPlan::new(&output, &request, Some(&evidence))
+        .unwrap_or_else(|error| panic!("{error:#}"));
+
+    let state = read_media_source_state(&plan.workspace).unwrap();
+    assert_eq!(state.request, request_fingerprint(&request).unwrap());
+    assert_eq!(state.evidence, evidence);
+    // The next retry finds the record like any other.
+    OutputPlan::new(&output, &request, Some(&evidence)).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn files_of_a_stream_without_an_identity_record_are_still_refused() {
+    let request = hls_request();
+    let (root, output, workspace) = folder_of_an_early_failure(&request);
+    fs::write(workspace.join("media.native-video.part"), b"segments").unwrap();
+
+    let error = OutputPlan::new(&output, &request, Some(&source_evidence()))
+        .err()
+        .expect("the folder holds segments that no record vouches for");
+
+    let text = format!("{error:#}");
+    assert!(text.contains("uyumluluk kanıtı"), "{text}");
+    assert!(!workspace.join(MEDIA_SOURCE_FILE).exists());
+    // The system's own wording of why belongs in the log, not in the message.
+    assert!(!text.contains("os error"), "{text}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_folder_whose_request_record_is_missing_is_refused_without_the_system_text() {
+    // A crash after `.owner` was written and before `.request` was.
+    let request = hls_request();
+    for evidence in [None, Some(source_evidence())] {
+        let (root, output, workspace) = folder_of_an_early_failure(&request);
+        fs::remove_file(workspace.join(".request")).unwrap();
+
+        let error = OutputPlan::new(&output, &request, evidence.as_ref())
+            .err()
+            .expect("nothing says whose files these are");
+
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("hangi indirmeye ait olduğu okunamadı"),
+            "{text}"
+        );
+        assert!(!text.contains("os error"), "{text}");
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn a_folder_of_another_download_is_not_taken_over_when_it_is_empty() {
+    let (root, output, _) = folder_of_an_early_failure(&hls_request());
+    let other = AddRequest {
+        container: Some("mkv".into()),
+        ..hls_request()
+    };
+
+    let error = OutputPlan::new(&output, &other, Some(&source_evidence()))
+        .err()
+        .expect("the folder belongs to another download");
+
+    assert!(
+        format!("{error:#}").contains("başka bir indirmeye ait"),
+        "{error:#}"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1510,6 +1759,143 @@ fn site_refusals_map_to_one_final_line_without_the_debug_trace() {
     assert_eq!(
         final_error_text(&non_debug_lines("ERROR: \r[download] Got error: gone\n")),
         "ERROR: \n[download] Got error: gone"
+    );
+}
+
+/// The text of a failed verbose download as the tool wrote it, with the app's stage note.
+const VERBOSE_DOWNLOAD_FAILURE: &str = "[debug] Command-line config: ['-v']\n\
+    [download] Destination: media.f1.mp4\n\
+    ERROR: unable to download video data: HTTP Error 404: Not Found\n\
+    Traceback (most recent call last):\n  \
+      File \"yt_dlp\\YoutubeDL.py\", line 3566, in process_info\n  \
+      File \"yt_dlp\\YoutubeDL.py\", line 3319, in dl\n  \
+      File \"yt_dlp\\downloader\\hls.py\", line 82, in real_download\n  \
+      File \"yt_dlp\\networking\\_requests.py\", line 361, in _send\n\
+    yt_dlp.networking.exceptions.HTTPError: HTTP Error 404: Not Found\n\
+    [ssdownload-stage=manifest_child]";
+
+#[test]
+fn the_user_sees_the_final_error_line_of_a_failed_download_not_its_traceback() {
+    let visible = non_debug_lines(VERBOSE_DOWNLOAD_FAILURE);
+    assert_eq!(
+        final_error_text(&visible),
+        "ERROR: unable to download video data: HTTP Error 404: Not Found"
+    );
+    // The stage note still classifies the failure.
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    assert_eq!(classify_download_error(&visible, &request).0, "alt liste");
+}
+
+#[test]
+fn a_run_that_crashed_without_an_error_line_gives_the_last_exception_of_its_traceback() {
+    let crash = "Traceback (most recent call last):\n  \
+          File \"yt_dlp\\YoutubeDL.py\", line 1700, in extract_info\n    \
+            ie_result = ie.extract(url)\n  \
+          File \"yt_dlp\\extractor\\common.py\", line 760, in extract\n    \
+            return self._real_extract(url)\n\
+        KeyError: 'formats'";
+    assert_eq!(final_error_text(crash), "KeyError: 'formats'");
+    // The progress lines before the crash are not the reason.
+    assert_eq!(
+        final_error_text(&format!(
+            "[generic] Extracting URL: https://page.example/watch\n{crash}"
+        )),
+        "KeyError: 'formats'"
+    );
+    // Of chained tracebacks the last one is the exception the run ended with.
+    assert_eq!(
+        final_error_text(&format!(
+            "{crash}\n\nDuring handling of the above exception, another exception occurred:\n\n\
+             Traceback (most recent call last):\n  \
+               File \"yt_dlp\\__init__.py\", line 1000, in main\n\
+             RuntimeError: gave up"
+        )),
+        "RuntimeError: gave up"
+    );
+}
+
+#[test]
+fn a_stored_download_failure_still_names_its_stage_in_every_language() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    // The tool's line alone reads as a failed media segment.
+    let summary = "ERROR: fragment 3 not found";
+    assert_eq!(
+        classify_download_error(summary, &request).0,
+        "medya parçası"
+    );
+    for info in crate::i18n::LANGUAGES {
+        for (stage, _) in FAILURE_STAGES {
+            let stored = crate::i18n::with_language(info.code, || {
+                download_failure_message(stage, true, summary)
+            });
+            assert!(!stored.contains("[ssdownload-stage"), "{stored}");
+            assert_eq!(
+                classify_download_error(&stored, &request).0,
+                stage,
+                "{}: {stored}",
+                info.code
+            );
+        }
+    }
+}
+
+#[test]
+fn chained_tracebacks_and_an_error_line_in_their_last_exception_are_not_the_failure() {
+    let stderr = "[download] Destination: media.f1.mp4\n\
+        ERROR: unable to download video data: HTTP Error 404: Not Found\n\
+        Traceback (most recent call last):\n  \
+          File \"yt_dlp\\networking\\_requests.py\", line 361, in _send\n    \
+            raise HTTPError(res)\n    \
+            ~~~~~~~~~~~~~~~~~~~~^\n\
+        yt_dlp.networking.exceptions.HTTPError: HTTP Error 404: Not Found\n\
+        \n\
+        During handling of the above exception, another exception occurred:\n\
+        \n\
+        Traceback (most recent call last):\n  \
+          File \"yt_dlp\\YoutubeDL.py\", line 3566, in process_info\n\
+        yt_dlp.utils.DownloadError: unable to download video data: HTTP Error 404: Not Found\n\
+        \n\
+        The above exception was the direct cause of the following exception:\n\
+        \n\
+        Traceback (most recent call last):\n  \
+          File \"yt_dlp\\__init__.py\", line 1000, in main\n\
+        yt_dlp.utils.DownloadError: ERROR: the download was given up\n\
+        [ssdownload-stage=media_segment]";
+    assert_eq!(
+        final_error_text(stderr),
+        "ERROR: unable to download video data: HTTP Error 404: Not Found"
+    );
+}
+
+#[test]
+fn frames_with_no_header_and_text_that_only_looks_like_one_are_told_apart() {
+    // A stack printed under the error line ends where the next line is not indented.
+    assert_eq!(
+        final_error_text(
+            "ERROR: [generic] Unable to download webpage: timed out\n  \
+               File \"yt_dlp\\extractor\\common.py\", line 1000, in _request_webpage\n    \
+                 return self._downloader.urlopen(request)\n\
+             [download] giving up after 3 tries"
+        ),
+        "ERROR: [generic] Unable to download webpage: timed out\n[download] giving up after 3 tries"
+    );
+    // The message itself is kept, however it reads.
+    let message = "ERROR: cannot open File \"a.m3u8\", line 3 of the playlist\n\
+                   Traceback (most recent call last) is a phrase";
+    assert_eq!(final_error_text(message), message);
+    // What the tool wrote before the last error line is left to the log.
+    assert_eq!(
+        final_error_text(
+            "WARNING: [generic] Falling back on generic information extractor\n\
+             ERROR: Unsupported URL: http://127.0.0.1:9/page.html"
+        ),
+        "ERROR: Unsupported URL: http://127.0.0.1:9/page.html"
     );
 }
 

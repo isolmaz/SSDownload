@@ -107,30 +107,36 @@ pub(super) fn format_selector(request: &AddRequest, info: &MediaInfo) -> Result<
         }
         return Ok("bestaudio/best".into());
     }
-    // Direct media URLs have no extractor format table or resolution fields.
-    // Applying bestvideo[height<=…] to them makes yt-dlp fail with “Requested
+    // A bare media file has no extractor format table or resolution fields.
+    // Applying bestvideo[height<=…] to it makes yt-dlp fail with “Requested
     // format is not available”, even though the source is downloadable. Let
     // FFmpeg remux the single source into the requested container instead.
-    if direct_media_url(&request.url) {
+    if bare_media_file(request, info) {
         return Ok(if request.container.as_deref() == Some("mp4") {
             "best[ext=mp4]/best".into()
         } else {
             "best".into()
         });
     }
-    let height = request
-        .max_height
-        .map(|h| format!("[height<={h}]"))
-        .unwrap_or_default();
-    let video = format!("bestvideo{height}");
-    let combined = format!("best{height}");
-    if request.expected_audio != Some(true) && (explicitly_silent(info) || !audio_offered(info)) {
-        return Ok(format!("{video}/{combined}"));
+    let silent = video_only_source(request, info);
+    if !silent && request.container.as_deref() == Some("mp4") {
+        return automatic_mp4_selector(request, info);
     }
-    Ok(if request.container.as_deref() == Some("mp4") {
-        automatic_mp4_selector(request, info)?
-    } else {
-        format!("{video}+bestaudio/{combined}")
+    let expression = |height: &str| {
+        if silent {
+            format!("bestvideo{height}/best{height}")
+        } else {
+            format!("bestvideo{height}+bestaudio/best{height}")
+        }
+    };
+    Ok(match request.max_height {
+        // A format that reports no height is the last resort under a limit.
+        Some(maximum) => format!(
+            "{}/{}",
+            expression(&format!("[height<={maximum}]")),
+            expression(&format!("[height<=?{maximum}]"))
+        ),
+        None => expression(""),
     })
 }
 
@@ -287,7 +293,7 @@ pub(super) fn automatic_mp4_selector(request: &AddRequest, info: &MediaInfo) -> 
             combined.id.clone()
         });
     }
-    if request.expected_audio != Some(true) && (explicitly_silent(info) || !audio_offered(info)) {
+    if video_only_source(request, info) {
         if let Some(video) = video_only {
             return Ok(if request.playlist {
                 playlist_mp4_selector(request, false)
@@ -425,6 +431,27 @@ pub(super) fn is_hdr_dynamic_range(value: &str) -> bool {
     ["HDR", "HLG", "DOLBY VISION", "PQ"]
         .iter()
         .any(|marker| upper.contains(marker))
+}
+
+/// Whether the source is a bare media file: its address names one and the analysis lists nothing
+/// to choose from. An address that only ends in a media extension (the file page of a wiki, a
+/// player route) is analysed into a format table, which the height limit and the codec rules
+/// apply to.
+fn bare_media_file(request: &AddRequest, info: &MediaInfo) -> bool {
+    direct_media_url(&request.url) && info.formats.len() <= 1
+}
+
+/// Whether the video is all there is to download: no audio is expected, and the source offers
+/// none, with every format silent or none of them audio-only or ready-made with audio. A
+/// video-only format of a source that has ready-made formats would otherwise win over them and
+/// lose the audio.
+fn video_only_source(request: &AddRequest, info: &MediaInfo) -> bool {
+    let carries_audio = info
+        .formats
+        .iter()
+        .any(|format| stream_present(format.audio_codec.as_deref()));
+    request.expected_audio != Some(true)
+        && (explicitly_silent(info) || !(audio_offered(info) || carries_audio))
 }
 
 pub(super) fn explicitly_silent(info: &MediaInfo) -> bool {

@@ -3,8 +3,8 @@
 use super::*;
 
 /// How far apart the ends of a video and an audio stream may be when the source gives no
-/// fragment timing, and how far an audio track extracted alone may end before the source's
-/// duration. AAC priming (2112 samples) and a last frame padded to 1024 samples move an end by
+/// fragment timing, and how far an audio track extracted alone from a source with a picture may
+/// end before the source's duration. AAC priming (2112 samples) and a last frame padded to 1024 samples move an end by
 /// 0.4 s at 8 kHz and 0.07 s at 48 kHz, and a progressive file can end its audio before its
 /// picture without any damage. A lost segment of an HLS or DASH stream is usually longer (2 to
 /// 10 s), so the bound stays below that.
@@ -128,10 +128,21 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             }
         }
         if let Some(max) = request.max_height {
-            if streams.iter().any(|s| {
-                s["codec_type"] == "video" && s["height"].as_u64().is_some_and(|h| h > max as u64)
-            }) {
-                bail!(crate::i18n::ui("Medya doğrulaması: istenen çözünürlük bu kaynakta kullanılamıyor", "Media verification: the requested resolution is not available from this source"));
+            let above = streams
+                .iter()
+                .filter(|s| s["codec_type"] == "video")
+                .filter_map(|s| s["height"].as_u64())
+                .find(|height| *height > max as u64);
+            if let Some(height) = above {
+                bail!(
+                    "{}",
+                    crate::i18n::ui_format!(
+                        "Medya doğrulaması: video {height} piksel yüksekliğinde, istenen {max} sınırını aşıyor",
+                        "Media verification: the video is {height} pixels high, above the requested limit of {max}",
+                        height = height,
+                        max = max
+                    )
+                );
             }
         }
     }
@@ -433,7 +444,13 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 0.0
             };
             // The audio of a file whose audio ends before its picture is shorter than the source.
-            let early = if request.kind == DownloadKind::Audio {
+            // A source that lists only audio formats has no picture to end after.
+            let audio_only = !info.formats.is_empty()
+                && info
+                    .formats
+                    .iter()
+                    .all(|format| stream_absent(format.video_codec.as_deref()));
+            let early = if request.kind == DownloadKind::Audio && !audio_only {
                 tolerance.max(end_gap)
             } else {
                 tolerance

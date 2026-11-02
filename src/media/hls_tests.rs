@@ -16,6 +16,8 @@ struct Source {
     audio_seconds: u32,
     /// Answers 404 to this file's first requests.
     failing: Option<(&'static str, usize)>,
+    /// Closes the connection of this file's first requests without a reply.
+    dropped: Option<(&'static str, usize)>,
     /// Holds every segment response this long, so a test can act mid-download.
     segment_delay: Duration,
     /// A tag added to both media playlists.
@@ -37,6 +39,7 @@ struct Server {
     site: PathBuf,
     requests: Mutex<Vec<String>>,
     failing: Option<(&'static str, usize)>,
+    dropped: Option<(&'static str, usize)>,
     segment_delay: Duration,
 }
 
@@ -219,6 +222,7 @@ impl Fixture {
             site,
             requests: Mutex::new(Vec::new()),
             failing: source.failing,
+            dropped: source.dropped,
             segment_delay: source.segment_delay,
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -398,6 +402,12 @@ impl Server {
                 requests.push(name.clone());
                 requests.iter().filter(|served| **served == name).count()
             };
+            if self
+                .dropped
+                .is_some_and(|(file, times)| file == name && count <= times)
+            {
+                return;
+            }
             if name.ends_with(".ts") {
                 thread::sleep(self.segment_delay);
             }
@@ -537,6 +547,30 @@ fn video_segments_that_end_with_a_parameter_set_merge_with_every_picture_and_no_
 
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
+fn a_server_that_drops_the_connection_once_at_the_analysis_fails_that_attempt_retryably() {
+    let fixture = Fixture::new(Source {
+        video_seconds: 4,
+        audio_seconds: 4,
+        dropped: Some(("master.m3u8", 1)),
+        ..Source::default()
+    });
+
+    let first = fixture
+        .download(&TransferControl::default(), 4)
+        .expect_err("the first attempt");
+
+    assert!(
+        crate::engine::retryable_error(&first),
+        "not retried: {first:#}"
+    );
+    let output = fixture
+        .download(&TransferControl::default(), 4)
+        .unwrap_or_else(|error| panic!("the retry failed after: {first:#}\n{error:#}"));
+    assert!((fixture.stream_seconds(&output, "video") - 4.0).abs() < 0.5);
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
 fn joined_segments_are_repaired_where_their_packets_call_for_it_and_the_copy_is_read_back() {
     let control = TransferControl::default();
     let tools =
@@ -610,6 +644,52 @@ fn joined_segments_are_repaired_where_their_packets_call_for_it_and_the_copy_is_
         assert_eq!(merged.len(), 150);
         assert!(times_hold(&merged));
     }
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_failed_download_and_a_failed_analysis_show_the_error_line_without_the_python_trace() {
+    // The video playlist is gone for good: yt-dlp fails the download with a traceback.
+    let fixture = Fixture::new(Source {
+        video_seconds: 4,
+        audio_seconds: 4,
+        failing: Some(("video.m3u8", 1000)),
+        ..Source::default()
+    });
+    let failure = format!(
+        "{:#}",
+        fixture
+            .download(&TransferControl::default(), 4)
+            .expect_err("the download")
+    );
+    assert!(failure.contains("HTTP Error 404"), "{failure}");
+    for internal in ["Traceback", "File \"", "[ssdownload-stage", "yt_dlp"] {
+        assert!(!failure.contains(internal), "{internal}: {failure}");
+    }
+
+    // A page with no media: yt-dlp warns, then fails the analysis.
+    fs::write(
+        fixture.server.site.join("page.html"),
+        "<html>no media</html>",
+    )
+    .unwrap();
+    let analysis = InspectRequest {
+        url: fixture.master.replace("master.m3u8", "page.html"),
+        ..InspectRequest::default()
+    };
+    let failure = format!(
+        "{:#}",
+        inspect_controlled(
+            &fixture.paths,
+            &analysis,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+        )
+        .expect_err("the analysis")
+    );
+    assert!(failure.starts_with("SSD-MED-006 "), "{failure}");
+    assert!(failure.contains("ERROR: "), "{failure}");
+    assert!(!failure.contains("WARNING:"), "{failure}");
 }
 
 #[test]
@@ -690,6 +770,37 @@ fn a_paused_download_resumes_after_the_segments_it_already_has() {
         .iter()
         .chain(&audio)
         .all(|count| (1..=2).contains(count)));
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_retry_after_an_attempt_that_never_reached_its_source_starts_fresh() {
+    // The video playlist does not answer twice: the first attempt cannot take the source's
+    // evidence and its download fails before a single segment is written. The retry finds the
+    // job folder with nothing but the files the app writes first.
+    let fixture = Fixture::new(Source {
+        video_seconds: 6,
+        audio_seconds: 6,
+        failing: Some(("video.m3u8", 2)),
+        ..Source::default()
+    });
+    let first = fixture
+        .download(&TransferControl::default(), 4)
+        .expect_err("the first attempt");
+    let work = fixture.folder.join(".ssdownload-work");
+    let mut left = Vec::new();
+    for folder in fs::read_dir(&work).unwrap() {
+        for file in fs::read_dir(folder.unwrap().path()).unwrap() {
+            left.push(file.unwrap().file_name().into_string().unwrap());
+        }
+    }
+    left.sort();
+    assert_eq!(left, [".owner", ".request"], "{first:#}");
+
+    let output = fixture
+        .download(&TransferControl::default(), 4)
+        .unwrap_or_else(|error| panic!("the retry failed after: {first:#}\n{error:#}"));
+    assert!((fixture.stream_seconds(&output, "video") - 6.0).abs() < 0.5);
 }
 
 #[test]
