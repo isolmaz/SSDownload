@@ -52,9 +52,8 @@ struct Fixture {
     server: Arc<Server>,
 }
 
-/// The cookie-jar folder (extractor documents included) is process-wide and set by the first
-/// `AppPaths`, so every test shares one profile: a test that finishes never removes the folder
-/// another test's download is using.
+/// Every test of the process shares one profile, so a test that finishes never removes the
+/// folder another test's download is using.
 fn shared_profile() -> AppPaths {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let root = ROOT.get_or_init(|| {

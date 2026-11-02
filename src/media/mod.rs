@@ -1117,6 +1117,19 @@ pub(crate) fn place_browser_file(
         return Ok(());
     };
     let tools = tools::verified_toolchain(paths, control)?;
+    remux_into_container(&tools, source, output, extension, control)
+}
+
+/// Puts `source` at `output` in the container `extension` names: a file already in it is renamed,
+/// any other is copied into it by FFmpeg. Whatever stops the copy, the file FFmpeg was writing
+/// does not stay behind.
+fn remux_into_container(
+    tools: &tools::VerifiedTools,
+    source: &Path,
+    output: &Path,
+    extension: &str,
+    control: &TransferControl,
+) -> Result<()> {
     let probed = run_capture(
         &tools.ffprobe,
         &[
@@ -1148,7 +1161,7 @@ pub(crate) fn place_browser_file(
     let staged = parent.join(format!(".browser-mux-{}.{extension}", uuid::Uuid::new_v4()));
     // No `-xerror`: segments muxed one by one restart the transport stream's continuity counters,
     // FFmpeg flags the packets at each join as corrupt, and `-xerror` stops at the first.
-    let result = run_capture(
+    let result = match run_capture(
         &tools.ffmpeg,
         &[
             "-v".into(),
@@ -1169,7 +1182,13 @@ pub(crate) fn place_browser_file(
         b"",
         Duration::from_secs(10 * 60),
         control,
-    )?;
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_file(&staged);
+            return Err(error);
+        }
+    };
     if !result.status.success() || !result.stderr.trim().is_empty() {
         let _ = fs::remove_file(&staged);
         crate::bail_code!(
@@ -1427,7 +1446,23 @@ fn unfinished_merge(error: anyhow::Error, timeout: Duration) -> anyhow::Error {
     }
 }
 
+/// The copy FFmpeg wrote to `staged` is kept only by a merge that came out clean (`Ok(None)`). A
+/// merge that failed, was stopped or ran out of time leaves a half-written file there.
 fn merge_streams_with(
+    request: &AddRequest,
+    streams: &[crate::browser_transfer::StreamFile],
+    staged: &Path,
+    tools: &tools::VerifiedTools,
+    run: RunTool,
+) -> Result<Option<String>> {
+    let merged = copy_streams(request, streams, staged, tools, run);
+    if !matches!(merged, Ok(None)) {
+        let _ = fs::remove_file(staged);
+    }
+    merged
+}
+
+fn copy_streams(
     request: &AddRequest,
     streams: &[crate::browser_transfer::StreamFile],
     staged: &Path,
@@ -1465,7 +1500,6 @@ fn merge_streams_with(
         &browser_mux_args(request, streams, staged, true),
     )?;
     if !merged_cleanly(&repaired) {
-        let _ = fs::remove_file(staged);
         return Ok(Some(bounded_tail(&repaired.stderr, 4096)));
     }
     for ((index, _), source) in transport_streams.iter().zip(&sources) {
@@ -1474,7 +1508,6 @@ fn merge_streams_with(
             .as_deref()
             .is_some_and(|copy| times_hold(copy) && repaired_pictures_keep_the_step(source, copy))
         {
-            let _ = fs::remove_file(staged);
             return Ok(Some(
                 crate::i18n::ui(
                     "Görüntünün zamanları güvenle onarılamadı; dosya yayınlanmadı",

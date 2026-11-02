@@ -3202,6 +3202,33 @@ fn four_and_two_chosen_after_the_move_stay_through_restarts() {
 }
 
 #[test]
+fn a_download_added_without_a_folder_is_saved_inside_the_profile_of_the_test() {
+    let root = std::env::temp_dir().join(format!(
+        "ssdownload-engine-default-folder-{}",
+        Uuid::new_v4()
+    ));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(AddRequest {
+            url: "https://example.test/files/report.bin".into(),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..Default::default()
+        })
+        .unwrap()
+        .remove(0);
+    let snapshot = engine.snapshot();
+    let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+    assert!(job.path.starts_with(&root), "{}", job.path.display());
+    assert!(
+        snapshot.settings.download_dir.starts_with(&root),
+        "{}",
+        snapshot.settings.download_dir.display()
+    );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn a_job_named_from_the_address_gets_the_decoded_file_name() {
     let root = std::env::temp_dir().join(format!("ssdownload-engine-name-{}", Uuid::new_v4()));
     let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();

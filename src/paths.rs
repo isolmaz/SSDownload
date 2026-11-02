@@ -28,9 +28,7 @@ impl AppPaths {
             std::env::current_dir()?.join(base_dir)
         };
         let _ = ACTIVE_BASE.set(base_dir.clone());
-        let download_dir = known_downloads()
-            .unwrap_or_else(|| base_dir.join("Downloads"))
-            .join("SSDownload");
+        let download_dir = default_download_dir(&base_dir);
         let value = Self {
             database: base_dir.join(DATABASE_FILE),
             tools_dir: base_dir.join("tools"),
@@ -71,13 +69,32 @@ pub(crate) fn profile_base_dir(override_dir: Option<&Path>) -> PathBuf {
         })
 }
 
+/// The folder downloads are saved to when the settings name none: the known Downloads folder
+/// of the user, or a folder in the profile when Windows has none. A test build always saves
+/// inside the profile directory, which the test deletes, so tests never fill the real Downloads
+/// folder.
+fn default_download_dir(base_dir: &Path) -> PathBuf {
+    let downloads = if cfg!(test) { None } else { known_downloads() };
+    downloads
+        .unwrap_or_else(|| base_dir.join("Downloads"))
+        .join("SSDownload")
+}
+
+/// The directory that holds the cookie-jar folder: the profile of the app. A test build uses
+/// a scratch folder of its process instead, because its tests build many profiles and delete
+/// them, and none of them may reach the folder of the installed app.
+fn cookie_jar_base(active: Option<&Path>) -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("ssdownload-test-{}", std::process::id()));
+    }
+    active
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| profile_base_dir(None))
+}
+
 /// Cookie jars passed to child processes rest in a profile subdirectory, created on demand.
 pub fn cookie_jar_dir() -> Result<PathBuf> {
-    let base = ACTIVE_BASE
-        .get()
-        .cloned()
-        .unwrap_or_else(|| profile_base_dir(None));
-    let dir = base.join("cookie-jar");
+    let dir = cookie_jar_base(ACTIVE_BASE.get().map(PathBuf::as_path)).join("cookie-jar");
     std::fs::create_dir_all(&dir).context(crate::i18n::ui(
         "Çerez klasörü oluşturulamadı",
         "The cookie folder could not be created",
@@ -104,5 +121,47 @@ fn known_downloads() -> Option<PathBuf> {
         )));
         CoTaskMemFree(ptr.cast());
         Some(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_root() -> PathBuf {
+        std::env::temp_dir().join(format!("ssdownload-paths-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// Tests add downloads without naming a folder; they must land in the profile the test
+    /// deletes, never in the Downloads folder of whoever runs the tests.
+    #[test]
+    fn a_test_profile_saves_inside_its_own_directory_and_never_in_the_real_downloads() {
+        let root = scratch_root();
+        let paths = AppPaths::new(root.clone()).unwrap();
+        assert!(
+            paths.download_dir.starts_with(&root),
+            "{}",
+            paths.download_dir.display()
+        );
+        if let Some(real) = known_downloads() {
+            assert!(
+                !paths.download_dir.starts_with(&real),
+                "{}",
+                paths.download_dir.display()
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_cookie_jars_of_a_test_build_stay_out_of_every_profile() {
+        let root = scratch_root();
+        let installed = profile_base_dir(None);
+        for active in [Some(root.as_path()), None] {
+            let base = cookie_jar_base(active);
+            assert!(base.starts_with(std::env::temp_dir()), "{}", base.display());
+            assert!(!base.starts_with(&root), "{}", base.display());
+            assert!(!base.starts_with(&installed), "{}", base.display());
+        }
     }
 }
