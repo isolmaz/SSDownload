@@ -1408,6 +1408,7 @@
   "The temporary file could not be created: {0}": "No se ha podido crear el archivo temporal: {0}",
   "The temporary file could not be opened: {0}": "No se ha podido abrir el archivo temporal: {0}",
   "The temporary file could not be written": "No se ha podido escribir el archivo temporal",
+  "Could not tell which download the temporary files for this target belong to. Choose a new file name.": "No se pudo determinar a qué descarga pertenecen los archivos temporales de este destino. Se debe elegir un nuevo nombre de archivo.",
   "The temporary files for this target belong to another download. Choose a new file name.": "Los archivos temporales de este destino pertenecen a otra descarga. Se debe elegir un nuevo nombre de archivo.",
   "The temporary setup page could not be written": "No se ha podido escribir la página temporal de instalación",
   "The temporary tool installation folder could not be created": "No se ha podido crear la carpeta temporal de instalación de la herramienta",

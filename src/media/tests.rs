@@ -621,6 +621,28 @@ fn files_of_a_stream_without_an_identity_record_are_still_refused() {
 }
 
 #[test]
+fn a_folder_whose_request_record_is_missing_is_refused_without_the_system_text() {
+    // A crash after `.owner` was written and before `.request` was.
+    let request = hls_request();
+    for evidence in [None, Some(source_evidence())] {
+        let (root, output, workspace) = folder_of_an_early_failure(&request);
+        fs::remove_file(workspace.join(".request")).unwrap();
+
+        let error = OutputPlan::new(&output, &request, evidence.as_ref())
+            .err()
+            .expect("nothing says whose files these are");
+
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("hangi indirmeye ait olduğu okunamadı"),
+            "{text}"
+        );
+        assert!(!text.contains("os error"), "{text}");
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn a_folder_of_another_download_is_not_taken_over_when_it_is_empty() {
     let (root, output, _) = folder_of_an_early_failure(&hls_request());
     let other = AddRequest {

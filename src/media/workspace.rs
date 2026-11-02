@@ -408,7 +408,14 @@ pub(super) fn reconcile_media_workspace(
 }
 
 fn ensure_same_request(workspace: &Path, fingerprint: &str) -> Result<()> {
-    if fs::read_to_string(workspace.join(".request"))? != fingerprint {
+    let recorded = fs::read_to_string(workspace.join(".request")).map_err(|error| {
+        let error = anyhow::Error::new(error).context(crate::i18n::ui(
+            "Bu hedefin geçici dosyalarının hangi indirmeye ait olduğu okunamadı. Yeni bir dosya adı seçin.",
+            "Could not tell which download the temporary files for this target belong to. Choose a new file name.",
+        ));
+        anyhow!("{}", unreadable_record(&error))
+    })?;
+    if recorded != fingerprint {
         bail!(crate::i18n::ui("Bu hedefin geçici dosyaları başka bir indirmeye ait. Yeni bir dosya adı seçin.", "The temporary files for this target belong to another download. Choose a new file name."));
     }
     Ok(())
