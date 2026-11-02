@@ -595,6 +595,42 @@ fn published_name_keeps_dots_that_belong_to_the_title() {
 }
 
 #[test]
+fn a_published_playlist_item_never_keeps_a_bidirectional_control_from_its_title() {
+    let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("list");
+    let request = AddRequest {
+        url: "https://example.test/playlist".into(),
+        kind: DownloadKind::Video,
+        playlist: true,
+        ..AddRequest::default()
+    };
+    let plan = OutputPlan::new(&output, &request, None).unwrap();
+    let titled = plan.workspace.join("001 - invoice\u{202e}4pm.mp4");
+    let plain = plan.workspace.join("002 - Second.mp4");
+    fs::write(&titled, b"first").unwrap();
+    fs::write(&plain, b"second").unwrap();
+    let completed = HashSet::from([
+        titled.canonicalize().unwrap(),
+        plain.canonicalize().unwrap(),
+    ]);
+
+    let published = plan.publish(&output, true, &completed, None).unwrap();
+
+    let mut names = fs::read_dir(&published)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["001 - invoice_4pm.mp4", "002 - Second.mp4"]);
+    assert_eq!(
+        fs::read(published.join("001 - invoice_4pm.mp4")).unwrap(),
+        b"first"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn discarding_a_failed_playlist_attempt_keeps_workspace_state_and_finished_items() {
     let root =
         std::env::temp_dir().join(format!("ssdownload-playlist-test-{}", uuid::Uuid::new_v4()));

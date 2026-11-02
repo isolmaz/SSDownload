@@ -3126,14 +3126,14 @@ mod output_validation_tests {
         let mut info = MediaInfo::default();
         let mut probe = json!({"streams":[
             {"codec_type":"video","codec_name":"h264","start_time":"0","duration":"5604.5"},
-            {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"5603.09"}
+            {"codec_type":"audio","codec_name":"aac","start_time":"0","duration":"5602.7"}
         ],"format":{"start_time":"0","duration":"5604.5"}});
         assert!(validate_probe(&probe, &request, &info).is_err());
         let mut source = PinnedMediaSource {
             inspection: json!({}),
             manifests: vec![PinnedManifest {
                 marker: "selected".into(),
-                body: "#EXTM3U\n#EXTINF:1.25,\nsegment.ts\n#EXT-X-ENDLIST\n".into(),
+                body: "#EXTM3U\n#EXTINF:1.75,\nsegment.ts\n#EXT-X-ENDLIST\n".into(),
             }],
             dash_formats: Vec::new(),
         };
@@ -3146,6 +3146,104 @@ mod output_validation_tests {
         info.duration_tolerance = Some(1.5);
         probe["streams"][1]["duration"] = json!(5600.0);
         assert!(validate_probe(&probe, &request, &info).is_err());
+    }
+
+    /// What ffprobe reports for a 20 s progressive MP4 (H.264 and AAC at 44.1 kHz, made with
+    /// FFmpeg) whose audio was cut to `audio_seconds`; the container lasts as long as its longest
+    /// stream.
+    fn progressive_mp4_probe(audio_seconds: f64) -> Value {
+        json!({"streams":[
+            {"index":0,"codec_type":"video","codec_name":"h264","height":180,"time_base":"1/12800",
+             "start_pts":0,"start_time":"0.000000","duration_ts":256000,"duration":"20.000000"},
+            {"index":1,"codec_type":"audio","codec_name":"aac","time_base":"1/44100",
+             "start_pts":0,"start_time":"0.000000",
+             "duration_ts":(audio_seconds * 44100.0).round() as u64,
+             "duration":format!("{audio_seconds:.6}")}
+        ],"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","start_time":"0.000000",
+                    "duration":format!("{:.6}", audio_seconds.max(20.0))}})
+    }
+
+    #[test]
+    fn a_progressive_file_whose_audio_stops_a_little_before_its_picture_passes() {
+        let request = AddRequest {
+            kind: DownloadKind::Video,
+            expected_audio: Some(true),
+            ..Default::default()
+        };
+        let info = MediaInfo {
+            duration: Some(20.0),
+            ..Default::default()
+        };
+        for audio_seconds in [20.0, 19.3, 18.6] {
+            let probe = progressive_mp4_probe(audio_seconds);
+            validate_probe(&probe, &request, &info)
+                .unwrap_or_else(|error| panic!("{audio_seconds} s of audio: {error:#}"));
+        }
+    }
+
+    #[test]
+    fn a_lost_or_repeated_stretch_of_audio_still_fails_the_stream_lengths() {
+        let request = AddRequest {
+            kind: DownloadKind::Video,
+            expected_audio: Some(true),
+            ..Default::default()
+        };
+        let info = MediaInfo::default();
+        // 15.0 s: the audio lacks a 5 s stretch, at the end or in the middle (the rest moved up);
+        // 18.0 s: a 2 s hole; 25.0 s: a 5 s stretch repeated.
+        for audio_seconds in [15.0, 18.0, 25.0] {
+            let probe = progressive_mp4_probe(audio_seconds);
+            let error = validate_probe(&probe, &request, &info)
+                .expect_err(&format!("{audio_seconds} s of audio"));
+            assert_eq!(
+                crate::error_codes::code_of(&error),
+                Some(crate::error_codes::TRF_012),
+                "{error:#}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("ses akışı 1: {audio_seconds:.1} sn")),
+                "{error:#}"
+            );
+        }
+        // A source with fragment timing is held to that timing.
+        let info = MediaInfo {
+            duration_tolerance: Some(0.5),
+            ..Default::default()
+        };
+        assert!(validate_probe(&progressive_mp4_probe(19.3), &request, &info).is_err());
+    }
+
+    #[test]
+    fn audio_extracted_from_a_file_with_short_audio_may_end_before_the_source_duration() {
+        let request = AddRequest {
+            kind: DownloadKind::Audio,
+            audio_format: Some("mp3".into()),
+            ..Default::default()
+        };
+        let info = MediaInfo {
+            duration: Some(20.0),
+            ..Default::default()
+        };
+        // ffprobe of the MP3 that FFmpeg made from the audio of a 20 s file whose audio lasts
+        // 19.3 s: the encoder delay moves the start by 25 ms, the length is the audio's.
+        let mp3 = |seconds: f64| {
+            json!({"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3",
+                "time_base":"1/14112000","start_pts":353600,"start_time":"0.025057",
+                "duration":format!("{seconds:.6}")}],
+              "format":{"format_name":"mp3","start_time":"0.025057",
+                "duration":format!("{seconds:.6}")}})
+        };
+        validate_probe(&mp3(19.3), &request, &info).unwrap();
+        validate_probe(&mp3(18.6), &request, &info).unwrap();
+        let error = validate_probe(&mp3(15.0), &request, &info).unwrap_err();
+        assert!(
+            error.to_string().contains("erken bitiş toleransı 1.500 sn"),
+            "{error:#}"
+        );
+        // The tolerance for a late end does not change.
+        assert!(validate_probe(&mp3(22.0), &request, &info).is_err());
     }
 
     #[test]

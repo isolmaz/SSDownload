@@ -139,10 +139,14 @@ impl OutputPlan {
             fs::create_dir_all(&ready)?;
             for path in completed {
                 let path = self.checked_output(path)?;
-                let target = ready.join(path.file_name().context(crate::i18n::ui(
+                let name = path.file_name().context(crate::i18n::ui(
                     "Dosya adı eksik",
                     "The file name is missing",
-                ))?);
+                ))?;
+                let target = ready.join(crate::engine::safe_filename(
+                    &name.to_string_lossy(),
+                    "item",
+                ));
                 if !target.exists() {
                     fs::rename(&path, &target)?;
                 }
