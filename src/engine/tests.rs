@@ -2249,33 +2249,25 @@ fn the_registry_says_what_the_engine_does_with_each_failure_that_has_a_network_c
             "HTTP {status}: {code:?}"
         );
     }
-    for curl in [
-        curl_sys::CURLE_COULDNT_RESOLVE_HOST,
-        curl_sys::CURLE_COULDNT_RESOLVE_PROXY,
-        97,
-        curl_sys::CURLE_COULDNT_CONNECT,
-        curl_sys::CURLE_OPERATION_TIMEDOUT,
-        curl_sys::CURLE_SSL_CONNECT_ERROR,
-        curl_sys::CURLE_SSL_CIPHER,
-        curl_sys::CURLE_PEER_FAILED_VERIFICATION,
-        curl_sys::CURLE_SSL_ISSUER_ERROR,
-        curl_sys::CURLE_SSL_PINNEDPUBKEYNOTMATCH,
-        curl_sys::CURLE_SSL_INVALIDCERTSTATUS,
-        curl_sys::CURLE_GOT_NOTHING,
-        curl_sys::CURLE_SEND_ERROR,
-        curl_sys::CURLE_RECV_ERROR,
-        curl_sys::CURLE_PARTIAL_FILE,
-        curl_sys::CURLE_HTTP2,
-        curl_sys::CURLE_HTTP2_STREAM,
-    ] {
+    // Every libcurl code that has a network code, found by asking the mapping.
+    let mut mapped = Vec::new();
+    for curl in 1..=255 {
         let error = anyhow::Error::new(curl::Error::new(curl));
-        let code = transfer::network_code(&error).expect("a network failure has a code");
+        let Some(code) = transfer::network_code(&error) else {
+            continue;
+        };
+        mapped.push(curl);
         assert_eq!(
             retried(code),
             retryable_error(&error),
             "curl error {curl}: {code:?}"
         );
     }
+    assert!(
+        mapped.contains(&curl_sys::CURLE_COULDNT_CONNECT)
+            && mapped.contains(&curl_sys::CURLE_PEER_FAILED_VERIFICATION),
+        "the libcurl codes with a network code were not found: {mapped:?}"
+    );
 }
 
 #[test]
