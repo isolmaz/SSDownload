@@ -7291,9 +7291,10 @@ unsafe fn handle_tray(ui: &mut MainUi, event: u32) {
         WM_RBUTTONUP | WM_CONTEXTMENU => {
             let quiet = ui.quiet_until.is_some_and(|until| until > Instant::now());
             let menu = tray_menu(&ui.snapshot.settings, quiet);
-            let glyphs = tray_menu_glyphs(menu, ui.hwnd, ui.dpi);
             let mut p: POINT = zeroed();
             GetCursorPos(&mut p);
+            // The menu opens on the monitor of the taskbar, which is not the window's.
+            let glyphs = tray_menu_glyphs(menu, ui.hwnd, dpi_at(p));
             SetForegroundWindow(ui.hwnd);
             let cmd = TrackPopupMenu(
                 menu,
@@ -11623,6 +11624,23 @@ mod tests {
                                 items.iter().filter(|item| glyph(item)).count(),
                                 "{context}"
                             );
+                            // A glyph is 16 epx at the scale the menu opens at.
+                            for &bitmap in &bitmaps {
+                                let mut info: windows_sys::Win32::Graphics::Gdi::BITMAP =
+                                    std::mem::zeroed();
+                                windows_sys::Win32::Graphics::Gdi::GetObjectW(
+                                    bitmap as _,
+                                    std::mem::size_of_val(&info) as i32,
+                                    (&mut info as *mut windows_sys::Win32::Graphics::Gdi::BITMAP)
+                                        .cast(),
+                                );
+                                let size = super::scale(16, dpi);
+                                assert_eq!(
+                                    (info.bmWidth, info.bmHeight),
+                                    (size, size),
+                                    "{context}"
+                                );
+                            }
                             // Each command of the table is in the menu, but for the update
                             // one that is not on offer.
                             for (id, _) in TRAY_MENU_GLYPHS {

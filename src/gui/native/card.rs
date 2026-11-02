@@ -47,7 +47,7 @@ pub(super) enum CardKind {
     Done(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum CardAction {
     Toggle(String),
     PauseAll,
@@ -74,9 +74,10 @@ struct CardUi {
     opened: Instant,
     hover: bool,
     hits: Vec<(RECT, CardAction)>,
-    /// Modern: the hit under the pointer and the one it is pressed on.
+    /// Modern: the target the pointer last moved onto, which tells when to repaint,
+    /// and where the pointer pressed with the action it pressed on.
     hot: Option<usize>,
-    down: Option<usize>,
+    press: Option<(POINT, CardAction)>,
 }
 
 thread_local! {
@@ -162,7 +163,7 @@ pub(super) unsafe fn open_card(owner: HWND, app: App, kind: CardKind) {
         hover: false,
         hits: Vec::new(),
         hot: None,
-        down: None,
+        press: None,
     }));
     let height = card_height(&*raw);
     let hwnd = CreateWindowExW(
@@ -203,7 +204,15 @@ pub(super) unsafe fn open_card(owner: HWND, app: App, kind: CardKind) {
 /// that opened a card may sit on another monitor with another scale, which
 /// would draw the card too large or too small where it actually appears.
 unsafe fn primary_dpi() -> u32 {
-    let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+    dpi_at(POINT { x: 0, y: 0 })
+}
+
+/// DPI of the monitor `point` is on, of the nearest one when it is on none.
+pub(super) unsafe fn dpi_at(point: POINT) -> u32 {
+    let monitor = MonitorFromPoint(
+        point,
+        windows_sys::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST,
+    );
     let (mut x, mut y) = (0u32, 0u32);
     if !monitor.is_null() && GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y) == 0 {
         x.max(96)
@@ -521,16 +530,66 @@ fn card_buttons(kind: &CardKind, jobs: &[&Job]) -> Vec<(String, CardAction)> {
     }
 }
 
+/// The colours a Modern card paints with.
+#[derive(Clone, Copy)]
+struct CardColours {
+    palette: MainPalette,
+    /// The palette of the footer's buttons, which sit on the flyout surface.
+    controls: MainPalette,
+    border: u32,
+    /// The plates under a glyph button the pointer is on and under one it presses.
+    plate: (u32, u32),
+    /// A glyph's colour on its plate where the plate is the system highlight.
+    on_plate: Option<u32>,
+    /// The check mark on the completion disc.
+    mark: u32,
+}
+
+/// The colours of a card in the scheme `dark` names, from `palette`. High
+/// contrast keeps the system colours: its border is the text colour, a plate is
+/// the highlight and a glyph on it the highlight's text.
+fn card_colours(dark: bool, palette: MainPalette, high: bool) -> CardColours {
+    let surface = palette.flyout;
+    if high {
+        return CardColours {
+            controls: MainPalette {
+                base: surface,
+                ..palette
+            },
+            border: palette.text,
+            plate: (palette.hover, palette.control_pressed),
+            on_plate: Some(palette.on_accent),
+            mark: palette.on_accent,
+            palette,
+        };
+    }
+    CardColours {
+        controls: on_card(
+            MainPalette {
+                card: surface,
+                ..palette
+            },
+            dark,
+        ),
+        border: over(if dark { 0x33000000 } else { 0x0f000000 }, surface),
+        plate: flyout_plates(dark, surface),
+        on_plate: None,
+        mark: if dark { 0x000000 } else { 0xffffff },
+        palette,
+    }
+}
+
 /// What a Modern card paints: the downloads and the state it shows.
 struct ModernCard<'a> {
     kind: &'a CardKind,
     snapshot: &'a AppSnapshot,
     dpi: u32,
-    dark: bool,
+    colours: CardColours,
     /// The pin is shown as taken.
     held: bool,
-    hot: Option<usize>,
-    down: Option<usize>,
+    /// Where the pointer is on the card, and where it pressed, in client pixels.
+    pointer: Option<POINT>,
+    press: Option<POINT>,
     body: HFONT,
     strong: HFONT,
     small: HFONT,
@@ -541,13 +600,13 @@ unsafe fn paint_plate(
     dc: HDC,
     rect: &RECT,
     (hot, down): (bool, bool),
-    palette: &MainPalette,
+    colours: &CardColours,
     dpi: u32,
 ) {
     let colour = if down {
-        palette.row_hover
+        colours.plate.1
     } else if hot {
-        palette.hover
+        colours.plate.0
     } else {
         return;
     };
@@ -561,17 +620,17 @@ unsafe fn paint_plate(
 unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<(RECT, CardAction)> {
     let d = card.dpi;
     let s = |value: i32| scale(value, d);
-    let palette = scheme_palette(card.dark);
+    let colours = &card.colours;
+    let palette = colours.palette;
+    let controls = colours.controls;
     let surface = palette.flyout;
-    let controls = on_card(
-        MainPalette {
-            card: surface,
-            ..palette
-        },
-        card.dark,
-    );
     fill_colour(dc, &client, surface);
-    let border = over(if card.dark { 0x33000000 } else { 0x0f000000 }, surface);
+    // The pointer is on a target, and presses it while it is still on it.
+    let state = |rect: &RECT| {
+        let hot = card.pointer.is_some_and(|point| PtInRect(rect, point) != 0);
+        let down = hot && card.press.is_some_and(|point| PtInRect(rect, point) != 0);
+        (hot, down)
+    };
     for edge in [
         RECT {
             bottom: client.top + 1,
@@ -590,7 +649,7 @@ unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<(RECT, C
             ..client
         },
     ] {
-        fill_colour(dc, &edge, border);
+        fill_colour(dc, &edge, colours.border);
     }
     let mut hits: Vec<(RECT, CardAction)> = Vec::new();
     let pad = s(MODERN_PAD);
@@ -604,7 +663,6 @@ unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<(RECT, C
         let size = s(20);
         let unit = size as f32 / 20.0;
         let stroke = (1.6 * unit).max(1.5);
-        let on_success = if card.dark { 0x000000 } else { 0xffffff };
         paint_shapes(
             dc,
             pad,
@@ -622,7 +680,7 @@ unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<(RECT, C
                 Shape::Line((5.5 * unit, 10.5 * unit), (8.8 * unit, 13.8 * unit), stroke),
                 Shape::Line((8.8 * unit, 13.8 * unit), (14.5 * unit, 6.8 * unit), stroke),
             ],
-            on_success,
+            colours.mark,
         );
         left = pad + size + s(8);
     }
@@ -647,9 +705,9 @@ unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<(RECT, C
             right,
             bottom: s(8) + target,
         };
-        let index = hits.len();
-        let state = (card.hot == Some(index), card.down == Some(index));
-        paint_plate(dc, &rect, state, &palette, d);
+        let (hot, down) = state(&rect);
+        paint_plate(dc, &rect, (hot, down), colours, d);
+        let colour = colours.on_plate.filter(|_| hot).unwrap_or(colour);
         draw_glyph(dc, symbol, rect, colour, d);
         hits.push((rect, action));
         right -= target;
@@ -717,14 +775,13 @@ unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<(RECT, C
                 job.state,
                 JobState::Paused | JobState::Failed | JobState::Cancelled
             );
-            let index = hits.len();
-            let state = (card.hot == Some(index), card.down == Some(index));
-            paint_plate(dc, &rect, state, &palette, d);
+            let (hot, down) = state(&rect);
+            paint_plate(dc, &rect, (hot, down), colours, d);
             draw_glyph(
                 dc,
                 if resume { Glyph::Play } else { Glyph::Pause },
                 rect,
-                palette.text,
+                colours.on_plate.filter(|_| hot).unwrap_or(palette.text),
                 d,
             );
             hits.push((rect, CardAction::Toggle(job.id.clone())));
@@ -795,7 +852,7 @@ unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<(RECT, C
             right: x + (text_width + 2 * s(16)).max(s(80)),
             bottom: y + target,
         };
-        let index = hits.len();
+        let (hot, down) = state(&face);
         paint_button(
             dc,
             inflate(face, ring, ring),
@@ -807,8 +864,8 @@ unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<(RECT, C
             ButtonState {
                 primary: matches!(action, CardAction::OpenFile(_)),
                 disabled: false,
-                pressed: card.down == Some(index),
-                hot: card.hot == Some(index),
+                pressed: down,
+                hot,
                 focused: false,
                 underline: false,
             },
@@ -823,6 +880,14 @@ unsafe fn paint_modern_card(card: &mut CardUi, dc: HDC) {
     let snapshot = card.app.snapshot();
     let mut client: RECT = zeroed();
     GetClientRect(card.hwnd, &mut client);
+    // The pointer is read as the card paints: a row that left moves what is under it.
+    let pointer = card.hover.then(|| {
+        let mut point: POINT = zeroed();
+        GetCursorPos(&mut point);
+        ScreenToClient(card.hwnd, &mut point);
+        point
+    });
+    let dark = snapshot.settings.dark_mode;
     let hits = paint_modern(
         dc,
         client,
@@ -830,15 +895,15 @@ unsafe fn paint_modern_card(card: &mut CardUi, dc: HDC) {
             kind: &card.kind,
             snapshot: &snapshot,
             dpi: card.dpi,
-            dark: snapshot.settings.dark_mode,
+            colours: card_colours(dark, scheme_palette(dark), high_contrast()),
             // A completion card is always on top; its pin means "stay until closed".
             held: if matches!(card.kind, CardKind::Done(_)) {
                 card.keep
             } else {
                 card.pinned
             },
-            hot: card.hot,
-            down: card.down,
+            pointer,
+            press: card.press.as_ref().map(|(point, _)| *point),
             body: card.font,
             strong: card.bold,
             small: card.small,
@@ -1037,6 +1102,12 @@ fn hit_at(hits: &[(RECT, CardAction)], point: POINT) -> Option<usize> {
         .position(|(rect, _)| unsafe { PtInRect(rect, point) } != 0)
 }
 
+/// The target a release at `up` completes a click on: the one under it, when
+/// the press began on the same action.
+fn clicked(hits: &[(RECT, CardAction)], pressed: Option<&CardAction>, up: POINT) -> Option<usize> {
+    hit_at(hits, up).filter(|&index| pressed == Some(&hits[index].1))
+}
+
 unsafe fn close_card(hwnd: HWND) {
     KillTimer(hwnd, TIMER_CARD);
     DestroyWindow(hwnd);
@@ -1180,15 +1251,16 @@ unsafe extern "system" fn card_proc(
         0x02A3 /* WM_MOUSELEAVE */ => {
             card.hover = false;
             card.opened = Instant::now();
-            if modern() && (card.hot.is_some() || card.down.is_some()) {
+            if modern() {
                 card.hot = None;
-                card.down = None;
+                card.press = None;
                 InvalidateRect(hwnd, null(), 0);
             }
             0
         }
         WM_LBUTTONDOWN if modern() => {
-            card.down = hit_at(&card.hits, point_of(lparam));
+            let point = point_of(lparam);
+            card.press = hit_at(&card.hits, point).map(|index| (point, card.hits[index].1.clone()));
             InvalidateRect(hwnd, null(), 0);
             0
         }
@@ -1202,13 +1274,20 @@ unsafe extern "system" fn card_proc(
         }
         WM_LBUTTONUP => {
             let point = point_of(lparam);
-            card.down = None;
-            let action = card
-                .hits
-                .iter()
-                .find(|(rect, _)| PtInRect(rect, point) != 0)
-                .map(|(_, action)| action.clone());
-            if let Some(action) = action {
+            let pressed = card.press.take();
+            // Modern clicks what the press began on; Classic acts on the release alone.
+            let target = if modern() {
+                InvalidateRect(hwnd, null(), 0);
+                clicked(
+                    &card.hits,
+                    pressed.as_ref().map(|(_, action)| action),
+                    point,
+                )
+            } else {
+                hit_at(&card.hits, point)
+            };
+            if let Some(index) = target {
+                let action = card.hits[index].1.clone();
                 run_action(card, action);
             }
             0
@@ -1288,22 +1367,31 @@ mod tests {
         assert!(!shows(&CardKind::Panel, &CardKind::Done(job())));
     }
 
-    /// A snapshot that lists `jobs`, taken from an app on a temporary data directory.
+    /// An app on a temporary data directory, and that directory.
+    fn temp_app() -> (crate::app::App, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("ssdownload-card-{}", uuid::Uuid::new_v4()));
+        let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
+        (crate::app::App::open(paths).unwrap(), root)
+    }
+
+    /// Stops `app` and removes its data directory.
+    fn drop_app(app: crate::app::App, root: &std::path::Path) {
+        app.shutdown();
+        for _ in 0..10 {
+            if std::fs::remove_dir_all(root).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A snapshot that lists `jobs`.
     fn snapshot_of(jobs: Vec<Job>) -> AppSnapshot {
         static BASE: std::sync::OnceLock<AppSnapshot> = std::sync::OnceLock::new();
         let base = BASE.get_or_init(|| {
-            let root =
-                std::env::temp_dir().join(format!("ssdownload-card-{}", uuid::Uuid::new_v4()));
-            let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
-            let app = crate::app::App::open(paths).unwrap();
+            let (app, root) = temp_app();
             let snapshot = app.snapshot();
-            app.shutdown();
-            for _ in 0..10 {
-                if std::fs::remove_dir_all(&root).is_ok() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            drop_app(app, &root);
             snapshot
         });
         AppSnapshot {
@@ -1329,13 +1417,13 @@ mod tests {
         ((pixel & 0xff) << 16) | (pixel & 0xff00) | (pixel >> 16)
     }
 
-    /// A Modern card painted on a DIB: its pixels, size, targets and palette.
+    /// A Modern card painted on a DIB: its pixels, size, targets and colours.
     struct Shot {
         pixels: Vec<u32>,
         width: i32,
         height: i32,
         hits: Vec<(RECT, CardAction)>,
-        palette: MainPalette,
+        colours: CardColours,
         dpi: u32,
     }
 
@@ -1348,25 +1436,26 @@ mod tests {
             scale(epx, self.dpi)
         }
 
-        /// The palette of the controls on the card's surface.
-        fn controls(&self, dark: bool) -> MainPalette {
-            on_card(
-                MainPalette {
-                    card: self.palette.flyout,
-                    ..self.palette
-                },
-                dark,
-            )
+        /// The middle of the target `index`.
+        fn middle(&self, index: usize) -> POINT {
+            let rect = self.hits[index].0;
+            POINT {
+                x: (rect.left + rect.right) / 2,
+                y: (rect.top + rect.bottom) / 2,
+            }
         }
     }
 
-    /// `kind` over `jobs`; `pointer` is the target the pointer is on and the one it presses.
-    fn shoot(
+    /// Where the pointer is on a card and where it pressed.
+    type Pointer = (Option<POINT>, Option<POINT>);
+
+    /// `kind` over `jobs` painted in `colours`.
+    fn shoot_in(
         kind: &CardKind,
         jobs: Vec<Job>,
         dpi: u32,
-        dark: bool,
-        pointer: (Option<usize>, Option<usize>),
+        colours: CardColours,
+        (pointer, press): Pointer,
     ) -> Shot {
         unsafe {
             let snapshot = snapshot_of(jobs);
@@ -1392,10 +1481,10 @@ mod tests {
                         kind,
                         snapshot: &snapshot,
                         dpi,
-                        dark,
+                        colours,
                         held: false,
-                        hot: pointer.0,
-                        down: pointer.1,
+                        pointer,
+                        press,
                         body: fonts[0],
                         strong: fonts[1],
                         small: fonts[2],
@@ -1410,10 +1499,16 @@ mod tests {
                 width,
                 height,
                 hits,
-                palette: scheme_palette(dark),
+                colours,
                 dpi,
             }
         }
+    }
+
+    /// `shoot_in` in the colours of the scheme `dark` names.
+    fn shoot(kind: &CardKind, jobs: Vec<Job>, dpi: u32, dark: bool, pointer: Pointer) -> Shot {
+        let colours = card_colours(dark, unsafe { scheme_palette(dark) }, false);
+        shoot_in(kind, jobs, dpi, colours, pointer)
     }
 
     fn action_name(action: &CardAction) -> &'static str {
@@ -1463,6 +1558,49 @@ mod tests {
         ]
     }
 
+    /// The colours of four high contrast themes, as COLORREFs (0x00BBGGRR): white on
+    /// black, black on white, and a light and a dark one with a coloured highlight.
+    fn high_contrast_themes() -> [SystemColours; 4] {
+        [
+            SystemColours {
+                window: 0x000000,
+                text: 0xffffff,
+                face: 0x000000,
+                button_text: 0xffffff,
+                highlight: 0xffeb1a,
+                highlight_text: 0x000000,
+                gray_text: 0x3ff23f,
+            },
+            SystemColours {
+                window: 0xffffff,
+                text: 0x000000,
+                face: 0xffffff,
+                button_text: 0x000000,
+                highlight: 0x6e0037,
+                highlight_text: 0xffffff,
+                gray_text: 0x000060,
+            },
+            SystemColours {
+                window: 0x202020,
+                text: 0xffffff,
+                face: 0x202020,
+                button_text: 0xffffff,
+                highlight: 0xefe38e,
+                highlight_text: 0x000000,
+                gray_text: 0x3ff23f,
+            },
+            SystemColours {
+                window: 0xffffff,
+                text: 0x000000,
+                face: 0xffffff,
+                button_text: 0x000000,
+                highlight: 0x527f03,
+                highlight_text: 0xffffff,
+                gray_text: 0x000060,
+            },
+        ]
+    }
+
     #[test]
     fn a_modern_card_fits_its_targets_in_every_language_scheme_and_scale() {
         for info in crate::i18n::LANGUAGES {
@@ -1502,11 +1640,11 @@ mod tests {
                                 } else {
                                     assert_eq!(rect.right - rect.left, target, "{context}");
                                 }
-                                let middle = POINT {
-                                    x: (rect.left + rect.right) / 2,
-                                    y: (rect.top + rect.bottom) / 2,
-                                };
-                                assert_eq!(hit_at(&shot.hits, middle), Some(index), "{context}");
+                                assert_eq!(
+                                    hit_at(&shot.hits, shot.middle(index)),
+                                    Some(index),
+                                    "{context}"
+                                );
                             }
                         }
                     }
@@ -1522,7 +1660,7 @@ mod tests {
                 let (kind, jobs, _) = card_samples().remove(2);
                 let shot = shoot(&kind, jobs, dpi, dark, (None, None));
                 let (w, h) = (shot.width, shot.height);
-                let surface = shot.palette.flyout;
+                let surface = shot.colours.palette.flyout;
                 let context = format!("dark={dark} dpi={dpi}");
                 // Right of the footer's buttons nothing is painted.
                 let empty = shot.at(w - shot.s(MODERN_PAD) - 4, h - shot.s(MODERN_FOOTER) / 2);
@@ -1563,25 +1701,76 @@ mod tests {
             for dpi in [96, 144] {
                 let shoot_at = |pointer| shoot(&kind, jobs.clone(), dpi, dark, pointer);
                 let rest = shoot_at((None, None));
-                let palette = rest.palette;
+                let (hover, pressed) = rest.colours.plate;
+                let surface = rest.colours.palette.flyout;
+                let context = format!("dark={dark} dpi={dpi}");
+                // Each plate is a visible step off the flyout it lies on, a press a stronger one.
+                assert!(contrast(hover, surface) >= 1.05, "{context}: hover");
+                assert!(contrast(pressed, surface) >= 1.1, "{context}: press");
                 assert!(
-                    palette.hover != palette.row_hover && palette.hover != palette.flyout,
-                    "the plates differ from each other and from the surface"
+                    contrast(pressed, surface) > contrast(hover, surface),
+                    "{context}"
                 );
                 // The close button, and the first row's pause button.
                 for index in [0, 3] {
                     let rect = rest.hits[index].0;
                     let (x, y) = beside_glyph(&rest, &rect);
-                    let hot = shoot_at((Some(index), None));
-                    let down = shoot_at((Some(index), Some(index)));
-                    let context = format!("dark={dark} dpi={dpi} target {index}");
-                    assert_eq!(rest.at(x, y), palette.flyout, "{context}");
-                    assert_eq!(hot.at(x, y), palette.hover, "{context}");
-                    assert_eq!(down.at(x, y), palette.row_hover, "{context}");
+                    let middle = Some(rest.middle(index));
+                    let hot = shoot_at((middle, None));
+                    let down = shoot_at((middle, middle));
+                    let context = format!("{context} target {index}");
+                    assert_eq!(rest.at(x, y), surface, "{context}");
+                    assert_eq!(hot.at(x, y), hover, "{context}");
+                    assert_eq!(down.at(x, y), pressed, "{context}");
                     assert!(differs_only_in(&rest, &hot, rect), "{context}");
                     assert!(differs_only_in(&rest, &down, rect), "{context}");
+                    // A press shows only while the pointer is still on the pressed target.
+                    let off = Some(rest.middle(2));
+                    assert!(differs_only_in(
+                        &rest,
+                        &shoot_at((off, middle)),
+                        rest.hits[2].0
+                    ));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_plate_follows_the_pointer_when_a_row_leaves_the_card() {
+        let (kind, jobs, _) = card_samples().remove(0);
+        let leaving = running("leaving.bin");
+        let both = vec![leaving, jobs[1].clone()];
+        for dark in [false, true] {
+            let with_both = shoot(&kind, both.clone(), 96, dark, (None, None));
+            // The pointer is on the second row's pause button; that row moves up.
+            let pointer = Some(with_both.middle(4));
+            let after = shoot(&kind, vec![jobs[1].clone()], 96, dark, (pointer, None));
+            let rest = shoot(&kind, vec![jobs[1].clone()], 96, dark, (None, None));
+            // Nothing of the card is under the pointer now, so no plate is painted anywhere.
+            assert!(
+                differs_only_in(
+                    &rest,
+                    &after,
+                    RECT {
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0
+                    }
+                ),
+                "dark={dark}"
+            );
+            // And the pointer on the target that moved under it paints that target's plate.
+            let moved = shoot(
+                &kind,
+                vec![jobs[1].clone()],
+                96,
+                dark,
+                (Some(rest.middle(3)), None),
+            );
+            let (x, y) = beside_glyph(&rest, &rest.hits[3].0);
+            assert_eq!(moved.at(x, y), rest.colours.plate.0, "dark={dark}");
         }
     }
 
@@ -1592,27 +1781,29 @@ mod tests {
             for dpi in [96, 144] {
                 let shoot_at = |pointer| shoot(&kind, jobs.clone(), dpi, dark, pointer);
                 let rest = shoot_at((None, None));
-                let controls = rest.controls(dark);
+                let controls = rest.colours.controls;
                 let ring = rest.s(FOCUS_MARGIN);
                 // Open (the primary action) and Show in folder.
                 let [open, folder] = [2, 3].map(|index| rest.hits[index].0);
                 let context = format!("dark={dark} dpi={dpi}");
                 let (x, y) = beside_glyph(&rest, &open);
-                assert_eq!(rest.at(x, y), rest.palette.accent, "{context}");
+                assert_eq!(rest.at(x, y), rest.colours.palette.accent, "{context}");
+                let on_open = Some(rest.middle(2));
                 assert_eq!(
-                    shoot_at((Some(2), None)).at(x, y),
+                    shoot_at((on_open, None)).at(x, y),
                     controls.accent_hover,
                     "{context}"
                 );
                 assert_eq!(
-                    shoot_at((Some(2), Some(2))).at(x, y),
+                    shoot_at((on_open, on_open)).at(x, y),
                     controls.accent_pressed,
                     "{context}"
                 );
                 let (x, y) = beside_glyph(&rest, &folder);
                 assert_eq!(rest.at(x, y), controls.control, "{context}");
-                let hot = shoot_at((Some(3), None));
-                let down = shoot_at((Some(3), Some(3)));
+                let on_folder = Some(rest.middle(3));
+                let hot = shoot_at((on_folder, None));
+                let down = shoot_at((on_folder, on_folder));
                 assert_eq!(hot.at(x, y), controls.control_hover, "{context}");
                 assert_eq!(down.at(x, y), controls.control_pressed, "{context}");
                 let area = inflate(folder, ring, ring);
@@ -1630,7 +1821,7 @@ mod tests {
                     let (kind, jobs, _) = card_samples().remove(index);
                     let shot = shoot(&kind, jobs, dpi, dark, (None, None));
                     let header = shot.s(MODERN_HEADER);
-                    let success = shot.palette.success;
+                    let success = shot.colours.palette.success;
                     (0..header)
                         .flat_map(|y| (0..shot.width).map(move |x| (x, y)))
                         .filter(|&(x, y)| shot.at(x, y) == success)
@@ -1657,7 +1848,7 @@ mod tests {
                     let at = |fraction: f64| {
                         shot.at(shot.s(MODERN_PAD) + (width as f64 * fraction) as i32, y)
                     };
-                    (at(0.25), at(0.75), shot.palette)
+                    (at(0.25), at(0.75), shot.colours.palette)
                 };
                 let context = format!("dark={dark} dpi={dpi}");
                 let (early, late, palette) = bar(&CardKind::Panel, running("half.bin"));
@@ -1730,5 +1921,226 @@ mod tests {
             );
             assert_eq!(detail_colour(&palette, JobState::Paused), palette.secondary);
         }
+    }
+
+    #[test]
+    fn the_check_mark_reads_on_the_success_disc_in_both_schemes() {
+        for dark in [false, true] {
+            let colours = card_colours(dark, unsafe { scheme_palette(dark) }, false);
+            assert!(
+                contrast(colours.mark, colours.palette.success) >= 4.5,
+                "dark={dark}"
+            );
+        }
+    }
+
+    #[test]
+    fn high_contrast_keeps_the_system_colours_on_every_part_of_a_card() {
+        for theme in high_contrast_themes() {
+            for dark in [false, true] {
+                let colours = card_colours(dark, system_palette(&theme), true);
+                let context = format!(
+                    "dark={dark} window={:06x} highlight={:06x}",
+                    theme.window, theme.highlight
+                );
+                // The buttons keep the face the system gives them, which its button text reads on.
+                assert_eq!(colours.controls.base, theme.window, "{context}");
+                assert_eq!(colours.controls.control, theme.face, "{context}");
+                assert!(
+                    contrast(theme.button_text, colours.controls.control) >= 4.5,
+                    "{context}"
+                );
+                // The border is the text colour, which the window reads against.
+                assert_eq!(colours.border, theme.text, "{context}");
+                assert!(contrast(colours.border, theme.window) >= 4.5, "{context}");
+                // A plate is the highlight, under a glyph in the highlight's text.
+                let on_plate = colours
+                    .on_plate
+                    .expect("a glyph on a plate has its own colour");
+                for plate in [colours.plate.0, colours.plate.1] {
+                    assert_eq!(plate, theme.highlight, "{context}");
+                    assert!(contrast(plate, theme.window) >= 3.0, "{context}");
+                    assert!(contrast(on_plate, plate) >= 4.5, "{context}");
+                }
+                // The check mark reads on the disc the highlight fills.
+                assert!(
+                    contrast(colours.mark, colours.palette.success) >= 4.5,
+                    "{context}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_card_in_high_contrast_paints_its_border_plate_glyph_and_mark_in_those_colours() {
+        let (kind, jobs, _) = card_samples().remove(2);
+        for theme in high_contrast_themes() {
+            for dpi in [96, 144] {
+                let colours = card_colours(false, system_palette(&theme), true);
+                let shoot_at = |pointer| shoot_in(&kind, jobs.clone(), dpi, colours, pointer);
+                let rest = shoot_at((None, None));
+                let context = format!(
+                    "dpi={dpi} window={:06x} highlight={:06x}",
+                    theme.window, theme.highlight
+                );
+                assert_eq!(rest.at(0, rest.height / 2), theme.text, "{context}: border");
+                assert_eq!(
+                    rest.at(1, rest.height / 2),
+                    theme.window,
+                    "{context}: surface"
+                );
+                // The disc is the highlight and the tick on it the highlight's text.
+                let unit = rest.s(20) as f32 / 20.0;
+                let pad = rest.s(MODERN_PAD);
+                let disc = (pad + (10.0 * unit) as i32, rest.s(14) + (3.0 * unit) as i32);
+                let tick = (pad + (8.8 * unit) as i32, rest.s(14) + (13.8 * unit) as i32);
+                assert_eq!(rest.at(disc.0, disc.1), theme.highlight, "{context}: disc");
+                assert_eq!(
+                    rest.at(tick.0, tick.1),
+                    theme.highlight_text,
+                    "{context}: tick"
+                );
+                // The pointer on the close button fills its plate with the highlight and draws
+                // the glyph in the highlight's text; a press keeps that look.
+                let on_close = Some(rest.middle(0));
+                for pointer in [(on_close, None), (on_close, on_close)] {
+                    let shot = shoot_at(pointer);
+                    let rect = shot.hits[0].0;
+                    let (x, y) = beside_glyph(&shot, &rect);
+                    assert_eq!(shot.at(x, y), theme.highlight, "{context}: plate");
+                    let middle = shot.middle(0);
+                    let reach = shot.s(6);
+                    let inside = |colour: u32| {
+                        (middle.y - reach..middle.y + reach)
+                            .flat_map(|y| (middle.x - reach..middle.x + reach).map(move |x| (x, y)))
+                            .filter(|&(x, y)| shot.at(x, y) == colour)
+                            .count()
+                    };
+                    assert!(inside(theme.highlight_text) > 0, "{context}: glyph");
+                    assert_eq!(inside(theme.text), 0, "{context}: glyph in the text colour");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_release_completes_a_click_only_on_the_action_the_press_began_on() {
+        let (kind, jobs, _) = card_samples().remove(3);
+        let shot = shoot(&kind, jobs, 96, false, (None, None));
+        let [close, pin, header_expand, first, second, footer_expand] =
+            [0, 1, 2, 3, 4, 5].map(|index| shot.middle(index));
+        let pressed = |index: usize| shot.hits[index].1.clone();
+        let nowhere = POINT {
+            x: shot.width / 2,
+            y: shot.s(MODERN_HEADER) + 4,
+        };
+        // Released where it was pressed.
+        assert_eq!(clicked(&shot.hits, Some(&pressed(1)), pin), Some(1));
+        assert_eq!(clicked(&shot.hits, Some(&pressed(3)), first), Some(3));
+        // Released on another target, on none, or without a press on any.
+        assert_eq!(clicked(&shot.hits, Some(&pressed(1)), close), None);
+        assert_eq!(clicked(&shot.hits, Some(&pressed(3)), second), None);
+        assert_eq!(clicked(&shot.hits, Some(&pressed(1)), nowhere), None);
+        assert_eq!(clicked(&shot.hits, None, pin), None);
+        // Two targets that do the same thing complete each other's click.
+        assert_eq!(
+            clicked(&shot.hits, Some(&pressed(2)), footer_expand),
+            Some(5)
+        );
+        assert_eq!(
+            clicked(&shot.hits, Some(&pressed(5)), header_expand),
+            Some(2)
+        );
+        // A row that left and a pause button of another one took its place: the press
+        // began on the first one's action, which the target under the release is not.
+        let moved = shoot(&kind, vec![running("b.bin")], 96, false, (None, None));
+        let under = moved.middle(3);
+        assert_eq!(
+            clicked(
+                &moved.hits,
+                Some(&CardAction::Toggle("a.bin".into())),
+                under
+            ),
+            None
+        );
+        assert_eq!(
+            clicked(
+                &moved.hits,
+                Some(&CardAction::Toggle("b.bin".into())),
+                under
+            ),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_modern_card_clicks_what_the_press_began_on_and_clears_its_pressed_look_on_release() {
+        use windows_sys::Win32::Graphics::Gdi::{GetUpdateRect, ValidateRect};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DestroyWindow, IsWindow, SendMessageW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT,
+        };
+
+        super::super::tests::on_private_desktop(|| unsafe {
+            super::super::set_modern(true);
+            assert!(register_card_class(GetModuleHandleW(null()), null_mut()));
+            let (app, root) = temp_app();
+            open_card(null_mut(), app.clone(), CardKind::Panel);
+            let hwnd = CARDS.with(|cards| *cards.borrow().last().expect("the card opened"));
+            let card = || &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut CardUi);
+            SendMessageW(hwnd, WM_PAINT, 0, 0);
+            let at = |action: &str| {
+                let hits = &card().hits;
+                let index = hits
+                    .iter()
+                    .position(|(_, a)| action_name(a) == action)
+                    .unwrap();
+                let rect = hits[index].0;
+                ((rect.left + rect.right) / 2) | (((rect.top + rect.bottom) / 2) << 16)
+            };
+            let (pin, close, expand) = (at("pin"), at("close"), at("expand"));
+            let mouse = |message: u32, point: i32| {
+                SendMessageW(hwnd, message, 0, point as isize);
+            };
+            let invalid = || {
+                let mut area: RECT = zeroed();
+                GetUpdateRect(hwnd, &mut area, 0) != 0
+            };
+
+            // Pressed on the pin and released on the close button, nothing runs.
+            mouse(WM_LBUTTONDOWN, pin);
+            assert!(card().press.is_some());
+            ValidateRect(hwnd, null());
+            mouse(WM_LBUTTONUP, close);
+            assert_ne!(
+                IsWindow(hwnd),
+                0,
+                "the release on another target closed the card"
+            );
+            assert!(card().press.is_none());
+            assert!(!card().pinned);
+            assert!(invalid(), "the pressed plate is painted away");
+
+            // Released off every target, nothing runs and the pressed look goes too.
+            mouse(WM_LBUTTONDOWN, pin);
+            ValidateRect(hwnd, null());
+            mouse(WM_LBUTTONUP, 4 | (4 << 16));
+            assert!(card().press.is_none() && !card().pinned);
+            assert!(invalid());
+
+            // Pressed and released on the pin, the card is pinned.
+            mouse(WM_LBUTTONDOWN, pin);
+            mouse(WM_LBUTTONUP, pin);
+            assert!(card().pinned && card().press.is_none());
+
+            // A release without a press on the target does nothing in Modern.
+            mouse(WM_LBUTTONUP, pin);
+            assert!(card().pinned);
+            mouse(WM_LBUTTONDOWN, expand);
+            mouse(WM_LBUTTONUP, close);
+            assert_ne!(IsWindow(hwnd), 0);
+
+            DestroyWindow(hwnd);
+            drop_app(app, &root);
+        });
     }
 }

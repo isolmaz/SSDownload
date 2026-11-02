@@ -255,19 +255,47 @@ pub(super) unsafe fn scheme_palette(dark: bool) -> MainPalette {
         };
         return fluent_palette(dark, accent);
     }
-    let window = GetSysColor(COLOR_WINDOW);
-    let text = GetSysColor(COLOR_WINDOWTEXT);
-    let face = GetSysColor(COLOR_BTNFACE);
-    let button_text = GetSysColor(COLOR_BTNTEXT);
-    let highlight = GetSysColor(COLOR_HIGHLIGHT);
-    let highlight_text = GetSysColor(COLOR_HIGHLIGHTTEXT);
+    system_palette(&SystemColours {
+        window: GetSysColor(COLOR_WINDOW),
+        text: GetSysColor(COLOR_WINDOWTEXT),
+        face: GetSysColor(COLOR_BTNFACE),
+        button_text: GetSysColor(COLOR_BTNTEXT),
+        highlight: GetSysColor(COLOR_HIGHLIGHT),
+        highlight_text: GetSysColor(COLOR_HIGHLIGHTTEXT),
+        gray_text: GetSysColor(COLOR_GRAYTEXT),
+    })
+}
+
+/// The system colours that high contrast sets.
+#[derive(Clone, Copy)]
+pub(super) struct SystemColours {
+    pub(super) window: u32,
+    pub(super) text: u32,
+    pub(super) face: u32,
+    pub(super) button_text: u32,
+    pub(super) highlight: u32,
+    pub(super) highlight_text: u32,
+    pub(super) gray_text: u32,
+}
+
+/// The palette of high contrast: the system colours in the places of Fluent's.
+pub(super) fn system_palette(colours: &SystemColours) -> MainPalette {
+    let SystemColours {
+        window,
+        text,
+        face,
+        button_text,
+        highlight,
+        highlight_text,
+        gray_text,
+    } = *colours;
     MainPalette {
         base: window,
         card: window,
         stroke: text,
         text,
         secondary: text,
-        disabled: GetSysColor(COLOR_GRAYTEXT),
+        disabled: gray_text,
         hover: highlight,
         control: face,
         control_hover: highlight,
@@ -282,7 +310,7 @@ pub(super) unsafe fn scheme_palette(dark: bool) -> MainPalette {
         on_accent_pressed: highlight_text,
         accent_stroke_bottom: button_text,
         accent_disabled: face,
-        on_accent_disabled: GetSysColor(COLOR_GRAYTEXT),
+        on_accent_disabled: gray_text,
         focus_outer: text,
         focus_inner: window,
         strong_stroke: text,
@@ -295,6 +323,14 @@ pub(super) unsafe fn scheme_palette(dark: bool) -> MainPalette {
         critical: highlight,
         flyout: window,
     }
+}
+
+/// The plates under a glyph button on the flyout surface: the subtle fill
+/// (SubtleFillColorSecondary) under the pointer and a stronger step under a
+/// press, composited over the flyout the button sits on.
+pub(super) fn flyout_plates(dark: bool, flyout: u32) -> (u32, u32) {
+    let on = |light: u32, dark_value: u32| over(if dark { dark_value } else { light }, flyout);
+    (on(0x09000000, 0x0fffffff), on(0x18000000, 0x14ffffff))
 }
 
 /// The colour of link text on a card: the system's link colour while high
