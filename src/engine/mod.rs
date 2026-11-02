@@ -92,9 +92,10 @@ enum Command {
     UpdateQueuePolicy(QueuePolicy, Reply<()>),
     CancelCompletionAction(String, Reply<()>),
     RunSynchronization(String, Reply<()>),
-    BeginBrowserTransfer(String, u32, u64, Reply<(Job, u64)>),
+    BeginBrowserTransfer(String, u32, u64, bool, Reply<(Job, u64)>),
+    BrowserTransferPrepared(String, u64, u64, Reply<()>),
     BrowserTransferJob(String, Reply<(Job, u64)>),
-    BrowserTransferProgress(String, u64, Option<u64>, Reply<()>),
+    BrowserTransferProgress(String, u64, u64, Option<u64>, Reply<()>),
     TryBeginBrowserRequest(String, u64, String, Reply<bool>),
     EndBrowserRequest(String, u64, String, Reply<()>),
     PauseBrowserTransfer(String, u64, Reply<()>),
@@ -307,6 +308,9 @@ struct BrowserTransferLease {
     requests: BTreeMap<String, ConnectionLease>,
     ended_requests: VecDeque<String>,
     sender_exited: bool,
+    /// The job was not authorized for a transfer to the browser, such as a download the app's
+    /// own downloader had begun: sending it to the browser starts the download over.
+    handed_over: bool,
 }
 
 fn process_started_at(handle: HANDLE) -> Result<u64> {
@@ -737,9 +741,22 @@ impl Engine {
         id: &str,
         sender_pid: u32,
         sender_started_at: u64,
+        restart: bool,
     ) -> Result<(Job, u64)> {
         self.request(|reply| {
-            Command::BeginBrowserTransfer(id.into(), sender_pid, sender_started_at, reply)
+            Command::BeginBrowserTransfer(id.into(), sender_pid, sender_started_at, restart, reply)
+        })
+    }
+    /// The receiver has the transfer's work ready and goes on from the `committed` bytes it
+    /// holds of it.
+    pub fn browser_transfer_prepared(
+        &self,
+        id: &str,
+        generation: u64,
+        committed: u64,
+    ) -> Result<()> {
+        self.request(|reply| {
+            Command::BrowserTransferPrepared(id.into(), generation, committed, reply)
         })
     }
     pub fn browser_transfer_job(&self, id: &str) -> Result<(Job, u64)> {
@@ -748,10 +765,13 @@ impl Engine {
     pub fn browser_transfer_progress(
         &self,
         id: &str,
+        generation: u64,
         downloaded: u64,
         total: Option<u64>,
     ) -> Result<()> {
-        self.request(|reply| Command::BrowserTransferProgress(id.into(), downloaded, total, reply))
+        self.request(|reply| {
+            Command::BrowserTransferProgress(id.into(), generation, downloaded, total, reply)
+        })
     }
     pub(crate) fn try_begin_browser_request(
         &self,
@@ -949,16 +969,22 @@ impl Actor {
                 respond(reply, self.cancel_completion_action(&queue_id))
             }
             Command::RunSynchronization(id, reply) => respond(reply, self.run_synchronization(&id)),
-            Command::BeginBrowserTransfer(id, sender_pid, sender_started_at, reply) => respond(
+            Command::BeginBrowserTransfer(id, sender_pid, sender_started_at, restart, reply) => {
+                respond(
+                    reply,
+                    self.begin_browser_transfer(&id, sender_pid, sender_started_at, restart),
+                )
+            }
+            Command::BrowserTransferPrepared(id, generation, committed, reply) => respond(
                 reply,
-                self.begin_browser_transfer(&id, sender_pid, sender_started_at),
+                self.browser_transfer_prepared(&id, generation, committed),
             ),
             Command::BrowserTransferJob(id, reply) => {
                 respond(reply, self.browser_transfer_job(&id))
             }
-            Command::BrowserTransferProgress(id, downloaded, total, reply) => respond(
+            Command::BrowserTransferProgress(id, generation, downloaded, total, reply) => respond(
                 reply,
-                self.browser_transfer_progress(&id, downloaded, total),
+                self.browser_transfer_progress(&id, generation, downloaded, total),
             ),
             Command::TryBeginBrowserRequest(id, generation, request_id, reply) => respond(
                 reply,
@@ -1186,7 +1212,12 @@ impl Actor {
                     )
                 )
             }
-            if !pause && job.browser_transfer_authorized {
+            // A job that a browser transfer was begun for belongs to that transfer until it
+            // ends. Before the receiver is ready, the job is neither authorized nor awaiting a
+            // source.
+            if !pause
+                && (job.browser_transfer_authorized || self.browser_transfers.contains_key(id))
+            {
                 bail!(
                     "{}",
                     crate::i18n::ui(
@@ -1338,9 +1369,12 @@ impl Actor {
             .jobs
             .get_mut(id)
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
+        // A job that a browser transfer was begun for belongs to that transfer until it ends (see
+        // `transition`).
         if job.state.is_terminal() && job.state != JobState::Failed
             || job.remove_requested.is_some()
             || job.browser_transfer_authorized
+            || self.browser_transfers.contains_key(id)
         {
             bail!(
                 "{}",
@@ -2199,8 +2233,18 @@ impl Actor {
             }
         }
 
-        self.quota_accounted
-            .insert(active.id.clone(), updated.downloaded);
+        // A refresh that starts the download over starts its count again; any other goes on from
+        // the most the job has counted, which its last report can be below.
+        let counted = if active.restart {
+            0
+        } else {
+            self.quota_accounted
+                .get(&active.id)
+                .copied()
+                .unwrap_or(0)
+                .max(updated.downloaded)
+        };
+        self.quota_accounted.insert(active.id.clone(), counted);
         let queue_id = job_queue_id(&updated).to_owned();
         self.jobs.insert(active.id.clone(), updated);
         self.source_refresh.remove(&active.id);
@@ -2493,6 +2537,7 @@ impl Actor {
         id: &str,
         sender_pid: u32,
         sender_started_at: u64,
+        restart: bool,
     ) -> Result<(Job, u64)> {
         // These refusals carry SSD-TRF-014, which tells the extension in any interface
         // language to stop resuming the job.
@@ -2590,15 +2635,22 @@ impl Actor {
             );
         }
         let sender = BrowserTransferSender::open(sender_pid, sender_started_at)?;
-        let acknowledged = if job.browser_transfer_authorized {
-            job.downloaded
-        } else {
-            0
-        };
-        job.browser_transfer_authorized = true;
-        job.downloaded = 0;
-        job.ranges = None;
-        job.resumable = None;
+        // A restart of a job authorized for a transfer starts the download over at once: its size
+        // and count go to 0. Sending a job that is not authorized to the browser starts it over
+        // as well, once the receiver is ready, which authorizes the job and uses up its grant.
+        // Until then the job's record keeps the state it has now, whatever saves the job: after a
+        // begin that ends early, also when the app closes, the job is as it was, and the next
+        // start does not run it on its own.
+        let handed_over = !job.browser_transfer_authorized;
+        if handed_over {
+            self.store.hold(&job);
+        }
+        let restarted = restart && !handed_over;
+        if restarted {
+            job.downloaded = 0;
+            job.ranges = None;
+            job.resumable = None;
+        }
         job.state = JobState::Downloading;
         job.phase = crate::i18n::ui(
             "Yetkili tarayıcı aktarımı bekleniyor",
@@ -2607,12 +2659,19 @@ impl Actor {
         .into();
         job.error = None;
         job.updated_at = Utc::now().timestamp();
-        self.store.save_job(&job)?;
+        if !handed_over {
+            self.store.save_job(&job)?;
+        }
+        if restarted {
+            self.quota_accounted.insert(id.into(), 0);
+        }
         self.jobs.insert(id.into(), job.clone());
         self.cancel_source_refresh_workers(id);
-        self.source_refresh.remove(id);
-        let generation = self.next_generation;
-        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        // The receiver's state and the extension keep a transfer's generation after the app
+        // closes, so a transfer draws a random one: a later session gives the same one again
+        // only by chance, about once in 2^53. The extension takes it only as a safe integer,
+        // below 2^53.
+        let generation = (Uuid::new_v4().as_u128() as u64 & ((1 << 53) - 1)).max(1);
         self.browser_transfers.insert(
             id.into(),
             BrowserTransferLease {
@@ -2621,12 +2680,74 @@ impl Actor {
                 requests: BTreeMap::new(),
                 ended_requests: VecDeque::new(),
                 sender_exited: false,
+                handed_over,
             },
         );
-        self.quota_accounted.insert(id.into(), acknowledged);
         self.completion_armed.insert(queue_id);
         self.publish();
         Ok((job, generation))
+    }
+
+    fn browser_transfer_prepared(
+        &mut self,
+        id: &str,
+        generation: u64,
+        committed: u64,
+    ) -> Result<()> {
+        let Some(handed_over) = self
+            .browser_transfers
+            .get(id)
+            .filter(|transfer| transfer.generation == generation)
+            .map(|transfer| transfer.handed_over)
+        else {
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "İş için etkin tarayıcı aktarımı yok.",
+                    "There is no active browser transfer for this job."
+                )
+            );
+        };
+        // The app's own downloader runs the job; a transfer does not take it over.
+        if self.active.contains_key(id) {
+            bail!(
+                "{}",
+                crate::i18n::ui(
+                    "Tarayıcı aktarımı artık bu işe yazamaz.",
+                    "The browser transfer can no longer write to this job."
+                )
+            );
+        }
+        let mut job = self
+            .jobs
+            .get(id)
+            .cloned()
+            .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
+        let accounted = self
+            .quota_accounted
+            .get(id)
+            .copied()
+            .unwrap_or(job.downloaded);
+        job.browser_transfer_authorized = true;
+        job.downloaded = committed;
+        // The receiver's bytes are not the ones the app's own download placed.
+        job.ranges = None;
+        job.resumable = None;
+        job.updated_at = Utc::now().timestamp();
+        self.store.save_job(&job)?;
+        self.jobs.insert(id.into(), job);
+        // The bytes the receiver goes on from were counted when they came. A job sent to the
+        // browser starts its download over, so every byte the transfer fetches beyond them counts
+        // again; any other transfer goes on from the most the job counted.
+        let counted = if handed_over {
+            committed
+        } else {
+            accounted.max(committed)
+        };
+        self.quota_accounted.insert(id.into(), counted);
+        self.source_refresh.remove(id);
+        self.publish();
+        Ok(())
     }
 
     fn browser_transfer_job(&mut self, id: &str) -> Result<(Job, u64)> {
@@ -2769,10 +2890,16 @@ impl Actor {
     fn browser_transfer_progress(
         &mut self,
         id: &str,
+        generation: u64,
         downloaded: u64,
         total: Option<u64>,
     ) -> Result<()> {
-        if !self.browser_transfers.contains_key(id) {
+        // A chunk of an earlier transfer can still report after the next one began.
+        if self
+            .browser_transfers
+            .get(id)
+            .is_none_or(|transfer| transfer.generation != generation)
+        {
             bail!(
                 "{}",
                 crate::i18n::ui(
@@ -2853,7 +2980,11 @@ impl Actor {
         }
         job.updated_at = Utc::now().timestamp();
         self.store.save_job_and_settings(&job, &self.settings)?;
-        self.quota_accounted.insert(id.into(), downloaded);
+        // A transfer can report fewer bytes than the job counted (its receiver lost the bytes it
+        // had committed, or the app's own downloader got further); the count goes on from the
+        // most it has reached.
+        self.quota_accounted
+            .insert(id.into(), downloaded.max(accounted));
         self.jobs.insert(id.into(), job);
         if !accepts_more {
             self.remove_browser_transfer(id);
@@ -2867,7 +2998,9 @@ impl Actor {
 
     /// Ends the transfer and with it every network permit it still holds. The extension's
     /// late `end_request` for that generation is refused, so nothing else could release them.
+    /// The job's record is no longer held either.
     fn remove_browser_transfer(&mut self, id: &str) -> Option<BrowserTransferLease> {
+        self.store.release(id);
         self.browser_transfers.remove(id)
     }
 
@@ -3300,7 +3433,16 @@ impl Actor {
                     JobState::Downloading
                 };
                 job.updated_at = Utc::now().timestamp();
-                self.quota_accounted.insert(id.clone(), value.downloaded);
+                // A downloader that starts again reports from the bytes it kept, fewer than this job
+                // may have counted; the count goes on from the most it has reached. A live
+                // recording cannot continue its file: a run that starts again records new content
+                // from zero, so the count follows its reports and every run counts in full.
+                let counted = if job.live {
+                    value.downloaded
+                } else {
+                    value.downloaded.max(accounted)
+                };
+                self.quota_accounted.insert(id.clone(), counted);
                 consume_queue_bytes(&mut self.settings, &queue_id, delta);
                 // Progress (and the quota bytes it consumed) is persisted at most once a
                 // second per job: a crash can forget at most that last second, while every
@@ -3355,6 +3497,7 @@ impl Actor {
                         uncapped.direct.max(uncapped.media_fragments).max(1)
                     });
                 let progressed = attempt_progressed(&mut self.retained_high, &id, &active.control);
+                let kept_nothing = matches!(active.control.retained(), Some((_, 0)));
                 if result.is_ok() || matches!(active.desired, DesiredStop::Remove { .. }) {
                     self.forget_retry_state(&id);
                 }
@@ -3398,6 +3541,7 @@ impl Actor {
                     DesiredStop::None => {
                         if let Err(failure) = &mut result {
                             failure.progressed = progressed;
+                            failure.kept_nothing = kept_nothing;
                         }
                         self.update_retry_connection_cap(
                             &id,
@@ -3664,6 +3808,12 @@ impl Actor {
                     self.retry_at.remove(id);
                     crate::logging::record_job(id, failure_event(&job, &message));
                 }
+                // Only the user starts a failed job again, and with nothing kept it downloads from
+                // the beginning: a new download, which its queue's quota counts again.
+                if job.state == JobState::Failed && failure.kept_nothing {
+                    job.downloaded = 0;
+                    self.quota_accounted.insert(id.into(), 0);
+                }
             }
         }
         if job.state == JobState::Failed {
@@ -3861,6 +4011,7 @@ impl Actor {
                 job.force_start
                     && job.state == JobState::Queued
                     && !self.active.contains_key(&job.id)
+                    && !self.browser_transfers.contains_key(&job.id)
             })
             .map(|job| job.id.clone())
             .collect::<Vec<_>>();
@@ -5032,6 +5183,9 @@ struct TransferFailure {
     /// The attempt ended above the most the job had retained before; the engine judges it when
     /// the attempt ends.
     progressed: bool,
+    /// The attempt left nothing on disk for a later one to continue from; the engine measures
+    /// it when the attempt ends.
+    kept_nothing: bool,
     /// The server answered 429 or 503.
     throttled: bool,
 }
@@ -5044,6 +5198,7 @@ fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailu
         source_refresh: source_refresh_needed(request, &error),
         message: safe_error(request, &detail),
         progressed: false,
+        kept_nothing: false,
         throttled: transfer::http_status(&error)
             .or_else(|| http_status_in_text(&detail.to_lowercase()))
             .is_some_and(|status| matches!(status, 429 | 503)),

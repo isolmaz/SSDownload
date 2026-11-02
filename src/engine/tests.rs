@@ -717,9 +717,11 @@ fn browser_policy_stop_persists_scheduled_state_before_releasing_generation() {
         process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .unwrap();
     let (_, generation) = engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
-    assert!(engine.browser_transfer_progress(&id, 1, Some(2)).is_err());
+    assert!(engine
+        .browser_transfer_progress(&id, generation, 1, Some(2))
+        .is_err());
     let snapshot = engine.snapshot();
     let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
     assert_eq!(job.state, JobState::Scheduled);
@@ -763,7 +765,7 @@ fn browser_transfer_refusals_carry_their_code() {
             .unwrap();
     let refusal = |id: &str| {
         engine
-            .begin_browser_transfer(id, std::process::id(), sender_started_at)
+            .begin_browser_transfer(id, std::process::id(), sender_started_at, false)
             .map(|_| ())
             .unwrap_err()
     };
@@ -829,7 +831,7 @@ fn disconnected_sender_releases_only_its_generation() {
         process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .unwrap();
     let (_, first_generation) = engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
     engine
         .release_browser_transfer(&id, first_generation)
@@ -840,7 +842,7 @@ fn disconnected_sender_releases_only_its_generation() {
     assert!(job.phase.contains("bağlantısı koptu"));
 
     let (_, current_generation) = engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
     assert_ne!(first_generation, current_generation);
     engine
@@ -863,6 +865,974 @@ fn disconnected_sender_releases_only_its_generation() {
             .state,
         JobState::Paused
     );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_restarted_browser_transfer_counts_its_bytes_again_and_a_resumed_one_does_not() {
+    let root = std::env::temp_dir().join(format!(
+        "ssdownload-engine-browser-quota-{}",
+        Uuid::new_v4()
+    ));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let engine = Engine::open(paths.clone()).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(AddRequest {
+            url: "https://example.test/browser-quota.bin".into(),
+            filename: Some("browser-quota.bin".into()),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..Default::default()
+        })
+        .unwrap()
+        .remove(0);
+    engine.shutdown();
+
+    // A browser transfer of the job had committed 1 MB when it was paused.
+    let mut store = Store::open(&paths.database).unwrap();
+    let mut job = store
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap();
+    job.request.start_at = None;
+    job.state = JobState::Paused;
+    job.browser_transfer_authorized = true;
+    job.downloaded = 1_000_000;
+    store.save_job(&job).unwrap();
+    drop(store);
+
+    let engine = Engine::open(paths).unwrap();
+    let sender_started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    let total = Some(4_000_000);
+    // Resumed, the transfer reports the bytes it committed before and those it adds.
+    let (_, generation) = engine
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
+        .unwrap();
+    engine
+        .browser_transfer_prepared(&id, generation, 1_000_000)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 1_300_000, total)
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+    engine.release_browser_transfer(&id, generation).unwrap();
+
+    // Restarted, it downloads the file again from the first byte.
+    let (_, generation) = engine
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, true)
+        .unwrap();
+    engine
+        .browser_transfer_prepared(&id, generation, 0)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 200_000, total)
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 500_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Adds a job of `url`, sets it up in the store as `set_up` says while the engine is closed, with
+/// browser transfers on and a quota on the default queue.
+fn browser_quota_job(
+    name: &str,
+    url: String,
+    set_up: impl FnOnce(&mut Job),
+) -> (PathBuf, AppPaths, String) {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-{name}-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let engine = Engine::open(paths.clone()).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(AddRequest {
+            filename: Some(format!("{name}.bin")),
+            page_url: Some(format!("https://example.test/watch/{name}")),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..file_request(url, &root.join("out"))
+        })
+        .unwrap()
+        .remove(0);
+    engine.shutdown();
+    let mut store = Store::open(&paths.database).unwrap();
+    let mut job = store
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap();
+    job.request.start_at = None;
+    job.state = JobState::Paused;
+    set_up(&mut job);
+    store.save_job(&job).unwrap();
+    (root, paths, id)
+}
+
+fn begin_as_this_process(engine: &Engine, id: &str, restart: bool) -> u64 {
+    let started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    engine
+        .begin_browser_transfer(id, std::process::id(), started_at, restart)
+        .unwrap()
+        .1
+}
+
+#[test]
+fn a_transfer_goes_on_from_the_count_after_a_begin_that_ended_early() {
+    // A browser transfer of the job had committed and counted 1 MB.
+    let (root, paths, id) = browser_quota_job(
+        "browser-early",
+        "https://example.test/browser-early.bin".into(),
+        |job| {
+            job.browser_transfer_authorized = true;
+            job.downloaded = 1_000_000;
+        },
+    );
+    let engine = Engine::open(paths.clone()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    // The app closes before the receiver is ready, and the receiver of the next session has lost
+    // the bytes: they come again and are not counted again.
+    begin_as_this_process(&engine, &id, false);
+    engine.shutdown();
+    let engine = Engine::open(paths).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, generation, 0)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 1_200_000, Some(4_000_000))
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 200_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_sent_to_the_browser_counts_again_after_a_begin_that_ended_early() {
+    // The app's own downloader had counted 1 MB.
+    let (root, paths, id) = browser_quota_job(
+        "browser-handover",
+        "https://example.test/browser-handover.bin".into(),
+        |job| job.downloaded = 1_000_000,
+    );
+    let engine = Engine::open(paths).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    engine.begin_source_refresh(&id).unwrap();
+    // The receiver fails before it is ready, which pauses the transfer; a state it saved by
+    // then holds no byte.
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine.pause_browser_transfer(&id, generation).unwrap();
+
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, generation, 0)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 300_000, Some(4_000_000))
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_restart_counts_again_after_a_begin_that_ended_early() {
+    // A browser transfer of the job had committed and counted 1 MB.
+    let (root, paths, id) = browser_quota_job(
+        "browser-restart",
+        "https://example.test/browser-restart.bin".into(),
+        |job| {
+            job.browser_transfer_authorized = true;
+            job.downloaded = 1_000_000;
+        },
+    );
+    let engine = Engine::open(paths.clone()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    let total = Some(4_000_000);
+    // A restart whose receiver fails before it is ready, and the begin after it, whose receiver
+    // goes on from `committed` bytes and reports `downloaded`.
+    let restart_then_begin = |engine: &Engine, committed: u64, downloaded: u64| {
+        let generation = begin_as_this_process(engine, &id, true);
+        engine.pause_browser_transfer(&id, generation).unwrap();
+        let generation = begin_as_this_process(engine, &id, false);
+        engine
+            .browser_transfer_prepared(&id, generation, committed)
+            .unwrap();
+        engine
+            .browser_transfer_progress(&id, generation, downloaded, total)
+            .unwrap();
+        engine.release_browser_transfer(&id, generation).unwrap();
+    };
+
+    // The receiver fails before it moves the committed bytes aside, and the next begin goes on
+    // from them.
+    restart_then_begin(&engine, 1_000_000, 1_100_000);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 100_000);
+
+    // It fails once it has moved them aside, and the next begin starts from the first byte.
+    restart_then_begin(&engine, 0, 200_000);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+
+    // The app closes once the receiver has moved them aside, and the begin in the next session
+    // starts from the first byte.
+    begin_as_this_process(&engine, &id, true);
+    engine.shutdown();
+    let engine = Engine::open(paths).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, generation, 0)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 400_000, total)
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 700_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_report_of_an_earlier_browser_transfer_is_refused() {
+    let (root, paths, id) = browser_quota_job(
+        "browser-late",
+        "https://example.test/browser-late.bin".into(),
+        |job| {
+            job.browser_transfer_authorized = true;
+            job.downloaded = 1_000_000;
+        },
+    );
+    let engine = Engine::open(paths).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    let total = Some(4_000_000);
+    let earlier = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, earlier, 1_000_000)
+        .unwrap();
+    engine.release_browser_transfer(&id, earlier).unwrap();
+
+    // A chunk of the earlier transfer that the receiver still held reports after the restart
+    // began; the restart's own first report follows it.
+    let restarted = begin_as_this_process(&engine, &id, true);
+    assert!(engine
+        .browser_transfer_progress(&id, earlier, 1_100_000, total)
+        .is_err());
+    engine.browser_transfer_prepared(&id, restarted, 0).unwrap();
+    engine
+        .browser_transfer_progress(&id, restarted, 200_000, total)
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 200_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_sent_to_the_browser_stays_as_it_was_when_the_app_closes_before_the_receiver_is_ready() {
+    // The job waits for a new source, which the browser's session gives; the app's own
+    // downloader must not run it.
+    let server = FileServer::start(vec![
+        ("/browser-reopen.bin".into(), vec![6; 4096], false),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) =
+        browser_quota_job("browser-reopen", server.url("/browser-reopen.bin"), |job| {
+            job.downloaded = 1_000_000
+        });
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    begin_as_this_process(&engine, &id, false);
+    engine.shutdown();
+
+    let engine = Engine::open(paths).unwrap();
+    // A job that the start queued would have been asked for by the time another one completes.
+    let other = engine
+        .add(file_request(server.url("/other.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the other download", || {
+        job_state(&engine, &other) == JobState::Completed
+    });
+    let snapshot = engine.snapshot();
+    let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+    assert_eq!(
+        (job.state, job.browser_transfer_authorized, job.downloaded),
+        (JobState::AwaitingSource, false, 1_000_000)
+    );
+    assert!(!server
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|hit| hit == "/browser-reopen.bin"));
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Opens the app again and lets another download of `server` complete, by when the start would
+/// have asked for the job had it queued it. Returns the job and whether its file at `path` was
+/// asked for.
+fn after_a_restart(
+    paths: AppPaths,
+    root: &Path,
+    server: &FileServer,
+    id: &str,
+    path: &str,
+) -> (Job, bool) {
+    let engine = Engine::open(paths).unwrap();
+    let other = engine
+        .add(file_request(server.url("/other.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the other download", || {
+        job_state(&engine, &other) == JobState::Completed
+    });
+    let job = engine
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .clone();
+    let asked = server.hits.lock().unwrap().iter().any(|hit| hit == path);
+    engine.shutdown();
+    (job, asked)
+}
+
+/// Sends a job that waits for a new source after an error to the browser, lets `change` change the
+/// job before the receiver is ready and closes the app. Returns the job as it was saved before the
+/// begin, the job once the app is open again (see `after_a_restart`) and whether its file was
+/// asked for.
+fn changed_before_the_receiver_is_ready(
+    name: &str,
+    change: impl FnOnce(&Engine, &str),
+) -> (Job, Job, bool) {
+    let path = format!("/{name}.bin");
+    let server = FileServer::start(vec![
+        (path.clone(), vec![6; 4096], false),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) = browser_quota_job(name, server.url(&path), |job| {
+        job.downloaded = 1_000_000;
+        job.error = Some("The signed address expired.".into());
+    });
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    let before = Store::open(&paths.database)
+        .unwrap()
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap();
+    begin_as_this_process(&engine, &id, false);
+    change(&engine, &id);
+    engine.shutdown();
+
+    let (after, asked) = after_a_restart(paths, &root, &server, &id, &path);
+    fs::remove_dir_all(root).unwrap();
+    (before, after, asked)
+}
+
+#[test]
+fn a_job_sent_to_the_browser_and_moved_up_stays_as_it_was_when_the_app_closes_before_the_receiver_is_ready(
+) {
+    // The user moves the job to the top of the list before the receiver is ready.
+    let (before, after, asked) =
+        changed_before_the_receiver_is_ready("browser-moved", |engine, id| {
+            engine.reorder(vec![id.into()], true).unwrap()
+        });
+    assert_eq!(
+        (
+            after.state,
+            after.phase,
+            after.error,
+            after.browser_transfer_authorized,
+            after.downloaded,
+            after.priority > before.priority,
+            asked
+        ),
+        (
+            JobState::AwaitingSource,
+            before.phase,
+            before.error,
+            false,
+            1_000_000,
+            true,
+            false
+        )
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_and_set_to_open_when_done_stays_as_it_was_when_the_app_closes_before_the_receiver_is_ready(
+) {
+    let (before, after, asked) =
+        changed_before_the_receiver_is_ready("browser-open", |engine, id| {
+            engine.set_open_when_done(id, true).unwrap()
+        });
+    assert_eq!(
+        (
+            after.state,
+            after.phase,
+            after.error,
+            after.browser_transfer_authorized,
+            after.downloaded,
+            (before.open_when_done, after.open_when_done),
+            asked
+        ),
+        (
+            JobState::AwaitingSource,
+            before.phase,
+            before.error,
+            false,
+            1_000_000,
+            (false, true),
+            false
+        )
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_not_started_now_before_the_receiver_is_ready() {
+    // A download of the job's file would stay running until the end.
+    let server = FileServer::start(vec![
+        ("/browser-start-now.bin".into(), vec![6; 4096], true),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) = browser_quota_job(
+        "browser-start-now",
+        server.url("/browser-start-now.bin"),
+        |job| job.downloaded = 1_000_000,
+    );
+    let engine = Engine::open(paths).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    let started = engine.start_now(&id);
+    // A job that the app's own downloader ran would have been asked for by the time another
+    // download completes.
+    let other = engine
+        .add(file_request(server.url("/other.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the other download", || {
+        job_state(&engine, &other) == JobState::Completed
+    });
+    let asked = server
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|hit| hit == "/browser-start-now.bin");
+    // The transfer goes on: its receiver gets ready.
+    let prepared = engine.browser_transfer_prepared(&id, generation, 0);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        (started.is_err(), asked, prepared.is_ok()),
+        (true, false, true)
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_not_resumed_before_the_receiver_is_ready() {
+    let server = FileServer::start(vec![
+        ("/browser-resume.bin".into(), vec![6; 4096], false),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) =
+        browser_quota_job("browser-resume", server.url("/browser-resume.bin"), |job| {
+            job.downloaded = 1_000_000
+        });
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    begin_as_this_process(&engine, &id, false);
+    let resumed = engine.resume(&id);
+    engine.shutdown();
+
+    let (job, asked) = after_a_restart(paths, &root, &server, &id, "/browser-resume.bin");
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        (resumed.is_err(), job.state, asked),
+        (true, JobState::AwaitingSource, false)
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_stays_as_it_was_when_the_jobs_are_saved_again_after_a_store_error() {
+    let server = FileServer::start(vec![
+        ("/browser-store-error.bin".into(), vec![6; 4096], false),
+        ("/scheduled.bin".into(), vec![8; 4096], false),
+        ("/other.bin".into(), vec![7; 4096], false),
+    ]);
+    let (root, paths, id) = browser_quota_job(
+        "browser-store-error",
+        server.url("/browser-store-error.bin"),
+        |job| job.downloaded = 1_000_000,
+    );
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    begin_as_this_process(&engine, &id, false);
+    // Before the receiver is ready, another job's start time comes while no job can be written.
+    // The engine stops and, once it can write again, saves every job it has.
+    engine
+        .add(AddRequest {
+            start_at: Some(Utc::now().timestamp() + 3),
+            ..file_request(server.url("/scheduled.bin"), &root.join("out"))
+        })
+        .unwrap();
+    let database = rusqlite::Connection::open(&paths.database).unwrap();
+    database
+        .execute("ALTER TABLE jobs RENAME TO jobs_aside", [])
+        .unwrap();
+    let store_error = || {
+        engine
+            .snapshot()
+            .warning
+            .is_some_and(|warning| warning.contains("no such table: jobs"))
+    };
+    wait_until("the store error", &store_error);
+    database
+        .execute("ALTER TABLE jobs_aside RENAME TO jobs", [])
+        .unwrap();
+    drop(database);
+    wait_until("the jobs to be saved again", || !store_error());
+    engine.shutdown();
+
+    let (job, asked) = after_a_restart(paths, &root, &server, &id, "/browser-store-error.bin");
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        (
+            job.state,
+            job.browser_transfer_authorized,
+            job.downloaded,
+            asked
+        ),
+        (JobState::AwaitingSource, false, 1_000_000, false)
+    );
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_saved_as_it_is_once_the_user_pauses_it_before_the_receiver_is_ready(
+) {
+    let server = FileServer::start(vec![("/browser-paused.bin".into(), vec![6; 4096], true)]);
+    let (root, paths, id) =
+        browser_quota_job("browser-paused", server.url("/browser-paused.bin"), |_| {});
+    let engine = Engine::open(paths.clone()).unwrap();
+    let saved = || {
+        Store::open(&paths.database)
+            .unwrap()
+            .load_jobs()
+            .unwrap()
+            .into_iter()
+            .find(|job| job.id == id)
+            .unwrap()
+    };
+    engine.begin_source_refresh(&id).unwrap();
+    begin_as_this_process(&engine, &id, false);
+    engine.pause(&id).unwrap();
+    let paused = saved().state;
+
+    // Resumed in the app, the job runs in the app's own downloader, which saves its progress at
+    // most once a second.
+    engine.resume(&id).unwrap();
+    wait_until("the run", || !server.hits.lock().unwrap().is_empty());
+    wait_until("the saved progress", || {
+        report_downloaded(&engine, &id, &[1_000]);
+        saved().downloaded == 1_000
+    });
+    let running = saved().state;
+    server.release();
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!((paused, running), (JobState::Paused, JobState::Downloading));
+}
+
+#[test]
+fn a_restart_sent_to_the_browser_that_ended_early_leaves_the_count_of_the_apps_own_download() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-engine-browser-back-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/browser-back.bin".into(), vec![6; 4096], true)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(AddRequest {
+            page_url: Some("https://example.test/watch/browser-back".into()),
+            ..file_request(server.url("/browser-back.bin"), &root.join("out"))
+        })
+        .unwrap()
+        .remove(0);
+    // The app's own downloader counts 1 MB, which its partial file keeps.
+    let runs = || server.hits.lock().unwrap().len();
+    wait_until("the first run", || runs() == 1);
+    report_downloaded(&engine, &id, &[1_000_000]);
+    engine.pause(&id).unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 1_000_000);
+
+    // Sent to the browser with a restart, the transfer ends before its receiver is ready.
+    wait_until("the run to stop", || {
+        engine.begin_source_refresh(&id).is_ok()
+    });
+    let generation = begin_as_this_process(&engine, &id, true);
+    engine.pause_browser_transfer(&id, generation).unwrap();
+
+    // Resumed in the app, the downloader goes on from its partial file and reports from it.
+    engine.resume(&id).unwrap();
+    wait_until("the second run", || runs() == 2);
+    report_downloaded(&engine, &id, &[1_000_000, 1_200_000]);
+    server.release();
+    wait_until("the download", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 1_200_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_saved_as_authorized_once_the_receiver_is_ready() {
+    let (root, paths, id) = browser_quota_job(
+        "browser-saved",
+        "https://example.test/browser-saved.bin".into(),
+        |job| job.downloaded = 1_000_000,
+    );
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, generation, 0)
+        .unwrap();
+    engine.shutdown();
+
+    let engine = Engine::open(paths).unwrap();
+    let snapshot = engine.snapshot();
+    let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+    assert_eq!(
+        (job.state, job.browser_transfer_authorized, job.downloaded),
+        (JobState::Paused, true, 0)
+    );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_sent_to_the_browser_counts_again_the_bytes_its_receiver_does_not_hold() {
+    // The app's own downloader had counted 1 MB, and the receiver holds 300 KB of an earlier
+    // transfer of the job.
+    let (root, paths, id) = browser_quota_job(
+        "browser-beyond",
+        "https://example.test/browser-beyond.bin".into(),
+        |job| job.downloaded = 1_000_000,
+    );
+    let engine = Engine::open(paths).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    engine.begin_source_refresh(&id).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    engine
+        .browser_transfer_prepared(&id, generation, 300_000)
+        .unwrap();
+    engine
+        .browser_transfer_progress(&id, generation, 1_300_000, Some(4_000_000))
+        .unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 1_000_000);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_chunk_that_carries_the_token_of_a_transfer_that_ended_is_refused() {
+    use crate::browser_transfer::{dispatch, Command as Transfer};
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    let (root, paths, id) = browser_quota_job(
+        "browser-old-token",
+        "https://example.test/browser-old-token.bin".into(),
+        |job| job.browser_transfer_authorized = true,
+    );
+    let engine = Engine::open(paths.clone()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    let started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    let begun = dispatch(
+        &paths,
+        &engine,
+        Transfer::Begin {
+            id: id.clone(),
+            total: Some(4_000_000),
+            etag: Some("\"browser-old-token\"".into()),
+            restart: false,
+            sender_pid: Some(std::process::id()),
+            sender_started_at: Some(started_at),
+        },
+    )
+    .unwrap();
+    let token = begun.token.clone().unwrap();
+    let chunk = |offset: u64, sequence: u64| {
+        let bytes = vec![7u8; 300_000];
+        dispatch(
+            &paths,
+            &engine,
+            Transfer::Chunk {
+                id: id.clone(),
+                token: token.clone(),
+                stream_id: 0,
+                sequence,
+                offset,
+                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                sha256: hex::encode(sha2::Sha256::digest(&bytes)),
+                client_checkpoint: None,
+            },
+        )
+    };
+    let stream = chunk(0, begun.streams[0].next_sequence).unwrap().streams[0].clone();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+
+    // Paused in the app, the transfer ends and the receiver keeps its token. A restart begins,
+    // and a chunk of the transfer that ended reaches the receiver before the restart does.
+    engine.pause(&id).unwrap();
+    let restarted = begin_as_this_process(&engine, &id, true);
+    assert!(chunk(stream.offset, stream.next_sequence).is_err());
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+    assert_eq!(engine.browser_transfer_job(&id).unwrap().1, restarted);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_chunk_that_carries_the_token_of_a_transfer_of_an_earlier_session_is_refused() {
+    use crate::browser_transfer::{dispatch, Command as Transfer};
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    let (root, paths, id) = browser_quota_job(
+        "browser-session",
+        "https://example.test/browser-session.bin".into(),
+        |job| job.browser_transfer_authorized = true,
+    );
+    let engine = Engine::open(paths.clone()).unwrap();
+    let queue = engine.snapshot().settings.queues[0].id.clone();
+    let started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    let begun = dispatch(
+        &paths,
+        &engine,
+        Transfer::Begin {
+            id: id.clone(),
+            total: Some(4_000_000),
+            etag: Some("\"browser-session\"".into()),
+            restart: false,
+            sender_pid: Some(std::process::id()),
+            sender_started_at: Some(started_at),
+        },
+    )
+    .unwrap();
+    let token = begun.token.clone().unwrap();
+    let chunk = |engine: &Engine, offset: u64, sequence: u64| {
+        let bytes = vec![7u8; 300_000];
+        dispatch(
+            &paths,
+            engine,
+            Transfer::Chunk {
+                id: id.clone(),
+                token: token.clone(),
+                stream_id: 0,
+                sequence,
+                offset,
+                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                sha256: hex::encode(sha2::Sha256::digest(&bytes)),
+                client_checkpoint: None,
+            },
+        )
+    };
+    let stream = chunk(&engine, 0, begun.streams[0].next_sequence)
+        .unwrap()
+        .streams[0]
+        .clone();
+    engine.shutdown();
+
+    // In the next session a restart begins, and a chunk of the earlier session's transfer reaches
+    // the receiver before the restart does.
+    let engine = Engine::open(paths.clone()).unwrap();
+    let restarted = begin_as_this_process(&engine, &id, true);
+    let late = chunk(&engine, stream.offset, stream.next_sequence);
+    let consumed = consumed_quota_bytes(&engine, &queue);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+    // The extension takes a generation only as a safe integer.
+    let safe = |generation: u64| (1..1 << 53).contains(&generation);
+    assert_eq!(
+        (
+            late.is_err(),
+            consumed,
+            safe(begun.sender_generation.unwrap()),
+            safe(restarted)
+        ),
+        (true, 300_000, true, true)
+    );
+}
+
+#[test]
+fn a_browser_transfer_counts_its_bytes_once_until_the_user_starts_it_over() {
+    use crate::browser_transfer::{dispatch, Command as Transfer, Response};
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    let root = std::env::temp_dir().join(format!(
+        "ssdownload-engine-browser-count-{}",
+        Uuid::new_v4()
+    ));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let engine = Engine::open(paths.clone()).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.experimental_browser_transfer = true;
+    engine.update_settings(settings).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(AddRequest {
+            filename: Some("browser-count.bin".into()),
+            page_url: Some("https://example.test/watch/browser-count".into()),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..file_request(
+                "https://example.test/browser-count.bin".into(),
+                &root.join("out"),
+            )
+        })
+        .unwrap()
+        .remove(0);
+    engine.shutdown();
+    // Stands in for the desktop, which authorizes a job for a transfer, and for an exited sender,
+    // which takes the authorization back.
+    let authorize = |authorized: bool| {
+        let mut store = Store::open(&paths.database).unwrap();
+        let mut job = store
+            .load_jobs()
+            .unwrap()
+            .into_iter()
+            .find(|job| job.id == id)
+            .unwrap();
+        job.request.start_at = None;
+        job.state = JobState::Paused;
+        job.browser_transfer_authorized = authorized;
+        store.save_job(&job).unwrap();
+    };
+    let sender_started_at =
+        process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+            .unwrap();
+    let begin = |engine: &Engine, restart: bool| -> Response {
+        dispatch(
+            &paths,
+            engine,
+            Transfer::Begin {
+                id: id.clone(),
+                total: Some(4_000_000),
+                etag: Some("\"browser-count\"".into()),
+                restart,
+                sender_pid: Some(std::process::id()),
+                sender_started_at: Some(sender_started_at),
+            },
+        )
+        .unwrap()
+    };
+    // The extension's side: a begin, then a chunk of each of `lengths` bytes, then the release.
+    let transfer = |engine: &Engine, restart: bool, lengths: &[usize]| {
+        let begun = begin(engine, restart);
+        let token = begun.token.clone().unwrap();
+        let mut stream = begun.streams[0].clone();
+        for &length in lengths {
+            let bytes = vec![7u8; length];
+            stream = dispatch(
+                &paths,
+                engine,
+                Transfer::Chunk {
+                    id: id.clone(),
+                    token: token.clone(),
+                    stream_id: 0,
+                    sequence: stream.next_sequence,
+                    offset: stream.offset,
+                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    sha256: hex::encode(sha2::Sha256::digest(&bytes)),
+                    client_checkpoint: None,
+                },
+            )
+            .unwrap()
+            .streams[0]
+                .clone();
+        }
+        dispatch(
+            &paths,
+            engine,
+            Transfer::Release {
+                id: id.clone(),
+                generation: begun.sender_generation.unwrap(),
+            },
+        )
+        .unwrap();
+    };
+
+    authorize(true);
+    let engine = Engine::open(paths.clone()).unwrap();
+    transfer(&engine, false, &[300_000]);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 300_000);
+
+    // A begin that ends before its first chunk, and the one after it.
+    transfer(&engine, false, &[]);
+    transfer(&engine, false, &[100_000]);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 400_000);
+
+    // A begin, the app closed before its first chunk, and a begin in the next session.
+    begin(&engine, false);
+    engine.shutdown();
+    let engine = Engine::open(paths.clone()).unwrap();
+    transfer(&engine, false, &[100_000]);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 500_000);
+
+    // The authorization taken back, and the transfer begun again from a source refresh.
+    engine.shutdown();
+    authorize(false);
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    transfer(&engine, false, &[100_000]);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 600_000);
+
+    // The bytes the receiver had committed are lost, so the transfer fetches them again.
+    let work = engine
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .work_dir
+        .clone()
+        .unwrap();
+    fs::remove_dir_all(work.join("browser-transfer")).unwrap();
+    // A begin that ends before its first chunk leaves the job with the bytes the receiver has.
+    transfer(&engine, false, &[]);
+    let snapshot = engine.snapshot();
+    let job = snapshot.jobs.iter().find(|job| job.id == id).unwrap();
+    assert_eq!((job.state, job.downloaded), (JobState::Paused, 0));
+    transfer(&engine, false, &[300_000, 300_000]);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 600_000);
+
+    // A restart downloads the file again from the first byte.
+    transfer(&engine, true, &[200_000]);
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 800_000);
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
 }
@@ -923,7 +1893,7 @@ fn exited_native_sender_pauses_without_an_idle_timeout() {
 
     let engine = Engine::open(paths).unwrap();
     let (_, generation) = engine
-        .begin_browser_transfer(&id, sender.id(), sender_started_at)
+        .begin_browser_transfer(&id, sender.id(), sender_started_at, false)
         .unwrap();
     sender.kill().unwrap();
     sender.wait().unwrap();
@@ -1958,8 +2928,17 @@ fn a_browser_hand_over_clears_the_ranges_of_the_bytes_it_drops() {
     let sender_started_at =
         process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .unwrap();
+    let paused = job_of(&engine, &id);
+    let (_, generation) = engine
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
+        .unwrap();
+    // Until the receiver is ready the job is as it was.
+    let waiting = job_of(&engine, &id);
+    assert_eq!(waiting.downloaded, paused.downloaded);
+    assert_eq!(waiting.ranges.as_deref(), Some(&REPORTED_RANGES[..]));
+    // The receiver starts the download over.
     engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .browser_transfer_prepared(&id, generation, 0)
         .unwrap();
     let handed_over = job_of(&engine, &id);
     assert_eq!(handed_over.downloaded, 0);
@@ -2045,6 +3024,96 @@ fn a_source_refresh_that_keeps_the_bytes_keeps_their_ranges() {
     let refreshed = job_of(&engine, &id);
     assert_eq!(refreshed.ranges.as_deref(), Some(&REPORTED_RANGES[..]));
     assert_eq!(refreshed.resumable, None);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn downloaded(bytes: &[u64]) -> Vec<TransferProgress> {
+    bytes
+        .iter()
+        .map(|&downloaded| TransferProgress {
+            downloaded,
+            ..TransferProgress::default()
+        })
+        .collect()
+}
+
+/// Sends the event `event` makes for each generation a job's worker can have. A worker's
+/// generation is not visible; the engine ignores the events that are not its worker's.
+fn send_to_the_worker(engine: &Engine, event: &dyn Fn(u64) -> WorkerEvent) {
+    for generation in 1..=8 {
+        engine
+            .inner
+            .sender
+            .send(Message::Worker(event(generation)))
+            .unwrap();
+    }
+}
+
+/// Reports each of `bytes` as the job's downloaded size, as its worker does.
+fn report_downloaded(engine: &Engine, id: &str, bytes: &[u64]) {
+    for value in downloaded(bytes) {
+        send_to_the_worker(engine, &|generation| WorkerEvent::Progress {
+            id: id.to_owned(),
+            generation,
+            value: value.clone(),
+        });
+    }
+}
+
+#[test]
+fn bytes_a_job_reports_again_after_its_count_fell_are_counted_once() {
+    assert_eq!(
+        quota_consumed_by_a_job_that_reports(&downloaded(&[600_000, 400_000, 700_000]), 700_000),
+        700_000
+    );
+}
+
+#[test]
+fn a_media_run_that_starts_again_counts_only_the_bytes_beyond_where_the_last_run_got() {
+    // yt-dlp, started again (a new speed limit, a stall, a lost fragment), first reports the files
+    // it has finished, then the partial file it resumes, then what it fetches on.
+    let first_run: [u64; 3] = [200_000, 350_000, 500_000];
+    let second_run: [u64; 4] = [200_000, 500_000, 650_000, 800_000];
+    let reports = downloaded(&[&first_run[..], &second_run[..]].concat());
+    assert_eq!(
+        quota_consumed_by_a_job_that_reports(&reports, 800_000),
+        800_000
+    );
+}
+
+#[test]
+fn every_run_of_a_live_recording_counts_in_full() {
+    // A stopped live recording cannot continue its file, so the run that resumes it records new
+    // content. The reports stand in for yt-dlp's, which start every run of a recording at zero.
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-quota-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/live.bin".into(), vec![4; 4096], true)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let queue = give_the_default_queue_a_quota(&engine);
+    let id = engine
+        .add(AddRequest {
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..file_request(server.url("/live.bin"), &root.join("out"))
+        })
+        .unwrap()
+        .remove(0);
+    mark_as_live_recording(&id);
+    let runs = || server.hits.lock().unwrap().len();
+    engine.start_now(&id).unwrap();
+    wait_until("the first run", || runs() == 1);
+    report_downloaded(&engine, &id, &[200_000, 500_000]);
+    engine.pause(&id).unwrap();
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 500_000);
+
+    engine.resume(&id).unwrap();
+    wait_until("the second run", || runs() == 2);
+    report_downloaded(&engine, &id, &[0, 100_000, 300_000]);
+    server.release();
+    wait_until("the recording to end", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+
+    assert_eq!(consumed_quota_bytes(&engine, &queue), 800_000);
     engine.shutdown();
     fs::remove_dir_all(root).unwrap();
 }
@@ -2520,7 +3589,7 @@ fn pausing_a_browser_transfer_releases_the_permits_of_its_open_requests() {
         process_started_at(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .unwrap();
     let (_, generation) = engine
-        .begin_browser_transfer(&id, std::process::id(), sender_started_at)
+        .begin_browser_transfer(&id, std::process::id(), sender_started_at, false)
         .unwrap();
     let limit = usize::from(engine.snapshot().settings.per_host_limit);
     for index in 0..limit {
@@ -3150,6 +4219,153 @@ mod retry_budget {
             })
             .unwrap_or_default();
         assert!(left.is_empty(), "partial files left behind: {left:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_retry_that_reports_less_than_the_attempt_before_it_counts_only_the_bytes_beyond_it() {
+        // The reports are those of the app's HLS downloader: a failed attempt has reported its
+        // stored segments and the part of a segment still coming, and the next attempt starts
+        // from the stored segments. The server holds every answer back for two seconds, so each
+        // attempt waits while its reports go in, and answers the first attempt's probe with 500.
+        let server = Server::start(Config {
+            size: 64 * 1024,
+            scripted: vec![Scripted {
+                status: 500,
+                retry_after: None,
+            }],
+            latency: Some(Duration::from_secs(2)),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-quota-once");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        let queue = give_the_default_queue_a_quota(&engine);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        wait_until("the first attempt", || attempts_made(&server) == 1);
+        report_downloaded(&engine, &id, &[400_000, 1_100_000]);
+        wait_until("the retry", || attempts_made(&server) == 2);
+        report_downloaded(&engine, &id, &[1_000_000, 1_200_000, 1_500_000]);
+        let path = engine
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|job| job.id == id)
+            .unwrap()
+            .path
+            .clone();
+        send_to_the_worker(&engine, &|generation| WorkerEvent::Finished {
+            id: id.clone(),
+            generation,
+            result: Ok(TransferResult {
+                path: path.clone(),
+                bytes: 1_500_000,
+                warning: None,
+            }),
+        });
+        wait_until("the job", || job_state(&engine, &id) == JobState::Completed);
+
+        assert_eq!(consumed_quota_bytes(&engine, &queue), 1_500_000);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn retrying_a_download_that_failed_and_kept_nothing_counts_its_bytes_again() {
+        // A SHA-256 that does not match deletes the file, so each retry, which only the user
+        // starts, downloads it again from the beginning.
+        let size = MIB;
+        let server = Server::start(Config {
+            size,
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-quota-again");
+        let engine = engine_with_retry_limit(&root.0, 1);
+        let queue = give_the_default_queue_a_quota(&engine);
+        let id = add_download(&engine, &server, &root.0.join("out"), Some(&"0".repeat(64)));
+        assert_eq!(finished_job(&engine, &id).state, JobState::Failed);
+        assert_eq!(consumed_quota_bytes(&engine, &queue), size);
+
+        engine.retry_failed().unwrap();
+        assert_eq!(finished_job(&engine, &id).state, JobState::Failed);
+        assert_eq!(consumed_quota_bytes(&engine, &queue), 2 * size);
+
+        // So does a retry after the app was closed in between.
+        engine.shutdown();
+        let engine = Engine::open(AppPaths::new(root.0.clone()).unwrap()).unwrap();
+        engine.retry_failed().unwrap();
+        assert_eq!(finished_job(&engine, &id).state, JobState::Failed);
+        assert_eq!(consumed_quota_bytes(&engine, &queue), 3 * size);
+        assert_eq!(server.body_bytes_sent(), 3 * size);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn retrying_a_download_that_failed_and_kept_bytes_does_not_count_them_again() {
+        // Slow enough for the attempt to report bytes before its connection is cut.
+        let size = MIB;
+        let server = Server::start(Config {
+            size,
+            throttle: Some(512 * 1024),
+            cut_body: Some(CutBody {
+                after_bytes: 300 * 1024,
+                responses: 1,
+            }),
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-quota-kept");
+        let engine = engine_with_retry_limit(&root.0, 0);
+        let queue = give_the_default_queue_a_quota(&engine);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+        assert_eq!(finished_job(&engine, &id).state, JobState::Failed);
+        assert!(consumed_quota_bytes(&engine, &queue) > 0);
+
+        engine.retry_failed().unwrap();
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+        assert_eq!(consumed_quota_bytes(&engine, &queue), size);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_source_refresh_that_goes_on_counts_only_the_bytes_beyond_the_most_the_job_counted() {
+        // The attempt's last report is below the most it reported, as when a downloader that
+        // started again reports the bytes it kept, and then its address has expired. The server
+        // holds its answers back for two seconds, so the reports go in while the attempt waits,
+        // and refuses the probe and the GET it falls back to.
+        let refused = Scripted {
+            status: 403,
+            retry_after: None,
+        };
+        let old = Server::start(Config {
+            size: MIB,
+            scripted: vec![refused.clone(), refused],
+            latency: Some(Duration::from_secs(2)),
+            ..Config::default()
+        });
+        let new = Server::start(Config {
+            size: MIB,
+            ..Config::default()
+        });
+        let root = TempDir::new("refresh-quota");
+        let engine = engine_with_retry_limit(&root.0, 0);
+        let queue = give_the_default_queue_a_quota(&engine);
+        let id = add_download_from_page(&engine, &old, &root.0.join("out"));
+        wait_until("the first request", || attempts_made(&old) == 1);
+        report_downloaded(&engine, &id, &[600_000, 400_000]);
+        wait_until("the job to wait for a new source", || {
+            job_state(&engine, &id) == JobState::AwaitingSource
+        });
+
+        let ticket = engine.begin_source_refresh(&id).unwrap();
+        let mut request = (*ticket.request).clone();
+        request.url = new.url("/payload.bin");
+        engine
+            .complete_source_refresh(&id, &ticket.token, request, false)
+            .unwrap();
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+
+        assert_eq!(consumed_quota_bytes(&engine, &queue), MIB);
         engine.shutdown();
     }
 

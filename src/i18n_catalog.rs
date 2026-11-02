@@ -332,7 +332,6 @@ static AR: &[(&str, &str)] = &[
     ("Install", "تثبيت"),
     ("Install missing", "تثبيت المفقود"),
     ("Install the extension in browsers...", "تثبيت الإضافة في المتصفحات..."),
-    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "تثبيت: تنزيل التحديث والتحقق منه ثم تثبيته. تخطّي: عدم السؤال عن هذا الإصدار مرة أخرى. لاحقًا: تذكيري لاحقًا."),
     ("Installed", "مثبّت"),
     ("Interface language:", "اللغة:"),
     ("Interface level:", "مستوى الواجهة:"),
@@ -489,7 +488,6 @@ static AR: &[(&str, &str)] = &[
     ("No pending job", "لا توجد مهمة معلّقة"),
     ("No proxy", "بدون خادم وكيل"),
     ("No refreshable source page was saved for this job.", "لم يُحفظ أي صفحة مصدر قابلة للتحديث لهذه المهمة."),
-    ("No release notes provided.", "لا توجد ملاحظات حول الإصدار."),
     ("No running SSDownload instance was found", "لم يُعثر على نسخة SSDownload قيد التشغيل"),
     ("No suitable stable yt-dlp release was found", "لم يُعثر على إصدار مستقر مناسب من yt-dlp"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "لا توجد معلومات عن الأدوات بعد. يقوم زر «تثبيت المفقود» بتنزيل الإصدارات الأصلية الآمنة لأي أداة مفقودة."),
@@ -517,7 +515,6 @@ static AR: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "فتح في متجر Chrome الإلكتروني"),
     ("Open log folder", "فتح مجلد السجلات"),
     ("Open page", "فتح الصفحة"),
-    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "فتح الصفحة: افتح صفحة التنزيل. تخطّي: عدم السؤال عن هذا الإصدار مرة أخرى. لاحقًا: تذكيري لاحقًا."),
     ("Open the error details.", "افتح تفاصيل الخطأ."),
     ("Open the extension folder", "فتح مجلد الإضافة"),
     ("Open the file", "فتح الملف"),
@@ -1384,6 +1381,7 @@ static AR: &[(&str, &str)] = &[
     ("Unsupported tool manifest version", "إصدار manifest الأداة غير مدعوم"),
     ("Untitled media", "وسائط بلا عنوان"),
     ("Update all", "تحديث الكل"),
+    ("Update now?", "هل تريد التحديث الآن؟"),
     ("Update the application and extension", "حدّث التطبيق والإضافة"),
     ("Usage mode:", "وضع الاستخدام:"),
     ("Usage modes (applies in Advanced mode):", "أوضاع الاستخدام (تُطبَّق في الوضع المتقدم):"),
@@ -1445,7 +1443,6 @@ static AR: &[(&str, &str)] = &[
     ("file", "ملف"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "مقطع التهيئة"),
-    ("is ready. Would you like to update now?", "جاهز. هل تريد التحديث الآن؟"),
     ("items: 1-10,15", "العناصر: 1-10,15"),
     ("job", "مهمة"),
     ("jobs", "مهام"),
@@ -1814,7 +1811,6 @@ static ES: &[(&str, &str)] = &[
     ("Install", "Instalar"),
     ("Install missing", "Instalar faltantes"),
     ("Install the extension in browsers...", "Instalar la extensión en los navegadores..."),
-    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "Instalar: descargar, verificar e instalar. Omitir: no volver a preguntar por esta versión. Más tarde: recordar más tarde."),
     ("Installed", "Instalado"),
     ("Interface language:", "Idioma:"),
     ("Interface level:", "Nivel de la interfaz:"),
@@ -1971,7 +1967,6 @@ static ES: &[(&str, &str)] = &[
     ("No pending job", "No hay tareas pendientes"),
     ("No proxy", "Sin proxy"),
     ("No refreshable source page was saved for this job.", "No se guardó ninguna página de origen actualizable para esta tarea."),
-    ("No release notes provided.", "No se proporcionaron notas de la versión."),
     ("No running SSDownload instance was found", "No se encontró ninguna instancia de SSDownload en ejecución"),
     ("No suitable stable yt-dlp release was found", "No se encontró ninguna versión estable adecuada de yt-dlp"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Todavía no hay información de herramientas. El botón de instalación descarga versiones seguras del proyecto original de lo que falte."),
@@ -1999,7 +1994,6 @@ static ES: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "Abrir en Chrome Web Store"),
     ("Open log folder", "Abrir carpeta de registros"),
     ("Open page", "Abrir página"),
-    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "Abrir página: abrir la página de descarga. Omitir: no volver a preguntar por esta versión. Más tarde: recordar más adelante."),
     ("Open the error details.", "Abrir los detalles del error."),
     ("Open the extension folder", "Abrir la carpeta de la extensión"),
     ("Open the file", "Abrir el archivo"),
@@ -2866,6 +2860,7 @@ static ES: &[(&str, &str)] = &[
     ("Unsupported tool manifest version", "Versión de manifiesto de herramienta no admitida"),
     ("Untitled media", "Contenido multimedia sin título"),
     ("Update all", "Actualizar todo"),
+    ("Update now?", "¿Actualizar ahora?"),
     ("Update the application and extension", "Actualizar la aplicación y la extensión"),
     ("Usage mode:", "Modo de uso:"),
     ("Usage modes (applies in Advanced mode):", "Modos de uso (se aplican en el modo avanzado):"),
@@ -2927,7 +2922,6 @@ static ES: &[(&str, &str)] = &[
     ("file", "archivo"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "segmento de inicialización"),
-    ("is ready. Would you like to update now?", "está disponible. ¿Desea actualizar ahora?"),
     ("items: 1-10,15", "elementos: 1-10,15"),
     ("job", "tarea"),
     ("jobs", "tareas"),
@@ -3296,7 +3290,6 @@ static PT: &[(&str, &str)] = &[
     ("Install", "Instalar"),
     ("Install missing", "Instalar ausentes"),
     ("Install the extension in browsers...", "Instalar a extensão nos navegadores..."),
-    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "Instalar: baixar, verificar e instalar. Pular: não perguntar de novo sobre esta versão. Mais tarde: lembrar depois."),
     ("Installed", "Instalado"),
     ("Interface language:", "Idioma:"),
     ("Interface level:", "Nível da interface:"),
@@ -3453,7 +3446,6 @@ static PT: &[(&str, &str)] = &[
     ("No pending job", "Nenhuma tarefa pendente"),
     ("No proxy", "Sem proxy"),
     ("No refreshable source page was saved for this job.", "Nenhuma página de origem atualizável foi salva para esta tarefa."),
-    ("No release notes provided.", "Nenhuma nota de versão fornecida."),
     ("No running SSDownload instance was found", "Nenhuma instância em execução do SSDownload foi encontrada"),
     ("No suitable stable yt-dlp release was found", "Nenhuma versão estável adequada do yt-dlp foi encontrada"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Ainda não há informações de ferramentas. O botão Instalar ausentes baixa versões upstream seguras para o que estiver faltando."),
@@ -3481,7 +3473,6 @@ static PT: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "Abrir na Chrome Web Store"),
     ("Open log folder", "Abrir pasta de logs"),
     ("Open page", "Abrir página"),
-    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "Abrir página: abre a página de download. Pular: não perguntar de novo sobre esta versão. Mais tarde: lembrar depois."),
     ("Open the error details.", "Abra os detalhes do erro."),
     ("Open the extension folder", "Abrir a pasta da extensão"),
     ("Open the file", "Abrir o arquivo"),
@@ -4348,6 +4339,7 @@ static PT: &[(&str, &str)] = &[
     ("Unsupported tool manifest version", "Versão de manifesto de ferramenta não suportada"),
     ("Untitled media", "Mídia sem título"),
     ("Update all", "Atualizar tudo"),
+    ("Update now?", "Atualizar agora?"),
     ("Update the application and extension", "Atualize o aplicativo e a extensão"),
     ("Usage mode:", "Modo de uso:"),
     ("Usage modes (applies in Advanced mode):", "Modos de uso (válido no modo Avançado):"),
@@ -4409,7 +4401,6 @@ static PT: &[(&str, &str)] = &[
     ("file", "arquivo"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "segmento de inicialização"),
-    ("is ready. Would you like to update now?", "está pronta. Deseja atualizar agora?"),
     ("items: 1-10,15", "itens: 1-10,15"),
     ("job", "tarefa"),
     ("jobs", "tarefas"),
@@ -4778,7 +4769,6 @@ static FR: &[(&str, &str)] = &[
     ("Install", "Installer"),
     ("Install missing", "Installer manquants"),
     ("Install the extension in browsers...", "Installer l'extension dans les navigateurs..."),
-    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "Installer : télécharger, vérifier et installer. Ignorer : ne plus demander pour cette version. Plus tard : me le rappeler plus tard."),
     ("Installed", "Installé"),
     ("Interface language:", "Langue :"),
     ("Interface level:", "Niveau de l'interface :"),
@@ -4935,7 +4925,6 @@ static FR: &[(&str, &str)] = &[
     ("No pending job", "Aucune tâche en attente"),
     ("No proxy", "Aucun proxy"),
     ("No refreshable source page was saved for this job.", "Aucune page source actualisable n'a été enregistrée pour cette tâche."),
-    ("No release notes provided.", "Aucune note de version fournie."),
     ("No running SSDownload instance was found", "Aucune instance SSDownload en cours d'exécution n'a été trouvée"),
     ("No suitable stable yt-dlp release was found", "Aucune version stable adaptée de yt-dlp n'a été trouvée"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Aucune information sur les outils pour l'instant. Le bouton Installer les manquants télécharge les versions amont sûres pour les éléments absents."),
@@ -4963,7 +4952,6 @@ static FR: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "Ouvrir dans le Chrome Web Store"),
     ("Open log folder", "Ouvrir le dossier journaux"),
     ("Open page", "Ouvrir la page"),
-    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "Ouvrir la page : ouvrir la page de téléchargement. Ignorer : ne plus demander pour cette version. Plus tard : me le rappeler plus tard."),
     ("Open the error details.", "Ouvrez les détails de l'erreur."),
     ("Open the extension folder", "Ouvrir le dossier de l'extension"),
     ("Open the file", "Ouvrir le fichier"),
@@ -5830,6 +5818,7 @@ static FR: &[(&str, &str)] = &[
     ("Unsupported tool manifest version", "Version de manifeste d'outil non prise en charge"),
     ("Untitled media", "Média sans titre"),
     ("Update all", "Tout mettre à jour"),
+    ("Update now?", "Mettre à jour maintenant ?"),
     ("Update the application and extension", "Mettez à jour l'application et l'extension"),
     ("Usage mode:", "Mode d'utilisation :"),
     ("Usage modes (applies in Advanced mode):", "Modes d'utilisation (s'applique en mode avancé) :"),
@@ -5891,7 +5880,6 @@ static FR: &[(&str, &str)] = &[
     ("file", "fichier"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "segment d'initialisation"),
-    ("is ready. Would you like to update now?", "est prête. Voulez-vous la mettre à jour maintenant ?"),
     ("items: 1-10,15", "éléments : 1-10,15"),
     ("job", "tâche"),
     ("jobs", "tâches"),
@@ -6260,7 +6248,6 @@ static DE: &[(&str, &str)] = &[
     ("Install", "Installieren"),
     ("Install missing", "Fehlende installieren"),
     ("Install the extension in browsers...", "Erweiterung in Browsern installieren..."),
-    ("Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.", "Installieren: herunterladen, prüfen und installieren. Überspringen: zu dieser Version nicht erneut fragen. Später: erneut später erinnern."),
     ("Installed", "Installiert"),
     ("Interface language:", "Sprache:"),
     ("Interface level:", "Umfang der Oberfläche:"),
@@ -6417,7 +6404,6 @@ static DE: &[(&str, &str)] = &[
     ("No pending job", "Kein ausstehender Auftrag"),
     ("No proxy", "Kein Proxy"),
     ("No refreshable source page was saved for this job.", "Für diesen Auftrag wurde keine aktualisierbare Quellseite gespeichert."),
-    ("No release notes provided.", "Keine Versionshinweise verfügbar."),
     ("No running SSDownload instance was found", "Keine laufende SSDownload-Instanz gefunden"),
     ("No suitable stable yt-dlp release was found", "Es wurde kein geeignetes stabiles yt-dlp-Release gefunden"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Noch keine Werkzeuginformationen. Die Schaltfläche „Fehlende installieren“ lädt für alles Fehlende sichere Upstream-Versionen herunter."),
@@ -6445,7 +6431,6 @@ static DE: &[(&str, &str)] = &[
     ("Open in the Chrome Web Store", "Im Chrome Web Store öffnen"),
     ("Open log folder", "Protokollordner öffnen"),
     ("Open page", "Seite öffnen"),
-    ("Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.", "Seite öffnen: die Download-Seite öffnen. Überspringen: zu dieser Version nicht erneut fragen. Später: erneut später erinnern."),
     ("Open the error details.", "Fehlerdetails öffnen."),
     ("Open the extension folder", "Erweiterungsordner öffnen"),
     ("Open the file", "Datei öffnen"),
@@ -7312,6 +7297,7 @@ static DE: &[(&str, &str)] = &[
     ("Unsupported tool manifest version", "Nicht unterstützte Version des Werkzeugmanifests"),
     ("Untitled media", "Medium ohne Titel"),
     ("Update all", "Alle aktualisieren"),
+    ("Update now?", "Jetzt aktualisieren?"),
     ("Update the application and extension", "Aktualisieren Sie die Anwendung und die Erweiterung"),
     ("Usage mode:", "Verwendungszweck:"),
     ("Usage modes (applies in Advanced mode):", "Verwendungszwecke (gilt im erweiterten Modus):"),
@@ -7373,7 +7359,6 @@ static DE: &[(&str, &str)] = &[
     ("file", "Datei"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "Initialisierungssegment"),
-    ("is ready. Would you like to update now?", "ist bereit. Möchten Sie jetzt aktualisieren?"),
     ("items: 1-10,15", "Einträge: 1-10,15"),
     ("job", "Auftrag"),
     ("jobs", "Aufträge"),
@@ -7699,6 +7684,9 @@ macro_rules! __ui_template_ar {
     };
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "جارٍ تثبيت SSDownload {0}. سيُعاد تشغيل التطبيق قريبًا. سيُنقل ملف المثبّت إلى مجلد العزل عند إعادة فتح التطبيق."
+    };
+    ("SSDownload {new} is available. You have {current}.") => {
+        "SSDownload {new} متاح. لديك الإصدار {current}."
     };
     ("Save to: {0}") => {
         "الحفظ في: {0}"
@@ -8116,6 +8104,9 @@ macro_rules! __ui_template_ar {
     };
     ("Waiting for the file lock failed with a Windows error (Win32 error code {code}: {error}).") => {
         "فشل الانتظار لقفل الملف بسبب خطأ Windows (رمز خطأ Win32: {code}: {error})."
+    };
+    ("What's new in {0}") => {
+        "ما الجديد في الإصدار {0}"
     };
     ("client version {0}") => {
         "إصدار العميل {0}"
@@ -8563,6 +8554,9 @@ macro_rules! __ui_template_es {
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "Se está instalando SSDownload {0}. La aplicación se reiniciará en breve. El archivo del instalador se moverá a la carpeta de cuarentena cuando la aplicación se vuelva a abrir."
     };
+    ("SSDownload {new} is available. You have {current}.") => {
+        "SSDownload {new} está disponible. Tiene la versión {current}."
+    };
     ("Save to: {0}") => {
         "Guardar en: {0}"
     };
@@ -8979,6 +8973,9 @@ macro_rules! __ui_template_es {
     };
     ("Waiting for the file lock failed with a Windows error (Win32 error code {code}: {error}).") => {
         "La espera del bloqueo del archivo ha fallado con un error de Windows (código de error Win32 {code}: {error})."
+    };
+    ("What's new in {0}") => {
+        "Novedades de la versión {0}"
     };
     ("client version {0}") => {
         "versión del cliente {0}"
@@ -9426,6 +9423,9 @@ macro_rules! __ui_template_pt {
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "O SSDownload {0} está sendo instalado. O aplicativo será reiniciado em breve. O arquivo do instalador será movido para a pasta de quarentena quando o aplicativo for reaberto."
     };
+    ("SSDownload {new} is available. You have {current}.") => {
+        "SSDownload {new} está disponível. Você usa a versão {current}."
+    };
     ("Save to: {0}") => {
         "Salvar em: {0}"
     };
@@ -9842,6 +9842,9 @@ macro_rules! __ui_template_pt {
     };
     ("Waiting for the file lock failed with a Windows error (Win32 error code {code}: {error}).") => {
         "A espera pelo bloqueio do arquivo falhou com um erro do Windows (código de erro Win32 {code}: {error})."
+    };
+    ("What's new in {0}") => {
+        "Novidades da versão {0}"
     };
     ("client version {0}") => {
         "versão do cliente {0}"
@@ -10289,6 +10292,9 @@ macro_rules! __ui_template_fr {
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "SSDownload {0} est en cours d'installation. L'application redémarrera sous peu. Le fichier d'installation sera déplacé dans le dossier de quarantaine à la réouverture de l'application."
     };
+    ("SSDownload {new} is available. You have {current}.") => {
+        "SSDownload {new} est disponible. Vous utilisez la version {current}."
+    };
     ("Save to: {0}") => {
         "Enregistrer dans : {0}"
     };
@@ -10705,6 +10711,9 @@ macro_rules! __ui_template_fr {
     };
     ("Waiting for the file lock failed with a Windows error (Win32 error code {code}: {error}).") => {
         "L'attente du verrou de fichier a échoué avec une erreur Windows (code d'erreur Win32 {code} : {error})."
+    };
+    ("What's new in {0}") => {
+        "Nouveautés de la version {0}"
     };
     ("client version {0}") => {
         "version du client {0}"
@@ -11152,6 +11161,9 @@ macro_rules! __ui_template_de {
     ("SSDownload {0} is installing. The application will restart shortly. The installer file will move to the quarantine folder when the application reopens.") => {
         "SSDownload {0} wird installiert. Die Anwendung wird in Kürze neu gestartet. Die Installationsdatei wird beim erneuten Öffnen der Anwendung in den Quarantäne-Ordner verschoben."
     };
+    ("SSDownload {new} is available. You have {current}.") => {
+        "SSDownload {new} ist verfügbar. Sie verwenden {current}."
+    };
     ("Save to: {0}") => {
         "Speichern unter: {0}"
     };
@@ -11568,6 +11580,9 @@ macro_rules! __ui_template_de {
     };
     ("Waiting for the file lock failed with a Windows error (Win32 error code {code}: {error}).") => {
         "Das Warten auf die Dateisperre ist mit einem Windows-Fehler fehlgeschlagen (Win32-Fehlercode {code}: {error})."
+    };
+    ("What's new in {0}") => {
+        "Neuerungen in Version {0}"
     };
     ("client version {0}") => {
         "Client-Version {0}"

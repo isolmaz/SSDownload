@@ -620,39 +620,49 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
-/// Native MB_YESNO update offer, matching the application's message style.
-/// "Hayır" keeps the current version and retries on a later day; "Evet"
-/// downloads, verifies and installs; the third button skips this version.
+/// Native update offer, matching the application's message style: one line naming the
+/// offered and the running version, the question, and a link to the release page for the
+/// details. The first button downloads, verifies and installs (a portable copy opens the
+/// release page instead), the second skips this version, the third postpones the offer.
 pub fn offer_update(
     manifest: &crate::update::UpdateManifest,
 ) -> Option<crate::update::UpdateDecision> {
-    let installed = crate::update::is_installed_copy();
+    offer_update_with(
+        manifest,
+        env!("CARGO_PKG_VERSION"),
+        crate::update::is_installed_copy(),
+        crate::update::RELEASES_PAGE,
+        crate::update::open_in_browser,
+    )
+}
+
+fn offer_update_with(
+    manifest: &crate::update::UpdateManifest,
+    current: &str,
+    installed: bool,
+    release_page: &str,
+    open: fn(&str) -> bool,
+) -> Option<crate::update::UpdateDecision> {
     let body = format!(
-        "SSDownload {} {}\n\n{}\n\n{}",
-        manifest.version,
-        crate::i18n::ui(
-            "hazır. Şimdi güncellemek ister misiniz?",
-            "is ready. Would you like to update now?",
+        "{}\n\n{}",
+        crate::i18n::ui_format!(
+            "SSDownload {new} hazır. Kullandığınız sürüm: {current}.",
+            "SSDownload {new} is available. You have {current}.",
+            new = manifest.version,
+            current = current,
         ),
-        if manifest.notes.is_empty() {
-            crate::i18n::ui("Sürüm notları verilmedi.", "No release notes provided.")
-        } else {
-            manifest.notes.as_str()
-        },
-        // A portable copy never runs the silent Setup: its update opens the
-        // release page, so the offer must not promise an install.
-        if installed {
-            crate::i18n::ui(
-                "Kur: indir, doğrula ve kur. Atla: bu sürümü bir daha sorma. Daha sonra: sonra hatırlat.",
-                "Install: download, verify and install. Skip: do not ask about this version again. Later: remind me later.",
-            )
-        } else {
-            crate::i18n::ui(
-                "Sayfayı aç: indirme sayfasını aç. Atla: bu sürümü bir daha sorma. Daha sonra: sonra hatırlat.",
-                "Open page: open the download page. Skip: do not ask about this version again. Later: remind me later.",
-            )
-        },
+        crate::i18n::ui("Şimdi güncellensin mi?", "Update now?"),
     );
+    let link = AlertLink {
+        label: crate::i18n::ui_format!(
+            "{0} sürümündeki yenilikler",
+            "What's new in {0}",
+            manifest.version
+        ),
+        target: release_page.to_string(),
+        open,
+        failure: crate::update::page_not_opened_notice(release_page),
+    };
     let title = format!(
         "SSDownload {} {}",
         manifest.version,
@@ -674,12 +684,13 @@ pub fn offer_update(
         (IDNO, crate::i18n::ui("Daha sonra", "Later")),
     ];
     let answer = unsafe {
-        run_alert_buttons(
+        run_alert_linked(
             std::ptr::null_mut(),
             &body,
             &title,
             MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
             Some(&buttons),
+            Some(link),
         )
     };
     match answer {
@@ -1234,6 +1245,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             dwICC: ICC_LISTVIEW_CLASSES
                 | ICC_BAR_CLASSES
                 | ICC_PROGRESS_CLASS
+                | ICC_LINK_CLASS
                 | ICC_STANDARD_CLASSES
                 | ICC_TAB_CLASSES,
         };
@@ -7414,6 +7426,8 @@ const DARK_SELECTION: u32 = 0x6f4f2f; // COLORREF: renders RGB(47,79,111)
 /// this renders RGB(31,42,51)).
 const DARK_SELECTION_DIM: u32 = 0x332a1f;
 const DARK_ACCENT: u32 = 0xa86e2f; // COLORREF: renders RGB(47,110,168)
+/// Link text; lighter than the accent so it reads on the dark surface.
+const DARK_LINK: u32 = 0xffcd60; // COLORREF: renders RGB(96,205,255)
 /// Tab strip of the settings dialog.
 const S_TABS: i32 = 2100;
 const S_DIR: i32 = 2101;
@@ -15601,11 +15615,18 @@ mod tests {
         use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES};
 
         let offer = || {
-            super::offer_update(&UpdateManifest {
-                version: "9.9.9".into(),
-                url: "https://update.example/setup.exe".into(),
-                sha256: String::new(),
-                notes: "A release note.".into(),
+            with_common_controls_6(|| {
+                super::offer_update_with(
+                    &UpdateManifest {
+                        version: "9.9.9".into(),
+                        url: "https://update.example/setup.exe".into(),
+                        sha256: String::new(),
+                    },
+                    "9.9.8",
+                    true,
+                    "https://releases.example/v9.9.9",
+                    |_| true,
+                )
             })
         };
         let name = |decision: Option<UpdateDecision>| match decision {
@@ -15637,6 +15658,553 @@ mod tests {
         for (index, expected) in ["install", "skip", "later"].into_iter().enumerate() {
             let (decision, _) = answer_alert(offer, click_button(index));
             assert_eq!(name(decision), expected, "button {index} from the left");
+        }
+    }
+
+    /// Runs `body` with comctl32 version 6 active on this thread, the way the application's
+    /// manifest makes it for the whole process. The test executable has no manifest, and the
+    /// link control exists only in version 6.
+    fn with_common_controls_6<T>(body: impl FnOnce() -> T) -> T {
+        use windows_sys::Win32::System::ApplicationInstallationAndServicing::{
+            ActivateActCtx, CreateActCtxW, DeactivateActCtx, ReleaseActCtx, ACTCTXW,
+        };
+
+        const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency><dependentAssembly>
+    <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+  </dependentAssembly></dependency>
+</assembly>"#;
+        let path = std::env::temp_dir().join(format!(
+            "ssdownload-common-controls-{}.manifest",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, MANIFEST).unwrap();
+        let source = super::wide(&path.to_string_lossy());
+        unsafe {
+            let context = CreateActCtxW(&ACTCTXW {
+                cbSize: std::mem::size_of::<ACTCTXW>() as u32,
+                dwFlags: 0,
+                lpSource: source.as_ptr(),
+                wProcessorArchitecture: 0,
+                wLangId: 0,
+                lpAssemblyDirectory: std::ptr::null(),
+                lpResourceName: std::ptr::null(),
+                lpApplicationName: std::ptr::null(),
+                hModule: std::ptr::null_mut(),
+            });
+            let _ = std::fs::remove_file(&path);
+            assert!(
+                context as isize != -1,
+                "the manifest creates an activation context"
+            );
+            let mut cookie = 0usize;
+            assert_ne!(ActivateActCtx(context, &mut cookie), 0);
+            let result = body();
+            DeactivateActCtx(0, cookie);
+            ReleaseActCtx(context);
+            result
+        }
+    }
+
+    /// Handle, class and text of every child of an open alert, in tab order.
+    fn alert_children(alert: usize) -> Vec<(usize, String, String)> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GW_CHILD, GW_HWNDNEXT};
+
+        let mut children = Vec::new();
+        unsafe {
+            let mut child = GetWindow(alert as _, GW_CHILD);
+            while !child.is_null() {
+                children.push((
+                    child as usize,
+                    super::window_class(child),
+                    // A link control reports its length with the terminator.
+                    super::text(child).trim_end_matches('\0').to_string(),
+                ));
+                child = GetWindow(child, GW_HWNDNEXT);
+            }
+        }
+        children
+    }
+
+    fn screen_rect(window: usize) -> windows_sys::Win32::Foundation::RECT {
+        use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetWindowRect};
+
+        unsafe {
+            let mut rect: RECT = std::mem::zeroed();
+            GetWindowRect(window as _, &mut rect);
+            rect
+        }
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        for _ in 0..100 {
+            if done() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        panic!("timed out waiting until {what}");
+    }
+
+    /// The input state (focus, mouse capture) of the thread that owns `alert`.
+    fn input_state(alert: usize) -> windows_sys::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+        };
+
+        unsafe {
+            let mut info: GUITHREADINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+            GetGUIThreadInfo(
+                GetWindowThreadProcessId(alert as _, std::ptr::null_mut()),
+                &mut info,
+            );
+            info
+        }
+    }
+
+    /// The window that has the keyboard focus in the thread that owns `alert`.
+    fn focused_window(alert: usize) -> usize {
+        input_state(alert).hwndFocus as usize
+    }
+
+    /// Posts a key press to `window`. A real key goes to the window that has the focus.
+    fn post_key(window: usize, key: u16) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN};
+
+        unsafe { PostMessageW(window as _, WM_KEYDOWN, key as usize, 0) };
+    }
+
+    fn is_topmost(window: usize) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOPMOST,
+        };
+
+        unsafe { GetWindowLongPtrW(window as _, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 }
+    }
+
+    /// The update offer of the tests in English (offered 9.9.9, running 1.2.3) whose link
+    /// opens `page` through `open`.
+    fn english_offer(
+        page: &'static str,
+        open: fn(&str) -> bool,
+    ) -> Option<crate::update::UpdateDecision> {
+        with_common_controls_6(|| {
+            crate::i18n::with_language("en", || {
+                super::offer_update_with(
+                    &crate::update::UpdateManifest {
+                        version: "9.9.9".into(),
+                        url: "https://update.example/setup.exe".into(),
+                        sha256: String::new(),
+                    },
+                    "1.2.3",
+                    true,
+                    page,
+                    open,
+                )
+            })
+        })
+    }
+
+    /// Presses Tab on the offer until the link has the focus, and returns the link.
+    fn tab_to_the_link(alert: usize) -> usize {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_TAB;
+
+        let link = alert_children(alert)
+            .into_iter()
+            .find(|child| child.1 == "SysLink")
+            .expect("the offer has a link")
+            .0;
+        post_key(alert, VK_TAB);
+        wait_until("Tab reaches the link first", || {
+            focused_window(alert) == link
+        });
+        link
+    }
+
+    #[test]
+    fn the_update_offer_names_both_versions_and_is_as_tall_as_its_text() {
+        use crate::update::UpdateManifest;
+        use windows_sys::Win32::UI::{
+            HiDpi::GetDpiForWindow,
+            WindowsAndMessaging::{GetDlgCtrlID, SendMessageW, WM_GETFONT},
+        };
+
+        for info in crate::i18n::LANGUAGES.iter() {
+            let code = info.code;
+            let offer = || {
+                with_common_controls_6(|| {
+                    crate::i18n::with_language(code, || {
+                        super::offer_update_with(
+                            &UpdateManifest {
+                                version: "9.9.9".into(),
+                                url: "https://update.example/setup.exe".into(),
+                                sha256: String::new(),
+                            },
+                            "1.2.3",
+                            true,
+                            "https://releases.example/v9.9.9",
+                            |_| true,
+                        )
+                    })
+                })
+            };
+            answer_alert(offer, |alert, buttons| unsafe {
+                let children = alert_children(alert);
+                let body = children
+                    .iter()
+                    .find(|child| GetDlgCtrlID(child.0 as _) == super::ALERT_BODY_ID)
+                    .unwrap_or_else(|| panic!("{code}: the offer has a body"));
+                let link = children
+                    .iter()
+                    .find(|child| child.1 == "SysLink")
+                    .unwrap_or_else(|| panic!("{code}: the offer has a link"));
+
+                assert!(
+                    children.iter().all(|child| child.1 != "Edit"),
+                    "{code}: the body would need a scrolling box"
+                );
+                for (what, text) in [("body", &body.2), ("link", &link.2)] {
+                    assert!(
+                        text.contains("9.9.9"),
+                        "{code}: the {what} names the new version"
+                    );
+                }
+                assert!(
+                    body.2.contains("1.2.3"),
+                    "{code}: the body names the running version"
+                );
+                match code {
+                    "en" => {
+                        assert_eq!(
+                            body.2,
+                            "SSDownload 9.9.9 is available. You have 1.2.3.\n\nUpdate now?"
+                        );
+                        assert_eq!(link.2, "<a>What's new in 9.9.9</a>");
+                    }
+                    "tr" => {
+                        assert_eq!(
+                            body.2,
+                            "SSDownload 9.9.9 hazır. Kullandığınız sürüm: 1.2.3.\n\nŞimdi güncellensin mi?"
+                        );
+                        assert_eq!(link.2, "<a>9.9.9 sürümündeki yenilikler</a>");
+                    }
+                    _ => {
+                        assert_ne!(
+                            body.2, "SSDownload 9.9.9 is available. You have 1.2.3.\n\nUpdate now?",
+                            "{code}: the body is translated"
+                        );
+                        assert_ne!(
+                            link.2, "<a>What's new in 9.9.9</a>",
+                            "{code}: the link is translated"
+                        );
+                    }
+                }
+
+                // The box is as tall as its content: body, link and buttons follow one
+                // another one gap apart, and the buttons end one margin above the frame.
+                let dpi = GetDpiForWindow(alert as _);
+                let (gap, margin) = (super::scale(8, dpi), super::scale(12, dpi));
+                let (body_box, link_box) = (screen_rect(body.0), screen_rect(link.0));
+                let font = SendMessageW(body.0 as _, WM_GETFONT, 0, 0) as super::HFONT;
+                let label = link.2.trim_start_matches("<a>").trim_end_matches("</a>");
+                for (what, window, text) in [
+                    ("body", &body_box, &body.2),
+                    ("link", &link_box, &label.to_string()),
+                ] {
+                    assert_eq!(
+                        window.bottom - window.top,
+                        super::wrapped_height(font, text, window.right - window.left),
+                        "{code}: the {what} is as tall as its text"
+                    );
+                }
+                let button_top = buttons
+                    .iter()
+                    .map(|button| screen_rect(button.handle).top)
+                    .min()
+                    .unwrap();
+                let button_bottom = buttons
+                    .iter()
+                    .map(|button| screen_rect(button.handle).bottom)
+                    .max()
+                    .unwrap();
+                let mut client: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+                windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(alert as _, &mut client);
+                let mut origin = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+                windows_sys::Win32::Graphics::Gdi::ClientToScreen(alert as _, &mut origin);
+                assert_eq!(
+                    link_box.top - body_box.bottom,
+                    gap,
+                    "{code}: link under the body"
+                );
+                assert_eq!(
+                    button_top - link_box.bottom,
+                    gap,
+                    "{code}: buttons under the link"
+                );
+                assert_eq!(
+                    origin.y + client.bottom - button_bottom,
+                    margin,
+                    "{code}: nothing is left empty under the buttons"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_release_page_link_takes_tab_focus_and_opens_the_page_it_was_given() {
+        use std::sync::Mutex;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB},
+            WindowsAndMessaging::{PostMessageW, IDYES, WM_LBUTTONDOWN, WM_LBUTTONUP},
+        };
+
+        static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        fn record(address: &str) -> bool {
+            OPENED.lock().unwrap().push(address.to_string());
+            true
+        }
+        let opened = || OPENED.lock().unwrap().clone();
+        let page = "https://releases.example/v9.9.9";
+
+        answer_alert(
+            || english_offer(page, record),
+            |alert, buttons| unsafe {
+                let link = tab_to_the_link(alert);
+                assert!(opened().is_empty(), "moving the focus opens nothing");
+
+                post_key(link, VK_RETURN);
+                wait_until("Enter opens the page", || opened().len() == 1);
+                post_key(link, VK_SPACE);
+                wait_until("Space opens the page", || opened().len() == 2);
+                PostMessageW(link as _, WM_LBUTTONDOWN, 1, 3 | (3 << 16));
+                PostMessageW(link as _, WM_LBUTTONUP, 0, 3 | (3 << 16));
+                wait_until("a click opens the page", || opened().len() == 3);
+                assert_eq!(
+                    opened(),
+                    [page, page, page],
+                    "every way in opens the given page"
+                );
+
+                let install = buttons
+                    .iter()
+                    .find(|button| button.id == IDYES)
+                    .unwrap()
+                    .handle;
+                post_key(focused_window(alert), VK_TAB);
+                wait_until("one Tab leaves the link for Install", || {
+                    focused_window(alert) == install
+                });
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    #[test]
+    fn the_offer_steps_back_from_the_top_once_its_link_has_opened_the_page() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
+
+        answer_alert(
+            || english_offer("https://releases.example/v9.9.9", |_| true),
+            |alert, _| {
+                assert!(
+                    is_topmost(alert),
+                    "the offer opens on top of the other windows"
+                );
+                let link = tab_to_the_link(alert);
+                assert!(is_topmost(alert), "moving the focus keeps it there");
+                post_key(link, VK_RETURN);
+                wait_until("the offer steps back from the top", || !is_topmost(alert));
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    #[test]
+    fn a_page_that_cannot_be_opened_is_named_in_a_notice_and_the_offer_stays_on_top() {
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN},
+            WindowsAndMessaging::{GetDlgCtrlID, IsWindow},
+        };
+
+        let page = "https://releases.example/v9.9.9";
+        answer_alert(
+            || english_offer(page, |_| false),
+            |alert, _| unsafe {
+                let link = tab_to_the_link(alert);
+                post_key(link, VK_RETURN);
+
+                let mut notice = 0;
+                wait_until("a notice opens over the offer", || {
+                    notice = notice_over(alert);
+                    notice != 0
+                });
+                let body = alert_children(notice)
+                    .into_iter()
+                    .find(|child| GetDlgCtrlID(child.0 as _) == super::ALERT_BODY_ID)
+                    .expect("the notice has a body")
+                    .2;
+                assert_eq!(
+                    body,
+                    format!(
+                        "The release page could not be opened; paste this address into your browser:\n{page}"
+                    )
+                );
+                assert!(
+                    is_topmost(alert),
+                    "the offer stays on top while the notice shows"
+                );
+
+                post_key(notice, VK_ESCAPE);
+                wait_until("the notice closes", || IsWindow(notice as _) == 0);
+                assert!(is_topmost(alert), "the offer stays on top: no page is open");
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    /// How many pixels of `window` inside the screen rectangle of `area` are exactly `rgb`,
+    /// as the window draws itself.
+    fn pixels_of(window: usize, area: usize, rgb: [u8; 3]) -> usize {
+        use windows_sys::Win32::{
+            Graphics::Gdi::{
+                CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+                GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
+            },
+            Storage::Xps::PrintWindow,
+        };
+
+        unsafe {
+            let frame = screen_rect(window);
+            let (width, height) = (frame.right - frame.left, frame.bottom - frame.top);
+            let screen = GetDC(std::ptr::null_mut());
+            let memory = CreateCompatibleDC(screen);
+            let bitmap = CreateCompatibleBitmap(screen, width, height);
+            let previous = SelectObject(memory, bitmap as _);
+            // 2 is PW_RENDERFULLCONTENT.
+            PrintWindow(window as _, memory, 2);
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            let mut pixels = vec![0u8; (width * height * 4) as usize];
+            GetDIBits(
+                memory,
+                bitmap,
+                0,
+                height as u32,
+                pixels.as_mut_ptr().cast(),
+                &mut info,
+                DIB_RGB_COLORS,
+            );
+            SelectObject(memory, previous);
+            DeleteObject(bitmap as _);
+            DeleteDC(memory);
+            ReleaseDC(std::ptr::null_mut(), screen);
+
+            let area = screen_rect(area);
+            let mut count = 0;
+            for y in (area.top - frame.top).max(0)..(area.bottom - frame.top).min(height) {
+                for x in (area.left - frame.left).max(0)..(area.right - frame.left).min(width) {
+                    let at = ((y * width + x) * 4) as usize;
+                    if pixels[at..at + 3] == [rgb[2], rgb[1], rgb[0]] {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+    }
+
+    #[test]
+    fn the_link_is_drawn_in_the_dark_link_colour_on_the_dark_scheme_and_in_the_system_colour_otherwise(
+    ) {
+        use windows_sys::Win32::{
+            Graphics::Gdi::{GetSysColor, COLOR_HOTLIGHT},
+            UI::{
+                Input::KeyboardAndMouse::VK_ESCAPE,
+                WindowsAndMessaging::{
+                    DestroyWindow, SetPropW, IDNO, IDYES, MB_ICONQUESTION, WS_POPUP,
+                },
+            },
+        };
+
+        // RGB(96, 205, 255), the colour of DARK_LINK.
+        let dark_link = [0x60, 0xcd, 0xff];
+        let hotlight = unsafe { GetSysColor(COLOR_HOTLIGHT) };
+        let system_link = [
+            hotlight as u8,
+            (hotlight >> 8) as u8,
+            (hotlight >> 16) as u8,
+        ];
+        for dark in [true, false] {
+            let offer = || {
+                with_common_controls_6(|| unsafe {
+                    // The scheme of an alert is the one of its owner.
+                    let owner = super::control(std::ptr::null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    if dark {
+                        SetPropW(owner, super::dark_prop(), 1usize as _);
+                    }
+                    let answer = super::run_alert_linked(
+                        owner,
+                        "Update now?",
+                        "Update",
+                        MB_ICONQUESTION,
+                        Some(&[(IDYES, "Yes"), (IDNO, "No")]),
+                        Some(super::AlertLink {
+                            label: "What's new in 9.9.9".into(),
+                            target: "https://releases.example/v9.9.9".into(),
+                            open: |_| true,
+                            failure: String::new(),
+                        }),
+                    );
+                    DestroyWindow(owner);
+                    answer
+                })
+            };
+            answer_alert(offer, |alert, _| {
+                let link = alert_children(alert)
+                    .into_iter()
+                    .find(|child| child.1 == "SysLink")
+                    .expect("the alert has a link")
+                    .0;
+                // The link underlines its whole text, so a link of this length has well over
+                // 40 pixels of its colour once it is drawn.
+                let mut drawn = (0, 0);
+                for _ in 0..40 {
+                    drawn = (
+                        pixels_of(alert, link, dark_link),
+                        pixels_of(alert, link, system_link),
+                    );
+                    if (if dark { drawn.0 } else { drawn.1 }) >= 40 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                if dark {
+                    assert!(
+                        drawn.0 >= 40,
+                        "the dark scheme draws the link in its own colour: {drawn:?}"
+                    );
+                    assert_eq!(
+                        drawn.1, 0,
+                        "no system link blue is left on the dark surface: {drawn:?}"
+                    );
+                } else {
+                    assert!(
+                        drawn.1 >= 40,
+                        "the light scheme draws the link in the system colour: {drawn:?}"
+                    );
+                    assert_eq!(
+                        drawn.0, 0,
+                        "the dark link colour does not reach the light scheme: {drawn:?}"
+                    );
+                }
+                post_key(alert, VK_ESCAPE);
+            });
         }
     }
 
@@ -15674,6 +16242,1491 @@ mod tests {
                 answer,
                 Some(expected),
                 "button {index} from the left closes the box"
+            );
+        }
+    }
+
+    /// Posts a key press to the window that has the focus, or to `alert` while no control has
+    /// it: the way the keyboard delivers a key.
+    fn alert_key(alert: usize, key: u16) {
+        post_key(
+            match focused_window(alert) {
+                0 => alert,
+                focus => focus,
+            },
+            key,
+        );
+    }
+
+    /// Presses Tab until the window `target` has the focus.
+    fn tab_until_focused(alert: usize, target: usize) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_TAB;
+
+        for _ in 0..8 {
+            let before = focused_window(alert);
+            alert_key(alert, VK_TAB);
+            wait_until("Tab moves the focus", || focused_window(alert) != before);
+            if focused_window(alert) == target {
+                return;
+            }
+        }
+        panic!("Tab never reached the window {target}");
+    }
+
+    /// The ids of the buttons that carry the default-button mark right now.
+    fn default_buttons(buttons: &[AlertButton]) -> Vec<i32> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, BS_DEFPUSHBUTTON, BS_TYPEMASK, GWL_STYLE,
+        };
+
+        buttons
+            .iter()
+            .filter(|button| unsafe {
+                GetWindowLongPtrW(button.handle as _, GWL_STYLE) as u32 & BS_TYPEMASK as u32
+                    == BS_DEFPUSHBUTTON as u32
+            })
+            .map(|button| button.id)
+            .collect()
+    }
+
+    /// Waits until exactly the buttons `expected` carry the default-button mark.
+    fn wait_for_default(buttons: &[AlertButton], expected: &[i32]) {
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            seen = default_buttons(buttons);
+            if seen == expected {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        panic!("the default-button mark is on {seen:?}, expected {expected:?}");
+    }
+
+    /// The visible alert other than `alert`, or 0 while there is none: the notice an alert
+    /// opens over itself.
+    fn notice_over(alert: usize) -> usize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, IsWindowVisible};
+
+        let class = super::wide(super::CLASS_ALERT);
+        let mut found = std::ptr::null_mut();
+        loop {
+            found = unsafe {
+                FindWindowExW(
+                    std::ptr::null_mut(),
+                    found,
+                    class.as_ptr(),
+                    std::ptr::null(),
+                )
+            };
+            if found.is_null()
+                || (found as usize != alert && unsafe { IsWindowVisible(found) } != 0)
+            {
+                return found as usize;
+            }
+        }
+    }
+
+    /// Opens the alert with `open`, lets `act` press its keys and returns what it answered.
+    fn alert_answer(
+        open: impl FnOnce() -> Option<i32> + Send,
+        act: impl FnOnce(usize, &[AlertButton]) + Send,
+    ) -> Option<i32> {
+        answer_alert(open, act).0
+    }
+
+    /// The buttons of an update offer: the first is the default, Escape means the last.
+    const OFFER_BUTTONS: [(i32, &str); 3] = [
+        (
+            windows_sys::Win32::UI::WindowsAndMessaging::IDYES,
+            "Install",
+        ),
+        (100, "Skip"),
+        (windows_sys::Win32::UI::WindowsAndMessaging::IDNO, "Later"),
+    ];
+
+    #[test]
+    fn enter_answers_an_alert_with_its_default_button() {
+        use super::{run_alert, run_alert_buttons};
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_RETURN,
+            WindowsAndMessaging::{
+                IDNO, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OK, MB_YESNO,
+            },
+        };
+
+        let enter = |alert: usize, _: &[AlertButton]| alert_key(alert, VK_RETURN);
+        let custom = |flags| {
+            move || unsafe {
+                run_alert_buttons(
+                    std::ptr::null_mut(),
+                    "Body",
+                    "Title",
+                    flags,
+                    Some(&OFFER_BUTTONS),
+                )
+            }
+        };
+        let plain =
+            |flags| move || unsafe { run_alert(std::ptr::null_mut(), "Body", "Title", flags) };
+        assert_eq!(
+            alert_answer(custom(MB_ICONQUESTION), enter),
+            Some(IDYES),
+            "the first of three buttons"
+        );
+        assert_eq!(
+            alert_answer(custom(MB_ICONQUESTION | MB_DEFBUTTON2), enter),
+            Some(100),
+            "the button MB_DEFBUTTON2 names"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNO | MB_ICONQUESTION), enter),
+            Some(IDYES),
+            "Yes of a yes/no question, which has no OK"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNO | MB_DEFBUTTON2), enter),
+            Some(IDNO),
+            "No when the question makes it the default"
+        );
+        assert_eq!(alert_answer(plain(MB_OK), enter), Some(IDOK), "OK");
+    }
+
+    #[test]
+    fn enter_after_tabbing_to_another_button_answers_that_button() {
+        use super::run_alert_buttons;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_RETURN, WindowsAndMessaging::MB_ICONQUESTION,
+        };
+
+        for (id, label) in OFFER_BUTTONS {
+            let answer = alert_answer(
+                || unsafe {
+                    run_alert_buttons(
+                        std::ptr::null_mut(),
+                        "Body",
+                        "Title",
+                        MB_ICONQUESTION,
+                        Some(&OFFER_BUTTONS),
+                    )
+                },
+                |alert, buttons| {
+                    let button = buttons.iter().find(|button| button.id == id).unwrap();
+                    tab_until_focused(alert, button.handle);
+                    alert_key(alert, VK_RETURN);
+                },
+            );
+            assert_eq!(answer, Some(id), "Enter on {label}");
+        }
+    }
+
+    #[test]
+    fn escape_answers_an_alert_with_its_own_action_and_not_its_default_button() {
+        use super::{run_alert, run_alert_buttons};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            IDCANCEL, IDNO, MB_ICONQUESTION, MB_YESNO, MB_YESNOCANCEL,
+        };
+
+        let custom = || unsafe {
+            run_alert_buttons(
+                std::ptr::null_mut(),
+                "Body",
+                "Title",
+                MB_ICONQUESTION,
+                Some(&OFFER_BUTTONS),
+            )
+        };
+        assert_eq!(
+            alert_answer(custom, press_escape),
+            Some(IDNO),
+            "Later, the last of three buttons"
+        );
+        let plain =
+            |flags| move || unsafe { run_alert(std::ptr::null_mut(), "Body", "Title", flags) };
+        assert_eq!(
+            alert_answer(plain(MB_YESNO), press_escape),
+            Some(IDNO),
+            "No of a yes/no question"
+        );
+        assert_eq!(
+            alert_answer(plain(MB_YESNOCANCEL), press_escape),
+            Some(IDCANCEL),
+            "Cancel when there is one"
+        );
+    }
+
+    #[test]
+    fn the_default_button_is_marked_again_when_the_focus_leaves_the_buttons_for_a_scrolling_body() {
+        use super::run_alert_buttons;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_ESCAPE,
+            WindowsAndMessaging::{IDNO, IDYES, MB_ICONQUESTION},
+        };
+
+        let body = (1..=400)
+            .map(|line| format!("Line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        alert_answer(
+            || unsafe {
+                run_alert_buttons(
+                    std::ptr::null_mut(),
+                    &body,
+                    "Title",
+                    MB_ICONQUESTION,
+                    Some(&OFFER_BUTTONS),
+                )
+            },
+            |alert, buttons| {
+                let edit = alert_children(alert)
+                    .into_iter()
+                    .find(|child| child.1 == "Edit")
+                    .expect("a body this long scrolls in an edit")
+                    .0;
+                let handle = |id| {
+                    buttons
+                        .iter()
+                        .find(|button| button.id == id)
+                        .unwrap()
+                        .handle
+                };
+                assert_eq!(
+                    default_buttons(buttons),
+                    [IDYES],
+                    "Install when the box opens"
+                );
+
+                tab_until_focused(alert, handle(IDNO));
+                wait_for_default(buttons, &[IDNO]);
+                tab_until_focused(alert, edit);
+                wait_for_default(buttons, &[IDYES]);
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    #[test]
+    fn the_default_button_is_marked_again_when_the_focus_moves_to_the_offers_link() {
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::VK_ESCAPE,
+            WindowsAndMessaging::{IDNO, IDYES},
+        };
+
+        answer_alert(
+            || english_offer("https://releases.example/v9.9.9", |_| true),
+            |alert, buttons| {
+                let link = alert_children(alert)
+                    .into_iter()
+                    .find(|child| child.1 == "SysLink")
+                    .expect("the offer has a link")
+                    .0;
+                let later = buttons.iter().find(|button| button.id == IDNO).unwrap();
+                assert_eq!(
+                    default_buttons(buttons),
+                    [IDYES],
+                    "Install when the box opens"
+                );
+
+                tab_until_focused(alert, later.handle);
+                wait_for_default(buttons, &[IDNO]);
+                tab_until_focused(alert, link);
+                wait_for_default(buttons, &[IDYES]);
+                post_key(alert, VK_ESCAPE);
+            },
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_link_that_cannot_open_its_page_leaves_the_notice_and_the_offer_usable() {
+        use crate::update::UpdateDecision;
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::IsWindowEnabled,
+            WindowsAndMessaging::{IsWindow, PostMessageW, BM_CLICK, WM_LBUTTONDOWN, WM_LBUTTONUP},
+        };
+
+        let (answer, _) = answer_alert(
+            || english_offer("https://releases.example/v9.9.9", |_| false),
+            |alert, buttons| unsafe {
+                let link = alert_children(alert)
+                    .into_iter()
+                    .find(|child| child.1 == "SysLink")
+                    .expect("the offer has a link")
+                    .0;
+                PostMessageW(link as _, WM_LBUTTONDOWN, 1, 3 | (3 << 16));
+                PostMessageW(link as _, WM_LBUTTONUP, 0, 3 | (3 << 16));
+
+                let mut notice = 0;
+                wait_until("a notice opens over the offer", || {
+                    notice = notice_over(alert);
+                    notice != 0
+                });
+                assert_eq!(
+                    IsWindowEnabled(alert as _),
+                    0,
+                    "the offer waits for the notice"
+                );
+                assert_eq!(
+                    input_state(alert).hwndCapture as usize,
+                    0,
+                    "no control keeps the mouse, so the notice can be clicked"
+                );
+
+                let ok = alert_children(notice)
+                    .into_iter()
+                    .find(|child| child.1 == "Button")
+                    .expect("the notice has OK")
+                    .0;
+                PostMessageW(ok as _, BM_CLICK, 0, 0);
+                wait_until("the notice closes", || IsWindow(notice as _) == 0);
+                wait_until("the offer is enabled again", || {
+                    IsWindowEnabled(alert as _) != 0
+                });
+                click_button(1)(alert, buttons);
+            },
+        );
+        assert!(
+            matches!(answer, Some(UpdateDecision::Skip)),
+            "the offer still answers its buttons"
+        );
+    }
+
+    /// The title bar when the colour scheme is applied to a window.
+    mod dark_caption {
+        use super::{rename_kind, with_dialog};
+        use crate::gui::native;
+        use std::cell::{Cell, RefCell};
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetActiveWindow, GetFocus, SetActiveWindow,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+        thread_local! {
+            static SEEN: RefCell<Vec<(u32, usize)>> = const { RefCell::new(Vec::new()) };
+            static STORED: RefCell<Vec<Option<i32>>> = const { RefCell::new(Vec::new()) };
+            static ORIGINAL: Cell<isize> = const { Cell::new(0) };
+        }
+
+        /// Passes everything on to the window's own procedure and notes the
+        /// activation messages on the way, and the title bar setting the window
+        /// holds when it is told to draw its title bar.
+        unsafe extern "system" fn record(
+            hwnd: native::HWND,
+            msg: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> isize {
+            if matches!(
+                msg,
+                WM_NCACTIVATE | WM_ACTIVATE | WM_SETFOCUS | WM_KILLFOCUS
+            ) {
+                SEEN.with(|seen| seen.borrow_mut().push((msg, wparam)));
+            }
+            if msg == WM_NCACTIVATE {
+                STORED.with(|held| held.borrow_mut().push(stored(hwnd)));
+            }
+            let original = std::mem::transmute::<isize, WNDPROC>(ORIGINAL.get());
+            CallWindowProcW(original, hwnd, msg, wparam, lparam)
+        }
+
+        /// What the window is sent while the scheme is applied to it, the title
+        /// bar setting it holds at each `WM_NCACTIVATE`, the active window and the
+        /// focus before and after, and whether its frame is drawn active before
+        /// and after. `shown` and `active` set the state it is in.
+        struct Switch {
+            seen: Vec<(u32, usize)>,
+            stored: Vec<Option<i32>>,
+            before: (usize, usize),
+            after: (usize, usize),
+            frame: (bool, bool),
+        }
+
+        fn switch(shown: bool, active: bool) -> Switch {
+            with_dialog(rename_kind, 460, 150, |dialog| unsafe {
+                let hwnd = dialog.hwnd;
+                // A second window to hold the activation when the dialog must not.
+                let other = native::control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                if shown {
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                }
+                ShowWindow(other, SW_SHOWNOACTIVATE);
+                SetActiveWindow(if active { hwnd } else { other });
+                assert_eq!(
+                    GetActiveWindow() == hwnd,
+                    active,
+                    "the activation is set up"
+                );
+                ORIGINAL.set(SetWindowLongPtrW(
+                    hwnd,
+                    GWLP_WNDPROC,
+                    record as *const () as isize,
+                ));
+                SEEN.with(|seen| seen.borrow_mut().clear());
+                STORED.with(|held| held.borrow_mut().clear());
+                let before = (GetActiveWindow() as usize, GetFocus() as usize);
+                let frame_before = frame_is_active(hwnd);
+                native::apply_dark_mode(hwnd, true);
+                let after = (GetActiveWindow() as usize, GetFocus() as usize);
+                let frame_after = frame_is_active(hwnd);
+                let seen = SEEN.with(|seen| seen.borrow().clone());
+                let stored = STORED.with(|held| held.borrow().clone());
+                DestroyWindow(other);
+                Switch {
+                    seen,
+                    stored,
+                    before,
+                    after,
+                    frame: (frame_before, frame_after),
+                }
+            })
+        }
+
+        #[test]
+        fn a_shown_active_window_is_told_it_lost_and_regained_the_activation() {
+            let switch = switch(true, true);
+            assert_eq!(
+                switch.seen,
+                [(WM_NCACTIVATE, 0), (WM_NCACTIVATE, 1)],
+                "the title bar is drawn inactive and active again"
+            );
+            assert_eq!(
+                switch.before, switch.after,
+                "the active window and the focus stay"
+            );
+            assert_eq!(switch.frame, (true, true), "the frame stays active");
+        }
+
+        #[test]
+        fn the_title_bar_setting_is_in_place_before_the_title_bar_is_drawn() {
+            assert_eq!(
+                switch(true, true).stored,
+                [Some(1), Some(1)],
+                "both repaints find the new setting"
+            );
+        }
+
+        #[test]
+        fn a_shown_inactive_window_is_told_the_opposite_and_ends_inactive() {
+            let switch = switch(true, false);
+            assert_eq!(
+                switch.seen,
+                [(WM_NCACTIVATE, 1), (WM_NCACTIVATE, 0)],
+                "the title bar is drawn active and inactive again"
+            );
+            assert_eq!(
+                switch.before, switch.after,
+                "the active window and the focus stay"
+            );
+            assert_eq!(switch.frame, (false, false), "the frame stays inactive");
+        }
+
+        #[test]
+        fn a_frame_drawn_inactive_stays_inactive_while_the_thread_has_the_window_active() {
+            // The state of a window behind another application's window:
+            // GetActiveWindow still names it, and its frame is drawn inactive.
+            with_dialog(rename_kind, 460, 150, |dialog| unsafe {
+                let hwnd = dialog.hwnd;
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                SetActiveWindow(hwnd);
+                SendMessageW(hwnd, WM_NCACTIVATE, 0, 0);
+                assert!(
+                    GetActiveWindow() == hwnd && !frame_is_active(hwnd),
+                    "the window is the thread's active window with an inactive frame"
+                );
+                native::apply_dark_mode(hwnd, true);
+                assert!(!frame_is_active(hwnd), "the frame is still inactive");
+                assert_eq!(GetActiveWindow(), hwnd, "the activation is untouched");
+            });
+        }
+
+        #[test]
+        fn a_window_that_is_not_shown_has_no_title_bar_to_draw() {
+            assert_eq!(switch(false, false).seen, []);
+        }
+
+        /// Whether the frame of `hwnd` is drawn as the active one.
+        unsafe fn frame_is_active(hwnd: native::HWND) -> bool {
+            let mut info: WINDOWINFO = std::mem::zeroed();
+            info.cbSize = size_of::<WINDOWINFO>() as u32;
+            GetWindowInfo(hwnd, &mut info);
+            info.dwWindowStatus & WS_ACTIVECAPTION != 0
+        }
+
+        /// The title bar setting the window stores.
+        unsafe fn stored(hwnd: native::HWND) -> Option<i32> {
+            let mut value = 0i32;
+            let result = DwmGetWindowAttribute(
+                hwnd,
+                20,
+                &mut value as *mut i32 as *mut _,
+                size_of::<i32>() as u32,
+            );
+            (result >= 0).then_some(value)
+        }
+
+        #[test]
+        fn the_title_bar_setting_reaches_the_window() {
+            with_dialog(rename_kind, 460, 150, |dialog| unsafe {
+                for dark in [true, false, true] {
+                    assert!(native::set_dark_caption(dialog.hwnd, dark) >= 0);
+                    assert_eq!(stored(dialog.hwnd), Some(dark as i32), "dark {dark}");
+                }
+                assert!(
+                    native::set_dark_caption(null_mut(), true) < 0,
+                    "a window that does not exist is refused"
+                );
+            });
+        }
+
+        #[test]
+        fn applying_the_scheme_to_a_window_sets_its_title_bar() {
+            with_dialog(rename_kind, 460, 150, |dialog| unsafe {
+                native::apply_dark_mode(dialog.hwnd, true);
+                assert_eq!(
+                    stored(dialog.hwnd),
+                    Some(!native::high_contrast() as i32),
+                    "dark"
+                );
+                native::apply_dark_mode(dialog.hwnd, false);
+                assert_eq!(stored(dialog.hwnd), Some(0), "light");
+            });
+        }
+
+        #[test]
+        fn an_alert_takes_the_title_bar_of_the_scheme_of_its_window() {
+            use super::{answer_alert, press_escape};
+            use std::sync::atomic::{AtomicI32, Ordering};
+
+            for dark in [true, false] {
+                let seen = AtomicI32::new(-1);
+                let alert_over_a_window = || unsafe {
+                    let owner = native::control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
+                    if dark {
+                        SetPropW(owner, native::dark_prop(), 1usize as _);
+                    }
+                    let answer = native::run_alert(owner, "A message", "Title", MB_OK);
+                    DestroyWindow(owner);
+                    answer
+                };
+                answer_alert(alert_over_a_window, |alert, buttons| {
+                    seen.store(
+                        unsafe { stored(alert as _) }.unwrap_or(-2),
+                        Ordering::SeqCst,
+                    );
+                    press_escape(alert, buttons);
+                });
+                assert_eq!(seen.load(Ordering::SeqCst), dark as i32, "dark {dark}");
+            }
+        }
+    }
+
+    /// Check boxes in the dark scheme, painted by the themed button class. The test binary has no manifest, so every test activates the
+    /// visual styles that the executable's manifest asks for on its own thread.
+    mod dark_buttons {
+        use super::super::{self as native, DARK_BACKGROUND, DARK_MUTED, DARK_TEXT};
+        use super::{on_private_desktop, settings_kind, HiddenDialog};
+        use crate::model::UiMode;
+        use std::{
+            mem::{size_of, zeroed},
+            ptr::{null, null_mut},
+        };
+        use windows_sys::Win32::{
+            Foundation::{HWND, RECT, SIZE},
+            Graphics::Gdi::*,
+            UI::{
+                Controls::*,
+                Input::KeyboardAndMouse::{EnableWindow, GetFocus, IsWindowEnabled, SetFocus},
+                WindowsAndMessaging::*,
+            },
+        };
+
+        #[repr(C)]
+        struct ActCtx {
+            size: u32,
+            flags: u32,
+            source: *const u16,
+            architecture: u16,
+            language: u16,
+            assembly_directory: *const u16,
+            resource_name: *const u16,
+            application_name: *const u16,
+            module: isize,
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CreateActCtxW(context: *const ActCtx) -> isize;
+            fn ActivateActCtx(context: isize, cookie: *mut usize) -> i32;
+            fn DeactivateActCtx(flags: u32, cookie: usize) -> i32;
+            fn ReleaseActCtx(context: isize);
+        }
+
+        /// The common controls version 6 of the executable's manifest, active on
+        /// the current thread: buttons are themed and send NM_CUSTOMDRAW only
+        /// under it.
+        struct VisualStyles {
+            context: isize,
+            cookie: usize,
+        }
+
+        impl VisualStyles {
+            fn activate() -> Self {
+                use std::os::windows::ffi::OsStrExt;
+
+                let manifest = include_str!("../../../assets/app.manifest")
+                    .replace("@VERSION_QUAD@", "0.0.0.0");
+                let path = std::env::temp_dir().join(format!(
+                    "ssdownload-visual-styles-{}.manifest",
+                    uuid::Uuid::new_v4()
+                ));
+                std::fs::write(&path, manifest).unwrap();
+                let source: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+                unsafe {
+                    let request = ActCtx {
+                        size: size_of::<ActCtx>() as u32,
+                        flags: 0,
+                        source: source.as_ptr(),
+                        architecture: 0,
+                        language: 0,
+                        assembly_directory: null(),
+                        resource_name: null(),
+                        application_name: null(),
+                        module: 0,
+                    };
+                    let context = CreateActCtxW(&request);
+                    let _ = std::fs::remove_file(&path);
+                    assert_ne!(context, -1, "the manifest is accepted");
+                    let mut cookie = 0usize;
+                    assert_ne!(
+                        ActivateActCtx(context, &mut cookie),
+                        0,
+                        "the context activates"
+                    );
+                    Self { context, cookie }
+                }
+            }
+        }
+
+        impl Drop for VisualStyles {
+            fn drop(&mut self) {
+                unsafe {
+                    DeactivateActCtx(0, self.cookie);
+                    ReleaseActCtx(self.context);
+                }
+            }
+        }
+
+        /// A dialog on a private desktop with the visual styles on its thread
+        /// while it is built, drawn and dropped, in the dark scheme or the light
+        /// one.
+        fn with_styled_dialog<T: Send>(
+            dark: bool,
+            make: impl FnOnce() -> native::DialogKind + Send,
+            width: i32,
+            height: i32,
+            body: impl FnOnce(&HiddenDialog) -> T + Send,
+        ) -> T {
+            on_private_desktop(|| {
+                let _styles = VisualStyles::activate();
+                let dialog = HiddenDialog::seeded(make(), width, height, |app| {
+                    let mut settings = app.snapshot().settings.clone();
+                    settings.dark_mode = dark;
+                    app.update_settings_quiet(settings).unwrap();
+                });
+                body(&dialog)
+            })
+        }
+
+        fn settings_advanced() -> native::DialogKind {
+            settings_kind(UiMode::Advanced)
+        }
+
+        fn settings_simple() -> native::DialogKind {
+            settings_kind(UiMode::Simple)
+        }
+
+        /// A picker whose analysis has loaded: the preparing state hides the
+        /// form and its check boxes until then.
+        fn media_loaded() -> native::DialogKind {
+            match super::media_kind() {
+                native::DialogKind::Media(mut f) => {
+                    f.populated = true;
+                    native::DialogKind::Media(f)
+                }
+                other => other,
+            }
+        }
+
+        fn settings_height(simple: bool) -> i32 {
+            native::settings_logical_height(native::modern(), simple) + native::SETTINGS_FRAME
+        }
+
+        /// A memory device context over a 32-bit bitmap whose pixels are read
+        /// back as 0x00RRGGBB.
+        struct Canvas {
+            dc: HDC,
+            bitmap: HBITMAP,
+            previous: HGDIOBJ,
+            bits: *const u32,
+            width: i32,
+            height: i32,
+        }
+
+        impl Canvas {
+            unsafe fn new(width: i32, height: i32, fill: u32) -> Self {
+                let mut info: BITMAPINFO = zeroed();
+                info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                info.bmiHeader.biWidth = width;
+                info.bmiHeader.biHeight = -height;
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = BI_RGB;
+                let mut bits = null_mut();
+                let bitmap =
+                    CreateDIBSection(null_mut(), &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+                assert!(!bitmap.is_null(), "the bitmap is created");
+                let dc = CreateCompatibleDC(null_mut());
+                let previous = SelectObject(dc, bitmap as HGDIOBJ);
+                std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize)
+                    .fill(fill);
+                Self {
+                    dc,
+                    bitmap,
+                    previous,
+                    bits: bits as *const u32,
+                    width,
+                    height,
+                }
+            }
+
+            unsafe fn face(&self) -> Face {
+                GdiFlush();
+                Face {
+                    pixels: std::slice::from_raw_parts(
+                        self.bits,
+                        (self.width * self.height) as usize,
+                    )
+                    .to_vec(),
+                    width: self.width,
+                    height: self.height,
+                }
+            }
+        }
+
+        impl Drop for Canvas {
+            fn drop(&mut self) {
+                unsafe {
+                    SelectObject(self.dc, self.previous);
+                    DeleteObject(self.bitmap as HGDIOBJ);
+                    DeleteDC(self.dc);
+                }
+            }
+        }
+
+        /// What a control painted into its client area. The top left pixel is
+        /// the background.
+        #[derive(PartialEq)]
+        struct Face {
+            pixels: Vec<u32>,
+            width: i32,
+            height: i32,
+        }
+
+        impl Face {
+            fn pixel(&self, x: i32, y: i32) -> u32 {
+                self.pixels[(y * self.width + x) as usize]
+            }
+
+            /// The columns `from..to` as one list of pixels.
+            fn columns(&self, from: i32, to: i32) -> Vec<u32> {
+                (0..self.height)
+                    .flat_map(|y| (from..to.min(self.width)).map(move |x| (x, y)))
+                    .map(|(x, y)| self.pixel(x, y))
+                    .collect()
+            }
+
+            /// The box around the pixels in columns `from..to` that differ from
+            /// the background: left, top, right, bottom.
+            fn ink(&self, from: i32, to: i32) -> Option<[i32; 4]> {
+                let background = self.pixel(0, 0);
+                let mut found: Option<[i32; 4]> = None;
+                for y in 0..self.height {
+                    for x in from.max(0)..to.min(self.width) {
+                        if self.pixel(x, y) != background {
+                            let [left, top, right, bottom] = found.unwrap_or([x, y, x, y]);
+                            found = Some([left.min(x), top.min(y), right.max(x), bottom.max(y)]);
+                        }
+                    }
+                }
+                found
+            }
+
+            /// The highest value of each colour channel in columns `from..to`.
+            fn brightest(&self, from: i32, to: i32) -> [u32; 3] {
+                let mut top = [0; 3];
+                for pixel in self.columns(from, to) {
+                    for (channel, value) in top.iter_mut().enumerate() {
+                        *value = (*value).max((pixel >> (16 - 8 * channel)) & 255);
+                    }
+                }
+                top
+            }
+
+            /// The lowest value of each colour channel in columns `from..to`.
+            fn darkest(&self, from: i32, to: i32) -> [u32; 3] {
+                let mut bottom = [255; 3];
+                for pixel in self.columns(from, to) {
+                    for (channel, value) in bottom.iter_mut().enumerate() {
+                        *value = (*value).min((pixel >> (16 - 8 * channel)) & 255);
+                    }
+                }
+                bottom
+            }
+        }
+
+        /// A COLORREF as red, green and blue.
+        fn channels(colour: u32) -> [u32; 3] {
+            [colour & 255, (colour >> 8) & 255, (colour >> 16) & 255]
+        }
+
+        /// A button's client area as it paints into a device context whose
+        /// layout is `layout`.
+        unsafe fn paint(button: HWND, layout: u32) -> Face {
+            let mut client: RECT = zeroed();
+            GetClientRect(button, &mut client);
+            let canvas = Canvas::new(client.right, client.bottom, 0x00ff_00ff);
+            SetLayout(canvas.dc, layout);
+            SendMessageW(
+                button,
+                WM_PRINTCLIENT,
+                canvas.dc as usize,
+                PRF_CLIENT as isize,
+            );
+            canvas.face()
+        }
+
+        /// The size the theme gives the box of a check box in `state`.
+        unsafe fn box_size(button: HWND, state: i32) -> SIZE {
+            let theme = OpenThemeData(button, native::wide("Button").as_ptr());
+            assert_ne!(theme, 0, "the button has a theme");
+            let dc = GetDC(null_mut());
+            let mut size: SIZE = zeroed();
+            GetThemePartSize(theme, dc, BP_CHECKBOX, state, null(), TS_DRAW, &mut size);
+            ReleaseDC(null_mut(), dc);
+            CloseThemeData(theme);
+            size
+        }
+
+        /// The box of a check box in `state` the way uxtheme draws it on the
+        /// dark surface, centred on the control's height.
+        unsafe fn themed_box(button: HWND, state: i32) -> Face {
+            let mut client: RECT = zeroed();
+            GetClientRect(button, &mut client);
+            let canvas = Canvas::new(client.right, client.bottom, DARK_BACKGROUND);
+            let size = box_size(button, state);
+            let top = (client.bottom - size.cy) / 2;
+            let area = RECT {
+                left: 0,
+                top,
+                right: size.cx,
+                bottom: top + size.cy,
+            };
+            let theme = OpenThemeData(button, native::wide("Button").as_ptr());
+            DrawThemeBackground(theme, canvas.dc, BP_CHECKBOX, state, &area, null());
+            CloseThemeData(theme);
+            canvas.face()
+        }
+
+        /// The visible check boxes the dialog's own code created.
+        unsafe fn check_boxes(dialog: HWND) -> Vec<HWND> {
+            let mut found = Vec::new();
+            let mut child = GetWindow(dialog, GW_CHILD);
+            while !child.is_null() {
+                let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+                if style & WS_VISIBLE != 0
+                    && native::window_class(child).eq_ignore_ascii_case("Button")
+                    && style & BS_TYPEMASK as u32 == BS_AUTOCHECKBOX as u32
+                    && style & BS_PUSHLIKE as u32 == 0
+                {
+                    found.push(child);
+                }
+                child = GetWindow(child, GW_HWNDNEXT);
+            }
+            found
+        }
+
+        /// A button of its own on the dialog, themed like the dialog's controls.
+        unsafe fn add_button(
+            dialog: &HiddenDialog,
+            label: &str,
+            style: i32,
+            ex_style: u32,
+            dark: bool,
+        ) -> HWND {
+            let dlg = &*dialog.raw;
+            let button = native::control(
+                dialog.hwnd,
+                "BUTTON",
+                label,
+                WS_CHILD | WS_VISIBLE | style as u32,
+                ex_style,
+                9000,
+            );
+            native::apply_font(button, dlg.font);
+            MoveWindow(
+                button,
+                0,
+                0,
+                native::scale(220, dlg.dpi),
+                native::scale(22, dlg.dpi),
+                0,
+            );
+            native::apply_dark_mode(dialog.hwnd, dark);
+            button
+        }
+
+        /// The answer a dialog gives to a button's NM_CUSTOMDRAW.
+        unsafe fn custom_draw_answer(dialog: HWND, button: HWND) -> isize {
+            let mut client: RECT = zeroed();
+            GetClientRect(button, &mut client);
+            let canvas = Canvas::new(client.right, client.bottom, 0);
+            let mut draw: NMCUSTOMDRAW = zeroed();
+            draw.hdr.hwndFrom = button;
+            draw.hdr.idFrom = GetDlgCtrlID(button) as usize;
+            draw.hdr.code = NM_CUSTOMDRAW;
+            draw.dwDrawStage = CDDS_PREPAINT;
+            draw.hdc = canvas.dc;
+            draw.rc = client;
+            SendMessageW(
+                dialog,
+                WM_NOTIFY,
+                draw.hdr.idFrom,
+                &draw as *const NMCUSTOMDRAW as isize,
+            )
+        }
+
+        /// Shows or hides the keyboard cues of the dialog: the focus rectangle and
+        /// the underline of the access letters.
+        unsafe fn keyboard_cues(dialog: HWND, shown: bool) {
+            let flags = (UISF_HIDEFOCUS | UISF_HIDEACCEL) as usize;
+            let action = (if shown { UIS_CLEAR } else { UIS_SET }) as usize;
+            SendMessageW(dialog, WM_UPDATEUISTATE, action | (flags << 16), 0);
+        }
+
+        /// A dialog that has check boxes: how it is made, its size in logical
+        /// pixels and how many tabs it has.
+        struct Case {
+            name: &'static str,
+            make: fn() -> native::DialogKind,
+            width: i32,
+            height: i32,
+            tabs: usize,
+        }
+
+        fn dialogs_with_check_boxes() -> [Case; 8] {
+            let case = |name, make, width, height, tabs| Case {
+                name,
+                make,
+                width,
+                height,
+                tabs,
+            };
+            [
+                case(
+                    "settings",
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    4,
+                ),
+                case(
+                    "simple settings",
+                    settings_simple,
+                    560,
+                    settings_height(true),
+                    1,
+                ),
+                case("queues", super::queues_kind, 700, 470, 1),
+                case("folder rules", super::rules_kind, 700, 470, 1),
+                case("file sync", super::sync_kind, 700, 470, 1),
+                case("saved logins", super::logins_kind, 700, 470, 1),
+                case("media picker", media_loaded, 640, 420, 1),
+                case("job view", super::progress_kind, 700, 470, 1),
+            ]
+        }
+
+        #[test]
+        fn dark_check_box_labels_are_drawn_in_the_scheme_colours_in_every_dialog() {
+            let mut wrong = Vec::new();
+            for Case {
+                name,
+                make,
+                width,
+                height,
+                tabs,
+            } in dialogs_with_check_boxes()
+            {
+                let (seen, problems) = with_styled_dialog(
+                    true,
+                    make,
+                    width,
+                    height,
+                    |dialog| unsafe {
+                        let mut seen = 0;
+                        let mut problems = Vec::new();
+                        for tab in 0..tabs {
+                            dialog.show_tab(tab);
+                            for (index, button) in check_boxes(dialog.hwnd).into_iter().enumerate()
+                            {
+                                // Checked and unchecked, enabled and disabled.
+                                SendMessageW(button, BM_SETCHECK, index % 2, 0);
+                                if index % 3 == 2 {
+                                    EnableWindow(button, 0);
+                                }
+                                let wanted = if IsWindowEnabled(button) != 0 {
+                                    DARK_TEXT
+                                } else {
+                                    DARK_MUTED
+                                };
+                                let face = paint(button, 0);
+                                let from = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                                let got = face.brightest(from, face.width);
+                                seen += 1;
+                                if got != channels(wanted) {
+                                    problems.push(format!(
+                                    "tab {tab}, control {}: the brightest label pixel is {got:02x?}, not {:02x?}",
+                                    GetDlgCtrlID(button),
+                                    channels(wanted)
+                                ));
+                                }
+                            }
+                        }
+                        (seen, problems)
+                    },
+                );
+                assert!(seen > 0, "{name} has check boxes to look at");
+                wrong.extend(
+                    problems
+                        .into_iter()
+                        .map(|problem| format!("{name}: {problem}")),
+                );
+            }
+            assert!(wrong.is_empty(), "{wrong:#?}");
+        }
+
+        #[test]
+        fn only_the_dark_scheme_takes_over_the_drawing_of_check_boxes() {
+            for dark in [false, true] {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        dialog.show_tab(0);
+                        let boxes = check_boxes(dialog.hwnd);
+                        assert!(!boxes.is_empty());
+                        let own = (if dark {
+                            CDRF_SKIPDEFAULT
+                        } else {
+                            CDRF_DODEFAULT
+                        }) as isize;
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, boxes[0]),
+                            own,
+                            "dark {dark}: a check box"
+                        );
+                        if !dark {
+                            // The theme keeps drawing the light labels.
+                            let face = paint(boxes[0], 0);
+                            let from = box_size(boxes[0], CBS_UNCHECKEDNORMAL).cx + 1;
+                            assert_eq!(
+                                face.darkest(from, face.width),
+                                channels(GetSysColor(COLOR_WINDOWTEXT)),
+                                "the light label"
+                            );
+                        }
+                    },
+                );
+            }
+        }
+
+        #[test]
+        fn buttons_other_than_check_boxes_are_left_to_the_default_drawing() {
+            for dark in [false, true] {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        // The cards of the wizard are push-like check boxes that paint
+                        // themselves.
+                        for (what, style, ex_style) in [
+                            ("a push button", BS_PUSHBUTTON, 0),
+                            ("a default push button", BS_DEFPUSHBUTTON, 0),
+                            ("a push-like check box", BS_AUTOCHECKBOX | BS_PUSHLIKE, 0),
+                            ("a radio button", BS_AUTORADIOBUTTON, 0),
+                            ("a three-state check box", BS_AUTO3STATE, 0),
+                            ("a group box", BS_GROUPBOX, 0),
+                            // The label of a check box that is placed another way.
+                            (
+                                "a check box with its text on the left",
+                                BS_AUTOCHECKBOX | BS_LEFTTEXT,
+                                0,
+                            ),
+                            ("a right-aligned check box", BS_AUTOCHECKBOX | BS_RIGHT, 0),
+                            ("a centred check box", BS_AUTOCHECKBOX | BS_CENTER, 0),
+                            (
+                                "a check box with its text at the top",
+                                BS_AUTOCHECKBOX | BS_TOP,
+                                0,
+                            ),
+                            (
+                                "a check box with its text at the bottom",
+                                BS_AUTOCHECKBOX | BS_BOTTOM,
+                                0,
+                            ),
+                            ("a check box with an icon", BS_AUTOCHECKBOX | BS_ICON, 0),
+                            ("a check box with a bitmap", BS_AUTOCHECKBOX | BS_BITMAP, 0),
+                            (
+                                "a check box with a right-aligned window",
+                                BS_AUTOCHECKBOX,
+                                WS_EX_RIGHT,
+                            ),
+                            (
+                                "a check box that reads right to left",
+                                BS_AUTOCHECKBOX,
+                                WS_EX_RTLREADING,
+                            ),
+                        ] {
+                            let button = add_button(dialog, what, style, ex_style, dark);
+                            // The system can drop an extended style at creation, so
+                            // it is set again, and every case must carry its bits.
+                            SetWindowLongPtrW(
+                                button,
+                                GWL_EXSTYLE,
+                                GetWindowLongPtrW(button, GWL_EXSTYLE) | ex_style as isize,
+                            );
+                            assert_eq!(
+                                GetWindowLongPtrW(button, GWL_STYLE) as u32 & style as u32,
+                                style as u32,
+                                "dark {dark}: {what} has its style"
+                            );
+                            assert_eq!(
+                                GetWindowLongPtrW(button, GWL_EXSTYLE) as u32 & ex_style,
+                                ex_style,
+                                "dark {dark}: {what} has its extended style"
+                            );
+                            assert_eq!(
+                                custom_draw_answer(dialog.hwnd, button),
+                                CDRF_DODEFAULT as isize,
+                                "dark {dark}: {what}"
+                            );
+                            DestroyWindow(button);
+                        }
+                    },
+                );
+            }
+        }
+
+        #[test]
+        fn dark_check_boxes_keep_the_position_the_theme_gives_them() {
+            // Box and label of every check box of the settings, by tab and id: the
+            // light scheme is drawn by the theme alone.
+            let layout = |dark: bool| {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        let mut found = Vec::new();
+                        for tab in 0..4 {
+                            dialog.show_tab(tab);
+                            for button in check_boxes(dialog.hwnd) {
+                                SendMessageW(button, BM_SETCHECK, 0, 0);
+                                let face = paint(button, 0);
+                                let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                                found.push((
+                                    (tab, GetDlgCtrlID(button)),
+                                    face.ink(0, edge),
+                                    face.ink(edge, face.width),
+                                ));
+                            }
+                        }
+                        found
+                    },
+                )
+            };
+            let (light, dark) = (layout(false), layout(true));
+            assert!(light.len() > 15, "the settings have their check boxes");
+            assert_eq!(light.len(), dark.len());
+            for (themed, mine) in light.iter().zip(&dark) {
+                assert_eq!(themed.0, mine.0);
+                assert_eq!(themed.1, mine.1, "tab and control {:?}: the box", themed.0);
+                let (a, b) = (themed.2.unwrap(), mine.2.unwrap());
+                // The last column of a label can hold a faint edge pixel of one
+                // scheme only: the same glyph blends differently with another
+                // text colour.
+                assert!(
+                    a[0] == b[0] && a[1] == b[1] && a[3] == b[3] && (a[2] - b[2]).abs() <= 1,
+                    "tab and control {:?}: the label lies at {a:?} in the theme and {b:?} in the scheme",
+                    themed.0
+                );
+            }
+        }
+
+        /// A state of a check box and the part state uxtheme has for it.
+        struct Look {
+            what: &'static str,
+            check: u32,
+            disabled: bool,
+            pressed: bool,
+            hot: bool,
+            state: i32,
+        }
+
+        fn looks() -> [Look; 8] {
+            let look = |what, check, disabled, pressed, hot, state| Look {
+                what,
+                check,
+                disabled,
+                pressed,
+                hot,
+                state,
+            };
+            [
+                look(
+                    "unchecked",
+                    BST_UNCHECKED,
+                    false,
+                    false,
+                    false,
+                    CBS_UNCHECKEDNORMAL,
+                ),
+                look(
+                    "unchecked, hot",
+                    BST_UNCHECKED,
+                    false,
+                    false,
+                    true,
+                    CBS_UNCHECKEDHOT,
+                ),
+                look(
+                    "unchecked, pressed",
+                    BST_UNCHECKED,
+                    false,
+                    true,
+                    false,
+                    CBS_UNCHECKEDPRESSED,
+                ),
+                look(
+                    "unchecked, disabled",
+                    BST_UNCHECKED,
+                    true,
+                    false,
+                    false,
+                    CBS_UNCHECKEDDISABLED,
+                ),
+                look(
+                    "checked",
+                    BST_CHECKED,
+                    false,
+                    false,
+                    false,
+                    CBS_CHECKEDNORMAL,
+                ),
+                look(
+                    "checked, hot",
+                    BST_CHECKED,
+                    false,
+                    false,
+                    true,
+                    CBS_CHECKEDHOT,
+                ),
+                look(
+                    "checked, pressed",
+                    BST_CHECKED,
+                    false,
+                    true,
+                    false,
+                    CBS_CHECKEDPRESSED,
+                ),
+                look(
+                    "checked, disabled",
+                    BST_CHECKED,
+                    true,
+                    false,
+                    false,
+                    CBS_CHECKEDDISABLED,
+                ),
+            ]
+        }
+
+        #[test]
+        fn dark_check_boxes_draw_the_box_of_their_state_and_a_scheme_label() {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let mut drawn: Vec<(&str, Vec<u32>)> = Vec::new();
+                    for look in looks() {
+                        let button =
+                            add_button(dialog, "A label to read", BS_AUTOCHECKBOX, 0, true);
+                        SendMessageW(button, BM_SETCHECK, look.check as usize, 0);
+                        EnableWindow(button, !look.disabled as i32);
+                        if look.pressed {
+                            SendMessageW(button, BM_SETSTATE, 1, 0);
+                        }
+                        if look.hot {
+                            SendMessageW(button, WM_MOUSEMOVE, 0, 5 | (5 << 16));
+                        }
+                        let face = paint(button, 0);
+                        let size = box_size(button, look.state);
+                        let wanted = themed_box(button, look.state);
+                        assert!(
+                            face.columns(0, size.cx) == wanted.columns(0, size.cx),
+                            "{}: the box is not the one uxtheme draws for the state",
+                            look.what
+                        );
+                        let colour = if look.disabled { DARK_MUTED } else { DARK_TEXT };
+                        assert_eq!(
+                            face.brightest(size.cx + 1, face.width),
+                            channels(colour),
+                            "{}: the label",
+                            look.what
+                        );
+                        drawn.push((look.what, wanted.columns(0, size.cx)));
+                        DestroyWindow(button);
+                    }
+                    // The comparison above means something only if uxtheme draws the
+                    // states differently.
+                    for (index, (what, pixels)) in drawn.iter().enumerate() {
+                        for (other, other_pixels) in &drawn[index + 1..] {
+                            assert!(
+                                pixels != other_pixels,
+                                "uxtheme draws \"{what}\" and \"{other}\" alike"
+                            );
+                        }
+                    }
+                },
+            );
+        }
+
+        /// The box around the label of an "&Open it" check box with the keyboard
+        /// cues shown, without the focus and with it, in the dark scheme or in the
+        /// light one that the theme draws alone.
+        fn label_and_focus_ink(dark: bool) -> ([i32; 4], [i32; 4]) {
+            with_styled_dialog(
+                dark,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let button = add_button(dialog, "&Open it", BS_AUTOCHECKBOX, 0, dark);
+                    let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                    SetFocus(null_mut());
+                    keyboard_cues(dialog.hwnd, true);
+                    let label = paint(button, 0);
+                    SetFocus(button);
+                    let focused = paint(button, 0);
+                    (
+                        label.ink(edge, label.width).unwrap(),
+                        focused.ink(edge, focused.width).unwrap(),
+                    )
+                },
+            )
+        }
+
+        #[test]
+        fn dark_check_boxes_show_the_focus_rectangle_and_the_underline_only_with_keyboard_cues() {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let button = add_button(dialog, "&Open it", BS_AUTOCHECKBOX, 0, true);
+                    SetFocus(null_mut());
+                    keyboard_cues(dialog.hwnd, true);
+                    let underlined = paint(button, 0);
+                    keyboard_cues(dialog.hwnd, false);
+                    let plain = paint(button, 0);
+                    let rows: std::collections::BTreeSet<i32> = (0..plain.height)
+                        .filter(|y| {
+                            (0..plain.width).any(|x| plain.pixel(x, *y) != underlined.pixel(x, *y))
+                        })
+                        .collect();
+                    assert!(
+                        !rows.is_empty() && rows.len() <= 2,
+                        "only the access letter's underline appears with the cues: rows {rows:?}"
+                    );
+
+                    SetFocus(button);
+                    assert_eq!(GetFocus(), button, "the button has the focus");
+                    let focused_without_cues = paint(button, 0);
+                    assert!(
+                        focused_without_cues == plain,
+                        "the focus alone draws nothing while the cues are hidden"
+                    );
+                    keyboard_cues(dialog.hwnd, true);
+                    let focused = paint(button, 0);
+                    let edge = box_size(button, CBS_UNCHECKEDNORMAL).cx + 1;
+                    let outline = focused.ink(edge, focused.width).unwrap();
+                    let text = underlined.ink(edge, underlined.width).unwrap();
+                    assert!(
+                        outline[0] < text[0]
+                            && outline[1] < text[1]
+                            && outline[2] > text[2]
+                            && outline[3] > text[3],
+                        "the focus rectangle {outline:?} surrounds the label {text:?}"
+                    );
+                    // Where the theme puts it for the same button: close around the
+                    // label, not stretched to the edge of the control.
+                    let (light_text, light_outline) = label_and_focus_ink(false);
+                    assert!(
+                        light_outline[0] < light_text[0]
+                            && light_outline[1] < light_text[1]
+                            && light_outline[2] > light_text[2]
+                            && light_outline[3] > light_text[3],
+                        "the theme draws a focus rectangle {light_outline:?} around the label {light_text:?}"
+                    );
+                    assert_eq!(
+                        outline, light_outline,
+                        "the focus rectangle lies where the theme draws it"
+                    );
+                },
+            );
+        }
+
+        #[test]
+        fn a_mirrored_dark_check_box_keeps_the_box_on_the_right_and_the_label_in_the_scheme_colour()
+        {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    let button = add_button(
+                        dialog,
+                        "A label to read",
+                        BS_AUTOCHECKBOX,
+                        WS_EX_LAYOUTRTL,
+                        true,
+                    );
+                    let face = paint(button, LAYOUT_RTL);
+                    let size = box_size(button, CBS_UNCHECKEDNORMAL);
+                    let label_end = face.width - size.cx - 1;
+                    let glyph = face.ink(label_end, face.width).expect("the box is drawn");
+                    assert_eq!(glyph[2], face.width - 1, "the box touches the right edge");
+                    let label = face.ink(0, label_end).expect("the label is drawn");
+                    assert!(label[0] > 0, "the label ends at the box: {label:?}");
+                    assert_eq!(face.brightest(0, label_end), channels(DARK_TEXT));
+                },
             );
         }
     }

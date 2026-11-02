@@ -681,20 +681,23 @@ pub(crate) fn preserves_partial(error: &anyhow::Error) -> bool {
 /// The bytes of `output` that a later attempt builds on: the ranges the resume state records
 /// for a segmented download, the recorded length of the part file for a sequential one. Bytes
 /// that were received but the state does not record are not counted. `None` while the record
-/// exists but cannot be read, when the amount is unknown.
+/// exists but cannot be read, or the folder that holds the download cannot be found (a drive or
+/// share that is gone), when the amount is unknown.
 pub(crate) fn retained_bytes(output: &Path) -> Option<u64> {
     let path = state_path(output);
     if unreadable_state(&path).is_some() {
         return None;
     }
-    Some(match read_state(&path) {
-        Some(state) if state.segmented => state.completed.iter().map(|range| range.len()).sum(),
-        Some(state) => resume_point(
+    match read_state(&path) {
+        Some(state) if state.segmented => {
+            Some(state.completed.iter().map(|range| range.len()).sum())
+        }
+        Some(state) => Some(resume_point(
             &state,
             fs::metadata(part_path(output)).map_or(0, |meta| meta.len()),
-        ),
-        None => 0,
-    })
+        )),
+        None => output.parent().is_some_and(Path::is_dir).then_some(0),
+    }
 }
 
 /// The length of the part file that a one-connection transfer continues from: the flushed
@@ -8007,6 +8010,16 @@ mod tests {
         assert_eq!(retained_bytes(&output), None);
         drop(held);
         assert_eq!(retained_bytes(&output), Some(7));
+    }
+
+    #[test]
+    fn retained_bytes_are_unknown_while_the_folder_of_the_download_cannot_be_found() {
+        // A folder that does not exist stands in for a drive or share that is gone.
+        let directory = TestDirectory::new("retained-folder-gone");
+        let output = directory.0.join("work").join("payload.bin");
+        assert_eq!(retained_bytes(&output), None);
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        assert_eq!(retained_bytes(&output), Some(0));
     }
 
     #[test]

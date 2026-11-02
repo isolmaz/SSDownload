@@ -526,10 +526,12 @@ pub(crate) fn has_partial_output(output: &Path) -> bool {
 
 /// The size of the tool's output files in the workspace of `output`, partial and finished
 /// streams alike: what a later attempt continues from. Workspace state files start with a dot.
-/// `None` when the folder cannot be listed for another reason than not existing.
+/// `None` when the folder that holds the download cannot be found (a drive or share that is
+/// gone), or the workspace cannot be listed for another reason than not existing.
 pub(crate) fn retained_bytes(output: &Path) -> Option<u64> {
+    // The identity resolves the folder that holds the download, so it fails while that is gone.
     let Ok(owner) = crate::output::identity(output) else {
-        return Some(0);
+        return None;
     };
     let entries = match fs::read_dir(workspace_path(output, &owner)) {
         Ok(entries) => entries,
