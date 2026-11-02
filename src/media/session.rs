@@ -278,6 +278,11 @@ pub(crate) fn scoped_cookie_applies(cookie: &ScopedCookie, target: &Url) -> bool
 /// before any job can create a live jar; per-job creation never sweeps, so
 /// concurrent media jobs keep their own jars.
 pub(crate) fn sweep_stale_cookie_jars() {
+    // The tests of a process share one jar folder, and each engine they open would sweep the jars
+    // and leases of the tests that run beside it.
+    if cfg!(test) {
+        return;
+    }
     if let Ok(dir) = crate::paths::cookie_jar_dir() {
         sweep_stale_session_files(&dir);
     }

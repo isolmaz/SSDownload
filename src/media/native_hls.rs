@@ -3888,7 +3888,19 @@ mod tests {
                     &mut |_| {},
                 ));
             });
-            let fetched = receiver.recv_timeout(Duration::from_secs(20));
+            // The download stalls when ten seconds pass without a new request, however long the
+            // whole of it takes.
+            let mut requests = 0;
+            let fetched = loop {
+                match receiver.recv_timeout(Duration::from_secs(10)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                        if server.log().len() > requests =>
+                    {
+                        requests = server.log().len();
+                    }
+                    other => break other,
+                }
+            };
             // A stalled download is stopped so that the scope can end.
             control.cancel();
             let joins = fetched.expect("the download stalled").unwrap();
