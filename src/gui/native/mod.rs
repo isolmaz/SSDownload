@@ -7152,6 +7152,10 @@ unsafe extern "system" fn dialog_proc(
         }
         WM_DPICHANGED => {
             let r = &*(lparam as *const RECT);
+            // The resize lays the dialog out, which has to use the new DPI and
+            // fonts: with the old ones its rows look too wide for the window
+            // and the window is widened.
+            dialog_font(dlg);
             SetWindowPos(
                 hwnd,
                 null_mut(),
@@ -7161,7 +7165,7 @@ unsafe extern "system" fn dialog_proc(
                 r.bottom - r.top,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
-            dialog_dpi(dlg);
+            layout_dialog(dlg);
             0
         }
         WM_COMMAND => {
@@ -7889,6 +7893,12 @@ unsafe fn window_class(hwnd: HWND) -> String {
     String::from_utf16_lossy(&name[..len])
 }
 unsafe fn dialog_dpi(dlg: &mut DialogUi) {
+    dialog_font(dlg);
+    layout_dialog(dlg);
+}
+
+/// Takes the window's DPI and gives every control the font for it.
+unsafe fn dialog_font(dlg: &mut DialogUi) {
     dlg.dpi = GetDpiForWindow(dlg.hwnd).max(96);
     let f = make_font(dlg.dpi, 9, FW_NORMAL as i32);
     let mut child = GetWindow(dlg.hwnd, GW_CHILD);
@@ -7898,7 +7908,6 @@ unsafe fn dialog_dpi(dlg: &mut DialogUi) {
     }
     DeleteObject(dlg.font);
     dlg.font = f;
-    layout_dialog(dlg);
 }
 
 unsafe fn set_dialog_error(hwnd: HWND, error: HWND, value: &str, focus: HWND) {
@@ -13847,13 +13856,17 @@ mod tests {
             use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyWindow, SetPropW, WS_POPUP};
 
             let mut wrong = Vec::new();
-            for info in crate::i18n::LANGUAGES.iter() {
+            for (info, dpi) in crate::i18n::LANGUAGES
+                .iter()
+                .flat_map(|info| [96, 144, 192].map(move |dpi| (info, dpi)))
+            {
                 for dark in [false, true] {
                     let found = Mutex::new(Vec::new());
                     for (name, buttons, flags) in in_language(info.code, alert_cases) {
                         let open = || {
                             with_common_controls_6(|| {
                                 crate::i18n::with_language(info.code, || unsafe {
+                                    native::ALERT_DPI.with(|alert_dpi| alert_dpi.set(Some(dpi)));
                                     let owner =
                                         native::control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
                                     if dark {
@@ -13868,6 +13881,7 @@ mod tests {
                                         (!buttons.is_empty()).then_some(&buttons[..]),
                                     );
                                     DestroyWindow(owner);
+                                    native::ALERT_DPI.with(|alert_dpi| alert_dpi.set(None));
                                     answer
                                 })
                             })
@@ -13887,7 +13901,7 @@ mod tests {
                     }
                     wrong.extend(found.into_inner().unwrap().into_iter().map(|problem| {
                         format!(
-                            "{} / {}: {problem}",
+                            "{} / {} / {dpi} dpi: {problem}",
                             info.code,
                             if dark { "dark" } else { "light" }
                         )
@@ -13897,21 +13911,22 @@ mod tests {
             assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
         }
 
-        #[test]
-        fn the_job_view_fits_its_buttons_when_a_download_fails_in_every_language() {
-            use crate::model::{AddRequest, Job, JobState};
-
-            let failed = Job {
+        fn a_job(
+            name: &str,
+            state: crate::model::JobState,
+            error: Option<&str>,
+        ) -> crate::model::Job {
+            crate::model::Job {
                 id: "job".into(),
-                request: AddRequest::default(),
-                name: "file.bin".into(),
-                state: JobState::Failed,
-                path: "file.bin".into(),
+                request: crate::model::AddRequest::default(),
+                name: name.into(),
+                state,
+                path: name.into(),
                 downloaded: 0,
                 total: None,
                 speed: 0,
                 eta: None,
-                error: Some("The source refused the request.".into()),
+                error: error.map(str::to_string),
                 phase: String::new(),
                 created_at: 0,
                 updated_at: 0,
@@ -13926,7 +13941,18 @@ mod tests {
                 open_when_done: false,
                 live: false,
                 sequence: 0,
-            };
+            }
+        }
+
+        #[test]
+        fn the_job_view_fits_its_buttons_when_a_download_fails_in_every_language() {
+            use crate::model::JobState;
+
+            let failed = a_job(
+                "file.bin",
+                JobState::Failed,
+                Some("The source refused the request."),
+            );
             let mut wrong = Vec::new();
             for info in crate::i18n::LANGUAGES.iter() {
                 let case = cases()
@@ -13969,6 +13995,210 @@ mod tests {
                 );
             }
             assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
+        }
+
+        /// The width of the window and the narrowest it may be.
+        unsafe fn window_widths(hwnd: native::HWND) -> (i32, i32) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{MINMAXINFO, WM_GETMINMAXINFO};
+            let mut frame: RECT = zeroed();
+            GetWindowRect(hwnd, &mut frame);
+            let mut info: MINMAXINFO = zeroed();
+            SendMessageW(
+                hwnd,
+                WM_GETMINMAXINFO,
+                0,
+                &mut info as *mut MINMAXINFO as isize,
+            );
+            (frame.right - frame.left, info.ptMinTrackSize.x)
+        }
+
+        #[test]
+        fn a_label_that_shows_a_long_file_name_does_not_widen_the_window() {
+            use crate::model::JobState;
+
+            let name = "A very long file name that a source may well give to a download, with a \
+                        part number, a quality and an extension [1080p] - part 3 of 12.mkv";
+            assert!(name.len() > 80);
+            let mut wrong = Vec::new();
+            for code in ["en", "de"] {
+                let found = in_language(code, || {
+                    let case = cases()
+                        .into_iter()
+                        .find(|case| case.name == "job view")
+                        .unwrap();
+                    let dialog = dialog(&case, false);
+                    unsafe {
+                        let before = window_widths(dialog.hwnd);
+                        let job = a_job(name, JobState::Downloading, None);
+                        let mut snapshot = dialog.app().snapshot();
+                        std::sync::Arc::make_mut(&mut snapshot.jobs).push(job.clone());
+                        let ui = &mut *dialog.raw;
+                        let native::DialogKind::Progress(f) = &mut ui.kind else {
+                            unreachable!()
+                        };
+                        f.ids = vec![job.id.clone()];
+                        native::refresh_job_view(ui.hwnd, ui.error, f, &snapshot);
+                        let summary = f.summary;
+                        assert!(
+                            native::text(summary).contains(name),
+                            "the summary shows the file name"
+                        );
+                        let mut found = Vec::new();
+                        let after = window_widths(dialog.hwnd);
+                        if after != before {
+                            found.push(format!(
+                                "the window and its minimum went from {before:?} to {after:?}"
+                            ));
+                        }
+                        found.extend(crowded(dialog.hwnd));
+                        found
+                    }
+                });
+                wrong.extend(
+                    found
+                        .into_iter()
+                        .map(|problem| format!("{code}: {problem}")),
+                );
+            }
+            assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
+        }
+
+        #[test]
+        fn a_dialog_that_changes_its_dpi_keeps_the_width_it_is_designed_for() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED,
+            };
+
+            let mut wrong = Vec::new();
+            for (code, name, dark) in [
+                ("en", "site logins", false),
+                ("en", "queues", false),
+                ("de", "site logins", false),
+                ("de", "queues", false),
+                ("de", "queues", true),
+            ] {
+                let found = in_language(code, || {
+                    let case = cases().into_iter().find(|case| case.name == name).unwrap();
+                    let dialog = dialog(&case, dark);
+                    unsafe {
+                        let before = window_widths(dialog.hwnd);
+                        let mut frame: RECT = zeroed();
+                        GetWindowRect(dialog.hwnd, &mut frame);
+                        let ui = &mut *dialog.raw;
+
+                        // The dialog as it stands on a monitor at 144 dpi: that
+                        // scale, the fonts for it, and the size of its design.
+                        ui.dpi = 144;
+                        let font = native::make_font(144, 9, 400);
+                        let mut child = GetWindow(ui.hwnd, GW_CHILD);
+                        while !child.is_null() {
+                            native::apply_font(child, font);
+                            child = GetWindow(child, GW_HWNDNEXT);
+                        }
+                        windows_sys::Win32::Graphics::Gdi::DeleteObject(ui.font as _);
+                        ui.font = font;
+                        SetWindowPos(
+                            ui.hwnd,
+                            null_mut(),
+                            frame.left,
+                            frame.top,
+                            native::scale(case.width, 144),
+                            native::scale(case.height, 144),
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                        if ui.grown.get() != 0 {
+                            return vec![format!(
+                                "{name}: the dialog is {} wider than designed before the change",
+                                ui.grown.get()
+                            )];
+                        }
+
+                        // The monitor changes to 96 dpi: the system suggests the
+                        // size of the design there.
+                        let suggested = frame;
+                        SendMessageW(
+                            ui.hwnd,
+                            WM_DPICHANGED,
+                            (96 << 16) | 96,
+                            &suggested as *const RECT as isize,
+                        );
+                        let after = window_widths(ui.hwnd);
+                        let mut found = Vec::new();
+                        if after != before || ui.grown.get() != 0 {
+                            found.push(format!(
+                                "{name} ({}): the window and its minimum went from {before:?} to {after:?}, {} wider",
+                                if dark { "dark" } else { "light" },
+                                ui.grown.get()
+                            ));
+                        }
+                        found
+                    }
+                });
+                wrong.extend(
+                    found
+                        .into_iter()
+                        .map(|problem| format!("{code}: {problem}")),
+                );
+            }
+            assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
+        }
+
+        #[test]
+        fn a_dialog_widened_next_to_the_right_edge_of_the_screen_stays_on_it() {
+            use windows_sys::Win32::{
+                Graphics::Gdi::{
+                    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+                },
+                UI::WindowsAndMessaging::{
+                    GetDlgItem, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                },
+            };
+
+            in_language("en", || {
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "rename")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                unsafe {
+                    let mut monitor: MONITORINFO = zeroed();
+                    monitor.cbSize = size_of::<MONITORINFO>() as u32;
+                    GetMonitorInfoW(
+                        MonitorFromWindow(dialog.hwnd, MONITOR_DEFAULTTONEAREST),
+                        &mut monitor,
+                    );
+                    let work = monitor.rcWork;
+                    let mut frame: RECT = zeroed();
+                    GetWindowRect(dialog.hwnd, &mut frame);
+                    let width = frame.right - frame.left;
+                    SetWindowPos(
+                        dialog.hwnd,
+                        null_mut(),
+                        work.right - width - 10,
+                        frame.top,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+
+                    let cancel = GetDlgItem(dialog.hwnd, native::D_CANCEL);
+                    native::set_text(
+                        cancel,
+                        &"A very long label for the closing button ".repeat(3),
+                    );
+                    native::layout_dialog(&*dialog.raw);
+                    GetWindowRect(dialog.hwnd, &mut frame);
+                    assert!(frame.right - frame.left > width, "the window was widened");
+                    assert!(
+                        frame.right <= work.right && frame.left >= work.left,
+                        "the window is at x {}..{} on a work area of x {}..{}",
+                        frame.left,
+                        frame.right,
+                        work.left,
+                        work.right
+                    );
+                }
+            });
         }
 
         #[test]

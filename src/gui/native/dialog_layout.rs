@@ -1855,15 +1855,7 @@ unsafe fn widen_for_scroll_bar(dlg: &DialogUi) {
     GetWindowRect(dlg.hwnd, &mut frame);
     let (least, _) = dialog_min_track(dlg, dlg.dpi);
     if frame.right - frame.left < least {
-        SetWindowPos(
-            dlg.hwnd,
-            null_mut(),
-            0,
-            0,
-            least,
-            frame.bottom - frame.top,
-            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
+        set_width(dlg, &frame, least);
     }
 }
 
@@ -1880,6 +1872,9 @@ struct Fitted {
     placed: (i32, i32),
     /// The width its text needs; zero for a control that is not fitted to its text.
     need: i32,
+    /// A label: it takes the room its row has inside the dialog and never widens
+    /// the window.
+    label: bool,
     /// The narrowest it can be squeezed to.
     least: i32,
 }
@@ -1914,11 +1909,12 @@ unsafe fn fitted_controls(dlg: &DialogUi) -> Vec<Fitted> {
         let (y, h) = (corners[0].y, corners[1].y - corners[0].y);
         if w > 0 && h > 0 {
             let class = window_class(child);
+            let label = class.eq_ignore_ascii_case("Static");
             let (need, least) = if class.eq_ignore_ascii_case("Button") {
                 let kind = style & BS_TYPEMASK as u32;
                 let push = kind == BS_PUSHBUTTON as u32 || kind == BS_DEFPUSHBUTTON as u32;
                 (if push { text_width(child) + padding } else { 0 }, w)
-            } else if class.eq_ignore_ascii_case("Static") {
+            } else if label {
                 let single_line = style & 0x1f <= 2 && h <= scale(DIALOG_ROW, dlg.dpi);
                 let need = if single_line { text_width(child) } else { 0 };
                 (
@@ -1940,6 +1936,7 @@ unsafe fn fitted_controls(dlg: &DialogUi) -> Vec<Fitted> {
                 h,
                 placed: (x, w),
                 need,
+                label,
                 least,
             });
         }
@@ -1953,17 +1950,17 @@ fn level(a: &Fitted, b: &Fitted) -> bool {
     shared * 2 >= a.h.min(b.h)
 }
 
-/// Widens `items[n]` to the width its text needs, towards the trailing side
-/// for `dir` 1 and the leading side for -1, by squeezing and then moving the
-/// controls level with it on that side. Returns how far something ended
-/// outside `limits`, how far outside the row it stood in, and how much
-/// moved.
+/// Widens `items[n]` by `extra`, towards the trailing side for `dir` 1 and the
+/// leading side for -1, by squeezing and then moving the controls level with it
+/// on that side. Returns how far something ended outside `limits`, how far
+/// outside the row it stood in, and how much moved.
 fn widen(
     items: &mut [Fitted],
     n: usize,
     dir: i32,
     (low, high): (i32, i32),
     gap: i32,
+    extra: i32,
 ) -> (i32, i32, i32) {
     let row: Vec<usize> = (0..items.len())
         .filter(|&i| level(&items[n], &items[i]))
@@ -1974,7 +1971,6 @@ fn widen(
         .map(|&i| items[i].placed.0 + items[i].placed.1)
         .max()
         .unwrap_or(high);
-    let extra = items[n].need - items[n].w;
     if dir < 0 {
         items[n].x -= extra;
     }
@@ -2029,28 +2025,49 @@ fn widen(
 
 /// Makes every push button and one-line label as wide as its text needs,
 /// keeping the rows they stand in aligned: a control grows on the side that
-/// costs its row least, and what is in the way is squeezed or moved over.
-/// Returns how much wider the client area has to be for the result to stay
-/// inside `limits`, zero when it fits.
+/// costs its row least, and what is in the way is squeezed or moved over. Only
+/// a push button may make the dialog grow. A label, which often shows what the
+/// user typed or what a source called its file, takes what its row can give
+/// inside `limits`, after the buttons, and stays cut where that is not enough.
+/// Returns how much wider the client area has to be for the buttons to stay
+/// inside `limits`, zero when they fit.
 unsafe fn fit_text(dlg: &DialogUi, limits: (i32, i32)) -> i32 {
     let mut items = fitted_controls(dlg);
     let gap = scale(DIALOG_GAP, dlg.dpi);
     let mut outside = 0;
-    for n in 0..items.len() {
-        if items[n].need <= items[n].w {
-            continue;
-        }
-        let mut best = None;
-        for dir in [1, -1] {
-            let mut trial = items.clone();
-            let cost = widen(&mut trial, n, dir, limits, gap);
-            if best.as_ref().is_none_or(|(_, kept)| cost < *kept) {
-                best = Some((trial, cost));
+    for label in [false, true] {
+        for n in 0..items.len() {
+            if items[n].label != label || items[n].need <= items[n].w {
+                continue;
             }
-        }
-        if let Some((fitted, cost)) = best {
-            items = fitted;
-            outside = outside.max(cost.0);
+            let want = items[n].need - items[n].w;
+            let mut best = None;
+            for dir in [1, -1] {
+                let mut extra = want;
+                let (trial, cost) = loop {
+                    let mut trial = items.clone();
+                    let cost = widen(&mut trial, n, dir, limits, gap, extra);
+                    if !label || cost.0 == 0 {
+                        break (trial, cost);
+                    }
+                    extra -= cost.0;
+                    if extra <= 0 {
+                        break (items.clone(), (0, 0, 0));
+                    }
+                };
+                let rank = if label {
+                    (want - extra.max(0), cost.1, cost.2)
+                } else {
+                    cost
+                };
+                if best.as_ref().is_none_or(|(_, kept, _)| rank < *kept) {
+                    best = Some((trial, rank, cost.0));
+                }
+            }
+            if let Some((fitted, _, beyond)) = best {
+                items = fitted;
+                outside = outside.max(beyond);
+            }
         }
     }
     for item in items.iter().filter(|item| (item.x, item.w) != item.placed) {
@@ -2065,30 +2082,41 @@ unsafe fn fit_text(dlg: &DialogUi, limits: (i32, i32)) -> i32 {
 unsafe fn widen_dialog(dlg: &DialogUi, extra: i32) {
     let mut frame: RECT = zeroed();
     GetWindowRect(dlg.hwnd, &mut frame);
-    let mut monitor: MONITORINFO = zeroed();
-    monitor.cbSize = size_of::<MONITORINFO>() as u32;
-    let room = if GetMonitorInfoW(
-        MonitorFromWindow(dlg.hwnd, MONITOR_DEFAULTTONEAREST),
-        &mut monitor,
-    ) != 0
-    {
-        monitor.rcWork.right - monitor.rcWork.left - (frame.right - frame.left)
-    } else {
-        extra
-    };
+    let room = work_area(dlg).map_or(extra, |work| {
+        work.right - work.left - (frame.right - frame.left)
+    });
     let by = extra.min(room);
     if by <= 0 {
         return;
     }
     dlg.grown
         .set(dlg.grown.get() + (by * 96 + dlg.dpi as i32 - 1) / dlg.dpi as i32);
+    set_width(dlg, &frame, frame.right - frame.left + by);
+}
+
+unsafe fn work_area(dlg: &DialogUi) -> Option<RECT> {
+    let mut monitor: MONITORINFO = zeroed();
+    monitor.cbSize = size_of::<MONITORINFO>() as u32;
+    (GetMonitorInfoW(
+        MonitorFromWindow(dlg.hwnd, MONITOR_DEFAULTTONEAREST),
+        &mut monitor,
+    ) != 0)
+        .then_some(monitor.rcWork)
+}
+
+/// Gives the window `width`, and moves it left when its right edge would leave
+/// the monitor's work area.
+unsafe fn set_width(dlg: &DialogUi, frame: &RECT, width: i32) {
+    let left = work_area(dlg).map_or(frame.left, |work| {
+        frame.left.min(work.right - width).max(work.left)
+    });
     SetWindowPos(
         dlg.hwnd,
         null_mut(),
-        0,
-        0,
-        frame.right - frame.left + by,
+        left,
+        frame.top,
+        width,
         frame.bottom - frame.top,
-        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        SWP_NOZORDER | SWP_NOACTIVATE,
     );
 }
