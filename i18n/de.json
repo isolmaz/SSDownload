@@ -446,7 +446,7 @@
   "Media verification: the video stream is missing": "Medienprüfung: Der Videostream fehlt",
   "Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).": "Medienprüfung: Der Stream {stream} dauert {length:.1} s, seine Quell-Playlist gibt {declared} s an (fehlendes oder doppeltes Fragment).",
   "Media verification: unexpected video stream in an audio-only output": "Medienprüfung: Unerwarteter Videostream in einer reinen Audioausgabe",
-  "Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).": "Medienprüfung: Video {0:.1} s, Audio {1} {2:.1} s; die Stream-Längen stimmen nicht überein (fehlendes oder doppeltes Fragment).",
+  "Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).": "Medienprüfung: Video {0:.1} s, Audiostream {1}: {2:.1} s; die Stream-Längen stimmen nicht überein (fehlendes oder doppeltes Fragment).",
   "Media workspace ownership could not be verified; artifacts were kept": "Die Zugehörigkeit des Medien-Arbeitsbereichs konnte nicht geprüft werden; Artefakte wurden behalten",
   "Metered connection and Battery saver: downloads are on hold": "Getaktete Verbindung und Energiesparmodus: Downloads werden zurückgehalten",
   "Metered connection: downloads are on hold": "Getaktete Verbindung: Downloads werden zurückgehalten",

@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// How far apart the ends of a video and an audio stream may be when the source gives no
+/// fragment timing, and how far an audio track extracted alone may end before the source's
+/// duration. AAC priming (2112 samples) and a last frame padded to 1024 samples move an end by
+/// 0.4 s at 8 kHz and 0.07 s at 48 kHz, and a progressive file can end its audio before its
+/// picture without any damage. A lost segment of an HLS or DASH stream is usually longer (2 to
+/// 10 s), so the bound stays below that.
+const STREAM_END_GAP: f64 = 1.5;
+
 pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaInfo) -> Result<()> {
     let streams = value["streams"].as_array().ok_or_else(|| {
         anyhow!(crate::i18n::ui(
@@ -235,6 +243,9 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
     // reason the user has to act on. Metadata findings are reported only for intact streams.
     let start_tolerance = info.duration_tolerance.unwrap_or(0.5).clamp(0.25, 2.0);
     let end_tolerance = start_tolerance;
+    let end_gap = info
+        .duration_tolerance
+        .map_or(STREAM_END_GAP, |_| end_tolerance);
     // Source playlists may declare different lengths for video and audio; each stream is then
     // held to its own playlist instead of to its counterpart.
     let declared =
@@ -305,13 +316,13 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
                 .abs()
                     > end_tolerance;
             if (video.0 - audio.0).abs() > start_tolerance
-                || (!declared && (video.1 - audio.1).abs() > end_tolerance)
+                || (!declared && (video.1 - audio.1).abs() > end_gap)
                 || drift_differs
             {
                 crate::bail_code!(
                     crate::error_codes::TRF_012,
                     "{}",
-                    crate::i18n::ui_format!("Medya doğrulaması: görüntü {0:.1} sn, ses {1} {2:.1} sn; akış uzunlukları uyuşmuyor (eksik ya da yinelenen parça).", "Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).", video.1 - video.0, index + 1, audio.1 - audio.0)
+                    crate::i18n::ui_format!("Medya doğrulaması: görüntü {0:.1} sn, ses akışı {1}: {2:.1} sn; akış uzunlukları uyuşmuyor (eksik ya da yinelenen parça).", "Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).", video.1 - video.0, index + 1, audio.1 - audio.0)
                 );
             }
         }
@@ -421,10 +432,16 @@ pub(super) fn validate_probe(value: &Value, request: &AddRequest, info: &MediaIn
             } else {
                 0.0
             };
-            if actual < expected - tolerance || actual > expected + tolerance + quantization {
+            // The audio of a file whose audio ends before its picture is shorter than the source.
+            let early = if request.kind == DownloadKind::Audio {
+                tolerance.max(end_gap)
+            } else {
+                tolerance
+            };
+            if actual < expected - early || actual > expected + tolerance + quantization {
                 bail!(
                     "{}",
-                    crate::i18n::ui_format!("Medya doğrulaması: çıktı süresi kaynakla eşleşmiyor (erken bitiş toleransı {tolerance:.3} sn; geç bitiş {0:.3} sn)", "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)", tolerance + quantization, tolerance = tolerance)
+                    crate::i18n::ui_format!("Medya doğrulaması: çıktı süresi kaynakla eşleşmiyor (erken bitiş toleransı {tolerance:.3} sn; geç bitiş {0:.3} sn)", "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)", tolerance + quantization, tolerance = early)
                 );
             }
         }
