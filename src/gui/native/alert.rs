@@ -167,25 +167,18 @@ pub(super) unsafe fn alert_is_dark(owner: HWND) -> bool {
     let main = FindWindowW(wide(CLASS_MAIN).as_ptr(), null());
     !main.is_null() && scheme_dark(main)
 }
-pub(super) unsafe fn alert_measure_button(ui: &AlertUi, label: &str) -> i32 {
+/// Measured with the screen's default font, not the window's, so the box can be
+/// sized for its buttons before the window exists.
+pub(super) unsafe fn alert_measure_button(dpi: u32, label: &str) -> i32 {
     let mut text = wide(label);
-    let dc = GetDC(ui.hwnd);
+    let dc = GetDC(null_mut());
     if dc.is_null() {
-        return scale(80, ui.dpi);
+        return scale(80, dpi);
     }
-    let font = SendMessageW(ui.hwnd, WM_GETFONT, 0, 0);
-    let previous = if font == 0 {
-        null_mut()
-    } else {
-        SelectObject(dc, font as HGDIOBJ)
-    };
     let mut size: SIZE = zeroed();
     GetTextExtentPoint32W(dc, text.as_mut_ptr(), text.len() as i32, &mut size);
-    if !previous.is_null() {
-        SelectObject(dc, previous);
-    }
-    ReleaseDC(ui.hwnd, dc);
-    (size.cx + scale(28, ui.dpi)).max(scale(80, ui.dpi))
+    ReleaseDC(null_mut(), dc);
+    (size.cx + scale(28, dpi)).max(scale(80, dpi))
 }
 pub(super) unsafe fn alert_layout(ui: &AlertUi) {
     let mut client: RECT = zeroed();
@@ -233,7 +226,7 @@ pub(super) unsafe fn alert_layout(ui: &AlertUi) {
     // Buttons sit bottom-right, in MessageBoxW's order, one gap apart.
     let mut x = client.right - ui.margin;
     for button in ui.buttons.iter().rev() {
-        let width = alert_measure_button(ui, button.label);
+        let width = alert_measure_button(ui.dpi, button.label);
         x -= width;
         MoveWindow(
             button.handle,
@@ -530,7 +523,12 @@ pub(super) unsafe fn run_alert_linked(
     } else {
         text_width
     };
-    let client_width = text_width + icon_column + 2 * margin;
+    let buttons_width = plan
+        .iter()
+        .map(|(_, label)| alert_measure_button(dpi, label))
+        .sum::<i32>()
+        + gap * (plan.len() as i32 - 1);
+    let client_width = (text_width + icon_column).max(buttons_width) + 2 * margin;
     let client_height = margin + body_height + link_block + gap + row + margin;
     let style = WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     let ex_style = owned_layout(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT);
