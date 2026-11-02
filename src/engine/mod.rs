@@ -4649,7 +4649,11 @@ fn run_job(
         return Ok(done);
     }
     let scratch = if job.work_dir.is_some() {
-        crate::recovery::prepare_work(job)?
+        let scratch = crate::recovery::prepare_work(job)?;
+        if let Some(done) = crate::recovery::adopt_finished(paths, job)? {
+            return Ok(done);
+        }
+        scratch
     } else {
         output.to_owned()
     };
