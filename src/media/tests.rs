@@ -51,6 +51,30 @@ fn a_failed_lossless_merge_is_a_merge_failure_not_a_tls_one() {
     assert!(!network_media_failure(observed));
 }
 
+/// The job log names a failure stage in English, whichever stage key the classifier returned.
+#[test]
+fn every_failure_stage_has_an_english_name_for_the_job_log() {
+    let names: Vec<_> = FAILURE_STAGES
+        .iter()
+        .map(|(stage, _)| failure_stage_name(stage))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "discovery",
+            "main playlist",
+            "sub-playlist",
+            "selected audio",
+            "subtitle",
+            "initialization segment",
+            "media segment",
+            "verification",
+            "media source",
+        ]
+    );
+    assert_eq!(failure_stage_name("not a stage"), "media source");
+}
+
 #[test]
 fn secure_connection_and_name_failures_keep_their_kind() {
     let request = AddRequest {

@@ -408,8 +408,10 @@ pub(crate) fn download(
         control.mark_live();
         crate::logging::record_job(
             job_id,
-            crate::logging::Event::warn("download.live")
-                .detail(format!("{} canlı yayın kaydı", crate::error_codes::MED_009)),
+            crate::logging::Event::warn("download.live").detail(format!(
+                "{} live stream recording",
+                crate::error_codes::MED_009
+            )),
         );
     }
     // A live source has no end the app can predict: say so on every progress update instead of
@@ -618,7 +620,7 @@ pub(crate) fn download(
             crate::logging::record_job(
                 job_id,
                 crate::logging::Event::info("download.native_hls").detail(format!(
-                    "parça={}",
+                    "streams={}",
                     streams
                         .iter()
                         .map(native_hls::NativeStream::summary)
@@ -809,7 +811,7 @@ pub(crate) fn download(
                         crate::logging::record_job(
                             job_id,
                             crate::logging::Event::warn("download.fragment_skip").detail(format!(
-                                "atılan dosya={} bayt={} deneme={}",
+                                "discarded files={} bytes={} attempt={}",
                                 discarded.0, discarded.1, fragment_restarts
                             )),
                         );
@@ -2033,8 +2035,10 @@ fn discard_fragmented_restart(
     if discarded.0 > 0 {
         crate::logging::record_job(
             job_id,
-            crate::logging::Event::warn("download.fragment_restart_discard")
-                .detail(format!("atılan dosya={} bayt={}", discarded.0, discarded.1)),
+            crate::logging::Event::warn("download.fragment_restart_discard").detail(format!(
+                "discarded files={} bytes={}",
+                discarded.0, discarded.1
+            )),
         );
     }
     Ok(())
@@ -2474,6 +2478,14 @@ const FAILURE_STAGES: [(&str, &str); 9] = [
     ("doğrulama", "verification"),
     ("medya kaynağı", "media source"),
 ];
+
+/// The English name of a failure stage returned by [`classify_download_error`], for the job log.
+pub(crate) fn failure_stage_name(stage: &str) -> &'static str {
+    FAILURE_STAGES
+        .iter()
+        .find(|(tr, _)| *tr == stage)
+        .map_or("media source", |(_, en)| en)
+}
 
 /// The wording of a failure stage returned by [`classify_download_error`].
 fn failure_stage_label(stage: &str) -> &'static str {

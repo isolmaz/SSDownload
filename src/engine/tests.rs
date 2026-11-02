@@ -500,14 +500,14 @@ fn a_failed_file_job_is_logged_at_the_file_stage_and_not_at_a_media_stage() {
         assert_eq!(event.code, Some("SSD-NET-004"));
         event.detail.unwrap()
     };
-    assert!(detail(request(DownloadKind::File)).starts_with("aşama=dosya "));
-    assert!(detail(request(DownloadKind::Video)).starts_with("aşama=medya kaynağı "));
+    assert!(detail(request(DownloadKind::File)).starts_with("stage=file "));
+    assert!(detail(request(DownloadKind::Video)).starts_with("stage=media source "));
     // A file job that asks for a media selection runs in the media pipeline.
     let selected = AddRequest {
         format_id: Some("18".into()),
         ..request(DownloadKind::File)
     };
-    assert!(detail(selected).starts_with("aşama=medya kaynağı "));
+    assert!(detail(selected).starts_with("stage=media source "));
 }
 
 #[test]
@@ -3292,6 +3292,175 @@ fn renaming_a_completed_file_replaces_bidirectional_controls() {
     fs::remove_dir_all(root).unwrap();
     assert_eq!(renamed.file_name().unwrap(), "_txt.exe");
     assert_eq!(on_disk, ["_txt.exe"]);
+}
+
+/// The job log is read by people who do not share the interface language: its words are English
+/// whatever the language is, and no Rust debug output (`Some(..)`, `None`) reaches it.
+#[test]
+fn the_details_of_job_log_lines_are_english_and_free_of_debug_output_in_every_language() {
+    let known = TransferProgress {
+        downloaded: 123,
+        total: Some(456),
+        speed: 789,
+        eta: Some(12),
+        ..Default::default()
+    };
+    let unknown = TransferProgress {
+        downloaded: 5,
+        ..Default::default()
+    };
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-log-text-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(AddRequest {
+            url: "https://example.test/files/report.bin".into(),
+            kind: DownloadKind::File,
+            directory: Some(root.join("out")),
+            start_at: Some(Utc::now().timestamp() + 3600),
+            ..Default::default()
+        })
+        .unwrap()
+        .remove(0);
+    let file_job = shown_job(&engine, &id);
+    let mut media_job = file_job.clone();
+    media_job.request.kind = DownloadKind::Video;
+    let stage_message = "SSD-MED-017 Media download failed at the sub-playlist stage (compatibility attempt: 0/1): HTTP Error 403: Forbidden";
+
+    for language in crate::i18n::LANGUAGES.iter().map(|info| info.code) {
+        crate::i18n::with_language(language, || {
+            assert_eq!(
+                progress_detail(&known),
+                "downloaded=123 total=456 speed=789B/s eta=12s",
+                "{language}"
+            );
+            assert_eq!(
+                progress_detail(&unknown),
+                "downloaded=5 total=unknown speed=0B/s eta=unknown",
+                "{language}"
+            );
+            assert_eq!(
+                stage_detail(JobState::Downloading, &known),
+                "state=downloading total=456",
+                "{language}"
+            );
+            assert_eq!(
+                stage_detail(JobState::Processing, &unknown),
+                "state=processing total=unknown",
+                "{language}"
+            );
+            assert_eq!(
+                job_selection(&file_job),
+                "kind=file name=report.bin",
+                "{language}"
+            );
+            let failed = failure_event(&file_job, "SSD-NET-004 The source answered with a page");
+            assert_eq!(
+                failed.detail.as_deref(),
+                Some("stage=file kind=other SSD-NET-004 The source answered with a page"),
+                "{language}"
+            );
+            let failed = failure_event(&media_job, stage_message);
+            assert_eq!(
+                failed.detail.as_deref(),
+                Some(format!("stage=sub-playlist kind=access_denied {stage_message}").as_str()),
+                "{language}"
+            );
+        });
+    }
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_job_that_runs_to_the_end_writes_english_job_log_lines() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-log-lines-{}", Uuid::new_v4()));
+    let server = FileServer::start(vec![("/done.bin".into(), vec![9; 4096], false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let id = engine
+        .add(file_request(server.url("/done.bin"), &root.join("out")))
+        .unwrap()
+        .remove(0);
+    wait_until("the download to finish", || {
+        job_state(&engine, &id) == JobState::Completed
+    });
+
+    let events = crate::logging::recorded_job_events(&id);
+    let details = |name: &str| {
+        events
+            .iter()
+            .filter(|event| event.event == name)
+            .map(|event| event.detail.clone().unwrap_or_default())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(details("job.add"), ["kind=file name=done.bin"]);
+    assert_eq!(details("job.done"), ["file=done.bin bytes=4096 attempts=1"]);
+    let stages = details("job.stage");
+    assert_eq!(
+        stages.first().map(String::as_str),
+        Some("state=connecting attempt=1")
+    );
+    assert!(
+        stages
+            .iter()
+            .skip(1)
+            .all(|stage| stage.starts_with("state=downloading total=")
+                || stage.starts_with("state=processing total=")),
+        "{stages:?}"
+    );
+    for event in &events {
+        let detail = event.detail.as_deref().unwrap_or_default();
+        assert!(detail.is_ascii(), "{}: {detail}", event.event);
+        assert!(
+            !detail.contains("Some(") && !detail.contains("None"),
+            "{}: {detail}",
+            event.event
+        );
+    }
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pausing_resuming_and_removing_a_job_write_english_job_log_lines() {
+    let root =
+        std::env::temp_dir().join(format!("ssdownload-engine-log-controls-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let add_later = |name: &str| {
+        engine
+            .add(AddRequest {
+                url: format!("https://example.test/files/{name}"),
+                directory: Some(root.join("out")),
+                start_at: Some(Utc::now().timestamp() + 3600),
+                ..Default::default()
+            })
+            .unwrap()
+            .remove(0)
+    };
+    let id = add_later("controls.bin");
+    engine.pause(&id).unwrap();
+    engine.resume(&id).unwrap();
+    engine.remove(&id, true).unwrap();
+    let kept = add_later("kept.bin");
+    engine.remove(&kept, false).unwrap();
+
+    let line = |id: &str, name: &str| {
+        crate::logging::recorded_job_events(id)
+            .into_iter()
+            .find(|event| event.event == name)
+            .and_then(|event| event.detail)
+    };
+    assert_eq!(line(&id, "job.paused").as_deref(), Some("state=paused"));
+    assert_eq!(line(&id, "job.resumed").as_deref(), Some("state=scheduled"));
+    assert_eq!(
+        line(&id, "job.cancelled").as_deref(),
+        Some("removed, the file will be deleted")
+    );
+    assert_eq!(
+        line(&kept, "job.cancelled").as_deref(),
+        Some("removed, the file will be kept")
+    );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn job_state(engine: &Engine, id: &str) -> JobState {

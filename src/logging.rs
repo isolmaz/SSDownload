@@ -371,8 +371,31 @@ pub fn record(event: Event) {
     }
 }
 
+/// Every event `record_job` was given, kept for tests: the writer is process-wide and writes
+/// asynchronously, so a test cannot read a job's timeline back from it.
+#[cfg(test)]
+static RECORDED_JOB_EVENTS: std::sync::Mutex<Vec<(String, Event)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The events recorded for `job_id` so far, oldest first.
+#[cfg(test)]
+pub(crate) fn recorded_job_events(job_id: &str) -> Vec<Event> {
+    RECORDED_JOB_EVENTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .filter(|(id, _)| id == job_id)
+        .map(|(_, event)| event.clone())
+        .collect()
+}
+
 /// Records one event on the session stream and on the job's own timeline.
 pub fn record_job(job_id: &str, event: Event) {
+    #[cfg(test)]
+    RECORDED_JOB_EVENTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push((job_id.to_owned(), event.clone()));
     let Some(writer) = WRITER.get() else {
         return;
     };
