@@ -425,7 +425,7 @@
   "Media verification: the external subtitle language/order does not match the selected track": "التحقق من الوسائط: لغة الترجمة الخارجية أو ترتيبها لا يطابق المسار المحدد",
   "Media verification: the output could not be read": "التحقق من الوسائط: تعذّرت قراءة المخرجات",
   "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)": "التحقق من الوسائط: مدة المخرجات لا تطابق المصدر (هامش النهاية المبكرة {tolerance:.3} ث؛ النهاية المتأخرة {0:.3} ث)",
-  "Media verification: the requested resolution is not available from this source": "التحقق من الوسائط: الدقة المطلوبة غير متاحة من هذا المصدر",
+  "Media verification: the video is {height} pixels high, above the requested limit of {max}": "التحقق من الوسائط: ارتفاع الفيديو {height} بكسل، وهو أعلى من الحد المطلوب {max}",
   "Media verification: the sampled start/middle/end section could not be decoded": "التحقق من الوسائط: تعذّر فك ترميز جزء البداية أو المنتصف أو النهاية الذي أُخذت منه عينة",
   "Media verification: the file's content ({0}) does not match its .{1} extension": "التحقق من الوسائط: محتوى الملف ({0}) لا يطابق امتداده .{1}",
   "Media verification: the selected HDR/dynamic range could not be verified in the output": "التحقق من الوسائط: تعذّر التحقق من نطاق HDR الديناميكي المحدد في المخرجات",

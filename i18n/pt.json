@@ -425,7 +425,7 @@
   "Media verification: the external subtitle language/order does not match the selected track": "Verificação de mídia: o idioma/ordem da legenda externa não corresponde à faixa selecionada",
   "Media verification: the output could not be read": "Verificação de mídia: a saída não pôde ser lida",
   "Media verification: the output duration does not match the source (early-end tolerance {tolerance:.3} s; late end {0:.3} s)": "Verificação de mídia: a duração da saída não corresponde à fonte (tolerância de término antecipado {tolerance:.3} s; término tardio {0:.3} s)",
-  "Media verification: the requested resolution is not available from this source": "Verificação de mídia: a resolução solicitada não está disponível nesta fonte",
+  "Media verification: the video is {height} pixels high, above the requested limit of {max}": "Verificação de mídia: o vídeo tem {height} pixels de altura, acima do limite solicitado de {max}",
   "Media verification: the sampled start/middle/end section could not be decoded": "Verificação de mídia: o trecho amostrado do início/meio/fim não pôde ser decodificado",
   "Media verification: the file's content ({0}) does not match its .{1} extension": "Verificação de mídia: o conteúdo do arquivo ({0}) não corresponde à extensão .{1}",
   "Media verification: the selected HDR/dynamic range could not be verified in the output": "Verificação de mídia: o HDR/faixa dinâmica selecionado não pôde ser verificado na saída",

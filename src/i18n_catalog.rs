@@ -391,7 +391,6 @@ static AR: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "التحقق من الوسائط: علامة الترجمة الخارجية الافتراضية لا تطابق"),
     ("Media verification: the external subtitle language/order does not match the selected track", "التحقق من الوسائط: لغة الترجمة الخارجية أو ترتيبها لا يطابق المسار المحدد"),
     ("Media verification: the output could not be read", "التحقق من الوسائط: تعذّرت قراءة المخرجات"),
-    ("Media verification: the requested resolution is not available from this source", "التحقق من الوسائط: الدقة المطلوبة غير متاحة من هذا المصدر"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "التحقق من الوسائط: تعذّر فك ترميز جزء البداية أو المنتصف أو النهاية الذي أُخذت منه عينة"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "التحقق من الوسائط: تعذّر التحقق من نطاق HDR الديناميكي المحدد في المخرجات"),
     ("Media verification: the selected audio codec does not match in the output", "التحقق من الوسائط: ترميز الصوت المحدد لا يطابق المخرجات"),
@@ -1835,7 +1834,6 @@ static ES: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "Verificación de medios: la marca de subtítulo externo predeterminado no coincide"),
     ("Media verification: the external subtitle language/order does not match the selected track", "Verificación de medios: el idioma u orden del subtítulo externo no coincide con la pista seleccionada"),
     ("Media verification: the output could not be read", "Verificación de medios: no se pudo leer la salida"),
-    ("Media verification: the requested resolution is not available from this source", "Verificación de medios: la resolución solicitada no está disponible en este origen"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "Verificación de medios: no se pudo decodificar la sección de muestra de inicio/medio/final"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "Verificación de medios: no se pudo verificar en la salida el rango dinámico HDR seleccionado"),
     ("Media verification: the selected audio codec does not match in the output", "Verificación de medios: el códec de audio seleccionado no coincide en la salida"),
@@ -3279,7 +3277,6 @@ static PT: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "Verificação de mídia: a marca padrão da legenda externa não corresponde"),
     ("Media verification: the external subtitle language/order does not match the selected track", "Verificação de mídia: o idioma/ordem da legenda externa não corresponde à faixa selecionada"),
     ("Media verification: the output could not be read", "Verificação de mídia: a saída não pôde ser lida"),
-    ("Media verification: the requested resolution is not available from this source", "Verificação de mídia: a resolução solicitada não está disponível nesta fonte"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "Verificação de mídia: o trecho amostrado do início/meio/fim não pôde ser decodificado"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "Verificação de mídia: o HDR/faixa dinâmica selecionado não pôde ser verificado na saída"),
     ("Media verification: the selected audio codec does not match in the output", "Verificação de mídia: o codec de áudio selecionado não corresponde na saída"),
@@ -4723,7 +4720,6 @@ static FR: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "Vérification du média : l'indicateur par défaut du sous-titre externe ne correspond pas"),
     ("Media verification: the external subtitle language/order does not match the selected track", "Vérification du média : la langue ou l'ordre du sous-titre externe ne correspond pas à la piste sélectionnée"),
     ("Media verification: the output could not be read", "Vérification du média : la sortie n'a pas pu être lue"),
-    ("Media verification: the requested resolution is not available from this source", "Vérification du média : la résolution demandée n'est pas disponible pour cette source"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "Vérification du média : la section échantillonnée (début, milieu, fin) n'a pas pu être décodée"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "Vérification du média : la plage HDR/dynamique sélectionnée n'a pas pu être vérifiée dans la sortie"),
     ("Media verification: the selected audio codec does not match in the output", "Vérification du média : le codec audio sélectionné ne correspond pas dans la sortie"),
@@ -6167,7 +6163,6 @@ static DE: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "Medienprüfung: Das Standard-Kennzeichen des externen Untertitels stimmt nicht überein"),
     ("Media verification: the external subtitle language/order does not match the selected track", "Medienprüfung: Sprache oder Reihenfolge des externen Untertitels stimmen nicht mit der ausgewählten Spur überein"),
     ("Media verification: the output could not be read", "Medienprüfung: Die Ausgabe konnte nicht gelesen werden"),
-    ("Media verification: the requested resolution is not available from this source", "Medienprüfung: Die gewünschte Auflösung ist für diese Quelle nicht verfügbar"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "Medienprüfung: Der stichprobenartig geprüfte Abschnitt am Anfang, in der Mitte oder am Ende konnte nicht dekodiert werden"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "Medienprüfung: Der ausgewählte HDR- bzw. Dynamikbereich konnte in der Ausgabe nicht geprüft werden"),
     ("Media verification: the selected audio codec does not match in the output", "Medienprüfung: Der ausgewählte Audio-Codec stimmt in der Ausgabe nicht überein"),
@@ -7420,6 +7415,9 @@ macro_rules! __ui_template_ar {
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "التحقق من الوسائط: الترجمة المحددة غير موجودة في المخرجات: {language}"
     };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "التحقق من الوسائط: ارتفاع الفيديو {height} بكسل، وهو أعلى من الحد المطلوب {max}"
+    };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "التحقق من الوسائط: بث {stream} مدته {length:.1} ث، وقائمة مصدره تعلن {declared} ث (مقطع مفقود أو مكرر)."
     };
@@ -8282,6 +8280,9 @@ macro_rules! __ui_template_es {
     };
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "Verificación de medios: el subtítulo seleccionado no está en la salida: {language}"
+    };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "Verificación de medios: el vídeo mide {height} píxeles de alto, por encima del límite solicitado de {max}"
     };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Verificación de medios: el flujo {stream} dura {length:.1} s, pero su lista de origen declara {declared} s (fragmento que falta o duplicado)."
@@ -9146,6 +9147,9 @@ macro_rules! __ui_template_pt {
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "Verificação de mídia: a legenda selecionada não está na saída: {language}"
     };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "Verificação de mídia: o vídeo tem {height} pixels de altura, acima do limite solicitado de {max}"
+    };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Verificação de mídia: o fluxo {stream} dura {length:.1} s, mas sua playlist de origem declara {declared} s (segmento ausente ou duplicado)."
     };
@@ -10009,6 +10013,9 @@ macro_rules! __ui_template_fr {
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "Vérification du média : le sous-titre sélectionné ne figure pas dans la sortie : {language}"
     };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "Vérification du média : la vidéo fait {height} pixels de haut, au-dessus de la limite demandée de {max}"
+    };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Vérification du média : le flux {stream} dure {length:.1} s, sa liste de lecture source indique {declared} s (fragment manquant ou dupliqué)."
     };
@@ -10871,6 +10878,9 @@ macro_rules! __ui_template_de {
     };
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "Medienprüfung: Der ausgewählte Untertitel ist nicht in der Ausgabe enthalten: {language}"
+    };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "Medienprüfung: Das Video ist {height} Pixel hoch und liegt über dem gewünschten Limit von {max}"
     };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Medienprüfung: Der Stream {stream} dauert {length:.1} s, seine Quell-Playlist gibt {declared} s an (fehlendes oder doppeltes Fragment)."
