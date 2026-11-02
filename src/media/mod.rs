@@ -1216,8 +1216,9 @@ pub(crate) fn place_browser_file(
 /// set or a delimiter). `setts` gives a packet without a time its decoding time plus the delay the
 /// stream starts with. That is the time of a picture only when it is shown at that delay after it
 /// is decoded, as the keyframe of a closed group of pictures is. A keyframe that pictures follow
-/// in decoding order and precede in time (an open group of pictures) and a picture that is no
-/// keyframe get a wrong time, so [`merge_streams`] repairs a video only where [`repair_applies`]
+/// in decoding order and precede in time (an open group of pictures) gets a wrong time unless it
+/// is shown as long after it is decoded as the first picture is, and a picture that is no
+/// keyframe gets a wrong time, so [`merge_streams`] repairs a video only where [`repair_applies`]
 /// and publishes the copy only where [`times_hold`].
 const TS_VIDEO_REPAIR: &str = "noise=drop='eq(pts,nopts)*not(key)*lt(size,32)',setts=pts='if(eq(PTS,NOPTS),DTS+STARTPTS-STARTDTS,PTS)'";
 
@@ -1309,12 +1310,34 @@ fn repair_applies(packets: &[VideoPacket]) -> bool {
     timeless.peek().is_some() && timeless.all(|packet| packet.key || packet.size < 32)
 }
 
-/// Whether every picture of a video has a time, no two share one, and the decoding times rise.
+/// Whether the times of a repaired video can be trusted: every picture has a time, no two pictures
+/// are shown less than half the usual distance apart, and the decoding times rise.
+///
+/// The pictures that kept their time fill the video's slots one by one, so a picture that lost its
+/// time has exactly one slot left, and only its own time fits into it. The repair gives a keyframe
+/// that pictures follow in decoding order and precede in time (an open group of pictures) a time
+/// that is early by as many pictures as precede it, which lands on the slot of one of them: two
+/// pictures share a time, or, where the frame rate does not divide the clock, lie a tick apart.
 fn times_hold(packets: &[VideoPacket]) -> bool {
-    let mut shown = HashSet::new();
-    packets
+    let Some(mut shown) = packets
         .iter()
-        .all(|packet| packet.pts.is_some_and(|pts| shown.insert(pts)))
+        .map(|packet| packet.pts)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    shown.sort_unstable();
+    let mut distances = shown
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect::<Vec<_>>();
+    distances.sort_unstable();
+    let half_a_picture = distances
+        .get(distances.len() / 2)
+        .map_or(0, |usual| usual / 2);
+    distances
+        .first()
+        .is_none_or(|shortest| *shortest >= half_a_picture.max(1))
         && packets
             .windows(2)
             .all(|pair| pair[0].dts.zip(pair[1].dts).is_none_or(|(a, b)| a < b))

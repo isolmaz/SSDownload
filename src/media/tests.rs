@@ -430,22 +430,27 @@ fn a_repaired_copy_is_published_only_where_the_times_of_its_video_hold() {
         assert!(remains);
     }
 
-    // The keyframe of an open group of pictures came out at the wrong time.
-    let (outcome, runs, remains) = scripted_merge(
-        true,
-        (1, UNKNOWN_TIMESTAMP),
-        (0, PARAMETER_SET_REMARK),
-        OPEN_GOP_SEGMENTS,
-        OPEN_GOP_REPAIRED,
-    );
-    assert!(
-        outcome
-            .as_deref()
-            .is_some_and(|reason| reason.contains("zamanları güvenle onarılamadı")),
-        "{outcome:?}"
-    );
-    assert_eq!(runs.last(), Some(&"packets of the copy"));
-    assert!(!remains);
+    // The keyframe of an open group of pictures came out at the wrong time: at the time of a
+    // picture that follows it in decoding order, or a tick beside it where the frame rate does not
+    // divide the clock.
+    let beside = OPEN_GOP_AS_IT_IS.replace("2000,1880,5142,K__", "1961,1880,5142,K__");
+    for copy in [OPEN_GOP_REPAIRED, beside.as_str()] {
+        let (outcome, runs, remains) = scripted_merge(
+            true,
+            (1, UNKNOWN_TIMESTAMP),
+            (0, PARAMETER_SET_REMARK),
+            OPEN_GOP_SEGMENTS,
+            copy,
+        );
+        assert!(
+            outcome
+                .as_deref()
+                .is_some_and(|reason| reason.contains("zamanları güvenle onarılamadı")),
+            "{outcome:?}"
+        );
+        assert_eq!(runs.last(), Some(&"packets of the copy"));
+        assert!(!remains);
+    }
 
     // A copy whose packets cannot be read back is not trusted either.
     let (outcome, _, remains) = scripted_merge(
@@ -482,6 +487,31 @@ fn the_times_of_a_repaired_open_group_of_pictures_do_not_hold() {
     // decoding order is shown, and the next decoding time repeats.
     assert!(!times_hold(&repaired));
     assert!(times_hold(&as_it_is));
+    // A frame rate that does not divide the clock gives distances of two lengths, none short.
+    let rounded = (0..50)
+        .map(|picture| {
+            let pts = (80.0 + f64::from(picture) * 41.7083).round() as i64;
+            VideoPacket {
+                pts: Some(pts),
+                dts: Some(pts - 125),
+                size: 500,
+                key: picture % 25 == 0,
+            }
+        })
+        .collect::<Vec<_>>();
+    assert!(times_hold(&rounded));
+    // There, the keyframe lands a tick before or after the time of the picture it shares its slot
+    // with, not on it.
+    for tick in [1961, 1959] {
+        let beside = as_it_is
+            .iter()
+            .map(|packet| VideoPacket {
+                pts: packet.pts.map(|pts| if pts == 2000 { tick } else { pts }),
+                ..*packet
+            })
+            .collect::<Vec<_>>();
+        assert!(!times_hold(&beside), "{tick}");
+    }
     // Each way a copy can be wrong on its own.
     let same_pts = as_it_is
         .iter()
