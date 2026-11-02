@@ -14046,6 +14046,7 @@ mod tests {
                 unsafe {
                     let pin = GetDlgItem(dialog.hwnd, native::P_PIN);
                     let mini = GetDlgItem(dialog.hwnd, native::P_MINI);
+                    let summary = GetDlgItem(dialog.hwnd, native::P_SUMMARY);
                     let width_of = |hwnd| {
                         let control = shown(dialog.hwnd)
                             .into_iter()
@@ -14053,17 +14054,29 @@ mod tests {
                             .unwrap();
                         control.rect.right - control.rect.left
                     };
-                    let before = width_of(pin);
+                    let (pin_before, mini_before) = (width_of(pin), width_of(mini));
                     MEASURING_PROC.store(
                         GetWindowLongPtrW(pin, GWLP_WNDPROC),
                         std::sync::atomic::Ordering::SeqCst,
                     );
-                    SetWindowLongPtrW(pin, GWLP_WNDPROC, cannot_measure as usize as isize);
-                    native::set_text(mini, "A caption far longer than the button that shows it");
+                    SetWindowLongPtrW(
+                        pin,
+                        GWLP_WNDPROC,
+                        cannot_measure as *const () as usize as isize,
+                    );
+                    // The summary cannot give room, so the check box beside the button is
+                    // the only thing the button could squeeze.
+                    native::set_text(
+                        summary,
+                        &"A summary far too long to give any room to the buttons beside it. "
+                            .repeat(4),
+                    );
+                    native::set_text(mini, "Shrink to a small card here");
                     native::layout_dialog(&*dialog.raw);
+                    assert!(width_of(mini) > mini_before, "the button grew for its text");
                     assert_eq!(
                         width_of(pin),
-                        before,
+                        pin_before,
                         "the check box keeps the width the layout gave it"
                     );
                 }
