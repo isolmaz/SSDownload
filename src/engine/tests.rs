@@ -1945,10 +1945,9 @@ fn bidirectional_and_invisible_format_characters_never_stay_in_a_file_name() {
     // Embeddings, overrides, isolates and marks.
     let bidirectional = "\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}\u{200e}\u{200f}\u{061c}";
     // Other format characters that draw nothing: a zero width space, the soft hyphen, a word
-    // joiner, a byte order mark, the deprecated format characters, an Arabic number sign, the
-    // Mongolian vowel separator and tag characters.
-    let invisible =
-        "\u{200b}\u{00ad}\u{2060}\u{feff}\u{206a}\u{206f}\u{0600}\u{180e}\u{e0067}\u{1d173}";
+    // joiner, a byte order mark, the deprecated format characters, the Mongolian vowel separator
+    // and a tag character that follows no flag emoji.
+    let invisible = "\u{200b}\u{00ad}\u{2060}\u{feff}\u{206a}\u{206f}\u{180e}\u{e0067}\u{1d173}";
     // The other control characters: DEL and the C1 range.
     let controls = "\u{7f}\u{85}\u{9f}";
     for control in [bidirectional, invisible, controls]
@@ -1971,6 +1970,74 @@ fn zero_width_joiners_that_spell_a_name_are_kept() {
     for name in ["می\u{200c}خواهم.txt", "👩\u{200d}💻.png", "क्\u{200d}ष.pdf"] {
         assert_eq!(safe_filename(name, "12345678"), name);
     }
+}
+
+#[test]
+fn the_tag_characters_of_a_flag_emoji_are_kept_and_all_others_replaced() {
+    // The flags of England, Scotland and Wales: U+1F3F4, tag letters, the cancel tag.
+    for name in [
+        "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}.png",
+        "match \u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}.png",
+        "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f} cup.png",
+    ] {
+        assert_eq!(safe_filename(name, "12345678"), name);
+    }
+    // The cancel tag ends the sequence: a tag after it, a tag after another emoji and a tag
+    // after a character in between stand alone.
+    assert_eq!(
+        safe_filename("\u{1f3f4}\u{e0067}\u{e007f}\u{e0067}.png", "12345678"),
+        "\u{1f3f4}\u{e0067}\u{e007f}_.png"
+    );
+    assert_eq!(
+        safe_filename("\u{1f600}\u{e0067}\u{e007f}.png", "12345678"),
+        "\u{1f600}__.png"
+    );
+    assert_eq!(
+        safe_filename("\u{1f3f4}x\u{e0067}.png", "12345678"),
+        "\u{1f3f4}x_.png"
+    );
+    // Tags with no flag before them are replaced, whatever their place in the name.
+    assert_eq!(
+        safe_filename("\u{e0067}\u{e007f}report.pdf", "12345678"),
+        "__report.pdf"
+    );
+    // A bidirectional control inside a flag sequence is replaced and ends it.
+    assert_eq!(
+        safe_filename("\u{1f3f4}\u{e0067}\u{202e}\u{e0062}.png", "12345678"),
+        "\u{1f3f4}\u{e0067}__.png"
+    );
+}
+
+#[test]
+fn prepended_concatenation_marks_that_number_digits_are_kept() {
+    for mark in [
+        '\u{0600}',
+        '\u{0601}',
+        '\u{0602}',
+        '\u{0603}',
+        '\u{0604}',
+        '\u{0605}',
+        '\u{06dd}',
+        '\u{070f}',
+        '\u{0890}',
+        '\u{0891}',
+        '\u{08e2}',
+        '\u{110bd}',
+        '\u{110cd}',
+    ] {
+        let name = format!("{mark}\u{661}\u{662}.pdf");
+        assert_eq!(
+            safe_filename(&name, "12345678"),
+            name,
+            "U+{:04X}",
+            mark as u32
+        );
+    }
+    // They are no cover for the controls that reorder a name.
+    assert_eq!(
+        safe_filename("\u{06dd}1\u{202e}fdp.exe", "12345678"),
+        "\u{06dd}1_fdp.exe"
+    );
 }
 
 #[test]

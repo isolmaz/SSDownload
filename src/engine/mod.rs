@@ -4981,17 +4981,14 @@ fn validate_checksum_text(value: &str) -> Result<()> {
 
 /// Unicode format characters (category Cf) that draw nothing or reorder what is drawn, so a name
 /// that holds one reads differently from what it is: the bidirectional controls make a name
-/// that ends in `.exe` read as one that ends in `.txt`. The zero width (non-)joiners U+200C and
-/// U+200D are not listed: spelling in Persian, the Indic scripts and emoji sequences needs
-/// them, and they neither reorder text nor hide a character.
+/// that ends in `.exe` read as one that ends in `.txt`. Not listed: the zero width (non-)joiners
+/// U+200C and U+200D, which the spelling of Persian, the Indic scripts and emoji sequences
+/// needs; the prepended concatenation marks (the Arabic number sign and the like), which are
+/// drawn before the digits they belong to; and the tag characters that spell a flag emoji, which
+/// `safe_filename` keeps after U+1F3F4 although this list holds them.
 const FORMAT_CONTROLS: &[(char, char)] = &[
     ('\u{00AD}', '\u{00AD}'),
-    ('\u{0600}', '\u{0605}'),
     ('\u{061C}', '\u{061C}'),
-    ('\u{06DD}', '\u{06DD}'),
-    ('\u{070F}', '\u{070F}'),
-    ('\u{0890}', '\u{0891}'),
-    ('\u{08E2}', '\u{08E2}'),
     ('\u{180E}', '\u{180E}'),
     ('\u{200B}', '\u{200B}'),
     ('\u{200E}', '\u{200F}'),
@@ -5000,14 +4997,21 @@ const FORMAT_CONTROLS: &[(char, char)] = &[
     ('\u{2066}', '\u{206F}'),
     ('\u{FEFF}', '\u{FEFF}'),
     ('\u{FFF9}', '\u{FFFB}'),
-    ('\u{110BD}', '\u{110BD}'),
-    ('\u{110CD}', '\u{110CD}'),
     ('\u{13430}', '\u{1343F}'),
     ('\u{1BCA0}', '\u{1BCA3}'),
     ('\u{1D173}', '\u{1D17A}'),
     ('\u{E0001}', '\u{E0001}'),
     ('\u{E0020}', '\u{E007F}'),
 ];
+
+/// U+1F3F4 followed by tag characters up to the cancel tag is the flag of a region (England,
+/// Scotland, Wales).
+const FLAG_EMOJI_BASE: char = '\u{1F3F4}';
+const CANCEL_TAG: char = '\u{E007F}';
+
+fn is_tag_character(character: char) -> bool {
+    ('\u{E0020}'..=CANCEL_TAG).contains(&character)
+}
 
 fn is_name_control(character: char) -> bool {
     character.is_control()
@@ -5018,10 +5022,13 @@ fn is_name_control(character: char) -> bool {
 
 pub(crate) fn safe_filename(suggested: &str, id: &str) -> String {
     let leaf = suggested.rsplit(['/', '\\']).next().unwrap_or("");
+    let mut in_flag = false;
     let mut value = leaf
         .chars()
         .map(|character| {
-            if is_name_control(character)
+            let flag_tag = in_flag && is_tag_character(character);
+            in_flag = character == FLAG_EMOJI_BASE || (flag_tag && character != CANCEL_TAG);
+            if (is_name_control(character) && !flag_tag)
                 || matches!(
                     character,
                     '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
