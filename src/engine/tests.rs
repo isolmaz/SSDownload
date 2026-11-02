@@ -2483,6 +2483,128 @@ fn a_job_whose_destination_folder_was_deleted_recreates_it_before_starting() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// A queued job of `url` that saves `file.bin` under `root`, with a work folder and the claim on
+/// its name that the engine takes when it adds a job.
+fn job_with_a_work_folder(root: &Path, url: String) -> (Job, PathBuf) {
+    let output = root.join("out").join("file.bin");
+    let id = Uuid::new_v4().to_string();
+    let job = Job {
+        id: id.clone(),
+        request: AddRequest {
+            url,
+            kind: DownloadKind::File,
+            ..Default::default()
+        },
+        name: "file.bin".into(),
+        state: JobState::Queued,
+        path: output.clone(),
+        downloaded: 0,
+        total: None,
+        speed: 0,
+        eta: None,
+        error: None,
+        phase: "Sırada".into(),
+        created_at: 0,
+        updated_at: 0,
+        attempts: 0,
+        work_dir: Some(crate::recovery::work_dir(&output, &id)),
+        remove_requested: None,
+        claim: Some(output.clone()),
+        legacy_completed: false,
+        browser_transfer_authorized: false,
+        priority: 0,
+        force_start: false,
+        open_when_done: false,
+        live: false,
+        sequence: 0,
+    };
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    crate::recovery::claim(&output, &id).unwrap();
+    (job, output)
+}
+
+#[test]
+fn a_finished_file_left_in_the_work_folder_is_published_instead_of_downloaded_again() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-adopt-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let server = FileServer::start(vec![("/file.bin".into(), b"served again".to_vec(), false)]);
+    let (job, output) = job_with_a_work_folder(&root, server.url("/file.bin"));
+    // The app stopped after the download moved its finished file into the work folder and
+    // before the publication wrote its journal.
+    let result = crate::recovery::prepare_work(&job).unwrap();
+    fs::write(&result, b"finished earlier").unwrap();
+    let allocation = ConnectionAllocation {
+        direct: 1,
+        media_fragments: 0,
+        usage_modes: UsageModes::default(),
+    };
+    let done = run_job(
+        &paths,
+        &job,
+        &output,
+        &TransferControl::default(),
+        &NetworkGovernor::new(2),
+        allocation,
+        &mut |_| {},
+    )
+    .unwrap();
+    let requested = server.hits.lock().unwrap().clone();
+    assert_eq!(
+        (
+            done.path.as_path(),
+            done.bytes,
+            fs::read(&output).unwrap(),
+            requested
+        ),
+        (
+            output.as_path(),
+            16,
+            b"finished earlier".to_vec(),
+            Vec::new()
+        )
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn the_archive_of_a_restarted_browser_transfer_is_not_published_as_the_file() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-archive-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let server = FileServer::start(vec![(
+        "/file.bin".into(),
+        b"the served file".to_vec(),
+        false,
+    )]);
+    let (job, output) = job_with_a_work_folder(&root, server.url("/file.bin"));
+    // The app stopped after a restart of a browser transfer renamed the transfer's folder to an
+    // archive and before it created the folder again: the work folder holds the archive only.
+    let work = job.work_dir.clone().unwrap();
+    crate::recovery::prepare_work(&job).unwrap();
+    let archive = work.join(format!("browser-transfer-previous-{}", Uuid::new_v4()));
+    fs::create_dir_all(archive.join("streams")).unwrap();
+    fs::write(archive.join("streams").join("1.bin"), b"half a file").unwrap();
+    let allocation = ConnectionAllocation {
+        direct: 1,
+        media_fragments: 0,
+        usage_modes: UsageModes::default(),
+    };
+    let done = run_job(
+        &paths,
+        &job,
+        &output,
+        &TransferControl::default(),
+        &NetworkGovernor::new(2),
+        allocation,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(done.path, output);
+    assert_eq!(fs::read(&output).unwrap(), b"the served file");
+    assert!(!server.hits.lock().unwrap().is_empty());
+    assert!(archive.join("streams").join("1.bin").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn synchronization_refuses_a_redirect_to_a_non_http_protocol() {
     let root = std::env::temp_dir().join(format!("ssdownload-engine-sync-{}", Uuid::new_v4()));
