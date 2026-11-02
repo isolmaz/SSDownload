@@ -2032,6 +2032,68 @@ fn an_http_error_in_a_media_tool_message_is_retried_by_the_rule_of_a_typed_statu
 }
 
 #[test]
+fn a_failed_attempt_leads_its_message_with_the_network_code_of_the_failure() {
+    let request = AddRequest {
+        url: "https://files.example.test/a".into(),
+        ..Default::default()
+    };
+    let failed = |error: anyhow::Error| transfer_failure(&request, error);
+    let curl = |code| {
+        anyhow::Error::new(curl::Error::new(code)).context("The network transfer did not complete")
+    };
+
+    let unresolved = failed(curl(curl_sys::CURLE_COULDNT_RESOLVE_HOST));
+    assert!(
+        unresolved.message.starts_with("SSD-NET-001 "),
+        "{}",
+        unresolved.message
+    );
+    assert!(unresolved.retryable);
+    assert_eq!(
+        crate::error_codes::from_text(&unresolved.message),
+        Some(crate::error_codes::NET_001)
+    );
+
+    let missing = failed(anyhow::Error::new(transfer::HttpStatusError {
+        status: 404,
+    }));
+    assert!(
+        missing.message.starts_with("SSD-NET-005 "),
+        "{}",
+        missing.message
+    );
+    assert!(!missing.retryable);
+
+    let refused = failed(anyhow::Error::new(transfer::HttpStatusError {
+        status: 403,
+    }));
+    assert!(
+        refused.message.starts_with("SSD-NET-012 "),
+        "{}",
+        refused.message
+    );
+    assert!(!refused.retryable);
+
+    // The causes follow the code, and a code the error already has stays the only one.
+    assert!(unresolved
+        .message
+        .contains("The network transfer did not complete"));
+    let digest = failed(crate::error_codes::with_code(
+        curl(curl_sys::CURLE_RECV_ERROR),
+        crate::error_codes::TRF_003,
+    ));
+    assert!(
+        digest.message.starts_with("SSD-TRF-003 ") && !digest.message.contains("SSD-NET"),
+        "{}",
+        digest.message
+    );
+    assert_eq!(
+        failed(anyhow!("The disk is full")).message,
+        "The disk is full"
+    );
+}
+
+#[test]
 fn a_file_locked_by_another_program_is_retried_but_other_access_errors_are_not() {
     let locked = |code| {
         anyhow::Error::new(std::io::Error::from_raw_os_error(code))
@@ -3650,8 +3712,45 @@ mod retry_budget {
 
         let job = finished_job(&engine, &id);
         assert_eq!(job.state, JobState::Failed);
+        assert!(
+            job.error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("SSD-NET-013 "),
+            "{:?}",
+            job.error
+        );
         // Each attempt sends the HEAD probe and gives up on its answer.
         assert_eq!(server.log().len(), 3);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_source_that_answers_not_found_fails_the_job_at_once_with_its_code() {
+        let server = Server::start(Config {
+            size: MIB,
+            scripted: vec![
+                Scripted {
+                    status: 404,
+                    retry_after: None,
+                };
+                50
+            ],
+            ..Config::default()
+        });
+        let root = TempDir::new("retry-not-found");
+        let engine = engine_with_retry_limit(&root.0, 3);
+        let id = add_download(&engine, &server, &root.0.join("out"), None);
+
+        let job = finished_job(&engine, &id);
+        assert_eq!(job.state, JobState::Failed, "{:?}", job.error);
+        let error = job.error.as_deref().unwrap();
+        assert!(error.starts_with("SSD-NET-005 "), "{error}");
+        assert!(error.contains("404"), "{error}");
+        let entry = crate::error_codes::definition(crate::error_codes::NET_005).unwrap();
+        assert!(!entry.retryable, "the registry must say what the job did");
+        assert_eq!(job.attempts, 0);
+        assert_eq!(attempts_made(&server), 1);
         engine.shutdown();
     }
 

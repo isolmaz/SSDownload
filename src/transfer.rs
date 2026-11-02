@@ -669,6 +669,57 @@ pub(crate) fn http_status(error: &anyhow::Error) -> Option<u32> {
     })
 }
 
+/// The registry code of the network-level failure an error chain ends in: an HTTP status that
+/// the server answered, or the libcurl error of a transfer that did not complete. None for an
+/// error that already carries a code and for any other failure.
+pub(crate) fn network_code(error: &anyhow::Error) -> Option<crate::error_codes::Code> {
+    if crate::error_codes::code_of(error).is_some() {
+        return None;
+    }
+    if let Some(status) = http_status(error) {
+        return status_code(status);
+    }
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<curl::Error>()
+            .and_then(|error| curl_code(error.code()))
+    })
+}
+
+fn status_code(status: u32) -> Option<crate::error_codes::Code> {
+    use crate::error_codes::*;
+    match status {
+        404 => Some(NET_005),
+        429 | 503 => Some(NET_006),
+        408 => Some(NET_007),
+        401 | 403 => Some(NET_012),
+        400..=499 => Some(NET_014),
+        500..=599 => Some(NET_013),
+        _ => None,
+    }
+}
+
+fn curl_code(code: curl_sys::CURLcode) -> Option<crate::error_codes::Code> {
+    use crate::error_codes::*;
+    match code {
+        curl_sys::CURLE_COULDNT_RESOLVE_HOST => Some(NET_001),
+        curl_sys::CURLE_SSL_CONNECT_ERROR
+        | curl_sys::CURLE_SSL_CIPHER
+        | curl_sys::CURLE_PEER_FAILED_VERIFICATION
+        | curl_sys::CURLE_SSL_ISSUER_ERROR
+        | curl_sys::CURLE_SSL_PINNEDPUBKEYNOTMATCH
+        | curl_sys::CURLE_SSL_INVALIDCERTSTATUS => Some(NET_002),
+        curl_sys::CURLE_OPERATION_TIMEDOUT => Some(NET_007),
+        curl_sys::CURLE_PARTIAL_FILE
+        | curl_sys::CURLE_GOT_NOTHING
+        | curl_sys::CURLE_SEND_ERROR
+        | curl_sys::CURLE_RECV_ERROR
+        | curl_sys::CURLE_HTTP2_STREAM => Some(NET_008),
+        curl_sys::CURLE_COULDNT_CONNECT => Some(NET_011),
+        _ => None,
+    }
+}
+
 /// Whether the chain carries a kept partial file awaiting a proven source.
 pub(crate) fn preserves_partial(error: &anyhow::Error) -> bool {
     error
@@ -5496,6 +5547,83 @@ mod tests {
         assert!(parse_content_range("bytes 20-10/30").is_none());
         assert!(parse_content_range("bytes 0-20/20").is_none());
         assert!(parse_content_range("items 0-1/2").is_none());
+    }
+
+    #[test]
+    fn libcurl_errors_map_to_the_network_code_of_what_went_wrong() {
+        use crate::error_codes::*;
+        // The chain a failed transfer carries: the libcurl error under the transfer's context.
+        let failed = |code| {
+            network_code(
+                &anyhow::Error::new(curl::Error::new(code))
+                    .context("The network transfer did not complete"),
+            )
+        };
+        for (curl, code) in [
+            (curl_sys::CURLE_COULDNT_RESOLVE_HOST, NET_001),
+            (curl_sys::CURLE_COULDNT_CONNECT, NET_011),
+            (curl_sys::CURLE_OPERATION_TIMEDOUT, NET_007),
+            (curl_sys::CURLE_SSL_CONNECT_ERROR, NET_002),
+            (curl_sys::CURLE_PEER_FAILED_VERIFICATION, NET_002),
+            (curl_sys::CURLE_SSL_CIPHER, NET_002),
+            (curl_sys::CURLE_SSL_ISSUER_ERROR, NET_002),
+            (curl_sys::CURLE_GOT_NOTHING, NET_008),
+            (curl_sys::CURLE_SEND_ERROR, NET_008),
+            (curl_sys::CURLE_RECV_ERROR, NET_008),
+            (curl_sys::CURLE_PARTIAL_FILE, NET_008),
+            (curl_sys::CURLE_HTTP2_STREAM, NET_008),
+        ] {
+            assert_eq!(failed(curl), Some(code), "curl error {curl}");
+        }
+        // A bad address, a write that failed, a stop and a redirect loop are no network failure.
+        for curl in [
+            curl_sys::CURLE_URL_MALFORMAT,
+            curl_sys::CURLE_WRITE_ERROR,
+            curl_sys::CURLE_ABORTED_BY_CALLBACK,
+            curl_sys::CURLE_TOO_MANY_REDIRECTS,
+        ] {
+            assert_eq!(failed(curl), None, "curl error {curl}");
+        }
+    }
+
+    #[test]
+    fn http_statuses_map_to_the_network_code_of_the_answer() {
+        use crate::error_codes::*;
+        let answered = |status| network_code(&anyhow::Error::new(HttpStatusError { status }));
+        for (status, code) in [
+            (404, NET_005),
+            (408, NET_007),
+            (401, NET_012),
+            (403, NET_012),
+            (400, NET_014),
+            (410, NET_014),
+            (416, NET_014),
+            (500, NET_013),
+            (501, NET_013),
+            (502, NET_013),
+            (504, NET_013),
+            (599, NET_013),
+        ] {
+            assert_eq!(answered(status), Some(code), "HTTP {status}");
+        }
+        // The throttling answers reach the engine as a retryable status.
+        for status in [429, 503] {
+            let throttled = retryable_status_error(status, Some(Duration::from_secs(3)));
+            assert_eq!(network_code(&throttled), Some(NET_006), "HTTP {status}");
+        }
+        for status in [0, 200, 304, 399, 600] {
+            assert_eq!(answered(status), None, "HTTP {status}");
+        }
+    }
+
+    #[test]
+    fn an_error_that_already_carries_a_code_gets_no_network_code() {
+        use crate::error_codes::*;
+        let reset = || anyhow::Error::new(curl::Error::new(curl_sys::CURLE_RECV_ERROR));
+        assert_eq!(network_code(&reset()), Some(NET_008));
+        assert_eq!(network_code(&with_code(reset(), TRF_003)), None);
+        assert_eq!(network_code(&coded_default(NET_004)), None);
+        assert_eq!(network_code(&anyhow!("The disk is full")), None);
     }
 
     #[test]

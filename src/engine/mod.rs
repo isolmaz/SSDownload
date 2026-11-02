@@ -5173,6 +5173,10 @@ struct TransferFailure {
 }
 
 fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailure {
+    let error = match transfer::network_code(&error) {
+        Some(code) => crate::error_codes::with_code(error, code),
+        None => error,
+    };
     let detail = format!("{error:#}");
     TransferFailure {
         retryable: retryable_error(&error),
