@@ -619,9 +619,9 @@ struct CurlSocketState {
     scope: CurlScope,
     control: TransferControl,
     connect_timeout_ms: AtomicU64,
-    /// The last connection attempt of the pre-connect callback ran out of `connect_timeout_ms`.
+    /// The latest connection attempt of the pre-connect callback ran out of `connect_timeout_ms`.
     /// libcurl is only handed a socket it could not get then, and reports that it could not
-    /// connect.
+    /// connect. Every attempt starts with the flag cleared.
     connect_timed_out: AtomicBool,
     // The first permit is acquired before libcurl starts its timers, then
     // transferred to the first actual socket opened by this Easy.
@@ -835,6 +835,7 @@ extern "C" fn curl_open_socket(
             return curl_sys::CURL_SOCKET_BAD;
         }
         let state = &*(data as *const CurlSocketState);
+        state.connect_timed_out.store(false, Ordering::Release);
         if purpose != curl_sys::CURLSOCKTYPE_IPCXN {
             state.fail(crate::i18n::ui(
                 "libcurl desteklenmeyen bir soket türü istedi",
@@ -883,10 +884,9 @@ extern "C" fn curl_open_socket(
         let socket = socket as curl_sys::curl_socket_t;
         if state.preconnects_http() {
             let connected = state.connect_before_curl(socket, address);
-            state.connect_timed_out.store(
-                matches!(connected, Err(error) if error == WSAETIMEDOUT),
-                Ordering::Release,
-            );
+            if connected == Err(WSAETIMEDOUT) {
+                state.connect_timed_out.store(true, Ordering::Release);
+            }
             match connected {
                 Ok(()) => entry.preconnected = true,
                 Err(error) => {
@@ -2804,5 +2804,35 @@ mod tests {
             Some(crate::error_codes::NET_011),
             "{reported:#}"
         );
+    }
+
+    #[test]
+    fn a_connect_that_fails_without_a_timeout_after_one_that_timed_out_is_not_a_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = url::Url::parse(&format!(
+            "http://127.0.0.1:{}/",
+            listener.local_addr().unwrap().port()
+        ))
+        .unwrap();
+        let control = TransferControl::default();
+        let mut easy = NetworkGovernor::new(1)
+            .easy_for_url(&url, &control)
+            .unwrap();
+        easy.url(url.as_str()).unwrap();
+        easy.callbacks
+            .state
+            .connect_timeout_ms
+            .store(0, std::sync::atomic::Ordering::Release);
+
+        let timed_out = easy.perform().unwrap_err();
+        assert!(timed_out.is_couldnt_connect(), "{timed_out}");
+        assert!(easy.reported_error(timed_out).is_operation_timedout());
+
+        // The next attempt is stopped before it connects: no connect ran out of time.
+        control.cancel();
+        let stopped = easy.perform().unwrap_err();
+        assert!(stopped.is_couldnt_connect(), "{stopped}");
+        let reported = easy.reported_error(stopped);
+        assert!(reported.is_couldnt_connect(), "{reported}");
     }
 }
