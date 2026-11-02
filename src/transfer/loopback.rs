@@ -596,6 +596,76 @@ fn a_server_that_refuses_head_is_downloaded_over_ranges() {
 }
 
 #[test]
+fn a_server_that_drops_the_connection_on_head_is_downloaded_over_several_connections() {
+    let size = 24 * MIB + 12_345;
+    let server = Server::start(Config {
+        size,
+        head_dropped: true,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("head-dropped");
+    let output = directory.0.join("payload.bin");
+    forget_writes();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    // One attempt: the HEAD that got no answer, then the one-byte ranged GET in its place.
+    assert_eq!(log[0].method, "HEAD");
+    assert!(log[0].answered.is_none());
+    assert_eq!(log.iter().filter(|e| e.method == "HEAD").count(), 1);
+    assert_eq!(log[1].method, "GET");
+    assert_eq!(log[1].range.as_deref(), Some("bytes=0-0"));
+    assert_tiles(delivered(&log, size), size);
+    let connections = data_gets(&log)
+        .map(|entry| entry.connection)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        connections.len() > 1,
+        "ranges used connections {connections:?}"
+    );
+}
+
+#[test]
+fn a_probe_whose_head_is_dropped_takes_the_size_and_validators_from_the_ranged_get() {
+    let size = 5 * MIB + 3;
+    let server = Server::start(Config {
+        size,
+        head_dropped: true,
+        ..Config::default()
+    });
+    let (media, probed) = prepare_auto(
+        &request_for(&server),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap();
+    assert!(!media);
+    let probed = probed.unwrap();
+    assert_eq!(probed.total, Some(size));
+    assert_eq!(probed.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(
+        server
+            .log()
+            .iter()
+            .map(|entry| (entry.method.as_str(), entry.range.as_deref()))
+            .collect::<Vec<_>>(),
+        [("HEAD", None), ("GET", Some("bytes=0-0"))]
+    );
+}
+
+#[test]
 fn a_fresh_download_adopts_the_validators_of_the_response_that_delivers_the_bytes() {
     let size = 12 * MIB + 7;
     for connections in [1, 4] {
