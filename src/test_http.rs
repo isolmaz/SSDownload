@@ -146,6 +146,9 @@ pub struct Config {
     pub head_etag: Option<String>,
     /// The `HEAD` answer carries no validators and no `Content-Length`.
     pub head_bare: bool,
+    /// A `HEAD` is read and the connection is then closed without an answer, as a server that
+    /// cannot handle the method does. The request is logged with status 0 and no answer time.
+    pub head_dropped: bool,
     /// Without it a `GET` answer has no `Content-Length` and its body ends with the connection.
     pub get_length_header: bool,
     pub etag: EtagKind,
@@ -256,6 +259,7 @@ impl Default for Config {
             head_not_allowed: false,
             head_etag: None,
             head_bare: false,
+            head_dropped: false,
             get_length_header: true,
             etag: EtagKind::Strong,
             vary_etag: false,
@@ -884,6 +888,8 @@ struct Reply {
     omit_length: bool,
     /// A fixed body sent after the head, to any method but `HEAD`.
     document: Option<Vec<u8>>,
+    /// Nothing is sent and the connection is closed.
+    dropped: bool,
 }
 
 impl Reply {
@@ -897,6 +903,7 @@ impl Reply {
             close: false,
             omit_length: false,
             document: None,
+            dropped: false,
         }
     }
 }
@@ -1163,6 +1170,10 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
 
     let size = config.size;
     match request.method.as_str() {
+        "HEAD" if config.head_dropped => Reply {
+            dropped: true,
+            ..Reply::empty(0)
+        },
         "HEAD" if config.head_not_allowed => {
             let mut reply = Reply::empty(405);
             reply.headers.push("Allow: GET".into());
@@ -1339,6 +1350,9 @@ fn answer(
     }
     if let Some(delay) = config.lookup_delay.filter(|_| is_lookup(&request.path)) {
         thread::sleep(delay);
+    }
+    if reply.dropped {
+        return false;
     }
     // Noted before the answer goes out, so that a client that has its answer finds it logged.
     shared.log.lock().unwrap()[position].answered = Some(Instant::now());
@@ -1750,6 +1764,22 @@ mod tests {
         let mut connection = connect(&refusing);
         assert_eq!(request(&mut connection, "HEAD", "/", &[]).status, 405);
         assert_eq!(request(&mut connection, "GET", "/", &[]).status, 200);
+    }
+
+    #[test]
+    fn a_dropped_head_gets_no_answer_and_every_other_request_is_served() {
+        let server = Server::start(Config {
+            head_dropped: true,
+            ..config(1000)
+        });
+        assert!(try_request(&mut connect(&server), "HEAD", "/", &[]).is_none());
+        let part = request(&mut connect(&server), "GET", "/", &["Range: bytes=0-0"]);
+        assert_eq!((part.status, part.body.len()), (206, 1));
+
+        let log = server.log();
+        assert_eq!((log[0].method.as_str(), log[0].status), ("HEAD", 0));
+        assert!(log[0].answered.is_none());
+        assert_eq!((log[1].method.as_str(), log[1].status), ("GET", 206));
     }
 
     #[test]

@@ -3927,6 +3927,14 @@ fn download_ftp_resuming(
     )
 }
 
+/// Whether a failed `HEAD` got no answer from a server that was reached: an empty reply or a
+/// reset connection. A server that does not handle `HEAD` can do that, and a ranged `GET` can
+/// still succeed. A failure to resolve the name, connect or secure the connection, a timeout and
+/// a stop are not this: the `GET` would fail the same way and take as long again.
+fn head_unanswered(error: &curl::Error) -> bool {
+    error.is_got_nothing() || error.is_recv_error()
+}
+
 fn probe_http(
     request: &AddRequest,
     mut url: Url,
@@ -3989,6 +3997,10 @@ fn probe_http(
             continue;
         }
         if let Err(error) = result {
+            if !use_get && head_unanswered(&error) {
+                use_get = true;
+                continue;
+            }
             if !(use_get && error.is_write_error() && headers.headers_complete) {
                 return Err(governed_transport_error(
                     &easy,
@@ -6184,6 +6196,23 @@ mod tests {
             staged.url,
             source_url_digest(&validate_source_url(&next.url).unwrap())
         );
+    }
+
+    #[test]
+    fn only_an_empty_reply_or_a_reset_sends_a_failed_head_to_the_ranged_get() {
+        let unanswered = |code| head_unanswered(&curl::Error::new(code));
+        assert!(unanswered(curl_sys::CURLE_GOT_NOTHING));
+        assert!(unanswered(curl_sys::CURLE_RECV_ERROR));
+        for code in [
+            curl_sys::CURLE_COULDNT_RESOLVE_HOST,
+            curl_sys::CURLE_COULDNT_CONNECT,
+            curl_sys::CURLE_OPERATION_TIMEDOUT,
+            curl_sys::CURLE_SSL_CONNECT_ERROR,
+            curl_sys::CURLE_PEER_FAILED_VERIFICATION,
+            curl_sys::CURLE_ABORTED_BY_CALLBACK,
+        ] {
+            assert!(!unanswered(code), "curl error {code}");
+        }
     }
 
     #[test]
