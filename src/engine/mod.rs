@@ -4979,12 +4979,56 @@ fn validate_checksum_text(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Unicode format characters (category Cf) that draw nothing or reorder what is drawn, so a name
+/// that holds one reads differently from what it is: the bidirectional controls make a name
+/// that ends in `.exe` read as one that ends in `.txt`. Not listed: the zero width (non-)joiners
+/// U+200C and U+200D, which the spelling of Persian, the Indic scripts and emoji sequences
+/// needs; the prepended concatenation marks (the Arabic number sign and the like), which are
+/// drawn before the digits they belong to; and the tag characters that spell a flag emoji, which
+/// `safe_filename` keeps after U+1F3F4 although this list holds them.
+const FORMAT_CONTROLS: &[(char, char)] = &[
+    ('\u{00AD}', '\u{00AD}'),
+    ('\u{061C}', '\u{061C}'),
+    ('\u{180E}', '\u{180E}'),
+    ('\u{200B}', '\u{200B}'),
+    ('\u{200E}', '\u{200F}'),
+    ('\u{202A}', '\u{202E}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206F}'),
+    ('\u{FEFF}', '\u{FEFF}'),
+    ('\u{FFF9}', '\u{FFFB}'),
+    ('\u{13430}', '\u{1343F}'),
+    ('\u{1BCA0}', '\u{1BCA3}'),
+    ('\u{1D173}', '\u{1D17A}'),
+    ('\u{E0001}', '\u{E0001}'),
+    ('\u{E0020}', '\u{E007F}'),
+];
+
+/// U+1F3F4 followed by tag characters up to the cancel tag is the flag of a region (England,
+/// Scotland, Wales).
+const FLAG_EMOJI_BASE: char = '\u{1F3F4}';
+const CANCEL_TAG: char = '\u{E007F}';
+
+fn is_tag_character(character: char) -> bool {
+    ('\u{E0020}'..=CANCEL_TAG).contains(&character)
+}
+
+fn is_name_control(character: char) -> bool {
+    character.is_control()
+        || FORMAT_CONTROLS
+            .iter()
+            .any(|&(first, last)| (first..=last).contains(&character))
+}
+
 pub(crate) fn safe_filename(suggested: &str, id: &str) -> String {
     let leaf = suggested.rsplit(['/', '\\']).next().unwrap_or("");
+    let mut in_flag = false;
     let mut value = leaf
         .chars()
         .map(|character| {
-            if character < ' '
+            let flag_tag = in_flag && is_tag_character(character);
+            in_flag = character == FLAG_EMOJI_BASE || (flag_tag && character != CANCEL_TAG);
+            if (is_name_control(character) && !flag_tag)
                 || matches!(
                     character,
                     '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
@@ -5173,6 +5217,10 @@ struct TransferFailure {
 }
 
 fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailure {
+    let error = match transfer::network_code(&error) {
+        Some(code) => crate::error_codes::with_code(error, code),
+        None => error,
+    };
     let detail = format!("{error:#}");
     TransferFailure {
         retryable: retryable_error(&error),
@@ -5272,7 +5320,10 @@ fn retryable_error(error: &anyhow::Error) -> bool {
             }
         }
         if let Some(error) = cause.downcast_ref::<curl::Error>() {
-            return matches!(error.code(), 5 | 6 | 7 | 18 | 28 | 52 | 55 | 56 | 92);
+            return matches!(
+                error.code(),
+                5 | 6 | 7 | 16 | 18 | 28 | 52 | 55 | 56 | 92 | 97
+            );
         }
     }
     let message = format!("{error:#}").to_lowercase();

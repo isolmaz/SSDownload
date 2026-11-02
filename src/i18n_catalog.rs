@@ -685,7 +685,6 @@ static AR: &[(&str, &str)] = &[
     ("Synchronization is already running.", "المزامنة تعمل بالفعل."),
     ("Synchronization not found", "لم يُعثر على المزامنة"),
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "تتطلب المزامنة عنوان URL بصيغة HTTP/HTTPS دون بيانات اعتماد للمستخدم."),
-    ("TLS certificate validation failed", "فشل التحقق من شهادة TLS"),
     ("Take over browser downloads (by file type)", "اعتراض تنزيلات المتصفح (حسب نوع الملف)"),
     ("Target file:", "الملف المستهدف:"),
     ("Target folder:", "المجلد المستهدف:"),
@@ -1115,6 +1114,7 @@ static AR: &[(&str, &str)] = &[
     ("The schedule must be in YYYY-MM-DD HH:MM format.", "يجب أن تكون الجدولة بالصيغة YYYY-MM-DD HH:MM."),
     ("The schedule time must use HH:MM format (e.g. 23:30)", "يجب أن يكون وقت الجدولة بالصيغة HH:MM (مثل 23:30)"),
     ("The scheduled speed limit must be 0 or a positive integer.", "يجب أن يكون حد السرعة المجدول 0 أو عددًا صحيحًا موجبًا."),
+    ("The secure connection (TLS) could not be established", "تعذّر إنشاء الاتصال الآمن (TLS)"),
     ("The selected audio language tag could not be written to the output", "تعذّرت كتابة وسم لغة الصوت المحدد في المخرجات"),
     ("The selected audio or subtitle track was not found", "لم يُعثر على المسار الصوتي أو مسار الترجمة المحدد"),
     ("The selected audio streams could not be verified without tagging", "تعذّر التحقق من مسارات الصوت المحددة دون وسمها"),
@@ -1134,10 +1134,16 @@ static AR: &[(&str, &str)] = &[
     ("The selected video format was not found", "لم يُعثر على تنسيق الفيديو المحدد"),
     ("The selected video stream was not found in the browser transfer", "لم يُعثر على بث الفيديو المحدد في النقل عبر المتصفح"),
     ("The server access token could not be read", "تعذّرت قراءة رمز الوصول للخادم"),
+    ("The server could not be reached", "تعذّر الوصول إلى الخادم"),
+    ("The server does not support the request (501)", "الخادم لا يدعم هذا الطلب (501)"),
+    ("The server failed to handle the request (5xx)", "تعذّر على الخادم معالجة الطلب (5xx)"),
     ("The server information could not be retrieved", "تعذّر الحصول على معلومات الخادم"),
+    ("The server refused access (401/403)", "رفض الخادم الوصول (401/403)"),
     ("The server rejected the byte range; the verified parts cannot be reused and the next attempt restarts the download from the beginning", "رفض الخادم نطاق البايتات؛ لا يمكن إعادة استخدام الأجزاء المتحقَّق منها، وستبدأ المحاولة التالية التنزيل من البداية"),
+    ("The server rejected the request (4xx)", "رفض الخادم الطلب (4xx)"),
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "أعاد الخادم الرمز 403؛ جارٍ إعادة المحاولة مرة واحدة على المصدر نفسه باتصال متوافق مع المتصفح"),
     ("The server sent an invalid or changed response", "أرسل الخادم استجابة غير صالحة أو متغيّرة"),
+    ("The server timed out waiting for the request (408)", "انتهت مهلة انتظار الخادم للطلب (408)"),
     ("The server's retry delay exceeds the supported range", "مدة إعادة المحاولة التي حدّدها الخادم تتجاوز النطاق المدعوم"),
     ("The session cookie could not be converted to a safe Netscape file", "تعذّر تحويل ملف تعريف ارتباط الجلسة إلى ملف Netscape آمن"),
     ("The session cookie's host scope is invalid", "نطاق المضيف لملف تعريف ارتباط الجلسة غير صالح"),
@@ -2121,7 +2127,6 @@ static ES: &[(&str, &str)] = &[
     ("Synchronization is already running.", "La sincronización ya está en ejecución."),
     ("Synchronization not found", "No se encontró la sincronización"),
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "La sincronización requiere una URL HTTP/HTTPS sin credenciales de usuario."),
-    ("TLS certificate validation failed", "Error en la validación del certificado TLS"),
     ("Take over browser downloads (by file type)", "Capturar las descargas del navegador (por tipo de archivo)"),
     ("Target file:", "Archivo de destino:"),
     ("Target folder:", "Carpeta de destino:"),
@@ -2551,6 +2556,7 @@ static ES: &[(&str, &str)] = &[
     ("The schedule must be in YYYY-MM-DD HH:MM format.", "La programación debe tener el formato AAAA-MM-DD HH:MM."),
     ("The schedule time must use HH:MM format (e.g. 23:30)", "La hora de programación debe tener el formato HH:MM (p. ej., 23:30)"),
     ("The scheduled speed limit must be 0 or a positive integer.", "El límite de velocidad programado debe ser 0 o un número entero positivo."),
+    ("The secure connection (TLS) could not be established", "No se pudo establecer la conexión segura (TLS)"),
     ("The selected audio language tag could not be written to the output", "No se pudo escribir en la salida la etiqueta de idioma de audio seleccionada"),
     ("The selected audio or subtitle track was not found", "No se ha encontrado la pista de audio o de subtítulos seleccionada"),
     ("The selected audio streams could not be verified without tagging", "No se han podido verificar los flujos de audio seleccionados sin etiquetarlos"),
@@ -2570,10 +2576,16 @@ static ES: &[(&str, &str)] = &[
     ("The selected video format was not found", "No se ha encontrado el formato de vídeo seleccionado"),
     ("The selected video stream was not found in the browser transfer", "No se ha encontrado el flujo de vídeo seleccionado en la transferencia desde el navegador"),
     ("The server access token could not be read", "No se ha podido leer el token de acceso del servidor"),
+    ("The server could not be reached", "No se pudo contactar con el servidor"),
+    ("The server does not support the request (501)", "El servidor no admite la solicitud (501)"),
+    ("The server failed to handle the request (5xx)", "El servidor no pudo procesar la solicitud (5xx)"),
     ("The server information could not be retrieved", "No se ha podido obtener la información del servidor"),
+    ("The server refused access (401/403)", "El servidor denegó el acceso (401/403)"),
     ("The server rejected the byte range; the verified parts cannot be reused and the next attempt restarts the download from the beginning", "El servidor ha rechazado el rango de bytes; las partes verificadas no se pueden reutilizar y el siguiente intento reiniciará la descarga desde el principio"),
+    ("The server rejected the request (4xx)", "El servidor rechazó la solicitud (4xx)"),
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "El servidor ha devuelto 403; se reintenta una vez el mismo origen con una conexión compatible con el navegador"),
     ("The server sent an invalid or changed response", "El servidor ha enviado una respuesta no válida o modificada"),
+    ("The server timed out waiting for the request (408)", "El servidor agotó el tiempo de espera de la solicitud (408)"),
     ("The server's retry delay exceeds the supported range", "La espera de reintento del servidor supera el intervalo admitido"),
     ("The session cookie could not be converted to a safe Netscape file", "No se ha podido convertir la cookie de sesión en un archivo Netscape seguro"),
     ("The session cookie's host scope is invalid", "El ámbito de host de la cookie de sesión no es válido"),
@@ -3557,7 +3569,6 @@ static PT: &[(&str, &str)] = &[
     ("Synchronization is already running.", "A sincronização já está em execução."),
     ("Synchronization not found", "Sincronização não encontrada"),
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "A sincronização exige uma URL HTTP/HTTPS sem credenciais de usuário."),
-    ("TLS certificate validation failed", "A validação do certificado TLS falhou"),
     ("Take over browser downloads (by file type)", "Assumir downloads do navegador (por tipo de arquivo)"),
     ("Target file:", "Arquivo de destino:"),
     ("Target folder:", "Pasta de destino:"),
@@ -3987,6 +3998,7 @@ static PT: &[(&str, &str)] = &[
     ("The schedule must be in YYYY-MM-DD HH:MM format.", "O agendamento deve estar no formato AAAA-MM-DD HH:MM."),
     ("The schedule time must use HH:MM format (e.g. 23:30)", "O horário do agendamento deve usar o formato HH:MM (ex.: 23:30)"),
     ("The scheduled speed limit must be 0 or a positive integer.", "O limite de velocidade agendado deve ser 0 ou um inteiro positivo."),
+    ("The secure connection (TLS) could not be established", "Não foi possível estabelecer a conexão segura (TLS)"),
     ("The selected audio language tag could not be written to the output", "Não foi possível gravar a tag de idioma de áudio selecionada na saída"),
     ("The selected audio or subtitle track was not found", "A faixa de áudio ou legenda selecionada não foi encontrada"),
     ("The selected audio streams could not be verified without tagging", "Não foi possível verificar os fluxos de áudio selecionados sem marcação"),
@@ -4006,10 +4018,16 @@ static PT: &[(&str, &str)] = &[
     ("The selected video format was not found", "O formato de vídeo selecionado não foi encontrado"),
     ("The selected video stream was not found in the browser transfer", "O fluxo de vídeo selecionado não foi encontrado na transferência pelo navegador"),
     ("The server access token could not be read", "Não foi possível ler o token de acesso do servidor"),
+    ("The server could not be reached", "Não foi possível alcançar o servidor"),
+    ("The server does not support the request (501)", "O servidor não oferece suporte à solicitação (501)"),
+    ("The server failed to handle the request (5xx)", "O servidor não conseguiu processar o pedido (5xx)"),
     ("The server information could not be retrieved", "Não foi possível obter as informações do servidor"),
+    ("The server refused access (401/403)", "O servidor recusou o acesso (401/403)"),
     ("The server rejected the byte range; the verified parts cannot be reused and the next attempt restarts the download from the beginning", "O servidor rejeitou o intervalo de bytes; as partes verificadas não podem ser reutilizadas e a próxima tentativa reinicia o download desde o início"),
+    ("The server rejected the request (4xx)", "O servidor rejeitou o pedido (4xx)"),
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "O servidor retornou 403; tentando a mesma fonte mais uma vez com uma conexão compatível com o navegador"),
     ("The server sent an invalid or changed response", "O servidor enviou uma resposta inválida ou alterada"),
+    ("The server timed out waiting for the request (408)", "O servidor esgotou o tempo de espera da solicitação (408)"),
     ("The server's retry delay exceeds the supported range", "O atraso de nova tentativa do servidor excede o intervalo suportado"),
     ("The session cookie could not be converted to a safe Netscape file", "Não foi possível converter o cookie de sessão para um arquivo Netscape seguro"),
     ("The session cookie's host scope is invalid", "O escopo de host do cookie de sessão é inválido"),
@@ -4993,7 +5011,6 @@ static FR: &[(&str, &str)] = &[
     ("Synchronization is already running.", "La synchronisation est déjà en cours."),
     ("Synchronization not found", "Synchronisation introuvable"),
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "La synchronisation nécessite une URL HTTP/HTTPS sans identifiants d'utilisateur."),
-    ("TLS certificate validation failed", "La validation du certificat TLS a échoué"),
     ("Take over browser downloads (by file type)", "Intercepter les téléchargements du navigateur (par type de fichier)"),
     ("Target file:", "Fichier cible :"),
     ("Target folder:", "Dossier cible :"),
@@ -5423,6 +5440,7 @@ static FR: &[(&str, &str)] = &[
     ("The schedule must be in YYYY-MM-DD HH:MM format.", "La planification doit être au format AAAA-MM-JJ HH:MM."),
     ("The schedule time must use HH:MM format (e.g. 23:30)", "L'heure de planification doit être au format HH:MM (par ex. 23:30)"),
     ("The scheduled speed limit must be 0 or a positive integer.", "La limite de vitesse planifiée doit être 0 ou un entier positif."),
+    ("The secure connection (TLS) could not be established", "La connexion sécurisée (TLS) n'a pas pu être établie"),
     ("The selected audio language tag could not be written to the output", "L'étiquette de langue audio sélectionnée n'a pas pu être écrite dans la sortie"),
     ("The selected audio or subtitle track was not found", "La piste audio ou de sous-titres sélectionnée est introuvable"),
     ("The selected audio streams could not be verified without tagging", "Les flux audio sélectionnés n'ont pas pu être vérifiés sans étiquetage"),
@@ -5442,10 +5460,16 @@ static FR: &[(&str, &str)] = &[
     ("The selected video format was not found", "Le format vidéo sélectionné est introuvable"),
     ("The selected video stream was not found in the browser transfer", "Le flux vidéo sélectionné est introuvable dans le transfert par le navigateur"),
     ("The server access token could not be read", "Le jeton d'accès du serveur n'a pas pu être lu"),
+    ("The server could not be reached", "Le serveur n'a pas pu être joint"),
+    ("The server does not support the request (501)", "Le serveur ne prend pas en charge la requête (501)"),
+    ("The server failed to handle the request (5xx)", "Le serveur n'a pas pu traiter la requête (5xx)"),
     ("The server information could not be retrieved", "Les informations du serveur n'ont pas pu être récupérées"),
+    ("The server refused access (401/403)", "Le serveur a refusé l'accès (401/403)"),
     ("The server rejected the byte range; the verified parts cannot be reused and the next attempt restarts the download from the beginning", "Le serveur a refusé la plage d'octets ; les fragments vérifiés ne peuvent pas être réutilisés et la prochaine tentative recommence le téléchargement depuis le début"),
+    ("The server rejected the request (4xx)", "Le serveur a rejeté la requête (4xx)"),
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "Le serveur a renvoyé 403 ; nouvelle tentative unique sur la même source avec une connexion compatible avec le navigateur"),
     ("The server sent an invalid or changed response", "Le serveur a envoyé une réponse invalide ou modifiée"),
+    ("The server timed out waiting for the request (408)", "Le serveur a dépassé le délai d'attente de la requête (408)"),
     ("The server's retry delay exceeds the supported range", "Le délai de nouvelle tentative du serveur dépasse la plage prise en charge"),
     ("The session cookie could not be converted to a safe Netscape file", "Le cookie de session n'a pas pu être converti en fichier Netscape sûr"),
     ("The session cookie's host scope is invalid", "La portée d'hôte du cookie de session est invalide"),
@@ -6429,7 +6453,6 @@ static DE: &[(&str, &str)] = &[
     ("Synchronization is already running.", "Die Synchronisierung läuft bereits."),
     ("Synchronization not found", "Synchronisierung nicht gefunden"),
     ("Synchronization requires an HTTP/HTTPS URL without user credentials.", "Die Synchronisierung erfordert eine HTTP/HTTPS-URL ohne Anmeldedaten."),
-    ("TLS certificate validation failed", "TLS-Zertifikatsprüfung fehlgeschlagen"),
     ("Take over browser downloads (by file type)", "Browser-Downloads übernehmen (nach Dateityp)"),
     ("Target file:", "Zieldatei:"),
     ("Target folder:", "Zielordner:"),
@@ -6859,6 +6882,7 @@ static DE: &[(&str, &str)] = &[
     ("The schedule must be in YYYY-MM-DD HH:MM format.", "Der Zeitplan muss im Format JJJJ-MM-TT HH:MM angegeben werden."),
     ("The schedule time must use HH:MM format (e.g. 23:30)", "Die Zeitplanzeit muss im Format HH:MM angegeben werden (z. B. 23:30)"),
     ("The scheduled speed limit must be 0 or a positive integer.", "Das zeitgesteuerte Geschwindigkeitslimit muss 0 oder eine positive ganze Zahl sein."),
+    ("The secure connection (TLS) could not be established", "Die sichere Verbindung (TLS) konnte nicht hergestellt werden"),
     ("The selected audio language tag could not be written to the output", "Das ausgewählte Audio-Sprach-Tag konnte nicht in die Ausgabe geschrieben werden"),
     ("The selected audio or subtitle track was not found", "Die ausgewählte Audio- oder Untertitelspur wurde nicht gefunden"),
     ("The selected audio streams could not be verified without tagging", "Die ausgewählten Audio-Streams konnten nicht ohne Kennzeichnung geprüft werden"),
@@ -6878,10 +6902,16 @@ static DE: &[(&str, &str)] = &[
     ("The selected video format was not found", "Das ausgewählte Videoformat wurde nicht gefunden"),
     ("The selected video stream was not found in the browser transfer", "Der ausgewählte Videostream wurde in der Browser-Übertragung nicht gefunden"),
     ("The server access token could not be read", "Das Zugriffstoken des Servers konnte nicht gelesen werden"),
+    ("The server could not be reached", "Der Server war nicht erreichbar"),
+    ("The server does not support the request (501)", "Der Server unterstützt die Anfrage nicht (501)"),
+    ("The server failed to handle the request (5xx)", "Der Server konnte die Anfrage nicht verarbeiten (5xx)"),
     ("The server information could not be retrieved", "Die Serverinformationen konnten nicht abgerufen werden"),
+    ("The server refused access (401/403)", "Der Server hat den Zugriff verweigert (401/403)"),
     ("The server rejected the byte range; the verified parts cannot be reused and the next attempt restarts the download from the beginning", "Der Server hat den Bytebereich abgelehnt; die geprüften Teile können nicht wiederverwendet werden, und der nächste Versuch startet den Download von vorn"),
+    ("The server rejected the request (4xx)", "Der Server hat die Anfrage abgelehnt (4xx)"),
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "Der Server hat 403 zurückgegeben; die gleiche Quelle wird einmal über eine browserkompatible Verbindung erneut versucht"),
     ("The server sent an invalid or changed response", "Der Server hat eine ungültige oder geänderte Antwort gesendet"),
+    ("The server timed out waiting for the request (408)", "Der Server hat beim Warten auf die Anfrage das Zeitlimit überschritten (408)"),
     ("The server's retry delay exceeds the supported range", "Die Wiederholungsverzögerung des Servers überschreitet den unterstützten Bereich"),
     ("The session cookie could not be converted to a safe Netscape file", "Das Sitzungscookie konnte nicht in eine sichere Netscape-Datei umgewandelt werden"),
     ("The session cookie's host scope is invalid", "Der Hostbereich des Sitzungscookies ist ungültig"),
@@ -7386,8 +7416,8 @@ macro_rules! __ui_template_ar {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "التحقق من الوسائط: بث {stream} مدته {length:.1} ث، وقائمة مصدره تعلن {declared} ث (مقطع مفقود أو مكرر)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "التحقق من الوسائط: الفيديو {0:.1} ث، والصوت {1} {2:.1} ث؛ أطوال البث لا تتطابق (مقطع مفقود أو مكرر)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "التحقق من الوسائط: الفيديو {0:.1} ث، وتدفق الصوت {1}: {2:.1} ث؛ أطوال البث لا تتطابق (مقطع مفقود أو مكرر)."
     };
     ("Missing value for {flag}") => {
         "القيمة مفقودة لـ {flag}"
@@ -8252,8 +8282,8 @@ macro_rules! __ui_template_es {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Verificación de medios: el flujo {stream} dura {length:.1} s, pero su lista de origen declara {declared} s (fragmento que falta o duplicado)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "Verificación de medios: vídeo {0:.1} s, audio {1} {2:.1} s; las duraciones de los flujos no coinciden (fragmento que falta o duplicado)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "Verificación de medios: vídeo {0:.1} s, flujo de audio {1}: {2:.1} s; las duraciones de los flujos no coinciden (fragmento que falta o duplicado)."
     };
     ("Missing value for {flag}") => {
         "Falta el valor de {flag}"
@@ -9118,8 +9148,8 @@ macro_rules! __ui_template_pt {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Verificação de mídia: o fluxo {stream} dura {length:.1} s, mas sua playlist de origem declara {declared} s (segmento ausente ou duplicado)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "Verificação de mídia: vídeo {0:.1} s, áudio {1} {2:.1} s; as durações dos fluxos não correspondem (segmento ausente ou duplicado)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "Verificação de mídia: vídeo {0:.1} s, fluxo de áudio {1}: {2:.1} s; as durações dos fluxos não correspondem (segmento ausente ou duplicado)."
     };
     ("Missing value for {flag}") => {
         "Valor ausente para {flag}"
@@ -9984,8 +10014,8 @@ macro_rules! __ui_template_fr {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Vérification du média : le flux {stream} dure {length:.1} s, sa liste de lecture source indique {declared} s (fragment manquant ou dupliqué)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "Vérification du média : vidéo {0:.1} s, audio {1} {2:.1} s ; les durées des flux ne correspondent pas (fragment manquant ou dupliqué)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "Vérification du média : vidéo {0:.1} s, flux audio {1} : {2:.1} s ; les durées des flux ne correspondent pas (fragment manquant ou dupliqué)."
     };
     ("Missing value for {flag}") => {
         "Valeur manquante pour {flag}"
@@ -10850,8 +10880,8 @@ macro_rules! __ui_template_de {
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Medienprüfung: Der Stream {stream} dauert {length:.1} s, seine Quell-Playlist gibt {declared} s an (fehlendes oder doppeltes Fragment)."
     };
-    ("Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
-        "Medienprüfung: Video {0:.1} s, Audio {1} {2:.1} s; die Stream-Längen stimmen nicht überein (fehlendes oder doppeltes Fragment)."
+    ("Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).") => {
+        "Medienprüfung: Video {0:.1} s, Audiostream {1}: {2:.1} s; die Stream-Längen stimmen nicht überein (fehlendes oder doppeltes Fragment)."
     };
     ("Missing value for {flag}") => {
         "Fehlender Wert für {flag}"
