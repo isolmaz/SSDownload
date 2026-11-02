@@ -449,6 +449,52 @@ fn a_source_with_a_longer_audio_playlist_downloads_both_streams_at_once() {
 
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
+fn a_failed_download_and_a_failed_analysis_show_the_error_line_without_the_python_trace() {
+    // The video playlist is gone for good: yt-dlp fails the download with a traceback.
+    let fixture = Fixture::new(Source {
+        video_seconds: 4,
+        audio_seconds: 4,
+        failing: Some(("video.m3u8", 1000)),
+        ..Source::default()
+    });
+    let failure = format!(
+        "{:#}",
+        fixture
+            .download(&TransferControl::default(), 4)
+            .expect_err("the download")
+    );
+    assert!(failure.contains("HTTP Error 404"), "{failure}");
+    for internal in ["Traceback", "File \"", "[ssdownload-stage", "yt_dlp"] {
+        assert!(!failure.contains(internal), "{internal}: {failure}");
+    }
+
+    // A page with no media: yt-dlp warns, then fails the analysis.
+    fs::write(
+        fixture.server.site.join("page.html"),
+        "<html>no media</html>",
+    )
+    .unwrap();
+    let analysis = InspectRequest {
+        url: fixture.master.replace("master.m3u8", "page.html"),
+        ..InspectRequest::default()
+    };
+    let failure = format!(
+        "{:#}",
+        inspect_controlled(
+            &fixture.paths,
+            &analysis,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+        )
+        .expect_err("the analysis")
+    );
+    assert!(failure.starts_with("SSD-MED-006 "), "{failure}");
+    assert!(failure.contains("ERROR: "), "{failure}");
+    assert!(!failure.contains("WARNING:"), "{failure}");
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
 fn a_failing_segment_is_retried_alone_without_restarting_its_stream() {
     let fixture = Fixture::new(Source {
         video_seconds: 12,

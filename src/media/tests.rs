@@ -1273,6 +1273,143 @@ fn site_refusals_map_to_one_final_line_without_the_debug_trace() {
     );
 }
 
+/// The text of a failed verbose download as the tool wrote it, with the app's stage note.
+const VERBOSE_DOWNLOAD_FAILURE: &str = "[debug] Command-line config: ['-v']\n\
+    [download] Destination: media.f1.mp4\n\
+    ERROR: unable to download video data: HTTP Error 404: Not Found\n\
+    Traceback (most recent call last):\n  \
+      File \"yt_dlp\\YoutubeDL.py\", line 3566, in process_info\n  \
+      File \"yt_dlp\\YoutubeDL.py\", line 3319, in dl\n  \
+      File \"yt_dlp\\downloader\\hls.py\", line 82, in real_download\n  \
+      File \"yt_dlp\\networking\\_requests.py\", line 361, in _send\n\
+    yt_dlp.networking.exceptions.HTTPError: HTTP Error 404: Not Found\n\
+    [ssdownload-stage=manifest_child]";
+
+#[test]
+fn the_user_sees_the_final_error_line_of_a_failed_download_not_its_traceback() {
+    let visible = non_debug_lines(VERBOSE_DOWNLOAD_FAILURE);
+    assert_eq!(
+        final_error_text(&visible),
+        "ERROR: unable to download video data: HTTP Error 404: Not Found"
+    );
+    // The stage note still classifies the failure.
+    let request = AddRequest {
+        url: "https://cdn.example/master.m3u8".into(),
+        ..AddRequest::default()
+    };
+    assert_eq!(classify_download_error(&visible, &request).0, "alt liste");
+}
+
+#[test]
+fn a_run_that_crashed_without_an_error_line_gives_the_last_exception_of_its_traceback() {
+    let crash = "Traceback (most recent call last):\n  \
+          File \"yt_dlp\\YoutubeDL.py\", line 1700, in extract_info\n    \
+            ie_result = ie.extract(url)\n  \
+          File \"yt_dlp\\extractor\\common.py\", line 760, in extract\n    \
+            return self._real_extract(url)\n\
+        KeyError: 'formats'";
+    assert_eq!(final_error_text(crash), "KeyError: 'formats'");
+    // The progress lines before the crash are not the reason.
+    assert_eq!(
+        final_error_text(&format!(
+            "[generic] Extracting URL: https://page.example/watch\n{crash}"
+        )),
+        "KeyError: 'formats'"
+    );
+    // Of chained tracebacks the last one is the exception the run ended with.
+    assert_eq!(
+        final_error_text(&format!(
+            "{crash}\n\nDuring handling of the above exception, another exception occurred:\n\n\
+             Traceback (most recent call last):\n  \
+               File \"yt_dlp\\__init__.py\", line 1000, in main\n\
+             RuntimeError: gave up"
+        )),
+        "RuntimeError: gave up"
+    );
+}
+
+#[test]
+fn a_stored_download_failure_still_names_its_stage_in_every_language() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    // The tool's line alone reads as a failed media segment.
+    let summary = "ERROR: fragment 3 not found";
+    assert_eq!(
+        classify_download_error(summary, &request).0,
+        "medya parçası"
+    );
+    for info in crate::i18n::LANGUAGES {
+        for (stage, _) in FAILURE_STAGES {
+            let stored = crate::i18n::with_language(info.code, || {
+                download_failure_message(stage, true, summary)
+            });
+            assert!(!stored.contains("[ssdownload-stage"), "{stored}");
+            assert_eq!(
+                classify_download_error(&stored, &request).0,
+                stage,
+                "{}: {stored}",
+                info.code
+            );
+        }
+    }
+}
+
+#[test]
+fn chained_tracebacks_and_an_error_line_in_their_last_exception_are_not_the_failure() {
+    let stderr = "[download] Destination: media.f1.mp4\n\
+        ERROR: unable to download video data: HTTP Error 404: Not Found\n\
+        Traceback (most recent call last):\n  \
+          File \"yt_dlp\\networking\\_requests.py\", line 361, in _send\n    \
+            raise HTTPError(res)\n    \
+            ~~~~~~~~~~~~~~~~~~~~^\n\
+        yt_dlp.networking.exceptions.HTTPError: HTTP Error 404: Not Found\n\
+        \n\
+        During handling of the above exception, another exception occurred:\n\
+        \n\
+        Traceback (most recent call last):\n  \
+          File \"yt_dlp\\YoutubeDL.py\", line 3566, in process_info\n\
+        yt_dlp.utils.DownloadError: unable to download video data: HTTP Error 404: Not Found\n\
+        \n\
+        The above exception was the direct cause of the following exception:\n\
+        \n\
+        Traceback (most recent call last):\n  \
+          File \"yt_dlp\\__init__.py\", line 1000, in main\n\
+        yt_dlp.utils.DownloadError: ERROR: the download was given up\n\
+        [ssdownload-stage=media_segment]";
+    assert_eq!(
+        final_error_text(stderr),
+        "ERROR: unable to download video data: HTTP Error 404: Not Found"
+    );
+}
+
+#[test]
+fn frames_with_no_header_and_text_that_only_looks_like_one_are_told_apart() {
+    // A stack printed under the error line ends where the next line is not indented.
+    assert_eq!(
+        final_error_text(
+            "ERROR: [generic] Unable to download webpage: timed out\n  \
+               File \"yt_dlp\\extractor\\common.py\", line 1000, in _request_webpage\n    \
+                 return self._downloader.urlopen(request)\n\
+             [download] giving up after 3 tries"
+        ),
+        "ERROR: [generic] Unable to download webpage: timed out\n[download] giving up after 3 tries"
+    );
+    // The message itself is kept, however it reads.
+    let message = "ERROR: cannot open File \"a.m3u8\", line 3 of the playlist\n\
+                   Traceback (most recent call last) is a phrase";
+    assert_eq!(final_error_text(message), message);
+    // What the tool wrote before the last error line is left to the log.
+    assert_eq!(
+        final_error_text(
+            "WARNING: [generic] Falling back on generic information extractor\n\
+             ERROR: Unsupported URL: http://127.0.0.1:9/page.html"
+        ),
+        "ERROR: Unsupported URL: http://127.0.0.1:9/page.html"
+    );
+}
+
 #[test]
 fn fragmented_resume_follows_the_selected_format_protocol_not_the_page_address() {
     let inspection = json!({"id":"x","title":"t","webpage_url":"https://example.test/watch?v=1","formats":[
