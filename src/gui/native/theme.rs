@@ -228,14 +228,17 @@ pub(super) unsafe fn make_face_font(dpi: u32, points: i32, weight: i32, faces: &
     }
     make_font(dpi, points, weight)
 }
-/// A card font, created once per control and DPI and owned by that control.
-pub(super) unsafe fn card_font(
-    hwnd: HWND,
-    prop: &str,
-    points: i32,
-    weight: i32,
-    faces: &[&str],
-) -> HFONT {
+/// The font of a card's title at `dpi`.
+pub(super) unsafe fn card_title_font(dpi: u32) -> HFONT {
+    make_face_font(dpi, 11, 600, &["Segoe UI Semibold", "Segoe UI"])
+}
+/// The font of a card's explanation at `dpi`.
+pub(super) unsafe fn card_description_font(dpi: u32) -> HFONT {
+    make_face_font(dpi, 8, FW_NORMAL as i32, &["Segoe UI"])
+}
+/// A card font, created once per control and DPI by `make` and owned by that
+/// control.
+pub(super) unsafe fn card_font(hwnd: HWND, prop: &str, make: unsafe fn(u32) -> HFONT) -> HFONT {
     let dpi = GetDpiForWindow(hwnd).max(96);
     // Each font records the DPI it was made for: the title and the description
     // are drawn one after the other, so a shared record would mark the second
@@ -254,7 +257,7 @@ pub(super) unsafe fn card_font(
         DeleteObject(stored as HGDIOBJ);
         RemovePropW(hwnd, card_prop(prop));
     }
-    let font = make_face_font(dpi, points, weight, faces);
+    let font = make(dpi);
     SetPropW(hwnd, card_prop(prop), font as HANDLE);
     SetPropW(hwnd, dpi_prop, dpi as usize as HANDLE);
     font
@@ -312,6 +315,24 @@ pub(super) fn card_text_parts(text: &str) -> (String, String) {
         None => (text.to_string(), String::new()),
     }
 }
+/// Where a card whose rounded outline is `padded` writes its title and, under it,
+/// its explanation.
+pub(super) fn card_text_areas(padded: RECT, dpi: u32) -> (RECT, RECT) {
+    (
+        RECT {
+            left: padded.left + scale(8, dpi),
+            top: padded.top + scale(52, dpi),
+            right: padded.right - scale(8, dpi),
+            bottom: padded.bottom,
+        },
+        RECT {
+            left: padded.left + scale(10, dpi),
+            top: padded.top + scale(76, dpi),
+            right: padded.right - scale(10, dpi),
+            bottom: padded.bottom - scale(4, dpi),
+        },
+    )
+}
 pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     let mut rect: RECT = zeroed();
     GetClientRect(hwnd, &mut rect);
@@ -355,22 +376,11 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     let mut buffer = [0u16; 512];
     let len = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32).max(0) as usize;
     let (title, description) = card_text_parts(&String::from_utf16_lossy(&buffer[..len]));
+    let (mut title_area, mut description_area) = card_text_areas(padded, dpi);
     let mut title_wide = wide(&title);
-    let mut title_area = RECT {
-        left: padded.left + scale(8, dpi),
-        top: padded.top + scale(52, dpi),
-        right: padded.right - scale(8, dpi),
-        bottom: padded.bottom,
-    };
     let title_font = SelectObject(
         dc,
-        card_font(
-            hwnd,
-            "title-font",
-            11,
-            600,
-            &["Segoe UI Semibold", "Segoe UI"],
-        ) as HGDIOBJ,
+        card_font(hwnd, "title-font", card_title_font) as HGDIOBJ,
     );
     SetTextColor(dc, face.title);
     DrawTextW(
@@ -382,15 +392,9 @@ pub(super) unsafe fn draw_card(hwnd: HWND, dc: HDC) {
     );
     SelectObject(dc, title_font);
     let mut description_wide = wide(&description);
-    let mut description_area = RECT {
-        left: padded.left + scale(10, dpi),
-        top: padded.top + scale(76, dpi),
-        right: padded.right - scale(10, dpi),
-        bottom: padded.bottom - scale(8, dpi),
-    };
     let description_font = SelectObject(
         dc,
-        card_font(hwnd, "text-font", 8, FW_NORMAL as i32, &["Segoe UI"]) as HGDIOBJ,
+        card_font(hwnd, "text-font", card_description_font) as HGDIOBJ,
     );
     SetTextColor(dc, face.description);
     DrawTextW(
