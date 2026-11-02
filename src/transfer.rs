@@ -1467,7 +1467,7 @@ fn download_http_single(
             remote,
             None,
             network,
-            &final_name(output, request, remote, None),
+            &final_name(output, request, remote, None, &remote.url),
             &part,
             &state_path,
             offset,
@@ -1561,7 +1561,7 @@ fn download_http_single(
                     remote,
                     Some(&headers),
                     network,
-                    &final_name(output, request, remote, Some(&headers)),
+                    &final_name(output, request, remote, Some(&headers), &current),
                     &part,
                     &state_path,
                     bytes,
@@ -2551,7 +2551,7 @@ fn download_segmented(
             remote,
             None,
             network,
-            &final_name(output, request, remote, None),
+            &final_name(output, request, remote, None, &remote.url),
             &part,
             &state_path,
             total,
@@ -2973,7 +2973,7 @@ fn download_segmented(
         remote,
         None,
         network,
-        &final_name(output, request, remote, None),
+        &final_name(output, request, remote, None, &remote.url),
         &part,
         &state_path,
         total,
@@ -5201,21 +5201,22 @@ pub(crate) fn throttle(
     }
 }
 
-/// The path a finished download is published at. A name the user chose stays. Otherwise the
-/// name comes from the `Content-Disposition` of the answer that delivered the file (or of the
-/// probe), then from the file name the redirects led to, and failing both from `output`, the
-/// name the job was added with.
+/// The path a finished download is published at. A name the user chose or the browser handed
+/// over stays. Otherwise the name comes from the `Content-Disposition` of the answer that
+/// delivered the file (`response`) or of the probe, then from the file name of `source`, the
+/// address the bytes came from, and failing both from `output`, the name the job was added with.
 fn final_name(
     output: &Path,
     request: &AddRequest,
     remote: &RemoteInfo,
     response: Option<&ResponseHeaders>,
+    source: &Url,
 ) -> PathBuf {
     if request.filename.is_none() {
         if let Some(name) = response
             .and_then(|headers| headers.filename.clone())
             .or_else(|| remote.filename.clone())
-            .or_else(|| redirected_file_name(request, &remote.url))
+            .or_else(|| redirected_file_name(request, source))
         {
             return output.with_file_name(crate::engine::safe_filename(&name, "download"));
         }
@@ -5223,16 +5224,22 @@ fn final_name(
     output.to_owned()
 }
 
-/// The last path segment of the address a download ended at, when it has a file extension and
-/// differs from the one of the requested address. A segment without an extension (`download`,
-/// `a1b2c3d4`) names nothing, so the name the job was added with stays.
-fn redirected_file_name(request: &AddRequest, last: &Url) -> Option<String> {
-    let name = url_file_name(last)?;
-    crate::output::real_extension(Path::new(&name))?;
+/// The last path segment of `source`, the address a download's redirects led to, when the
+/// requested address names no file and that segment does. A last segment with a file extension
+/// (`report.pdf`) is a name already, so nothing a redirect leads to replaces it. The extension
+/// of the segment that is taken has a letter in it: the `.2` of `v1.2` is a version, not a type.
+fn redirected_file_name(request: &AddRequest, source: &Url) -> Option<String> {
     let requested = validate_source_url(&request.url)
         .ok()
         .and_then(|url| url_file_name(&url));
-    (requested.as_ref() != Some(&name)).then_some(name)
+    if requested.is_some_and(|name| crate::output::real_extension(Path::new(&name)).is_some()) {
+        return None;
+    }
+    let name = url_file_name(source)?;
+    crate::output::real_extension(Path::new(&name))?
+        .chars()
+        .any(char::is_alphabetic)
+        .then_some(name)
 }
 /// Decodes `%XX` escapes; `None` when an escape is malformed or the bytes are not UTF-8.
 fn percent_decode_utf8(value: &str) -> Option<String> {
