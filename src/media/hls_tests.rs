@@ -483,6 +483,52 @@ fn a_server_that_drops_the_connection_once_at_the_analysis_fails_that_attempt_re
 
 #[test]
 #[ignore = "needs the installed media tools; run explicitly"]
+fn a_failed_download_and_a_failed_analysis_show_the_error_line_without_the_python_trace() {
+    // The video playlist is gone for good: yt-dlp fails the download with a traceback.
+    let fixture = Fixture::new(Source {
+        video_seconds: 4,
+        audio_seconds: 4,
+        failing: Some(("video.m3u8", 1000)),
+        ..Source::default()
+    });
+    let failure = format!(
+        "{:#}",
+        fixture
+            .download(&TransferControl::default(), 4)
+            .expect_err("the download")
+    );
+    assert!(failure.contains("HTTP Error 404"), "{failure}");
+    for internal in ["Traceback", "File \"", "[ssdownload-stage", "yt_dlp"] {
+        assert!(!failure.contains(internal), "{internal}: {failure}");
+    }
+
+    // A page with no media: yt-dlp warns, then fails the analysis.
+    fs::write(
+        fixture.server.site.join("page.html"),
+        "<html>no media</html>",
+    )
+    .unwrap();
+    let analysis = InspectRequest {
+        url: fixture.master.replace("master.m3u8", "page.html"),
+        ..InspectRequest::default()
+    };
+    let failure = format!(
+        "{:#}",
+        inspect_controlled(
+            &fixture.paths,
+            &analysis,
+            &TransferControl::default(),
+            &NetworkGovernor::new(16),
+        )
+        .expect_err("the analysis")
+    );
+    assert!(failure.starts_with("SSD-MED-006 "), "{failure}");
+    assert!(failure.contains("ERROR: "), "{failure}");
+    assert!(!failure.contains("WARNING:"), "{failure}");
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
 fn a_failing_segment_is_retried_alone_without_restarting_its_stream() {
     let fixture = Fixture::new(Source {
         video_seconds: 12,
@@ -559,6 +605,37 @@ fn a_paused_download_resumes_after_the_segments_it_already_has() {
         .iter()
         .chain(&audio)
         .all(|count| (1..=2).contains(count)));
+}
+
+#[test]
+#[ignore = "needs the installed media tools; run explicitly"]
+fn a_retry_after_an_attempt_that_never_reached_its_source_starts_fresh() {
+    // The video playlist does not answer twice: the first attempt cannot take the source's
+    // evidence and its download fails before a single segment is written. The retry finds the
+    // job folder with nothing but the files the app writes first.
+    let fixture = Fixture::new(Source {
+        video_seconds: 6,
+        audio_seconds: 6,
+        failing: Some(("video.m3u8", 2)),
+        ..Source::default()
+    });
+    let first = fixture
+        .download(&TransferControl::default(), 4)
+        .expect_err("the first attempt");
+    let work = fixture.folder.join(".ssdownload-work");
+    let mut left = Vec::new();
+    for folder in fs::read_dir(&work).unwrap() {
+        for file in fs::read_dir(folder.unwrap().path()).unwrap() {
+            left.push(file.unwrap().file_name().into_string().unwrap());
+        }
+    }
+    left.sort();
+    assert_eq!(left, [".owner", ".request"], "{first:#}");
+
+    let output = fixture
+        .download(&TransferControl::default(), 4)
+        .unwrap_or_else(|error| panic!("the retry failed after: {first:#}\n{error:#}"));
+    assert!((fixture.stream_seconds(&output, "video") - 6.0).abs() < 0.5);
 }
 
 #[test]

@@ -1042,6 +1042,175 @@ fn a_job_sent_to_the_browser_counts_again_after_a_begin_that_ended_early() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// A job that waits for a new source address, with the failure that sent it there, and a browser
+/// transfer that this process begins for it. Returns the folder, the paths, the engine, the job
+/// and the transfer's generation.
+fn awaiting_source_in_a_transfer(name: &str) -> (PathBuf, AppPaths, Engine, String, u64) {
+    let (root, paths, id) =
+        browser_quota_job(name, format!("https://example.test/{name}.bin"), |job| {
+            job.downloaded = 1_000_000;
+            job.error = Some("The signed address expired.".into());
+        });
+    let engine = Engine::open(paths.clone()).unwrap();
+    engine.begin_source_refresh(&id).unwrap();
+    let generation = begin_as_this_process(&engine, &id, false);
+    (root, paths, engine, id, generation)
+}
+
+fn stored_job(paths: &AppPaths, id: &str) -> Job {
+    Store::open(&paths.database)
+        .unwrap()
+        .load_jobs()
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == id)
+        .unwrap()
+}
+
+fn shown_job(engine: &Engine, id: &str) -> Job {
+    let snapshot = engine.snapshot();
+    snapshot
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .clone()
+}
+
+/// What a job is, as the engine shows it and as the database has it.
+fn state_of_both(engine: &Engine, paths: &AppPaths, id: &str) -> [(JobState, bool); 2] {
+    [shown_job(engine, id), stored_job(paths, id)]
+        .map(|job| (job.state, job.browser_transfer_authorized))
+}
+
+#[test]
+fn a_job_waiting_for_a_source_waits_again_when_its_browser_transfer_ends_before_the_receiver_is_ready(
+) {
+    for end in ["released", "paused"] {
+        let (root, paths, engine, id, generation) =
+            awaiting_source_in_a_transfer(&format!("browser-ends-{end}"));
+        let before = stored_job(&paths, &id);
+        assert_eq!(before.state, JobState::AwaitingSource);
+        if end == "released" {
+            engine.release_browser_transfer(&id, generation)
+        } else {
+            engine.pause_browser_transfer(&id, generation)
+        }
+        .unwrap();
+
+        // As it was before the transfer began, in the engine and in the database.
+        for job in [shown_job(&engine, &id), stored_job(&paths, &id)] {
+            assert_eq!(
+                (
+                    job.state,
+                    &job.phase,
+                    &job.error,
+                    job.browser_transfer_authorized
+                ),
+                (
+                    JobState::AwaitingSource,
+                    &before.phase,
+                    &before.error,
+                    false
+                ),
+                "{end}"
+            );
+        }
+        // The address it waits for can still be delivered.
+        begin_as_this_process(&engine, &id, false);
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn a_job_sent_to_the_browser_is_paused_when_its_transfer_ends_after_the_receiver_was_ready() {
+    for end in ["released", "paused"] {
+        let (root, paths, engine, id, generation) =
+            awaiting_source_in_a_transfer(&format!("browser-prepared-{end}"));
+        engine
+            .browser_transfer_prepared(&id, generation, 0)
+            .unwrap();
+        if end == "released" {
+            engine.release_browser_transfer(&id, generation)
+        } else {
+            engine.pause_browser_transfer(&id, generation)
+        }
+        .unwrap();
+
+        assert_eq!(
+            state_of_both(&engine, &paths, &id),
+            [(JobState::Paused, true); 2],
+            "{end}"
+        );
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn a_job_waiting_for_a_source_waits_again_when_the_sender_of_its_browser_transfer_exits_before_the_receiver_is_ready(
+) {
+    // After the receiver is ready the sender's exit revokes the authorization and pauses the job.
+    for (prepared, expected) in [
+        (false, (JobState::AwaitingSource, false)),
+        (true, (JobState::Paused, false)),
+    ] {
+        let (root, paths, id) = browser_quota_job(
+            &format!("browser-exits-{prepared}"),
+            format!("https://example.test/browser-exits-{prepared}.bin"),
+            |job| job.downloaded = 1_000_000,
+        );
+        let mut sender = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                sender.id(),
+            )
+        };
+        assert!(!handle.is_null());
+        let sender_started_at = process_started_at(handle).unwrap();
+        unsafe {
+            CloseHandle(handle);
+        }
+        let engine = Engine::open(paths.clone()).unwrap();
+        engine.begin_source_refresh(&id).unwrap();
+        let before = stored_job(&paths, &id);
+        let (_, generation) = engine
+            .begin_browser_transfer(&id, sender.id(), sender_started_at, false)
+            .unwrap();
+        if prepared {
+            engine
+                .browser_transfer_prepared(&id, generation, 0)
+                .unwrap();
+        }
+        sender.kill().unwrap();
+        sender.wait().unwrap();
+        wait_until("the exit of the sender to end the transfer", || {
+            job_state(&engine, &id) != JobState::Downloading
+        });
+
+        assert_eq!(
+            state_of_both(&engine, &paths, &id),
+            [expected; 2],
+            "prepared: {prepared}"
+        );
+        if !prepared {
+            for job in [shown_job(&engine, &id), stored_job(&paths, &id)] {
+                assert_eq!((&job.phase, &job.error), (&before.phase, &before.error));
+            }
+        }
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[test]
 fn a_restart_counts_again_after_a_begin_that_ended_early() {
     // A browser transfer of the job had committed and counted 1 MB.
@@ -1485,8 +1654,11 @@ fn a_restart_sent_to_the_browser_that_ended_early_leaves_the_count_of_the_apps_o
     });
     let generation = begin_as_this_process(&engine, &id, true);
     engine.pause_browser_transfer(&id, generation).unwrap();
+    assert_eq!(job_state(&engine, &id), JobState::AwaitingSource);
 
-    // Resumed in the app, the downloader goes on from its partial file and reports from it.
+    // Paused and resumed in the app, the downloader goes on from its partial file and reports
+    // from it.
+    engine.pause(&id).unwrap();
     engine.resume(&id).unwrap();
     wait_until("the second run", || runs() == 2);
     report_downloaded(&engine, &id, &[1_000_000, 1_200_000]);
@@ -2343,6 +2515,128 @@ fn a_job_whose_destination_folder_was_deleted_recreates_it_before_starting() {
         folder.is_dir(),
         "the destination folder was not recreated: {error:#}"
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A queued job of `url` that saves `file.bin` under `root`, with a work folder and the claim on
+/// its name that the engine takes when it adds a job.
+fn job_with_a_work_folder(root: &Path, url: String) -> (Job, PathBuf) {
+    let output = root.join("out").join("file.bin");
+    let id = Uuid::new_v4().to_string();
+    let job = Job {
+        id: id.clone(),
+        request: AddRequest {
+            url,
+            kind: DownloadKind::File,
+            ..Default::default()
+        },
+        name: "file.bin".into(),
+        state: JobState::Queued,
+        path: output.clone(),
+        downloaded: 0,
+        total: None,
+        speed: 0,
+        eta: None,
+        error: None,
+        phase: "Sırada".into(),
+        created_at: 0,
+        updated_at: 0,
+        attempts: 0,
+        work_dir: Some(crate::recovery::work_dir(&output, &id)),
+        remove_requested: None,
+        claim: Some(output.clone()),
+        legacy_completed: false,
+        browser_transfer_authorized: false,
+        priority: 0,
+        force_start: false,
+        open_when_done: false,
+        live: false,
+        sequence: 0,
+    };
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    crate::recovery::claim(&output, &id).unwrap();
+    (job, output)
+}
+
+#[test]
+fn a_finished_file_left_in_the_work_folder_is_published_instead_of_downloaded_again() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-adopt-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let server = FileServer::start(vec![("/file.bin".into(), b"served again".to_vec(), false)]);
+    let (job, output) = job_with_a_work_folder(&root, server.url("/file.bin"));
+    // The app stopped after the download moved its finished file into the work folder and
+    // before the publication wrote its journal.
+    let result = crate::recovery::prepare_work(&job).unwrap();
+    fs::write(&result, b"finished earlier").unwrap();
+    let allocation = ConnectionAllocation {
+        direct: 1,
+        media_fragments: 0,
+        usage_modes: UsageModes::default(),
+    };
+    let done = run_job(
+        &paths,
+        &job,
+        &output,
+        &TransferControl::default(),
+        &NetworkGovernor::new(2),
+        allocation,
+        &mut |_| {},
+    )
+    .unwrap();
+    let requested = server.hits.lock().unwrap().clone();
+    assert_eq!(
+        (
+            done.path.as_path(),
+            done.bytes,
+            fs::read(&output).unwrap(),
+            requested
+        ),
+        (
+            output.as_path(),
+            16,
+            b"finished earlier".to_vec(),
+            Vec::new()
+        )
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn the_archive_of_a_restarted_browser_transfer_is_not_published_as_the_file() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-archive-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let server = FileServer::start(vec![(
+        "/file.bin".into(),
+        b"the served file".to_vec(),
+        false,
+    )]);
+    let (job, output) = job_with_a_work_folder(&root, server.url("/file.bin"));
+    // The app stopped after a restart of a browser transfer renamed the transfer's folder to an
+    // archive and before it created the folder again: the work folder holds the archive only.
+    let work = job.work_dir.clone().unwrap();
+    crate::recovery::prepare_work(&job).unwrap();
+    let archive = work.join(format!("browser-transfer-previous-{}", Uuid::new_v4()));
+    fs::create_dir_all(archive.join("streams")).unwrap();
+    fs::write(archive.join("streams").join("1.bin"), b"half a file").unwrap();
+    let allocation = ConnectionAllocation {
+        direct: 1,
+        media_fragments: 0,
+        usage_modes: UsageModes::default(),
+    };
+    let done = run_job(
+        &paths,
+        &job,
+        &output,
+        &TransferControl::default(),
+        &NetworkGovernor::new(2),
+        allocation,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(done.path, output);
+    assert_eq!(fs::read(&output).unwrap(), b"the served file");
+    assert!(!server.hits.lock().unwrap().is_empty());
+    assert!(archive.join("streams").join("1.bin").exists());
     fs::remove_dir_all(root).unwrap();
 }
 

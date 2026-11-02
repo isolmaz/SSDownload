@@ -195,6 +195,7 @@ static AR: &[(&str, &str)] = &[
     ("Could not resolve the HLS segment URL", "تعذّر تحديد عنوان مقطع HLS"),
     ("Could not send the media request", "تعذّر إرسال طلب الوسائط"),
     ("Could not start", "تعذّر البدء"),
+    ("Could not tell which download the temporary files for this target belong to. Choose a new file name.", "تعذّر معرفة التنزيل الذي تتبعه الملفات المؤقتة لهذا الهدف. اختر اسم ملف جديدًا."),
     ("Could not verify that the working folder belongs to SSDownload", "تعذّر التحقق من أن مجلد العمل تابع لـ SSDownload"),
     ("Could not write the external subtitle to the working file", "تعذّرت كتابة الترجمة الخارجية في ملف العمل"),
     ("Countdown", "العد التنازلي"),
@@ -390,7 +391,6 @@ static AR: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "التحقق من الوسائط: علامة الترجمة الخارجية الافتراضية لا تطابق"),
     ("Media verification: the external subtitle language/order does not match the selected track", "التحقق من الوسائط: لغة الترجمة الخارجية أو ترتيبها لا يطابق المسار المحدد"),
     ("Media verification: the output could not be read", "التحقق من الوسائط: تعذّرت قراءة المخرجات"),
-    ("Media verification: the requested resolution is not available from this source", "التحقق من الوسائط: الدقة المطلوبة غير متاحة من هذا المصدر"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "التحقق من الوسائط: تعذّر فك ترميز جزء البداية أو المنتصف أو النهاية الذي أُخذت منه عينة"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "التحقق من الوسائط: تعذّر التحقق من نطاق HDR الديناميكي المحدد في المخرجات"),
     ("Media verification: the selected audio codec does not match in the output", "التحقق من الوسائط: ترميز الصوت المحدد لا يطابق المخرجات"),
@@ -1638,6 +1638,7 @@ static ES: &[(&str, &str)] = &[
     ("Could not resolve the HLS segment URL", "No se pudo resolver la URL del segmento HLS"),
     ("Could not send the media request", "No se pudo enviar la solicitud multimedia"),
     ("Could not start", "No se pudo iniciar"),
+    ("Could not tell which download the temporary files for this target belong to. Choose a new file name.", "No se pudo determinar a qué descarga pertenecen los archivos temporales de este destino. Se debe elegir un nuevo nombre de archivo."),
     ("Could not verify that the working folder belongs to SSDownload", "No se pudo verificar que la carpeta de trabajo pertenezca a SSDownload"),
     ("Could not write the external subtitle to the working file", "No se pudo escribir el subtítulo externo en el archivo de trabajo"),
     ("Countdown", "Cuenta atrás"),
@@ -1833,7 +1834,6 @@ static ES: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "Verificación de medios: la marca de subtítulo externo predeterminado no coincide"),
     ("Media verification: the external subtitle language/order does not match the selected track", "Verificación de medios: el idioma u orden del subtítulo externo no coincide con la pista seleccionada"),
     ("Media verification: the output could not be read", "Verificación de medios: no se pudo leer la salida"),
-    ("Media verification: the requested resolution is not available from this source", "Verificación de medios: la resolución solicitada no está disponible en este origen"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "Verificación de medios: no se pudo decodificar la sección de muestra de inicio/medio/final"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "Verificación de medios: no se pudo verificar en la salida el rango dinámico HDR seleccionado"),
     ("Media verification: the selected audio codec does not match in the output", "Verificación de medios: el códec de audio seleccionado no coincide en la salida"),
@@ -3081,6 +3081,7 @@ static PT: &[(&str, &str)] = &[
     ("Could not resolve the HLS segment URL", "Não foi possível resolver a URL do segmento HLS"),
     ("Could not send the media request", "Não foi possível enviar a solicitação de mídia"),
     ("Could not start", "Não foi possível iniciar"),
+    ("Could not tell which download the temporary files for this target belong to. Choose a new file name.", "Não foi possível determinar a qual download pertencem os arquivos temporários deste destino. Escolha um novo nome de arquivo."),
     ("Could not verify that the working folder belongs to SSDownload", "Não foi possível verificar se a pasta de trabalho pertence ao SSDownload"),
     ("Could not write the external subtitle to the working file", "Não foi possível gravar a legenda externa no arquivo de trabalho"),
     ("Countdown", "Contagem regressiva"),
@@ -3276,7 +3277,6 @@ static PT: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "Verificação de mídia: a marca padrão da legenda externa não corresponde"),
     ("Media verification: the external subtitle language/order does not match the selected track", "Verificação de mídia: o idioma/ordem da legenda externa não corresponde à faixa selecionada"),
     ("Media verification: the output could not be read", "Verificação de mídia: a saída não pôde ser lida"),
-    ("Media verification: the requested resolution is not available from this source", "Verificação de mídia: a resolução solicitada não está disponível nesta fonte"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "Verificação de mídia: o trecho amostrado do início/meio/fim não pôde ser decodificado"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "Verificação de mídia: o HDR/faixa dinâmica selecionado não pôde ser verificado na saída"),
     ("Media verification: the selected audio codec does not match in the output", "Verificação de mídia: o codec de áudio selecionado não corresponde na saída"),
@@ -4524,6 +4524,7 @@ static FR: &[(&str, &str)] = &[
     ("Could not resolve the HLS segment URL", "Impossible de résoudre l'URL du segment HLS"),
     ("Could not send the media request", "Impossible d'envoyer la requête média"),
     ("Could not start", "Impossible de démarrer"),
+    ("Could not tell which download the temporary files for this target belong to. Choose a new file name.", "Impossible de déterminer à quel téléchargement appartiennent les fichiers temporaires de cette cible. Choisissez un nouveau nom de fichier."),
     ("Could not verify that the working folder belongs to SSDownload", "Impossible de vérifier que le dossier de travail appartient à SSDownload"),
     ("Could not write the external subtitle to the working file", "Impossible d'écrire le sous-titre externe dans le fichier de travail"),
     ("Countdown", "Compte à rebours"),
@@ -4719,7 +4720,6 @@ static FR: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "Vérification du média : l'indicateur par défaut du sous-titre externe ne correspond pas"),
     ("Media verification: the external subtitle language/order does not match the selected track", "Vérification du média : la langue ou l'ordre du sous-titre externe ne correspond pas à la piste sélectionnée"),
     ("Media verification: the output could not be read", "Vérification du média : la sortie n'a pas pu être lue"),
-    ("Media verification: the requested resolution is not available from this source", "Vérification du média : la résolution demandée n'est pas disponible pour cette source"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "Vérification du média : la section échantillonnée (début, milieu, fin) n'a pas pu être décodée"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "Vérification du média : la plage HDR/dynamique sélectionnée n'a pas pu être vérifiée dans la sortie"),
     ("Media verification: the selected audio codec does not match in the output", "Vérification du média : le codec audio sélectionné ne correspond pas dans la sortie"),
@@ -5967,6 +5967,7 @@ static DE: &[(&str, &str)] = &[
     ("Could not resolve the HLS segment URL", "Die URL des HLS-Segments konnte nicht aufgelöst werden"),
     ("Could not send the media request", "Die Medienanfrage konnte nicht gesendet werden"),
     ("Could not start", "Start nicht möglich"),
+    ("Could not tell which download the temporary files for this target belong to. Choose a new file name.", "Es konnte nicht festgestellt werden, zu welchem Download die temporären Dateien für dieses Ziel gehören. Wählen Sie einen neuen Dateinamen."),
     ("Could not verify that the working folder belongs to SSDownload", "Es konnte nicht geprüft werden, ob der Arbeitsordner zu SSDownload gehört"),
     ("Could not write the external subtitle to the working file", "Der externe Untertitel konnte nicht in die Arbeitsdatei geschrieben werden"),
     ("Countdown", "Countdown"),
@@ -6162,7 +6163,6 @@ static DE: &[(&str, &str)] = &[
     ("Media verification: the external subtitle default flag does not match", "Medienprüfung: Das Standard-Kennzeichen des externen Untertitels stimmt nicht überein"),
     ("Media verification: the external subtitle language/order does not match the selected track", "Medienprüfung: Sprache oder Reihenfolge des externen Untertitels stimmen nicht mit der ausgewählten Spur überein"),
     ("Media verification: the output could not be read", "Medienprüfung: Die Ausgabe konnte nicht gelesen werden"),
-    ("Media verification: the requested resolution is not available from this source", "Medienprüfung: Die gewünschte Auflösung ist für diese Quelle nicht verfügbar"),
     ("Media verification: the sampled start/middle/end section could not be decoded", "Medienprüfung: Der stichprobenartig geprüfte Abschnitt am Anfang, in der Mitte oder am Ende konnte nicht dekodiert werden"),
     ("Media verification: the selected HDR/dynamic range could not be verified in the output", "Medienprüfung: Der ausgewählte HDR- bzw. Dynamikbereich konnte in der Ausgabe nicht geprüft werden"),
     ("Media verification: the selected audio codec does not match in the output", "Medienprüfung: Der ausgewählte Audio-Codec stimmt in der Ausgabe nicht überein"),
@@ -7415,6 +7415,9 @@ macro_rules! __ui_template_ar {
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "التحقق من الوسائط: الترجمة المحددة غير موجودة في المخرجات: {language}"
     };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "التحقق من الوسائط: ارتفاع الفيديو {height} بكسل، وهو أعلى من الحد المطلوب {max}"
+    };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "التحقق من الوسائط: بث {stream} مدته {length:.1} ث، وقائمة مصدره تعلن {declared} ث (مقطع مفقود أو مكرر)."
     };
@@ -7586,8 +7589,8 @@ macro_rules! __ui_template_ar {
     ("The closed browser transfer could not be paused: {error}") => {
         "تعذّر إيقاف النقل المغلق عبر المتصفح مؤقتًا: {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "دليل التوافق لمقاطع HLS/DASH الموجودة مفقود أو تالف؛ تم الاحتفاظ بملفات العمل. يلزم إعادة تشغيل صريحة: {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "دليل التوافق لمقاطع HLS/DASH الموجودة مفقود أو تالف؛ تم الاحتفاظ بملفات العمل. يلزم إعادة تشغيل صريحة: {error}"
     };
     ("The completed media was not found: {0}") => {
         "لم يُعثر على الوسائط المكتملة: {0}"
@@ -7745,8 +7748,8 @@ macro_rules! __ui_template_ar {
     ("The path to open is invalid: {plain}") => {
         "مسار الفتح غير صالح: {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "أدلة المصدر أو البث أو المقطع الدائمة لمقاطع HLS/DASH الموجودة مفقودة؛ تم الاحتفاظ بملفات العمل. يلزم إعادة تشغيل صريحة: {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "أدلة المصدر أو البث أو المقطع الدائمة لمقاطع HLS/DASH الموجودة مفقودة؛ تم الاحتفاظ بملفات العمل. يلزم إعادة تشغيل صريحة: {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "تم نقل ملف التحديث السابق إلى العزل:\n{0}"
@@ -8278,6 +8281,9 @@ macro_rules! __ui_template_es {
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "Verificación de medios: el subtítulo seleccionado no está en la salida: {language}"
     };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "Verificación de medios: el vídeo mide {height} píxeles de alto, por encima del límite solicitado de {max}"
+    };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Verificación de medios: el flujo {stream} dura {length:.1} s, pero su lista de origen declara {declared} s (fragmento que falta o duplicado)."
     };
@@ -8449,8 +8455,8 @@ macro_rules! __ui_template_es {
     ("The closed browser transfer could not be paused: {error}") => {
         "No se pudo pausar la transferencia desde el navegador que se cerró: {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "Faltan las pruebas de compatibilidad de los segmentos HLS/DASH existentes o están dañadas; se conservaron los archivos de trabajo. Se requiere un reinicio explícito: {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "Faltan las pruebas de compatibilidad de los segmentos HLS/DASH existentes o están dañadas; se conservaron los archivos de trabajo. Se requiere un reinicio explícito: {error}"
     };
     ("The completed media was not found: {0}") => {
         "No se encontró el contenido multimedia completado: {0}"
@@ -8608,8 +8614,8 @@ macro_rules! __ui_template_es {
     ("The path to open is invalid: {plain}") => {
         "La ruta que se va a abrir no es válida: {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "Faltan las pruebas persistentes de origen, flujo y segmento de los segmentos HLS/DASH existentes; se conservaron los archivos de trabajo. Se requiere un reinicio explícito: {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "Faltan las pruebas persistentes de origen, flujo y segmento de los segmentos HLS/DASH existentes; se conservaron los archivos de trabajo. Se requiere un reinicio explícito: {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "El archivo de actualización anterior se movió a cuarentena:\n{0}"
@@ -9141,6 +9147,9 @@ macro_rules! __ui_template_pt {
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "Verificação de mídia: a legenda selecionada não está na saída: {language}"
     };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "Verificação de mídia: o vídeo tem {height} pixels de altura, acima do limite solicitado de {max}"
+    };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Verificação de mídia: o fluxo {stream} dura {length:.1} s, mas sua playlist de origem declara {declared} s (segmento ausente ou duplicado)."
     };
@@ -9312,8 +9321,8 @@ macro_rules! __ui_template_pt {
     ("The closed browser transfer could not be paused: {error}") => {
         "Não foi possível pausar a transferência do navegador encerrada: {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "As evidências de compatibilidade dos segmentos HLS/DASH existentes estão ausentes ou corrompidas; os arquivos de trabalho foram mantidos. É necessário um reinício explícito: {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "As evidências de compatibilidade dos segmentos HLS/DASH existentes estão ausentes ou corrompidas; os arquivos de trabalho foram mantidos. É necessário um reinício explícito: {error}"
     };
     ("The completed media was not found: {0}") => {
         "A mídia concluída não foi encontrada: {0}"
@@ -9471,8 +9480,8 @@ macro_rules! __ui_template_pt {
     ("The path to open is invalid: {plain}") => {
         "O caminho a abrir é inválido: {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "As evidências persistentes de fonte/fluxo/segmento dos segmentos HLS/DASH existentes estão ausentes; os arquivos de trabalho foram mantidos. É necessário um reinício explícito: {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "As evidências persistentes de fonte/fluxo/segmento dos segmentos HLS/DASH existentes estão ausentes; os arquivos de trabalho foram mantidos. É necessário um reinício explícito: {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "O arquivo da atualização anterior foi movido para a quarentena:\n{0}"
@@ -10004,6 +10013,9 @@ macro_rules! __ui_template_fr {
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "Vérification du média : le sous-titre sélectionné ne figure pas dans la sortie : {language}"
     };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "Vérification du média : la vidéo fait {height} pixels de haut, au-dessus de la limite demandée de {max}"
+    };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Vérification du média : le flux {stream} dure {length:.1} s, sa liste de lecture source indique {declared} s (fragment manquant ou dupliqué)."
     };
@@ -10175,8 +10187,8 @@ macro_rules! __ui_template_fr {
     ("The closed browser transfer could not be paused: {error}") => {
         "Le transfert par le navigateur fermé n'a pas pu être mis en pause : {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "Les preuves de compatibilité des segments HLS/DASH existants sont absentes ou corrompues ; les fichiers de travail ont été conservés. Un redémarrage explicite est nécessaire : {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "Les preuves de compatibilité des segments HLS/DASH existants sont absentes ou corrompues ; les fichiers de travail ont été conservés. Un redémarrage explicite est nécessaire : {error}"
     };
     ("The completed media was not found: {0}") => {
         "Le média terminé est introuvable : {0}"
@@ -10334,8 +10346,8 @@ macro_rules! __ui_template_fr {
     ("The path to open is invalid: {plain}") => {
         "Le chemin à ouvrir est invalide : {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "Les preuves persistantes de source, de flux et de segment pour les segments HLS/DASH existants sont absentes ; les fichiers de travail ont été conservés. Un redémarrage explicite est nécessaire : {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "Les preuves persistantes de source, de flux et de segment pour les segments HLS/DASH existants sont absentes ; les fichiers de travail ont été conservés. Un redémarrage explicite est nécessaire : {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "Le fichier de mise à jour précédent a été déplacé en quarantaine :\n{0}"
@@ -10867,6 +10879,9 @@ macro_rules! __ui_template_de {
     ("Media verification: the selected subtitle is not in the output: {language}") => {
         "Medienprüfung: Der ausgewählte Untertitel ist nicht in der Ausgabe enthalten: {language}"
     };
+    ("Media verification: the video is {height} pixels high, above the requested limit of {max}") => {
+        "Medienprüfung: Das Video ist {height} Pixel hoch und liegt über dem gewünschten Limit von {max}"
+    };
     ("Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).") => {
         "Medienprüfung: Der Stream {stream} dauert {length:.1} s, seine Quell-Playlist gibt {declared} s an (fehlendes oder doppeltes Fragment)."
     };
@@ -11038,8 +11053,8 @@ macro_rules! __ui_template_de {
     ("The closed browser transfer could not be paused: {error}") => {
         "Die geschlossene Browser-Übertragung konnte nicht pausiert werden: {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "Der Kompatibilitätsnachweis für die vorhandenen HLS/DASH-Segmente fehlt oder ist beschädigt; Arbeitsdateien wurden behalten. Ein ausdrücklicher Neustart ist erforderlich: {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "Der Kompatibilitätsnachweis für die vorhandenen HLS/DASH-Segmente fehlt oder ist beschädigt; Arbeitsdateien wurden behalten. Ein ausdrücklicher Neustart ist erforderlich: {error}"
     };
     ("The completed media was not found: {0}") => {
         "Die fertigen Medien wurden nicht gefunden: {0}"
@@ -11197,8 +11212,8 @@ macro_rules! __ui_template_de {
     ("The path to open is invalid: {plain}") => {
         "Der zu öffnende Pfad ist ungültig: {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "Die dauerhaften Quell-, Stream- und Segmentnachweise für die vorhandenen HLS/DASH-Segmente fehlen; Arbeitsdateien wurden behalten. Ein ausdrücklicher Neustart ist erforderlich: {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "Die dauerhaften Quell-, Stream- und Segmentnachweise für die vorhandenen HLS/DASH-Segmente fehlen; Arbeitsdateien wurden behalten. Ein ausdrücklicher Neustart ist erforderlich: {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "Die vorherige Update-Datei wurde in die Quarantäne verschoben:\n{0}"
