@@ -1266,6 +1266,7 @@
   "The scheduled speed limit must be 0 or a positive integer.": "يجب أن يكون حد السرعة المجدول 0 أو عددًا صحيحًا موجبًا.",
   "The secure connection (TLS) could not be established": "تعذّر إنشاء الاتصال الآمن (TLS)",
   "The selected audio language tag could not be written to the output": "تعذّرت كتابة وسم لغة الصوت المحدد في المخرجات",
+  "The media tool could not finish the download": "تعذّر على أداة الوسائط إكمال التنزيل",
   "The selected audio or subtitle track was not found": "لم يُعثر على المسار الصوتي أو مسار الترجمة المحدد",
   "The selected audio streams could not be verified without tagging": "تعذّر التحقق من مسارات الصوت المحددة دون وسمها",
   "The selected audio track is no longer available: {id}": "المسار الصوتي المحدد لم يعد متاحًا: {id}",
