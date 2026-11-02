@@ -50,7 +50,7 @@ const ERROR_CODES = {
   "SSD-NET-015": { area: "network", stage: "source", severity: "error", action: "retry", retryable: true },
   "SSD-NET-016": { area: "network", stage: "source", severity: "error", action: "unsupported", retryable: false },
   "SSD-TRF-001": { area: "transfer", stage: "segment", severity: "error", action: "retry", retryable: true },
-  "SSD-TRF-002": { area: "transfer", stage: "validation", severity: "error", action: "retry", retryable: true },
+  "SSD-TRF-002": { area: "transfer", stage: "validation", severity: "error", action: "retry", retryable: false },
   "SSD-TRF-003": { area: "transfer", stage: "validation", severity: "error", action: "retry", retryable: true },
   "SSD-TRF-004": { area: "transfer", stage: "output", severity: "error", action: "retry", retryable: true },
   "SSD-TRF-005": { area: "transfer", stage: "output", severity: "error", action: "retry", retryable: true },

@@ -1468,6 +1468,7 @@
   "The verified media source bundle is not text": "O pacote verificado da fonte de mídia não é texto",
   "The verified tool installation could not be moved to the activation area": "Não foi possível mover a instalação verificada da ferramenta para a área de ativação",
   "The version and license provenance record could not be written": "Não foi possível gravar o registro de procedência da versão e da licença",
+  "The times of the video could not be restored reliably, so the file was not published": "Não foi possível restaurar com segurança os tempos do vídeo, por isso o arquivo não foi publicado",
   "The video and audio streams could not be merged losslessly: {0}": "Não foi possível mesclar sem perdas os fluxos de vídeo e áudio: {0}",
   "The video container must be MP4 or MKV": "O contêiner de vídeo deve ser MP4 ou MKV",
   "The volume of the downloaded file could not be opened": "Não foi possível abrir o volume do arquivo baixado",
@@ -1725,5 +1726,6 @@
   "No stable release of Deno {0}.x was found": "Nenhuma versão estável do Deno {0}.x foi encontrada",
   "No suitable stable yt-dlp release was found": "Nenhuma versão estável adequada do yt-dlp foi encontrada",
   "FFmpeg did not generate the test clip ({0}): {1}": "O FFmpeg não gerou o clipe de teste ({0}): {1}",
-  "exit code {0}": "código de saída {0}"
+  "exit code {0}": "código de saída {0}",
+  "The streams could not be merged within {0} seconds": "Não foi possível mesclar os fluxos em {0} segundos"
 }

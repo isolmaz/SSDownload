@@ -1468,6 +1468,7 @@
   "The verified media source bundle is not text": "حزمة مصدر الوسائط المتحقَّق منها ليست نصًا",
   "The verified tool installation could not be moved to the activation area": "تعذّر نقل تثبيت الأداة المتحقَّق منه إلى منطقة التفعيل",
   "The version and license provenance record could not be written": "تعذّرت كتابة سجل مصدر الإصدار والترخيص",
+  "The times of the video could not be restored reliably, so the file was not published": "تعذّرت استعادة أوقات الفيديو بشكل موثوق، لذلك لم يُنشر الملف",
   "The video and audio streams could not be merged losslessly: {0}": "تعذّر دمج بث الفيديو وبث الصوت دون فقد: {0}",
   "The video container must be MP4 or MKV": "يجب أن تكون حاوية الفيديو MP4 أو MKV",
   "The volume of the downloaded file could not be opened": "تعذّر فتح وحدة التخزين الخاصة بالملف المُنزَّل",
@@ -1725,5 +1726,6 @@
   "No stable release of Deno {0}.x was found": "لم يُعثر على إصدار مستقر من Deno {0}.x",
   "No suitable stable yt-dlp release was found": "لم يُعثر على إصدار مستقر مناسب من yt-dlp",
   "FFmpeg did not generate the test clip ({0}): {1}": "لم يُنشئ FFmpeg مقطع الاختبار ({0}): {1}",
-  "exit code {0}": "رمز الخروج {0}"
+  "exit code {0}": "رمز الخروج {0}",
+  "The streams could not be merged within {0} seconds": "تعذّر دمج البثوث خلال {0} ث"
 }

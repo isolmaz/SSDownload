@@ -1243,6 +1243,7 @@ static AR: &[(&str, &str)] = &[
     ("The temporary files for this target belong to another download. Choose a new file name.", "الملفات المؤقتة لهذا الهدف تتبع تنزيلًا آخر. اختر اسم ملف جديدًا."),
     ("The temporary setup page could not be written", "تعذّرت كتابة صفحة الإعداد المؤقتة"),
     ("The temporary tool installation folder could not be created", "تعذّر إنشاء مجلد تثبيت الأدوات المؤقت"),
+    ("The times of the video could not be restored reliably, so the file was not published", "تعذّرت استعادة أوقات الفيديو بشكل موثوق، لذلك لم يُنشر الملف"),
     ("The tool could not be started", "تعذّر تشغيل الأداة"),
     ("The tool download could not be written to disk", "تعذّرت كتابة تنزيل الأداة على القرص"),
     ("The tool download exceeded the expected size limit", "تجاوز تنزيل الأداة حد الحجم المتوقع"),
@@ -2687,6 +2688,7 @@ static ES: &[(&str, &str)] = &[
     ("The temporary files for this target belong to another download. Choose a new file name.", "Los archivos temporales de este destino pertenecen a otra descarga. Se debe elegir un nuevo nombre de archivo."),
     ("The temporary setup page could not be written", "No se ha podido escribir la página temporal de instalación"),
     ("The temporary tool installation folder could not be created", "No se ha podido crear la carpeta temporal de instalación de la herramienta"),
+    ("The times of the video could not be restored reliably, so the file was not published", "No se pudieron restaurar de forma fiable los tiempos del vídeo, por lo que el archivo no se publicó"),
     ("The tool could not be started", "No se ha podido iniciar la herramienta"),
     ("The tool download could not be written to disk", "No se ha podido escribir la descarga de la herramienta en el disco"),
     ("The tool download exceeded the expected size limit", "La descarga de la herramienta ha superado el límite de tamaño esperado"),
@@ -4131,6 +4133,7 @@ static PT: &[(&str, &str)] = &[
     ("The temporary files for this target belong to another download. Choose a new file name.", "Os arquivos temporários deste destino pertencem a outro download. Escolha um novo nome de arquivo."),
     ("The temporary setup page could not be written", "Não foi possível gravar a página de configuração temporária"),
     ("The temporary tool installation folder could not be created", "Não foi possível criar a pasta temporária de instalação das ferramentas"),
+    ("The times of the video could not be restored reliably, so the file was not published", "Não foi possível restaurar com segurança os tempos do vídeo, por isso o arquivo não foi publicado"),
     ("The tool could not be started", "Não foi possível iniciar a ferramenta"),
     ("The tool download could not be written to disk", "Não foi possível gravar o download da ferramenta no disco"),
     ("The tool download exceeded the expected size limit", "O download da ferramenta excedeu o limite de tamanho esperado"),
@@ -5575,6 +5578,7 @@ static FR: &[(&str, &str)] = &[
     ("The temporary files for this target belong to another download. Choose a new file name.", "Les fichiers temporaires de cette cible appartiennent à un autre téléchargement. Choisissez un nouveau nom de fichier."),
     ("The temporary setup page could not be written", "La page de configuration temporaire n'a pas pu être écrite"),
     ("The temporary tool installation folder could not be created", "Le dossier temporaire d'installation des outils n'a pas pu être créé"),
+    ("The times of the video could not be restored reliably, so the file was not published", "Les temps de la vidéo n'ont pas pu être rétablis de façon fiable ; le fichier n'a donc pas été publié"),
     ("The tool could not be started", "L'outil n'a pas pu être démarré"),
     ("The tool download could not be written to disk", "Le téléchargement de l'outil n'a pas pu être écrit sur le disque"),
     ("The tool download exceeded the expected size limit", "Le téléchargement de l'outil a dépassé la limite de taille attendue"),
@@ -7019,6 +7023,7 @@ static DE: &[(&str, &str)] = &[
     ("The temporary files for this target belong to another download. Choose a new file name.", "Die temporären Dateien für dieses Ziel gehören zu einem anderen Download. Wählen Sie einen neuen Dateinamen."),
     ("The temporary setup page could not be written", "Die temporäre Einrichtungsseite konnte nicht geschrieben werden"),
     ("The temporary tool installation folder could not be created", "Der temporäre Installationsordner für Werkzeuge konnte nicht erstellt werden"),
+    ("The times of the video could not be restored reliably, so the file was not published", "Die Zeiten des Videos konnten nicht zuverlässig wiederhergestellt werden, daher wurde die Datei nicht veröffentlicht"),
     ("The tool could not be started", "Das Werkzeug konnte nicht gestartet werden"),
     ("The tool download could not be written to disk", "Der Werkzeug-Download konnte nicht auf den Datenträger geschrieben werden"),
     ("The tool download exceeded the expected size limit", "Der Werkzeug-Download hat das erwartete Größenlimit überschritten"),
@@ -7833,6 +7838,9 @@ macro_rules! __ui_template_ar {
     };
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "تم حفظ تحديث المصدر، لكن سجل عمل الوسائط لم يكتمل بعد: {error:#}"
+    };
+    ("The streams could not be merged within {0} seconds") => {
+        "تعذّر دمج البثوث خلال {0} ث"
     };
     ("The subprocess did not respond within {0} s") => {
         "لم تستجب العملية الفرعية خلال {0} ث"
@@ -8700,6 +8708,9 @@ macro_rules! __ui_template_es {
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "La actualización del origen se ha guardado, pero el registro de trabajo multimedia aún no está terminado: {error:#}"
     };
+    ("The streams could not be merged within {0} seconds") => {
+        "No se han podido combinar los flujos en {0} segundos"
+    };
     ("The subprocess did not respond within {0} s") => {
         "El subproceso no ha respondido en {0} s"
     };
@@ -9565,6 +9576,9 @@ macro_rules! __ui_template_pt {
     };
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "A atualização da fonte foi salva, mas o registro de trabalho de mídia ainda não foi concluído: {error:#}"
+    };
+    ("The streams could not be merged within {0} seconds") => {
+        "Não foi possível mesclar os fluxos em {0} segundos"
     };
     ("The subprocess did not respond within {0} s") => {
         "O subprocesso não respondeu em {0} s"
@@ -10432,6 +10446,9 @@ macro_rules! __ui_template_fr {
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "L'actualisation de la source a été enregistrée mais l'enregistrement du travail média n'est pas encore terminé : {error:#}"
     };
+    ("The streams could not be merged within {0} seconds") => {
+        "Les flux n'ont pas pu être fusionnés dans les {0} secondes"
+    };
     ("The subprocess did not respond within {0} s") => {
         "Le sous-processus n'a pas répondu dans les {0} s"
     };
@@ -11297,6 +11314,9 @@ macro_rules! __ui_template_de {
     };
     ("The source refresh was saved but the media work record is not finished yet: {error:#}") => {
         "Die Quellaktualisierung wurde gespeichert, der Medienarbeitsdatensatz ist aber noch nicht abgeschlossen: {error:#}"
+    };
+    ("The streams could not be merged within {0} seconds") => {
+        "Die Streams konnten nicht innerhalb von {0} Sekunden zusammengeführt werden"
     };
     ("The subprocess did not respond within {0} s") => {
         "Der Unterprozess hat nicht innerhalb von {0} s geantwortet"

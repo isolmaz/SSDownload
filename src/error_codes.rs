@@ -117,7 +117,7 @@ define! {
     NET_015 => "SSD-NET-015", "network", "source", Error, Retry, true, "Sunucu isteği beklerken zaman aşımına uğradı (408)", "The server timed out waiting for the request (408)", "The origin answered 408 Request Timeout: it gave up waiting for the request. Retried.";
     NET_016 => "SSD-NET-016", "network", "source", Error, Unsupported, false, "Sunucu bu isteği desteklemiyor (501)", "The server does not support the request (501)", "The origin answered 501 Not Implemented. Not retried.";
     TRF_001 => "SSD-TRF-001", "transfer", "segment", Error, Retry, true, "Medya parçası indirilemedi", "A media segment could not be downloaded", "A fragment or segment request failed after its retries.";
-    TRF_002 => "SSD-TRF-002", "transfer", "validation", Error, Retry, true, "Parçalar birleştirilemedi", "The parts could not be merged", "Muxing the downloaded parts failed.";
+    TRF_002 => "SSD-TRF-002", "transfer", "validation", Error, Retry, false, "Parçalar birleştirilemedi", "The parts could not be merged", "Copying the downloaded streams into one file failed, or the times of a repaired MPEG-TS video could not be trusted. The job is not retried by itself.";
     TRF_003 => "SSD-TRF-003", "transfer", "validation", Error, Retry, true, "Boyut veya SHA-256 doğrulaması başarısız", "Size or SHA-256 verification failed", "The finished file did not match its expected size or digest.";
     TRF_004 => "SSD-TRF-004", "transfer", "output", Error, Retry, true, "Çıktı yayınlanamadı", "The output could not be published", "The final atomic publication step failed.";
     TRF_005 => "SSD-TRF-005", "transfer", "output", Error, Retry, true, "Hedef dosya kilitli", "The destination file is locked", "The destination is locked by another process.";
