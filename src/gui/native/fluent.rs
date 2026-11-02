@@ -3000,12 +3000,11 @@ unsafe fn footer_top(dlg: &DialogUi, client: &RECT) -> i32 {
     client.bottom - scale(ADD_FOOTER, dlg.dpi)
 }
 
-/// The Windows 11 surfaces and controls of Modern's converted dialogs: the
+/// The Windows 11 surfaces and controls of Modern's dialogs: the
 /// content card, the command bar with its top stroke, flat input frames with
 /// an accent line under the focused field that take a click anywhere on them,
 /// WinUI buttons with the primary action as the accent button, WinUI check
-/// boxes, and the label and field colours. Every other dialog keeps its own
-/// painting.
+/// boxes, and the label and field colours.
 pub(super) unsafe fn modern_dialog_message(
     dlg: &DialogUi,
     msg: u32,

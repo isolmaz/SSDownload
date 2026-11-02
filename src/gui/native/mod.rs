@@ -9542,28 +9542,10 @@ unsafe fn create_error(dlg: &mut DialogUi) {
     dlg.error = dialog_label(dlg.hwnd, dlg.font, "", D_ERROR);
 }
 
-/// Modern's converted dialogs use the Windows 11 Body style; the others keep
-/// the classic dialog font.
+/// Modern's dialogs use the Windows 11 Body style; Classic's use the classic
+/// dialog font.
 unsafe fn dialog_font(dlg: &DialogUi) -> HFONT {
-    if modern()
-        && matches!(
-            dlg.kind,
-            DialogKind::Add(_)
-                | DialogKind::Settings(_)
-                | DialogKind::Speed(_)
-                | DialogKind::Rename(_)
-                | DialogKind::Queues(_)
-                | DialogKind::Rules(_)
-                | DialogKind::Crawler(_)
-                | DialogKind::Synchronization(_)
-                | DialogKind::Logins(_)
-                | DialogKind::Events(_)
-                | DialogKind::JobLog(_)
-                | DialogKind::Media(_)
-                | DialogKind::Progress(_)
-                | DialogKind::Wizard(_)
-        )
-    {
+    if modern() {
         ramp_font(dlg.dpi, BODY_PX, false)
     } else {
         make_font(dlg.dpi, 9, FW_NORMAL as i32)
@@ -12805,18 +12787,28 @@ mod tests {
     #[test]
     fn modern_s_media_tools_lay_their_report_bar_and_buttons_down_the_card() {
         use super::{
-            child_rect, modern_progress_proc, scale, text, DialogKind, ADD_FOOTER, ADD_PAD,
-            D_CANCEL, FOCUS_MARGIN, FORM_HEIGHT, FORM_WIDTH, SETTINGS_FRAME, T_BROWSER, T_INSTALL,
-            T_UPDATE,
+            child_rect, modern_progress_proc, ramp_font, scale, text, DialogKind, ADD_FOOTER,
+            ADD_PAD, BODY_PX, D_CANCEL, FOCUS_MARGIN, FORM_HEIGHT, FORM_WIDTH, SETTINGS_FRAME,
+            T_BROWSER, T_INSTALL, T_UPDATE,
         };
         use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, HGDIOBJ, LOGFONTW};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetClientRect, GetDlgItem, GetWindow, GetWindowLongPtrW, GetWindowLongW, GWLP_WNDPROC,
-            GWL_STYLE, GW_HWNDPREV, WS_BORDER,
+            GetClientRect, GetDlgItem, GetWindow, GetWindowLongPtrW, GetWindowLongW, SendMessageW,
+            GWLP_WNDPROC, GWL_STYLE, GW_HWNDPREV, WM_GETFONT, WS_BORDER,
         };
         let themed = || {
             super::set_modern(true);
             tools_kind()
+        };
+        let logfont = |font: HGDIOBJ| unsafe {
+            let mut out: LOGFONTW = std::mem::zeroed();
+            GetObjectW(
+                font,
+                std::mem::size_of::<LOGFONTW>() as i32,
+                &mut out as *mut LOGFONTW as *mut _,
+            );
+            (out.lfHeight, out.lfFaceName)
         };
         with_dialog(
             themed,
@@ -12846,6 +12838,17 @@ mod tests {
                     modern_progress_proc as *const () as isize,
                     "the bar is the Modern bar"
                 );
+                let body = ramp_font(dpi, BODY_PX, false);
+                let expected = logfont(body as HGDIOBJ);
+                DeleteObject(body as HGDIOBJ);
+                for control in [label, f.status, GetDlgItem(dialog.hwnd, T_INSTALL)] {
+                    assert_eq!(
+                        logfont(SendMessageW(control, WM_GETFONT, 0, 0) as HGDIOBJ),
+                        expected,
+                        "{} is in the Body style",
+                        text(control)
+                    );
+                }
                 let (status, bar) = (at(f.status), at(f.progress));
                 let buttons =
                     [T_INSTALL, T_UPDATE, T_BROWSER].map(|id| at(GetDlgItem(dialog.hwnd, id)));
