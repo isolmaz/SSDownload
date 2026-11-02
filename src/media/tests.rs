@@ -235,6 +235,36 @@ fn a_format_without_a_height_is_taken_under_a_limit_only_when_no_known_height_fi
 }
 
 #[test]
+fn the_strict_height_filters_come_before_the_loose_ones_in_the_selector() {
+    // yt-dlp takes the first alternative of `a/b` that matches a format, so the order is what
+    // keeps a format without a height behind every format with one. The app's own selection
+    // model sorts unknown heights last whatever the order.
+    let request = AddRequest {
+        url: "https://video.example/watch/1".into(),
+        kind: DownloadKind::Video,
+        max_height: Some(480),
+        ..AddRequest::default()
+    };
+    let with_audio = media_info_from_json(&json!({"formats":[
+        {"format_id":"a","ext":"mp4","height":360,"vcodec":"avc1","acodec":"aac"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        format_selector(&request, &with_audio).unwrap(),
+        "bestvideo[height<=480]+bestaudio/best[height<=480]/\
+         bestvideo[height<=?480]+bestaudio/best[height<=?480]"
+    );
+    let silent = media_info_from_json(&json!({"formats":[
+        {"format_id":"v","ext":"mp4","height":360,"vcodec":"avc1","acodec":"none"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        format_selector(&request, &silent).unwrap(),
+        "bestvideo[height<=480]/best[height<=480]/bestvideo[height<=?480]/best[height<=?480]"
+    );
+}
+
+#[test]
 fn a_video_above_the_limit_is_reported_with_its_height() {
     let request = AddRequest {
         kind: DownloadKind::Video,
