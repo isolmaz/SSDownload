@@ -12976,6 +12976,41 @@ mod tests {
         }
 
         #[test]
+        fn a_disabled_push_button_with_an_icon_a_bitmap_or_wrapped_text_is_left_to_the_theme() {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    for (what, style) in [
+                        ("an icon", BS_PUSHBUTTON | BS_ICON),
+                        ("a bitmap", BS_PUSHBUTTON | BS_BITMAP),
+                        ("wrapped text", BS_PUSHBUTTON | BS_MULTILINE),
+                        (
+                            "a default button with wrapped text",
+                            BS_DEFPUSHBUTTON | BS_MULTILINE,
+                        ),
+                    ] {
+                        let button = add_button(dialog, what, style, 0, true);
+                        assert_eq!(
+                            GetWindowLongPtrW(button, GWL_STYLE) as u32 & style as u32,
+                            style as u32,
+                            "{what} has its style"
+                        );
+                        EnableWindow(button, 0);
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, button),
+                            CDRF_DODEFAULT as isize,
+                            "a disabled push button with {what}"
+                        );
+                        DestroyWindow(button);
+                    }
+                },
+            );
+        }
+
+        #[test]
         fn only_the_dark_scheme_takes_over_the_drawing_of_check_boxes() {
             for dark in [false, true] {
                 with_styled_dialog(

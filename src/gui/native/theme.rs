@@ -1501,9 +1501,11 @@ pub(super) unsafe fn paint_theme(
 }
 /// A disabled push button in the dark scheme. The theme dims its label so little that the
 /// button reads as enabled, so uxtheme draws the disabled face and the label is drawn here
-/// in the scheme's muted colour. An enabled button is left to the window.
+/// in the scheme's muted colour on one line. An enabled button, and one that shows an icon
+/// or a bitmap or wraps its text, is left to the window.
 unsafe fn paint_disabled_push_button(draw: &NMCUSTOMDRAW, button: HWND) -> Option<LRESULT> {
-    if IsWindowEnabled(button) != 0 {
+    let own = (BS_ICON | BS_BITMAP | BS_MULTILINE) as u32;
+    if IsWindowEnabled(button) != 0 || GetWindowLongPtrW(button, GWL_STYLE) as u32 & own != 0 {
         return None;
     }
     let theme = OpenThemeData(button, wide("Button").as_ptr());
