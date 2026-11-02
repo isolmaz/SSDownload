@@ -2335,10 +2335,13 @@ fn a_failed_media_run_is_read_by_its_final_error_line_and_keeps_its_code() {
     assert!(!analysis.retryable);
 }
 
-/// What yt-dlp prints while it retries a fragment, before the error that ends the run.
-const TOOL_RETRY_NOTES: &str = "WARNING: [download] Got error: curl: (52) Empty reply from server. Retrying fragment 2 (1/10)\n\
-    WARNING: [download] Got error: HTTP Error 503: Service Unavailable. Retrying fragment 2 (2/10)\n\
-    WARNING: [download] Got error: The read operation timed out. Retrying fragment 2 (3/10)\n";
+/// What yt-dlp reports about a fragment it retries, each of which retries the job when it ends the
+/// run.
+const RETRYABLE_TOOL_ERRORS: [&str; 3] = [
+    "curl: (52) Empty reply from server",
+    "HTTP Error 503: Service Unavailable",
+    "The read operation timed out",
+];
 
 #[test]
 fn a_download_the_origin_refused_is_not_retried_for_what_the_tool_met_before() {
@@ -2347,29 +2350,28 @@ fn a_download_the_origin_refused_is_not_retried_for_what_the_tool_met_before() {
         page_url: Some("https://example.test/watch".into()),
         ..AddRequest::default()
     };
-    let refused = transfer_failure(
-        &request,
-        crate::media::download_failure(
-            &format!(
-                "{TOOL_RETRY_NOTES}ERROR: unable to download video data: HTTP Error 403: Forbidden"
-            ),
+    let download = |output: String| {
+        transfer_failure(
             &request,
-            true,
-            &[],
-        ),
-    );
-    assert!(
-        refused.message.starts_with("SSD-MED-007 "),
-        "{}",
-        refused.message
-    );
-    assert!(
-        !refused.message.contains("Empty reply"),
-        "{}",
-        refused.message
-    );
-    assert!(refused.source_refresh);
-    assert!(!refused.retryable);
+            crate::media::download_failure(&output, &request, true, &[]),
+        )
+    };
+    for error in RETRYABLE_TOOL_ERRORS {
+        let ended_by_it = download(format!("ERROR: unable to download video data: {error}"));
+        assert!(ended_by_it.retryable, "{}", ended_by_it.message);
+
+        let refused = download(format!(
+            "WARNING: [download] Got error: {error}. Retrying fragment 2 (1/10)\n\
+             ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        ));
+        assert!(!refused.retryable, "{}", refused.message);
+        assert!(refused.source_refresh, "{}", refused.message);
+        assert!(
+            refused.message.starts_with("SSD-MED-007 "),
+            "{}",
+            refused.message
+        );
+    }
 }
 
 #[test]
@@ -2379,28 +2381,26 @@ fn an_analysis_the_origin_refused_is_not_retried_for_what_the_tool_met_before() 
         page_url: Some("https://example.test/watch".into()),
         ..AddRequest::default()
     };
-    let refused = transfer_failure(
-        &request,
-        crate::media::inspection_failure(
-            &format!(
-                "[debug] Command-line config: ['-v']\n{TOOL_RETRY_NOTES}\
-                 ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden"
+    for error in RETRYABLE_TOOL_ERRORS {
+        let refused = transfer_failure(
+            &request,
+            crate::media::inspection_failure(
+                &format!(
+                    "[debug] Command-line config: ['-v']\n\
+                     WARNING: [generic] Unable to download webpage: {error}. Retrying (1/3)\n\
+                     ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden"
+                ),
+                &[],
             ),
-            &[],
-        ),
-    );
-    assert!(
-        refused.message.starts_with("SSD-MED-007 "),
-        "{}",
-        refused.message
-    );
-    assert!(
-        !refused.message.contains("Empty reply"),
-        "{}",
-        refused.message
-    );
-    assert!(refused.source_refresh);
-    assert!(!refused.retryable);
+        );
+        assert!(!refused.retryable, "{}", refused.message);
+        assert!(refused.source_refresh, "{}", refused.message);
+        assert!(
+            refused.message.starts_with("SSD-MED-007 "),
+            "{}",
+            refused.message
+        );
+    }
 }
 
 #[test]
