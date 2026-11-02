@@ -248,6 +248,9 @@ mod tests {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 
+    /// Each test works under a parent key of its own, `<SCRATCH>-<id>`. Two tests that create and
+    /// delete keys under one parent make Windows fail one of the calls with error 1018, a key
+    /// marked for deletion.
     const SCRATCH: &str = r"Software\SSDownloadExtensionTest";
 
     /// Registration writes exactly the value Chromium's registry loader reads
@@ -255,7 +258,7 @@ mod tests {
     #[test]
     fn external_entries_round_trip_without_touching_other_extensions() {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let scratch = format!(r"{SCRATCH}\{}", uuid::Uuid::new_v4().simple());
+        let scratch = format!(r"{SCRATCH}-{}", uuid::Uuid::new_v4().simple());
         let chrome = format!(r"{scratch}\Chrome\Extensions");
         let edge = format!(r"{scratch}\Edge\Extensions");
         let foreign = format!(r"{chrome}\aaaabbbbccccddddeeeeffffgggghhhh");
@@ -284,8 +287,6 @@ mod tests {
         }
         assert!(hkcu.open_subkey(&foreign).is_ok(), "foreign entry removed");
         hkcu.delete_subkey_all(&scratch).unwrap();
-        // Fails while a parallel test still owns a sibling scratch key.
-        hkcu.delete_subkey(SCRATCH).ok();
     }
 
     /// A leftover force-list entry for our ID is removed together with its
@@ -293,7 +294,7 @@ mod tests {
     #[test]
     fn legacy_policy_cleanup_removes_only_our_entries() {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let scratch = format!(r"{SCRATCH}\{}", uuid::Uuid::new_v4().simple());
+        let scratch = format!(r"{SCRATCH}-{}", uuid::Uuid::new_v4().simple());
         let forcelist = format!(r"{scratch}\ExtensionInstallForcelist");
         let settings = format!(r"{scratch}\ExtensionSettings");
         let (list, _) = hkcu.create_subkey(&forcelist).unwrap();
@@ -330,8 +331,6 @@ mod tests {
             .is_ok());
         drop((list, values));
         hkcu.delete_subkey_all(&scratch).unwrap();
-        // Fails while a parallel test still owns a sibling scratch key.
-        hkcu.delete_subkey(SCRATCH).ok();
     }
 
     /// The Web Store listing, the native host allow-list and the registry

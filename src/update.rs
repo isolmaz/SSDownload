@@ -1698,11 +1698,14 @@ mod tests {
         let script = install_helper_script(2_000_000_000, setup, &target, sha256, marker, "9.9.9");
         let status = helper_command(&script).status().expect("powershell starts");
         assert!(status.success(), "the helper itself must finish cleanly");
-        for _ in 0..100 {
+        // The helper has started the stand-in and gone; when the stand-in runs is up to the
+        // machine, and only a hang reaches the end of the wait.
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        while std::time::Instant::now() < deadline {
             if reopened.is_file() {
                 return true;
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(50));
         }
         false
     }
