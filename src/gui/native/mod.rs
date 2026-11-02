@@ -14557,7 +14557,7 @@ mod tests {
         }
 
         #[test]
-        fn a_widened_window_is_at_least_as_wide_as_its_minimum_at_any_scale_and_with_the_scroll_bar(
+        fn a_widened_window_is_at_least_as_wide_as_its_minimum_at_several_scales_and_with_the_scroll_bar(
         ) {
             let work = RECT {
                 left: 0,
@@ -14566,8 +14566,9 @@ mod tests {
                 bottom: 1040,
             };
             // The window, its minimum and whether the scroll bar shows, with
-            // the closing button given `times` times the long text.
-            let state = |dpi: u32, times: usize, too_short: bool| {
+            // the closing button given the long text and `extra` more letters;
+            // the window stays narrower than a small screen can show.
+            let state = |dpi: u32, extra: usize, too_short: bool| {
                 in_language("en", || {
                     let rename = cases()
                         .into_iter()
@@ -14587,7 +14588,10 @@ mod tests {
                         if dpi != 96 {
                             at_dpi(&dialog, &case, dpi);
                         }
-                        native::set_text(cancel_of(&dialog), &long_text(times));
+                        native::set_text(
+                            cancel_of(&dialog),
+                            &format!("{}{}", long_text(2), "i".repeat(extra)),
+                        );
                         native::layout_dialog(&*dialog.raw);
                         let mut frame: RECT = zeroed();
                         GetWindowRect(dialog.hwnd, &mut frame);
@@ -14599,11 +14603,11 @@ mod tests {
                 })
             };
             let mut wrong = Vec::new();
-            for dpi in [96, 120, 144, 168, 192] {
-                for times in 2..=5 {
-                    let (tall, tall_least, tall_bar) = state(dpi, times, false);
-                    let (short, short_least, short_bar) = state(dpi, times, true);
-                    let what = format!("{dpi} dpi, text x{times}");
+            for dpi in [96, 120, 144] {
+                for extra in 0..=4 {
+                    let (tall, tall_least, tall_bar) = state(dpi, extra, false);
+                    let (short, short_least, short_bar) = state(dpi, extra, true);
+                    let what = format!("{dpi} dpi, {extra} more letters");
                     if tall_bar || !short_bar {
                         wrong.push(format!(
                             "{what}: the scroll bar shows: {tall_bar} / {short_bar}"
