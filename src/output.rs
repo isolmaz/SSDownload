@@ -93,7 +93,7 @@ pub(crate) fn is_transient_lock(error: &std::io::Error) -> bool {
 /// The part of a file name after its last dot when it can be a file extension. A dot inside a
 /// title ("Mr. Robot", "Vol. 2 best of", "Python 3.12 guide") leaves text with spaces after
 /// it, which is not an extension and must stay part of the name.
-fn real_extension(path: &Path) -> Option<&str> {
+pub(crate) fn real_extension(path: &Path) -> Option<&str> {
     let extension = path.extension()?.to_str()?;
     ((1..=16).contains(&extension.chars().count()) && extension.chars().all(char::is_alphanumeric))
         .then_some(extension)

@@ -3384,6 +3384,170 @@ fn a_page_that_is_reached_without_a_redirect_is_still_saved() {
     assert_eq!(fs::read(result.path).unwrap(), pattern(1, size));
 }
 
+/// The answer that sends a request for `from` on to `to`, as the link of a download page does.
+fn redirect_document(from: &str, status: u16, to: &str) -> Document {
+    Document {
+        path: from.into(),
+        status,
+        headers: vec![format!("Location: {to}")],
+        body: Vec::new(),
+        unframed: false,
+    }
+}
+
+/// Downloads `request` as a job added with it is: into a file that the address names (or the name
+/// the user chose), which the finished file may replace. Returns the name the file was saved
+/// under, after checking that its bytes are the source's.
+fn saved_as(request: &AddRequest, size: u64) -> String {
+    let directory = TempDir::new("named");
+    let name = request
+        .filename
+        .clone()
+        .or_else(|| url_file_name(&validate_source_url(&request.url).unwrap()))
+        .unwrap();
+    let result = fetch(
+        request,
+        &directory.0.join(name),
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(fs::read(&result.path).unwrap(), pattern(1, size));
+    result
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn a_redirect_to_a_named_file_saves_the_file_under_that_name() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/get", 302, "/files/Setup%20159.0.bin"),
+            redirect_document("/redirect-chain", 301, "/step-two"),
+            redirect_document("/step-two", 302, "/step-three"),
+            redirect_document("/step-three", 307, "/range.bin"),
+            redirect_document("/old.zip", 302, "/releases/new-1.2.zip"),
+        ],
+        ..Config::default()
+    });
+    for (path, saved) in [
+        ("/get", "Setup 159.0.bin"),
+        ("/redirect-chain", "range.bin"),
+        ("/old.zip", "new-1.2.zip"),
+    ] {
+        assert_eq!(
+            saved_as(&file_request(server.url(path)), size),
+            saved,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_redirect_to_a_path_without_an_extension_keeps_the_name_of_the_address() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/file.zip", 302, "/a1b2c3d4"),
+            redirect_document("/download", 302, "/a1b2c3d4"),
+            redirect_document("/folder", 302, "/files/"),
+        ],
+        ..Config::default()
+    });
+    for (path, saved) in [
+        ("/file.zip", "file.zip"),
+        ("/download", "download"),
+        ("/folder", "folder"),
+    ] {
+        assert_eq!(
+            saved_as(&file_request(server.url(path)), size),
+            saved,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn the_name_the_user_chose_and_the_content_disposition_win_over_the_name_a_redirect_led_to() {
+    let size = 4_000;
+    let documents = vec![redirect_document("/get", 302, "/files/from-address.bin")];
+    let plain = Server::start(Config {
+        size,
+        documents: documents.clone(),
+        ..Config::default()
+    });
+    let chosen = AddRequest {
+        filename: Some("mine.bin".into()),
+        ..file_request(plain.url("/get"))
+    };
+    assert_eq!(saved_as(&chosen, size), "mine.bin");
+
+    let disposition = Server::start(Config {
+        size,
+        documents,
+        content_disposition: Some("attachment; filename=\"from-header.bin\"".into()),
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(disposition.url("/get")), size),
+        "from-header.bin"
+    );
+}
+
+#[test]
+fn a_file_saved_under_the_name_a_redirect_led_to_never_overwrites_one_that_exists() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![redirect_document("/get", 302, "/files/report.bin")],
+        ..Config::default()
+    });
+    let directory = TempDir::new("named-exists");
+    fs::write(directory.0.join("report.bin"), b"mine").unwrap();
+    let result = fetch(
+        &file_request(server.url("/get")),
+        &directory.0.join("get"),
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(result.path, directory.0.join("report (1).bin"));
+    assert_eq!(fs::read(&result.path).unwrap(), pattern(1, size));
+    assert_eq!(fs::read(directory.0.join("report.bin")).unwrap(), b"mine");
+}
+
+#[test]
+fn a_redirect_to_the_same_name_leaves_the_name_the_job_was_given() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![redirect_document("/a/report.bin", 302, "/b/report.bin")],
+        ..Config::default()
+    });
+    let directory = TempDir::new("named-same");
+    // The job was given the next free name because `report.bin` was taken when it was added.
+    let result = fetch(
+        &file_request(server.url("/a/report.bin")),
+        &directory.0.join("report (1).bin"),
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(result.path, directory.0.join("report (1).bin"));
+}
+
 #[test]
 fn an_auto_job_redirected_to_a_page_stays_a_media_job() {
     let page = page_server(4_000, "text/html");

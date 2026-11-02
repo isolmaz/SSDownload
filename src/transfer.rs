@@ -5201,6 +5201,10 @@ pub(crate) fn throttle(
     }
 }
 
+/// The path a finished download is published at. A name the user chose stays. Otherwise the
+/// name comes from the `Content-Disposition` of the answer that delivered the file (or of the
+/// probe), then from the file name the redirects led to, and failing both from `output`, the
+/// name the job was added with.
 fn final_name(
     output: &Path,
     request: &AddRequest,
@@ -5209,13 +5213,26 @@ fn final_name(
 ) -> PathBuf {
     if request.filename.is_none() {
         if let Some(name) = response
-            .and_then(|headers| headers.filename.as_ref())
-            .or(remote.filename.as_ref())
+            .and_then(|headers| headers.filename.clone())
+            .or_else(|| remote.filename.clone())
+            .or_else(|| redirected_file_name(request, &remote.url))
         {
-            return output.with_file_name(crate::engine::safe_filename(name, "download"));
+            return output.with_file_name(crate::engine::safe_filename(&name, "download"));
         }
     }
     output.to_owned()
+}
+
+/// The last path segment of the address a download ended at, when it has a file extension and
+/// differs from the one of the requested address. A segment without an extension (`download`,
+/// `a1b2c3d4`) names nothing, so the name the job was added with stays.
+fn redirected_file_name(request: &AddRequest, last: &Url) -> Option<String> {
+    let name = url_file_name(last)?;
+    crate::output::real_extension(Path::new(&name))?;
+    let requested = validate_source_url(&request.url)
+        .ok()
+        .and_then(|url| url_file_name(&url));
+    (requested.as_ref() != Some(&name)).then_some(name)
 }
 /// Decodes `%XX` escapes; `None` when an escape is malformed or the bytes are not UTF-8.
 fn percent_decode_utf8(value: &str) -> Option<String> {
