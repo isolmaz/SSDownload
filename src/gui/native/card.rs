@@ -6,7 +6,7 @@
 
 use super::*;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, SetActiveWindow};
 
 pub(super) const CLASS_CARD: &str = "SSDownload.Card";
 const TIMER_CARD: usize = 7;
@@ -910,6 +910,15 @@ unsafe fn paint_buffered(
     painted
 }
 
+/// Activates a card that was clicked. The click is the last input of the program, so the
+/// system lets the card take the foreground; where it does not, the card still becomes the
+/// active window of the program.
+unsafe fn activate(hwnd: HWND) {
+    if SetForegroundWindow(hwnd) == 0 {
+        SetActiveWindow(hwnd);
+    }
+}
+
 /// Whether the user is working in the card: it is the active window, or the cursor is on it.
 unsafe fn in_use(hwnd: HWND) -> bool {
     let mut area: RECT = zeroed();
@@ -1073,11 +1082,11 @@ unsafe extern "system" fn card_proc(
         // whoever clicks a card wants to work in it, and keys reach it only then. A card
         // never activates itself when it appears.
         WM_LBUTTONDOWN => {
-            SetForegroundWindow(hwnd);
+            activate(hwnd);
             0
         }
         WM_PARENTNOTIFY if loword(wparam) as u32 == WM_LBUTTONDOWN => {
-            SetForegroundWindow(hwnd);
+            activate(hwnd);
             0
         }
         WM_DPICHANGED => {
