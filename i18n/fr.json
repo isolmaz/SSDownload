@@ -446,7 +446,7 @@
   "Media verification: the video stream is missing": "Vérification du média : le flux vidéo est absent",
   "Media verification: the {stream} stream lasts {length:.1} s, its source playlist declares {declared} s (missing or duplicated fragment).": "Vérification du média : le flux {stream} dure {length:.1} s, sa liste de lecture source indique {declared} s (fragment manquant ou dupliqué).",
   "Media verification: unexpected video stream in an audio-only output": "Vérification du média : flux vidéo inattendu dans une sortie audio uniquement",
-  "Media verification: video {0:.1} s, audio {1} {2:.1} s; the stream lengths do not match (missing or duplicated fragment).": "Vérification du média : vidéo {0:.1} s, audio {1} {2:.1} s ; les durées des flux ne correspondent pas (fragment manquant ou dupliqué).",
+  "Media verification: video {0:.1} s, audio stream {1}: {2:.1} s; the stream lengths do not match (missing or duplicated fragment).": "Vérification du média : vidéo {0:.1} s, flux audio {1} : {2:.1} s ; les durées des flux ne correspondent pas (fragment manquant ou dupliqué).",
   "Media workspace ownership could not be verified; artifacts were kept": "La propriété de l'espace de travail média n'a pas pu être vérifiée ; les fichiers ont été conservés",
   "Metered connection and Battery saver: downloads are on hold": "Connexion limitée et Économiseur de batterie : téléchargements suspendus",
   "Metered connection: downloads are on hold": "Connexion limitée : téléchargements suspendus",
