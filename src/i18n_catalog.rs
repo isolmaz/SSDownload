@@ -7556,8 +7556,8 @@ macro_rules! __ui_template_ar {
     ("The closed browser transfer could not be paused: {error}") => {
         "تعذّر إيقاف النقل المغلق عبر المتصفح مؤقتًا: {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "دليل التوافق لمقاطع HLS/DASH الموجودة مفقود أو تالف؛ تم الاحتفاظ بملفات العمل. يلزم إعادة تشغيل صريحة: {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "دليل التوافق لمقاطع HLS/DASH الموجودة مفقود أو تالف؛ تم الاحتفاظ بملفات العمل. يلزم إعادة تشغيل صريحة: {error}"
     };
     ("The completed media was not found: {0}") => {
         "لم يُعثر على الوسائط المكتملة: {0}"
@@ -7715,8 +7715,8 @@ macro_rules! __ui_template_ar {
     ("The path to open is invalid: {plain}") => {
         "مسار الفتح غير صالح: {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "أدلة المصدر أو البث أو المقطع الدائمة لمقاطع HLS/DASH الموجودة مفقودة؛ تم الاحتفاظ بملفات العمل. يلزم إعادة تشغيل صريحة: {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "أدلة المصدر أو البث أو المقطع الدائمة لمقاطع HLS/DASH الموجودة مفقودة؛ تم الاحتفاظ بملفات العمل. يلزم إعادة تشغيل صريحة: {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "تم نقل ملف التحديث السابق إلى العزل:\n{0}"
@@ -8419,8 +8419,8 @@ macro_rules! __ui_template_es {
     ("The closed browser transfer could not be paused: {error}") => {
         "No se pudo pausar la transferencia desde el navegador que se cerró: {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "Faltan las pruebas de compatibilidad de los segmentos HLS/DASH existentes o están dañadas; se conservaron los archivos de trabajo. Se requiere un reinicio explícito: {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "Faltan las pruebas de compatibilidad de los segmentos HLS/DASH existentes o están dañadas; se conservaron los archivos de trabajo. Se requiere un reinicio explícito: {error}"
     };
     ("The completed media was not found: {0}") => {
         "No se encontró el contenido multimedia completado: {0}"
@@ -8578,8 +8578,8 @@ macro_rules! __ui_template_es {
     ("The path to open is invalid: {plain}") => {
         "La ruta que se va a abrir no es válida: {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "Faltan las pruebas persistentes de origen, flujo y segmento de los segmentos HLS/DASH existentes; se conservaron los archivos de trabajo. Se requiere un reinicio explícito: {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "Faltan las pruebas persistentes de origen, flujo y segmento de los segmentos HLS/DASH existentes; se conservaron los archivos de trabajo. Se requiere un reinicio explícito: {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "El archivo de actualización anterior se movió a cuarentena:\n{0}"
@@ -9282,8 +9282,8 @@ macro_rules! __ui_template_pt {
     ("The closed browser transfer could not be paused: {error}") => {
         "Não foi possível pausar a transferência do navegador encerrada: {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "As evidências de compatibilidade dos segmentos HLS/DASH existentes estão ausentes ou corrompidas; os arquivos de trabalho foram mantidos. É necessário um reinício explícito: {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "As evidências de compatibilidade dos segmentos HLS/DASH existentes estão ausentes ou corrompidas; os arquivos de trabalho foram mantidos. É necessário um reinício explícito: {error}"
     };
     ("The completed media was not found: {0}") => {
         "A mídia concluída não foi encontrada: {0}"
@@ -9441,8 +9441,8 @@ macro_rules! __ui_template_pt {
     ("The path to open is invalid: {plain}") => {
         "O caminho a abrir é inválido: {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "As evidências persistentes de fonte/fluxo/segmento dos segmentos HLS/DASH existentes estão ausentes; os arquivos de trabalho foram mantidos. É necessário um reinício explícito: {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "As evidências persistentes de fonte/fluxo/segmento dos segmentos HLS/DASH existentes estão ausentes; os arquivos de trabalho foram mantidos. É necessário um reinício explícito: {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "O arquivo da atualização anterior foi movido para a quarentena:\n{0}"
@@ -10145,8 +10145,8 @@ macro_rules! __ui_template_fr {
     ("The closed browser transfer could not be paused: {error}") => {
         "Le transfert par le navigateur fermé n'a pas pu être mis en pause : {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "Les preuves de compatibilité des segments HLS/DASH existants sont absentes ou corrompues ; les fichiers de travail ont été conservés. Un redémarrage explicite est nécessaire : {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "Les preuves de compatibilité des segments HLS/DASH existants sont absentes ou corrompues ; les fichiers de travail ont été conservés. Un redémarrage explicite est nécessaire : {error}"
     };
     ("The completed media was not found: {0}") => {
         "Le média terminé est introuvable : {0}"
@@ -10304,8 +10304,8 @@ macro_rules! __ui_template_fr {
     ("The path to open is invalid: {plain}") => {
         "Le chemin à ouvrir est invalide : {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "Les preuves persistantes de source, de flux et de segment pour les segments HLS/DASH existants sont absentes ; les fichiers de travail ont été conservés. Un redémarrage explicite est nécessaire : {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "Les preuves persistantes de source, de flux et de segment pour les segments HLS/DASH existants sont absentes ; les fichiers de travail ont été conservés. Un redémarrage explicite est nécessaire : {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "Le fichier de mise à jour précédent a été déplacé en quarantaine :\n{0}"
@@ -11008,8 +11008,8 @@ macro_rules! __ui_template_de {
     ("The closed browser transfer could not be paused: {error}") => {
         "Die geschlossene Browser-Übertragung konnte nicht pausiert werden: {error}"
     };
-    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}") => {
-        "Der Kompatibilitätsnachweis für die vorhandenen HLS/DASH-Segmente fehlt oder ist beschädigt; Arbeitsdateien wurden behalten. Ein ausdrücklicher Neustart ist erforderlich: {error:#}"
+    ("The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}") => {
+        "Der Kompatibilitätsnachweis für die vorhandenen HLS/DASH-Segmente fehlt oder ist beschädigt; Arbeitsdateien wurden behalten. Ein ausdrücklicher Neustart ist erforderlich: {error}"
     };
     ("The completed media was not found: {0}") => {
         "Die fertigen Medien wurden nicht gefunden: {0}"
@@ -11167,8 +11167,8 @@ macro_rules! __ui_template_de {
     ("The path to open is invalid: {plain}") => {
         "Der zu öffnende Pfad ist ungültig: {plain}"
     };
-    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}") => {
-        "Die dauerhaften Quell-, Stream- und Segmentnachweise für die vorhandenen HLS/DASH-Segmente fehlen; Arbeitsdateien wurden behalten. Ein ausdrücklicher Neustart ist erforderlich: {error:#}"
+    ("The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}") => {
+        "Die dauerhaften Quell-, Stream- und Segmentnachweise für die vorhandenen HLS/DASH-Segmente fehlen; Arbeitsdateien wurden behalten. Ein ausdrücklicher Neustart ist erforderlich: {error}"
     };
     ("The previous update file was moved to quarantine:\n{0}") => {
         "Die vorherige Update-Datei wurde in die Quarantäne verschoben:\n{0}"

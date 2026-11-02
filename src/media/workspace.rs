@@ -341,11 +341,25 @@ pub(super) fn reconcile_media_workspace(
 ) -> Result<()> {
     let source_path = workspace.join(MEDIA_SOURCE_FILE);
     match evidence {
+        // An attempt that failed before it knew its source leaves the files `OutputPlan::new`
+        // writes first and nothing of a stream: there is no record to compare with, and this
+        // one is the first.
+        Some(evidence) if !source_path.exists() && holds_only_the_first_files(workspace) => {
+            ensure_same_request(workspace, fingerprint)?;
+            write_media_source_state(
+                workspace,
+                &MediaSourceState {
+                    version: MEDIA_SOURCE_STATE_VERSION,
+                    request: fingerprint.to_string(),
+                    evidence: evidence.clone(),
+                },
+            )
+        }
         Some(evidence) => {
             let current = read_media_source_state(workspace).map_err(|error| {
                 anyhow!(
                     "{}",
-                    crate::i18n::ui_format!("Mevcut HLS/DASH parçalarının uyumluluk kanıtı yok veya bozuk; eserler korundu. Açık yeniden başlatma gerekir: {error:#}", "The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error:#}", error = error)
+                    crate::i18n::ui_format!("Mevcut HLS/DASH parçalarının uyumluluk kanıtı yok veya bozuk; eserler korundu. Açık yeniden başlatma gerekir: {error}", "The compatibility evidence for the existing HLS/DASH segments is missing or corrupt; work files were kept. An explicit restart is required: {error}", error = unreadable_record(&error))
                 )
             })?;
             if current.request == fingerprint && current.evidence == *evidence {
@@ -384,12 +398,38 @@ pub(super) fn reconcile_media_workspace(
             if source_path.exists() {
                 bail!(crate::i18n::ui("Mevcut çalışma HLS/DASH parça kanıtı içeriyor ancak yeni kaynak tam parça çizelgesi sunmuyor; eserler korundu. Açık yeniden başlatma gerekir", "The existing work has HLS/DASH segment evidence but the new source offers no complete segment timeline; work files were kept. An explicit restart is required"));
             }
-            if fs::read_to_string(workspace.join(".request"))? != fingerprint {
-                bail!(crate::i18n::ui("Bu hedefin geçici dosyaları başka bir indirmeye ait. Yeni bir dosya adı seçin.", "The temporary files for this target belong to another download. Choose a new file name."));
-            }
-            Ok(())
+            ensure_same_request(workspace, fingerprint)
         }
     }
+}
+
+fn ensure_same_request(workspace: &Path, fingerprint: &str) -> Result<()> {
+    if fs::read_to_string(workspace.join(".request"))? != fingerprint {
+        bail!(crate::i18n::ui("Bu hedefin geçici dosyaları başka bir indirmeye ait. Yeni bir dosya adı seçin.", "The temporary files for this target belong to another download. Choose a new file name."));
+    }
+    Ok(())
+}
+
+/// Whether the folder holds no more than `OutputPlan::new` writes first. Everything a stream
+/// leaves (segments, parts, joined files) has another name.
+fn holds_only_the_first_files(workspace: &Path) -> bool {
+    fs::read_dir(workspace).is_ok_and(|mut entries| {
+        entries.all(|entry| {
+            entry.is_ok_and(|entry| {
+                matches!(entry.file_name().to_str(), Some(".owner" | ".request"))
+            })
+        })
+    })
+}
+
+/// The error of a record that cannot be read, without the reason in the system's own wording
+/// (Windows words it in the system language): the message names what could not be done, and
+/// the whole chain goes to the log.
+fn unreadable_record(error: &anyhow::Error) -> String {
+    crate::logging::record(
+        crate::logging::Event::warn("media.workspace").detail(format!("{error:#}")),
+    );
+    error.to_string()
 }
 
 pub(super) fn workspace_path(output: &Path, owner: &str) -> PathBuf {
@@ -613,7 +653,7 @@ pub(crate) fn prepare_source_refresh(
     let current = read_media_source_state(&workspace).map_err(|error| {
         anyhow!(
             "{}",
-            crate::i18n::ui_format!("Mevcut HLS/DASH parçalarının kalıcı kaynak/akış/parça kanıtı yok; eserler korundu. Açık yeniden başlatma gerekir: {error:#}", "The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error:#}", error = error)
+            crate::i18n::ui_format!("Mevcut HLS/DASH parçalarının kalıcı kaynak/akış/parça kanıtı yok; eserler korundu. Açık yeniden başlatma gerekir: {error}", "The persistent source/stream/segment evidence for the existing HLS/DASH segments is missing; work files were kept. An explicit restart is required: {error}", error = unreadable_record(&error))
         )
     })?;
     let previous_fingerprint = request_fingerprint(previous)?;

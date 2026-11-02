@@ -551,6 +551,94 @@ fn media_publication_moves_only_the_final_file_out_of_private_workspace() {
     fs::remove_dir_all(root).unwrap();
 }
 
+fn source_evidence() -> MediaSourceEvidence {
+    MediaSourceEvidence {
+        selection: "selection".into(),
+        request_context_sha256: "context".into(),
+        live: false,
+        items: Vec::new(),
+    }
+}
+
+/// A job folder after an attempt that failed before its source was known: only the files
+/// `OutputPlan::new` writes first.
+fn folder_of_an_early_failure(request: &AddRequest) -> (PathBuf, PathBuf, PathBuf) {
+    let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("film");
+    let plan = OutputPlan::new(&output, request, None).unwrap();
+    let mut files = fs::read_dir(&plan.workspace)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, [".owner", ".request"]);
+    (root, output, plan.workspace)
+}
+
+fn hls_request() -> AddRequest {
+    AddRequest {
+        url: "https://example.test/master.m3u8".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        ..AddRequest::default()
+    }
+}
+
+#[test]
+fn a_retry_that_finds_only_the_files_of_an_early_failure_starts_fresh() {
+    let request = hls_request();
+    let (root, output, _) = folder_of_an_early_failure(&request);
+    let evidence = source_evidence();
+
+    let plan = OutputPlan::new(&output, &request, Some(&evidence))
+        .unwrap_or_else(|error| panic!("{error:#}"));
+
+    let state = read_media_source_state(&plan.workspace).unwrap();
+    assert_eq!(state.request, request_fingerprint(&request).unwrap());
+    assert_eq!(state.evidence, evidence);
+    // The next retry finds the record like any other.
+    OutputPlan::new(&output, &request, Some(&evidence)).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn files_of_a_stream_without_an_identity_record_are_still_refused() {
+    let request = hls_request();
+    let (root, output, workspace) = folder_of_an_early_failure(&request);
+    fs::write(workspace.join("media.native-video.part"), b"segments").unwrap();
+
+    let error = OutputPlan::new(&output, &request, Some(&source_evidence()))
+        .err()
+        .expect("the folder holds segments that no record vouches for");
+
+    let text = format!("{error:#}");
+    assert!(text.contains("uyumluluk kanıtı"), "{text}");
+    assert!(!workspace.join(MEDIA_SOURCE_FILE).exists());
+    // The system's own wording of why belongs in the log, not in the message.
+    assert!(!text.contains("os error"), "{text}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_folder_of_another_download_is_not_taken_over_when_it_is_empty() {
+    let (root, output, _) = folder_of_an_early_failure(&hls_request());
+    let other = AddRequest {
+        container: Some("mkv".into()),
+        ..hls_request()
+    };
+
+    let error = OutputPlan::new(&output, &other, Some(&source_evidence()))
+        .err()
+        .expect("the folder belongs to another download");
+
+    assert!(
+        format!("{error:#}").contains("başka bir indirmeye ait"),
+        "{error:#}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn published_name_keeps_dots_that_belong_to_the_title() {
     let extension = std::ffi::OsStr::new("mp4");
