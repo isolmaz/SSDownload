@@ -381,15 +381,7 @@ pub(crate) fn download(
                 } else {
                     "keşif"
                 };
-                anyhow!(
-                    "{}",
-                    crate::i18n::ui_format!(
-                        "{0} aşamasında {error:#}",
-                        "{0} stage: {error:#}",
-                        failure_stage_label(phase),
-                        error = error
-                    )
-                )
+                failed_in_stage(error, phase)
             })?;
             let from_start = from_start_formats(&inspection);
             let selector = format_selector(request, &info)?;
@@ -1573,8 +1565,11 @@ fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
     ]
 }
 
+/// Whether the tool's final error ([`last_error`]) is a 403: a 403 it met on the way, in a warning
+/// or an earlier error, is not the reason the run ended.
 fn is_forbidden(error: &str) -> bool {
-    error.contains("HTTP Error 403") || error.contains("HTTP Error: 403")
+    let last = last_error(error);
+    last.contains("HTTP Error 403") || last.contains("HTTP Error: 403")
 }
 
 /// Phrases of yt-dlp's final `ERROR:` line when the origin refuses the media for this viewer
@@ -1599,16 +1594,20 @@ const SITE_ACCESS_PHRASES: &[&str] = &[
 ];
 
 fn site_access_blocked(stderr: &str) -> bool {
-    stderr.lines().any(|line| {
-        let line = line.trim_start();
-        if !line.starts_with("ERROR:") {
-            return false;
-        }
+    final_error_line(stderr).is_some_and(|line| {
         let lower = line.to_ascii_lowercase();
         SITE_ACCESS_PHRASES
             .iter()
             .any(|phrase| lower.contains(phrase))
     })
+}
+
+/// The tool's last `ERROR:` line: the failure that ended the run, whatever the lines before it
+/// said (an earlier item of a playlist may have failed another way).
+fn final_error_line(stderr: &str) -> Option<String> {
+    let last = last_error(stderr);
+    last.starts_with("ERROR:")
+        .then(|| last.lines().next().unwrap_or_default().to_owned())
 }
 
 /// The tool's output without its `[debug]` trace (version header, argument echo, request log).
@@ -1625,12 +1624,17 @@ fn non_debug_lines(text: &str) -> String {
 /// crashed and printed no `ERROR:` line, the exception line that ended its last traceback. The
 /// whole output is kept in the log only.
 fn final_error_text(text: &str) -> String {
+    bounded_tail(&last_error(text), 2048)
+}
+
+/// [`final_error_text`] without the bound, for the code to be decided from.
+fn last_error(text: &str) -> String {
     let (text, exception) = without_tracebacks(text);
     let text = text.trim();
     match (text.rfind("ERROR:"), exception) {
-        (Some(start), _) => bounded_tail(text[start..].trim(), 2048),
-        (None, Some(exception)) => bounded_tail(exception, 2048),
-        (None, None) => bounded_tail(text, 2048),
+        (Some(start), _) => text[start..].trim().to_owned(),
+        (None, Some(exception)) => exception.to_owned(),
+        (None, None) => text.to_owned(),
     }
 }
 
@@ -1679,12 +1683,10 @@ fn without_tracebacks(text: &str) -> (String, Option<&str>) {
 }
 
 /// yt-dlp drops DRM formats and, when nothing else remains, ends with an `ERROR: ... This video
-/// is DRM protected` line instead of JSON; a per-format warning about skipped formats is not it.
+/// is DRM protected` line instead of JSON; a per-format warning about skipped formats is not it,
+/// and neither is an earlier error of a run that ended another way.
 fn drm_protected(stderr: &str) -> bool {
-    stderr.lines().any(|line| {
-        let line = line.trim_start();
-        line.starts_with("ERROR:") && line.to_ascii_lowercase().contains("drm protected")
-    })
+    final_error_line(stderr).is_some_and(|line| line.to_ascii_lowercase().contains("drm protected"))
 }
 
 /// yt-dlp reports a hole in the stream instead of failing the download: "[download] fragment not
@@ -2146,6 +2148,27 @@ fn failure_stage_label(stage: &str) -> &'static str {
     crate::i18n::ui("medya kaynağı", "media source")
 }
 
+/// The error of an analysis that failed in the stage `phase` of a download. The text of a failure
+/// that carries a code starts with it, as every other failure's does; the stage follows, where
+/// [`named_download_failure_stage`] reads it.
+fn failed_in_stage(error: anyhow::Error, phase: &str) -> anyhow::Error {
+    let text = format!("{error:#}");
+    let code = crate::error_codes::code_of_text(&error);
+    let detail = code
+        .and_then(|code| text.strip_prefix(code.0))
+        .map_or(text.as_str(), str::trim_start);
+    let message = crate::i18n::ui_format!(
+        "{0} aşamasında {error:#}",
+        "{0} stage: {error:#}",
+        failure_stage_label(phase),
+        error = detail
+    );
+    match code {
+        Some(code) => crate::error_codes::coded(code, message),
+        None => anyhow!(message),
+    }
+}
+
 /// The error of a download whose tool failed, from the tool's output without its `[debug]` trace:
 /// `SSD-MED-008` when the origin refuses the media, `SSD-MED-007` when the tool's final error is a
 /// 403 and `SSD-MED-017` otherwise. The message names the failed stage and gives the tool's final
@@ -2182,9 +2205,10 @@ fn download_failure_message(phase: &str, compatibility_retry: bool, summary: &st
     )
 }
 
-/// The stage a [`download_failure_message`] names, read in whichever interface language wrote
-/// it: the stored message carries the stage by its label only. The label opens the message, after
-/// its code; the same words further in are the tool's own text and name nothing.
+/// The stage a [`download_failure_message`] or a [`failed_in_stage`] names, read in whichever
+/// interface language wrote it: the stored message carries the stage by its label only. The label
+/// opens the message, after its code; the same words further in are the tool's own text and name
+/// nothing.
 fn named_download_failure_stage(error: &str) -> Option<&'static str> {
     let text = error.trim_start();
     let text = if crate::error_codes::from_text(text).is_some() {
@@ -2198,6 +2222,10 @@ fn named_download_failure_stage(error: &str) -> Option<&'static str> {
         "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}"
     )
     .into_iter()
+    .chain(crate::i18n::ui_templates!(
+        "{0} aşamasında {error:#}",
+        "{0} stage: {error:#}"
+    ))
     .find_map(|template| {
         let (before, rest) = template.split_once("{0}")?;
         let after = &rest[..rest.find('{')?];

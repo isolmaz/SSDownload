@@ -1533,6 +1533,137 @@ fn a_download_the_origin_refuses_carries_the_code_of_the_refusal() {
 }
 
 #[test]
+fn an_analysis_that_fails_in_a_download_keeps_its_code_at_the_start_in_every_language() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    // The tool's own word "fragment" alone would read as a failed media segment.
+    let refused =
+        "ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden (fragment 3)";
+    let other = "ERROR: [generic] fragment 3 not found";
+    for info in crate::i18n::LANGUAGES {
+        for (stderr, code) in [
+            (refused, crate::error_codes::MED_007),
+            (other, crate::error_codes::MED_006),
+        ] {
+            for stage in ["keşif", "ana liste"] {
+                let error = crate::i18n::with_language(info.code, || {
+                    failed_in_stage(inspection_failure(stderr, &[]), stage)
+                });
+                let stored = error.to_string();
+                assert_eq!(code_of(&error), Some(code), "{}: {stored}", info.code);
+                // What the job log and the extension read.
+                assert_eq!(
+                    crate::error_codes::from_text(&stored),
+                    Some(code),
+                    "{}: {stored}",
+                    info.code
+                );
+                assert!(
+                    stored.matches(code.0).count() == 1 && stored.ends_with(stderr),
+                    "{}: {stored}",
+                    info.code
+                );
+                assert_eq!(
+                    classify_download_error(&stored, &request).0,
+                    stage,
+                    "{}: {stored}",
+                    info.code
+                );
+            }
+        }
+    }
+
+    // A failure without a code keeps the stage in front and gets none.
+    let plain = crate::i18n::with_language("en", || {
+        failed_in_stage(anyhow!("yt-dlp did not return valid JSON"), "keşif")
+    });
+    assert_eq!(code_of(&plain), None);
+    assert_eq!(
+        plain.to_string(),
+        "discovery stage: yt-dlp did not return valid JSON"
+    );
+}
+
+#[test]
+fn the_code_of_a_failed_run_follows_its_final_error_line_not_an_earlier_item() {
+    let request = AddRequest {
+        url: "https://cdn.example/playlist".into(),
+        playlist: true,
+        ..AddRequest::default()
+    };
+    let private = "ERROR: [youtube] abc123: Private video. Sign in if you've been granted access to this video";
+    let drm = "ERROR: [example] def456: This video is DRM protected";
+    let missing = "ERROR: unable to download video data: HTTP Error 404: Not Found";
+    let items = |first: &str, last: &str| {
+        format!(
+            "[download] Downloading item 1 of 2\n{first}\n[download] Downloading item 2 of 2\n{last}"
+        )
+    };
+    let download = |stderr: String| code_of(&download_failure(&stderr, &request, true, &[]));
+    let analysis = |stderr: String| code_of(&inspection_failure(&stderr, &[]));
+
+    // An item that was refused, then one that is gone: the text shows the 404, so the code is
+    // the failure's own and not the refusal's.
+    assert_eq!(
+        download(items(private, missing)),
+        Some(crate::error_codes::MED_017)
+    );
+    assert_eq!(
+        analysis(items(private, missing)),
+        Some(crate::error_codes::MED_006)
+    );
+    // The same items the other way round end in the refusal.
+    assert_eq!(
+        download(items(missing, private)),
+        Some(crate::error_codes::MED_008)
+    );
+    assert_eq!(
+        analysis(items(missing, private)),
+        Some(crate::error_codes::MED_008)
+    );
+    // DRM decides the code only where it is the final error.
+    assert_eq!(
+        analysis(items(drm, missing)),
+        Some(crate::error_codes::MED_006)
+    );
+    assert_eq!(
+        analysis(items(missing, drm)),
+        Some(crate::error_codes::MED_003)
+    );
+    assert_eq!(analysis(drm.into()), Some(crate::error_codes::MED_003));
+}
+
+#[test]
+fn a_403_starts_a_compatibility_retry_only_where_it_is_the_final_error_of_the_tool() {
+    let stale =
+        "WARNING: [generic] Unable to download webpage: HTTP Error 403: Forbidden. Retrying (1/3)";
+    let missing = "ERROR: unable to download video data: HTTP Error 404: Not Found";
+    let forbidden = "ERROR: unable to download video data: HTTP Error 403: Forbidden";
+    // The run ended in another failure after a 403 it met on the way, in a warning or in the
+    // error of an earlier item.
+    assert!(!is_forbidden(&format!("{stale}\n{missing}")));
+    assert!(!is_forbidden(&format!(
+        "{forbidden}\n[download] Downloading item 2 of 2\n{missing}"
+    )));
+    // The run ended in the 403, whatever follows the error line.
+    assert!(is_forbidden(&format!("{stale}\n{forbidden}")));
+    assert!(is_forbidden(&format!(
+        "{forbidden}\n[ssdownload-stage=media_segment]"
+    )));
+    assert!(is_forbidden(&format!(
+        "{forbidden}\nTraceback (most recent call last):\n  File \"yt_dlp\\YoutubeDL.py\", line 1, in x\n\
+         yt_dlp.utils.DownloadError: ERROR: unable to download video data: HTTP Error 404"
+    )));
+    assert!(is_forbidden("ERROR: [generic] HTTP Error: 403: Forbidden"));
+    // Without an error line the whole output is the failure.
+    assert!(is_forbidden(
+        "[download] Got error: HTTP Error 403: Forbidden"
+    ));
+}
+
+#[test]
 fn the_refusal_of_the_origin_keeps_its_stage_when_the_stored_text_is_read_again() {
     let request = AddRequest {
         url: "https://cdn.example/master.m3u8".into(),

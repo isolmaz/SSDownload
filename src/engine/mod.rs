@@ -5384,6 +5384,11 @@ pub(crate) fn retryable_error(error: &anyhow::Error) -> bool {
             "timed out",
             "temporary failure",
             "connection reset",
+            // A failed name lookup as Python's sockets word it, per platform; `Temporary failure
+            // in name resolution` is matched above.
+            "getaddrinfo failed",
+            "name or service not known",
+            "nodename nor servname provided",
             // Python's wording of an empty reply, as curl's is `curl: (52)`.
             "remote end closed connection without response",
         ]

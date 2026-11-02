@@ -2483,6 +2483,51 @@ fn a_curl_error_in_a_media_tool_message_is_retried_by_the_rule_of_a_typed_one() 
 }
 
 #[test]
+fn a_failed_name_lookup_in_a_media_tool_message_is_retried() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        ..AddRequest::default()
+    };
+    // How the sockets of the tool's Python word it on Windows, on Linux (two ways) and on macOS.
+    for lookup in [
+        "<urlopen error [Errno 11001] getaddrinfo failed>",
+        "<urlopen error [Errno -2] Name or service not known>",
+        "<urlopen error [Errno -3] Temporary failure in name resolution>",
+        "<urlopen error [Errno 8] nodename nor servname provided, or not known>",
+    ] {
+        let analysis = transfer_failure(
+            &request,
+            crate::media::inspection_failure(
+                &format!("ERROR: [generic] Unable to download webpage: {lookup}"),
+                &[],
+            ),
+        );
+        assert!(analysis.retryable, "{}", analysis.message);
+        let download = |output: String| {
+            transfer_failure(
+                &request,
+                crate::media::download_failure(&output, &request, true, &[]),
+            )
+        };
+        let ended_by_it = download(format!("ERROR: unable to download video data: {lookup}"));
+        assert!(ended_by_it.retryable, "{}", ended_by_it.message);
+        // A lookup that failed on the way, before the error that ended the run, decides nothing.
+        let earlier = download(format!(
+            "WARNING: [download] Got error: {lookup}. Retrying fragment 2 (1/10)\n\
+             ERROR: unable to download video data: HTTP Error 404: Not Found"
+        ));
+        assert!(!earlier.retryable, "{}", earlier.message);
+    }
+    // What the server answered for good, and an address no extractor takes, stay permanent.
+    assert!(!retryable_error(&anyhow!(
+        "ERROR: unable to download video data: HTTP Error 404: Not Found"
+    )));
+    assert!(!retryable_error(&anyhow!(
+        "ERROR: Unsupported URL: https://example.test/page"
+    )));
+}
+
+#[test]
 fn a_failed_attempt_leads_its_message_with_the_network_code_of_the_failure() {
     let request = AddRequest {
         url: "https://files.example.test/a".into(),
