@@ -3927,10 +3927,12 @@ fn download_ftp_resuming(
     )
 }
 
-/// Whether a failed `HEAD` got no answer from a server that was reached: an empty reply or a
-/// reset connection. A server that does not handle `HEAD` can do that, and a ranged `GET` can
-/// still succeed. A failure to resolve the name, connect or secure the connection, a timeout and
-/// a stop are not this: the `GET` would fail the same way and take as long again.
+/// Whether a failed `HEAD` got no answer: an empty reply or a reset connection. A server that
+/// does not handle `HEAD` can do that, and a ranged `GET` can still succeed. Through an HTTPS
+/// proxy, a `CONNECT` that the proxy aborts is reported as a reset too, so the server may never
+/// have been reached; the `GET` then fails at once in the same way. A failure to resolve a name,
+/// connect, secure the connection or send the request, an HTTP/2 error, a timeout and a stop are
+/// not this: the `GET` would fail the same way and take as long again.
 fn head_unanswered(error: &curl::Error) -> bool {
     error.is_got_nothing() || error.is_recv_error()
 }
@@ -6204,12 +6206,16 @@ mod tests {
         assert!(unanswered(curl_sys::CURLE_GOT_NOTHING));
         assert!(unanswered(curl_sys::CURLE_RECV_ERROR));
         for code in [
+            curl_sys::CURLE_COULDNT_RESOLVE_PROXY,
             curl_sys::CURLE_COULDNT_RESOLVE_HOST,
             curl_sys::CURLE_COULDNT_CONNECT,
             curl_sys::CURLE_OPERATION_TIMEDOUT,
             curl_sys::CURLE_SSL_CONNECT_ERROR,
             curl_sys::CURLE_PEER_FAILED_VERIFICATION,
             curl_sys::CURLE_ABORTED_BY_CALLBACK,
+            curl_sys::CURLE_SEND_ERROR,
+            curl_sys::CURLE_HTTP2,
+            curl_sys::CURLE_HTTP2_STREAM,
         ] {
             assert!(!unanswered(code), "curl error {code}");
         }
