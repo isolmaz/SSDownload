@@ -5560,6 +5560,10 @@ pub(crate) fn throttle(
     written: u64,
 ) {
     *cost = cost.saturating_add(written.saturating_mul(workers.max(1)));
+    #[cfg(test)]
+    if control.speed_limit() != 0 {
+        control.paced_by.lock().unwrap().push(workers.max(1));
+    }
     loop {
         let limit = control.speed_limit();
         if limit == 0 || control.stop_requested() {
@@ -8037,9 +8041,12 @@ mod tests {
         .unwrap();
         let elapsed = started.elapsed();
         assert_eq!(fs::read(result.path).unwrap(), payload);
-        // 2 MiB at 2 MiB/s: never faster than the limit, and not paced at a quarter of it.
+        // 2 MiB at 2 MiB/s: never faster than the limit.
         assert!(elapsed >= Duration::from_millis(900), "{elapsed:?}");
-        assert!(elapsed < Duration::from_millis(2500), "{elapsed:?}");
+        // The one worker that is left divides the limit by itself, not by the four connections
+        // planned.
+        let widest = control.paced_by.lock().unwrap().iter().copied().max();
+        assert_eq!(widest, Some(1), "the limit was divided by {widest:?}");
     }
 
     struct FtpBehavior {

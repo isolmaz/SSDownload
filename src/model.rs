@@ -1013,6 +1013,9 @@ pub struct TransferControl {
     retained: Arc<Mutex<Option<(u64, u64)>>>,
     /// A request of the attempt was answered 429 or 503.
     throttled: Arc<AtomicBool>,
+    /// The number of busy workers each paced write divided the speed limit by, for tests.
+    #[cfg(test)]
+    pub(crate) paced_by: Arc<Mutex<Vec<u64>>>,
 }
 impl TransferControl {
     pub fn pause(&self) {
