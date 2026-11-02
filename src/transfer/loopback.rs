@@ -637,6 +637,136 @@ fn a_server_that_drops_the_connection_on_head_is_downloaded_over_several_connect
     );
 }
 
+/// Makes the probes that the current test thread starts wait `head` for a `HEAD` and `get` for a
+/// ranged `GET`.
+fn probe_waits(head: Duration, get: Duration) {
+    TEST_PROBE_TIMEOUTS.with(|timeouts| timeouts.set(Some((head, get))));
+}
+
+#[test]
+fn a_server_that_never_answers_head_is_downloaded_after_the_short_wait_for_it() {
+    let size = 24 * MIB + 12_345;
+    let server = Server::start(Config {
+        size,
+        head_hung: true,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("head-hung");
+    let output = directory.0.join("payload.bin");
+    // The wait for the `GET` is far longer than the one for the `HEAD`, so that it shows which of
+    // the two ended the `HEAD`.
+    probe_waits(Duration::from_millis(300), Duration::from_secs(20));
+    forget_writes();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    // One attempt: the HEAD that nothing answered, then the one-byte ranged GET in its place.
+    assert_eq!(log[0].method, "HEAD");
+    assert!(log[0].answered.is_none());
+    assert_eq!(log.iter().filter(|e| e.method == "HEAD").count(), 1);
+    assert_eq!(log[1].method, "GET");
+    assert_eq!(log[1].range.as_deref(), Some("bytes=0-0"));
+    let waited = log[1].arrived.duration_since(log[0].arrived);
+    assert!(
+        waited >= Duration::from_millis(250) && waited < Duration::from_secs(10),
+        "the HEAD was given up on after {waited:?}"
+    );
+    assert_tiles(delivered(&log, size), size);
+}
+
+#[test]
+fn a_server_that_hangs_on_head_and_on_the_ranged_get_fails_after_one_wait_for_each() {
+    let server = Server::start(Config {
+        size: 5 * MIB,
+        head_hung: true,
+        first_byte_delay: Some(Duration::from_secs(3)),
+        ..Config::default()
+    });
+    probe_waits(Duration::from_millis(200), Duration::from_millis(500));
+    let began = Instant::now();
+    let error = prepare_auto(
+        &request_for(&server),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("The server information could not be retrieved")
+            || format!("{error:#}").contains("Sunucu bilgileri alınamadı"),
+        "{error:#}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        began.elapsed()
+    );
+    let log = server.log();
+    assert_eq!(
+        log.iter()
+            .map(|entry| (entry.method.as_str(), entry.range.as_deref()))
+            .collect::<Vec<_>>(),
+        [("HEAD", None), ("GET", Some("bytes=0-0"))]
+    );
+}
+
+#[test]
+fn a_tls_handshake_that_hangs_is_given_up_on_after_one_connection_and_not_asked_again_by_get() {
+    // A server that takes the connection and never answers the handshake. The `HEAD` times out
+    // before the handshake has finished, so the server was not heard from and the one-byte `GET`
+    // would hang the same way: it is not sent.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server = {
+        let (accepted, stop) = (accepted.clone(), stop.clone());
+        thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        accepted.fetch_add(1, Ordering::AcqRel);
+                        held.push(stream);
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        })
+    };
+    probe_waits(Duration::from_millis(400), Duration::from_millis(400));
+    let url = format!("https://{address}/payload.bin");
+    let error = probe_http(
+        &file_request(url.clone()),
+        validate_source_url(&url).unwrap(),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("The server information could not be retrieved")
+            || format!("{error:#}").contains("Sunucu bilgileri alınamadı"),
+        "{error:#}"
+    );
+    // Any connection of a fallback would have been made by now.
+    thread::sleep(Duration::from_millis(300));
+    stop.store(true, Ordering::Release);
+    server.join().unwrap();
+    assert_eq!(accepted.load(Ordering::Acquire), 1);
+}
+
 #[test]
 fn a_probe_whose_head_is_dropped_takes_the_size_and_validators_from_the_ranged_get() {
     let size = 5 * MIB + 3;
@@ -3158,6 +3288,124 @@ fn file_request(url: String) -> AddRequest {
     }
 }
 
+/// The error of a download from `url` that fails.
+fn failed_fetch(url: String) -> anyhow::Error {
+    let directory = TempDir::new("network-code");
+    fetch(
+        &file_request(url),
+        &directory.0.join("payload.bin"),
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap_err()
+}
+
+/// A server that accepts `connections` connections, answers each with `reply` (after reading
+/// what the client sent first, if there is a reply) and closes it. Returns its port.
+fn closing_server(reply: Option<&'static [u8]>, connections: usize) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for _ in 0..connections {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            if let Some(reply) = reply {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let _ = stream.read(&mut [0u8; 1024]);
+                let _ = stream.write_all(reply);
+            }
+        }
+    });
+    port
+}
+
+#[test]
+fn a_status_that_fails_the_download_is_reported_with_the_network_code_of_its_class() {
+    use crate::error_codes::*;
+    for (status, code) in [
+        (404, NET_005),
+        (410, NET_014),
+        (403, NET_012),
+        (401, NET_012),
+        (408, NET_015),
+        (501, NET_016),
+        (500, NET_013),
+        (502, NET_013),
+        (503, NET_006),
+        (429, NET_006),
+    ] {
+        let server = Server::start(Config {
+            size: MIB,
+            scripted: vec![
+                Scripted {
+                    status,
+                    retry_after: None
+                };
+                8
+            ],
+            ..Config::default()
+        });
+        let error = failed_fetch(server.url("/payload.bin"));
+        assert_eq!(network_code(&error), Some(code), "HTTP {status}: {error:#}");
+        assert_eq!(http_status(&error), Some(u32::from(status)));
+    }
+}
+
+#[test]
+fn a_connection_that_is_refused_is_reported_as_the_server_not_being_reached() {
+    // A port that nothing listens on.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let error = failed_fetch(format!("http://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_011),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_server_that_closes_the_connection_without_an_answer_is_reported_as_a_reset_connection() {
+    // The HEAD gets nothing, then the ranged GET that takes its place gets nothing either.
+    let port = closing_server(None, 4);
+    let error = failed_fetch(format!("http://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_008),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_server_that_does_not_speak_tls_fails_an_https_download_with_the_tls_code() {
+    let port = closing_server(
+        Some(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+        4,
+    );
+    let error = failed_fetch(format!("https://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_002),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_name_that_does_not_resolve_is_reported_as_a_dns_failure() {
+    // A label of 64 bytes cannot be put in a DNS query (the limit is 63), so libcurl fails at once
+    // and locally: no resolver, not even one that answers every name, is asked.
+    let error = failed_fetch(format!("http://{}.invalid/payload.bin", "a".repeat(64)));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_001),
+        "{error:#}"
+    );
+}
+
 /// A server that sends the web page `kind` instead of a file: what a sign-in redirect ends on.
 fn page_server(size: u64, kind: &str) -> Server {
     Server::start(Config {
@@ -4012,6 +4260,32 @@ fn the_name_the_user_chose_and_the_content_disposition_win_over_the_name_a_redir
     assert_eq!(
         saved_as(&file_request(disposition.url("/get")), size),
         "from-header.bin"
+    );
+}
+
+#[test]
+fn a_name_from_the_server_never_keeps_a_bidirectional_control() {
+    let size = 4_000;
+    // The name of the Content-Disposition header, in the encoded form that carries any text.
+    let disposition = Server::start(Config {
+        size,
+        content_disposition: Some("attachment; filename*=UTF-8''invoice%E2%80%AEfdp.exe".into()),
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(disposition.url("/get")), size),
+        "invoice_fdp.exe"
+    );
+
+    // The name of the address that a redirect led to.
+    let redirected = Server::start(Config {
+        size,
+        documents: vec![redirect_document("/get", 302, "/files/%E2%80%AEtxt.exe")],
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(redirected.url("/get")), size),
+        "_txt.exe"
     );
 }
 

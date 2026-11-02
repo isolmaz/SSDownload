@@ -149,6 +149,10 @@ pub struct Config {
     /// A `HEAD` is read and the connection is then closed without an answer, as a server that
     /// cannot handle the method does. The request is logged with status 0 and no answer time.
     pub head_dropped: bool,
+    /// A `HEAD` is read and then never answered, as a server that swallows the method does: the
+    /// connection stays silent until the client closes it or `STALL_LIMIT` has passed. The
+    /// request is logged with status 0 and no answer time.
+    pub head_hung: bool,
     /// Without it a `GET` answer has no `Content-Length` and its body ends with the connection.
     pub get_length_header: bool,
     pub etag: EtagKind,
@@ -262,6 +266,7 @@ impl Default for Config {
             head_etag: None,
             head_bare: false,
             head_dropped: false,
+            head_hung: false,
             get_length_header: true,
             etag: EtagKind::Strong,
             vary_etag: false,
@@ -893,6 +898,8 @@ struct Reply {
     document: Option<Vec<u8>>,
     /// Nothing is sent and the connection is closed.
     dropped: bool,
+    /// Nothing is sent and the connection stays open.
+    hung: bool,
 }
 
 impl Reply {
@@ -907,6 +914,7 @@ impl Reply {
             omit_length: false,
             document: None,
             dropped: false,
+            hung: false,
         }
     }
 }
@@ -1177,6 +1185,10 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
             dropped: true,
             ..Reply::empty(0)
         },
+        "HEAD" if config.head_hung => Reply {
+            hung: true,
+            ..Reply::empty(0)
+        },
         "HEAD" if config.head_not_allowed => {
             let mut reply = Reply::empty(405);
             reply.headers.push("Allow: GET".into());
@@ -1355,6 +1367,10 @@ fn answer(
         thread::sleep(delay);
     }
     if reply.dropped {
+        return false;
+    }
+    if reply.hung {
+        hold(shared, stream);
         return false;
     }
     // Noted before the answer goes out, so that a client that has its answer finds it logged.
@@ -1793,6 +1809,28 @@ mod tests {
             ..config(1000)
         });
         assert!(try_request(&mut connect(&server), "HEAD", "/", &[]).is_none());
+        let part = request(&mut connect(&server), "GET", "/", &["Range: bytes=0-0"]);
+        assert_eq!((part.status, part.body.len()), (206, 1));
+
+        let log = server.log();
+        assert_eq!((log[0].method.as_str(), log[0].status), ("HEAD", 0));
+        assert!(log[0].answered.is_none());
+        assert_eq!((log[1].method.as_str(), log[1].status), ("GET", 206));
+    }
+
+    #[test]
+    fn a_hung_head_gets_no_answer_until_the_client_gives_up_and_every_other_request_is_served() {
+        let server = Server::start(Config {
+            head_hung: true,
+            ..config(1000)
+        });
+        let mut waiting = connect(&server);
+        waiting
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        assert!(try_request(&mut waiting, "HEAD", "/", &[]).is_none());
+        drop(waiting);
         let part = request(&mut connect(&server), "GET", "/", &["Range: bytes=0-0"]);
         assert_eq!((part.status, part.body.len()), (206, 1));
 
