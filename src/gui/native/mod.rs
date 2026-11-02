@@ -1031,14 +1031,20 @@ unsafe fn dispatch(ui: &MainUi, action: Action) {
     }
 }
 
+/// The state of a job, and its phase when that says more than the state. A phase that
+/// only repeats the state ("Downloading" or the plain "Downloading media") is left out;
+/// one that goes on from the plain phase ("Downloading media; the server is limiting
+/// requests") already names the state, so it stands alone.
 fn state_label(job: &Job) -> String {
     let label = job.state.label();
     let phase = job.phase.trim();
-    // The plain transfer phase repeats the state ("Downloading — Downloading").
-    if job.state.is_active() && !phase.is_empty() && phase != label {
-        format!("{label} — {phase}")
-    } else {
-        label.to_string()
+    if !job.state.is_active() || phase.is_empty() || phase == label {
+        return label.to_string();
+    }
+    match job.state.plain_phase() {
+        Some(plain) if phase == plain => label.to_string(),
+        Some(plain) if phase.starts_with(plain) => phase.to_string(),
+        _ => format!("{label} — {phase}"),
     }
 }
 fn format_bytes(value: u64) -> String {
@@ -4376,6 +4382,16 @@ fn short_error(job: &Job, value: &str) -> &'static str {
     }
 }
 
+/// The Error line of the details pane: the failure's code and short message, then what to
+/// do about it. The whole text stays in the error details.
+fn error_summary(job: &Job, error: &str) -> String {
+    let hint = short_error(job, error);
+    match crate::error_codes::from_text(error) {
+        Some(code) => format!("{} — {hint}", crate::error_codes::labelled_message(code)),
+        None => hint.to_string(),
+    }
+}
+
 fn display_url(value: &str) -> String {
     if let Ok(mut url) = url::Url::parse(value) {
         let _ = url.set_username("");
@@ -4502,7 +4518,7 @@ unsafe fn update_details(ui: &MainUi) {
         crate::i18n::ui("Zamanlama", "Schedule"), scheduled,
         crate::i18n::ui("Konum", "Location"), job.path.display(),
         crate::i18n::ui("URL", "URL"), display_url(&job.request.url),
-        job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), display_text(ui.snapshot.settings.debug_mode, short_error(job, error)))).unwrap_or_default());
+        job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), display_text(ui.snapshot.settings.debug_mode, &error_summary(job, error)))).unwrap_or_default());
     set_text(ui.details, &body);
     update_status(ui);
 }
@@ -8317,12 +8333,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn state_label_shows_a_phase_only_when_it_adds_something() {
-        use crate::model::{AddRequest, Job, JobState};
-        let job = |state: JobState, phase: &str| Job {
+    /// A job in `state` with `phase`, for the text the lists show.
+    fn job_in(state: crate::model::JobState, phase: &str) -> crate::model::Job {
+        crate::model::Job {
             id: "job".into(),
-            request: AddRequest::default(),
+            request: crate::model::AddRequest::default(),
             name: "file.bin".into(),
             state,
             path: "file.bin".into(),
@@ -8345,7 +8360,13 @@ mod tests {
             open_when_done: false,
             live: false,
             sequence: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn state_label_shows_a_phase_only_when_it_adds_something() {
+        use crate::model::JobState;
+        let job = job_in;
         let downloading = JobState::Downloading.label();
         assert_eq!(
             super::state_label(&job(JobState::Downloading, downloading)),
@@ -8362,6 +8383,93 @@ mod tests {
         assert_eq!(
             super::state_label(&job(JobState::Paused, "MP4")),
             JobState::Paused.label()
+        );
+    }
+
+    #[test]
+    fn the_plain_media_phase_does_not_repeat_the_state_in_any_language() {
+        use crate::model::JobState;
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let code = info.code;
+                let downloading = JobState::Downloading.label();
+                let processing = JobState::Processing.label();
+                let plain = crate::i18n::ui("Medya indiriliyor", "Downloading media");
+                let limited = crate::i18n::ui(
+                    "Medya indiriliyor; sunucu istekleri sınırlıyor",
+                    "Downloading media; the server is limiting requests",
+                );
+                assert!(
+                    limited.starts_with(plain),
+                    "{code}: the longer phase goes on from the plain one"
+                );
+                assert_eq!(
+                    super::state_label(&job_in(JobState::Downloading, plain)),
+                    downloading,
+                    "{code}: the plain download phase"
+                );
+                assert_eq!(
+                    super::state_label(&job_in(JobState::Downloading, limited)),
+                    limited,
+                    "{code}: a phase that goes on from the plain one stands alone"
+                );
+                assert_eq!(
+                    super::state_label(&job_in(
+                        JobState::Processing,
+                        crate::i18n::ui("Medya işleniyor", "Processing media")
+                    )),
+                    processing,
+                    "{code}: the plain processing phase"
+                );
+                let converting = crate::i18n::ui_format!(
+                    "Ses {0} biçimine dönüştürülüyor: %{1}",
+                    "Converting the audio to {0}: {1}%",
+                    "MP3",
+                    40
+                );
+                assert_eq!(
+                    super::state_label(&job_in(JobState::Processing, &converting)),
+                    format!("{processing} — {converting}"),
+                    "{code}: a phase that says more is added to the state"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_error_line_names_the_code_and_the_short_message_of_every_code() {
+        use crate::model::JobState;
+        let failed = job_in(JobState::Failed, "");
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                for entry in crate::error_codes::TABLE {
+                    let error = format!("{} {}", entry.code, "the whole text of the failure");
+                    let line = super::error_summary(&failed, &error);
+                    let label = crate::error_codes::labelled_message(entry.code);
+                    assert!(
+                        label.len() > entry.code.to_string().len() + 1,
+                        "{} / {}: the code has a message",
+                        info.code,
+                        entry.code
+                    );
+                    assert!(
+                        line.starts_with(&label),
+                        "{} / {}: {line}",
+                        info.code,
+                        entry.code
+                    );
+                    assert!(
+                        !line.contains("the whole text of the failure"),
+                        "the full text stays in the error details: {line}"
+                    );
+                }
+            });
+        }
+        let plain = "fragment 7: connection reset";
+        assert_eq!(
+            super::error_summary(&failed, plain),
+            super::short_error(&failed, plain),
+            "a failure without a code has the hint only"
         );
     }
 
@@ -12838,6 +12946,96 @@ mod tests {
                 );
             }
             assert!(wrong.is_empty(), "{wrong:#?}");
+        }
+
+        #[test]
+        fn a_disabled_push_button_is_dimmed_clearly_in_the_dark_scheme_and_left_alone_in_the_light_one(
+        ) {
+            for dark in [true, false] {
+                with_styled_dialog(
+                    dark,
+                    settings_advanced,
+                    560,
+                    settings_height(false),
+                    |dialog| unsafe {
+                        let button = add_button(dialog, "Browse", BS_PUSHBUTTON, 0, dark);
+                        let skip = CDRF_SKIPDEFAULT as isize;
+                        let default = CDRF_DODEFAULT as isize;
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, button),
+                            default,
+                            "dark {dark}: an enabled push button is the theme's"
+                        );
+                        let enabled = paint(button, 0);
+                        EnableWindow(button, 0);
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, button),
+                            if dark { skip } else { default },
+                            "dark {dark}: a disabled push button"
+                        );
+                        if !dark {
+                            return;
+                        }
+                        let disabled = paint(button, 0);
+                        // The label, away from the border and the corners.
+                        let label = |face: &Face| {
+                            let mut top = [0; 3];
+                            for y in 4..face.height - 4 {
+                                for x in 8..face.width - 8 {
+                                    for (channel, value) in top.iter_mut().enumerate() {
+                                        *value = (*value)
+                                            .max((face.pixel(x, y) >> (16 - 8 * channel)) & 255);
+                                    }
+                                }
+                            }
+                            top
+                        };
+                        assert_eq!(label(&disabled), channels(DARK_MUTED), "the disabled label");
+                        let (enabled, disabled) = (label(&enabled), label(&disabled));
+                        for channel in 0..3 {
+                            assert!(
+                                enabled[channel] >= disabled[channel] + 0x30,
+                                "the enabled label {enabled:02x?} is clearly brighter than the disabled one {disabled:02x?}"
+                            );
+                        }
+                    },
+                );
+            }
+        }
+
+        #[test]
+        fn a_disabled_push_button_with_an_icon_a_bitmap_or_wrapped_text_is_left_to_the_theme() {
+            with_styled_dialog(
+                true,
+                settings_advanced,
+                560,
+                settings_height(false),
+                |dialog| unsafe {
+                    for (what, style) in [
+                        ("an icon", BS_PUSHBUTTON | BS_ICON),
+                        ("a bitmap", BS_PUSHBUTTON | BS_BITMAP),
+                        ("wrapped text", BS_PUSHBUTTON | BS_MULTILINE),
+                        (
+                            "a default button with wrapped text",
+                            BS_DEFPUSHBUTTON | BS_MULTILINE,
+                        ),
+                    ] {
+                        let button = add_button(dialog, what, style, 0, true);
+                        assert_eq!(
+                            GetWindowLongPtrW(button, GWL_STYLE) as u32 & style as u32,
+                            style as u32,
+                            "{what} has its style"
+                        );
+                        EnableWindow(button, 0);
+                        assert_eq!(
+                            custom_draw_answer(dialog.hwnd, button),
+                            CDRF_DODEFAULT as isize,
+                            "a disabled push button with {what}"
+                        );
+                        DestroyWindow(button);
+                    }
+                },
+            );
         }
 
         #[test]

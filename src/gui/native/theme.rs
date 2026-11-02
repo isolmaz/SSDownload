@@ -1503,11 +1503,46 @@ pub(super) unsafe fn paint_theme(
         _ => None,
     }
 }
+/// A disabled push button in the dark scheme. The theme dims its label so little that the
+/// button reads as enabled, so uxtheme draws the disabled face and the label is drawn here
+/// in the scheme's muted colour on one line. An enabled button, and one that shows an icon
+/// or a bitmap or wraps its text, is left to the window.
+unsafe fn paint_disabled_push_button(draw: &NMCUSTOMDRAW, button: HWND) -> Option<LRESULT> {
+    let own = (BS_ICON | BS_BITMAP | BS_MULTILINE) as u32;
+    if IsWindowEnabled(button) != 0 || GetWindowLongPtrW(button, GWL_STYLE) as u32 & own != 0 {
+        return None;
+    }
+    let theme = OpenThemeData(button, wide("Button").as_ptr());
+    if theme == 0 {
+        return None;
+    }
+    let dc = draw.hdc;
+    let saved = SaveDC(dc);
+    DrawThemeBackground(theme, dc, BP_PUSHBUTTON, PBS_DISABLED, &draw.rc, null());
+    CloseThemeData(theme);
+    let font = SendMessageW(button, WM_GETFONT, 0, 0);
+    if font != 0 {
+        SelectObject(dc, font as HGDIOBJ);
+    }
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, DARK_MUTED);
+    let mut text = vec![0u16; GetWindowTextLengthW(button).max(0) as usize + 1];
+    let length = GetWindowTextW(button, text.as_mut_ptr(), text.len() as i32).max(0);
+    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+    if SendMessageW(button, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    let mut area = draw.rc;
+    DrawTextW(dc, text.as_mut_ptr(), length, &mut area, flags);
+    RestoreDC(dc, saved);
+    Some(CDRF_SKIPDEFAULT as LRESULT)
+}
 /// A check box in the dark scheme. The themed button draws its label in the
 /// theme's own text colour, which ignores WM_CTLCOLORBTN and is dark on some
 /// Windows 11 builds, so uxtheme draws the box and the label is drawn here in
-/// the scheme's colours. This answers the NM_CUSTOMDRAW of a check box; any
-/// other notification and any other kind of button is left to the window.
+/// the scheme's colours. This answers the NM_CUSTOMDRAW of a check box and of a
+/// disabled push button; any other notification and any other kind of button is
+/// left to the window.
 unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
     if (*(lparam as *const NMHDR)).code != NM_CUSTOMDRAW {
         return None;
@@ -1519,6 +1554,9 @@ unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
     }
     let style = GetWindowLongPtrW(button, GWL_STYLE) as u32;
     let kind = (style & BS_TYPEMASK as u32) as i32;
+    if kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON {
+        return paint_disabled_push_button(draw, button);
+    }
     // A push-like check box looks like a button; the wizard's cards paint themselves.
     if !(kind == BS_CHECKBOX || kind == BS_AUTOCHECKBOX) || style & BS_PUSHLIKE as u32 != 0 {
         return None;

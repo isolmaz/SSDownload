@@ -350,6 +350,15 @@ impl JobState {
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
+    /// What a media transfer calls its phase while it only does what this state says. A
+    /// longer phase that starts with it states the same activity and adds to it.
+    pub fn plain_phase(self) -> Option<&'static str> {
+        match self {
+            Self::Downloading => Some(crate::i18n::ui("Medya indiriliyor", "Downloading media")),
+            Self::Processing => Some(crate::i18n::ui("Medya işleniyor", "Processing media")),
+            _ => None,
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::Queued => crate::i18n::ui("Sırada", "Queued"),
