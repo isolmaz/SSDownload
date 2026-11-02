@@ -722,6 +722,52 @@ fn a_server_that_hangs_on_head_and_on_the_ranged_get_fails_after_one_wait_for_ea
 }
 
 #[test]
+fn a_tls_handshake_that_hangs_is_given_up_on_after_one_connection_and_not_asked_again_by_get() {
+    // A server that takes the connection and never answers the handshake. The `HEAD` times out
+    // before the handshake has finished, so the server was not heard from and the one-byte `GET`
+    // would hang the same way: it is not sent.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server = {
+        let (accepted, stop) = (accepted.clone(), stop.clone());
+        thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        accepted.fetch_add(1, Ordering::AcqRel);
+                        held.push(stream);
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        })
+    };
+    probe_waits(Duration::from_millis(400), Duration::from_millis(400));
+    let url = format!("https://{address}/payload.bin");
+    let error = probe_http(
+        &file_request(url.clone()),
+        validate_source_url(&url).unwrap(),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("The server information could not be retrieved")
+            || format!("{error:#}").contains("Sunucu bilgileri alınamadı"),
+        "{error:#}"
+    );
+    // Any connection of a fallback would have been made by now.
+    thread::sleep(Duration::from_millis(300));
+    stop.store(true, Ordering::Release);
+    server.join().unwrap();
+    assert_eq!(accepted.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn a_probe_whose_head_is_dropped_takes_the_size_and_validators_from_the_ranged_get() {
     let size = 5 * MIB + 3;
     let server = Server::start(Config {
