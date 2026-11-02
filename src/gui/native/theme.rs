@@ -1664,13 +1664,54 @@ pub(super) unsafe fn allow_dark_mode_for_window() -> Option<AllowDarkModeForWind
         std::sync::LazyLock::new(|| unsafe { uxtheme_export(133) });
     (*ADDRESS != 0).then(|| std::mem::transmute::<usize, AllowDarkModeForWindow>(*ADDRESS))
 }
+/// The build number of Windows. `RtlGetVersion` states the real one, where GetVersionEx
+/// answers what the manifest asks for; 0 when it cannot be read.
+pub(super) fn windows_build() -> u32 {
+    static BUILD: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| unsafe {
+        type RtlGetVersion = unsafe extern "system" fn(
+            *mut windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW,
+        ) -> i32;
+        let module = GetModuleHandleW(wide("ntdll.dll").as_ptr());
+        if module.is_null() {
+            return 0;
+        }
+        let Some(address) = GetProcAddress(module, c"RtlGetVersion".as_ptr().cast()) else {
+            return 0;
+        };
+        let get = std::mem::transmute::<usize, RtlGetVersion>(address as usize);
+        let mut info: windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW = zeroed();
+        info.dwOSVersionInfoSize = size_of_val(&info) as u32;
+        if get(&mut info) == 0 {
+            info.dwBuildNumber
+        } else {
+            0
+        }
+    });
+    *BUILD
+}
+/// Windows 10 1809 is the one build whose uxtheme ordinal 135 is AllowDarkModeForApp, which
+/// takes a bool; every later build has SetPreferredAppMode there, which takes the mode.
+const BOOL_APP_MODE_BUILD: u32 = 17763;
+/// What ordinal 135 is called with on `build` for an app that wants dark (`enabled`) or light
+/// menus: the mode ForceDark or ForceLight, or on 1809 the bool that allows dark menus or not.
+/// The mode numbers would both read as true there, and the menus would follow the desktop.
+fn app_mode_argument(build: u32, enabled: bool) -> i32 {
+    if build == BOOL_APP_MODE_BUILD {
+        enabled as i32
+    } else if enabled {
+        2
+    } else {
+        3
+    }
+}
 /// Opts the process into the shell colour scheme so comctl32 draws menus,
 /// combo boxes and list headers dark too. The app's own setting decides, not the
 /// desktop's: ForceDark keeps popup menus dark on a light desktop and ForceLight
-/// keeps a light dialog light on a dark one.
+/// keeps a light dialog light on a dark one. Windows 10 1809 has no such modes: it can
+/// allow dark menus, which then follow a dark desktop, or disallow them.
 pub(super) unsafe fn dark_app_mode(enabled: bool) {
     if let Some(set_mode) = set_preferred_app_mode() {
-        set_mode(if enabled { 2 } else { 3 });
+        set_mode(app_mode_argument(windows_build(), enabled));
     }
     if let Some(flush) = flush_menu_themes() {
         flush();
@@ -2016,10 +2057,32 @@ pub(super) unsafe extern "system" fn progress_proc(
 #[cfg(test)]
 mod tests {
     use super::{
-        processing_sweep, progress_colour, progress_fraction, set_dark_caption_with,
-        split_mnemonic, SWEEP_ONE_WAY_MS,
+        app_mode_argument, processing_sweep, progress_colour, progress_fraction,
+        set_dark_caption_with, split_mnemonic, windows_build, SWEEP_ONE_WAY_MS,
     };
     use crate::model::JobState;
+
+    #[test]
+    fn windows_10_1809_is_told_dark_or_light_as_a_bool_and_every_other_build_as_a_mode() {
+        // ForceDark and ForceLight.
+        for build in [17134, 18362, 19041, 19045, 22000, 26100, 26200] {
+            assert_eq!(app_mode_argument(build, true), 2, "build {build}: dark");
+            assert_eq!(app_mode_argument(build, false), 3, "build {build}: light");
+        }
+        // AllowDarkModeForApp(TRUE) and AllowDarkModeForApp(FALSE).
+        assert_eq!(app_mode_argument(17763, true), 1);
+        assert_eq!(app_mode_argument(17763, false), 0);
+        // A build that could not be read gets the modes.
+        assert_eq!(app_mode_argument(0, true), 2);
+        assert_eq!(app_mode_argument(0, false), 3);
+    }
+
+    #[test]
+    fn the_build_comes_from_windows_and_not_from_the_compatibility_answer() {
+        // GetVersionEx tells a program without a manifest, such as this test, that it runs on
+        // Windows 8 (build 9200).
+        assert!(windows_build() >= 10240, "build {}", windows_build());
+    }
 
     /// The attributes the title bar setting is stored under, in the order they
     /// are tried, with the value each call carries.
