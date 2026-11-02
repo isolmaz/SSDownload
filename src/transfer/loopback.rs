@@ -3772,11 +3772,14 @@ fn a_page_that_answers_for_a_file_of_another_type_is_refused_without_a_redirect(
 
 #[test]
 fn a_page_is_recognised_by_how_it_opens_whatever_the_rest_of_it_is() {
-    let starts: [&[u8]; 4] = [
+    let starts: [&[u8]; 7] = [
         PAGE_START,
         b"\xEF\xBB\xBF\r\n  <HTML lang=en>",
         b"<script>location='/login'</script>",
         b"<title>Sign in</title>",
+        b"<div id=login>",
+        b"<!-- sign in -->",
+        b"<?xml version=\"1.0\"?>\n<!DOCTYPE html>",
     ];
     for start in starts {
         let page = Server::start(Config {
@@ -3806,7 +3809,8 @@ fn a_file_served_with_a_page_type_is_saved_when_its_bytes_are_no_page() {
         ("data.csv", "id,name\n1,a\n"),
         ("notes.txt", "hello"),
         ("data.json", "{\"html\": \"<html>\"}\n"),
-        ("feed.xml", "<?xml version=\"1.0\"?><html/>"),
+        ("feed.xml", "<?xml version=\"1.0\"?><feed/>"),
+        ("header.txt", "<header>"),
         ("tiny.txt", "<"),
         ("blank.txt", "\n"),
     ] {
