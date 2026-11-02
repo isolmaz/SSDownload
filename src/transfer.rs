@@ -27,6 +27,11 @@ const MAX_SEGMENT_SIZE: u64 = 8 * 1024 * 1024;
 const MIN_SPLIT_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
+/// How long the probe waits for a `HEAD`, connecting included. A `HEAD` carries no body, so one
+/// that has had no answer by then is not going to get one; the ranged `GET` that follows it is
+/// given `PROBE_TIMEOUT`, so a server that hangs on both costs the two together.
+const HEAD_TIMEOUT: Duration = Duration::from_secs(20);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long a lease has to flow before its rate is taken for the rate it keeps. The bytes of the
 /// first moments of a transfer come unevenly (a new connection ramps up, writes arrive in
 /// bursts), and a lease cut on a rate seen over less than this is cut on noise. It is longer
@@ -194,6 +199,9 @@ thread_local! {
     static TEST_START_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
     /// The sources of the digests that verified the files the current test thread finished.
     static TEST_VERIFIED: RefCell<Vec<digest::Source>> = const { RefCell::new(Vec::new()) };
+    /// Replaces `HEAD_TIMEOUT` and `PROBE_TIMEOUT` of the probes that the current test thread
+    /// starts.
+    static TEST_PROBE_TIMEOUTS: std::cell::Cell<Option<(Duration, Duration)>> = const { std::cell::Cell::new(None) };
 }
 
 /// What a cycle does with the record once the part file is durable.
@@ -3927,14 +3935,46 @@ fn download_ftp_resuming(
     )
 }
 
-/// Whether a failed `HEAD` got no answer: an empty reply or a reset connection. A server that
-/// does not handle `HEAD` can do that, and a ranged `GET` can still succeed. Through an HTTPS
-/// proxy, a `CONNECT` that the proxy aborts is reported as a reset too, so the server may never
-/// have been reached; the `GET` then fails at once in the same way. A failure to resolve a name,
-/// connect, secure the connection or send the request, an HTTP/2 error, a timeout and a stop are
-/// not this: the `GET` would fail the same way and take as long again.
-fn head_unanswered(error: &curl::Error) -> bool {
-    error.is_got_nothing() || error.is_recv_error()
+/// Whether a failed `HEAD` got no answer from a server that was reached: an empty reply, a reset
+/// connection, a request that could not be sent to the open connection, an HTTP/2 error before
+/// the response (libcurl ignores one after the response headers of a `HEAD`), or a timeout
+/// with nothing received (`hung`). A server that does not handle `HEAD` can do any of
+/// these, and a ranged `GET` can still succeed. Through an HTTPS proxy, a `CONNECT` that the
+/// proxy aborts is reported as a reset too, so the server may never have been reached; the `GET`
+/// then fails at once in the same way. A failure to resolve a name, connect or secure the
+/// connection, a timeout before the connection was made, and a stop are not this: the `GET`
+/// would fail the same way and take as long again.
+fn head_unanswered(error: &curl::Error, hung: bool) -> bool {
+    error.is_got_nothing()
+        || error.is_recv_error()
+        || error.is_send_error()
+        || error.is_http2_error()
+        || error.is_http2_stream_error()
+        || (error.is_operation_timedout() && hung)
+}
+
+/// Whether the connection to the server was made, and secured when the address is HTTPS.
+/// libcurl notes these times when the step has finished, so a connect or a handshake that timed
+/// out leaves none.
+fn connection_made(easy: &GovernedEasy, url: &Url) -> bool {
+    let time = if url.scheme() == "https" {
+        easy.appconnect_time()
+    } else {
+        easy.connect_time()
+    };
+    time.is_ok_and(|time| !time.is_zero())
+}
+
+fn probe_timeout(head: bool) -> Duration {
+    #[cfg(test)]
+    if let Some((head_timeout, get_timeout)) = TEST_PROBE_TIMEOUTS.with(std::cell::Cell::get) {
+        return if head { head_timeout } else { get_timeout };
+    }
+    if head {
+        HEAD_TIMEOUT
+    } else {
+        PROBE_TIMEOUT
+    }
 }
 
 fn probe_http(
@@ -3960,7 +4000,7 @@ fn probe_http(
             easy.range("0-0")?;
         }
         easy.progress(true)?;
-        easy.timeout(Duration::from_secs(45))?;
+        easy.timeout(probe_timeout(!use_get))?;
         easy.follow_location(false)?;
         easy.http_headers(build_headers(request, &url, &original_origin, None)?)?;
         let response = Rc::new(RefCell::new(ResponseHeaders::default()));
@@ -3999,9 +4039,12 @@ fn probe_http(
             continue;
         }
         if let Err(error) = result {
-            if !use_get && head_unanswered(&error) {
-                use_get = true;
-                continue;
+            if !use_get {
+                let hung = headers.status == 0 && connection_made(&easy, &url);
+                if head_unanswered(&error, hung) {
+                    use_get = true;
+                    continue;
+                }
             }
             if !(use_get && error.is_write_error() && headers.headers_complete) {
                 return Err(governed_transport_error(
@@ -6231,24 +6274,111 @@ mod tests {
     }
 
     #[test]
-    fn only_an_empty_reply_or_a_reset_sends_a_failed_head_to_the_ranged_get() {
-        let unanswered = |code| head_unanswered(&curl::Error::new(code));
-        assert!(unanswered(curl_sys::CURLE_GOT_NOTHING));
-        assert!(unanswered(curl_sys::CURLE_RECV_ERROR));
+    fn a_failed_head_goes_on_to_the_ranged_get_only_when_a_server_that_was_reached_gave_no_answer()
+    {
+        let unanswered = |code, hung| head_unanswered(&curl::Error::new(code), hung);
+        // The connection was made and the request went out, and nothing came back: an empty
+        // reply, a reset, a request that the open connection refused, an HTTP/2 stream or
+        // session that ended before the response.
         for code in [
-            curl_sys::CURLE_COULDNT_RESOLVE_PROXY,
-            curl_sys::CURLE_COULDNT_RESOLVE_HOST,
-            curl_sys::CURLE_COULDNT_CONNECT,
-            curl_sys::CURLE_OPERATION_TIMEDOUT,
-            curl_sys::CURLE_SSL_CONNECT_ERROR,
-            curl_sys::CURLE_PEER_FAILED_VERIFICATION,
-            curl_sys::CURLE_ABORTED_BY_CALLBACK,
+            curl_sys::CURLE_GOT_NOTHING,
+            curl_sys::CURLE_RECV_ERROR,
             curl_sys::CURLE_SEND_ERROR,
             curl_sys::CURLE_HTTP2,
             curl_sys::CURLE_HTTP2_STREAM,
         ] {
-            assert!(!unanswered(code), "curl error {code}");
+            assert!(unanswered(code, false), "curl error {code}");
         }
+        // A timeout is this only when the connection was made and the server sent nothing.
+        assert!(unanswered(curl_sys::CURLE_OPERATION_TIMEDOUT, true));
+        assert!(!unanswered(curl_sys::CURLE_OPERATION_TIMEDOUT, false));
+        // The GET would fail the same way and take as long again, whether or not a server hung.
+        for code in [
+            curl_sys::CURLE_COULDNT_RESOLVE_PROXY,
+            curl_sys::CURLE_COULDNT_RESOLVE_HOST,
+            curl_sys::CURLE_COULDNT_CONNECT,
+            curl_sys::CURLE_SSL_CONNECT_ERROR,
+            curl_sys::CURLE_PEER_FAILED_VERIFICATION,
+            curl_sys::CURLE_ABORTED_BY_CALLBACK,
+        ] {
+            assert!(!unanswered(code, false), "curl error {code}");
+            assert!(!unanswered(code, true), "curl error {code} after a hang");
+        }
+    }
+
+    /// A server that resets the connection of a `HEAD` by closing it with the request unread, and
+    /// serves the one-byte ranged `GET` that follows. Returns the address and, once the `GET` has
+    /// been served, the requests the server saw.
+    fn head_resetting_server() -> (SocketAddr, mpsc::Receiver<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (done, seen) = mpsc::channel();
+        thread::spawn(move || {
+            let mut resets = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut first = [0u8; 5];
+                let read = loop {
+                    let read = stream.peek(&mut first).unwrap_or(0);
+                    if read == 0 || read == first.len() {
+                        break read;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                };
+                if read == 0 {
+                    continue;
+                }
+                if &first == b"HEAD " {
+                    resets.push("HEAD".to_owned());
+                    drop(stream);
+                    continue;
+                }
+                let request = read_request(&mut stream);
+                response(
+                    &mut stream,
+                    "206 Partial Content",
+                    &["Content-Range: bytes 0-0/13", "ETag: \"reset-v1\""],
+                    b"x",
+                );
+                resets.push(request);
+                done.send(resets).unwrap();
+                return;
+            }
+        });
+        (address, seen)
+    }
+
+    #[test]
+    fn a_head_that_the_server_resets_goes_on_to_the_ranged_get_in_the_same_attempt() {
+        let (address, seen) = head_resetting_server();
+        let url = format!("http://{address}/payload.bin");
+
+        // A `HEAD` to this server fails as a reset or a request that could not be sent, not as an
+        // empty reply, which `head_dropped` in the loopback tests covers.
+        let mut easy = curl::easy::Easy::new();
+        easy.url(&url).unwrap();
+        easy.proxy("").unwrap();
+        easy.nobody(true).unwrap();
+        let error = easy.perform().unwrap_err();
+        assert!(
+            error.is_recv_error() || error.is_send_error(),
+            "curl error {error}"
+        );
+        assert!(head_unanswered(&error, false));
+
+        let probed = probe_http(
+            &local_request(url),
+            validate_source_url(&format!("http://{address}/payload.bin")).unwrap(),
+            &TransferControl::default(),
+            &NetworkGovernor::new(4),
+        )
+        .unwrap();
+        assert_eq!(probed.total, Some(13));
+        assert_eq!(probed.etag.as_deref(), Some("\"reset-v1\""));
+        let requests = seen.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The raw `HEAD`, the probe's `HEAD` and then its ranged `GET`.
+        assert_eq!(requests.len(), 3, "{requests:?}");
+        assert!(requests[2].starts_with("GET ") && requests[2].contains("Range: bytes=0-0"));
     }
 
     #[test]
