@@ -129,7 +129,8 @@ pub(super) fn postprocess_selected_streams(
         control,
     )?;
     if !muxed.status.success() || !muxed.stderr.trim().is_empty() {
-        bail!(
+        crate::bail_code!(
+            crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Seçilen ses/altyazı akışları kayıpsız birleştirilemedi: {0}",

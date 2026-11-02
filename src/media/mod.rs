@@ -180,48 +180,7 @@ fn inspect_document_with_tools(
         )?;
     }
     if !captured.status.success() {
-        let detail = useful_error(&captured.stderr, &secrets.redactions);
-        // The extractor text stays verbatim; the code tells the user (and support) which
-        // stage failed without hiding the original diagnostic.
-        if drm_protected(&captured.stderr) {
-            crate::logging::record(crate::logging::Event::failure(
-                "inspect.drm",
-                crate::error_codes::MED_003,
-                detail,
-            ));
-            crate::bail_code!(crate::error_codes::MED_003);
-        }
-        if is_forbidden(&detail) {
-            crate::logging::record(crate::logging::Event::failure(
-                "inspect.blocked",
-                crate::error_codes::MED_007,
-                detail.clone(),
-            ));
-            crate::bail_code!(crate::error_codes::MED_007, "{detail}");
-        }
-        if site_access_blocked(&captured.stderr) {
-            let short = useful_error(&final_error_text(&captured.stderr), &secrets.redactions);
-            crate::logging::record(crate::logging::Event::failure(
-                "inspect.access",
-                crate::error_codes::MED_008,
-                detail,
-            ));
-            crate::bail_code!(crate::error_codes::MED_008, "{short}");
-        }
-        crate::logging::record(crate::logging::Event::failure(
-            "inspect.failed",
-            crate::error_codes::MED_006,
-            detail.clone(),
-        ));
-        crate::bail_code!(
-            crate::error_codes::MED_006,
-            "{}",
-            crate::i18n::ui_format!(
-                "Medya analizi başarısız: {detail}",
-                "Media analysis failed: {detail}",
-                detail = detail
-            )
-        );
+        return Err(inspection_failure(&captured.stderr, &secrets.redactions));
     }
     if captured.stdout.len() > MAX_INSPECT_OUTPUT {
         crate::bail_code!(
@@ -241,6 +200,50 @@ fn inspect_document_with_tools(
     let info = media_info_from_json(&value)?;
     validate_single_selection(&info, request.playlist)?;
     Ok((value, info))
+}
+
+/// The error of an analysis whose tool failed. The user sees the tool's final error text; the
+/// log keeps its whole output. The code tells the user (and support) which stage failed.
+pub(crate) fn inspection_failure(stderr: &str, redactions: &[String]) -> anyhow::Error {
+    let detail = useful_error(stderr, redactions);
+    let short = useful_error(&final_error_text(stderr), redactions);
+    if drm_protected(stderr) {
+        crate::logging::record(crate::logging::Event::failure(
+            "inspect.drm",
+            crate::error_codes::MED_003,
+            detail,
+        ));
+        return crate::error_codes::coded_default(crate::error_codes::MED_003);
+    }
+    if is_forbidden(&short) {
+        crate::logging::record(crate::logging::Event::failure(
+            "inspect.blocked",
+            crate::error_codes::MED_007,
+            detail,
+        ));
+        return crate::error_codes::coded(crate::error_codes::MED_007, short);
+    }
+    if site_access_blocked(stderr) {
+        crate::logging::record(crate::logging::Event::failure(
+            "inspect.access",
+            crate::error_codes::MED_008,
+            detail,
+        ));
+        return crate::error_codes::coded(crate::error_codes::MED_008, short);
+    }
+    crate::logging::record(crate::logging::Event::failure(
+        "inspect.failed",
+        crate::error_codes::MED_006,
+        detail,
+    ));
+    crate::error_codes::coded(
+        crate::error_codes::MED_006,
+        crate::i18n::ui_format!(
+            "Medya analizi başarısız: {detail}",
+            "Media analysis failed: {detail}",
+            detail = short
+        ),
+    )
 }
 
 /// How long an analysis answers the download of the same source: long enough to pick a
@@ -378,15 +381,7 @@ pub(crate) fn download(
                 } else {
                     "keşif"
                 };
-                anyhow!(
-                    "{}",
-                    crate::i18n::ui_format!(
-                        "{0} aşamasında {error:#}",
-                        "{0} stage: {error:#}",
-                        failure_stage_label(phase),
-                        error = error
-                    )
-                )
+                failed_in_stage(error, phase)
             })?;
             let from_start = from_start_formats(&inspection);
             let selector = format_selector(request, &info)?;
@@ -857,24 +852,16 @@ pub(crate) fn download(
                             crate::i18n::ui_format!("Seçilen kalite indirme anında kaynağın listesinde yok; kaynak yenilenmiş olabilir. Kaynağı yeniden çözümleyip var olan bir kaliteyi seçin. {0}", "The selected quality was not in the source's list at download time; the source may have been refreshed. Analyze the source again and pick an available quality. {0}", available_qualities(&info))
                         );
                     }
-                    let visible = non_debug_lines(&error);
-                    let phase = classify_download_error(
-                        &useful_error(&visible, &secrets.redactions),
-                        request,
-                    )
-                    .0;
-                    let summary = useful_error(&final_error_text(&visible), &secrets.redactions);
                     crate::logging::record_job(
                         job_id,
                         crate::logging::Event::warn("download.failed_output").detail(redacted),
                     );
-                    if site_access_blocked(&visible) {
-                        crate::bail_code!(crate::error_codes::MED_008, "{summary}");
-                    }
-                    bail!(
-                        "{}",
-                        crate::i18n::ui_format!("{0} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {1}/1): {2}", "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}", failure_stage_label(phase), u8::from(compatibility_retry), summary)
-                    );
+                    return Err(download_failure(
+                        &non_debug_lines(&error),
+                        request,
+                        compatibility_retry,
+                        &secrets.redactions,
+                    ));
                 }
                 break;
             }
@@ -1080,22 +1067,21 @@ pub(crate) fn mux_browser_streams(
         }
     }
     let staged = parent.join(format!(".browser-mux-{}.tmp", uuid::Uuid::new_v4()));
-    let args = browser_mux_args(request, streams, &staged);
-    let result = run_capture(
-        &tools.ffmpeg,
-        &args,
-        b"",
+    if let Some(reason) = merge_streams(
+        request,
+        streams,
+        &staged,
         Duration::from_secs(10 * 60),
+        &tools,
         control,
-    )?;
-    if !result.status.success() || !result.stderr.trim().is_empty() {
-        let _ = fs::remove_file(&staged);
-        bail!(
+    )? {
+        crate::bail_code!(
+            crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Tarayıcı medya akışları kayıpsız birleştirilemedi: {0}",
                 "The browser media streams could not be merged losslessly: {0}",
-                bounded_tail(&result.stderr, 4096)
+                reason
             )
         );
     }
@@ -1184,7 +1170,8 @@ pub(crate) fn place_browser_file(
     )?;
     if !result.status.success() || !result.stderr.trim().is_empty() {
         let _ = fs::remove_file(&staged);
-        bail!(
+        crate::bail_code!(
+            crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Tarayıcı medya akışları kayıpsız birleştirilemedi: {0}",
@@ -1204,11 +1191,329 @@ pub(crate) fn place_browser_file(
     Ok(())
 }
 
+/// Bitstream filters for the video of joined MPEG-TS segments.
+///
+/// A segment can end with a parameter set after its last picture. The parser of H.264 and HEVC
+/// hands it over as the start of the next picture, so once the segments are joined the first
+/// picture of every later segment comes without a time, which a container cannot store, and the
+/// last segment's parameter set comes as a packet of its own that holds no picture.
+///
+/// `noise` leaves out a packet without a time that is no keyframe and under 32 bytes (a parameter
+/// set or a delimiter). `setts` gives a packet without a time its decoding time plus the delay the
+/// stream starts with. That is the time of a picture only when it is shown at that delay after it
+/// is decoded, as the keyframe of a closed group of pictures is. A keyframe that pictures follow
+/// in decoding order and precede in time (an open group of pictures) gets a wrong time unless it
+/// is shown as long after it is decoded as the first picture is, and a picture that is no
+/// keyframe gets a wrong time, so [`merge_streams`] repairs a video only where [`repair_applies`]
+/// and publishes the copy only where [`times_hold`] and [`repaired_pictures_keep_the_step`].
+const TS_VIDEO_REPAIR: &str = "noise=drop='eq(pts,nopts)*not(key)*lt(size,32)',setts=pts='if(eq(PTS,NOPTS),DTS+STARTPTS-STARTDTS,PTS)'";
+
+/// Whether the file is MPEG-TS: its packets are 188 bytes, each starting with the sync byte.
+fn is_mpeg_ts(path: &Path) -> bool {
+    let mut head = [0u8; 377];
+    fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut head))
+        .is_ok()
+        && [0, 188, 376].iter().all(|at| head[*at] == 0x47)
+}
+
+/// A packet of a video stream, as `ffprobe` lists it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VideoPacket {
+    pts: Option<i64>,
+    dts: Option<i64>,
+    size: u64,
+    key: bool,
+}
+
+/// The packets `ffprobe -show_entries packet=pts,dts,size,flags -of csv=p=0` lists, one line
+/// `pts,dts,size,flags` each, `N/A` for a time the packet lacks and a `K` among the flags of a
+/// keyframe; `None` for a line of another shape.
+fn parse_video_packets(listing: &str) -> Option<Vec<VideoPacket>> {
+    let time = |field: &str| match field {
+        "N/A" => Some(None),
+        field => field.parse().ok().map(Some),
+    };
+    listing
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let mut fields = line.split(',');
+            Some(VideoPacket {
+                pts: time(fields.next()?)?,
+                dts: time(fields.next()?)?,
+                size: fields.next()?.parse().ok()?,
+                key: fields.next()?.contains('K'),
+            })
+        })
+        .collect()
+}
+
+/// Runs a tool with its arguments and captures what it printed.
+type RunTool<'a> = &'a mut dyn FnMut(&Path, &[String]) -> Result<process::Captured>;
+
+/// The packets of the `index`th video stream of `path`; `None` where they could not be listed.
+fn video_packets(
+    path: &Path,
+    index: usize,
+    ffprobe: &Path,
+    run: RunTool,
+) -> Result<Option<Vec<VideoPacket>>> {
+    let args = [
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-select_streams",
+        &format!("v:{index}"),
+        "-show_entries",
+        "packet=pts,dts,size,flags",
+        "-of",
+        "csv=p=0",
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain([path.to_string_lossy().into_owned()])
+    .collect::<Vec<_>>();
+    let listed = run(ffprobe, &args)?;
+    Ok(listed
+        .status
+        .success()
+        .then(|| parse_video_packets(&String::from_utf8_lossy(&listed.stdout)))
+        .flatten())
+}
+
+/// Whether [`TS_VIDEO_REPAIR`] gives the pictures their times: some packet has none, and every
+/// one without a time is a keyframe or under 32 bytes, as the repair assumes. A large packet that
+/// is no keyframe (a picture of a PES packet that holds several) has a time of its own that the
+/// repair cannot know.
+fn repair_applies(packets: &[VideoPacket]) -> bool {
+    let mut timeless = packets
+        .iter()
+        .filter(|packet| packet.pts.is_none())
+        .peekable();
+    timeless.peek().is_some() && timeless.all(|packet| packet.key || packet.size < 32)
+}
+
+/// Whether the times of a repaired video can be trusted: every picture has a time, no two pictures
+/// are shown less than half the usual distance apart, and the decoding times rise.
+///
+/// The pictures that kept their time fill the video's slots one by one, so a picture that lost its
+/// time has exactly one slot left, and only its own time fits into it. The repair gives a keyframe
+/// that pictures follow in decoding order and precede in time (an open group of pictures) a time
+/// that is early by as many pictures as precede it, which lands on the slot of one of them: two
+/// pictures share a time, or, where the frame rate does not divide the clock, lie a tick apart.
+fn times_hold(packets: &[VideoPacket]) -> bool {
+    let Some(mut shown) = packets
+        .iter()
+        .map(|packet| packet.pts)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    shown.sort_unstable();
+    let mut distances = shown
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect::<Vec<_>>();
+    distances.sort_unstable();
+    let half_a_picture = distances
+        .get(distances.len() / 2)
+        .map_or(0, |usual| usual / 2);
+    distances
+        .first()
+        .is_none_or(|shortest| *shortest >= half_a_picture.max(1))
+        && packets
+            .windows(2)
+            .all(|pair| pair[0].dts.zip(pair[1].dts).is_none_or(|(a, b)| a < b))
+}
+
+/// Whether two distances between neighbouring pictures are one step: they differ by no more than
+/// the rounding to the clock's ticks (a tick) and an eighth of the shorter.
+fn same_step(a: i64, b: i64) -> bool {
+    a.abs_diff(b) <= 1 + (a.min(b) / 8).unsigned_abs()
+}
+
+/// Whether every picture of `copy` that had no time in `source` (the video before
+/// [`TS_VIDEO_REPAIR`]) lies on the step of the pictures around it.
+///
+/// FFmpeg guesses the decoding time of a packet without a time from the packet before it: its
+/// time plus its duration. That is the time of the picture only where nothing lies between the two.
+/// Where the stream has a gap at the start of a segment, the picture lands before the gap while the
+/// pictures after it keep their own times, so no two pictures come close together and
+/// [`times_hold`] passes it, yet it is shown at a wrong time. In the order the pictures are
+/// shown, the distance from such a picture to the one before it or to the one after it then
+/// differs from the distance beside it ([`same_step`]). The step is read from the neighbours, not
+/// from the whole video, so that a video whose frame rate changes is judged where it changes.
+///
+/// A copy that does not hold the packets of `source` less the ones the repair leaves out cannot be
+/// matched to it and is refused.
+fn repaired_pictures_keep_the_step(source: &[VideoPacket], copy: &[VideoPacket]) -> bool {
+    let kept = source
+        .iter()
+        .filter(|packet| !(packet.pts.is_none() && !packet.key && packet.size < 32));
+    if kept.clone().count() != copy.len() {
+        return false;
+    }
+    let Some(mut shown) = copy
+        .iter()
+        .map(|packet| packet.pts)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    shown.sort_unstable();
+    let steps = shown
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect::<Vec<_>>();
+    let step_at = |at: Option<usize>| at.and_then(|at| steps.get(at)).copied();
+    let like_beyond = |step: Option<usize>, beyond: Option<usize>| {
+        step_at(step)
+            .zip(step_at(beyond))
+            .is_none_or(|(step, beyond)| same_step(step, beyond))
+    };
+    kept.zip(copy)
+        .filter(|(before, _)| before.pts.is_none())
+        .all(|(_, repaired)| {
+            repaired
+                .pts
+                .and_then(|pts| shown.binary_search(&pts).ok())
+                .is_some_and(|at| {
+                    like_beyond(at.checked_sub(1), at.checked_sub(2))
+                        && like_beyond(Some(at), Some(at + 1))
+                })
+        })
+}
+
+/// Copies the streams into `staged` without re-encoding. `None`: it is there. `Some(reason)`:
+/// it is not, and `reason` says why.
+///
+/// A copy of MPEG-TS video that fails is made once more with [`TS_VIDEO_REPAIR`], where the
+/// packets of every such video show that the repair gives it the right times, and the copy is
+/// kept only where it passes [`times_hold`] and [`repaired_pictures_keep_the_step`]; a video the
+/// repair cannot be trusted with fails with the reason of the first copy.
+fn merge_streams(
+    request: &AddRequest,
+    streams: &[crate::browser_transfer::StreamFile],
+    staged: &Path,
+    timeout: Duration,
+    tools: &tools::VerifiedTools,
+    control: &TransferControl,
+) -> Result<Option<String>> {
+    merge_streams_with(request, streams, staged, tools, &mut |executable, args| {
+        run_capture(executable, args, b"", timeout, control)
+            .map_err(|error| unfinished_merge(error, timeout))
+    })
+}
+
+/// The error of a merge tool that did not finish within `timeout`, which names the merge and not
+/// a media analysis. Any other error, such as a stop, is kept.
+fn unfinished_merge(error: anyhow::Error, timeout: Duration) -> anyhow::Error {
+    if crate::error_codes::code_of(&error) == Some(crate::error_codes::MED_011) {
+        crate::error_codes::coded(
+            crate::error_codes::TRF_002,
+            crate::i18n::ui_format!(
+                "Akışlar {0} saniye içinde birleştirilemedi",
+                "The streams could not be merged within {0} seconds",
+                timeout.as_secs()
+            ),
+        )
+    } else {
+        error
+    }
+}
+
+fn merge_streams_with(
+    request: &AddRequest,
+    streams: &[crate::browser_transfer::StreamFile],
+    staged: &Path,
+    tools: &tools::VerifiedTools,
+    run: RunTool,
+) -> Result<Option<String>> {
+    let plain = run(
+        &tools.ffmpeg,
+        &browser_mux_args(request, streams, staged, false),
+    )?;
+    if plain.status.success() && plain.stderr.trim().is_empty() {
+        return Ok(None);
+    }
+    let _ = fs::remove_file(staged);
+    let failed = Some(bounded_tail(&plain.stderr, 4096));
+    let transport_streams = streams
+        .iter()
+        .filter(|stream| stream.role == "video")
+        .enumerate()
+        .filter(|(_, stream)| is_mpeg_ts(&stream.path))
+        .map(|(index, stream)| (index, stream.path.as_path()))
+        .collect::<Vec<_>>();
+    if transport_streams.is_empty() {
+        return Ok(failed);
+    }
+    let mut sources = Vec::new();
+    for (_, path) in &transport_streams {
+        match video_packets(path, 0, &tools.ffprobe, run)? {
+            Some(packets) if repair_applies(&packets) => sources.push(packets),
+            _ => return Ok(failed),
+        }
+    }
+    let repaired = run(
+        &tools.ffmpeg,
+        &browser_mux_args(request, streams, staged, true),
+    )?;
+    if !merged_cleanly(&repaired) {
+        let _ = fs::remove_file(staged);
+        return Ok(Some(bounded_tail(&repaired.stderr, 4096)));
+    }
+    for ((index, _), source) in transport_streams.iter().zip(&sources) {
+        let packets = video_packets(staged, *index, &tools.ffprobe, run)?;
+        if !packets
+            .as_deref()
+            .is_some_and(|copy| times_hold(copy) && repaired_pictures_keep_the_step(source, copy))
+        {
+            let _ = fs::remove_file(staged);
+            return Ok(Some(
+                crate::i18n::ui(
+                    "Görüntünün zamanları güvenle onarılamadı; dosya yayınlanmadı",
+                    "The times of the video could not be restored reliably, so the file was not published",
+                )
+                .into(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a merge with [`TS_VIDEO_REPAIR`] ran without a failure: FFmpeg succeeded and printed
+/// nothing at error level but the parsers' remark about a parameter set without a picture, the
+/// packet that the repair leaves out. Without the repair that packet is in the copy.
+fn merged_cleanly(result: &process::Captured) -> bool {
+    result.status.success() && only_parameter_set_remarks(&result.stderr)
+}
+
+fn only_parameter_set_remarks(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .all(is_parameter_set_remark)
+}
+
+/// `[h264 @ 000001a927f34780] missing picture in access unit with size 7`
+fn is_parameter_set_remark(line: &str) -> bool {
+    line.strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .and_then(|(_, text)| text.strip_prefix("missing picture in access unit with size "))
+        .is_some_and(|size| !size.is_empty() && size.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 /// FFmpeg arguments that copy the browser's stream files into one container.
 fn browser_mux_args(
     request: &AddRequest,
     streams: &[crate::browser_transfer::StreamFile],
     staged: &Path,
+    repair: bool,
 ) -> Vec<String> {
     let audios = streams
         .iter()
@@ -1243,6 +1548,12 @@ fn browser_mux_args(
         args.extend(["-map".into(), format!("{index}:{specifier}")]);
     }
     args.extend(["-c:v".into(), "copy".into(), "-c:a".into(), "copy".into()]);
+    let videos = streams.iter().filter(|stream| stream.role == "video");
+    for (index, video) in videos.enumerate() {
+        if repair && is_mpeg_ts(&video.path) {
+            args.extend([format!("-bsf:v:{index}"), TS_VIDEO_REPAIR.into()]);
+        }
+    }
     if subtitle_count > 0 {
         args.extend([
             "-c:s".into(),
@@ -1578,8 +1889,11 @@ fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
     ]
 }
 
+/// Whether the tool's final error ([`last_error`]) is a 403: a 403 it met on the way, in a warning
+/// or an earlier error, is not the reason the run ended.
 fn is_forbidden(error: &str) -> bool {
-    error.contains("HTTP Error 403") || error.contains("HTTP Error: 403")
+    let last = last_error(error);
+    last.contains("HTTP Error 403") || last.contains("HTTP Error: 403")
 }
 
 /// Phrases of yt-dlp's final `ERROR:` line when the origin refuses the media for this viewer
@@ -1604,16 +1918,20 @@ const SITE_ACCESS_PHRASES: &[&str] = &[
 ];
 
 fn site_access_blocked(stderr: &str) -> bool {
-    stderr.lines().any(|line| {
-        let line = line.trim_start();
-        if !line.starts_with("ERROR:") {
-            return false;
-        }
+    final_error_line(stderr).is_some_and(|line| {
         let lower = line.to_ascii_lowercase();
         SITE_ACCESS_PHRASES
             .iter()
             .any(|phrase| lower.contains(phrase))
     })
+}
+
+/// The tool's last `ERROR:` line: the failure that ended the run, whatever the lines before it
+/// said (an earlier item of a playlist may have failed another way).
+fn final_error_line(stderr: &str) -> Option<String> {
+    let last = last_error(stderr);
+    last.starts_with("ERROR:")
+        .then(|| last.lines().next().unwrap_or_default().to_owned())
 }
 
 /// The tool's output without its `[debug]` trace (version header, argument echo, request log).
@@ -1625,21 +1943,74 @@ fn non_debug_lines(text: &str) -> String {
         .join("\n")
 }
 
-/// The failure a user can act on: from the last `ERROR:` line to the end, bounded. The verbose
-/// trace around it is kept in the log only.
+/// The failure a user can act on: from the last `ERROR:` line to the end, bounded, without the
+/// Python traceback the tool prints after it and the app's own stage notes; when the tool
+/// crashed and printed no `ERROR:` line, the exception line that ended its last traceback. The
+/// whole output is kept in the log only.
 fn final_error_text(text: &str) -> String {
+    bounded_tail(&last_error(text), 2048)
+}
+
+/// [`final_error_text`] without the bound, for the code to be decided from.
+fn last_error(text: &str) -> String {
+    let (text, exception) = without_tracebacks(text);
     let text = text.trim();
-    let start = text.rfind("ERROR:").unwrap_or(0);
-    bounded_tail(text[start..].trim(), 2048)
+    match (text.rfind("ERROR:"), exception) {
+        (Some(start), _) => text[start..].trim().to_owned(),
+        (None, Some(exception)) => exception.to_owned(),
+        (None, None) => text.to_owned(),
+    }
+}
+
+/// The text without Python tracebacks (`Traceback (most recent call last):`, its frames, the
+/// exception line that ends it and the notes that chain tracebacks), without frames printed on
+/// their own (a stack under an `ERROR:` line), and without the lines of [`DownloadFailureStages`];
+/// with it, the exception line that ended the last traceback. A traceback can end in
+/// `yt_dlp.utils.DownloadError: ERROR: ...`, which is not the failure when an `ERROR:` line
+/// precedes it.
+fn without_tracebacks(text: &str) -> (String, Option<&str>) {
+    #[derive(PartialEq)]
+    enum Trace {
+        Outside,
+        /// After the header: frames, then the exception line.
+        Header,
+        /// After a frame with no header.
+        Frames,
+    }
+    let mut trace = Trace::Outside;
+    let mut kept = Vec::new();
+    let mut exception = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let indented = line.starts_with([' ', '\t']);
+        if trace != Trace::Outside && (indented || trimmed.is_empty()) {
+            continue;
+        }
+        if trace == Trace::Header {
+            trace = Trace::Outside;
+            exception = Some(trimmed);
+            continue;
+        }
+        trace = Trace::Outside;
+        if trimmed == "Traceback (most recent call last):" {
+            trace = Trace::Header;
+        } else if indented && trimmed.starts_with("File \"") && trimmed.contains("\", line ") {
+            trace = Trace::Frames;
+        } else if !trimmed.starts_with("During handling of the above exception")
+            && !trimmed.starts_with("The above exception was the direct cause")
+            && !trimmed.starts_with("[ssdownload-stage=")
+        {
+            kept.push(line);
+        }
+    }
+    (kept.join("\n"), exception)
 }
 
 /// yt-dlp drops DRM formats and, when nothing else remains, ends with an `ERROR: ... This video
-/// is DRM protected` line instead of JSON; a per-format warning about skipped formats is not it.
+/// is DRM protected` line instead of JSON; a per-format warning about skipped formats is not it,
+/// and neither is an earlier error of a run that ended another way.
 fn drm_protected(stderr: &str) -> bool {
-    stderr.lines().any(|line| {
-        let line = line.trim_start();
-        line.starts_with("ERROR:") && line.to_ascii_lowercase().contains("drm protected")
-    })
+    final_error_line(stderr).is_some_and(|line| line.to_ascii_lowercase().contains("drm protected"))
 }
 
 /// yt-dlp reports a hole in the stream instead of failing the download: "[download] fragment not
@@ -1744,16 +2115,24 @@ fn fragment_concurrency(requested: Option<u8>, per_host_limit: u8, restarts: u32
         .to_string()
 }
 
+/// Whether a lowercased text has a word that starts with `prefix` (`ssl` in `SSLError`,
+/// `[SSL: CERTIFICATE_VERIFY_FAILED]`; not the one in `lossless`).
+fn has_word_starting_with(lower: &str, prefix: &str) -> bool {
+    lower
+        .match_indices(prefix)
+        .any(|(at, _)| !lower[..at].ends_with(|before: char| before.is_alphabetic()))
+}
+
 fn network_media_failure(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     lower.contains("http error")
         || lower.contains("forbidden")
         || lower.contains("certificate")
-        || lower.contains("tls")
-        || lower.contains("ssl")
+        || has_word_starting_with(&lower, "tls")
+        || has_word_starting_with(&lower, "ssl")
         || lower.contains("resolve host")
         || lower.contains("name or service not known")
-        || lower.contains("dns")
+        || has_word_starting_with(&lower, "dns")
         || lower.contains("timed out")
         || lower.contains("timeout")
         // Local proxy tunnel saturation/failure; transient by construction.
@@ -1787,11 +2166,16 @@ pub(crate) fn classify_download_error(
     request: &AddRequest,
 ) -> (&'static str, &'static str) {
     let lower = failure_reading(error);
-    let kind = if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+    let kind = if lower.contains("could not be merged") {
+        "merge"
+    } else if lower.contains("certificate")
+        || has_word_starting_with(&lower, "tls")
+        || has_word_starting_with(&lower, "ssl")
+    {
         "tls"
     } else if lower.contains("resolve host")
         || lower.contains("name or service not known")
-        || lower.contains("dns")
+        || has_word_starting_with(&lower, "dns")
     {
         "dns"
     } else if [
@@ -1826,7 +2210,9 @@ pub(crate) fn classify_download_error(
         "other"
     };
     // An access/TLS failure must not erase which part of the media graph failed.
-    let phase = if let Some(phase) = marked_download_failure_phase(&lower) {
+    let phase = if let Some(phase) = named_download_failure_stage(error) {
+        phase
+    } else if let Some(phase) = marked_download_failure_phase(error) {
         phase
     } else if lower.contains("subtitle") || lower.contains("altyazı") {
         "altyazı"
@@ -2099,7 +2485,99 @@ fn failure_stage_label(stage: &str) -> &'static str {
     crate::i18n::ui("medya kaynağı", "media source")
 }
 
+/// The error of an analysis that failed in the stage `phase` of a download. The text of a failure
+/// that carries a code starts with it, as every other failure's does; the stage follows, where
+/// [`named_download_failure_stage`] reads it.
+fn failed_in_stage(error: anyhow::Error, phase: &str) -> anyhow::Error {
+    let text = format!("{error:#}");
+    let code = crate::error_codes::code_of_text(&error);
+    let detail = code
+        .and_then(|code| text.strip_prefix(code.0))
+        .map_or(text.as_str(), str::trim_start);
+    let message = crate::i18n::ui_format!(
+        "{0} aşamasında {error:#}",
+        "{0} stage: {error:#}",
+        failure_stage_label(phase),
+        error = detail
+    );
+    match code {
+        Some(code) => crate::error_codes::coded(code, message),
+        None => anyhow!(message),
+    }
+}
+
+/// The error of a download whose tool failed, from the tool's output without its `[debug]` trace:
+/// `SSD-MED-008` when the origin refuses the media, `SSD-MED-007` when the tool's final error is a
+/// 403 and `SSD-MED-017` otherwise. The message names the failed stage and gives the tool's final
+/// error text.
+pub(crate) fn download_failure(
+    visible: &str,
+    request: &AddRequest,
+    compatibility_retry: bool,
+    redactions: &[String],
+) -> anyhow::Error {
+    let phase = classify_download_error(&useful_error(visible, redactions), request).0;
+    let summary = useful_error(&final_error_text(visible), redactions);
+    let code = if site_access_blocked(visible) {
+        crate::error_codes::MED_008
+    } else if is_forbidden(&summary) {
+        crate::error_codes::MED_007
+    } else {
+        crate::error_codes::MED_017
+    };
+    crate::error_codes::coded(
+        code,
+        download_failure_message(phase, compatibility_retry, &summary),
+    )
+}
+
+/// The message of a download that stopped in `phase`, a stage [`classify_download_error`] returns.
+fn download_failure_message(phase: &str, compatibility_retry: bool, summary: &str) -> String {
+    crate::i18n::ui_format!(
+        "{0} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {1}/1): {2}",
+        "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}",
+        failure_stage_label(phase),
+        u8::from(compatibility_retry),
+        summary
+    )
+}
+
+/// The stage a [`download_failure_message`] or a [`failed_in_stage`] names, read in whichever
+/// interface language wrote it: the stored message carries the stage by its label only. The label
+/// opens the message, after its code; the same words further in are the tool's own text and name
+/// nothing.
+fn named_download_failure_stage(error: &str) -> Option<&'static str> {
+    let text = error.trim_start();
+    let text = if crate::error_codes::from_text(text).is_some() {
+        text.split_once(char::is_whitespace)
+            .map_or("", |(_, rest)| rest.trim_start())
+    } else {
+        text
+    };
+    crate::i18n::ui_templates!(
+        "{0} aşamasında medya indirmesi başarısız (uyumluluk denemesi: {1}/1): {2}",
+        "Media download failed at the {0} stage (compatibility attempt: {1}/1): {2}"
+    )
+    .into_iter()
+    .chain(crate::i18n::ui_templates!(
+        "{0} aşamasında {error:#}",
+        "{0} stage: {error:#}"
+    ))
+    .find_map(|template| {
+        let (before, rest) = template.split_once("{0}")?;
+        let after = &rest[..rest.find('{')?];
+        FAILURE_STAGES.into_iter().find_map(|(tr, en)| {
+            crate::i18n::wordings(tr, en)
+                .any(|stage| text.starts_with(&format!("{before}{stage}{after}")))
+                .then_some(tr)
+        })
+    })
+}
+
+/// The stage [`DownloadFailureStages::annotate`] marked: its marker ends the text, as a word of
+/// its own. The same words inside the tool's output name nothing.
 fn marked_download_failure_phase(error: &str) -> Option<&'static str> {
+    let last = error.split_whitespace().next_back()?;
     [
         ("[ssdownload-stage=manifest_root]", "ana liste"),
         ("[ssdownload-stage=manifest_child]", "alt liste"),
@@ -2108,7 +2586,7 @@ fn marked_download_failure_phase(error: &str) -> Option<&'static str> {
         ("[ssdownload-stage=media_segment]", "medya parçası"),
     ]
     .into_iter()
-    .find_map(|(marker, phase)| error.contains(marker).then_some(phase))
+    .find_map(|(marker, phase)| (last == marker).then_some(phase))
 }
 
 /// ISO 639-2 form of a language tag. The MP4 (mov) muxer writes only three-letter codes and
@@ -3170,6 +3648,59 @@ mod output_validation_tests {
             ..Default::default()
         };
         assert!(validate_probe(&progressive_mp4_probe(19.3), &request, &info).is_err());
+    }
+
+    #[test]
+    fn audio_from_a_source_without_a_picture_may_not_end_before_the_source_duration() {
+        let request = AddRequest {
+            kind: DownloadKind::Audio,
+            audio_format: Some("mp3".into()),
+            ..Default::default()
+        };
+        let format = |id: &str, video_codec: &str| MediaFormat {
+            id: id.into(),
+            video_codec: Some(video_codec.into()),
+            audio_codec: Some("aac".into()),
+            ..Default::default()
+        };
+        let source = |formats: Vec<MediaFormat>| MediaInfo {
+            duration: Some(20.0),
+            formats,
+            ..Default::default()
+        };
+        // ffprobe of an MP3 that lasts 19.3 s.
+        let mp3 = json!({"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3",
+            "time_base":"1/14112000","start_pts":353600,"start_time":"0.025057",
+            "duration":"19.300000"}],
+          "format":{"format_name":"mp3","start_time":"0.025057","duration":"19.300000"}});
+
+        // Every format of the source lacks a picture: the audio is held to the tolerance.
+        let audio_only = source(vec![format("140", "none"), format("251", "none")]);
+        let error = validate_probe(&mp3, &request, &audio_only).unwrap_err();
+        assert!(
+            error.to_string().contains("erken bitiş toleransı 0.500 sn"),
+            "{error:#}"
+        );
+        // One format with a picture, or formats that do not say, keep the allowance.
+        validate_probe(
+            &mp3,
+            &request,
+            &source(vec![format("140", "none"), format("137", "avc1.640028")]),
+        )
+        .unwrap();
+        let mut unsaid = format("0", "none");
+        unsaid.video_codec = None;
+        validate_probe(&mp3, &request, &source(vec![unsaid])).unwrap();
+        // The tolerance itself does not move for an audio-only source.
+        validate_probe(
+            &json!({"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3",
+                "time_base":"1/14112000","start_pts":353600,"start_time":"0.025057",
+                "duration":"19.700000"}],
+              "format":{"format_name":"mp3","start_time":"0.025057","duration":"19.700000"}}),
+            &request,
+            &audio_only,
+        )
+        .unwrap();
     }
 
     #[test]

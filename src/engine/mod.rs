@@ -3,7 +3,7 @@ use crate::{
     model::*,
     network::{ConnectionLease, NetworkGovernor},
     paths::AppPaths,
-    store::Store,
+    store::{HeldRecord, Store},
     transfer,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -2984,10 +2984,31 @@ impl Actor {
 
     /// Ends the transfer and with it every network permit it still holds. The extension's
     /// late `end_request` for that generation is refused, so nothing else could release them.
-    /// The job's record is no longer held either.
-    fn remove_browser_transfer(&mut self, id: &str) -> Option<BrowserTransferLease> {
-        self.store.release(id);
-        self.browser_transfers.remove(id)
+    /// The job's record is no longer held either; the record it kept is returned.
+    fn remove_browser_transfer(&mut self, id: &str) -> Option<HeldRecord> {
+        self.browser_transfers.remove(id);
+        self.store.release(id)
+    }
+
+    /// Sets the state of a job whose browser transfer ended without a result. A job that waited
+    /// for a new source address, and was not yet authorized for the transfer, is as it was
+    /// before the transfer began (`held`): the address it waits for was not delivered, and a
+    /// restart of the app leaves it that way too. Any other job is paused with `paused_phase`.
+    fn leave_browser_transfer(job: &mut Job, held: Option<HeldRecord>, paused_phase: String) {
+        match held {
+            Some((JobState::AwaitingSource, phase, error)) if !job.browser_transfer_authorized => {
+                job.state = JobState::AwaitingSource;
+                job.phase = phase;
+                job.error = error;
+            }
+            _ => {
+                job.state = JobState::Paused;
+                job.phase = paused_phase;
+            }
+        }
+        job.speed = 0;
+        job.eta = None;
+        job.updated_at = Utc::now().timestamp();
     }
 
     fn revoke_exited_browser_transfer(&mut self, id: &str, generation: u64) -> Result<()> {
@@ -3004,24 +3025,24 @@ impl Actor {
                 )
             );
         }
-        self.remove_browser_transfer(id);
+        let held = self.remove_browser_transfer(id);
         let job = self
             .jobs
             .get_mut(id)
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
+        Self::leave_browser_transfer(
+            job,
+            held,
+            crate::i18n::ui(
+                "Tarayıcı aktarım göndericisi kapandı; yetki geri alındı",
+                "The browser transfer sender exited; the authorization was revoked",
+            )
+            .into(),
+        );
         // With no granted request there is no Fetch body whose authorization
         // must survive the native sender. Revoke this generation instead of
         // leaving a later native connection able to revive it implicitly.
         job.browser_transfer_authorized = false;
-        job.state = JobState::Paused;
-        job.speed = 0;
-        job.eta = None;
-        job.phase = crate::i18n::ui(
-            "Tarayıcı aktarım göndericisi kapandı; yetki geri alındı",
-            "The browser transfer sender exited; the authorization was revoked",
-        )
-        .into();
-        job.updated_at = Utc::now().timestamp();
         self.store.save_job(job)?;
         self.publish();
         Ok(())
@@ -3041,20 +3062,20 @@ impl Actor {
                 )
             );
         }
-        self.remove_browser_transfer(id);
+        let held = self.remove_browser_transfer(id);
         let job = self
             .jobs
             .get_mut(id)
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
-        job.state = JobState::Paused;
-        job.speed = 0;
-        job.eta = None;
-        job.phase = crate::i18n::ui(
-            "Tarayıcı aktarımı duraklatıldı",
-            "The browser transfer was paused",
-        )
-        .into();
-        job.updated_at = Utc::now().timestamp();
+        Self::leave_browser_transfer(
+            job,
+            held,
+            crate::i18n::ui(
+                "Tarayıcı aktarımı duraklatıldı",
+                "The browser transfer was paused",
+            )
+            .into(),
+        );
         self.store.save_job(job)?;
         self.publish();
         Ok(())
@@ -3068,20 +3089,20 @@ impl Actor {
         {
             return Ok(());
         }
-        self.remove_browser_transfer(id);
+        let held = self.remove_browser_transfer(id);
         let job = self
             .jobs
             .get_mut(id)
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
-        job.state = JobState::Paused;
-        job.speed = 0;
-        job.eta = None;
-        job.phase = crate::i18n::ui(
-            "Tarayıcı bağlantısı koptu; açıkça sürdürmeniz gerekiyor",
-            "The browser connection was lost; resume it explicitly",
-        )
-        .into();
-        job.updated_at = Utc::now().timestamp();
+        Self::leave_browser_transfer(
+            job,
+            held,
+            crate::i18n::ui(
+                "Tarayıcı bağlantısı koptu; açıkça sürdürmeniz gerekiyor",
+                "The browser connection was lost; resume it explicitly",
+            )
+            .into(),
+        );
         let saved = self.store.save_job(job);
         self.publish();
         saved?;
@@ -4649,7 +4670,11 @@ fn run_job(
         return Ok(done);
     }
     let scratch = if job.work_dir.is_some() {
-        crate::recovery::prepare_work(job)?
+        let scratch = crate::recovery::prepare_work(job)?;
+        if let Some(done) = crate::recovery::adopt_finished(paths, job)? {
+            return Ok(done);
+        }
+        scratch
     } else {
         output.to_owned()
     };
@@ -5297,7 +5322,29 @@ fn http_status_in_text(message: &str) -> Option<u32> {
     })
 }
 
-fn retryable_error(error: &anyhow::Error) -> bool {
+/// The curl errors that a connection or the server's way of answering can cause again later:
+/// a refused or unresolvable connection, a transfer cut short, a timeout, an empty reply, a
+/// failed send or receive, an HTTP/2 error and a failed proxy handshake.
+fn retryable_curl_code(code: i32) -> bool {
+    matches!(code, 5 | 6 | 7 | 16 | 18 | 28 | 52 | 55 | 56 | 92 | 97)
+}
+
+/// The codes of the curl errors a tool prints in its message (`curl: (52) Empty reply from
+/// server`), in a message that has already been lowercased.
+fn curl_codes_in_text(message: &str) -> impl Iterator<Item = i32> + '_ {
+    message
+        .match_indices("curl: (")
+        .filter_map(|(index, needle)| {
+            let rest = &message[index + needle.len()..];
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            rest[digits..]
+                .starts_with(')')
+                .then(|| rest[..digits].parse().ok())
+                .flatten()
+        })
+}
+
+pub(crate) fn retryable_error(error: &anyhow::Error) -> bool {
     if transfer::http_status(error).is_some_and(retryable_status) {
         return true;
     }
@@ -5320,16 +5367,14 @@ fn retryable_error(error: &anyhow::Error) -> bool {
             }
         }
         if let Some(error) = cause.downcast_ref::<curl::Error>() {
-            return matches!(
-                error.code(),
-                5 | 6 | 7 | 16 | 18 | 28 | 52 | 55 | 56 | 92 | 97
-            );
+            return retryable_curl_code(error.code());
         }
     }
     let message = format!("{error:#}").to_lowercase();
     // yt-dlp fragment and webpage failures surface as "HTTP Error <code>" after exhausting
     // its own retries; they get the same job-level retry as a typed status.
     http_status_in_text(&message).is_some_and(retryable_status)
+        || curl_codes_in_text(&message).any(retryable_curl_code)
         || [
             // Local proxy saturation and tunnel failures surface verbatim from
             // the child's urllib stack; they are transient by construction.
@@ -5339,6 +5384,13 @@ fn retryable_error(error: &anyhow::Error) -> bool {
             "timed out",
             "temporary failure",
             "connection reset",
+            // A failed name lookup as Python's sockets word it, per platform; `Temporary failure
+            // in name resolution` is matched above.
+            "getaddrinfo failed",
+            "name or service not known",
+            "nodename nor servname provided",
+            // Python's wording of an empty reply, as curl's is `curl: (52)`.
+            "remote end closed connection without response",
         ]
         .iter()
         .any(|needle| message.contains(needle))
