@@ -2549,6 +2549,10 @@ pub(super) unsafe extern "system" fn modern_progress_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_TIMER && wparam == BAR_SWEEP_TIMER {
+        sweep_due(hwnd);
+        return 0;
+    }
     if !high_contrast() {
         match msg {
             WM_PAINT => {
@@ -2556,6 +2560,7 @@ pub(super) unsafe extern "system" fn modern_progress_proc(
                 let dc = BeginPaint(hwnd, &mut paint);
                 paint_modern_progress(hwnd, dc);
                 EndPaint(hwnd, &paint);
+                schedule_sweep(hwnd);
                 return 0;
             }
             WM_PRINTCLIENT => {

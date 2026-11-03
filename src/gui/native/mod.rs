@@ -12812,6 +12812,234 @@ mod tests {
         });
     }
 
+    /// Delivers this thread's messages, timers and paints included, for `ms` milliseconds.
+    fn run_message_loop(ms: u64) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+        };
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < end {
+            unsafe {
+                let mut msg: MSG = std::mem::zeroed();
+                while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The x of the first pixel of `fill` (a COLORREF) in the middle row of what `bar` shows
+    /// on screen. The surface is copied as it is: a window that nothing invalidates keeps
+    /// showing its last frame, unlike `PrintWindow`, which paints a new one.
+    unsafe fn block_start(bar: super::HWND, fill: u32) -> Option<usize> {
+        use windows_sys::Win32::Graphics::Gdi::{
+            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+            GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
+            SRCCOPY,
+        };
+        let mut client: super::RECT = std::mem::zeroed();
+        super::GetClientRect(bar, &mut client);
+        let (width, height) = (client.right, client.bottom);
+        let window = GetDC(bar);
+        let memory = CreateCompatibleDC(window);
+        let bitmap = CreateCompatibleBitmap(window, width, height);
+        let previous = SelectObject(memory, bitmap as _);
+        BitBlt(memory, 0, 0, width, height, window, 0, 0, SRCCOPY);
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        GetDIBits(
+            memory,
+            bitmap,
+            0,
+            height as u32,
+            pixels.as_mut_ptr().cast(),
+            &mut info,
+            DIB_RGB_COLORS,
+        );
+        SelectObject(memory, previous);
+        DeleteObject(bitmap as _);
+        DeleteDC(memory);
+        ReleaseDC(bar, window);
+        // The bytes of a pixel are blue, green, red.
+        let wanted = [(fill >> 16) as u8, (fill >> 8) as u8, fill as u8];
+        let row = (height / 2 * width) as usize;
+        (0..width as usize).find(|x| pixels[(row + x) * 4..(row + x) * 4 + 3] == wanted)
+    }
+
+    /// Where the block of `bar` starts over a second of the message loop, with nothing else
+    /// asking the bar to paint.
+    unsafe fn sweep_positions(bar: super::HWND, fill: u32) -> Vec<Option<usize>> {
+        (0..8)
+            .map(|_| {
+                run_message_loop(125);
+                block_start(bar, fill)
+            })
+            .collect()
+    }
+
+    /// Runs `body` with a shown download window in the look of `in_modern` and `dark`, on a
+    /// private desktop. `body` gets the window's bar and a function that refreshes the
+    /// window for a job in the given state. The window's own refresh timer is off: it would
+    /// replace that job with the engine's empty queue.
+    fn with_download_window<T: Send>(
+        in_modern: bool,
+        dark: bool,
+        body: impl FnOnce(super::HWND, &dyn Fn(crate::model::JobState)) -> T + Send,
+    ) -> T {
+        use super::*;
+
+        on_private_desktop(|| {
+            with_common_controls_6(|| unsafe {
+                let (raw, hwnd, root) = theme_test_dialog(
+                    in_modern,
+                    DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                    MEDIA_WIDTH,
+                    media_window_height(PROGRESS_HEIGHT, 420),
+                );
+                apply_dark_mode(hwnd, dark);
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                KillTimer(hwnd, TIMER_DIALOG);
+                let error = (*raw).error;
+                let show = |state| {
+                    let mut snapshot = (*raw).app.snapshot();
+                    let mut job = sample_job("job", state);
+                    job.total = Some(1_400_000_000);
+                    job.downloaded = 1_400_000_000;
+                    snapshot.jobs = std::sync::Arc::new(vec![job]);
+                    if let DialogKind::Progress(f) = &mut (*raw).kind {
+                        refresh_job_view(hwnd, error, f, &snapshot);
+                    }
+                };
+                let DialogKind::Progress(f) = &(*raw).kind else {
+                    unreachable!()
+                };
+                let result = body(f.progress, &show);
+                close_test_dialog(raw, hwnd, root);
+                result
+            })
+        })
+    }
+
+    #[test]
+    fn the_block_of_a_processing_bar_keeps_moving_in_the_download_window_and_the_picker() {
+        use super::*;
+        use crate::model::JobState;
+
+        // The looks that paint the bar themselves; comctl32 animates the others.
+        for (name, in_modern, dark) in [
+            ("Modern", true, false),
+            ("Modern dark", true, true),
+            ("Classic dark", false, true),
+        ] {
+            let fill = |bar: HWND| unsafe {
+                if in_modern {
+                    card_palette(GetParent(bar)).accent
+                } else {
+                    DARK_ACCENT
+                }
+            };
+            let check = |window: &str, positions: Vec<Option<usize>>| {
+                let mut distinct: Vec<_> = positions.iter().flatten().collect();
+                distinct.sort();
+                distinct.dedup();
+                assert!(
+                    positions.iter().all(Option::is_some) && distinct.len() >= 4,
+                    "{name}, {window}: the block stays where it was painted: {positions:?}"
+                );
+            };
+            with_download_window(in_modern, dark, |bar, show| unsafe {
+                show(JobState::Processing);
+                check("download window", sweep_positions(bar, fill(bar)));
+            });
+            on_private_desktop(|| {
+                with_common_controls_6(|| unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(in_modern, media_kind(), 640, 420);
+                    apply_dark_mode(hwnd, dark);
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                    KillTimer(hwnd, TIMER_DIALOG);
+                    let dlg = &*raw;
+                    let mut snapshot = dlg.app.snapshot();
+                    snapshot.inspecting = true;
+                    let DialogKind::Media(f) = &mut (*raw).kind else {
+                        unreachable!()
+                    };
+                    refresh_media(dlg, f, &snapshot);
+                    check("picker", sweep_positions(f.prep_bar, fill(f.prep_bar)));
+                    close_test_dialog(raw, hwnd, root);
+                })
+            });
+        }
+    }
+
+    /// How many frames `bar` asks for over `ms` milliseconds of the message loop.
+    unsafe fn frames_asked_for(bar: super::HWND, ms: u64) -> u32 {
+        use super::BAR_SWEEP_TIMER;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE, WM_TIMER};
+
+        let mut asked = 0;
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < end {
+            let mut msg: MSG = std::mem::zeroed();
+            if PeekMessageW(&mut msg, bar, WM_TIMER, WM_TIMER, PM_REMOVE) != 0
+                && msg.wParam == BAR_SWEEP_TIMER
+            {
+                asked += 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        asked
+    }
+
+    #[test]
+    fn a_bar_whose_job_stops_processing_stops_asking_for_frames() {
+        use crate::model::JobState;
+
+        for (in_modern, dark) in [(true, false), (false, true)] {
+            with_download_window(in_modern, dark, |bar, show| unsafe {
+                show(JobState::Processing);
+                run_message_loop(300);
+                show(JobState::Completed);
+                // The frame that is already scheduled still comes.
+                run_message_loop(300);
+                assert_eq!(
+                    frames_asked_for(bar, 300),
+                    0,
+                    "modern {in_modern}, dark {dark}: a finished job's bar still asks for frames"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn a_bar_that_stops_painting_itself_mid_sweep_stops_asking_for_frames() {
+        use crate::model::JobState;
+
+        with_download_window(false, true, |bar, show| unsafe {
+            show(JobState::Processing);
+            run_message_loop(300);
+            // A live switch away from the dark scheme: the bar is left to the system.
+            let root = windows_sys::Win32::UI::WindowsAndMessaging::GetAncestor(
+                bar,
+                windows_sys::Win32::UI::WindowsAndMessaging::GA_ROOT,
+            );
+            super::apply_dark_mode(root, false);
+            // The frame that is already scheduled still comes.
+            run_message_loop(300);
+            assert_eq!(
+                frames_asked_for(bar, 300),
+                0,
+                "a bar that no longer paints itself keeps asking for frames"
+            );
+        });
+    }
+
     /// Runs `body` on a fresh thread attached to a private desktop. A dialog's
     /// controls take the focus when they are created, which makes the dialog the
     /// foreground window of the process; on a private desktop that never
