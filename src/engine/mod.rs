@@ -3,7 +3,7 @@ use crate::{
     model::*,
     network::{ConnectionLease, NetworkGovernor},
     paths::AppPaths,
-    store::Store,
+    store::{HeldRecord, Store},
     transfer,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -160,11 +160,11 @@ fn failure_event(job: &Job, message: &str) -> crate::logging::Event {
     let stage = if job.request.kind == DownloadKind::File
         && !transfer::request_requires_media_pipeline(&job.request)
     {
-        "dosya"
+        "file"
     } else {
-        stage
+        crate::media::failure_stage_name(stage)
     };
-    let detail = format!("aşama={stage} tür={kind} {message}");
+    let detail = format!("stage={stage} kind={kind} {message}");
     match crate::error_codes::from_text(message) {
         Some(code) => {
             crate::logging::Event::failure("job.fail", code, detail).host(source_host_of(job))
@@ -176,10 +176,63 @@ fn failure_event(job: &Job, message: &str) -> crate::logging::Event {
     }
 }
 
+/// The word the job log uses for a download kind, whatever the interface language.
+fn kind_name(kind: DownloadKind) -> &'static str {
+    match kind {
+        DownloadKind::Auto => "auto",
+        DownloadKind::File => "file",
+        DownloadKind::Video => "video",
+        DownloadKind::Audio => "audio",
+    }
+}
+
+/// The word the job log uses for a job state, whatever the interface language.
+fn state_name(state: JobState) -> &'static str {
+    match state {
+        JobState::Queued => "queued",
+        JobState::Scheduled => "scheduled",
+        JobState::Connecting => "connecting",
+        JobState::Downloading => "downloading",
+        JobState::Processing => "processing",
+        JobState::Paused => "paused",
+        JobState::AwaitingSource => "awaiting source",
+        JobState::Completed => "completed",
+        JobState::Failed => "failed",
+        JobState::Cancelled => "cancelled",
+    }
+}
+
+/// A count that the transfer may not know yet, for the job log.
+fn known(value: Option<u64>) -> String {
+    value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+}
+
+/// The state and phase of a download as the job log states them when either changes.
+fn stage_detail(state: JobState, phase_name: &str, progress: &TransferProgress) -> String {
+    format!(
+        "state={} phase={phase_name} total={}",
+        state_name(state),
+        known(progress.total)
+    )
+}
+
+/// The periodic account of a running transfer in the job log.
+fn progress_detail(progress: &TransferProgress) -> String {
+    format!(
+        "downloaded={} total={} speed={}B/s eta={}",
+        progress.downloaded,
+        known(progress.total),
+        progress.speed,
+        progress
+            .eta
+            .map_or_else(|| "unknown".to_owned(), |seconds| format!("{seconds}s"))
+    )
+}
+
 /// Short, human-readable summary of what was requested, for `job.add`.
 fn job_selection(job: &Job) -> String {
     let request = &job.request;
-    let mut parts = vec![format!("kind={:?}", request.kind).to_lowercase()];
+    let mut parts = vec![format!("kind={}", kind_name(request.kind))];
     if let Some(format) = &request.format_id {
         parts.push(format!("format={format}"));
     }
@@ -215,6 +268,8 @@ struct ActiveJob {
     last_persist: Instant,
     /// Last time a periodic progress sample was written to the event log.
     last_log: Instant,
+    /// The phase the job log last stated for this attempt.
+    phase_name: &'static str,
     /// Start of the current attempt, reported as the age of a progress sample.
     attempt_started: Instant,
     /// Started through "Hemen başlat": exempt from the concurrency limits.
@@ -482,7 +537,7 @@ impl Engine {
                                 .host(source_host_of(job))
                                 .outcome(crate::logging::Outcome::Ok)
                                 .detail(format!(
-                                    "kayıttan tamamlandı dosya={} bayt={}",
+                                    "completed from the record file={} bytes={}",
                                     crate::logging::file_name(&job.path),
                                     job.downloaded
                                 )),
@@ -1277,7 +1332,7 @@ impl Actor {
                 &job.id,
                 crate::logging::Event::info(if pause { "job.paused" } else { "job.resumed" })
                     .host(source_host_of(&job))
-                    .detail(job.phase.clone()),
+                    .detail(format!("state={}", state_name(job.state))),
             );
             self.jobs.insert(job.id.clone(), job);
         }
@@ -1627,9 +1682,9 @@ impl Actor {
                 .host(source_host_of(&job))
                 .outcome(crate::logging::Outcome::Skipped)
                 .detail(if delete_file {
-                    "kaldırıldı, dosya silinecek"
+                    "removed, the file will be deleted"
                 } else {
-                    "kaldırıldı, dosya korunacak"
+                    "removed, the file will be kept"
                 }),
         );
         let refresh_running = self
@@ -2998,10 +3053,31 @@ impl Actor {
 
     /// Ends the transfer and with it every network permit it still holds. The extension's
     /// late `end_request` for that generation is refused, so nothing else could release them.
-    /// The job's record is no longer held either.
-    fn remove_browser_transfer(&mut self, id: &str) -> Option<BrowserTransferLease> {
-        self.store.release(id);
-        self.browser_transfers.remove(id)
+    /// The job's record is no longer held either; the record it kept is returned.
+    fn remove_browser_transfer(&mut self, id: &str) -> Option<HeldRecord> {
+        self.browser_transfers.remove(id);
+        self.store.release(id)
+    }
+
+    /// Sets the state of a job whose browser transfer ended without a result. A job that waited
+    /// for a new source address, and was not yet authorized for the transfer, is as it was
+    /// before the transfer began (`held`): the address it waits for was not delivered, and a
+    /// restart of the app leaves it that way too. Any other job is paused with `paused_phase`.
+    fn leave_browser_transfer(job: &mut Job, held: Option<HeldRecord>, paused_phase: String) {
+        match held {
+            Some((JobState::AwaitingSource, phase, error)) if !job.browser_transfer_authorized => {
+                job.state = JobState::AwaitingSource;
+                job.phase = phase;
+                job.error = error;
+            }
+            _ => {
+                job.state = JobState::Paused;
+                job.phase = paused_phase;
+            }
+        }
+        job.speed = 0;
+        job.eta = None;
+        job.updated_at = Utc::now().timestamp();
     }
 
     fn revoke_exited_browser_transfer(&mut self, id: &str, generation: u64) -> Result<()> {
@@ -3018,24 +3094,24 @@ impl Actor {
                 )
             );
         }
-        self.remove_browser_transfer(id);
+        let held = self.remove_browser_transfer(id);
         let job = self
             .jobs
             .get_mut(id)
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
+        Self::leave_browser_transfer(
+            job,
+            held,
+            crate::i18n::ui(
+                "Tarayıcı aktarım göndericisi kapandı; yetki geri alındı",
+                "The browser transfer sender exited; the authorization was revoked",
+            )
+            .into(),
+        );
         // With no granted request there is no Fetch body whose authorization
         // must survive the native sender. Revoke this generation instead of
         // leaving a later native connection able to revive it implicitly.
         job.browser_transfer_authorized = false;
-        job.state = JobState::Paused;
-        job.speed = 0;
-        job.eta = None;
-        job.phase = crate::i18n::ui(
-            "Tarayıcı aktarım göndericisi kapandı; yetki geri alındı",
-            "The browser transfer sender exited; the authorization was revoked",
-        )
-        .into();
-        job.updated_at = Utc::now().timestamp();
         self.store.save_job(job)?;
         self.publish();
         Ok(())
@@ -3055,20 +3131,20 @@ impl Actor {
                 )
             );
         }
-        self.remove_browser_transfer(id);
+        let held = self.remove_browser_transfer(id);
         let job = self
             .jobs
             .get_mut(id)
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
-        job.state = JobState::Paused;
-        job.speed = 0;
-        job.eta = None;
-        job.phase = crate::i18n::ui(
-            "Tarayıcı aktarımı duraklatıldı",
-            "The browser transfer was paused",
-        )
-        .into();
-        job.updated_at = Utc::now().timestamp();
+        Self::leave_browser_transfer(
+            job,
+            held,
+            crate::i18n::ui(
+                "Tarayıcı aktarımı duraklatıldı",
+                "The browser transfer was paused",
+            )
+            .into(),
+        );
         self.store.save_job(job)?;
         self.publish();
         Ok(())
@@ -3082,20 +3158,20 @@ impl Actor {
         {
             return Ok(());
         }
-        self.remove_browser_transfer(id);
+        let held = self.remove_browser_transfer(id);
         let job = self
             .jobs
             .get_mut(id)
             .context(crate::i18n::ui("İş bulunamadı", "Job not found"))?;
-        job.state = JobState::Paused;
-        job.speed = 0;
-        job.eta = None;
-        job.phase = crate::i18n::ui(
-            "Tarayıcı bağlantısı koptu; açıkça sürdürmeniz gerekiyor",
-            "The browser connection was lost; resume it explicitly",
-        )
-        .into();
-        job.updated_at = Utc::now().timestamp();
+        Self::leave_browser_transfer(
+            job,
+            held,
+            crate::i18n::ui(
+                "Tarayıcı bağlantısı koptu; açıkça sürdürmeniz gerekiyor",
+                "The browser connection was lost; resume it explicitly",
+            )
+            .into(),
+        );
         let saved = self.store.save_job(job);
         self.publish();
         saved?;
@@ -3417,21 +3493,26 @@ impl Actor {
                     .copied()
                     .unwrap_or(job.downloaded);
                 let delta = value.downloaded.saturating_sub(accounted);
-                let stage = value.phase.clone();
-                let stage_changed = job.phase != stage;
-                job.downloaded = value.downloaded;
-                job.total = value.total;
-                job.speed = value.speed;
-                job.eta = value.eta;
-                job.ranges = value.ranges;
-                job.resumable = value.resumable;
-                job.phase = stage.clone();
-                job.live = active.control.is_live();
-                job.state = if value.processing {
+                let state = if value.processing {
                     JobState::Processing
                 } else {
                     JobState::Downloading
                 };
+                let phase_name = if value.phase_name.is_empty() {
+                    state_name(state)
+                } else {
+                    value.phase_name
+                };
+                let stage_changed = job.state != state || active.phase_name != phase_name;
+                job.downloaded = value.downloaded;
+                job.total = value.total;
+                job.speed = value.speed;
+                job.eta = value.eta;
+                job.ranges = value.ranges.clone();
+                job.resumable = value.resumable;
+                job.phase = value.phase.clone();
+                job.live = active.control.is_live();
+                job.state = state;
                 job.updated_at = Utc::now().timestamp();
                 // A downloader that starts again reports from the bytes it kept, fewer than this job
                 // may have counted; the count goes on from the most it has reached. A live
@@ -3454,11 +3535,12 @@ impl Actor {
                     active.last_persist = Instant::now();
                 }
                 if stage_changed {
+                    active.phase_name = phase_name;
                     crate::logging::record_job(
                         &id,
                         crate::logging::Event::info("job.stage")
                             .host(source_host_of(job))
-                            .detail(format!("{stage} toplam={:?}", value.total)),
+                            .detail(stage_detail(job.state, phase_name, &value)),
                     );
                 } else if active.last_log.elapsed() >= Duration::from_secs(15) {
                     active.last_log = Instant::now();
@@ -3467,10 +3549,7 @@ impl Actor {
                         crate::logging::Event::debug("job.progress")
                             .host(source_host_of(job))
                             .ms(active.attempt_started.elapsed().as_millis() as u64)
-                            .detail(format!(
-                                "indirilen={} toplam={:?} hız={} eta={:?}",
-                                value.downloaded, value.total, value.speed, value.eta
-                            )),
+                            .detail(progress_detail(&value)),
                     );
                 }
                 self.publish();
@@ -3698,16 +3777,15 @@ impl Actor {
                 job.state = JobState::Completed;
                 job.phase = crate::i18n::ui("Tamamlandı", "Completed").into();
                 job.request.forget_session();
-                let mark_warning = install::mark_download(&job.path, &job.request.url)
-                    .err()
-                    .map(|error| {
-                        crate::i18n::ui_format!(
-                            "Windows indirme işareti uygulanamadı: {error:#}",
-                            "Could not apply the Windows download mark: {error:#}",
-                            error = error
-                        )
-                    });
-                job.error = [result.warning, mark_warning.clone()]
+                let mark_error = install::mark_download(&job.path, &job.request.url).err();
+                let mark_warning = mark_error.as_ref().map(|error| {
+                    crate::i18n::ui_format!(
+                        "Windows indirme işareti uygulanamadı: {error:#}",
+                        "Could not apply the Windows download mark: {error:#}",
+                        error = error
+                    )
+                });
+                job.error = [result.warning, mark_warning]
                     .into_iter()
                     .flatten()
                     .reduce(|first, second| format!("{first}; {second}"));
@@ -3720,18 +3798,20 @@ impl Actor {
                         .ms(elapsed)
                         .outcome(crate::logging::Outcome::Ok)
                         .detail(format!(
-                            "dosya={} bayt={} deneme={}",
+                            "file={} bytes={} attempts={}",
                             crate::logging::file_name(&job.path),
                             result.bytes,
                             job.attempts.saturating_add(1)
                         )),
                 );
-                if let Some(warning) = &mark_warning {
+                if let Some(error) = &mark_error {
                     crate::logging::record_job(
                         id,
                         crate::logging::Event::warn("job.mark_failed")
                             .host(source_host_of(&job))
-                            .detail(warning.clone()),
+                            .detail(format!(
+                                "could not apply the Windows download mark: {error:#}"
+                            )),
                     );
                 }
             }
@@ -3788,7 +3868,7 @@ impl Actor {
                             failure_event(&job, &message)
                                 .outcome(crate::logging::Outcome::Retry)
                                 .detail(format!(
-                                    "{message} ({} sn sonra, deneme {})",
+                                    "{message} (retry in {} s, attempt {})",
                                     delay.as_secs(),
                                     job.attempts
                                 )),
@@ -4172,7 +4252,8 @@ impl Actor {
             crate::logging::Event::info("job.stage")
                 .host(source_host_of(job))
                 .detail(format!(
-                    "Bağlanıyor deneme={}",
+                    "state={} attempt={}",
+                    state_name(JobState::Connecting),
                     job.attempts.saturating_add(1)
                 )),
         );
@@ -4241,6 +4322,7 @@ impl Actor {
                 desired: DesiredStop::None,
                 last_persist: Instant::now(),
                 last_log: Instant::now(),
+                phase_name: "",
                 attempt_started: Instant::now(),
                 forced,
             },
@@ -4667,7 +4749,11 @@ fn run_job(
         return Ok(done);
     }
     let scratch = if job.work_dir.is_some() {
-        crate::recovery::prepare_work(job)?
+        let scratch = crate::recovery::prepare_work(job)?;
+        if let Some(done) = crate::recovery::adopt_finished(paths, job)? {
+            return Ok(done);
+        }
+        scratch
     } else {
         output.to_owned()
     };
@@ -4997,12 +5083,56 @@ fn validate_checksum_text(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Unicode format characters (category Cf) that draw nothing or reorder what is drawn, so a name
+/// that holds one reads differently from what it is: the bidirectional controls make a name
+/// that ends in `.exe` read as one that ends in `.txt`. Not listed: the zero width (non-)joiners
+/// U+200C and U+200D, which the spelling of Persian, the Indic scripts and emoji sequences
+/// needs; the prepended concatenation marks (the Arabic number sign and the like), which are
+/// drawn before the digits they belong to; and the tag characters that spell a flag emoji, which
+/// `safe_filename` keeps after U+1F3F4 although this list holds them.
+const FORMAT_CONTROLS: &[(char, char)] = &[
+    ('\u{00AD}', '\u{00AD}'),
+    ('\u{061C}', '\u{061C}'),
+    ('\u{180E}', '\u{180E}'),
+    ('\u{200B}', '\u{200B}'),
+    ('\u{200E}', '\u{200F}'),
+    ('\u{202A}', '\u{202E}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206F}'),
+    ('\u{FEFF}', '\u{FEFF}'),
+    ('\u{FFF9}', '\u{FFFB}'),
+    ('\u{13430}', '\u{1343F}'),
+    ('\u{1BCA0}', '\u{1BCA3}'),
+    ('\u{1D173}', '\u{1D17A}'),
+    ('\u{E0001}', '\u{E0001}'),
+    ('\u{E0020}', '\u{E007F}'),
+];
+
+/// U+1F3F4 followed by tag characters up to the cancel tag is the flag of a region (England,
+/// Scotland, Wales).
+const FLAG_EMOJI_BASE: char = '\u{1F3F4}';
+const CANCEL_TAG: char = '\u{E007F}';
+
+fn is_tag_character(character: char) -> bool {
+    ('\u{E0020}'..=CANCEL_TAG).contains(&character)
+}
+
+fn is_name_control(character: char) -> bool {
+    character.is_control()
+        || FORMAT_CONTROLS
+            .iter()
+            .any(|&(first, last)| (first..=last).contains(&character))
+}
+
 pub(crate) fn safe_filename(suggested: &str, id: &str) -> String {
     let leaf = suggested.rsplit(['/', '\\']).next().unwrap_or("");
+    let mut in_flag = false;
     let mut value = leaf
         .chars()
         .map(|character| {
-            if character < ' '
+            let flag_tag = in_flag && is_tag_character(character);
+            in_flag = character == FLAG_EMOJI_BASE || (flag_tag && character != CANCEL_TAG);
+            if (is_name_control(character) && !flag_tag)
                 || matches!(
                     character,
                     '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
@@ -5191,6 +5321,10 @@ struct TransferFailure {
 }
 
 fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailure {
+    let error = match transfer::network_code(&error) {
+        Some(code) => crate::error_codes::with_code(error, code),
+        None => error,
+    };
     let detail = format!("{error:#}");
     TransferFailure {
         retryable: retryable_error(&error),
@@ -5267,7 +5401,29 @@ fn http_status_in_text(message: &str) -> Option<u32> {
     })
 }
 
-fn retryable_error(error: &anyhow::Error) -> bool {
+/// The curl errors that a connection or the server's way of answering can cause again later:
+/// a refused or unresolvable connection, a transfer cut short, a timeout, an empty reply, a
+/// failed send or receive, an HTTP/2 error and a failed proxy handshake.
+fn retryable_curl_code(code: i32) -> bool {
+    matches!(code, 5 | 6 | 7 | 16 | 18 | 28 | 52 | 55 | 56 | 92 | 97)
+}
+
+/// The codes of the curl errors a tool prints in its message (`curl: (52) Empty reply from
+/// server`), in a message that has already been lowercased.
+fn curl_codes_in_text(message: &str) -> impl Iterator<Item = i32> + '_ {
+    message
+        .match_indices("curl: (")
+        .filter_map(|(index, needle)| {
+            let rest = &message[index + needle.len()..];
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            rest[digits..]
+                .starts_with(')')
+                .then(|| rest[..digits].parse().ok())
+                .flatten()
+        })
+}
+
+pub(crate) fn retryable_error(error: &anyhow::Error) -> bool {
     if transfer::http_status(error).is_some_and(retryable_status) {
         return true;
     }
@@ -5290,13 +5446,14 @@ fn retryable_error(error: &anyhow::Error) -> bool {
             }
         }
         if let Some(error) = cause.downcast_ref::<curl::Error>() {
-            return matches!(error.code(), 5 | 6 | 7 | 18 | 28 | 52 | 55 | 56 | 92);
+            return retryable_curl_code(error.code());
         }
     }
     let message = format!("{error:#}").to_lowercase();
     // yt-dlp fragment and webpage failures surface as "HTTP Error <code>" after exhausting
     // its own retries; they get the same job-level retry as a typed status.
     http_status_in_text(&message).is_some_and(retryable_status)
+        || curl_codes_in_text(&message).any(retryable_curl_code)
         || [
             // Local proxy saturation and tunnel failures surface verbatim from
             // the child's urllib stack; they are transient by construction.
@@ -5306,6 +5463,21 @@ fn retryable_error(error: &anyhow::Error) -> bool {
             "timed out",
             "temporary failure",
             "connection reset",
+            // A refused, reset or aborted connection as the tool's Python words it on Windows
+            // (WinError 10061, 10054, 10053) and on Linux (`[Errno 111] Connection refused`,
+            // `[Errno 103] Software caused connection abort`); curl's are 7 and 56.
+            "connection refused",
+            "actively refused",
+            "forcibly closed",
+            "connection was aborted",
+            "software caused connection abort",
+            // A failed name lookup as Python's sockets word it, per platform; `Temporary failure
+            // in name resolution` is matched above.
+            "getaddrinfo failed",
+            "name or service not known",
+            "nodename nor servname provided",
+            // Python's wording of an empty reply, as curl's is `curl: (52)`.
+            "remote end closed connection without response",
         ]
         .iter()
         .any(|needle| message.contains(needle))

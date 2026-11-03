@@ -361,10 +361,20 @@ pub(crate) fn publish(
             directory,
             files: entries.clone(),
         };
+        // The target of an earlier try that failed to move the file. The journal below replaces
+        // it, so nothing would release its claim.
+        let earlier = read_receipt(paths, &job.id)
+            .ok()
+            .flatten()
+            .map(|earlier| earlier.target)
+            .filter(|earlier| *earlier != target);
         atomic_write(
             &receipt_path(paths, &job.id)?,
             secure::seal(serde_json::to_string(&receipt)?)?.as_bytes(),
         )?;
+        if let Some(earlier) = earlier {
+            let _ = release(&earlier, &job.id);
+        }
         if unsafe {
             MoveFileExW(
                 wide(&result.path).as_ptr(),
@@ -380,19 +390,116 @@ pub(crate) fn publish(
             });
         }
         let error = std::io::Error::last_os_error();
-        release(&target, &job.id)?;
         if !target.exists() {
+            // The journal names this target; the claim keeps the name for the retry in `recovered`.
             return Err(error).context(crate::i18n::ui(
                 "Son dosya taşınamadı",
                 "The final file could not be moved",
             ));
         }
+        release(&target, &job.id)?;
     }
     bail!(
         "{}",
         crate::i18n::ui("Boş çıktı adı bulunamadı", "No free output name was found")
     )
 }
+/// Names in a work folder that are not a download's result: the owner marker, temporaries of
+/// `atomic_write`, the media workspace, the transfer's part, state and segment files, the
+/// output a browser transfer stages while it remuxes. The `browser-transfer` folder and its
+/// `browser-transfer-previous-<uuid>` archives are none of them: they keep `adopt_finished`
+/// from adopting anything.
+fn is_work_artifact(name: &str) -> bool {
+    name == ".job"
+        || name == ".ssdownload-work"
+        || (name.starts_with('.') && name.ends_with(".tmp"))
+        || name.contains(".ssdownload.")
+        || name.starts_with(".browser-mux-")
+}
+
+/// `name` in lower case without the number that `output::numbered` adds: `Movie (2)` is `movie`.
+fn without_number(name: &str) -> String {
+    let name = name.to_lowercase();
+    match name
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" ("))
+    {
+        Some((base, number))
+            if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base.to_owned()
+        }
+        _ => name,
+    }
+}
+
+/// The name of a file without its extension and without its number: `Movie (2).mkv` and
+/// `movie.mp4` have the same stem.
+fn result_stem(name: &str) -> String {
+    let path = crate::output::without_real_extension(Path::new(name));
+    without_number(&path.to_string_lossy())
+}
+
+/// Whether the downloader of `job` can leave a file called `name` as its result. When the
+/// request fixes the file's name, that is the job's name, numbered, or with the extension of
+/// the media container; otherwise the server names the file.
+fn is_possible_result(job: &Job, name: &str) -> bool {
+    job.request.filename.is_none()
+        || job.path.file_name().is_some_and(|own| {
+            let own = own.to_string_lossy();
+            let stem = result_stem(name);
+            // The last dot of a title without an extension ("Talk v2.0") reads as an extension, but
+            // the container's extension is added to the whole name ("Talk v2.0.mp4").
+            stem == result_stem(&own) || stem == without_number(&own)
+        })
+}
+
+/// Publishes the finished result of a download that stopped before `publish` wrote its journal
+/// entry. A download first moves its result out of its part files into the work folder
+/// (`output::publish`) and `publish` journals and moves it on; between the two nothing names the
+/// result, `recovered` finds nothing and the download would start over. The result is the one
+/// regular file of the work folder that the job's downloader can have left (`is_possible_result`)
+/// and that is not an artifact of the transfer. Nothing is adopted when the folder holds
+/// anything else, a folder included. The `browser-transfer` folder is one: its receiver puts the
+/// file in the work folder first and verifies it after, so a file beside the folder may have
+/// failed that verification. So is a `browser-transfer-previous-<uuid>` archive: a restart
+/// archives the folder before it moves the earlier output into it, so a file beside an archive
+/// can be the output the restart discards. The caller has checked the folder with `prepare_work`.
+pub(crate) fn adopt_finished(paths: &AppPaths, job: &Job) -> Result<Option<TransferResult>> {
+    let Some(work) = &job.work_dir else {
+        return Ok(None);
+    };
+    let mut finished = None;
+    for entry in fs::read_dir(work)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_work_artifact(&name) {
+            continue;
+        }
+        if !entry.file_type()?.is_file()
+            || !is_possible_result(job, &name)
+            || finished.replace(entry.path()).is_some()
+        {
+            return Ok(None);
+        }
+    }
+    let Some(path) = finished else {
+        return Ok(None);
+    };
+    reject_link(&path)?;
+    let bytes = fs::metadata(&path)?.len();
+    publish(
+        paths,
+        job,
+        TransferResult {
+            path,
+            bytes,
+            warning: None,
+        },
+    )
+    .map(Some)
+}
+
 pub(crate) fn cleanup_work(job: &Job) -> Result<()> {
     let Some(path) = &job.work_dir else {
         return Ok(());
@@ -525,17 +632,10 @@ pub(crate) fn forget(paths: &AppPaths, id: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::{AddRequest, JobState};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture() -> (AppPaths, PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "ssdownload-recovery-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-recovery-test-{}", uuid::Uuid::new_v4()));
         let paths = AppPaths::new(root.clone()).unwrap();
         fs::create_dir_all(root.join("out")).unwrap();
         (paths, root)
@@ -619,6 +719,389 @@ mod tests {
         assert!(!claim_path(&job.path).exists());
         assert!(!job.work_dir.as_ref().unwrap().exists());
         assert!(published.path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A job whose download stopped after moving its result into the work folder and before
+    /// `publish` wrote the journal: the result sits at `path`, nothing names it.
+    fn stopped_before_the_journal(root: &Path, filename: &str, bytes: &[u8]) -> (Job, PathBuf) {
+        let id = uuid::Uuid::new_v4().to_string();
+        let job = job(root, id.clone(), filename);
+        claim(&job.path, &id).unwrap();
+        let result = prepare_work(&job).unwrap();
+        fs::write(&result, bytes).unwrap();
+        (job, result)
+    }
+
+    #[test]
+    fn a_finished_file_the_work_folder_kept_without_a_journal_is_published() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        // The transfer's own state file outlives its part file when it stops after the rename.
+        fs::write(append_state(&result), b"{}").unwrap();
+        assert!(recovered(&paths, &job.id).unwrap().is_none());
+
+        let adopted = adopt_finished(&paths, &job).unwrap().unwrap();
+        assert_eq!(
+            (adopted.path.as_path(), adopted.bytes),
+            (job.path.as_path(), 11)
+        );
+        assert_eq!(fs::read(&job.path).unwrap(), b"movie bytes");
+        assert!(!result.exists());
+        // From here on the journal names the file, as after any other publication.
+        assert_eq!(recovered(&paths, &job.id).unwrap().unwrap().path, job.path);
+
+        acknowledge(&paths, &job).unwrap();
+        assert!(!job.work_dir.as_ref().unwrap().exists());
+        assert!(!claim_path(&job.path).exists());
+        assert_eq!(fs::read(&job.path).unwrap(), b"movie bytes");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn append_state(result: &Path) -> PathBuf {
+        let mut name = result.as_os_str().to_os_string();
+        name.push(".ssdownload.state");
+        PathBuf::from(name)
+    }
+
+    #[test]
+    fn a_folder_of_the_work_folder_is_never_published_as_the_result() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "playlist", b"unused");
+        let work = job.work_dir.clone().unwrap();
+        fs::remove_file(&result).unwrap();
+        // A finished playlist folder is not recognised; the job downloads it again.
+        fs::create_dir_all(result.join("part")).unwrap();
+        fs::write(result.join("001 - one.mp4"), b"one").unwrap();
+        assert!(adopt_finished(&paths, &job).unwrap().is_none());
+        assert!(result.join("001 - one.mp4").exists() && !job.path.exists());
+        fs::remove_dir_all(&result).unwrap();
+
+        // What a restart of a browser transfer leaves when the app stops between renaming the
+        // transfer's folder to an archive and creating it again.
+        let archive = work.join(format!(
+            "browser-transfer-previous-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(archive.join("streams")).unwrap();
+        fs::write(archive.join("streams").join("1.bin"), b"bytes").unwrap();
+        assert!(adopt_finished(&paths, &job).unwrap().is_none());
+        assert!(archive.join("streams").join("1.bin").exists() && !job.path.exists());
+        assert!(recovered(&paths, &job.id).unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_file_beside_the_live_folder_of_a_browser_transfer_is_left_to_its_receiver() {
+        let (paths, root) = fixture();
+        let (mut job, result) = stopped_before_the_journal(&root, "movie.mp4", b"unverified");
+        let work = job.work_dir.clone().unwrap();
+        // The receiver places the file in the work folder and verifies it after; a file that
+        // failed the check stays there beside the receiver's folder.
+        let live = work.join("browser-transfer");
+        fs::create_dir_all(&live).unwrap();
+        fs::write(live.join("stream-00000000.bin"), b"unverified").unwrap();
+
+        for filename in [None, Some("movie.mp4".to_owned())] {
+            job.request.filename = filename;
+            assert!(adopt_finished(&paths, &job).unwrap().is_none());
+            assert!(result.exists() && !job.path.exists());
+            assert!(recovered(&paths, &job.id).unwrap().is_none());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_output_a_restart_of_a_browser_transfer_discards_is_not_published() {
+        let (paths, root) = fixture();
+        let (mut job, result) = stopped_before_the_journal(&root, "movie.mp4", b"old output");
+        let work = job.work_dir.clone().unwrap();
+        // A restart renames the transfer's folder to an archive, creates the folder again and
+        // only then moves the earlier output into the archive; a stop between the first two
+        // steps leaves the output beside the archive.
+        let archive = work.join(format!(
+            "browser-transfer-previous-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&archive).unwrap();
+        fs::write(archive.join("stream-00000000.bin"), b"old output").unwrap();
+
+        for filename in [None, Some("movie.mp4".to_owned())] {
+            job.request.filename = filename;
+            assert!(adopt_finished(&paths, &job).unwrap().is_none());
+            assert!(result.exists() && !job.path.exists());
+            assert!(recovered(&paths, &job.id).unwrap().is_none());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_output_a_stopped_remux_staged_is_never_published() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"unused");
+        let work = job.work_dir.clone().unwrap();
+        fs::remove_file(&result).unwrap();
+        // `place_browser_file` writes the remuxed copy under this name before it renames it to the
+        // job's name; the request leaves the file's name to the server, so any name is possible.
+        let staged = work.join(format!(".browser-mux-{}.mp4", uuid::Uuid::new_v4()));
+        fs::write(&staged, b"half a file").unwrap();
+
+        assert!(job.request.filename.is_none());
+        assert!(adopt_finished(&paths, &job).unwrap().is_none());
+        assert!(staged.exists() && !job.path.exists());
+        assert!(recovered(&paths, &job.id).unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_a_name_the_downloader_can_give_is_published_when_the_request_fixes_the_name() {
+        let (paths, root) = fixture();
+        // Each name gets a job of its own: `stem` is the stem of the job's name.
+        let adopt = |index: usize, found: &dyn Fn(&str) -> String| {
+            let stem = format!("clip{index}");
+            let (mut job, result) =
+                stopped_before_the_journal(&root, &format!("{stem}.mp4"), b"bytes");
+            job.request.filename = Some(format!("{stem}.mp4"));
+            fs::rename(&result, result.with_file_name(found(&stem))).unwrap();
+            adopt_finished(&paths, &job).unwrap()
+        };
+        let rejected: [&dyn Fn(&str) -> String; 5] = [
+            &|_| "other.bin".to_owned(),
+            &|stem| format!("{stem}2.mp4"),
+            &|stem| format!("my {stem}.mp4"),
+            &|stem| format!("{stem} (x).mp4"),
+            &|stem| format!("{stem} (1) (2).mp4"),
+        ];
+        for (index, found) in rejected.into_iter().enumerate() {
+            assert!(adopt(index, found).is_none(), "rejected name {index}");
+        }
+        // The name, numbered, or with the extension of another container.
+        let accepted: [&dyn Fn(&str) -> String; 4] = [
+            &|stem| format!("{stem}.mp4"),
+            &|stem| format!("{} (1).mp4", stem.to_uppercase()),
+            &|stem| format!("{stem}.mkv"),
+            &|stem| format!("{stem} (12).webm"),
+        ];
+        for (index, found) in accepted.into_iter().enumerate() {
+            let adopted = adopt(10 + index, found).unwrap_or_else(|| panic!("name {index}"));
+            assert_eq!(adopted.bytes, 5);
+            assert!(adopted.path.exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_title_with_a_dot_and_no_extension_is_published_under_its_container() {
+        let (paths, root) = fixture();
+        // The title's last dot reads as the extension `.0`; the container's extension follows it.
+        let adopt = |index: usize, found: &dyn Fn(&str) -> String| {
+            let title = format!("Talk v{index}.0");
+            let (mut job, result) = stopped_before_the_journal(&root, &title, b"bytes");
+            job.request.filename = Some(title.clone());
+            fs::rename(&result, result.with_file_name(found(&title))).unwrap();
+            adopt_finished(&paths, &job).unwrap()
+        };
+        let rejected: [&dyn Fn(&str) -> String; 3] = [
+            &|title| format!("my {title}.mp4"),
+            &|title| format!("{title}1.mp4"),
+            &|title| format!("{title} (x).mp4"),
+        ];
+        for (index, found) in rejected.into_iter().enumerate() {
+            assert!(adopt(index, found).is_none(), "rejected name {index}");
+        }
+        let accepted: [&dyn Fn(&str) -> String; 4] = [
+            &|title| format!("{title}.mp4"),
+            &|title| format!("{} (2).mkv", title.to_uppercase()),
+            &|title| title.to_owned(),
+            &|title| format!("{}.mp4", title.trim_end_matches(".0")),
+        ];
+        for (index, found) in accepted.into_iter().enumerate() {
+            let adopted = adopt(10 + index, found).unwrap_or_else(|| panic!("name {index}"));
+            assert_eq!(adopted.bytes, 5);
+            assert!(adopted.path.exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn any_name_is_published_when_the_server_may_choose_it() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "download.php", b"report bytes");
+        fs::rename(&result, result.with_file_name("report.pdf")).unwrap();
+        let adopted = adopt_finished(&paths, &job).unwrap().unwrap();
+        assert_eq!(adopted.path.file_name().unwrap(), "report.pdf");
+        assert_eq!(fs::read(&adopted.path).unwrap(), b"report bytes");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_media_workspace_a_stop_left_beside_the_result_does_not_hide_it() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        // The workspace is removed after the result is published and may outlive a stop.
+        let workspace = result
+            .parent()
+            .unwrap()
+            .join(".ssdownload-work")
+            .join("owner");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("media.mp4"), b"movie bytes").unwrap();
+
+        let adopted = adopt_finished(&paths, &job).unwrap().unwrap();
+        assert_eq!(adopted.path, job.path);
+        acknowledge(&paths, &job).unwrap();
+        assert!(!workspace.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn work_that_is_not_one_finished_result_is_left_alone() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        let work = job.work_dir.clone().unwrap();
+        fs::remove_file(&result).unwrap();
+        // Replaces everything but the owner marker with `entries` (name, is a folder).
+        let left_alone = |entries: &[(&str, bool)]| {
+            for entry in fs::read_dir(&work).unwrap() {
+                let path = entry.unwrap().path();
+                if path.file_name().unwrap() == ".job" {
+                    continue;
+                }
+                if path.is_dir() {
+                    fs::remove_dir_all(&path).unwrap();
+                } else {
+                    fs::remove_file(&path).unwrap();
+                }
+            }
+            for (name, folder) in entries {
+                if *folder {
+                    fs::create_dir_all(work.join(name)).unwrap();
+                } else {
+                    fs::write(work.join(name), b"bytes").unwrap();
+                }
+            }
+            assert!(
+                adopt_finished(&paths, &job).unwrap().is_none(),
+                "{entries:?}"
+            );
+            assert!(!job.path.exists(), "published from {entries:?}");
+            for (name, _) in entries {
+                assert!(work.join(name).exists(), "{name} was lost");
+            }
+        };
+
+        left_alone(&[]);
+        left_alone(&[(".0b3f9c1e.tmp", false)]);
+        left_alone(&[("movie.mp4.ssdownload.part", false)]);
+        left_alone(&[("movie.mp4.ssdownload.state", false)]);
+        left_alone(&[("movie.mp4.ssdownload.part.000", false)]);
+        left_alone(&[(".ssdownload-work", true)]);
+        left_alone(&[("browser-transfer", true)]);
+        left_alone(&[("browser-transfer-previous-0b3f9c1e", true)]);
+        // Two results cannot be told apart.
+        left_alone(&[("movie.mp4", false), ("movie (1).mp4", false)]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_publication_does_not_take_a_name_another_job_claimed() {
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        // Another job holds the free name `movie (2).mp4` and the first two exist or are ours.
+        fs::write(root.join("out").join("movie (1).mp4"), b"user file").unwrap();
+        let other = uuid::Uuid::new_v4().to_string();
+        claim(&root.join("out").join("movie (2).mp4"), &other).unwrap();
+        // The job's own claim on `movie.mp4` is released, and another job took that name too.
+        release(&job.path, &job.id).unwrap();
+        claim(&job.path, &other).unwrap();
+
+        let published = publish(
+            &paths,
+            &job,
+            TransferResult {
+                path: result,
+                bytes: 11,
+                warning: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(published.path.file_name().unwrap(), "movie (3).mp4");
+        for name in ["movie.mp4", "movie (2).mp4"] {
+            let marker = claim_path(&root.join("out").join(name));
+            assert_eq!(fs::read_to_string(marker).unwrap(), other, "{name}");
+            assert!(!root.join("out").join(name).exists(), "{name}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_publication_whose_move_failed_keeps_its_claim_until_the_retry_moves_the_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        fs::write(&job.path, b"user file").unwrap();
+        let target = root.join("out").join("movie (1).mp4");
+        let other = uuid::Uuid::new_v4().to_string();
+        // A program that shares the file for reading only blocks the rename.
+        let scanner = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&result)
+            .unwrap();
+        assert!(adopt_finished(&paths, &job).is_err());
+        assert!(!target.exists());
+        // The journal names the target; no other job can reserve it in the meantime.
+        assert_eq!(fs::read_to_string(claim_path(&target)).unwrap(), job.id);
+        assert!(claim(&target, &other).is_err());
+
+        drop(scanner);
+        let done = recovered(&paths, &job.id).unwrap().unwrap();
+        assert_eq!(done.path, target);
+        assert_eq!(fs::read(&target).unwrap(), b"movie bytes");
+        assert_eq!(fs::read(&job.path).unwrap(), b"user file");
+        assert_eq!(fs::read_to_string(claim_path(&target)).unwrap(), job.id);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_claim_kept_for_a_name_a_file_took_before_the_retry_is_released_with_the_journal() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (paths, root) = fixture();
+        let (job, result) = stopped_before_the_journal(&root, "movie.mp4", b"movie bytes");
+        let out = root.join("out");
+        fs::write(&job.path, b"user file").unwrap();
+        let first = out.join("movie (1).mp4");
+        // A program that shares the file for reading only blocks the first try.
+        let scanner = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&result)
+            .unwrap();
+        assert!(adopt_finished(&paths, &job).is_err());
+        assert_eq!(fs::read_to_string(claim_path(&first)).unwrap(), job.id);
+        drop(scanner);
+
+        // A file takes the name that the journal names, and another job reserves the next one.
+        fs::write(&first, b"another file").unwrap();
+        let other = uuid::Uuid::new_v4().to_string();
+        claim(&out.join("movie (2).mp4"), &other).unwrap();
+        assert!(recovered(&paths, &job.id).unwrap().is_none());
+        let published = adopt_finished(&paths, &job).unwrap().unwrap();
+        assert_eq!(published.path, out.join("movie (3).mp4"));
+        assert!(!claim_path(&first).exists());
+        assert_eq!(
+            fs::read_to_string(claim_path(&out.join("movie (2).mp4"))).unwrap(),
+            other
+        );
+
+        acknowledge(&paths, &job).unwrap();
+        let left: Vec<_> = fs::read_dir(&out)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".claim"))
+            .collect();
+        assert_eq!(left, ["movie (2).mp4.ssdownload.claim"]);
+        assert_eq!(fs::read(&first).unwrap(), b"another file");
         fs::remove_dir_all(root).unwrap();
     }
 

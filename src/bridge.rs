@@ -1456,10 +1456,7 @@ fn serve_native_host(
         log.record(crate::logging::Event::failure(
             "bridge.identity_rejected",
             crate::error_codes::BRG_001,
-            ui(
-                "izin verilmeyen eklenti kaynağı",
-                "disallowed extension origin",
-            ),
+            "disallowed extension origin",
         ));
         crate::bail_code!(crate::error_codes::BRG_001);
     }
@@ -1493,11 +1490,7 @@ fn serve_native_host(
                 log.record(crate::logging::Event::failure(
                     "bridge.protocol_mismatch",
                     crate::error_codes::BRG_006,
-                    crate::i18n::ui_format!(
-                        "istemci sürümü {0}",
-                        "client version {0}",
-                        request.version
-                    ),
+                    format!("client version {}", request.version),
                 ));
                 BridgeResponse {
                     result: None,
@@ -2436,6 +2429,9 @@ mod tests {
             .unwrap_or_else(|| panic!("no identity event in {events:?}"));
         assert_eq!(rejected["code"], "SSD-BRG-001");
         assert_eq!(rejected["channel"], "native-host");
+        // The event log is English whatever language the interface speaks (unit tests run in
+        // Turkish).
+        assert_eq!(rejected["detail"], "disallowed extension origin");
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -2481,12 +2477,9 @@ mod tests {
             .unwrap_or_else(|| panic!("no mismatch event in {events:?}"));
         assert_eq!(mismatch["code"], "SSD-BRG-006");
         assert_eq!(mismatch["channel"], "native-host");
-        assert!(
-            mismatch["detail"]
-                .as_str()
-                .unwrap()
-                .contains(&(PROTOCOL_VERSION + 1).to_string()),
-            "{mismatch:?}"
+        assert_eq!(
+            mismatch["detail"],
+            format!("client version {}", PROTOCOL_VERSION + 1)
         );
         std::fs::remove_dir_all(root).ok();
     }

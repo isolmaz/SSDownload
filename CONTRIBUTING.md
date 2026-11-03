@@ -70,7 +70,7 @@ scripts/             Local checks, error-code generator and release scripts
 - Threads are named `std::thread`s (no async runtime). Only the engine thread changes jobs, settings and the store; everything else sends it a command or reads a snapshot.
 - Start helper programs with argument arrays, never through a shell. Validate input at trust boundaries with the helpers in `src/validation.rs`.
 - User-visible failures use `bail_code!` with a permanent `SSD-<area>-<number>` code. Codes are never renumbered or reused: edit the table in `scripts/generate-error-codes.py` and run it; it rewrites `src/error_codes.rs` and `browser/chromium/codes.js`.
-- Tests sit next to the code in `#[cfg(test)] mod tests` and use local fixtures (`127.0.0.1`, `.example` hosts) only, never live sites.
+- Tests sit next to the code in `#[cfg(test)] mod tests` and use local fixtures (`127.0.0.1`, `.example` hosts) only, never live sites. They create files only in temporary directories: in a test build `AppPaths::new` puts the download folder inside the profile directory and the cookie jars in a scratch folder of the process, so no test fills your Downloads folder or the profile of an installed copy. The window tests of `src/gui/native` run on a private Windows desktop, so none of their windows or focus changes reaches your screen.
 - Update the affected documentation ([README.md](README.md), [docs/GUIDE.md](docs/GUIDE.md), [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md)) in the same change.
 
 Contributions are licensed under the [MIT License](LICENSE.txt).

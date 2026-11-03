@@ -502,6 +502,7 @@ impl LiveRecordingGauge {
             total: None,
             speed,
             eta: None,
+            phase_name: "downloading media",
             phase: crate::i18n::ui("Medya indiriliyor", "Downloading media").into(),
         })
     }
@@ -659,6 +660,11 @@ impl DownloadGauge {
             total,
             speed,
             eta: remaining_seconds(total, downloaded, speed),
+            phase_name: if processing {
+                "processing media"
+            } else {
+                "downloading media"
+            },
             phase: if processing {
                 crate::i18n::ui("Medya işleniyor", "Processing media")
             } else {
@@ -880,6 +886,7 @@ pub(super) fn handle_machine_line(
             total: None,
             speed: 0,
             eta: None,
+            phase_name: "processing with ffmpeg",
             phase: crate::i18n::ui("FFmpeg ile işleniyor", "Processing with FFmpeg").into(),
             processing: true,
         });

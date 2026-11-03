@@ -10,6 +10,9 @@ use crate::test_http::{
 
 const MIB: u64 = 1024 * 1024;
 const NEVER: Duration = Duration::from_secs(3600);
+/// How long a test waits for something that happens however slow the machine is. Only a hang
+/// reaches it; a test whose outcome depends on how fast the machine is does not use it.
+const HANG_GUARD: Duration = Duration::from_secs(180);
 
 fn request_for(server: &Server) -> AddRequest {
     AddRequest {
@@ -596,6 +599,206 @@ fn a_server_that_refuses_head_is_downloaded_over_ranges() {
 }
 
 #[test]
+fn a_server_that_drops_the_connection_on_head_is_downloaded_over_several_connections() {
+    let size = 24 * MIB + 12_345;
+    let server = Server::start(Config {
+        size,
+        head_dropped: true,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("head-dropped");
+    let output = directory.0.join("payload.bin");
+    forget_writes();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    // One attempt: the HEAD that got no answer, then the one-byte ranged GET in its place.
+    assert_eq!(log[0].method, "HEAD");
+    assert!(log[0].answered.is_none());
+    assert_eq!(log.iter().filter(|e| e.method == "HEAD").count(), 1);
+    assert_eq!(log[1].method, "GET");
+    assert_eq!(log[1].range.as_deref(), Some("bytes=0-0"));
+    assert_tiles(delivered(&log, size), size);
+    let connections = data_gets(&log)
+        .map(|entry| entry.connection)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        connections.len() > 1,
+        "ranges used connections {connections:?}"
+    );
+}
+
+/// Makes the probes that the current test thread starts wait `head` for a `HEAD` and `get` for a
+/// ranged `GET`.
+fn probe_waits(head: Duration, get: Duration) {
+    TEST_PROBE_TIMEOUTS.with(|timeouts| timeouts.set(Some((head, get))));
+}
+
+#[test]
+fn a_server_that_never_answers_head_is_downloaded_after_the_short_wait_for_it() {
+    let size = 24 * MIB + 12_345;
+    let server = Server::start(Config {
+        size,
+        head_hung: true,
+        throttle: Some(64 * MIB),
+        ..Config::default()
+    });
+    let directory = TempDir::new("head-hung");
+    let output = directory.0.join("payload.bin");
+    // The wait for the `GET` is far longer than the one for the `HEAD`, so that it shows which of
+    // the two ended the `HEAD`.
+    probe_waits(Duration::from_millis(300), Duration::from_secs(20));
+    forget_writes();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let log = server.log();
+    // One attempt: the HEAD that nothing answered, then the one-byte ranged GET in its place.
+    assert_eq!(log[0].method, "HEAD");
+    assert!(log[0].answered.is_none());
+    assert_eq!(log.iter().filter(|e| e.method == "HEAD").count(), 1);
+    assert_eq!(log[1].method, "GET");
+    assert_eq!(log[1].range.as_deref(), Some("bytes=0-0"));
+    let waited = log[1].arrived.duration_since(log[0].arrived);
+    assert!(
+        waited >= Duration::from_millis(250) && waited < Duration::from_secs(10),
+        "the HEAD was given up on after {waited:?}"
+    );
+    assert_tiles(delivered(&log, size), size);
+}
+
+#[test]
+fn a_server_that_hangs_on_head_and_on_the_ranged_get_fails_after_one_wait_for_each() {
+    let server = Server::start(Config {
+        size: 5 * MIB,
+        head_hung: true,
+        first_byte_delay: Some(Duration::from_secs(3)),
+        ..Config::default()
+    });
+    probe_waits(Duration::from_millis(200), Duration::from_millis(500));
+    let began = Instant::now();
+    let error = prepare_auto(
+        &request_for(&server),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("The server information could not be retrieved")
+            || format!("{error:#}").contains("Sunucu bilgileri alınamadı"),
+        "{error:#}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        began.elapsed()
+    );
+    let log = server.log();
+    assert_eq!(
+        log.iter()
+            .map(|entry| (entry.method.as_str(), entry.range.as_deref()))
+            .collect::<Vec<_>>(),
+        [("HEAD", None), ("GET", Some("bytes=0-0"))]
+    );
+}
+
+#[test]
+fn a_tls_handshake_that_hangs_is_given_up_on_after_one_connection_and_not_asked_again_by_get() {
+    // A server that takes the connection and never answers the handshake. The `HEAD` times out
+    // before the handshake has finished, so the server was not heard from and the one-byte `GET`
+    // would hang the same way: it is not sent.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server = {
+        let (accepted, stop) = (accepted.clone(), stop.clone());
+        thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        accepted.fetch_add(1, Ordering::AcqRel);
+                        held.push(stream);
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        })
+    };
+    probe_waits(Duration::from_millis(400), Duration::from_millis(400));
+    let url = format!("https://{address}/payload.bin");
+    let error = probe_http(
+        &file_request(url.clone()),
+        validate_source_url(&url).unwrap(),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("The server information could not be retrieved")
+            || format!("{error:#}").contains("Sunucu bilgileri alınamadı"),
+        "{error:#}"
+    );
+    // Any connection of a fallback would have been made by now.
+    thread::sleep(Duration::from_millis(300));
+    stop.store(true, Ordering::Release);
+    server.join().unwrap();
+    assert_eq!(accepted.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn a_probe_whose_head_is_dropped_takes_the_size_and_validators_from_the_ranged_get() {
+    let size = 5 * MIB + 3;
+    let server = Server::start(Config {
+        size,
+        head_dropped: true,
+        ..Config::default()
+    });
+    let (media, probed) = prepare_auto(
+        &request_for(&server),
+        &TransferControl::default(),
+        &NetworkGovernor::new(4),
+    )
+    .unwrap();
+    assert!(!media);
+    let probed = probed.unwrap();
+    assert_eq!(probed.total, Some(size));
+    assert_eq!(probed.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(
+        server
+            .log()
+            .iter()
+            .map(|entry| (entry.method.as_str(), entry.range.as_deref()))
+            .collect::<Vec<_>>(),
+        [("HEAD", None), ("GET", Some("bytes=0-0"))]
+    );
+}
+
+#[test]
 fn a_fresh_download_adopts_the_validators_of_the_response_that_delivers_the_bytes() {
     let size = 12 * MIB + 7;
     for connections in [1, 4] {
@@ -938,15 +1141,54 @@ fn a_retry_notice_does_not_report_the_head_length_as_the_size() {
         &TransferControl::default(),
         1,
         1,
-        &mut |progress| notices.push((progress.total, progress.phase.to_string())),
+        &mut |progress| notices.push(progress),
     )
     .unwrap();
     assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
     let retry = notices
         .iter()
-        .find(|(_, phase)| phase.contains("429"))
+        .find(|progress| progress.phase.contains("429"))
         .unwrap_or_else(|| panic!("no retry notice in {notices:?}"));
-    assert_eq!(retry.0, None);
+    assert_eq!(retry.total, None);
+    assert_eq!(retry.phase_name, "retrying with one connection");
+}
+
+/// The job log names every phase of a download in English; a report without a name would be
+/// logged under its state.
+#[test]
+fn every_report_of_a_download_names_its_phase() {
+    for (connections, size) in [(1, MIB), (4, 9 * MIB)] {
+        let server = Server::start(Config {
+            size,
+            ..Config::default()
+        });
+        let directory = TempDir::new("phase-names");
+        let output = directory.0.join("payload.bin");
+        let mut names = Vec::new();
+        fetch(
+            &request_for(&server),
+            &output,
+            &TransferControl::default(),
+            connections,
+            connections,
+            &mut |progress| names.push(progress.phase_name),
+        )
+        .unwrap();
+        assert!(
+            names
+                .iter()
+                .all(|name| ["downloading", "completing"].contains(name)),
+            "{connections} connection(s): {names:?}"
+        );
+        // The last report of a download over several connections says that it completes; a single
+        // connection reports it is downloading until it is done.
+        let last = if connections == 1 {
+            "downloading"
+        } else {
+            "completing"
+        };
+        assert_eq!(names.last(), Some(&last), "{connections} connection(s)");
+    }
 }
 
 #[test]
@@ -1649,9 +1891,9 @@ fn the_number_of_checkpoints_follows_the_cadence_not_the_number_of_leases() {
 fn the_cadence_alone_triggers_a_checkpoint_that_records_bytes_the_part_file_holds() {
     let size = 20 * MIB;
     for (connections, interval, bytes) in [
-        (2u8, NEVER, MIB),
+        (2u8, NEVER, 64 * 1024),
         (2, Duration::from_millis(50), u64::MAX),
-        (1, NEVER, MIB),
+        (1, NEVER, 64 * 1024),
         (1, Duration::from_millis(50), u64::MAX),
     ] {
         let label = format!("{connections} connection(s), {interval:?} or {bytes} bytes");
@@ -1668,8 +1910,9 @@ fn the_cadence_alone_triggers_a_checkpoint_that_records_bytes_the_part_file_hold
         let state_file = state_path(&output);
         let mut observed = None;
         let cycles_before = checkpoint_cycles();
-        // The download takes seconds at this rate, so a checkpoint that the cadence alone
-        // triggers has to come before it ends.
+        // The download is held at a rate that cannot end it before the checkpoint that the
+        // cadence alone triggers has been recorded and observed.
+        control.set_speed_limit(HELD_RATE);
         let result = fetch(
             &request_for(&server),
             &output,
@@ -1947,14 +2190,15 @@ fn a_segmented_download_stopped_after_its_final_record_failed_resumes_from_the_p
         throttle: Some(4 * MIB),
         ..Config::default()
     });
-    // One periodic cycle records, and the record is held from then on: the cycle at the end
-    // cannot write it. The download is stopped by the report that comes right before the file is
-    // published.
-    checkpoint_every(NEVER, 4 * MIB);
+    // A periodic cycle records, and the record is held from then on: the cycle at the end cannot
+    // write it. The download is held at a rate that cannot end it first until the record is held,
+    // and is stopped by the report that comes right before the file is published.
+    checkpoint_every(Duration::from_millis(100), u64::MAX);
     let directory = TempDir::new("stopped-after-final-record");
     let output = directory.0.join("payload.bin");
     let state_file = state_path(&output);
     let control = TransferControl::default();
+    control.set_speed_limit(HELD_RATE);
     let cancel = control.clone();
     let mut held = None;
     let mut observed = None;
@@ -1970,6 +2214,7 @@ fn a_segmented_download_stopped_after_its_final_record_failed_resumes_from_the_p
                 held = Some(hold_against_replacement(&state_file));
                 // The record that stays, read with the part file as it is while it is held.
                 observed = read_state(&state_file).zip(fs::read(part_path(&output)).ok());
+                control.set_speed_limit(0);
             }
             if progress.phase == completing {
                 cancel.cancel();
@@ -3176,11 +3421,150 @@ fn file_request(url: String) -> AddRequest {
     }
 }
 
+/// The error of a download from `url` that fails.
+fn failed_fetch(url: String) -> anyhow::Error {
+    let directory = TempDir::new("network-code");
+    fetch(
+        &file_request(url),
+        &directory.0.join("payload.bin"),
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap_err()
+}
+
+/// A server that accepts `connections` connections, answers each with `reply` (after reading
+/// what the client sent first, if there is a reply) and closes it. Returns its port.
+fn closing_server(reply: Option<&'static [u8]>, connections: usize) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for _ in 0..connections {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            if let Some(reply) = reply {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let _ = stream.read(&mut [0u8; 1024]);
+                let _ = stream.write_all(reply);
+            }
+        }
+    });
+    port
+}
+
+#[test]
+fn a_status_that_fails_the_download_is_reported_with_the_network_code_of_its_class() {
+    use crate::error_codes::*;
+    for (status, code) in [
+        (404, NET_005),
+        (410, NET_014),
+        (403, NET_012),
+        (401, NET_012),
+        (408, NET_015),
+        (501, NET_016),
+        (500, NET_013),
+        (502, NET_013),
+        (503, NET_006),
+        (429, NET_006),
+    ] {
+        let server = Server::start(Config {
+            size: MIB,
+            scripted: vec![
+                Scripted {
+                    status,
+                    retry_after: None
+                };
+                8
+            ],
+            ..Config::default()
+        });
+        let error = failed_fetch(server.url("/payload.bin"));
+        assert_eq!(network_code(&error), Some(code), "HTTP {status}: {error:#}");
+        assert_eq!(http_status(&error), Some(u32::from(status)));
+    }
+}
+
+#[test]
+fn a_connection_that_is_refused_is_reported_as_the_server_not_being_reached() {
+    // A port that nothing listens on.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let error = failed_fetch(format!("http://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_011),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_server_that_closes_the_connection_without_an_answer_is_reported_as_a_reset_connection() {
+    // The HEAD gets nothing, then the ranged GET that takes its place gets nothing either.
+    let port = closing_server(None, 4);
+    let error = failed_fetch(format!("http://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_008),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_server_that_does_not_speak_tls_fails_an_https_download_with_the_tls_code() {
+    let port = closing_server(
+        Some(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+        4,
+    );
+    let error = failed_fetch(format!("https://127.0.0.1:{port}/payload.bin"));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_002),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_name_that_does_not_resolve_is_reported_as_a_dns_failure() {
+    // A label of 64 bytes cannot be put in a DNS query (the limit is 63), so libcurl fails at once
+    // and locally: no resolver, not even one that answers every name, is asked.
+    let error = failed_fetch(format!("http://{}.invalid/payload.bin", "a".repeat(64)));
+    assert_eq!(
+        network_code(&error),
+        Some(crate::error_codes::NET_001),
+        "{error:#}"
+    );
+}
+
 /// A server that sends the web page `kind` instead of a file: what a sign-in redirect ends on.
 fn page_server(size: u64, kind: &str) -> Server {
     Server::start(Config {
         size,
         content_type: Some(kind.into()),
+        ..Config::default()
+    })
+}
+
+/// How a sign-in page opens.
+const PAGE_START: &[u8] = b"<!DOCTYPE html><html><head><title>Sign in</title></head><body>";
+
+/// The body of a server with the `body_start` given: the pattern with `start` over its first bytes.
+fn body_starting(start: &[u8], size: u64) -> Vec<u8> {
+    let mut body = pattern(1, size);
+    body[..start.len()].copy_from_slice(start);
+    body
+}
+
+/// A server whose answers are web pages of `size` bytes that open like a page, of the content
+/// type `kind`.
+fn opened_page_server(size: u64, kind: &str) -> Server {
+    Server::start(Config {
+        size,
+        content_type: Some(kind.into()),
+        body_start: PAGE_START.to_vec(),
         ..Config::default()
     })
 }
@@ -3470,6 +3854,663 @@ fn a_page_that_is_reached_without_a_redirect_is_still_saved() {
     )
     .unwrap();
     assert_eq!(fs::read(result.path).unwrap(), pattern(1, size));
+}
+
+/// Downloads from `server` into a file called `name`, as a job added with that name, or with an
+/// address that ends in it, does.
+fn fetch_into(server: &Server, name: &str, connections: u8) -> (Result<TransferResult>, TempDir) {
+    let directory = TempDir::new("direct-page");
+    let result = fetch(
+        &file_request(server.url("/file")),
+        &directory.0.join(name),
+        &TransferControl::default(),
+        connections,
+        connections,
+        &mut |_| {},
+    );
+    (result, directory)
+}
+
+#[test]
+fn a_page_that_answers_for_a_file_of_another_type_is_refused_without_a_redirect() {
+    for name in ["report.pdf", "setup.EXE", "archive.tar.gz", "photo.jpg"] {
+        for kind in [
+            "text/html",
+            "application/xhtml+xml",
+            "Text/HTML; charset=utf-8",
+        ] {
+            let page = opened_page_server(4_000, kind);
+            let directory = TempDir::new("direct-page-refused");
+            let output = directory.0.join(name);
+            let error = fetch(
+                &file_request(page.url("/file")),
+                &output,
+                &TransferControl::default(),
+                1,
+                1,
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert_page_refused(&error, &output);
+            page.wait_idle();
+            assert_eq!(
+                data_gets(&page.log()).count(),
+                1,
+                "{name} {kind}: {:?}",
+                page.log()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_page_is_recognised_by_how_it_opens_whatever_the_rest_of_it_is() {
+    let starts: [&[u8]; 7] = [
+        PAGE_START,
+        b"\xEF\xBB\xBF\r\n  <HTML lang=en>",
+        b"<script>location='/login'</script>",
+        b"<title>Sign in</title>",
+        b"<div id=login>",
+        b"<!-- sign in -->",
+        b"<?xml version=\"1.0\"?>\n<!DOCTYPE html>",
+    ];
+    for start in starts {
+        let page = Server::start(Config {
+            size: 4_000,
+            content_type: Some("text/html".into()),
+            body_start: start.to_vec(),
+            ..Config::default()
+        });
+        let directory = TempDir::new("direct-page-opening");
+        let output = directory.0.join("report.pdf");
+        let error = fetch(
+            &file_request(page.url("/file")),
+            &output,
+            &TransferControl::default(),
+            1,
+            1,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+    }
+}
+
+#[test]
+fn a_file_served_with_a_page_type_is_saved_when_its_bytes_are_no_page() {
+    for (name, start) in [
+        ("data.csv", "id,name\n1,a\n"),
+        ("notes.txt", "hello"),
+        ("data.json", "{\"html\": \"<html>\"}\n"),
+        ("feed.xml", "<?xml version=\"1.0\"?><feed/>"),
+        ("header.txt", "<header>"),
+        ("tiny.txt", "<"),
+        ("blank.txt", "\n"),
+    ] {
+        // The whole body fits the part that is looked at, and a body that is longer.
+        for size in [start.len() as u64, 4_000] {
+            let server = Server::start(Config {
+                size,
+                content_type: Some("text/html".into()),
+                body_start: start.as_bytes().to_vec(),
+                ..Config::default()
+            });
+            let (result, _directory) = fetch_into(&server, name, 1);
+            let path = result
+                .unwrap_or_else(|error| panic!("{name} {size}: {error:#}"))
+                .path;
+            assert_eq!(
+                fs::read(path).unwrap(),
+                body_starting(start.as_bytes(), size),
+                "{name} {size}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_large_file_served_with_a_page_type_is_downloaded_over_one_connection_because_one_byte_cannot_be_looked_at(
+) {
+    let size = 6 * MIB;
+    let server = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        body_start: b"id,name\n".to_vec(),
+        ..Config::default()
+    });
+    let (result, _directory) = fetch_into(&server, "data.csv", 4);
+    assert_eq!(
+        fs::read(result.unwrap().path).unwrap(),
+        body_starting(b"id,name\n", size)
+    );
+    server.wait_idle();
+    assert_eq!(data_gets(&server.log()).count(), 1, "{:?}", server.log());
+}
+
+#[test]
+fn a_resumed_download_of_a_file_served_with_a_page_type_continues_where_it_stopped() {
+    // The bytes that were kept are not the start of the body, which is all that can be looked at:
+    // what the rest of the body opens with, even a page's tag, decides nothing.
+    let size = MIB;
+    let held = 300_001usize;
+    let mut lead = vec![b'x'; held + 16];
+    lead[held..held + 6].copy_from_slice(b"<html>");
+    let server = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        body_start: lead.clone(),
+        ..Config::default()
+    });
+    let directory = TempDir::new("resume-mistyped");
+    let output = directory.0.join("data.csv");
+    fs::write(part_path(&output), &pattern(1, size)[..held]).unwrap();
+    fs::write(
+        state_path(&output),
+        previous_release_state(&server, size, false, "[]"),
+    )
+    .unwrap();
+    let result = fetch(
+        &request_for(&server),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    let mut expected = pattern(1, size)[..held].to_vec();
+    expected.extend_from_slice(&body_starting(&lead, size)[held..]);
+    assert_eq!(fs::read(result.path).unwrap(), expected);
+    server.wait_idle();
+    let log = server.log();
+    let gets = log
+        .iter()
+        .filter(|entry| entry.method == "GET")
+        .collect::<Vec<_>>();
+    assert_eq!(gets.len(), 1, "{log:?}");
+    assert_eq!(gets[0].range, Some(format!("bytes={held}-")));
+}
+
+#[test]
+fn a_page_that_only_the_head_answer_announces_is_not_the_file_the_get_delivers() {
+    // The HEAD (request 0) says page; every GET says file.
+    for (size, connections) in [(4_000, 1), (6 * MIB, 4)] {
+        let server = Server::start(Config {
+            size,
+            content_type: Some("text/html".into()),
+            content_type_from: Some((1, "application/pdf".into())),
+            ..Config::default()
+        });
+        let (result, _directory) = fetch_into(&server, "report.pdf", connections);
+        assert_eq!(
+            fs::read(result.unwrap().path).unwrap(),
+            pattern(1, size),
+            "{size} bytes over {connections}"
+        );
+    }
+}
+
+#[test]
+fn the_name_a_page_would_be_saved_under_decides_whether_it_is_the_file() {
+    let size = 4_000;
+    let suggesting = |name: &str| {
+        Server::start(Config {
+            size,
+            content_type: Some("text/html".into()),
+            content_disposition: Some(format!("inline; filename=\"{name}\"")),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        })
+    };
+    // The server names a page as a file and the job's own name is no file's.
+    let server = suggesting("report.pdf");
+    let directory = TempDir::new("suggested-file");
+    let output = directory.0.join("download");
+    let error = fetch(
+        &file_request(server.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+
+    // The server names the page as a page, whatever the address ends in.
+    let server = suggesting("saved.html");
+    let (result, _directory) = fetch_into(&server, "report.pdf", 1);
+    let path = result.unwrap().path;
+    assert_eq!(path.file_name().unwrap(), "saved.html");
+    assert_eq!(fs::read(path).unwrap(), body_starting(PAGE_START, size));
+
+    // A name the user or the browser chose is not the server's to change.
+    let directory = TempDir::new("typed-file");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &AddRequest {
+            filename: Some("report.pdf".into()),
+            ..file_request(server.url("/file"))
+        },
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+}
+
+#[test]
+fn a_page_is_saved_when_the_name_is_a_pages_or_names_no_file_type() {
+    let size = 4_000;
+    for name in [
+        "page.html",
+        "page.HTM",
+        "page.xhtml",
+        "page.shtml",
+        "page.mhtml",
+        "page (1).html",
+        "download",
+        "v1.2",
+        "2024.11",
+        "Mr. Robot",
+    ] {
+        let page = page_server(size, "text/html");
+        let (result, _directory) = fetch_into(&page, name, 1);
+        let path = result
+            .unwrap_or_else(|error| panic!("{name}: {error:#}"))
+            .path;
+        assert_eq!(fs::read(path).unwrap(), pattern(1, size), "{name}");
+    }
+}
+
+#[test]
+fn a_page_sent_as_an_attachment_is_saved_whatever_the_name_asked_for() {
+    let size = 4_000;
+    let page = Server::start(Config {
+        size,
+        content_type: Some("text/html".into()),
+        content_disposition: Some("attachment; filename=\"saved.bin\"".into()),
+        ..Config::default()
+    });
+    let (result, _directory) = fetch_into(&page, "report.pdf", 1);
+    assert_eq!(fs::read(result.unwrap().path).unwrap(), pattern(1, size));
+}
+
+#[test]
+fn a_page_the_transfer_meets_after_a_probe_that_saw_a_file_is_not_written_under_the_name_of_a_file()
+{
+    // The probe's HEAD (request 0) sees the file; the GET (request 1) answers with the page.
+    let page = Server::start(Config {
+        size: 4_000,
+        content_type: Some("application/octet-stream".into()),
+        content_type_from: Some((1, "text/html".into())),
+        body_start: PAGE_START.to_vec(),
+        ..Config::default()
+    });
+    let directory = TempDir::new("direct-get-page");
+    let output = directory.0.join("report.pdf");
+    let error = fetch(
+        &file_request(page.url("/file")),
+        &output,
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_page_refused(&error, &output);
+    page.wait_idle();
+    assert!(
+        page.log().iter().any(|entry| entry.method == "GET"),
+        "the transfer should have reached the page: {:?}",
+        page.log()
+    );
+}
+
+#[test]
+fn a_page_in_the_range_support_probe_or_a_ranged_transfer_is_not_written_by_any_connection_of_a_file(
+) {
+    // Request 0 is the HEAD, request 1 the one-byte probe, the later ones are the ranges.
+    for page_from in [1, 2] {
+        let page = Server::start(Config {
+            size: 6 * MIB,
+            content_type: Some("application/octet-stream".into()),
+            content_type_from: Some((page_from, "text/html".into())),
+            body_start: PAGE_START.to_vec(),
+            ..Config::default()
+        });
+        let directory = TempDir::new("direct-ranged-page");
+        let output = directory.0.join("archive.zip");
+        forget_writes();
+        let error = fetch(
+            &file_request(page.url("/file")),
+            &output,
+            &TransferControl::default(),
+            4,
+            4,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_page_refused(&error, &output);
+        assert!(writes().is_empty(), "{page_from}: {:?}", writes());
+        page.wait_idle();
+        // A page in the probe is looked at by the transfer over one connection, which asks for
+        // the whole file; a page in the ranges is refused by the first range that meets it.
+        let gets = data_gets(&page.log()).cloned().collect::<Vec<_>>();
+        assert!(!gets.is_empty(), "{page_from}: {:?}", page.log());
+        assert_eq!(
+            gets.iter().all(|entry| entry.range.is_none()),
+            page_from == 1,
+            "{page_from}: {gets:?}"
+        );
+    }
+}
+
+/// The answer that sends a request for `from` on to `to`, as the link of a download page does.
+fn redirect_document(from: &str, status: u16, to: &str) -> Document {
+    Document {
+        path: from.into(),
+        status,
+        headers: vec![format!("Location: {to}")],
+        body: Vec::new(),
+        unframed: false,
+    }
+}
+
+/// Downloads `request` as a job added with it is: into a file that the address names (or the name
+/// the user chose), which the finished file may replace. Returns the name the file was saved
+/// under, after checking that its bytes are the source's.
+fn saved_as(request: &AddRequest, size: u64) -> String {
+    let directory = TempDir::new("named");
+    let name = request
+        .filename
+        .clone()
+        .or_else(|| url_file_name(&validate_source_url(&request.url).unwrap()))
+        .unwrap();
+    let result = fetch(
+        request,
+        &directory.0.join(name),
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(fs::read(&result.path).unwrap(), pattern(1, size));
+    result
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Asserts that `server` serves each `(path, name)` under `name`, and lists every path that it
+/// does not, so that one wrong name does not hide the others.
+fn assert_saved_as(server: &Server, size: u64, cases: &[(&str, &str)]) {
+    let wrong = cases
+        .iter()
+        .filter_map(|&(path, name)| {
+            let saved = saved_as(&file_request(server.url(path)), size);
+            (saved != name).then(|| format!("{path} was saved as {saved}, not {name}"))
+        })
+        .collect::<Vec<_>>();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn a_redirect_to_a_named_file_saves_the_file_under_that_name() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/get", 302, "/files/Setup%20159.0.bin"),
+            redirect_document("/redirect-chain", 301, "/step-two"),
+            redirect_document("/step-two", 302, "/step-three"),
+            redirect_document("/step-three", 307, "/range.bin"),
+            redirect_document("/current", 302, "/releases/tool-1.2.exe"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/get", "Setup 159.0.bin"),
+            ("/redirect-chain", "range.bin"),
+            ("/current", "tool-1.2.exe"),
+        ],
+    );
+}
+
+#[test]
+fn a_redirect_to_a_path_without_an_extension_keeps_the_name_of_the_address() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/file.zip", 302, "/a1b2c3d4"),
+            redirect_document("/download", 302, "/a1b2c3d4"),
+            redirect_document("/folder", 302, "/files/"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/file.zip", "file.zip"),
+            ("/download", "download"),
+            ("/folder", "folder"),
+        ],
+    );
+}
+
+#[test]
+fn a_requested_name_with_an_extension_is_not_replaced_by_the_name_of_the_target() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/report.pdf", 302, "/download.php?id=5"),
+            redirect_document("/app.exe", 302, "/objects/7f3a.dat"),
+            redirect_document("/old.zip", 302, "/releases/new-1.2.zip"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/report.pdf", "report.pdf"),
+            ("/app.exe", "app.exe"),
+            ("/old.zip", "old.zip"),
+        ],
+    );
+}
+
+#[test]
+fn a_version_number_at_the_end_of_a_redirect_target_names_nothing() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/latest", 302, "/releases/v1.2"),
+            redirect_document("/stable", 302, "/builds/2024.11"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[("/latest", "latest"), ("/stable", "stable")],
+    );
+}
+
+#[test]
+fn a_version_number_at_the_end_of_the_requested_address_names_no_file() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![
+            redirect_document("/stable/2024.11", 302, "/files/app-2024.11.msi"),
+            redirect_document("/download/1.2", 302, "/files/app-1.2.zip"),
+            redirect_document("/v2.0", 302, "/files/tool-2.0.exe"),
+        ],
+        ..Config::default()
+    });
+    assert_saved_as(
+        &server,
+        size,
+        &[
+            ("/stable/2024.11", "app-2024.11.msi"),
+            ("/download/1.2", "app-1.2.zip"),
+            ("/v2.0", "tool-2.0.exe"),
+        ],
+    );
+}
+
+#[test]
+fn the_name_the_user_chose_and_the_content_disposition_win_over_the_name_a_redirect_led_to() {
+    let size = 4_000;
+    let documents = vec![redirect_document("/get", 302, "/files/from-address.bin")];
+    let plain = Server::start(Config {
+        size,
+        documents: documents.clone(),
+        ..Config::default()
+    });
+    let chosen = AddRequest {
+        filename: Some("mine.bin".into()),
+        ..file_request(plain.url("/get"))
+    };
+    assert_eq!(saved_as(&chosen, size), "mine.bin");
+
+    let disposition = Server::start(Config {
+        size,
+        documents,
+        content_disposition: Some("attachment; filename=\"from-header.bin\"".into()),
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(disposition.url("/get")), size),
+        "from-header.bin"
+    );
+}
+
+#[test]
+fn a_name_from_the_server_never_keeps_a_bidirectional_control() {
+    let size = 4_000;
+    // The name of the Content-Disposition header, in the encoded form that carries any text.
+    let disposition = Server::start(Config {
+        size,
+        content_disposition: Some("attachment; filename*=UTF-8''invoice%E2%80%AEfdp.exe".into()),
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(disposition.url("/get")), size),
+        "invoice_fdp.exe"
+    );
+
+    // The name of the address that a redirect led to.
+    let redirected = Server::start(Config {
+        size,
+        documents: vec![redirect_document("/get", 302, "/files/%E2%80%AEtxt.exe")],
+        ..Config::default()
+    });
+    assert_eq!(
+        saved_as(&file_request(redirected.url("/get")), size),
+        "_txt.exe"
+    );
+}
+
+#[test]
+fn a_file_saved_under_the_name_a_redirect_led_to_never_overwrites_one_that_exists() {
+    let size = 4_000;
+    let server = Server::start(Config {
+        size,
+        documents: vec![redirect_document("/get", 302, "/files/report.bin")],
+        ..Config::default()
+    });
+    let directory = TempDir::new("named-exists");
+    fs::write(directory.0.join("report.bin"), b"mine").unwrap();
+    let result = fetch(
+        &file_request(server.url("/get")),
+        &directory.0.join("get"),
+        &TransferControl::default(),
+        1,
+        1,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(result.path, directory.0.join("report (1).bin"));
+    assert_eq!(fs::read(&result.path).unwrap(), pattern(1, size));
+    assert_eq!(fs::read(directory.0.join("report.bin")).unwrap(), b"mine");
+}
+
+#[test]
+fn a_download_over_several_connections_is_named_after_the_file_its_redirect_led_to() {
+    let size = 6 * MIB;
+    let server = Server::start(Config {
+        size,
+        throttle: Some(8 * MIB),
+        documents: vec![redirect_document("/get", 302, "/files/Archive.bin")],
+        ..Config::default()
+    });
+    let directory = TempDir::new("named-segmented");
+    forget_writes();
+    let result = fetch(
+        &file_request(server.url("/get")),
+        &directory.0.join("get"),
+        &TransferControl::default(),
+        4,
+        4,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(result.path, directory.0.join("Archive.bin"));
+    assert_eq!(file_sha256(&result.path), pattern_sha256(1, size));
+    assert_written_once(&writes(), &[], size);
+
+    server.wait_idle();
+    let connections = data_gets(&server.log())
+        .map(|entry| entry.connection)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        connections.len() > 1,
+        "ranges used connections {connections:?}"
+    );
+}
+
+#[test]
+fn a_download_over_one_connection_is_named_after_the_address_that_answered_it() {
+    // The probe sees no redirect; only the transfer is sent on.
+    let size = 4_000;
+    let target = Server::start(Config {
+        size,
+        ..Config::default()
+    });
+    let source = redirecting_get(target.url("/files/Archive.bin"), size);
+    assert_eq!(
+        saved_as(&file_request(source.url("/get")), size),
+        "Archive.bin"
+    );
+}
+
+#[test]
+fn a_download_over_one_connection_falls_back_to_the_name_of_the_address_the_probe_ended_at() {
+    // The probe ends at a named file; the transfer is sent on from there to an address without
+    // an extension.
+    let size = 4_000;
+    let blob = Server::start(Config {
+        size,
+        ..Config::default()
+    });
+    let named = redirecting_get(blob.url("/blob/abc123"), size);
+    let source = redirecting(named.url("/files/app.exe"));
+    assert_eq!(saved_as(&file_request(source.url("/get")), size), "app.exe");
 }
 
 #[test]
@@ -4463,9 +5504,11 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
         }),
         ..Config::default()
     });
+    // The other job keeps the slot it takes for longer than any machine needs for the whole
+    // download, so the download ends first however fast the machine is.
     let rival = Server::start(Config {
         size: 64 * MIB,
-        throttle: Some(2 * MIB),
+        throttle: Some(HELD_RATE),
         ..Config::default()
     });
     let network = NetworkGovernor::new(2);
@@ -4496,7 +5539,7 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
         // The other job starts as soon as the download reports its first bytes, while it holds
         // both slots, so it has to wait for one.
         first_rx
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(HANG_GUARD)
             .expect("the download reported no bytes");
         scope.spawn(|| {
             let result = download(
@@ -4510,7 +5553,7 @@ fn a_renewal_does_not_stall_the_download_while_another_job_takes_the_slot_it_gav
             );
             rival_tx.send(result.is_ok()).unwrap();
         });
-        let outcome = done_rx.recv_timeout(Duration::from_secs(25));
+        let outcome = done_rx.recv_timeout(HANG_GUARD);
         let rival_ended = rival_rx.try_recv().is_ok();
         rival_control.cancel();
         let result = outcome
@@ -5700,28 +6743,44 @@ fn a_lookup_limit_under_a_millisecond_sends_no_lookup() {
 #[test]
 fn a_stop_during_a_digest_lookup_ends_the_download_at_once_and_publishes_nothing() {
     let size = 2 * MIB + 11;
-    let server = slow_lookups(size, Duration::from_secs(5));
+    // The server answers the lookup after a minute, which is also all the time the lookup gets,
+    // so a download that does not stop at once ends a minute after the stop.
+    let server = slow_lookups(size, Duration::from_secs(60));
     let directory = TempDir::new("digest-stop-lookup");
     let output = directory.0.join("payload.bin");
     let request = request_for(&server);
     let control = TransferControl::default();
     forget_verified();
-    let started = Instant::now();
-    let error = thread::scope(|scope| {
-        scope.spawn(|| {
-            for _ in 0..2000 {
-                if !server.lookups().is_empty() {
-                    control.pause();
-                    break;
+    let stopped = std::sync::Mutex::new(None);
+    let ended = std::sync::atomic::AtomicBool::new(false);
+    let error = with_lookup_limit(Duration::from_secs(60), || {
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                // The lookup is awaited for as long as the download runs, which a slow machine
+                // may take; a download that ends without one stops the wait.
+                while !ended.load(Ordering::Acquire) {
+                    if !server.lookups().is_empty() {
+                        *stopped.lock().unwrap() = Some(Instant::now());
+                        control.pause();
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
                 }
-                thread::sleep(Duration::from_millis(5));
-            }
-        });
-        fetch(&request, &output, &control, 1, 1, &mut |_| {}).unwrap_err()
+            });
+            let result = fetch(&request, &output, &control, 1, 1, &mut |_| {});
+            ended.store(true, Ordering::Release);
+            result.unwrap_err()
+        })
     });
-    let waited = started.elapsed();
+    let waited = stopped
+        .lock()
+        .unwrap()
+        .expect("the lookup never reached the server")
+        .elapsed();
     assert!(!is_trf_003(&error), "{error:#}");
-    assert!(waited < Duration::from_secs(3), "{waited:?}");
+    // The progress callback polls for a stop about once a second, while the lookup itself would
+    // take a minute.
+    assert!(waited < Duration::from_secs(10), "{waited:?}");
     assert!(!output.exists());
     assert!(part_path(&output).exists());
     assert_eq!(verified_by(), []);
@@ -5746,12 +6805,14 @@ fn a_download_whose_host_has_no_free_connection_for_a_lookup_is_published_unveri
     let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let releasing = held.clone();
     thread::spawn(move || {
-        thread::sleep(Duration::from_secs(12));
+        thread::sleep(Duration::from_secs(60));
         releasing.lock().unwrap().clear();
     });
     let completing = crate::i18n::ui("Tamamlanıyor", "Completing");
     forget_verified();
-    let started = Instant::now();
+    // The wait is measured from the moment the bytes are in, so that the time the download itself
+    // takes does not count.
+    let mut bytes_in = None;
     let result = with_lookup_limit(Duration::from_secs(1), || {
         download(
             &request_for(&server),
@@ -5762,6 +6823,7 @@ fn a_download_whose_host_has_no_free_connection_for_a_lookup_is_published_unveri
             None,
             &mut |progress| {
                 if progress.phase == completing {
+                    bytes_in.get_or_insert_with(Instant::now);
                     let mut held = held.lock().unwrap();
                     while let Some(lease) = governor.try_acquire_host("127.0.0.1".into()) {
                         held.push(lease);
@@ -5770,12 +6832,14 @@ fn a_download_whose_host_has_no_free_connection_for_a_lookup_is_published_unveri
             },
         )
     });
-    let waited = started.elapsed();
+    let waited = bytes_in.expect("the bytes never came in").elapsed();
     assert!(!held.lock().unwrap().is_empty(), "no slot was taken");
     assert_published(result, &directory, 1, size);
     assert_eq!(verified_by(), []);
     assert_eq!(server.lookups().len(), 0);
-    assert!(waited < Duration::from_secs(6), "{waited:?}");
+    // The lookup gives up after its limit of 1 s; the default is 15 s and the slots are free again
+    // after 60 s.
+    assert!(waited < Duration::from_secs(10), "{waited:?}");
 }
 
 const BENCH_SIZE: u64 = 128 * MIB;

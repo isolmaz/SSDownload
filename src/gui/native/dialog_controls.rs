@@ -1053,6 +1053,9 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 T_PROGRESS,
             );
             SendMessageW(f.progress, PBM_SETRANGE32, 0, 100);
+            if modern() {
+                subclass(f.progress, modern_progress_proc);
+            }
             f.install = dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -1211,7 +1214,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             if let Err(error) = refresh_queue_controls(dlg.hwnd, f, &dlg.app.snapshot()) {
                 crate::logging::record(
                     crate::logging::Event::warn("gui.queue_controls")
-                        .detail(format!("Kuyruk denetimleri yüklenemedi: {error:#}")),
+                        .detail(format!("The queue controls could not be loaded: {error:#}")),
                 );
             }
             if modern() {

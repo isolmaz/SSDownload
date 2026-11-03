@@ -278,6 +278,21 @@ pub(super) unsafe fn face_font(
     }
     None
 }
+#[cfg(test)]
+thread_local! {
+    /// The scale the cards of a test's thread measure their text at, in place of
+    /// their monitor's: a test machine has the monitors it has.
+    pub(super) static CARD_DPI: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// The scale a card measures its text at: its monitor's.
+unsafe fn card_dpi(card: HWND) -> u32 {
+    #[cfg(test)]
+    if let Some(dpi) = CARD_DPI.with(std::cell::Cell::get) {
+        return dpi;
+    }
+    GetDpiForWindow(card).max(96)
+}
 /// A card font, created once per control and DPI and owned by that control.
 pub(super) unsafe fn card_font(
     hwnd: HWND,
@@ -286,7 +301,7 @@ pub(super) unsafe fn card_font(
     weight: i32,
     faces: &[&str],
 ) -> HFONT {
-    let dpi = GetDpiForWindow(hwnd).max(96);
+    let dpi = card_dpi(hwnd);
     // Each font records the DPI it was made for: the title and the description
     // are drawn one after the other, so a shared record would mark the second
     // one fresh as soon as the first was rebuilt.
@@ -415,7 +430,7 @@ pub(super) fn card_text_areas(width: i32, dpi: u32, modern: bool, lines: i32) ->
 /// How many lines `card`'s explanation wraps to on a card `width` pixels
 /// wide.
 pub(super) unsafe fn card_text_lines(card: HWND, width: i32) -> i32 {
-    let dpi = GetDpiForWindow(card).max(96);
+    let dpi = card_dpi(card);
     let (_, area) = card_text_areas(width, dpi, modern(), 1);
     let (_, text) = card_text_parts(&super::text(card));
     let mut text: Vec<u16> = text.encode_utf16().collect();
@@ -2062,11 +2077,46 @@ pub(super) unsafe fn paint_theme(
         _ => None,
     }
 }
+/// A disabled push button in the dark scheme. The theme dims its label so little that the
+/// button reads as enabled, so uxtheme draws the disabled face and the label is drawn here
+/// in the scheme's muted colour on one line. An enabled button, and one that shows an icon
+/// or a bitmap or wraps its text, is left to the window.
+unsafe fn paint_disabled_push_button(draw: &NMCUSTOMDRAW, button: HWND) -> Option<LRESULT> {
+    let own = (BS_ICON | BS_BITMAP | BS_MULTILINE) as u32;
+    if IsWindowEnabled(button) != 0 || GetWindowLongPtrW(button, GWL_STYLE) as u32 & own != 0 {
+        return None;
+    }
+    let theme = OpenThemeData(button, wide("Button").as_ptr());
+    if theme == 0 {
+        return None;
+    }
+    let dc = draw.hdc;
+    let saved = SaveDC(dc);
+    DrawThemeBackground(theme, dc, BP_PUSHBUTTON, PBS_DISABLED, &draw.rc, null());
+    CloseThemeData(theme);
+    let font = SendMessageW(button, WM_GETFONT, 0, 0);
+    if font != 0 {
+        SelectObject(dc, font as HGDIOBJ);
+    }
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, DARK_MUTED);
+    let mut text = vec![0u16; GetWindowTextLengthW(button).max(0) as usize + 1];
+    let length = GetWindowTextW(button, text.as_mut_ptr(), text.len() as i32).max(0);
+    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+    if SendMessageW(button, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    let mut area = draw.rc;
+    DrawTextW(dc, text.as_mut_ptr(), length, &mut area, flags);
+    RestoreDC(dc, saved);
+    Some(CDRF_SKIPDEFAULT as LRESULT)
+}
 /// A check box in the dark scheme. The themed button draws its label in the
 /// theme's own text colour, which ignores WM_CTLCOLORBTN and is dark on some
 /// Windows 11 builds, so uxtheme draws the box and the label is drawn here in
-/// the scheme's colours. This answers the NM_CUSTOMDRAW of a check box; any
-/// other notification and any other kind of button is left to the window.
+/// the scheme's colours. This answers the NM_CUSTOMDRAW of a check box and of a
+/// disabled push button; any other notification and any other kind of button is
+/// left to the window.
 unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
     if (*(lparam as *const NMHDR)).code != NM_CUSTOMDRAW {
         return None;
@@ -2078,6 +2128,14 @@ unsafe fn paint_button_label(lparam: LPARAM) -> Option<LRESULT> {
     }
     let style = GetWindowLongPtrW(button, GWL_STYLE) as u32;
     let kind = (style & BS_TYPEMASK as u32) as i32;
+    if kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON {
+        // Modern paints its own buttons, disabled ones included.
+        return if modern() {
+            None
+        } else {
+            paint_disabled_push_button(draw, button)
+        };
+    }
     // A push-like check box looks like a button; the wizard's cards paint themselves.
     if !(kind == BS_CHECKBOX || kind == BS_AUTOCHECKBOX) || style & BS_PUSHLIKE as u32 != 0 {
         return None;
@@ -2223,13 +2281,54 @@ pub(super) unsafe fn allow_dark_mode_for_window() -> Option<AllowDarkModeForWind
         std::sync::LazyLock::new(|| unsafe { uxtheme_export(133) });
     (*ADDRESS != 0).then(|| std::mem::transmute::<usize, AllowDarkModeForWindow>(*ADDRESS))
 }
+/// The build number of Windows. `RtlGetVersion` states the real one, where GetVersionEx
+/// answers what the manifest asks for; 0 when it cannot be read.
+pub(super) fn windows_build() -> u32 {
+    static BUILD: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| unsafe {
+        type RtlGetVersion = unsafe extern "system" fn(
+            *mut windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW,
+        ) -> i32;
+        let module = GetModuleHandleW(wide("ntdll.dll").as_ptr());
+        if module.is_null() {
+            return 0;
+        }
+        let Some(address) = GetProcAddress(module, c"RtlGetVersion".as_ptr().cast()) else {
+            return 0;
+        };
+        let get = std::mem::transmute::<usize, RtlGetVersion>(address as usize);
+        let mut info: windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW = zeroed();
+        info.dwOSVersionInfoSize = size_of_val(&info) as u32;
+        if get(&mut info) == 0 {
+            info.dwBuildNumber
+        } else {
+            0
+        }
+    });
+    *BUILD
+}
+/// Windows 10 1809 is the one build whose uxtheme ordinal 135 is AllowDarkModeForApp, which
+/// takes a bool; every later build has SetPreferredAppMode there, which takes the mode.
+const BOOL_APP_MODE_BUILD: u32 = 17763;
+/// What ordinal 135 is called with on `build` for an app that wants dark (`enabled`) or light
+/// menus: the mode ForceDark or ForceLight, or on 1809 the bool that allows dark menus or not.
+/// The mode numbers would both read as true there, and the menus would follow the desktop.
+fn app_mode_argument(build: u32, enabled: bool) -> i32 {
+    if build == BOOL_APP_MODE_BUILD {
+        enabled as i32
+    } else if enabled {
+        2
+    } else {
+        3
+    }
+}
 /// Opts the process into the shell colour scheme so comctl32 draws menus,
 /// combo boxes and list headers dark too. The app's own setting decides, not the
 /// desktop's: ForceDark keeps popup menus dark on a light desktop and ForceLight
-/// keeps a light dialog light on a dark one.
+/// keeps a light dialog light on a dark one. Windows 10 1809 has no such modes: it can
+/// allow dark menus, which then follow a dark desktop, or disallow them.
 pub(super) unsafe fn dark_app_mode(enabled: bool) {
     if let Some(set_mode) = set_preferred_app_mode() {
-        set_mode(if enabled { 2 } else { 3 });
+        set_mode(app_mode_argument(windows_build(), enabled));
     }
     if let Some(flush) = flush_menu_themes() {
         flush();
@@ -2393,6 +2492,8 @@ pub(super) const D_ERROR: i32 = 2098;
 pub(super) const DIALOG_MARGIN: i32 = 12;
 pub(super) const DIALOG_GAP: i32 = 8;
 pub(super) const DIALOG_ROW: i32 = 24;
+/// The room a push button keeps around its text, both sides together.
+pub(super) const BUTTON_TEXT_PADDING: i32 = 20;
 /// Paints the whole tab strip: background, titles and the selected underline.
 /// The control's own paint draws a themed band under the items, which shows as
 /// a dark line on the light dialog, so the strip is painted here in both
@@ -2712,10 +2813,32 @@ pub(super) unsafe extern "system" fn progress_proc(
 #[cfg(test)]
 mod tests {
     use super::{
-        processing_sweep, progress_colour, progress_fraction, set_dark_caption_with,
-        split_mnemonic, SWEEP_ONE_WAY_MS,
+        app_mode_argument, processing_sweep, progress_colour, progress_fraction,
+        set_dark_caption_with, split_mnemonic, windows_build, SWEEP_ONE_WAY_MS,
     };
     use crate::model::JobState;
+
+    #[test]
+    fn windows_10_1809_is_told_dark_or_light_as_a_bool_and_every_other_build_as_a_mode() {
+        // ForceDark and ForceLight.
+        for build in [17134, 18362, 19041, 19045, 22000, 26100, 26200] {
+            assert_eq!(app_mode_argument(build, true), 2, "build {build}: dark");
+            assert_eq!(app_mode_argument(build, false), 3, "build {build}: light");
+        }
+        // AllowDarkModeForApp(TRUE) and AllowDarkModeForApp(FALSE).
+        assert_eq!(app_mode_argument(17763, true), 1);
+        assert_eq!(app_mode_argument(17763, false), 0);
+        // A build that could not be read gets the modes.
+        assert_eq!(app_mode_argument(0, true), 2);
+        assert_eq!(app_mode_argument(0, false), 3);
+    }
+
+    #[test]
+    fn the_build_comes_from_windows_and_not_from_the_compatibility_answer() {
+        // GetVersionEx tells a program without a manifest, such as this test, that it runs on
+        // Windows 8 (build 9200).
+        assert!(windows_build() >= 10240, "build {}", windows_build());
+    }
 
     /// The attributes the title bar setting is stored under, in the order they
     /// are tried, with the value each call carries.

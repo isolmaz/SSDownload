@@ -106,7 +106,7 @@ fn luminance(colour: u32) -> f64 {
         + 0.0722 * channel((colour >> 16) & 0xff)
 }
 /// The WCAG contrast ratio of two COLORREFs.
-fn contrast(a: u32, b: u32) -> f64 {
+pub(super) fn contrast(a: u32, b: u32) -> f64 {
     let (a, b) = (luminance(a), luminance(b));
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
@@ -237,6 +237,12 @@ static ACCENT: AtomicU64 = AtomicU64::new(0);
 /// The palette the main window paints with right now: Fluent in either scheme,
 /// system colours while high contrast is on.
 pub(super) unsafe fn main_palette(hwnd: HWND) -> MainPalette {
+    scheme_palette(scheme_dark(hwnd))
+}
+
+/// `main_palette` for the scheme `dark` names, for a window that has not
+/// been stamped with its scheme.
+pub(super) unsafe fn scheme_palette(dark: bool) -> MainPalette {
     if !high_contrast() {
         let packed = ACCENT.load(Ordering::Relaxed);
         let accent = if packed == 0 {
@@ -247,21 +253,49 @@ pub(super) unsafe fn main_palette(hwnd: HWND) -> MainPalette {
                 light2: packed as u32 & 0x00ff_ffff,
             }
         };
-        return fluent_palette(scheme_dark(hwnd), accent);
+        return fluent_palette(dark, accent);
     }
-    let window = GetSysColor(COLOR_WINDOW);
-    let text = GetSysColor(COLOR_WINDOWTEXT);
-    let face = GetSysColor(COLOR_BTNFACE);
-    let button_text = GetSysColor(COLOR_BTNTEXT);
-    let highlight = GetSysColor(COLOR_HIGHLIGHT);
-    let highlight_text = GetSysColor(COLOR_HIGHLIGHTTEXT);
+    system_palette(&SystemColours {
+        window: GetSysColor(COLOR_WINDOW),
+        text: GetSysColor(COLOR_WINDOWTEXT),
+        face: GetSysColor(COLOR_BTNFACE),
+        button_text: GetSysColor(COLOR_BTNTEXT),
+        highlight: GetSysColor(COLOR_HIGHLIGHT),
+        highlight_text: GetSysColor(COLOR_HIGHLIGHTTEXT),
+        gray_text: GetSysColor(COLOR_GRAYTEXT),
+    })
+}
+
+/// The system colours that high contrast sets.
+#[derive(Clone, Copy)]
+pub(super) struct SystemColours {
+    pub(super) window: u32,
+    pub(super) text: u32,
+    pub(super) face: u32,
+    pub(super) button_text: u32,
+    pub(super) highlight: u32,
+    pub(super) highlight_text: u32,
+    pub(super) gray_text: u32,
+}
+
+/// The palette of high contrast: the system colours in the places of Fluent's.
+pub(super) fn system_palette(colours: &SystemColours) -> MainPalette {
+    let SystemColours {
+        window,
+        text,
+        face,
+        button_text,
+        highlight,
+        highlight_text,
+        gray_text,
+    } = *colours;
     MainPalette {
         base: window,
         card: window,
         stroke: text,
         text,
         secondary: text,
-        disabled: GetSysColor(COLOR_GRAYTEXT),
+        disabled: gray_text,
         hover: highlight,
         control: face,
         control_hover: highlight,
@@ -276,7 +310,7 @@ pub(super) unsafe fn main_palette(hwnd: HWND) -> MainPalette {
         on_accent_pressed: highlight_text,
         accent_stroke_bottom: button_text,
         accent_disabled: face,
-        on_accent_disabled: GetSysColor(COLOR_GRAYTEXT),
+        on_accent_disabled: gray_text,
         focus_outer: text,
         focus_inner: window,
         strong_stroke: text,
@@ -288,6 +322,34 @@ pub(super) unsafe fn main_palette(hwnd: HWND) -> MainPalette {
         caution: highlight,
         critical: highlight,
         flyout: window,
+    }
+}
+
+/// The plates under a glyph button on the flyout surface: the subtle fill
+/// (SubtleFillColorSecondary) under the pointer and a stronger step under a
+/// press, composited over the flyout the button sits on.
+pub(super) fn flyout_plates(dark: bool, flyout: u32) -> (u32, u32) {
+    let on = |light: u32, dark_value: u32| over(if dark { dark_value } else { light }, flyout);
+    (on(0x09000000, 0x0fffffff), on(0x18000000, 0x14ffffff))
+}
+
+/// The colour of link text on a card: the system's link colour while high
+/// contrast is on, else the accent.
+pub(super) unsafe fn link_colour(palette: &MainPalette) -> u32 {
+    if high_contrast() {
+        GetSysColor(COLOR_HOTLIGHT)
+    } else {
+        accent_text(palette)
+    }
+}
+
+/// The accent as a text colour on the card; where it would read below 4.5:1 there
+/// (a pale accent on the light card), the text colour.
+fn accent_text(palette: &MainPalette) -> u32 {
+    if contrast(palette.accent, palette.card) >= 4.5 {
+        palette.accent
+    } else {
+        palette.text
     }
 }
 
@@ -413,13 +475,18 @@ pub(super) fn ramp_faces(language: Language, caption: bool) -> &'static [&'stati
 }
 /// A type ramp font `px` effective pixels high.
 pub(super) unsafe fn ramp_font(dpi: u32, px: i32, caption: bool) -> HFONT {
+    ramp_font_weight(dpi, px, caption, FW_NORMAL as i32)
+}
+/// A type ramp font `px` effective pixels high in the given weight: the
+/// semibold of the Body strong style, for instance.
+pub(super) unsafe fn ramp_font_weight(dpi: u32, px: i32, caption: bool, weight: i32) -> HFONT {
     face_font(
         -scale(px, dpi),
-        FW_NORMAL as i32,
+        weight,
         CLEARTYPE_QUALITY,
         ramp_faces(crate::i18n::language(), caption),
     )
-    .unwrap_or_else(|| make_font(dpi, px * 3 / 4, FW_NORMAL as i32))
+    .unwrap_or_else(|| make_font(dpi, px * 3 / 4, weight))
 }
 /// Body: commands, rows, tabs and the tab page (14/20 epx).
 pub(super) const BODY_PX: i32 = 14;
@@ -787,7 +854,7 @@ pub(super) unsafe fn main_control_colour(ui: &MainUi, dc: HDC, control: HWND) ->
     Some(GetStockObject(DC_BRUSH) as LRESULT)
 }
 
-fn hot_prop() -> *const u16 {
+pub(super) fn hot_prop() -> *const u16 {
     static NAME: std::sync::LazyLock<Vec<u16>> =
         std::sync::LazyLock::new(|| wide("SSDownload.ButtonHot"));
     NAME.as_ptr()
@@ -2117,13 +2184,19 @@ pub(super) unsafe fn paint_shapes(
 /// `draw` run on a white `size` square DIB, as 0x00RRGGBB pixels.
 #[cfg(test)]
 pub(super) unsafe fn on_white(size: i32, draw: impl FnOnce(HDC)) -> Vec<u32> {
+    on_white_rect(size, size, draw)
+}
+
+/// `draw` run on a white `width` by `height` DIB, as 0x00RRGGBB pixels.
+#[cfg(test)]
+pub(super) unsafe fn on_white_rect(width: i32, height: i32, draw: impl FnOnce(HDC)) -> Vec<u32> {
     let screen = GetDC(null_mut());
     let dc = CreateCompatibleDC(screen);
     ReleaseDC(null_mut(), screen);
     let mut info: BITMAPINFO = zeroed();
     info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-    info.bmiHeader.biWidth = size;
-    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
@@ -2134,13 +2207,13 @@ pub(super) unsafe fn on_white(size: i32, draw: impl FnOnce(HDC)) -> Vec<u32> {
     let area = RECT {
         left: 0,
         top: 0,
-        right: size,
-        bottom: size,
+        right: width,
+        bottom: height,
     };
     fill_colour(dc, &area, 0xffffff);
     draw(dc);
     GdiFlush();
-    let pixels = std::slice::from_raw_parts(bits as *const u32, (size * size) as usize)
+    let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize)
         .iter()
         .map(|pixel| pixel & 0xffffff)
         .collect();
@@ -2410,9 +2483,7 @@ const INPUT_PAD_TOP: i32 = 6;
 /// sunken border (the dialog paints their frames) and its field labels their
 /// trailing colon, as Fluent writes them.
 pub(super) unsafe fn prepare_modern_form(dlg: &DialogUi) {
-    let Some(form) = modern_form(&dlg.kind) else {
-        return;
-    };
+    let form = modern_form(&dlg.kind);
     for edit in form.inputs.into_iter().chain(form.texts) {
         flatten_edit(edit);
     }
@@ -2805,9 +2876,9 @@ struct ModernForm {
     hint: HWND,
 }
 
-unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
+unsafe fn modern_form(kind: &DialogKind) -> ModernForm {
     match kind {
-        DialogKind::Add(f) => Some(ModernForm {
+        DialogKind::Add(f) => ModernForm {
             inputs: add_inputs(f).to_vec(),
             lists: vec![],
             texts: Vec::new(),
@@ -2815,8 +2886,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: D_ADD_OK,
             card_buttons: &[D_BROWSE],
             hint: null_mut(),
-        }),
-        DialogKind::Settings(f) => Some(ModernForm {
+        },
+        DialogKind::Settings(f) => ModernForm {
             inputs: settings_inputs(f).to_vec(),
             lists: vec![],
             texts: Vec::new(),
@@ -2835,8 +2906,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
                 ID_SETTINGS_INSTALL_EXTENSION,
             ],
             hint: f.theme_note,
-        }),
-        DialogKind::Speed(f) => Some(ModernForm {
+        },
+        DialogKind::Speed(f) => ModernForm {
             inputs: vec![f.edit],
             lists: vec![],
             texts: Vec::new(),
@@ -2844,8 +2915,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: SP_OK,
             card_buttons: &[],
             hint: null_mut(),
-        }),
-        DialogKind::Rename(f) => Some(ModernForm {
+        },
+        DialogKind::Rename(f) => ModernForm {
             inputs: vec![f.edit],
             lists: vec![],
             texts: Vec::new(),
@@ -2853,8 +2924,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: RN_OK,
             card_buttons: &[],
             hint: null_mut(),
-        }),
-        DialogKind::Queues(f) => Some(ModernForm {
+        },
+        DialogKind::Queues(f) => ModernForm {
             inputs: queue_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2877,8 +2948,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
                 Q_CANCEL_COMPLETION,
             ],
             hint: f.countdown,
-        }),
-        DialogKind::Rules(f) => Some(ModernForm {
+        },
+        DialogKind::Rules(f) => ModernForm {
             inputs: rule_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2886,8 +2957,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: R_SAVE,
             card_buttons: &[R_NEW, R_SAVE, R_REMOVE],
             hint: null_mut(),
-        }),
-        DialogKind::Crawler(f) => Some(ModernForm {
+        },
+        DialogKind::Crawler(f) => ModernForm {
             inputs: crawler_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2895,8 +2966,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: C_SCAN,
             card_buttons: &[C_SCAN],
             hint: null_mut(),
-        }),
-        DialogKind::Synchronization(f) => Some(ModernForm {
+        },
+        DialogKind::Synchronization(f) => ModernForm {
             inputs: sync_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2904,8 +2975,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: Y_SAVE,
             card_buttons: &[Y_NEW, Y_SAVE, Y_REMOVE, Y_RUN],
             hint: null_mut(),
-        }),
-        DialogKind::Media(f) => Some(ModernForm {
+        },
+        DialogKind::Media(f) => ModernForm {
             inputs: vec![
                 f.name,
                 f.external_url,
@@ -2928,8 +2999,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: M_QUEUE,
             card_buttons: &[ID_MEDIA_EXTERNAL_ADD, ID_MEDIA_EXTERNAL_REMOVE, M_RENEW],
             hint: f.size,
-        }),
-        DialogKind::Progress(f) => Some(ModernForm {
+        },
+        DialogKind::Progress(f) => ModernForm {
             inputs: Vec::new(),
             lists: vec![f.list],
             texts: vec![f.status],
@@ -2947,8 +3018,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: 0,
             card_buttons: &[P_MINI, P_DETAILS, P_REPORT],
             hint: f.hint,
-        }),
-        DialogKind::Events(f) => Some(ModernForm {
+        },
+        DialogKind::Events(f) => ModernForm {
             inputs: Vec::new(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2956,8 +3027,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: 0,
             card_buttons: &[E_OPEN, E_PACKAGE],
             hint: null_mut(),
-        }),
-        DialogKind::JobLog(f) => Some(ModernForm {
+        },
+        DialogKind::JobLog(f) => ModernForm {
             inputs: Vec::new(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2965,8 +3036,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: 0,
             card_buttons: &[J_COPY, J_OPEN],
             hint: null_mut(),
-        }),
-        DialogKind::Logins(f) => Some(ModernForm {
+        },
+        DialogKind::Logins(f) => ModernForm {
             inputs: login_inputs(f).to_vec(),
             lists: vec![f.list],
             texts: Vec::new(),
@@ -2974,8 +3045,8 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: L_SAVE,
             card_buttons: &[L_ADD, L_REMOVE],
             hint: null_mut(),
-        }),
-        DialogKind::Wizard(f) => Some(ModernForm {
+        },
+        DialogKind::Wizard(f) => ModernForm {
             inputs: Vec::new(),
             lists: vec![],
             texts: Vec::new(),
@@ -2983,8 +3054,17 @@ unsafe fn modern_form(kind: &DialogKind) -> Option<ModernForm> {
             primary: ID_WIZARD_START,
             card_buttons: &[],
             hint: f.note,
-        }),
-        _ => None,
+        },
+        DialogKind::Tools(f) => ModernForm {
+            inputs: Vec::new(),
+            lists: vec![],
+            texts: vec![f.status],
+            buttons: &[T_INSTALL, T_UPDATE, T_BROWSER, D_CANCEL],
+            // No button is the default (Enter installs nothing), so none looks like one.
+            primary: 0,
+            card_buttons: &[T_INSTALL, T_UPDATE, T_BROWSER],
+            hint: null_mut(),
+        },
     }
 }
 
@@ -2993,12 +3073,11 @@ unsafe fn footer_top(dlg: &DialogUi, client: &RECT) -> i32 {
     client.bottom - scale(ADD_FOOTER, dlg.dpi)
 }
 
-/// The Windows 11 surfaces and controls of Modern's converted dialogs: the
+/// The Windows 11 surfaces and controls of Modern's dialogs: the
 /// content card, the command bar with its top stroke, flat input frames with
 /// an accent line under the focused field that take a click anywhere on them,
 /// WinUI buttons with the primary action as the accent button, WinUI check
-/// boxes, and the label and field colours. Every other dialog keeps its own
-/// painting.
+/// boxes, and the label and field colours.
 pub(super) unsafe fn modern_dialog_message(
     dlg: &DialogUi,
     msg: u32,
@@ -3018,7 +3097,7 @@ pub(super) unsafe fn modern_dialog_message(
     ) {
         return None;
     }
-    let form = modern_form(&dlg.kind)?;
+    let form = modern_form(&dlg.kind);
     let palette = main_palette(dlg.hwnd);
     match msg {
         // The frame's padding belongs to its field: a click there goes to the
@@ -4273,6 +4352,51 @@ mod tests {
     }
 
     #[test]
+    fn link_text_is_in_the_accent_only_where_that_reads_on_the_card() {
+        use super::accent_text;
+        let shades = |colour| AccentShades {
+            dark1: colour,
+            light2: colour,
+        };
+        // Windows' default blue: the shade of each scheme reads on its card.
+        for dark in [false, true] {
+            let blue = fluent_palette(
+                dark,
+                AccentShades {
+                    dark1: 0x9e5a00,
+                    light2: 0xffcd60,
+                },
+            );
+            assert_eq!(accent_text(&blue), blue.accent, "dark={dark}");
+        }
+        // A pale yellow reads on the dark card, not on the light one; a deep navy the other way.
+        let (pale, deep) = (0x80f0ff, 0x401010);
+        let light = fluent_palette(false, shades(pale));
+        assert_eq!(accent_text(&light), light.text);
+        let dark = fluent_palette(true, shades(pale));
+        assert_eq!(accent_text(&dark), dark.accent);
+        let light = fluent_palette(false, shades(deep));
+        assert_eq!(accent_text(&light), light.accent);
+        let dark = fluent_palette(true, shades(deep));
+        assert_eq!(accent_text(&dark), dark.text);
+        for dark in [false, true] {
+            for r in (0..=255u32).step_by(15) {
+                for g in (0..=255u32).step_by(15) {
+                    for b in (0..=255u32).step_by(15) {
+                        let palette = fluent_palette(dark, shades(r | g << 8 | b << 16));
+                        let ratio = contrast(accent_text(&palette), palette.card);
+                        assert!(
+                            ratio >= 4.5,
+                            "dark={dark} accent={:06x} {ratio:.2}",
+                            palette.accent
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn text_on_any_accent_reads_at_rest_and_under_the_pointer() {
         for dark in [false, true] {
             for r in (0..=255u32).step_by(5) {
@@ -4827,31 +4951,8 @@ mod tests {
     }
 
     #[test]
-    fn only_the_dialogs_modern_lays_out_lose_their_label_colons() {
+    fn modern_labels_lose_their_colon_but_the_error_line_keeps_its_own() {
         crate::gui::native::tests::on_private_desktop(|| unsafe {
-            let tools = DialogKind::Tools(ToolsFields {
-                status: null_mut(),
-                progress: null_mut(),
-                install: null_mut(),
-                update: null_mut(),
-                last_render: String::new(),
-            });
-            let rules = DialogKind::Rules(RuleFields {
-                list: null_mut(),
-                ids: Vec::new(),
-                host: null_mut(),
-                dir: null_mut(),
-                subdomains: null_mut(),
-                file: null_mut(),
-                video: null_mut(),
-                audio: null_mut(),
-                priority: null_mut(),
-            });
-            assert!(
-                modern_form(&tools).is_none(),
-                "the media tools keep Classic's form"
-            );
-            assert!(modern_form(&rules).is_some());
             let parent = control(null_mut(), "STATIC", "", WS_POPUP, 0, 0);
             let label = control(parent, "STATIC", "Host:", WS_CHILD, 0, 1);
             let error = control(parent, "STATIC", "Failed:", WS_CHILD, 0, 2);
@@ -4869,7 +4970,7 @@ mod tests {
     #[test]
     fn the_job_view_has_no_accent_button() {
         let kind = DialogKind::Progress(ProgressFields::new(vec!["job".into()]));
-        let form = unsafe { modern_form(&kind) }.expect("the job view is a Modern form");
+        let form = unsafe { modern_form(&kind) };
         assert!(
             !form.buttons.contains(&form.primary),
             "no button looks like a default one"

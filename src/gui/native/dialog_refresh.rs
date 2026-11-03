@@ -127,6 +127,10 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             }
             if body != f.last_render {
                 set_text(f.status, &body);
+                // Modern shows the report's scroll bar only while the text overflows.
+                if modern() {
+                    sync_edit_scrollbar(f.status);
+                }
                 f.last_render = body;
             }
             EnableWindow(f.install, (!snapshot.installing_tools) as BOOL);
@@ -358,9 +362,13 @@ pub(super) unsafe fn refresh_job_view(
         }
         f.rendered = detail;
     }
+    // The width of a button follows its text, so a new text or a button that
+    // appears is laid out again.
+    let mut relayout = false;
     if action_label != f.action_label {
         set_text(f.action, action_label);
         f.action_label = action_label.to_string();
+        relayout = true;
     }
     // The work after the download has no size: a full bar would look finished, so the bar
     // moves instead.
@@ -408,8 +416,18 @@ pub(super) unsafe fn refresh_job_view(
     // not merely disabled - for every other state of the watched job.
     let reportable = job_view_job(snapshot, f)
         .is_some_and(|job| job.state == JobState::Failed || job.error.is_some());
+    let was_shown = GetWindowLongPtrW(f.report, GWL_STYLE) as u32 & WS_VISIBLE != 0;
     ShowWindow(f.report, if reportable { SW_SHOW } else { SW_HIDE });
     EnableWindow(f.report, reportable as BOOL);
+    if reportable != was_shown {
+        relayout = true;
+    }
+    if relayout {
+        let dlg = dialog_state(hwnd);
+        if !dlg.is_null() {
+            layout_dialog(&*dlg);
+        }
+    }
 
     // A playlist keeps its own rows in step with the same state the detail
     // shows, so several items can be followed at once. The rows are rewritten
@@ -1822,11 +1840,11 @@ pub(super) fn job_facts(job: &Job) -> [String; JOB_FACTS.len()] {
 /// "Wird" or "جارٍ" that every running state shares. Shorter phase words than
 /// four letters never match.
 pub(super) fn job_status(job: &Job) -> String {
-    let label = state_label(job);
     let phase = job.phase.trim();
-    if label == job.state.label() {
-        return label;
+    if !job.state.is_active() || phase.is_empty() || phase == job.state.label() {
+        return job.state.label().to_string();
     }
+    let label = state_label(job);
     let words = |text: &str| -> Vec<String> {
         text.split_whitespace()
             .map(|word| {

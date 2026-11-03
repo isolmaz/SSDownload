@@ -7,6 +7,7 @@ use curl::easy::List;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -29,6 +30,11 @@ const MAX_RANGE_ATTEMPTS: u8 = 3;
 const RANGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 /// The most ranges a progress report lists; the narrowest gaps close first beyond it.
 const SHOWN_RANGES: usize = 64;
+/// How long the probe waits for a `HEAD`, connecting included. A `HEAD` carries no body, so one
+/// that has had no answer by then is not going to get one; the ranged `GET` that follows it is
+/// given `PROBE_TIMEOUT`, so a server that hangs on both costs the two together.
+const HEAD_TIMEOUT: Duration = Duration::from_secs(20);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long a lease has to flow before its rate is taken for the rate it keeps. The bytes of the
 /// first moments of a transfer come unevenly (a new connection ramps up, writes arrive in
 /// bursts), and a lease cut on a rate seen over less than this is cut on noise. It is longer
@@ -196,6 +202,9 @@ thread_local! {
     static TEST_START_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
     /// The sources of the digests that verified the files the current test thread finished.
     static TEST_VERIFIED: RefCell<Vec<digest::Source>> = const { RefCell::new(Vec::new()) };
+    /// Replaces `HEAD_TIMEOUT` and `PROBE_TIMEOUT` of the probes that the current test thread
+    /// starts.
+    static TEST_PROBE_TIMEOUTS: std::cell::Cell<Option<(Duration, Duration)>> = const { std::cell::Cell::new(None) };
 }
 
 /// What a cycle does with the record once the part file is durable.
@@ -409,6 +418,10 @@ pub(crate) struct RemoteInfo {
     /// A redirect led to `url`, so a web page answering there is a sign-in or interstitial page
     /// and not the file. `download` clears it for a requested name that is a page's.
     refuse_page: bool,
+    /// The name the file is saved under unless the answer names it (see `final_name`), which
+    /// `download` sets. With the answer it decides whether a page that no redirect led to is
+    /// the file (`page_named_as_file`).
+    job_name: Option<String>,
     /// The SHA-256 (hex) that the answer to the probe published in `Repr-Digest`.
     repr_digest: Option<String>,
 }
@@ -669,6 +682,63 @@ pub(crate) fn http_status(error: &anyhow::Error) -> Option<u32> {
                     .map(|value| value.status)
             })
     })
+}
+
+/// The registry code of the network-level failure an error chain ends in: an HTTP status that
+/// the server answered, or the libcurl error of a transfer that did not complete. None for an
+/// error that already carries a code and for any other failure.
+pub(crate) fn network_code(error: &anyhow::Error) -> Option<crate::error_codes::Code> {
+    if crate::error_codes::code_of(error).is_some() {
+        return None;
+    }
+    if let Some(status) = http_status(error) {
+        return status_code(status);
+    }
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<curl::Error>()
+            .and_then(|error| curl_code(error.code()))
+    })
+}
+
+fn status_code(status: u32) -> Option<crate::error_codes::Code> {
+    use crate::error_codes::*;
+    match status {
+        404 => Some(NET_005),
+        429 | 503 => Some(NET_006),
+        408 => Some(NET_015),
+        401 | 403 => Some(NET_012),
+        501 => Some(NET_016),
+        400..=499 => Some(NET_014),
+        500..=599 => Some(NET_013),
+        _ => None,
+    }
+}
+
+/// `CURLE_PROXY`: the handshake with a proxy failed. curl-sys does not name it.
+pub(crate) const CURLE_PROXY: curl_sys::CURLcode = 97;
+
+fn curl_code(code: curl_sys::CURLcode) -> Option<crate::error_codes::Code> {
+    use crate::error_codes::*;
+    match code {
+        curl_sys::CURLE_COULDNT_RESOLVE_HOST => Some(NET_001),
+        curl_sys::CURLE_COULDNT_RESOLVE_PROXY | CURLE_PROXY => Some(NET_003),
+        curl_sys::CURLE_SSL_CONNECT_ERROR
+        | curl_sys::CURLE_SSL_CIPHER
+        | curl_sys::CURLE_PEER_FAILED_VERIFICATION
+        | curl_sys::CURLE_SSL_ISSUER_ERROR
+        | curl_sys::CURLE_SSL_PINNEDPUBKEYNOTMATCH
+        | curl_sys::CURLE_SSL_INVALIDCERTSTATUS => Some(NET_002),
+        curl_sys::CURLE_OPERATION_TIMEDOUT => Some(NET_007),
+        curl_sys::CURLE_PARTIAL_FILE
+        | curl_sys::CURLE_GOT_NOTHING
+        | curl_sys::CURLE_SEND_ERROR
+        | curl_sys::CURLE_RECV_ERROR
+        | curl_sys::CURLE_HTTP2
+        | curl_sys::CURLE_HTTP2_STREAM => Some(NET_008),
+        curl_sys::CURLE_COULDNT_CONNECT => Some(NET_011),
+        _ => None,
+    }
 }
 
 /// Whether the chain carries a kept partial file awaiting a proven source.
@@ -1094,6 +1164,7 @@ pub(crate) fn download(
                         total: Some(bytes),
                         speed: 0,
                         eta: None,
+                        phase_name: "restarting",
                         phase: error.to_string(),
                     });
                     download_http_from(
@@ -1131,6 +1202,10 @@ fn download_http_from(
     if is_html_name(output) {
         remote.refuse_page = false;
     }
+    remote.job_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned);
     if remote.refuse_page && is_web_page(remote.content_type.as_deref(), remote.attachment) {
         return Err(page_instead_of_file());
     }
@@ -1204,6 +1279,7 @@ fn restart_from_zero(
         total,
         speed: 0,
         eta: None,
+        phase_name: "restarting",
         phase: crate::i18n::ui(
             "Kaynak kimliği kanıtlanamadı; baştan başlıyor",
             "The source identity could not be proven; restarting from the beginning",
@@ -1493,7 +1569,7 @@ fn download_http_single(
             remote,
             None,
             network,
-            &final_name(output, request, remote, None),
+            &final_name(output, request, remote, None, &remote.url),
             &part,
             &state_path,
             offset,
@@ -1615,7 +1691,7 @@ fn download_http_single(
                     remote,
                     Some(&headers),
                     network,
-                    &final_name(output, request, remote, Some(&headers)),
+                    &final_name(output, request, remote, Some(&headers), &current),
                     &part,
                     &state_path,
                     bytes,
@@ -1645,6 +1721,7 @@ fn download_http_single(
                     total: expected_total(expected, &ResponseHeaders::default(), remote),
                     speed: 0,
                     eta: None,
+                    phase_name: "retrying with one connection",
                     phase: crate::i18n::ui_format!("HTTP {status}; {0} sn sonra tek bağlantıyla yeniden denenecek", "HTTP {status}; retrying single connection in {0} s", delay.as_secs(), status = status),
                 });
                 wait_for_retry(control, delay)?;
@@ -1664,6 +1741,7 @@ fn download_http_single(
                     total: expected_total(expected, &ResponseHeaders::default(), remote),
                     speed: 0,
                     eta: None,
+                    phase_name: "retrying with one connection",
                     phase: crate::i18n::ui_format!("Geçici ağ hatası; {0} sn sonra tek bağlantıyla yeniden denenecek", "Transient network error; retrying single connection in {0} s", delay.as_secs()),
                 });
                 wait_for_retry(control, delay)?;
@@ -1788,6 +1866,58 @@ fn http_to_file(
     let mut throttle_started = Instant::now();
     let mut throttle_cost = 0u64;
 
+    // Writes bytes of the body to the part file; `false` when that failed.
+    let mut write_data = |data: &[u8]| {
+        if sink.written == 0 && matches!(expected, ExpectedResponse::Full) {
+            // The state has to describe the bytes before the first one is written.
+            let adopted = adopt_full_response(remote, &write_response.borrow());
+            let state = single_state(request, &adopted, 0);
+            if adopted.etag != remote.etag
+                || adopted.last_modified != remote.last_modified
+                || adopted.total != remote.total
+            {
+                if let Err(error) = sink.adopt(state.clone()) {
+                    *write_error.borrow_mut() = Some(std::io::Error::other(error));
+                    return false;
+                }
+            }
+            settled(&state);
+        }
+        if let Err(error) = sink.write(data) {
+            *write_error.borrow_mut() = Some(error);
+            return false;
+        }
+        throttle(
+            control,
+            divisor,
+            &mut throttle_started,
+            &mut throttle_cost,
+            data.len() as u64,
+        );
+        let now = Instant::now();
+        if now.duration_since(last_report) >= Duration::from_millis(200) {
+            let elapsed = now.duration_since(last_report).as_secs_f64().max(0.001);
+            let current = offset.saturating_add(sink.written);
+            let speed = ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64;
+            let total = expected_total(expected, &write_response.borrow(), remote);
+            progress(TransferProgress {
+                ranges: None,
+                resumable: None,
+                processing: false,
+                downloaded: current,
+                total,
+                speed,
+                eta: eta(total, current, speed),
+                phase_name: "downloading",
+                phase: crate::i18n::ui("İndiriliyor", "Downloading").into(),
+            });
+            last_report = now;
+            last_bytes = current;
+        }
+        true
+    };
+    let mut gate = PageGate::default();
+
     easy.progress(true).map_err(anyhow::Error::from)?;
     let perform_result = {
         let mut transfer = easy.transfer();
@@ -1798,7 +1928,7 @@ fn http_to_file(
             })
             .map_err(anyhow::Error::from)?;
         transfer
-            .write_function(|data| {
+            .write_function(|received| {
                 if control.stop_requested() {
                     return Ok(0);
                 }
@@ -1807,52 +1937,15 @@ fn http_to_file(
                 {
                     return Ok(0);
                 }
-                if sink.written == 0 && matches!(expected, ExpectedResponse::Full) {
-                    // The state has to describe the bytes before the first one is written.
-                    let adopted = adopt_full_response(remote, &write_response.borrow());
-                    let state = single_state(request, &adopted, 0);
-                    if adopted.etag != remote.etag
-                        || adopted.last_modified != remote.last_modified
-                        || adopted.total != remote.total
-                    {
-                        if let Err(error) = sink.adopt(state.clone()) {
-                            *write_error.borrow_mut() = Some(std::io::Error::other(error));
-                            return Ok(0);
-                        }
-                    }
-                    settled(&state);
+                // Only a body from its first byte can be looked at.
+                let taken = gate.take(received, || {
+                    offset == 0 && page_named_as_file(request, &write_response.borrow(), remote)
+                });
+                match taken {
+                    Taken::Held => Ok(received.len()),
+                    Taken::Page => Ok(0),
+                    Taken::Free(data) => Ok(if write_data(&data) { received.len() } else { 0 }),
                 }
-                if let Err(error) = sink.write(data) {
-                    *write_error.borrow_mut() = Some(error);
-                    return Ok(0);
-                }
-                throttle(
-                    control,
-                    divisor,
-                    &mut throttle_started,
-                    &mut throttle_cost,
-                    data.len() as u64,
-                );
-                let now = Instant::now();
-                if now.duration_since(last_report) >= Duration::from_millis(200) {
-                    let elapsed = now.duration_since(last_report).as_secs_f64().max(0.001);
-                    let current = offset.saturating_add(sink.written);
-                    let speed = ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64;
-                    let total = expected_total(expected, &write_response.borrow(), remote);
-                    progress(TransferProgress {
-                        ranges: None,
-                        resumable: None,
-                        processing: false,
-                        downloaded: current,
-                        total,
-                        speed,
-                        eta: eta(total, current, speed),
-                        phase: crate::i18n::ui("İndiriliyor", "Downloading").into(),
-                    });
-                    last_report = now;
-                    last_bytes = current;
-                }
-                Ok(data.len())
             })
             .map_err(anyhow::Error::from)?;
         transfer
@@ -1860,6 +1953,11 @@ fn http_to_file(
             .map_err(anyhow::Error::from)?;
         transfer.perform()
     };
+    if perform_result.is_ok() && !control.stop_requested() {
+        if let Some(rest) = gate.finish() {
+            write_data(&rest);
+        }
+    }
 
     let headers = response.borrow().clone();
     if control.stop_requested() {
@@ -1911,7 +2009,7 @@ fn http_to_file(
             Ok(()) => Err(AttemptFailure::RangeRejected),
         };
     }
-    if page_refused(&headers, remote) {
+    if page_refused(&headers, remote) || gate.page {
         return Err(AttemptFailure::Other(page_instead_of_file()));
     }
     if identity_changed(&headers, expected, remote) {
@@ -1962,6 +2060,7 @@ fn http_to_file(
         total,
         speed,
         eta: eta(total, current, speed),
+        phase_name: "downloading",
         phase: crate::i18n::ui("İndiriliyor", "Downloading").into(),
     });
     Ok((headers, written))
@@ -2684,7 +2783,7 @@ fn download_segmented(
             remote,
             None,
             network,
-            &final_name(output, request, remote, None),
+            &final_name(output, request, remote, None, &remote.url),
             &part,
             &state_path,
             total,
@@ -2943,6 +3042,7 @@ fn download_segmented(
                             total: Some(total),
                             speed: 0,
                             eta: None,
+                            phase_name: "retrying with fewer connections",
                             phase: crate::i18n::ui_format!(
                                 "HTTP {status}; {0} sn sonra {1} bağlantıyla yeniden denenecek",
                                 "HTTP {status}; retrying in {0} s using {1} connections",
@@ -2980,6 +3080,7 @@ fn download_segmented(
                             total: Some(total),
                             speed: 0,
                             eta: None,
+                            phase_name: "retrying with fewer connections",
                             phase: crate::i18n::ui_format!(
                                 "Geçici ağ hatası; {0} sn sonra {1} bağlantıyla yeniden denenecek",
                                 "Transient network error; retrying in {0} s using {1} connections",
@@ -3030,6 +3131,7 @@ fn download_segmented(
                 speed,
                 eta: eta(Some(total), downloaded.min(total), speed),
                 // Shown after the state: "Downloading — 8 connections".
+                phase_name: "downloading",
                 phase: if effective_workers == 1 {
                     crate::i18n::ui("1 bağlantı", "1 connection").to_string()
                 } else {
@@ -3111,6 +3213,7 @@ fn download_segmented(
         speed: ((total.saturating_sub(baseline)) as f64
             / started.elapsed().as_secs_f64().max(0.001)) as u64,
         eta: Some(0),
+        phase_name: "completing",
         phase: crate::i18n::ui("Tamamlanıyor", "Completing").into(),
     });
     cleanup_legacy_segments(output);
@@ -3119,7 +3222,7 @@ fn download_segmented(
         remote,
         None,
         network,
-        &final_name(output, request, remote, None),
+        &final_name(output, request, remote, None, &remote.url),
         &part,
         &state_path,
         total,
@@ -3386,7 +3489,7 @@ impl DynamicRangeWorker<'_> {
                         return Ok(0);
                     }
                     if !response_allows_remote_body(&write_response.borrow(), expected, remote)
-                        || page_refused(&write_response.borrow(), remote)
+                        || ranged_page_refused(request, &write_response.borrow(), remote)
                     {
                         return Ok(0);
                     }
@@ -3482,7 +3585,7 @@ impl DynamicRangeWorker<'_> {
                 Ok(()) => Err(AttemptFailure::RangeRejected),
             };
         }
-        if page_refused(&headers, remote) {
+        if ranged_page_refused(request, &headers, remote) {
             return Err(AttemptFailure::Other(page_instead_of_file()));
         }
         if identity_changed(&headers, expected, remote) {
@@ -4000,6 +4103,7 @@ fn download_ftp_resuming(
                     total: remote.total,
                     speed,
                     eta: eta(remote.total, current, speed),
+                    phase_name: "downloading over ftp",
                     phase: crate::i18n::ui("FTP indiriliyor", "Downloading over FTP").into(),
                 });
                 last = now;
@@ -4075,6 +4179,48 @@ fn download_ftp_resuming(
     )
 }
 
+/// Whether a failed `HEAD` got no answer from a server that was reached: an empty reply, a reset
+/// connection, a request that could not be sent to the open connection, an HTTP/2 error before
+/// the response (libcurl ignores one after the response headers of a `HEAD`), or a timeout
+/// with nothing received (`hung`). A server that does not handle `HEAD` can do any of
+/// these, and a ranged `GET` can still succeed. Through an HTTPS proxy, a `CONNECT` that the
+/// proxy aborts is reported as a reset too, so the server may never have been reached; the `GET`
+/// then fails at once in the same way. A failure to resolve a name, connect or secure the
+/// connection, a timeout before the connection was made, and a stop are not this: the `GET`
+/// would fail the same way and take as long again.
+fn head_unanswered(error: &curl::Error, hung: bool) -> bool {
+    error.is_got_nothing()
+        || error.is_recv_error()
+        || error.is_send_error()
+        || error.is_http2_error()
+        || error.is_http2_stream_error()
+        || (error.is_operation_timedout() && hung)
+}
+
+/// Whether the connection to the server was made, and secured when the address is HTTPS.
+/// libcurl notes these times when the step has finished, so a connect or a handshake that timed
+/// out leaves none.
+fn connection_made(easy: &GovernedEasy, url: &Url) -> bool {
+    let time = if url.scheme() == "https" {
+        easy.appconnect_time()
+    } else {
+        easy.connect_time()
+    };
+    time.is_ok_and(|time| !time.is_zero())
+}
+
+fn probe_timeout(head: bool) -> Duration {
+    #[cfg(test)]
+    if let Some((head_timeout, get_timeout)) = TEST_PROBE_TIMEOUTS.with(std::cell::Cell::get) {
+        return if head { head_timeout } else { get_timeout };
+    }
+    if head {
+        HEAD_TIMEOUT
+    } else {
+        PROBE_TIMEOUT
+    }
+}
+
 fn probe_http(
     request: &AddRequest,
     mut url: Url,
@@ -4098,7 +4244,7 @@ fn probe_http(
             easy.range("0-0")?;
         }
         easy.progress(true)?;
-        easy.timeout(Duration::from_secs(45))?;
+        easy.timeout(probe_timeout(!use_get))?;
         easy.follow_location(false)?;
         easy.http_headers(build_headers(request, &url, &original_origin, None)?)?;
         let response = Rc::new(RefCell::new(ResponseHeaders::default()));
@@ -4137,6 +4283,13 @@ fn probe_http(
             continue;
         }
         if let Err(error) = result {
+            if !use_get {
+                let hung = headers.status == 0 && connection_made(&easy, &url);
+                if head_unanswered(&error, hung) {
+                    use_get = true;
+                    continue;
+                }
+            }
             if !(use_get && error.is_write_error() && headers.headers_complete) {
                 return Err(governed_transport_error(
                     &easy,
@@ -4173,6 +4326,7 @@ fn probe_http(
             attachment: headers.attachment,
             filename: headers.filename,
             refuse_page: redirects > 0,
+            job_name: None,
             repr_digest: headers.repr_digest.as_deref().and_then(digest::repr_sha256),
         });
     }
@@ -4221,6 +4375,7 @@ fn probe_ftp(
         attachment: false,
         filename: None,
         refuse_page: false,
+        job_name: None,
         repr_digest: None,
     })
 }
@@ -4296,6 +4451,11 @@ fn verify_range_support(
     }
     if !fresh && validators_changed(&headers, remote) {
         return Err(AttemptFailure::ResourceChanged);
+    }
+    if page_named_as_file(request, &headers, remote) {
+        // One byte cannot be looked at. The transfer over one connection reads the start of the
+        // body and decides.
+        return Ok(None);
     }
     let known_total = headers
         .content_range
@@ -4395,12 +4555,12 @@ pub(crate) fn configure_easy(easy: &mut GovernedEasy, url: &Url) -> Result<()> {
     Ok(())
 }
 
-fn governed_transport_error(
+pub(crate) fn governed_transport_error(
     easy: &GovernedEasy,
     error: curl::Error,
     context: &'static str,
 ) -> anyhow::Error {
-    let error = anyhow!(error).context(context);
+    let error = anyhow!(easy.reported_error(error)).context(context);
     match easy.network_error() {
         Some(failure) => error.context(failure),
         None => error,
@@ -5288,7 +5448,7 @@ fn is_html_name(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            ["htm", "html", "xhtml"]
+            ["htm", "html", "xhtml", "shtml", "mhtml"]
                 .iter()
                 .any(|html| extension.eq_ignore_ascii_case(html))
         })
@@ -5301,6 +5461,236 @@ fn page_refused(headers: &ResponseHeaders, remote: &RemoteInfo) -> bool {
     remote.refuse_page
         && (200..300).contains(&headers.status)
         && is_web_page(headers.content_type.as_deref(), headers.attachment)
+}
+
+/// Whether the answer to a request that no redirect led through is a web page that stands in for
+/// a file: the page is not an attachment and the name the file is saved under, the one the
+/// answer's `Content-Disposition` gives when the job's name is not fixed (`final_name`), has the
+/// extension of a file that is not a page's. A name that is a page's, or has no such extension,
+/// takes the page.
+fn page_named_as_file(
+    request: &AddRequest,
+    headers: &ResponseHeaders,
+    remote: &RemoteInfo,
+) -> bool {
+    if !(200..300).contains(&headers.status)
+        || !is_web_page(headers.content_type.as_deref(), headers.attachment)
+    {
+        return false;
+    }
+    let suggested = headers
+        .filename
+        .as_deref()
+        .or(remote.filename.as_deref())
+        .filter(|_| request.filename.is_none())
+        .map(|name| crate::engine::safe_filename(name, "download"));
+    suggested
+        .or_else(|| remote.job_name.clone())
+        .is_some_and(|name| !is_html_name(Path::new(&name)) && names_a_file(&name))
+}
+
+/// Whether a ranged answer is a page that is not the file. A ranged transfer begins only after
+/// an answer that was no such page, and a range from the middle of a file has no start to look
+/// at, so the page's type and the name decide.
+fn ranged_page_refused(
+    request: &AddRequest,
+    headers: &ResponseHeaders,
+    remote: &RemoteInfo,
+) -> bool {
+    page_refused(headers, remote) || page_named_as_file(request, headers, remote)
+}
+
+/// How many bytes from the start of a body show whether it is a web page.
+const PAGE_SNIFF_BYTES: usize = 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+enum Sniffed {
+    Page,
+    File,
+    /// What came so far could still become either.
+    Undecided,
+}
+
+/// The tags that open a page in the WHATWG MIME Sniffing standard's list for `text/html`, and the
+/// doctype. The rule differs from the standard in three ways, because the server has declared a
+/// page already and only the file's own bytes are in question: a tag name also ends at the other
+/// white space and `/`, as the HTML tokenizer ends it; `<!--` needs no byte after it; and a byte
+/// order mark before the first tag is skipped.
+const PAGE_OPENINGS: [&[u8]; 16] = [
+    b"<!doctype html",
+    b"<html",
+    b"<head",
+    b"<script",
+    b"<iframe",
+    b"<h1",
+    b"<div",
+    b"<font",
+    b"<table",
+    b"<a",
+    b"<style",
+    b"<title",
+    b"<b",
+    b"<body",
+    b"<br",
+    b"<p",
+];
+const TAG_NAME_END: &[u8] = b"\t\n\x0C\r />";
+
+/// Whether `body` begins with `pattern`, ignoring case: `Page` when it does, `File` when it does
+/// not, `Undecided` when it is shorter and so far the same.
+fn begins_with(body: &[u8], pattern: &[u8]) -> Sniffed {
+    let shared = body.len().min(pattern.len());
+    if !body[..shared].eq_ignore_ascii_case(&pattern[..shared]) {
+        Sniffed::File
+    } else if body.len() < pattern.len() {
+        Sniffed::Undecided
+    } else {
+        Sniffed::Page
+    }
+}
+
+/// Like `begins_with`, with a tag name that ends where `pattern` does: `<header` and `<titles>`
+/// do not begin with `<head` and `<title`.
+fn begins_with_tag(body: &[u8], pattern: &[u8]) -> Sniffed {
+    match begins_with(body, pattern) {
+        Sniffed::Page => match body.get(pattern.len()) {
+            Some(byte) if TAG_NAME_END.contains(byte) => Sniffed::Page,
+            Some(_) => Sniffed::File,
+            None => Sniffed::Undecided,
+        },
+        other => other,
+    }
+}
+
+/// `Page` if any verdict is, else `Undecided` if any is, else `File`.
+fn strongest(verdicts: impl IntoIterator<Item = Sniffed>) -> Sniffed {
+    let mut strongest = Sniffed::File;
+    for verdict in verdicts {
+        match verdict {
+            Sniffed::Page => return Sniffed::Page,
+            Sniffed::Undecided => strongest = Sniffed::Undecided,
+            Sniffed::File => {}
+        }
+    }
+    strongest
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Whether `body`, an XML document, is an XHTML page: after its declaration, white space,
+/// comments and processing instructions, the document type or the root element is `html`. The
+/// standard has no such rule.
+fn xhtml_page(body: &[u8]) -> Sniffed {
+    match begins_with(body, b"<?xml") {
+        Sniffed::Page => {}
+        other => return other,
+    }
+    let Some(end) = find(body, b"?>") else {
+        return Sniffed::Undecided;
+    };
+    let mut rest = &body[end + 2..];
+    loop {
+        rest = rest.trim_ascii_start();
+        let (open, close) = if begins_with(rest, b"<!--") == Sniffed::File {
+            (&b"<?"[..], &b"?>"[..])
+        } else {
+            (&b"<!--"[..], &b"-->"[..])
+        };
+        match begins_with(rest, open) {
+            Sniffed::File => break,
+            Sniffed::Undecided => return Sniffed::Undecided,
+            Sniffed::Page => match find(&rest[open.len()..], close) {
+                Some(end) => rest = &rest[open.len() + end + close.len()..],
+                None => return Sniffed::Undecided,
+            },
+        }
+    }
+    strongest([
+        begins_with_tag(rest, b"<!doctype html"),
+        begins_with_tag(rest, b"<html"),
+    ])
+}
+
+/// Whether `start`, the first bytes of a body, is a web page: after a byte order mark and white
+/// space it opens with a comment, one of the tags in `PAGE_OPENINGS`, or an XML declaration that
+/// an `html` document follows (`xhtml_page`). A text, CSV, JSON or XML file does not.
+fn sniff_page(start: &[u8]) -> Sniffed {
+    const BOM: &[u8] = b"\xEF\xBB\xBF";
+    if !start.is_empty() && start.len() < BOM.len() && BOM.starts_with(start) {
+        return Sniffed::Undecided;
+    }
+    let body = start.strip_prefix(BOM).unwrap_or(start).trim_ascii_start();
+    strongest(
+        PAGE_OPENINGS
+            .iter()
+            .map(|tag| begins_with_tag(body, tag))
+            .chain([begins_with(body, b"<!--"), xhtml_page(body)]),
+    )
+}
+
+/// Holds back the start of the body of a page that is named as a file until its first bytes show
+/// whether it is a page: a file served with a page's type is no page and is saved, and a page
+/// is refused before a byte of it is written.
+#[derive(Default)]
+struct PageGate {
+    checked: bool,
+    holding: bool,
+    held: Vec<u8>,
+    page: bool,
+}
+
+enum Taken<'a> {
+    Held,
+    Page,
+    Free(Cow<'a, [u8]>),
+}
+
+impl PageGate {
+    /// What the first `PAGE_SNIFF_BYTES` held tell, however the body was cut into pieces.
+    fn verdict(&self) -> Sniffed {
+        sniff_page(&self.held[..self.held.len().min(PAGE_SNIFF_BYTES)])
+    }
+
+    /// Takes the next bytes of the body. `candidate` is asked once, at the first bytes, whether
+    /// the body is one to look at.
+    fn take<'a>(&mut self, received: &'a [u8], candidate: impl FnOnce() -> bool) -> Taken<'a> {
+        if !self.checked {
+            self.checked = true;
+            self.holding = candidate();
+        }
+        if !self.holding {
+            return Taken::Free(Cow::Borrowed(received));
+        }
+        self.held.extend_from_slice(received);
+        match self.verdict() {
+            Sniffed::Undecided if self.held.len() < PAGE_SNIFF_BYTES => Taken::Held,
+            Sniffed::Page => {
+                self.page = true;
+                Taken::Page
+            }
+            _ => {
+                self.holding = false;
+                Taken::Free(Cow::Owned(std::mem::take(&mut self.held)))
+            }
+        }
+    }
+
+    /// The body has ended: the bytes held back so far are all of it, or `None` when they are a
+    /// page.
+    fn finish(&mut self) -> Option<Vec<u8>> {
+        if !std::mem::take(&mut self.holding) {
+            return None;
+        }
+        if self.verdict() == Sniffed::Page {
+            self.page = true;
+            return None;
+        }
+        Some(std::mem::take(&mut self.held)).filter(|held| !held.is_empty())
+    }
 }
 
 fn page_instead_of_file() -> anyhow::Error {
@@ -5329,6 +5719,10 @@ pub(crate) fn throttle(
     written: u64,
 ) {
     *cost = cost.saturating_add(written.saturating_mul(workers.max(1)));
+    #[cfg(test)]
+    if control.speed_limit() != 0 {
+        control.paced_by.lock().unwrap().push(workers.max(1));
+    }
     loop {
         let limit = control.speed_limit();
         if limit == 0 || control.stop_requested() {
@@ -5349,22 +5743,52 @@ pub(crate) fn throttle(
     }
 }
 
+/// The path a finished download is published at. A name the user chose or the browser handed
+/// over stays. Otherwise the name comes from the `Content-Disposition` of the answer that
+/// delivered the file (`response`) or of the probe, then from the file name of `source`, the
+/// address the bytes came from, or of the address the probe ended at, and failing all from
+/// `output`, the name the job was added with.
 fn final_name(
     output: &Path,
     request: &AddRequest,
     remote: &RemoteInfo,
     response: Option<&ResponseHeaders>,
+    source: &Url,
 ) -> PathBuf {
     if request.filename.is_none() {
         if let Some(name) = response
-            .and_then(|headers| headers.filename.as_ref())
-            .or(remote.filename.as_ref())
+            .and_then(|headers| headers.filename.clone())
+            .or_else(|| remote.filename.clone())
+            .or_else(|| redirected_file_name(request, source))
+            .or_else(|| redirected_file_name(request, &remote.url))
         {
-            return output.with_file_name(crate::engine::safe_filename(name, "download"));
+            return output.with_file_name(crate::engine::safe_filename(&name, "download"));
         }
     }
     output.to_owned()
 }
+
+/// The last path segment of `source`, the address a download's redirects led to, when the
+/// requested address names no file and that segment does. A segment names a file when its
+/// extension has a letter in it: the `.2` of `v1.2` is a version, not a type. A requested
+/// segment that names a file (`report.pdf`) is a name already, so nothing a redirect leads to
+/// replaces it.
+fn redirected_file_name(request: &AddRequest, source: &Url) -> Option<String> {
+    let requested = validate_source_url(&request.url)
+        .ok()
+        .and_then(|url| url_file_name(&url));
+    if requested.is_some_and(|name| names_a_file(&name)) {
+        return None;
+    }
+    let name = url_file_name(source)?;
+    names_a_file(&name).then_some(name)
+}
+
+fn names_a_file(name: &str) -> bool {
+    crate::output::real_extension(Path::new(name))
+        .is_some_and(|extension| extension.chars().any(char::is_alphabetic))
+}
+
 /// Decodes `%XX` escapes; `None` when an escape is malformed or the bytes are not UTF-8.
 fn percent_decode_utf8(value: &str) -> Option<String> {
     let input = value.as_bytes();
@@ -5590,6 +6014,7 @@ mod tests {
             attachment: false,
             filename: None,
             refuse_page: false,
+            job_name: None,
             repr_digest: None,
         }
     }
@@ -5600,6 +6025,86 @@ mod tests {
         assert!(parse_content_range("bytes 20-10/30").is_none());
         assert!(parse_content_range("bytes 0-20/20").is_none());
         assert!(parse_content_range("items 0-1/2").is_none());
+    }
+
+    #[test]
+    fn libcurl_errors_map_to_the_network_code_of_what_went_wrong() {
+        use crate::error_codes::*;
+        // The chain a failed transfer carries: the libcurl error under the transfer's context.
+        let failed = |code| {
+            network_code(
+                &anyhow::Error::new(curl::Error::new(code))
+                    .context("The network transfer did not complete"),
+            )
+        };
+        for (curl, code) in [
+            (curl_sys::CURLE_COULDNT_RESOLVE_HOST, NET_001),
+            (curl_sys::CURLE_COULDNT_RESOLVE_PROXY, NET_003),
+            (CURLE_PROXY, NET_003),
+            (curl_sys::CURLE_COULDNT_CONNECT, NET_011),
+            (curl_sys::CURLE_OPERATION_TIMEDOUT, NET_007),
+            (curl_sys::CURLE_SSL_CONNECT_ERROR, NET_002),
+            (curl_sys::CURLE_PEER_FAILED_VERIFICATION, NET_002),
+            (curl_sys::CURLE_SSL_CIPHER, NET_002),
+            (curl_sys::CURLE_SSL_ISSUER_ERROR, NET_002),
+            (curl_sys::CURLE_GOT_NOTHING, NET_008),
+            (curl_sys::CURLE_SEND_ERROR, NET_008),
+            (curl_sys::CURLE_RECV_ERROR, NET_008),
+            (curl_sys::CURLE_PARTIAL_FILE, NET_008),
+            (curl_sys::CURLE_HTTP2, NET_008),
+            (curl_sys::CURLE_HTTP2_STREAM, NET_008),
+        ] {
+            assert_eq!(failed(curl), Some(code), "curl error {curl}");
+        }
+        // A bad address, a write that failed, a stop and a redirect loop are no network failure.
+        for curl in [
+            curl_sys::CURLE_URL_MALFORMAT,
+            curl_sys::CURLE_WRITE_ERROR,
+            curl_sys::CURLE_ABORTED_BY_CALLBACK,
+            curl_sys::CURLE_TOO_MANY_REDIRECTS,
+        ] {
+            assert_eq!(failed(curl), None, "curl error {curl}");
+        }
+    }
+
+    #[test]
+    fn http_statuses_map_to_the_network_code_of_the_answer() {
+        use crate::error_codes::*;
+        let answered = |status| network_code(&anyhow::Error::new(HttpStatusError { status }));
+        for (status, code) in [
+            (404, NET_005),
+            (408, NET_015),
+            (401, NET_012),
+            (403, NET_012),
+            (400, NET_014),
+            (410, NET_014),
+            (416, NET_014),
+            (500, NET_013),
+            (501, NET_016),
+            (502, NET_013),
+            (504, NET_013),
+            (599, NET_013),
+        ] {
+            assert_eq!(answered(status), Some(code), "HTTP {status}");
+        }
+        // The throttling answers reach the engine as a retryable status.
+        for status in [429, 503] {
+            let throttled = retryable_status_error(status, Some(Duration::from_secs(3)));
+            assert_eq!(network_code(&throttled), Some(NET_006), "HTTP {status}");
+        }
+        for status in [0, 200, 304, 399, 600] {
+            assert_eq!(answered(status), None, "HTTP {status}");
+        }
+    }
+
+    #[test]
+    fn an_error_that_already_carries_a_code_gets_no_network_code() {
+        use crate::error_codes::*;
+        let reset = || anyhow::Error::new(curl::Error::new(curl_sys::CURLE_RECV_ERROR));
+        assert_eq!(network_code(&reset()), Some(NET_008));
+        assert_eq!(network_code(&with_code(reset(), TRF_003)), None);
+        assert_eq!(network_code(&coded_default(NET_004)), None);
+        assert_eq!(network_code(&anyhow!("The disk is full")), None);
     }
 
     #[test]
@@ -6020,6 +6525,8 @@ mod tests {
             "a.htm",
             "a.html",
             "a.xhtml",
+            "a.shtml",
+            "a.mhtml",
             "A.HTML",
             "page (1).Htm",
             "x.y.html",
@@ -6077,6 +6584,196 @@ mod tests {
                 &redirected
             ));
         }
+    }
+
+    #[test]
+    fn a_page_is_a_file_when_the_name_it_is_saved_under_says_so() {
+        let page = |disposition: Option<&str>| ResponseHeaders {
+            status: 200,
+            content_type: Some("text/html".into()),
+            filename: disposition.map(str::to_owned),
+            ..Default::default()
+        };
+        let job = |name: &str| RemoteInfo {
+            job_name: Some(name.to_owned()),
+            ..remote_with_etag(None)
+        };
+        let typed = |name: &str| AddRequest {
+            filename: Some(name.to_owned()),
+            ..local_request("https://example.test/download".into())
+        };
+        let untyped = local_request("https://example.test/download".into());
+
+        // The job's name, when no answer names the file.
+        assert!(page_named_as_file(
+            &untyped,
+            &page(None),
+            &job("report.pdf")
+        ));
+        assert!(page_named_as_file(&untyped, &page(None), &job("setup.EXE")));
+        assert!(!page_named_as_file(&untyped, &page(None), &job("download")));
+        assert!(!page_named_as_file(&untyped, &page(None), &job("v1.2")));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(None),
+            &job("page.html")
+        ));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(None),
+            &job("page.mhtml")
+        ));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(None),
+            &remote_with_etag(None)
+        ));
+
+        // The name the answer suggests wins over the job's name when the name is not fixed.
+        assert!(page_named_as_file(
+            &untyped,
+            &page(Some("report.pdf")),
+            &job("download")
+        ));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(Some("saved.html")),
+            &job("report.pdf")
+        ));
+        // The probe's suggestion counts when the answer itself has none, and the answer's wins.
+        let probed = RemoteInfo {
+            filename: Some("report.pdf".into()),
+            ..job("download")
+        };
+        assert!(page_named_as_file(&untyped, &page(None), &probed));
+        assert!(!page_named_as_file(
+            &untyped,
+            &page(Some("saved.html")),
+            &probed
+        ));
+        // A suggestion is cleaned like any file name before its extension is read.
+        assert!(page_named_as_file(
+            &untyped,
+            &page(Some("dir\\report.pdf. ")),
+            &job("download")
+        ));
+
+        // A name the user or the browser fixed ignores what the answer suggests.
+        assert!(page_named_as_file(
+            &typed("report.pdf"),
+            &page(Some("saved.html")),
+            &job("report.pdf")
+        ));
+        assert!(!page_named_as_file(
+            &typed("saved.html"),
+            &page(Some("report.pdf")),
+            &job("saved.html")
+        ));
+        assert!(!page_named_as_file(
+            &typed("download"),
+            &page(Some("report.pdf")),
+            &job("download")
+        ));
+
+        // Only a web page that is not an attachment is in question.
+        let mut other = page(None);
+        other.content_type = Some("application/pdf".into());
+        assert!(!page_named_as_file(&untyped, &other, &job("report.pdf")));
+        other.content_type = Some("text/html".into());
+        other.attachment = true;
+        assert!(!page_named_as_file(&untyped, &other, &job("report.pdf")));
+        for status in [0, 302, 404, 503] {
+            let mut error = page(None);
+            error.status = status;
+            assert!(
+                !page_named_as_file(&untyped, &error, &job("report.pdf")),
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_start_of_a_body_is_a_page_only_when_it_opens_like_one() {
+        // The browser extension's relay applies the same rule to the same cases
+        // (`browser/tests/relay-content.test.js`).
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../browser/tests/page-sniff-cases.json")).unwrap();
+        for (group, expected) in [
+            ("page", Sniffed::Page),
+            ("file", Sniffed::File),
+            ("undecided", Sniffed::Undecided),
+        ] {
+            let starts = cases[group].as_array().unwrap();
+            assert!(!starts.is_empty(), "{group}");
+            for start in starts {
+                let start = start.as_str().unwrap();
+                assert_eq!(sniff_page(start.as_bytes()), expected, "{group}: {start:?}");
+            }
+        }
+        assert_eq!(sniff_page(&[0xFF, 0xFE, b'<']), Sniffed::File);
+        assert_eq!(sniff_page(&[0xEF]), Sniffed::Undecided);
+        assert_eq!(sniff_page(&[0xEF, 0xBB]), Sniffed::Undecided);
+        assert_eq!(sniff_page(&[0xEF, 0xBB, 0x41]), Sniffed::File);
+    }
+
+    #[test]
+    fn the_gate_decides_on_the_start_of_the_body_however_it_arrives() {
+        let run = |chunks: &[&[u8]], candidate: bool| {
+            let mut gate = PageGate::default();
+            let mut passed = Vec::new();
+            for chunk in chunks {
+                match gate.take(chunk, || candidate) {
+                    Taken::Held => {}
+                    Taken::Page => return (true, passed),
+                    Taken::Free(bytes) => passed.extend_from_slice(&bytes),
+                }
+            }
+            match gate.finish() {
+                Some(rest) => passed.extend_from_slice(&rest),
+                None if gate.page => return (true, passed),
+                None => {}
+            }
+            (false, passed)
+        };
+        let bytes = |text: &str| text.as_bytes().to_vec();
+        // A page is stopped however its opening is cut up, and nothing of it is passed on.
+        let page = b"  <!DOCTYPE html><html><body>Sign in</body></html>";
+        for cut in 1..page.len() {
+            let (refused, passed) = run(&[&page[..cut], &page[cut..]], true);
+            assert!(refused && passed.is_empty(), "cut at {cut}");
+        }
+        let byte_by_byte = page.chunks(1).collect::<Vec<_>>();
+        assert!(run(&byte_by_byte, true).0);
+        // A file is passed on whole, whether the first bytes decide it or the end of the body does.
+        for body in [
+            "id,name\n1,a\n",
+            "<",
+            "<!doc",
+            "  ",
+            "<?xml version=\"1.0\"?><a/>",
+        ] {
+            let one = body.as_bytes().chunks(1).collect::<Vec<_>>();
+            assert_eq!(run(&one, true), (false, bytes(body)), "{body:?}");
+            assert_eq!(
+                run(&[body.as_bytes()], true),
+                (false, bytes(body)),
+                "{body:?}"
+            );
+        }
+        // A body that stays undecided is passed on once the window is full.
+        let blank = " ".repeat(PAGE_SNIFF_BYTES + 10);
+        let (refused, passed) = run(&[blank.as_bytes()], true);
+        assert!(!refused && passed == blank.as_bytes());
+        // So is a body whose XHTML prologue does not end within the window.
+        let long = format!(
+            "<?xml version=\"1.0\"?><!--{}--><html>",
+            "x".repeat(PAGE_SNIFF_BYTES)
+        );
+        let (refused, passed) = run(&[long.as_bytes()], true);
+        assert!(!refused && passed == long.as_bytes());
+        // Nothing is looked at unless asked.
+        assert_eq!(run(&[&page[..]], false), (false, page.to_vec()));
+        assert_eq!(run(&[], true), (false, Vec::new()));
     }
 
     #[test]
@@ -6332,6 +7029,114 @@ mod tests {
             staged.url,
             source_url_digest(&validate_source_url(&next.url).unwrap())
         );
+    }
+
+    #[test]
+    fn a_failed_head_goes_on_to_the_ranged_get_only_when_a_server_that_was_reached_gave_no_answer()
+    {
+        let unanswered = |code, hung| head_unanswered(&curl::Error::new(code), hung);
+        // The connection was made and the request went out, and nothing came back: an empty
+        // reply, a reset, a request that the open connection refused, an HTTP/2 stream or
+        // session that ended before the response.
+        for code in [
+            curl_sys::CURLE_GOT_NOTHING,
+            curl_sys::CURLE_RECV_ERROR,
+            curl_sys::CURLE_SEND_ERROR,
+            curl_sys::CURLE_HTTP2,
+            curl_sys::CURLE_HTTP2_STREAM,
+        ] {
+            assert!(unanswered(code, false), "curl error {code}");
+        }
+        // A timeout is this only when the connection was made and the server sent nothing.
+        assert!(unanswered(curl_sys::CURLE_OPERATION_TIMEDOUT, true));
+        assert!(!unanswered(curl_sys::CURLE_OPERATION_TIMEDOUT, false));
+        // The GET would fail the same way and take as long again, whether or not a server hung.
+        for code in [
+            curl_sys::CURLE_COULDNT_RESOLVE_PROXY,
+            curl_sys::CURLE_COULDNT_RESOLVE_HOST,
+            curl_sys::CURLE_COULDNT_CONNECT,
+            curl_sys::CURLE_SSL_CONNECT_ERROR,
+            curl_sys::CURLE_PEER_FAILED_VERIFICATION,
+            curl_sys::CURLE_ABORTED_BY_CALLBACK,
+        ] {
+            assert!(!unanswered(code, false), "curl error {code}");
+            assert!(!unanswered(code, true), "curl error {code} after a hang");
+        }
+    }
+
+    /// A server that resets the connection of a `HEAD` by closing it with the request unread, and
+    /// serves the one-byte ranged `GET` that follows. Returns the address and, once the `GET` has
+    /// been served, the requests the server saw.
+    fn head_resetting_server() -> (SocketAddr, mpsc::Receiver<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (done, seen) = mpsc::channel();
+        thread::spawn(move || {
+            let mut resets = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut first = [0u8; 5];
+                let read = loop {
+                    let read = stream.peek(&mut first).unwrap_or(0);
+                    if read == 0 || read == first.len() {
+                        break read;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                };
+                if read == 0 {
+                    continue;
+                }
+                if &first == b"HEAD " {
+                    resets.push("HEAD".to_owned());
+                    drop(stream);
+                    continue;
+                }
+                let request = read_request(&mut stream);
+                response(
+                    &mut stream,
+                    "206 Partial Content",
+                    &["Content-Range: bytes 0-0/13", "ETag: \"reset-v1\""],
+                    b"x",
+                );
+                resets.push(request);
+                done.send(resets).unwrap();
+                return;
+            }
+        });
+        (address, seen)
+    }
+
+    #[test]
+    fn a_head_that_the_server_resets_goes_on_to_the_ranged_get_in_the_same_attempt() {
+        let (address, seen) = head_resetting_server();
+        let url = format!("http://{address}/payload.bin");
+
+        // A `HEAD` to this server fails as a reset or a request that could not be sent, not as an
+        // empty reply, which `head_dropped` in the loopback tests covers.
+        let mut easy = curl::easy::Easy::new();
+        easy.url(&url).unwrap();
+        easy.proxy("").unwrap();
+        easy.nobody(true).unwrap();
+        let error = easy.perform().unwrap_err();
+        assert!(
+            error.is_recv_error() || error.is_send_error(),
+            "curl error {error}"
+        );
+        assert!(head_unanswered(&error, false));
+
+        let probed = probe_http(
+            &local_request(url),
+            validate_source_url(&format!("http://{address}/payload.bin")).unwrap(),
+            &TransferControl::default(),
+            &NetworkGovernor::new(4),
+        )
+        .unwrap();
+        assert_eq!(probed.total, Some(13));
+        assert_eq!(probed.etag.as_deref(), Some("\"reset-v1\""));
+        let requests = seen.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The raw `HEAD`, the probe's `HEAD` and then its ranged `GET`.
+        assert_eq!(requests.len(), 3, "{requests:?}");
+        assert!(requests[2].starts_with("GET ") && requests[2].contains("Range: bytes=0-0"));
     }
 
     #[test]
@@ -7446,9 +8251,12 @@ mod tests {
         .unwrap();
         let elapsed = started.elapsed();
         assert_eq!(fs::read(result.path).unwrap(), payload);
-        // 2 MiB at 2 MiB/s: never faster than the limit, and not paced at a quarter of it.
+        // 2 MiB at 2 MiB/s: never faster than the limit.
         assert!(elapsed >= Duration::from_millis(900), "{elapsed:?}");
-        assert!(elapsed < Duration::from_millis(2500), "{elapsed:?}");
+        // The one worker that is left divides the limit by itself, not by the four connections
+        // planned.
+        let widest = control.paced_by.lock().unwrap().iter().copied().max();
+        assert_eq!(widest, Some(1), "the limit was divided by {widest:?}");
     }
 
     /// Every report that lists ranges lists them sorted, apart, inside the file and adding

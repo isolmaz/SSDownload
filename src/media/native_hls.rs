@@ -254,6 +254,7 @@ pub(super) fn download_streams(
     progress(TransferProgress {
         downloaded: received,
         total: Some(received),
+        phase_name: "processing media",
         phase: crate::i18n::ui("Medya işleniyor", "Processing media").into(),
         processing: true,
         ..TransferProgress::default()
@@ -336,21 +337,21 @@ fn merge(
     let _ = fs::remove_file(&staged);
     // At least ten minutes, and enough for a slow disk to copy a large film at 20 MB/s.
     let bytes = joins.iter().map(Join::stored_bytes).sum::<u64>();
-    let result = run_capture(
-        &tools.ffmpeg,
-        &browser_mux_args(request, &files, &staged),
-        b"",
+    if let Some(reason) = merge_streams(
+        request,
+        &files,
+        &staged,
         Duration::from_secs((bytes / (20 << 20)).max(10 * 60)),
+        tools,
         control,
-    )?;
-    if !result.status.success() || !result.stderr.trim().is_empty() {
-        let _ = fs::remove_file(&staged);
-        bail!(
+    )? {
+        crate::bail_code!(
+            crate::error_codes::TRF_002,
             "{}",
             crate::i18n::ui_format!(
                 "Görüntü ve ses akışları kayıpsız birleştirilemedi: {0}",
                 "The video and audio streams could not be merged losslessly: {0}",
-                bounded_tail(&result.stderr, 4096)
+                reason
             )
         );
     }
@@ -563,6 +564,11 @@ fn conversion_progress(
         speed: 0,
         eta: (share > 0.0 && elapsed >= Duration::from_secs(1))
             .then(|| (elapsed.as_secs_f64() * (1.0 - share) / share).round() as u64),
+        phase_name: if output.encodes {
+            "converting audio"
+        } else {
+            "copying audio"
+        },
         phase: if output.encodes {
             crate::i18n::ui_format!(
                 "Ses {0} biçimine dönüştürülüyor: %{1}",
@@ -1346,7 +1352,7 @@ impl WorkerContext<'_> {
                         crate::logging::Event::warn("media.segment_retry")
                             .host(self.shared.host_names[host].clone())
                             .detail(format!(
-                                "{} segment {} deneme {}: {reason}",
+                                "{} segment {} attempt {}: {reason}",
                                 stream.role, task.index, task.attempt
                             )),
                     );
@@ -1703,6 +1709,11 @@ impl Reporter {
             eta: (limited != Limited::Waiting)
                 .then(|| time_left(&streams))
                 .flatten(),
+            phase_name: match limited {
+                Limited::No => "downloading media",
+                Limited::Flowing => "downloading media under a request limit",
+                Limited::Waiting => "waiting for the server under a request limit",
+            },
             phase: match limited {
                 Limited::No => crate::i18n::ui("Medya indiriliyor", "Downloading media"),
                 Limited::Flowing => crate::i18n::ui(
@@ -2087,6 +2098,7 @@ mod tests {
         );
         assert!(start.processing);
         assert_eq!(start.phase, "Ses MP3 biçimine dönüştürülüyor: %0");
+        assert_eq!(start.phase_name, "converting audio");
         // A quarter written in 4 s leaves 12 s; under a second in, the rate says too little.
         let quarter = report(50.0, 4.0);
         assert_eq!(quarter.phase, "Ses MP3 biçimine dönüştürülüyor: %25");
@@ -2108,6 +2120,7 @@ mod tests {
             Duration::from_secs(1),
         );
         assert_eq!(copy.phase, "Ses M4A dosyasına kopyalanıyor: %50");
+        assert_eq!(copy.phase_name, "copying audio");
     }
 
     #[test]
@@ -3490,7 +3503,12 @@ mod tests {
         let start = Instant::now();
         let after = |millis| start + Duration::from_millis(millis);
         let mut reporter = Reporter::new(&received, start);
-        let mut phase = |now| reporter.report(&context, now).phase;
+        let mut names = Vec::new();
+        let mut phase = |now| {
+            let report = reporter.report(&context, now);
+            names.push(report.phase_name);
+            report.phase
+        };
         let (downloading, limiting, waiting) = (
             crate::i18n::ui("Medya indiriliyor", "Downloading media"),
             crate::i18n::ui(
@@ -3542,6 +3560,24 @@ mod tests {
             .settle(0, Settled::Done { sent: retry.sent }, after(3_300));
         assert_eq!(phase(after(3_300)), limiting);
         assert_eq!(phase(after(10_100)), downloading);
+        let (downloading, limiting, waiting) = (
+            "downloading media",
+            "downloading media under a request limit",
+            "waiting for the server under a request limit",
+        );
+        assert_eq!(
+            names,
+            [
+                downloading,
+                waiting,
+                waiting,
+                waiting,
+                limiting,
+                limiting,
+                limiting,
+                downloading
+            ]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3856,10 +3892,26 @@ mod tests {
                     &mut |_| {},
                 ));
             });
-            let fetched = receiver.recv_timeout(Duration::from_secs(20));
+            // The download stalls when ten seconds pass without a new request, however long the
+            // whole of it takes, but it also fails when it sends requests for two minutes
+            // without ending: 24 segments of 2000 bytes take seconds.
+            let hung_at = Instant::now() + Duration::from_secs(120);
+            let mut requests = 0;
+            let fetched = loop {
+                match receiver.recv_timeout(Duration::from_secs(10)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                        if server.log().len() > requests && Instant::now() < hung_at =>
+                    {
+                        requests = server.log().len();
+                    }
+                    other => break other,
+                }
+            };
             // A stalled download is stopped so that the scope can end.
             control.cancel();
-            let joins = fetched.expect("the download stalled").unwrap();
+            let joins = fetched
+                .expect("the download stalled or never ended")
+                .unwrap();
             assert_eq!(
                 fs::read(&joins[0].joined).unwrap(),
                 pattern(1, 2000).repeat(24)
