@@ -327,9 +327,6 @@ pub(super) unsafe fn card_font(
 /// Vector icon for a card: a play triangle, a folder, a music note, or a
 /// window with square or rounded corners for the two themes. Icon
 /// fonts are not used because a font that is missing or substituted renders the
-/// Vector icon for a card: a play triangle, a folder, a music note, or a
-/// window with square or rounded corners for the two themes. Icon
-/// fonts are not used because a font that is missing or substituted renders the
 /// private-use codepoint as a tofu box, which no size check can tell apart from
 /// a real glyph.
 pub(super) unsafe fn draw_card_glyph(dc: HDC, id: i32, origin: POINT, size: i32, colour: u32) {
