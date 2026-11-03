@@ -19343,7 +19343,7 @@ mod tests {
             (true, "pt", 144, "queues", native::Q_CANCEL_COMPLETION),
             (true, "fr", 144, "queues", native::Q_CANCEL_COMPLETION),
             (true, "de", 144, "queues", native::Q_CANCEL_COMPLETION),
-            (true, "de", 192, "duplicates", native::IDCANCEL),
+            (true, "de", 192, "duplicates", native::IDYES),
         ];
 
         /// The ids of the buttons of `window` that may stand outside its client area
