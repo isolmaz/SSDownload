@@ -29,6 +29,7 @@ use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
 
 mod evidence;
 mod metadata;
+mod naming;
 mod native_hls;
 mod postprocess;
 mod probe;
@@ -39,6 +40,7 @@ mod session;
 mod workspace;
 use evidence::*;
 use metadata::*;
+pub(crate) use naming::picker_file_name;
 pub(crate) use postprocess::validate_options;
 use postprocess::*;
 use probe::*;
