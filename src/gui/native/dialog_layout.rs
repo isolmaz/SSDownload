@@ -3611,7 +3611,8 @@ pub(super) unsafe fn dialog_dpi_changed(dlg: &mut DialogUi, suggested: &RECT) {
     if old_bar > 0 && dlg.scroll_range.get() == 0 {
         let mut frame: RECT = zeroed();
         GetWindowRect(dlg.hwnd, &mut frame);
-        let old_bar = (old_bar as i64 * dlg.dpi as i64 / old_dpi as i64) as i32;
+        let old_bar =
+            ((old_bar as i64 * dlg.dpi as i64 + old_dpi as i64 / 2) / old_dpi as i64) as i32;
         let (least, _) = dialog_min_track(dlg, dlg.dpi);
         let width = (frame.right - frame.left - old_bar).max(least);
         if width < frame.right - frame.left {
