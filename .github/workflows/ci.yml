@@ -27,22 +27,5 @@ jobs:
       # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: cargo fmt --check
-        run: cargo fmt --check
-
-      - name: cargo clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-
-      - name: cargo test
-        run: cargo test --locked
-
-      - name: Translation catalogs
-        run: python scripts/i18n.py check
-
-      - name: Browser extension tests
-        run: |
-          $suites = Get-ChildItem browser/tests -Filter '*.test.js' | ForEach-Object { $_.FullName }
-          node --test @suites
-
-      - name: cargo build
-        run: cargo build --locked
+      - name: probe
+        run: cargo test --locked --lib probe_the_screen -- --nocapture

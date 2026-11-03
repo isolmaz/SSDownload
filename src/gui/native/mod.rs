@@ -20868,6 +20868,41 @@ mod tests {
             });
         }
         #[test]
+        fn probe_the_screen_of_the_test_machine() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetSystemMetrics, SM_CXFULLSCREEN, SM_CXMAXTRACK, SM_CXSCREEN, SM_CXSIZEFRAME,
+                SM_CYFULLSCREEN, SM_CYMAXTRACK, SM_CYSCREEN,
+            };
+            on_private_desktop(|| unsafe {
+                let metric = |index| GetSystemMetrics(index);
+                let case = cases()
+                    .into_iter()
+                    .find(|case| case.name == "rename")
+                    .unwrap();
+                let dialog = dialog(&case, false);
+                let work = native::work_area(dialog.hwnd).unwrap();
+                let mut frame: RECT = zeroed();
+                GetWindowRect(dialog.hwnd, &mut frame);
+                println!(
+                    "PROBE screen {}x{} full {}x{} max-track {}x{} size-frame {} work x {}..{} y {}..{} dialog {}x{}",
+                    metric(SM_CXSCREEN),
+                    metric(SM_CYSCREEN),
+                    metric(SM_CXFULLSCREEN),
+                    metric(SM_CYFULLSCREEN),
+                    metric(SM_CXMAXTRACK),
+                    metric(SM_CYMAXTRACK),
+                    metric(SM_CXSIZEFRAME),
+                    work.left,
+                    work.right,
+                    work.top,
+                    work.bottom,
+                    frame.right - frame.left,
+                    frame.bottom - frame.top
+                );
+            });
+        }
+
+        #[test]
         fn a_dialog_widened_next_to_the_right_edge_of_the_screen_stays_on_it() {
             use windows_sys::Win32::{
                 Graphics::Gdi::{
