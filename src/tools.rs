@@ -82,6 +82,10 @@ pub(crate) struct OwnText {
     pub(crate) strings: Vec<String>,
     /// The folder the application installs its programs into.
     pub(crate) tools_dir: PathBuf,
+    /// The same folder as the file system spells it (`canonicalize`), which the paths of the
+    /// installed programs use, when that differs from `tools_dir`: a substituted or network
+    /// drive, a junction, or a `.` or `..` in the profile path.
+    pub(crate) canonical_tools_dir: Option<PathBuf>,
 }
 
 impl OwnText {
@@ -89,9 +93,39 @@ impl OwnText {
     pub(crate) fn profile(profile: &Path) -> Self {
         Self {
             strings: vec![profile.display().to_string()],
-            tools_dir: crate::paths::tools_dir_of(profile),
+            ..Self::tools_folder(&crate::paths::tools_dir_of(profile))
         }
     }
+
+    /// Only the tools folder `tools_dir`, in both of its spellings.
+    pub(crate) fn tools_folder(tools_dir: &Path) -> Self {
+        Self {
+            strings: Vec::new(),
+            tools_dir: tools_dir.to_path_buf(),
+            canonical_tools_dir: canonical_spelling(tools_dir),
+        }
+    }
+}
+
+/// The spelling of `dir` the file system uses, `None` when it is the same folder spelled the same
+/// way (a `\\?\` prefix and letter case aside). It is looked up once per folder: asking the file
+/// system costs a round trip on a network or disconnected drive, and the texts of the window are
+/// filtered on every refresh. A folder the file system cannot resolve is asked again next time.
+fn canonical_spelling(dir: &Path) -> Option<PathBuf> {
+    static SPELLINGS: Mutex<Vec<(PathBuf, Option<PathBuf>)>> = Mutex::new(Vec::new());
+    let mut spellings = SPELLINGS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, spelling)) = spellings.iter().find(|(known, _)| known == dir) {
+        return spelling.clone();
+    }
+    let canonical = dir.canonicalize().ok()?;
+    let shown = canonical.display().to_string();
+    let same = shown
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&shown)
+        .eq_ignore_ascii_case(&dir.display().to_string());
+    let spelling = (!same).then_some(canonical);
+    spellings.push((dir.to_path_buf(), spelling.clone()));
+    spelling
 }
 
 /// `text` with every name of a program behind a media component (yt-dlp, FFmpeg, ffprobe, Deno,
@@ -101,13 +135,24 @@ impl OwnText {
 ///
 /// What is the user's own stays as it is: every occurrence of a string of `own`, and a file path
 /// (a word with a `\`, or one that begins like `C:/`, `/`, `./` or `../`). Below the tools folder
-/// of the application the names in a path are hidden and the folder up to it stays. An address
-/// is hidden unless `own` holds it.
+/// of the application the names in a path are hidden whatever `own` holds, and the folder up to it
+/// stays. An address is hidden unless `own` holds it. A string of `own` that is itself the name of
+/// a program is not the user's text to keep, and a string of `own` keeps a name only when it holds
+/// the whole name.
 pub(crate) fn without_component_names(text: &str, own: &OwnText) -> String {
     const NAMES: [&str; 5] = ["ffprobe", "ffmpeg", "yt-dlp", "deno", "btbn"];
     let lower = text.to_ascii_lowercase();
     let mut kept: Vec<std::ops::Range<usize>> = Vec::new();
-    for part in own.strings.iter().filter(|part| !part.is_empty()) {
+    for part in own
+        .strings
+        .iter()
+        .filter(|part| !part.is_empty())
+        .filter(|part| {
+            !NAMES
+                .iter()
+                .any(|name| part.trim().eq_ignore_ascii_case(name))
+        })
+    {
         let part = part.to_ascii_lowercase();
         kept.extend(
             lower
@@ -115,8 +160,12 @@ pub(crate) fn without_component_names(text: &str, own: &OwnText) -> String {
                 .map(|(start, found)| start..start + found.len()),
         );
     }
-    let (tools, below) = tools_folder_ranges(text, &own.tools_dir);
-    kept.extend(tools);
+    let mut below: Vec<std::ops::Range<usize>> = Vec::new();
+    for tools_dir in std::iter::once(&own.tools_dir).chain(&own.canonical_tools_dir) {
+        let (tools, programs) = tools_folder_ranges(text, tools_dir);
+        kept.extend(tools);
+        below.extend(programs);
+    }
     let mut hits: Vec<(usize, &str, bool)> = NAMES
         .iter()
         .flat_map(|name| {
@@ -126,15 +175,15 @@ pub(crate) fn without_component_names(text: &str, own: &OwnText) -> String {
         })
         .filter_map(|(start, name)| {
             let end = start + name.len();
-            if kept
-                .iter()
-                .any(|range| range.start < end && start < range.end)
+            let in_program_path = below.iter().any(|range| range.contains(&start));
+            if !in_program_path
+                && kept
+                    .iter()
+                    .any(|range| range.start <= start && end <= range.end)
             {
                 return None;
             }
-            if !below.iter().any(|range| range.contains(&start))
-                && is_file_path(word_around(text, start, end))
-            {
+            if !in_program_path && is_file_path(word_around(text, start, end)) {
                 return None;
             }
             let before = text[..start].chars().next_back();
@@ -3336,6 +3385,7 @@ mod tests {
         let own = OwnText {
             strings: own.iter().map(|part| part.to_string()).collect(),
             tools_dir: PathBuf::from(tools_dir),
+            canonical_tools_dir: None,
         };
         crate::i18n::with_language("en", || without_component_names(text, &own))
     }
@@ -3533,6 +3583,116 @@ mod tests {
                 tools
             ),
             r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\runtime\runtime.exe and runtime"
+        );
+    }
+
+    #[test]
+    fn a_program_below_the_tools_folder_is_hidden_when_the_file_system_spells_the_folder_otherwise()
+    {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::create_dir_all(root.join("x").join("tools")).unwrap();
+        // The profile is given with a `..`, the file system spells the tools folder without it.
+        let profile = root.join("other").join("..").join("x");
+        let own = OwnText::profile(&profile);
+        let canonical = profile.join("tools").canonicalize().unwrap();
+        assert_ne!(canonical, own.tools_dir);
+        let text = format!(
+            r"{}\versions\7\ffmpeg\ffmpeg.exe was modified",
+            canonical.display()
+        );
+        let shown = crate::i18n::with_language("en", || without_component_names(&text, &own));
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            shown,
+            format!(
+                r"{}\versions\7\converter\converter.exe was modified",
+                canonical.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_program_below_the_tools_folder_is_hidden_whatever_a_string_of_the_user_holds() {
+        let tools = r"C:\p\tools";
+        let program = r"C:\p\tools\versions\1\ffmpeg\ffmpeg.exe";
+        assert_eq!(
+            english_without_names_in(
+                &format!("{program} was modified"),
+                &["ffmpeg.exe", program],
+                tools
+            ),
+            r"C:\p\tools\versions\1\converter\converter.exe was modified"
+        );
+        // The same string keeps the name where the text is not below the tools folder.
+        assert_eq!(
+            english_without_names_in("saved ffmpeg.exe", &["ffmpeg.exe"], tools),
+            "saved ffmpeg.exe"
+        );
+    }
+
+    #[test]
+    fn the_spelling_of_the_tools_folder_is_asked_of_the_file_system_once() {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::create_dir_all(root.join("tools")).unwrap();
+        let tools = root.join("other").join("..").join("tools");
+        let first = OwnText::tools_folder(&tools).canonical_tools_dir;
+        assert_eq!(first, Some(root.join("tools").canonicalize().unwrap()));
+        fs::remove_dir_all(root.join("tools")).unwrap();
+        let second = OwnText::tools_folder(&tools).canonical_tools_dir;
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            second, first,
+            "the folder is gone, so a new lookup would fail"
+        );
+    }
+
+    #[test]
+    fn a_tools_folder_the_file_system_cannot_resolve_is_asked_again_later() {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("other")).unwrap();
+        let tools = root.join("other").join("..").join("tools");
+        assert_eq!(OwnText::tools_folder(&tools).canonical_tools_dir, None);
+        fs::create_dir_all(root.join("tools")).unwrap();
+        let resolved = OwnText::tools_folder(&tools).canonical_tools_dir;
+        fs::remove_dir_all(&root).unwrap();
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn the_tools_folder_is_not_scanned_twice_when_the_file_system_spells_it_the_same() {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("tools")).unwrap();
+        // `canonicalize` adds the `\\?\` prefix on Windows to the very folder given.
+        let canonical = root
+            .join("tools")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string();
+        let same = PathBuf::from(canonical.strip_prefix(r"\\?\").unwrap_or(&canonical));
+        let own = OwnText::tools_folder(&same);
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(own.canonical_tools_dir, None);
+    }
+
+    #[test]
+    fn a_string_of_the_user_that_is_a_program_name_or_part_of_one_keeps_no_name_visible() {
+        let text = "ERROR: Postprocessing: ffprobe and ffmpeg not found";
+        let hidden = "ERROR: Postprocessing: media inspector and converter not found";
+        for own in [
+            "FFmpeg", "ffprobe", " Deno ", "yt-dlp", "e", "mp", "fm", "pe",
+        ] {
+            assert_eq!(english_without_names(text, &[own]), hidden, "{own:?}");
+        }
+        // The user's own text that holds a whole name still keeps it, next to a name that stays hidden.
+        assert_eq!(
+            english_without_names(
+                "ffmpeg wrote my ffmpeg clip",
+                &["ffmpeg", "e", "my ffmpeg clip"]
+            ),
+            "converter wrote my ffmpeg clip"
         );
     }
 
