@@ -1730,10 +1730,7 @@ pub(super) fn tools_report(
     progress: Option<&ToolProgress>,
     tools_dir: &Path,
 ) -> String {
-    let own = OwnText {
-        strings: Vec::new(),
-        tools_dir: tools_dir.to_path_buf(),
-    };
+    let own = OwnText::tools_folder(tools_dir);
     let mut body = String::new();
     for tool in tools {
         body.push_str(&crate::i18n::ui_format!(

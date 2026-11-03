@@ -1085,17 +1085,26 @@ unsafe fn dispatch(ui: &MainUi, action: Action) {
     if let Err(error) = ui.app.dispatch(action) {
         message(
             ui.hwnd,
-            &format!(
-                "{}:\n{error:#}",
-                crate::i18n::ui(
-                    "İşlem tamamlanamadı",
-                    "The operation could not be completed",
-                )
-            ),
+            &operation_failed_text(&error, &ui.app.paths().base_dir, &ui.snapshot.settings),
             "SSDownload",
             MB_OK | MB_ICONERROR,
         );
     }
+}
+
+/// The text of the message box for an action that failed: the error carries what the failed
+/// action reported, which can name a program behind a component.
+fn operation_failed_text(error: &anyhow::Error, profile: &Path, settings: &Settings) -> String {
+    without_component_names(
+        &format!(
+            "{}:\n{error:#}",
+            crate::i18n::ui(
+                "İşlem tamamlanamadı",
+                "The operation could not be completed",
+            )
+        ),
+        &profile_text(profile, settings),
+    )
 }
 
 /// The state of a job, and its phase when that says more than the state. A phase that
@@ -11600,6 +11609,34 @@ mod tests {
                 )
             ),
             "the folder of the profile stays, the program below it is hidden"
+        );
+    }
+
+    #[test]
+    fn the_message_box_of_a_failed_action_hides_the_programs_and_keeps_the_folders_of_the_user() {
+        use super::operation_failed_text;
+        let profile = std::path::Path::new(r"C:\Users\deno\AppData\Local\SSDownload");
+        let settings = crate::model::Settings {
+            download_dir: r"D:\my ffmpeg clips".into(),
+            ..Default::default()
+        };
+        let error = anyhow::anyhow!(
+            r"{}\tools\versions\1\ffmpeg\ffmpeg.exe was modified, see D:\my ffmpeg clips",
+            profile.display()
+        )
+        .context("ERROR: Postprocessing: ffprobe and ffmpeg not found, see https://github.com/yt-dlp/yt-dlp/issues");
+        let shown =
+            crate::i18n::with_language("en", || operation_failed_text(&error, profile, &settings));
+        assert_eq!(
+            shown,
+            format!(
+                "The operation could not be completed:\nERROR: Postprocessing: {} and {} not found, see https://github.com/{ytdlp}/{ytdlp}/issues: {}\\tools\\versions\\1\\{converter}\\{converter}.exe was modified, see D:\\my ffmpeg clips",
+                crate::i18n::with_language("en", || crate::tools::component_label("ffprobe")),
+                crate::i18n::with_language("en", || crate::tools::component_label("ffmpeg")),
+                profile.display(),
+                ytdlp = crate::i18n::with_language("en", || crate::tools::component_label("yt-dlp").replace(' ', "-")),
+                converter = crate::i18n::with_language("en", || crate::tools::component_label("ffmpeg").replace(' ', "-")),
+            )
         );
     }
 

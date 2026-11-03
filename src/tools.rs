@@ -82,6 +82,10 @@ pub(crate) struct OwnText {
     pub(crate) strings: Vec<String>,
     /// The folder the application installs its programs into.
     pub(crate) tools_dir: PathBuf,
+    /// The same folder as the file system spells it (`canonicalize`), which the paths of the
+    /// installed programs use, when that differs from `tools_dir`: a substituted or network
+    /// drive, a junction, or a `.` or `..` in the profile path.
+    pub(crate) canonical_tools_dir: Option<PathBuf>,
 }
 
 impl OwnText {
@@ -89,7 +93,19 @@ impl OwnText {
     pub(crate) fn profile(profile: &Path) -> Self {
         Self {
             strings: vec![profile.display().to_string()],
-            tools_dir: crate::paths::tools_dir_of(profile),
+            ..Self::tools_folder(&crate::paths::tools_dir_of(profile))
+        }
+    }
+
+    /// Only the tools folder `tools_dir`, in both of its spellings.
+    pub(crate) fn tools_folder(tools_dir: &Path) -> Self {
+        Self {
+            strings: Vec::new(),
+            tools_dir: tools_dir.to_path_buf(),
+            canonical_tools_dir: tools_dir
+                .canonicalize()
+                .ok()
+                .filter(|path| path != tools_dir),
         }
     }
 }
@@ -102,12 +118,22 @@ impl OwnText {
 /// What is the user's own stays as it is: every occurrence of a string of `own`, and a file path
 /// (a word with a `\`, or one that begins like `C:/`, `/`, `./` or `../`). Below the tools folder
 /// of the application the names in a path are hidden and the folder up to it stays. An address
-/// is hidden unless `own` holds it.
+/// is hidden unless `own` holds it. A string of `own` that is itself the name of a program is not
+/// the user's text to keep, and a string of `own` keeps a name only when it holds the whole name.
 pub(crate) fn without_component_names(text: &str, own: &OwnText) -> String {
     const NAMES: [&str; 5] = ["ffprobe", "ffmpeg", "yt-dlp", "deno", "btbn"];
     let lower = text.to_ascii_lowercase();
     let mut kept: Vec<std::ops::Range<usize>> = Vec::new();
-    for part in own.strings.iter().filter(|part| !part.is_empty()) {
+    for part in own
+        .strings
+        .iter()
+        .filter(|part| !part.is_empty())
+        .filter(|part| {
+            !NAMES
+                .iter()
+                .any(|name| part.trim().eq_ignore_ascii_case(name))
+        })
+    {
         let part = part.to_ascii_lowercase();
         kept.extend(
             lower
@@ -115,8 +141,12 @@ pub(crate) fn without_component_names(text: &str, own: &OwnText) -> String {
                 .map(|(start, found)| start..start + found.len()),
         );
     }
-    let (tools, below) = tools_folder_ranges(text, &own.tools_dir);
-    kept.extend(tools);
+    let mut below: Vec<std::ops::Range<usize>> = Vec::new();
+    for tools_dir in std::iter::once(&own.tools_dir).chain(&own.canonical_tools_dir) {
+        let (tools, programs) = tools_folder_ranges(text, tools_dir);
+        kept.extend(tools);
+        below.extend(programs);
+    }
     let mut hits: Vec<(usize, &str, bool)> = NAMES
         .iter()
         .flat_map(|name| {
@@ -128,7 +158,7 @@ pub(crate) fn without_component_names(text: &str, own: &OwnText) -> String {
             let end = start + name.len();
             if kept
                 .iter()
-                .any(|range| range.start < end && start < range.end)
+                .any(|range| range.start <= start && end <= range.end)
             {
                 return None;
             }
@@ -3336,6 +3366,7 @@ mod tests {
         let own = OwnText {
             strings: own.iter().map(|part| part.to_string()).collect(),
             tools_dir: PathBuf::from(tools_dir),
+            canonical_tools_dir: None,
         };
         crate::i18n::with_language("en", || without_component_names(text, &own))
     }
@@ -3533,6 +3564,51 @@ mod tests {
                 tools
             ),
             r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\runtime\runtime.exe and runtime"
+        );
+    }
+
+    #[test]
+    fn a_program_below_the_tools_folder_is_hidden_when_the_file_system_spells_the_folder_otherwise()
+    {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::create_dir_all(root.join("x").join("tools")).unwrap();
+        // The profile is given with a `..`, the file system spells the tools folder without it.
+        let profile = root.join("other").join("..").join("x");
+        let own = OwnText::profile(&profile);
+        let canonical = profile.join("tools").canonicalize().unwrap();
+        assert_ne!(canonical, own.tools_dir);
+        let text = format!(
+            r"{}\versions\7\ffmpeg\ffmpeg.exe was modified",
+            canonical.display()
+        );
+        let shown = crate::i18n::with_language("en", || without_component_names(&text, &own));
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            shown,
+            format!(
+                r"{}\versions\7\converter\converter.exe was modified",
+                canonical.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_string_of_the_user_that_is_a_program_name_or_part_of_one_keeps_no_name_visible() {
+        let text = "ERROR: Postprocessing: ffprobe and ffmpeg not found";
+        let hidden = "ERROR: Postprocessing: media inspector and converter not found";
+        for own in [
+            "FFmpeg", "ffprobe", " Deno ", "yt-dlp", "e", "mp", "fm", "pe",
+        ] {
+            assert_eq!(english_without_names(text, &[own]), hidden, "{own:?}");
+        }
+        // The user's own text that holds a whole name still keeps it, next to a name that stays hidden.
+        assert_eq!(
+            english_without_names(
+                "ffmpeg wrote my ffmpeg clip",
+                &["ffmpeg", "e", "my ffmpeg clip"]
+            ),
+            "converter wrote my ffmpeg clip"
         );
     }
 
