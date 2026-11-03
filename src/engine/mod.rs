@@ -5463,11 +5463,14 @@ pub(crate) fn retryable_error(error: &anyhow::Error) -> bool {
             "timed out",
             "temporary failure",
             "connection reset",
-            // A refused or reset connection as the tool's Python words it on Windows (WinError
-            // 10061, 10054) and on Linux (`[Errno 111] Connection refused`); curl's are 7 and 56.
+            // A refused, reset or aborted connection as the tool's Python words it on Windows
+            // (WinError 10061, 10054, 10053) and on Linux (`[Errno 111] Connection refused`,
+            // `[Errno 103] Software caused connection abort`); curl's are 7 and 56.
             "connection refused",
             "actively refused",
             "forcibly closed",
+            "connection was aborted",
+            "software caused connection abort",
             // A failed name lookup as Python's sockets word it, per platform; `Temporary failure
             // in name resolution` is matched above.
             "getaddrinfo failed",
