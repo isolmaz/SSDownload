@@ -2571,6 +2571,47 @@ fn the_code_of_a_failed_run_follows_its_final_error_line_not_an_earlier_item() {
 }
 
 #[test]
+fn a_download_and_an_analysis_give_the_same_text_the_same_refusal_code() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    for (stderr, code) in [
+        // A 403 that the final line words as a sign-in demand is the 403: the job retries and
+        // waits for a new source as it does for any 403.
+        (
+            "ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden. Please sign in",
+            crate::error_codes::MED_007,
+        ),
+        // The 403 comes on a later line of the final error, after a first line that reads as a
+        // removal.
+        (
+            "ERROR: [youtube] abc123: Video unavailable\nHTTP Error 403: Forbidden",
+            crate::error_codes::MED_007,
+        ),
+        (
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            crate::error_codes::MED_007,
+        ),
+        (
+            "ERROR: [youtube] abc123: Private video. Sign in if you've been granted access to this video",
+            crate::error_codes::MED_008,
+        ),
+    ] {
+        assert_eq!(
+            code_of(&download_failure(stderr, &request, true, &[])),
+            Some(code),
+            "download: {stderr}"
+        );
+        assert_eq!(
+            code_of(&inspection_failure(stderr, &[])),
+            Some(code),
+            "analysis: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn a_403_starts_a_compatibility_retry_only_where_it_is_the_final_error_of_the_tool() {
     let stale =
         "WARNING: [generic] Unable to download webpage: HTTP Error 403: Forbidden. Retrying (1/3)";
