@@ -223,11 +223,11 @@ function hlsChildren(text, base) { return hlsRelations(text,base).filter(item=>i
     if (predicate()) return true;
     throw new Error(`waitFor timed out after ${timeoutMs}ms: ${String(predicate)}`);
   }
-  async function content(message, tabId = 7, frameId = 0) {
+  async function content(message, tabId = 7, frameId = 0, tabTitle, tabUrl) {
     message={...message,sources:message.sources?.map(s=>({...s,playerId:s.playerId||message.players?.find(p=>p.urls?.includes(s.url))?.id}))};
     const listener = events.message.listeners.at(-1);
     let reply = null;
-    assert.equal(listener(message, { id: "test-extension", url: message.pageUrl || "https://site.example/watch", tab: { id: tabId }, frameId }, value => { reply = value; }), true);
+    assert.equal(listener(message, { id: "test-extension", url: message.pageUrl || "https://site.example/watch", tab: { id: tabId, ...(tabTitle === undefined ? {} : { title: tabTitle }), ...(tabUrl === undefined ? {} : { url: tabUrl }) }, frameId }, value => { reply = value; }), true);
     for (let round = 0; round < 8; round += 1) {
       await Promise.resolve();
       await new Promise(resolve => setImmediate(resolve));
@@ -353,6 +353,149 @@ test("a captured media address never becomes the handed-over file name", async (
   assert.ok(handoff, "the player must reach the picker");
   assert.equal(handoff.action.request.url, address);
   assert.ok(!String(handoff.action.request.filename || "").includes("videoplayback"), "the address must never become the file name; an untitled player leaves the desktop's own placeholder");
+});
+
+// What a media handoff suggests as the file name. The messages follow the content script's: the
+// scan carries the page title, the tile's own message does not.
+async function suggestedName({ pageUrl = "https://clips.example/watch", pageTitle, tabTitle, siteNames = [] }) {
+  const h = backgroundHarness();
+  const manifest = "https://cdn.example/master.m3u8";
+  const page = { channel: "ssdownload-content", documentId: "d", pageUrl, siteNames, players: [{ id: "p1", title: pageTitle, urls: [manifest], active: true }],
+    sources: [{ url: manifest, contentType: "application/vnd.apple.mpegurl", playerId: "p1" }] };
+  await h.content({ ...page, event: "scan", pageTitle }, 7, 0, tabTitle);
+  await h.content({ ...page, event: "download-video", mediaKind: "video", playerId: "p1" }, 7, 0, tabTitle);
+  return h.nativeRequests.find(request => request?.action?.type === "browser_media").action.request.filename;
+}
+
+test("a title that only names the site is not handed over as the file name", async () => {
+  assert.equal(await suggestedName({ pageTitle: "Clips", tabTitle: "Clips" }), null, "the host's own label");
+  assert.equal(await suggestedName({ pageTitle: "Clips", tabTitle: " CLIPS " }), null, "case and spacing do not make it a title");
+  assert.equal(await suggestedName({ pageUrl: "https://watch.example/v/1", pageTitle: "Moviehub", tabTitle: "Moviehub", siteNames: ["Moviehub"] }), null,
+    "the name the document declares for its site");
+  assert.equal(await suggestedName({ pageTitle: "", tabTitle: "" }), null, "an untitled player leaves the desktop's own placeholder, not 'Video'");
+});
+
+test("a title that names the content is still handed over as the file name", async () => {
+  assert.equal(await suggestedName({ pageTitle: "A Film - Clips", tabTitle: "A Film - Clips" }), "A Film - Clips", "the site may end a title");
+  assert.equal(await suggestedName({ pageTitle: "Clips", tabTitle: "A Film (2011)" }), "A Film (2011)", "a site-only page title yields to the tab's title");
+  assert.equal(await suggestedName({ pageUrl: "https://watch.example/v/1", pageTitle: "Moviehub 2", tabTitle: "Moviehub 2", siteNames: ["Moviehub"] }), "Moviehub 2");
+});
+
+test("a placeholder of the extension, in any of its languages, is not handed over as the file name", async () => {
+  const catalog = vm.createContext({});
+  loadI18n(catalog);
+  const messages = JSON.parse(vm.runInContext("JSON.stringify(SSDownloadI18n.MESSAGES)", catalog));
+  const placeholders = Object.values(messages).flatMap(language => [language.videoTitleFallback, language.playerTitleFallback.replace("{0}", "3"), language.embedTitleFallback]);
+  assert.equal(placeholders.length, 21);
+  assert.ok(placeholders.includes("Vídeo 3") && placeholders.includes("فيديو"));
+  for (const title of placeholders) assert.equal(await suggestedName({ pageTitle: title, tabTitle: title }), null, title);
+  assert.equal(await suggestedName({ pageTitle: "Video Game Night", tabTitle: "Video Game Night" }), "Video Game Night", "a title that only starts with a placeholder's word");
+});
+
+test("a page with no title reports none, whatever the language, so no placeholder reaches the file name", async () => {
+  const ready = { status: "ready", usageModes: { video: true, file: true, audio: true }, siteEntries: true };
+  for (const browserLanguage of ["es", "pt", "fr", "ar", "tr", "de", "en"]) {
+    const h = contentHarness({ browserLanguage, reply: ready });
+    await vm.runInContext("refreshUsageModes()", h.context);
+    const scans = h.sent.filter(message => message.event === "scan");
+    assert.ok(scans.length > 0, browserLanguage);
+    assert.deepEqual(scans.map(message => message.pageTitle), scans.map(() => ""), browserLanguage);
+  }
+  const titled = contentHarness({ reply: ready, nodes: { 'meta[property="og:title"]': [{ content: "Shared Film" }] } });
+  titled.document.title = "Tab Film";
+  assert.equal(vm.runInContext("pageTitle()", titled.context), "Shared Film", "the title the page shares wins");
+  const plain = contentHarness({ reply: ready });
+  plain.document.title = "Tab Film";
+  assert.equal(vm.runInContext("pageTitle()", plain.context), "Tab Film");
+});
+
+test("a leading unread count does not hide that a title only names the site", async () => {
+  assert.equal(await suggestedName({ pageTitle: "(3) Clips", tabTitle: "(3) Clips" }), null);
+  assert.equal(await suggestedName({ pageUrl: "https://watch.example/v/1", pageTitle: "(12) Moviehub", tabTitle: "(12) Moviehub", siteNames: ["Moviehub"] }), null);
+  assert.equal(await suggestedName({ pageTitle: "(3) A Film (2011)", tabTitle: "(3) A Film (2011)" }), "(3) A Film (2011)", "a title that names the content is not rewritten");
+  assert.equal(await suggestedName({ pageTitle: "(1917)", tabTitle: "(1917)" }), "(1917)", "a number that is the whole title is no count");
+});
+
+test("no site name is built into the rules for a title", async () => {
+  assert.equal(await suggestedName({ pageTitle: "YouTube", tabTitle: "YouTube" }), "YouTube", "a title that is not the label of the page's address names content");
+  assert.equal(await suggestedName({ pageUrl: "https://www.youtube.com/watch?v=abc", pageTitle: "YouTube", tabTitle: "YouTube" }), null, "the label of the page's own address is the site");
+});
+
+test("untitled players are told apart by number in every language", async () => {
+  const h = backgroundHarness({ browserLanguage: "es" });
+  const [one, two] = ["https://cdn.example/one.m3u8", "https://cdn.example/two.m3u8"];
+  const page = { channel: "ssdownload-content", documentId: "d", pageUrl: "https://clips.example/watch", pageTitle: "",
+    players: [{ id: "1", title: "", urls: [one], active: true }, { id: "2", title: "", urls: [two], active: true }],
+    sources: [one, two].map((url, index) => ({ url, contentType: "application/vnd.apple.mpegurl", playerId: String(index + 1) })) };
+  await h.content({ ...page, event: "scan" }, 7, 0, "");
+  assert.deepEqual((await h.state(7)).videos.map(video => video.title).sort(), ["Vídeo 1", "Vídeo 2"]);
+});
+
+test("without a record of the top document the tab title is judged against the tab's address", async () => {
+  const send = async tabTitle => {
+    const h = backgroundHarness();
+    const manifest = "https://cdn.example/master.m3u8";
+    const frame = { channel: "ssdownload-content", documentId: "frame", pageUrl: "https://player.example/embed", pageTitle: "MobiPlayer",
+      players: [{ id: "p1", urls: [manifest], active: true }], sources: [{ url: manifest, contentType: "application/vnd.apple.mpegurl", playerId: "p1" }] };
+    await h.content({ ...frame, event: "scan" }, 7, 2, tabTitle, "https://clips.example/");
+    await h.content({ ...frame, event: "download-video", mediaKind: "video", playerId: "p1" }, 7, 2, tabTitle, "https://clips.example/");
+    return h.nativeRequests.find(request => request?.action?.type === "browser_media").action.request.filename;
+  };
+  assert.equal(await send("Clips"), null);
+  assert.equal(await send("A Film (2011)"), "A Film (2011)");
+});
+
+test("a tab title that only names the top document's site is not handed over for a player in a frame", async () => {
+  const send = async tabTitle => {
+    const h = backgroundHarness();
+    const manifest = "https://cdn.example/master.m3u8";
+    await h.content({ channel: "ssdownload-content", event: "scan", documentId: "top", pageUrl: "https://clips.example/", pageTitle: tabTitle, players: [], sources: [] }, 7, 0, tabTitle);
+    const frame = { channel: "ssdownload-content", documentId: "frame", pageUrl: "https://player.example/embed", pageTitle: "MobiPlayer",
+      players: [{ id: "p1", urls: [manifest], active: true }], sources: [{ url: manifest, contentType: "application/vnd.apple.mpegurl", playerId: "p1" }] };
+    await h.content({ ...frame, event: "scan" }, 7, 2, tabTitle);
+    await h.content({ ...frame, event: "download-video", mediaKind: "video", playerId: "p1" }, 7, 2, tabTitle);
+    return h.nativeRequests.find(request => request?.action?.type === "browser_media").action.request.filename;
+  };
+  assert.equal(await send("Clips"), null);
+  assert.equal(await send("A Film (2011)"), "A Film (2011)");
+});
+
+test("a page handoff does not suggest a title that only names the site", async () => {
+  const send = async title => {
+    const h = backgroundHarness();
+    const message = { channel: "ssdownload-content", documentId: "d", pageUrl: "https://watch.example/film/sample", pageTitle: title, siteNames: ["Moviehub"], players: [], sources: [],
+      playerSignals: { embeds: [], containers: true, playerScripts: true } };
+    await h.content({ ...message, event: "scan" }, 7, 0, title);
+    await h.content({ ...message, event: "download-page", mediaKind: "video" }, 7, 0, title);
+    return h.nativeRequests.find(request => request?.action?.type === "browser_media").action.request.filename;
+  };
+  assert.equal(await send("Moviehub"), null);
+  assert.equal(await send("Beastly (2011)"), "Beastly (2011)");
+});
+
+test("with several players a player title that only names the site is not suggested either", async () => {
+  const h = backgroundHarness();
+  const [one, two] = ["https://cdn.example/one.m3u8", "https://cdn.example/two.m3u8"];
+  const page = { channel: "ssdownload-content", documentId: "d", pageUrl: "https://clips.example/watch",
+    players: [{ id: "p1", title: "Clips", urls: [one], active: true }, { id: "p2", title: "A Film (2011)", urls: [two], active: true }],
+    sources: [one, two].map((url, index) => ({ url, contentType: "application/vnd.apple.mpegurl", playerId: `p${index + 1}` })) };
+  await h.content({ ...page, event: "scan" }, 7, 0, "Clips - Home");
+  const names = [];
+  for (const playerId of ["p1", "p2"]) {
+    await h.content({ ...page, event: "download-video", mediaKind: "video", playerId }, 7, 0, "Clips - Home");
+    names.push(h.nativeRequests.filter(request => request?.action?.type === "browser_media").at(-1).action.request.filename);
+  }
+  assert.deepEqual(names, [null, "A Film (2011)"]);
+});
+
+test("the site names a page reports are bounded strings", async () => {
+  const h = backgroundHarness();
+  const scan = siteNames => h.content({ channel: "ssdownload-content", event: "scan", documentId: "d", pageUrl: "https://site.example/watch", siteNames, players: [], sources: [] });
+  const kept = () => JSON.parse(vm.runInContext('JSON.stringify(frames.get("7\\n0").siteNames)', h.context));
+  await scan(["a".repeat(500), 7, null, "b", "c", "d", "e"]);
+  assert.deepEqual(kept().map(name => name.length), [120, 1, 1, 1]);
+  await scan("Clips");
+  assert.deepEqual(kept(), []);
 });
 
 test("a blob player with one observed manifest hands that manifest, never its blob address", async () => {
@@ -2020,6 +2163,7 @@ function contentHarness(options = {}) {
     events: documentEvents,
     createElement(tag) { return createNode(tag); },
     createElementNS(namespace, tag) { return createNode(tag); },
+    querySelector(selector) { return options.nodes?.[selector]?.[0] ?? null; },
     querySelectorAll(selector) {
       if (options.nodes?.[selector]) return options.nodes[selector];
       if (selector === "video, audio") return [media];
@@ -2219,6 +2363,28 @@ test("a document without a media element offers its own page and drops the offer
   h.runtimeMessages.listeners[0]({ channel: "ssdownload-background", command: "no-single-media" });
   assert.equal(tile.hidden, true, "a rejected page must not keep an affordance");
   assert.equal(tile.style.display, "none", "the withdrawal must restate the tile's own display");
+});
+
+test("every title the content script reports comes with the names the document declares for its site", async () => {
+  const ready = { status: "ready", usageModes: { video: true, file: true, audio: true }, siteEntries: true };
+  const meta = {
+    'meta[property="og:site_name"]': [{ content: " Moviehub " }],
+    'meta[name="application-name"]': [{ content: "Moviehub" }]
+  };
+  // The reports of a document are data of the content script's realm.
+  const reported = (h, events) => h.sent.filter(message => events.includes(message.event)).map(message => [message.event, JSON.stringify(message.siteNames)]);
+  const player = contentHarness({ reply: ready, nodes: meta });
+  await vm.runInContext("refreshUsageModes()", player.context);
+  player.gesture(player.buttons[0]);
+  const video = reported(player, ["scan", "download-video"]);
+  assert.ok(video.some(([event]) => event === "scan") && video.some(([event]) => event === "download-video"), "the scan and the tile's own message are reported");
+  assert.ok(video.every(([, names]) => names === '["Moviehub"]'), "a name is trimmed and reported once");
+  const page = contentHarness({ reply: ready, nodes: { ...meta, "video, audio": [], "iframe": [{ src: "https://player.example/embed/one" }] } });
+  await vm.runInContext("refreshUsageModes()", page.context);
+  page.gesture(page.buttons[0]);
+  assert.deepEqual(reported(page, ["download-page"]), [["download-page", '["Moviehub"]']]);
+  const bare = contentHarness({ reply: ready });
+  assert.deepEqual(reported(bare, ["scan"]).at(0), ["scan", "[]"], "a document that declares none reports none");
 });
 
 test("the page tile is drawn only while the desktop offers site entries", async () => {

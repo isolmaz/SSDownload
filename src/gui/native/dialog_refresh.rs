@@ -1038,22 +1038,13 @@ pub(super) unsafe fn populate_media(
 
     SendMessageW(f.format, CB_RESETCONTENT, 0, 0);
     f.video_formats.clear();
-    // The popup this replaces asked for the saved name; the field starts from
-    // whatever the handoff suggested, or the source title plus the selected
-    // container's extension.
-    let fallback = format!(
-        "{}.{}",
-        crate::engine::safe_filename(&info.title, "video"),
-        media_extension(f)
+    // Only a browser handoff carries a session consent, and only its name comes from a page.
+    let chosen = crate::media::picker_file_name(
+        &f.base,
+        f.session_consent.is_some(),
+        info,
+        &media_extension(f),
     );
-    let chosen = f
-        .base
-        .filename
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or(fallback);
     set_text(f.name, &chosen);
     combo_add(
         f.format,

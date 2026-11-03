@@ -12290,6 +12290,42 @@ mod tests {
     }
 
     #[test]
+    fn the_picker_names_the_file_from_the_media_title_when_the_browser_name_is_only_the_site() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let (raw, hwnd, root) = modern_test_dialog(
+                    blank_picker(),
+                    MEDIA_WIDTH,
+                    media_window_height(MEDIA_HEIGHT, 420),
+                );
+                let analysed = MediaInfo {
+                    title: "Real Title".into(),
+                    extractor: "Generic".into(),
+                    webpage_url: "https://clips.example/watch".into(),
+                    ..Default::default()
+                };
+                let field = |suggested: &str, browser_handoff: bool| {
+                    let DialogKind::Media(f) = &mut (*raw).kind else {
+                        panic!("a media picker");
+                    };
+                    f.base.filename = Some(suggested.into());
+                    f.session_consent = browser_handoff.then_some(false);
+                    populate_media(hwnd, f, &analysed, "");
+                    text(f.name)
+                };
+                let names = [
+                    field("Clips", true),
+                    field("Clips", false),
+                    field("Real Film (2011)", true),
+                ];
+                close_test_dialog(raw, hwnd, root);
+                assert_eq!(names, ["Real Title.mp4", "Clips", "Real Film (2011)"]);
+            }
+        });
+    }
+
+    #[test]
     fn modern_s_queue_manager_tabs_through_its_rows() {
         on_private_desktop(|| {
             use super::*;

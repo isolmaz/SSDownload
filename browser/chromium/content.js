@@ -111,7 +111,17 @@ function collectPlayerSignals() {
 }
 function pageUrl() { return /^https?:/.test(location.href) ? location.href : /^https?:/.test(document.baseURI) ? document.baseURI : document.referrer; }
 function pageTitle() {
-  return document.querySelector?.('meta[property="og:title"]')?.content || document.title || t("videoTitleFallback");
+  return document.querySelector?.('meta[property="og:title"]')?.content || document.title || "";
+}
+// The names the document gives its own site. A title equal to one of them names the site, not
+// the content, and is never suggested as a file name.
+function siteNames() {
+  const names = [];
+  for (const selector of ['meta[property="og:site_name"]', 'meta[name="application-name"]']) {
+    const name = String(document.querySelector?.(selector)?.content || "").trim().slice(0, 120);
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
 }
 // The error report carries this document's own markup, serialized on demand at the moment a
 // handoff asks for it. The extension's own affordances are not the page, and a script or
@@ -829,7 +839,7 @@ function updatePageOverlay(descriptions) {
   if (!pageOverlay) {
     // The document's own name travels with the gesture: the page candidate is named from
     // this report, so a message without it would leave the candidate to the tab name.
-    pageOverlay = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-page",mediaKind:"video",documentId,pageUrl:pageUrl(),pageTitle:pageTitle(),players:players(),sources:collectSources(),playerSignals:collectPlayerSignals()})), () => hideChoices(null));
+    pageOverlay = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-page",mediaKind:"video",documentId,pageUrl:pageUrl(),pageTitle:pageTitle(),siteNames:siteNames(),players:players(),sources:collectSources(),playerSignals:collectPlayerSignals()})), () => hideChoices(null));
     document.documentElement.appendChild(pageOverlay);
   }
   labelTile(pageOverlay, t("tilePage"));
@@ -862,7 +872,7 @@ function paintOverlays() {
     const mediaKind=node.tagName==="AUDIO"||!usageModes.video?"audio":"video";
     let button = overlays.get(node);
     if (!button) {
-      button = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-video",mediaKind:node.tagName==="AUDIO"||!usageModes?.video?"audio":"video",playerId:playerIds.get(node)?.id,documentId,pageUrl:pageUrl(),players:players(),sources:collectSources()})), () => hideChoices(node));
+      button = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-video",mediaKind:node.tagName==="AUDIO"||!usageModes?.video?"audio":"video",playerId:playerIds.get(node)?.id,documentId,pageUrl:pageUrl(),siteNames:siteNames(),players:players(),sources:collectSources()})), () => hideChoices(node));
       document.documentElement.appendChild(button); overlays.set(node, button);
     }
     labelTile(button, mediaKind==="audio"?t("tileAudio"):t("tileVideo"));
@@ -950,7 +960,7 @@ function report(event) {
     const result = sendToExtension({
       channel: "ssdownload-content",
       event,
-      sources, players:currentPlayers, documentId, pageUrl:pageUrl(), pageTitle:pageTitle(), playerSignals
+      sources, players:currentPlayers, documentId, pageUrl:pageUrl(), pageTitle:pageTitle(), siteNames:siteNames(), playerSignals
     });
     if (result && typeof result.catch === "function") result.catch(() => {});
   } catch (_) {}
