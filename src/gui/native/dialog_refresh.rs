@@ -279,7 +279,7 @@ pub(super) unsafe fn refresh_job_view(
                 detail.push_str(&crate::i18n::ui_format!(
                     "Aşama: {0}\r\n",
                     "Phase: {0}\r\n",
-                    phase
+                    without_component_names(phase)
                 ));
             }
             if let Some(message) = job.error.as_deref() {
@@ -288,7 +288,7 @@ pub(super) unsafe fn refresh_job_view(
                 detail.push_str(&crate::i18n::ui_format!(
                     "Hata: {message}\r\n",
                     "Error: {message}\r\n",
-                    message = message
+                    message = without_component_names(message)
                 ));
             }
             if job.state == JobState::Completed {
@@ -321,8 +321,6 @@ pub(super) unsafe fn refresh_job_view(
             can_open = job.state == JobState::Completed && job.remove_requested.is_none();
         }
     }
-    // A phase or a failure reason can carry the name of a program behind a component.
-    let detail = without_component_names(&detail);
     if detail != f.rendered {
         set_text(f.status, &detail);
         // Modern shows the status's scroll bar only while the text overflows.

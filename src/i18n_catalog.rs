@@ -7535,6 +7535,9 @@ macro_rules! __ui_template_ar {
     ("Cancel the download \"{name}\"?\n\nFragment files are deleted; finished output is kept.") => {
         "هل تريد إلغاء تنزيل «{name}»؟\n\nستُحذف ملفات المقاطع، ويُحتفظ بالمخرجات المكتملة."
     };
+    ("Checksum ({0})") => {
+        "المجموع الاختباري ({0})"
+    };
     ("Completed · {0}") => {
         "مكتمل · {0}"
     };
@@ -8132,9 +8135,6 @@ macro_rules! __ui_template_ar {
     ("The {0} queue has finished.") => {
         "انتهت قائمة الانتظار {0}."
     };
-    ("The {name} version output is empty") => {
-        "مخرجات إصدار {name} فارغة"
-    };
     ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
         "تطبيق SSDownload هذا أقدم من إضافة المتصفح (بروتوكول الإضافة: {version}، وبروتوكول التطبيق: {supported}). حدّث التطبيق: المساعدة ← التحقق من التحديثات."
     };
@@ -8161,6 +8161,9 @@ macro_rules! __ui_template_ar {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "مخرجات صوت غير مدعومة: {other}. الخيارات المتاحة: original وMP3 وM4A وOpus وFLAC"
+    };
+    ("Version output is empty: {name}") => {
+        "مخرجات الإصدار فارغة: {name}"
     };
     ("Video and audio support: {error:#}") => {
         "دعم الفيديو والصوت: {error:#}"
@@ -8194,9 +8197,6 @@ macro_rules! __ui_template_ar {
     };
     ("{0} address(es) exported: {1}") => {
         "تم تصدير {0} من العناوين: {1}"
-    };
-    ("{0} checksum") => {
-        "المجموع الاختباري لـ {0}"
     };
     ("{0} connections") => {
         "الاتصالات: {0}"
@@ -8262,25 +8262,25 @@ macro_rules! __ui_template_ar {
         "تنزيلات {kind} معطّلة لغرض الاستخدام الخاص بك. فعّلها من الإعدادات > غرض الاستخدام."
     };
     ("{label} HTTPS download failed") => {
-        "فشل تنزيل {label} عبر HTTPS"
+        "{label}: فشل التنزيل عبر HTTPS"
     };
     ("{label} SHA-256 verification failed (expected {expected}, received {actual})") => {
-        "فشل التحقق من SHA-256 لـ {label} (المتوقع {expected}، والمستلم {actual})"
+        "{label}: فشل التحقق من SHA-256 (المتوقع {expected}، والمستلم {actual})"
     };
     ("{label} could not be downloaded") => {
-        "تعذّر تنزيل {label}"
+        "{label}: تعذّر التنزيل"
     };
     ("{label} download returned HTTP {status}") => {
-        "أعاد تنزيل {label} الرمز HTTP {status}"
+        "{label}: أعاد التنزيل الرمز HTTP {status}"
     };
     ("{label} download size differs from the expected size (expected {0}, received {seen})") => {
-        "حجم تنزيل {label} يختلف عن الحجم المتوقع (المتوقع {0}، والمستلم {seen})"
+        "{label}: حجم التنزيل يختلف عن الحجم المتوقع (المتوقع {0}، والمستلم {seen})"
     };
     ("{label} is invalid") => {
         "{label} غير صالح"
     };
     ("{label} is not UTF-8") => {
-        "{label} ليس بترميز UTF-8"
+        "{label}: ليس بترميز UTF-8"
     };
     ("{label} must be a number.") => {
         "يجب أن يكون {label} رقمًا."
@@ -8298,19 +8298,19 @@ macro_rules! __ui_template_ar {
         "{message} كما تعذّر حفظ الإيقاف المؤقت الآمن: {error:#}"
     };
     ("{name} could not be started") => {
-        "تعذّر بدء {name}"
+        "{name}: تعذّر البدء"
     };
     ("{name} is missing from the tool manifest") => {
-        "{name} مفقود من manifest الأداة"
+        "{name}: مفقود من manifest الأداة"
     };
     ("{name} version verification failed: {0}") => {
-        "فشل التحقق من إصدار {name}: {0}"
+        "{name}: فشل التحقق من الإصدار. {0}"
     };
     ("{name} was not found in the active tool manifest") => {
-        "لم يُعثر على {name} في manifest الأداة النشط"
+        "{name}: لم يُعثر عليه في manifest الأداة النشط"
     };
     ("{name} was not found in the verified file list") => {
-        "لم يُعثر على {name} في قائمة الملفات المتحقَّق منها"
+        "{name}: لم يُعثر عليه في قائمة الملفات المتحقَّق منها"
     };
     ("{quota}No completion countdown is active.") => {
         "{quota}لا يوجد عد تنازلي نشط لإجراء الاكتمال."
@@ -8394,6 +8394,9 @@ macro_rules! __ui_template_es {
     };
     ("Cancel the download \"{name}\"?\n\nFragment files are deleted; finished output is kept.") => {
         "¿Cancelar la descarga «{name}»?\n\nSe eliminan los archivos de fragmentos; el resultado terminado se conserva."
+    };
+    ("Checksum ({0})") => {
+        "Suma de comprobación ({0})"
     };
     ("Completed · {0}") => {
         "Completada · {0}"
@@ -8992,9 +8995,6 @@ macro_rules! __ui_template_es {
     ("The {0} queue has finished.") => {
         "La cola {0} ha terminado."
     };
-    ("The {name} version output is empty") => {
-        "La salida de la versión de {name} está vacía"
-    };
     ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
         "Esta aplicación SSDownload es más antigua que la extensión del navegador (la extensión usa el protocolo {version}, la aplicación {supported}). Actualizar la aplicación: Ayuda → Buscar actualizaciones."
     };
@@ -9021,6 +9021,9 @@ macro_rules! __ui_template_es {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "Salida de audio no admitida: {other}. Opciones disponibles: original, MP3, M4A, Opus, FLAC"
+    };
+    ("Version output is empty: {name}") => {
+        "La salida de la versión está vacía: {name}"
     };
     ("Video and audio support: {error:#}") => {
         "Compatibilidad con vídeo y audio: {error:#}"
@@ -9054,9 +9057,6 @@ macro_rules! __ui_template_es {
     };
     ("{0} address(es) exported: {1}") => {
         "{0} dirección(es) exportada(s): {1}"
-    };
-    ("{0} checksum") => {
-        "Suma de comprobación de {0}"
     };
     ("{0} connections") => {
         "{0} conexiones"
@@ -9122,25 +9122,25 @@ macro_rules! __ui_template_es {
         "Las descargas de {kind} están desactivadas para el modo de uso actual. Se pueden activar en Configuración > Modo de uso."
     };
     ("{label} HTTPS download failed") => {
-        "La descarga HTTPS de {label} ha fallado"
+        "{label}: la descarga HTTPS ha fallado"
     };
     ("{label} SHA-256 verification failed (expected {expected}, received {actual})") => {
-        "La verificación SHA-256 de {label} ha fallado (esperado {expected}, recibido {actual})"
+        "{label}: la verificación SHA-256 ha fallado (esperado {expected}, recibido {actual})"
     };
     ("{label} could not be downloaded") => {
-        "No se ha podido descargar {label}"
+        "{label}: no se ha podido descargar"
     };
     ("{label} download returned HTTP {status}") => {
-        "La descarga de {label} ha devuelto HTTP {status}"
+        "{label}: la descarga ha devuelto HTTP {status}"
     };
     ("{label} download size differs from the expected size (expected {0}, received {seen})") => {
-        "El tamaño de la descarga de {label} no coincide con el esperado (esperado {0}, recibido {seen})"
+        "{label}: el tamaño de la descarga no coincide con el esperado (esperado {0}, recibido {seen})"
     };
     ("{label} is invalid") => {
         "{label} no es válido"
     };
     ("{label} is not UTF-8") => {
-        "{label} no está en UTF-8"
+        "{label}: no está en UTF-8"
     };
     ("{label} must be a number.") => {
         "{label} debe ser un número."
@@ -9158,19 +9158,19 @@ macro_rules! __ui_template_es {
         "{message} Tampoco se ha podido guardar la pausa segura: {error:#}"
     };
     ("{name} could not be started") => {
-        "No se ha podido iniciar {name}"
+        "{name}: no se ha podido iniciar"
     };
     ("{name} is missing from the tool manifest") => {
-        "Falta {name} en el manifiesto de herramientas"
+        "{name}: falta en el manifiesto de herramientas"
     };
     ("{name} version verification failed: {0}") => {
-        "La verificación de la versión de {name} ha fallado: {0}"
+        "{name}: la verificación de la versión ha fallado. {0}"
     };
     ("{name} was not found in the active tool manifest") => {
-        "No se ha encontrado {name} en el manifiesto de herramientas activo"
+        "{name}: no se ha encontrado en el manifiesto de herramientas activo"
     };
     ("{name} was not found in the verified file list") => {
-        "No se ha encontrado {name} en la lista de archivos verificados"
+        "{name}: no se ha encontrado en la lista de archivos verificados"
     };
     ("{quota}No completion countdown is active.") => {
         "{quota}No hay ninguna cuenta atrás de finalización en curso."
@@ -9254,6 +9254,9 @@ macro_rules! __ui_template_pt {
     };
     ("Cancel the download \"{name}\"?\n\nFragment files are deleted; finished output is kept.") => {
         "Cancelar o download \"{name}\"?\n\nOs arquivos de segmento são excluídos; a saída concluída é mantida."
+    };
+    ("Checksum ({0})") => {
+        "Soma de verificação ({0})"
     };
     ("Completed · {0}") => {
         "Concluído · {0}"
@@ -9852,9 +9855,6 @@ macro_rules! __ui_template_pt {
     ("The {0} queue has finished.") => {
         "A fila {0} foi concluída."
     };
-    ("The {name} version output is empty") => {
-        "A saída da versão de {name} está vazia"
-    };
     ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
         "Este aplicativo SSDownload é mais antigo que a extensão do navegador (a extensão usa o protocolo {version}; o aplicativo, o {supported}). Atualize o aplicativo: Ajuda → Verificar atualizações."
     };
@@ -9881,6 +9881,9 @@ macro_rules! __ui_template_pt {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "Saída de áudio não suportada: {other}. Opções disponíveis: original, MP3, M4A, Opus, FLAC"
+    };
+    ("Version output is empty: {name}") => {
+        "A saída da versão está vazia: {name}"
     };
     ("Video and audio support: {error:#}") => {
         "Suporte a vídeo e áudio: {error:#}"
@@ -9914,9 +9917,6 @@ macro_rules! __ui_template_pt {
     };
     ("{0} address(es) exported: {1}") => {
         "{0} endereço(s) exportado(s): {1}"
-    };
-    ("{0} checksum") => {
-        "Soma de verificação de {0}"
     };
     ("{0} connections") => {
         "{0} conexões"
@@ -9982,25 +9982,25 @@ macro_rules! __ui_template_pt {
         "Os downloads de {kind} estão desativados para a sua finalidade de uso. Ative-os em Configurações > Finalidade de uso."
     };
     ("{label} HTTPS download failed") => {
-        "O download HTTPS de {label} falhou"
+        "{label}: o download HTTPS falhou"
     };
     ("{label} SHA-256 verification failed (expected {expected}, received {actual})") => {
-        "A verificação SHA-256 de {label} falhou (esperado {expected}, recebido {actual})"
+        "{label}: a verificação SHA-256 falhou (esperado {expected}, recebido {actual})"
     };
     ("{label} could not be downloaded") => {
-        "Não foi possível baixar {label}"
+        "{label}: não foi possível baixar"
     };
     ("{label} download returned HTTP {status}") => {
-        "O download de {label} retornou HTTP {status}"
+        "{label}: o download retornou HTTP {status}"
     };
     ("{label} download size differs from the expected size (expected {0}, received {seen})") => {
-        "O tamanho do download de {label} difere do tamanho esperado (esperado {0}, recebido {seen})"
+        "{label}: o tamanho do download difere do tamanho esperado (esperado {0}, recebido {seen})"
     };
     ("{label} is invalid") => {
         "{label} é inválido"
     };
     ("{label} is not UTF-8") => {
-        "{label} não está em UTF-8"
+        "{label}: não está em UTF-8"
     };
     ("{label} must be a number.") => {
         "{label} deve ser um número."
@@ -10018,19 +10018,19 @@ macro_rules! __ui_template_pt {
         "{message} Também não foi possível salvar a pausa segura: {error:#}"
     };
     ("{name} could not be started") => {
-        "Não foi possível iniciar {name}"
+        "{name}: não foi possível iniciar"
     };
     ("{name} is missing from the tool manifest") => {
-        "{name} está ausente do manifesto de ferramentas"
+        "{name}: ausente do manifesto de ferramentas"
     };
     ("{name} version verification failed: {0}") => {
-        "A verificação da versão de {name} falhou: {0}"
+        "{name}: a verificação da versão falhou. {0}"
     };
     ("{name} was not found in the active tool manifest") => {
-        "{name} não foi encontrado no manifesto de ferramentas ativo"
+        "{name}: não encontrado no manifesto de ferramentas ativo"
     };
     ("{name} was not found in the verified file list") => {
-        "{name} não foi encontrado na lista de arquivos verificados"
+        "{name}: não encontrado na lista de arquivos verificados"
     };
     ("{quota}No completion countdown is active.") => {
         "{quota}Não há contagem regressiva de conclusão ativa."
@@ -10114,6 +10114,9 @@ macro_rules! __ui_template_fr {
     };
     ("Cancel the download \"{name}\"?\n\nFragment files are deleted; finished output is kept.") => {
         "Annuler le téléchargement « {name} » ?\n\nLes fichiers de fragments sont supprimés ; la sortie terminée est conservée."
+    };
+    ("Checksum ({0})") => {
+        "Somme de contrôle ({0})"
     };
     ("Completed · {0}") => {
         "Terminé · {0}"
@@ -10712,9 +10715,6 @@ macro_rules! __ui_template_fr {
     ("The {0} queue has finished.") => {
         "La file d'attente {0} est terminée."
     };
-    ("The {name} version output is empty") => {
-        "La sortie de version de {name} est vide"
-    };
     ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
         "Cette application SSDownload est plus ancienne que l’extension du navigateur (l’extension utilise le protocole {version}, l’application le protocole {supported}). Mettez à jour l’application : Aide → Rechercher les mises à jour."
     };
@@ -10741,6 +10741,9 @@ macro_rules! __ui_template_fr {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "Sortie audio non prise en charge : {other}. Options disponibles : original, MP3, M4A, Opus, FLAC"
+    };
+    ("Version output is empty: {name}") => {
+        "La sortie de version est vide : {name}"
     };
     ("Video and audio support: {error:#}") => {
         "Prise en charge vidéo et audio : {error:#}"
@@ -10774,9 +10777,6 @@ macro_rules! __ui_template_fr {
     };
     ("{0} address(es) exported: {1}") => {
         "{0} adresse(s) exportée(s) : {1}"
-    };
-    ("{0} checksum") => {
-        "Somme de contrôle de {0}"
     };
     ("{0} connections") => {
         "{0} connexions"
@@ -10842,25 +10842,25 @@ macro_rules! __ui_template_fr {
         "Les téléchargements de type {kind} sont désactivés pour votre mode d'utilisation. Activez-les dans Paramètres > Mode d'utilisation."
     };
     ("{label} HTTPS download failed") => {
-        "Le téléchargement HTTPS de {label} a échoué"
+        "{label} : le téléchargement HTTPS a échoué"
     };
     ("{label} SHA-256 verification failed (expected {expected}, received {actual})") => {
-        "La vérification SHA-256 de {label} a échoué (attendu {expected}, reçu {actual})"
+        "{label} : la vérification SHA-256 a échoué (attendu {expected}, reçu {actual})"
     };
     ("{label} could not be downloaded") => {
-        "{label} n'a pas pu être téléchargé"
+        "{label} : téléchargement impossible"
     };
     ("{label} download returned HTTP {status}") => {
-        "Le téléchargement de {label} a renvoyé HTTP {status}"
+        "{label} : le téléchargement a renvoyé HTTP {status}"
     };
     ("{label} download size differs from the expected size (expected {0}, received {seen})") => {
-        "La taille du téléchargement de {label} diffère de la taille attendue (attendue {0}, reçue {seen})"
+        "{label} : la taille du téléchargement diffère de la taille attendue (attendue {0}, reçue {seen})"
     };
     ("{label} is invalid") => {
         "{label} est invalide"
     };
     ("{label} is not UTF-8") => {
-        "{label} n'est pas en UTF-8"
+        "{label} : n'est pas en UTF-8"
     };
     ("{label} must be a number.") => {
         "{label} doit être un nombre."
@@ -10878,19 +10878,19 @@ macro_rules! __ui_template_fr {
         "{message} La mise en pause de sécurité n'a pas pu non plus être enregistrée : {error:#}"
     };
     ("{name} could not be started") => {
-        "{name} n'a pas pu être démarré"
+        "{name} : démarrage impossible"
     };
     ("{name} is missing from the tool manifest") => {
-        "{name} est absent du manifeste des outils"
+        "{name} : absent du manifeste des outils"
     };
     ("{name} version verification failed: {0}") => {
-        "La vérification de la version de {name} a échoué : {0}"
+        "{name} : la vérification de la version a échoué. {0}"
     };
     ("{name} was not found in the active tool manifest") => {
-        "{name} est introuvable dans le manifeste des outils actif"
+        "{name} : introuvable dans le manifeste des outils actif"
     };
     ("{name} was not found in the verified file list") => {
-        "{name} est introuvable dans la liste des fichiers vérifiée"
+        "{name} : introuvable dans la liste des fichiers vérifiée"
     };
     ("{quota}No completion countdown is active.") => {
         "{quota}Aucun compte à rebours de fin n'est actif."
@@ -10974,6 +10974,9 @@ macro_rules! __ui_template_de {
     };
     ("Cancel the download \"{name}\"?\n\nFragment files are deleted; finished output is kept.") => {
         "Download „{name}“ abbrechen?\n\nFragmentdateien werden gelöscht; die fertige Ausgabe bleibt erhalten."
+    };
+    ("Checksum ({0})") => {
+        "Prüfsumme ({0})"
     };
     ("Completed · {0}") => {
         "Abgeschlossen · {0}"
@@ -11572,9 +11575,6 @@ macro_rules! __ui_template_de {
     ("The {0} queue has finished.") => {
         "Die Warteschlange {0} ist abgeschlossen."
     };
-    ("The {name} version output is empty") => {
-        "Die Versionsausgabe von {name} ist leer"
-    };
     ("This SSDownload app is older than the browser extension (the extension speaks protocol {version}, the app {supported}). Update the app: Help → Check for updates.") => {
         "Diese SSDownload-App ist älter als die Browser-Erweiterung (die Erweiterung nutzt Protokoll {version}, die App {supported}). Aktualisieren Sie die App: Hilfe → Nach Updates suchen."
     };
@@ -11601,6 +11601,9 @@ macro_rules! __ui_template_de {
     };
     ("Unsupported audio output: {other}. Available options: original, MP3, M4A, Opus, FLAC") => {
         "Nicht unterstützte Audioausgabe: {other}. Verfügbare Optionen: original, MP3, M4A, Opus, FLAC"
+    };
+    ("Version output is empty: {name}") => {
+        "Die Versionsausgabe ist leer: {name}"
     };
     ("Video and audio support: {error:#}") => {
         "Video- und Audiounterstützung: {error:#}"
@@ -11634,9 +11637,6 @@ macro_rules! __ui_template_de {
     };
     ("{0} address(es) exported: {1}") => {
         "{0} Adresse(n) exportiert: {1}"
-    };
-    ("{0} checksum") => {
-        "Prüfsumme von {0}"
     };
     ("{0} connections") => {
         "{0} Verbindungen"
@@ -11702,25 +11702,25 @@ macro_rules! __ui_template_de {
         "{kind}-Downloads sind für Ihren Verwendungszweck deaktiviert. Aktivieren Sie sie unter Einstellungen > Verwendungszweck."
     };
     ("{label} HTTPS download failed") => {
-        "{label}-HTTPS-Download fehlgeschlagen"
+        "{label}: HTTPS-Download fehlgeschlagen"
     };
     ("{label} SHA-256 verification failed (expected {expected}, received {actual})") => {
-        "{label}-SHA-256-Prüfung fehlgeschlagen (erwartet {expected}, erhalten {actual})"
+        "{label}: SHA-256-Prüfung fehlgeschlagen (erwartet {expected}, erhalten {actual})"
     };
     ("{label} could not be downloaded") => {
-        "{label} konnte nicht heruntergeladen werden"
+        "{label}: Download fehlgeschlagen"
     };
     ("{label} download returned HTTP {status}") => {
-        "Der {label}-Download hat HTTP {status} zurückgegeben"
+        "{label}: Der Download hat HTTP {status} zurückgegeben"
     };
     ("{label} download size differs from the expected size (expected {0}, received {seen})") => {
-        "Die Größe des {label}-Downloads weicht von der erwarteten Größe ab (erwartet {0}, erhalten {seen})"
+        "{label}: Die Größe des Downloads weicht von der erwarteten Größe ab (erwartet {0}, erhalten {seen})"
     };
     ("{label} is invalid") => {
         "{label} ist ungültig"
     };
     ("{label} is not UTF-8") => {
-        "{label} ist nicht UTF-8"
+        "{label}: kein UTF-8-Text"
     };
     ("{label} must be a number.") => {
         "{label} muss eine Zahl sein."
@@ -11738,19 +11738,19 @@ macro_rules! __ui_template_de {
         "{message} Auch die sichere Pausierung konnte nicht gespeichert werden: {error:#}"
     };
     ("{name} could not be started") => {
-        "{name} konnte nicht gestartet werden"
+        "{name}: Start fehlgeschlagen"
     };
     ("{name} is missing from the tool manifest") => {
-        "{name} fehlt im Werkzeugmanifest"
+        "{name}: fehlt im Werkzeugmanifest"
     };
     ("{name} version verification failed: {0}") => {
-        "Die Versionsprüfung von {name} ist fehlgeschlagen: {0}"
+        "{name}: Die Versionsprüfung ist fehlgeschlagen. {0}"
     };
     ("{name} was not found in the active tool manifest") => {
-        "{name} wurde im aktiven Werkzeugmanifest nicht gefunden"
+        "{name}: im aktiven Werkzeugmanifest nicht gefunden"
     };
     ("{name} was not found in the verified file list") => {
-        "{name} wurde in der geprüften Dateiliste nicht gefunden"
+        "{name}: in der geprüften Dateiliste nicht gefunden"
     };
     ("{quota}No completion countdown is active.") => {
         "{quota}Es ist kein Countdown bis zum Abschluss aktiv."

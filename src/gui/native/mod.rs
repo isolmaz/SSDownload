@@ -5,7 +5,8 @@ use crate::{
         Action, AddRequest, AppSnapshot, AudioSelection, CompletionAction, DownloadKind,
         ExternalSubtitle, FolderRule, InspectRequest, Job, JobState, MediaFormat, MediaInfo,
         MediaLaunch, QueuePolicy, Settings, SiteCrawlRequest, SiteCrawlResult, SubtitleSelection,
-        SubtitleTrack, SyncPolicy, ToolProgress, UiMode, UsageModes, ONBOARDING_VERSION,
+        SubtitleTrack, SyncPolicy, ToolProgress, UiMode, UsageModes, UserMessage,
+        ONBOARDING_VERSION,
     },
     tools::without_component_names,
 };
@@ -5155,6 +5156,17 @@ fn notice_body(message: &str, percent: Option<u32>) -> String {
     }
 }
 
+/// The text of a message as the status line and a balloon show it: an error carries what a failed
+/// action reported, which can name a program behind a component, and any other message is the
+/// application's own text, which holds the folders, names and titles of the user as they are.
+fn shown_message(message: &UserMessage) -> String {
+    if message.error {
+        without_component_names(&message.text)
+    } else {
+        message.text.clone()
+    }
+}
+
 /// Whole percent of a tool download, `None` until its size is known.
 fn tool_percent(progress: &ToolProgress) -> Option<u32> {
     let total = progress.total.filter(|total| *total > 0)?;
@@ -5247,7 +5259,7 @@ unsafe fn refresh_notices(ui: &mut MainUi) {
     match crate::update::progress() {
         Some(update) => {
             let percent = update.percent();
-            let body = notice_body(&without_component_names(&update.message), percent);
+            let body = notice_body(&update.message, percent);
             let notice_title = crate::i18n::ui(UPDATE_NOTICE_TITLE, "SSDownload update");
             let line = if update.version.is_empty() {
                 format!("{notice_title}: {body}")
@@ -5315,7 +5327,7 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     let seen_messages = ui.seen_messages;
     for item in snapshot.messages.iter().filter(|m| m.id > seen_messages) {
         ui.seen_messages = ui.seen_messages.max(item.id);
-        let message = without_component_names(&item.text);
+        let message = shown_message(item);
         set_text(ui.status, &message);
         if item.error {
             notify(
@@ -11264,26 +11276,62 @@ mod tests {
                         ),
                         "modern {in_modern}"
                     );
-                    // The raw text of a failed tool names its program in any letter case.
+                    // What a failed program printed names it in any letter case, but the file of
+                    // the user, and the paths and addresses the program quotes, stay as they are.
+                    let folder = r"C:\Users\deno\Videos\my ffmpeg tutorial.mp4";
+                    let label = |name| crate::tools::component_label(name);
                     let mut raw_failure = segmented_job(JobState::Failed);
+                    raw_failure.path = folder.into();
                     raw_failure.error = Some(
-                        "ERROR: ffmpeg exited with code 1, see https://github.com/yt-dlp/yt-dlp/issues"
+                        r"ERROR: ffmpeg could not open C:\Users\deno\x.mp4 for yt-dlp, see https://files.example/yt-dlp-guide.mp4"
                             .into(),
                     );
                     show(raw_failure);
-                    let shown = details();
-                    for name in ["ffmpeg", "yt-dlp", "ffprobe", "deno", "btbn"] {
-                        assert!(
-                            !shown.to_lowercase().contains(name),
-                            "modern {in_modern}: {name} in {shown}"
-                        );
-                    }
-                    assert!(
-                        shown.contains(&format!(
-                            "ERROR: {} exited with code 1",
-                            crate::tools::component_label("ffmpeg")
-                        )),
-                        "modern {in_modern}: {shown}"
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}{}",
+                            crate::i18n::ui_format!(
+                                "Hata: {message}\r\n",
+                                "Error: {message}\r\n",
+                                message = format!(
+                                    r"ERROR: {} could not open C:\Users\deno\x.mp4 for {}, see https://files.example/yt-dlp-guide.mp4",
+                                    label("ffmpeg"),
+                                    label("yt-dlp")
+                                )
+                            ),
+                            save_to(folder)
+                        ),
+                        "modern {in_modern}"
+                    );
+                    let mut waiting = segmented_job(JobState::Queued);
+                    waiting.path = folder.into();
+                    waiting.phase = r"Waiting for ffmpeg, then C:\Users\deno\x.mp4".into();
+                    show(waiting);
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}{}",
+                            crate::i18n::ui_format!(
+                                "Aşama: {0}\r\n",
+                                "Phase: {0}\r\n",
+                                format!(
+                                    r"Waiting for {}, then C:\Users\deno\x.mp4",
+                                    label("ffmpeg")
+                                )
+                            ),
+                            save_to(folder)
+                        ),
+                        "modern {in_modern}"
+                    );
+                    let mut saved = segmented_job(JobState::Completed);
+                    saved.path = folder.into();
+                    show(saved);
+                    assert_eq!(
+                        details(),
+                        crate::i18n::ui_format!("Kayıt: {0}\r\n", "Saved: {0}\r\n", folder)
+                            .trim_end(),
+                        "modern {in_modern}: the saved file keeps the name the user gave it"
                     );
                     show(segmented_job(JobState::Completed));
                     assert_eq!(
@@ -11332,6 +11380,13 @@ mod tests {
                         null_mut(),
                     );
                     let shown = text(error);
+                    set_dialog_error(
+                        hwnd,
+                        error,
+                        r"The download could not be added: ffmpeg failed for https://files.example/yt-dlp-guide.mp4 and C:\Users\deno\Videos\x.mp4",
+                        null_mut(),
+                    );
+                    let with_paths = text(error);
                     close_test_dialog(raw, hwnd, root);
                     assert_eq!(
                         shown,
@@ -11343,9 +11398,54 @@ mod tests {
                         ),
                         "modern {in_modern}"
                     );
+                    assert_eq!(
+                        with_paths,
+                        format!(
+                            r"The download could not be added: {} failed for https://files.example/yt-dlp-guide.mp4 and C:\Users\deno\Videos\x.mp4",
+                            crate::tools::component_label("ffmpeg")
+                        ),
+                        "modern {in_modern}: the address and the path of the user stay"
+                    );
                 }
             }
         });
+    }
+
+    #[test]
+    fn a_status_message_hides_the_programs_of_an_error_and_keeps_the_text_of_the_user() {
+        use super::shown_message;
+        use crate::model::UserMessage;
+        let message = |text: String, error: bool| UserMessage { id: 1, text, error };
+        let folder = r"C:\Users\deno\Documents\my ffmpeg tutorial\reports";
+        let ready = crate::i18n::ui_format!(
+            "Hata raporu hazır. Klasör: {0} · ZIP: {1}",
+            "Failure report ready. Folder: {0} · ZIP: {1}",
+            folder,
+            format!("{folder}.zip")
+        );
+        assert_eq!(shown_message(&message(ready.clone(), false)), ready);
+        let found = crate::i18n::ui_format!(
+            "Medya bulundu: {0}",
+            "Media found: {0}",
+            "Deno and ffmpeg: a tutorial"
+        );
+        assert_eq!(shown_message(&message(found.clone(), false)), found);
+        let failed = crate::i18n::ui_format!(
+            "Video ve ses desteği: {error:#}",
+            "Video and audio support: {error:#}",
+            error = r"Deno could not open C:\Users\deno\x.mp4, see https://files.example/yt-dlp-guide.mp4"
+        );
+        assert_eq!(
+            shown_message(&message(failed, true)),
+            crate::i18n::ui_format!(
+                "Video ve ses desteği: {error:#}",
+                "Video and audio support: {error:#}",
+                error = format!(
+                    r"{} could not open C:\Users\deno\x.mp4, see https://files.example/yt-dlp-guide.mp4",
+                    crate::tools::component_label("deno")
+                )
+            )
+        );
     }
 
     #[test]
