@@ -562,9 +562,13 @@ test("the video entry on a blob player inside a frame hands over that frame's pa
 });
 
 // The media handoff of an unresolved blob player in frame 2 of a tab: the frame's page is the source.
-async function framePlayerHandoff({ tabUrl = "https://clips.example/watch/7", frameId = 2, frameUrl = "https://player.example/embed/frame.html", lookup } = {}) {
+async function framePlayerHandoff({ tabUrl = "https://clips.example/watch/7", frameId = 2, frameUrl = "https://player.example/embed/frame.html", lookup, others = [], observed = [] } = {}) {
   const h = backgroundHarness({ tabUrl });
   if (lookup) vm.runInContext("browser.tabs.get = async () => { throw new Error('The tab is gone'); }", h.context);
+  // What the tab's other frames report before the click: [frameId, message] pairs.
+  for (const [otherFrame, other] of others) await h.content({ channel: "ssdownload-content", event: "scan", players: [], sources: [], ...other }, 7, otherFrame);
+  // Media the network showed in a frame that reported no player: [frameId, address] pairs.
+  for (const [observedFrame, url] of observed) await h.events.headers.listeners[0]({ tabId: 7, frameId: observedFrame, statusCode: 200, url, responseHeaders: [{ name: "content-type", value: "application/vnd.apple.mpegurl" }] });
   const message = { channel: "ssdownload-content", documentId: "df", pageUrl: frameUrl, pageTitle: "",
     players: [{ id: "inner", title: "", urls: ["blob:https://player.example/inner"], active: true }], sources: [] };
   await h.content({ ...message, event: "scan" }, 7, frameId);
@@ -587,6 +591,18 @@ test("a source that is not in a frame, or whose frame is the tab's page, names n
   assert.ok(!("top_page_url" in topLevel), "the top document is the tab's page, whatever the tab says");
   const same = await framePlayerHandoff({ tabUrl: "https://player.example/embed/frame.html" });
   assert.ok(!("top_page_url" in same), "a frame at the tab's own address names nothing else");
+});
+
+test("the tab's address is sent only when the frame is the one frame of the tab that holds a player or an embed", async () => {
+  const frame = "https://player.example/embed/frame.html", top = "https://clips.example/watch/7";
+  const topLists = embeds => [0, { documentId: "dt", pageUrl: top, playerSignals: { embeds, containers: false, playerScripts: false } }];
+  const sent = async (others, observed) => "top_page_url" in await framePlayerHandoff({ others, observed });
+  assert.equal(await sent([]), true, "no other frame is known");
+  assert.equal(await sent([topLists([{ url: frame, title: "" }])]), true, "the page lists this frame as its only embed");
+  assert.equal(await sent([topLists([{ url: frame, title: "" }, { url: "https://video.example/embed/9", title: "" }])]), false, "the page lists another embed too");
+  assert.equal(await sent([[3, { documentId: "do", pageUrl: "https://other.example/embed/x", players: [{ id: "p", urls: ["blob:https://other.example/p"], active: true }] }]]), false, "another frame holds a player");
+  assert.equal(await sent([], [[3, "https://cdn.example/a.m3u8"]]), false, "the network showed media in another frame");
+  assert.equal(await sent([topLists([{ url: frame, title: "" }]), [3, { documentId: "do", pageUrl: "https://other.example/embed/x", players: [{ id: "p", urls: ["blob:https://other.example/p"], active: true }] }]]), false, "the page lists this frame and another frame holds a player");
 });
 
 test("the tab's address is left out when the tab cannot give an http(s) one", async () => {

@@ -96,7 +96,7 @@ The two sides never update together: Chrome installs an approved store version o
 - the new app still answers the previous protocol and capability version, and the new extension still works with an app that reports the previous values, each covered by a test;
 - the extension of that release is submitted to the Chrome Web Store together with the app release.
 
-A capability that only adds a field to the capabilities reply (`browser_takeover`, `add_status`) changes neither value: the extension reads an absent field as off, so an app that predates it keeps its earlier behaviour. The same holds for an optional field of a request (`top_page_url` of a media handoff): an app that predates it ignores it, because the request of a media handoff does not reject unknown fields, and an app reads an extension's absent one as not sent.
+A capability that only adds a field to the capabilities reply (`browser_takeover`, `add_status`) changes neither value: the extension reads an absent field as off, so an app that predates it keeps its earlier behaviour. The same holds for an optional field of a request (`top_page_url` of a media handoff): an app that predates it ignores it, because the request of a media handoff does not reject unknown fields, and an app reads an extension's absent one as not sent. What the field enables needs the new app and the new extension together; with either side older, the media tool's own error for a frame stays.
 
 Dropping a previous value is a later release of its own, published only after the store serves an extension that speaks the new values.
 

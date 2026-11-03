@@ -688,7 +688,7 @@ pub(crate) fn prepare_source_refresh(
         ..InspectRequest::default()
     };
     let toolchain = tools::verified_toolchain(paths, control)?;
-    let (inspection, info, _) =
+    let (inspection, info) =
         inspect_document_with_tools(&inspect_request, &toolchain, control, network)?;
     if control.stop_requested() {
         bail!(crate::i18n::ui(

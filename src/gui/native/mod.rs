@@ -12915,6 +12915,44 @@ mod tests {
     }
 
     #[test]
+    fn the_picker_names_the_page_it_analysed_when_that_is_not_the_address_it_was_opened_for() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let (raw, hwnd, root) = modern_test_dialog(
+                    blank_picker(),
+                    MEDIA_WIDTH,
+                    media_window_height(MEDIA_HEIGHT, 420),
+                );
+                let summary = |analysed_url: Option<&str>| {
+                    let analysed = MediaInfo {
+                        title: "Real Title".into(),
+                        extractor: "Generic".into(),
+                        analysed_url: analysed_url.map(Into::into),
+                        ..Default::default()
+                    };
+                    let DialogKind::Media(f) = &mut (*raw).kind else {
+                        panic!("a media picker");
+                    };
+                    crate::i18n::with_language("en", || {
+                        populate_media(hwnd, f, &analysed, "");
+                        text(f.summary)
+                    })
+                };
+                let own = summary(None);
+                let page = summary(Some("https://clips.example/watch/7?token=SECRET#part"));
+                close_test_dialog(raw, hwnd, root);
+                assert!(!own.contains("Analyzed page"), "{own}");
+                assert!(page.contains("Analyzed page: clips.example"), "{page}");
+                assert!(
+                    !page.contains("SECRET") && !page.contains("/watch/7"),
+                    "only the host is shown: {page}"
+                );
+            }
+        });
+    }
+
+    #[test]
     fn modern_s_queue_manager_tabs_through_its_rows() {
         on_private_desktop(|| {
             use super::*;

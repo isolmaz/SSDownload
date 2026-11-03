@@ -310,7 +310,7 @@ pub struct InspectRequest {
     /// network value, and neither substitutes for the other.
     pub page_url: Option<String>,
     /// The page that embeds the frame `url` belongs to. When the media tool does not support
-    /// `url`, the analysis runs once more for this page, or for `page_url` when none is named.
+    /// `url`, the analysis runs once more for this page.
     pub top_page_url: Option<String>,
     pub playlist: bool,
     /// Analyze a live stream as downloaded from its beginning (yt-dlp `--live-from-start`).
@@ -1008,6 +1008,10 @@ pub struct MediaInfo {
     pub playlist_count: Option<usize>,
     pub is_live: bool,
     pub extractor: String,
+    /// The address the media tool analysed when it is not the one asked for: the page that
+    /// embeds the requested frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysed_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -955,6 +955,7 @@ fn public_snapshot(mut snapshot: AppSnapshot) -> AppSnapshot {
             media.webpage_url = url.origin().ascii_serialization();
         }
         media.thumbnail = None;
+        media.analysed_url = None;
     }
     for job in std::sync::Arc::make_mut(&mut snapshot.jobs) {
         job.request.headers.clear();
@@ -1857,8 +1858,8 @@ mod tests {
         }
     }
 
-    /// A job's page addresses never travel back to the browser, and the record of a job without
-    /// the field is the record it always was.
+    /// A job's page addresses and the page an analysis was made for never travel back to the
+    /// browser, and the record of a job without the field is the record it always was.
     #[test]
     fn a_browser_response_carries_no_page_that_embeds_a_frame() {
         let root = std::env::temp_dir().join(format!(
@@ -1891,7 +1892,15 @@ mod tests {
             "the stored job holds the page: {:?}",
             stored.jobs
         );
-        let browser = public_snapshot(app.snapshot());
+        let mut snapshot = app.snapshot();
+        snapshot.media = Some(crate::model::MediaInfo {
+            analysed_url: Some("https://clips.example/watch/7?token=SECRET".into()),
+            ..Default::default()
+        });
+        let browser = public_snapshot(snapshot);
+        assert!(browser
+            .media
+            .is_some_and(|media| media.analysed_url.is_none()));
         assert_eq!(browser.jobs.len(), 2);
         assert!(browser
             .jobs
