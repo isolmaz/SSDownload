@@ -3280,6 +3280,55 @@ fn a_playlist_with_an_audio_language_does_not_pin_the_sampled_entrys_ids() {
     assert_eq!(format_selector(&request, &sampled).unwrap(), "f-avc+f-tr");
 }
 
+/// A playlist entry that reports no height is the last resort under the limit, behind every
+/// entry format that reports one; a single item with an exact height stays strict.
+#[test]
+fn a_playlist_with_an_audio_language_and_a_height_limit_takes_a_format_without_a_height_last() {
+    let audio = |video: Vec<Value>| {
+        let mut formats = video;
+        formats.extend([
+            json!({"format_id": "a-en", "vcodec": "none", "acodec": "opus", "language": "en"}),
+            json!({"format_id": "a-tr", "vcodec": "none", "acodec": "opus", "language": "tr"}),
+        ]);
+        media_info_from_json(&json!({ "formats": formats })).unwrap()
+    };
+    let known = audio(vec![
+        json!({"format_id": "v-360", "height": 360, "vcodec": "vp9", "acodec": "none"}),
+        json!({"format_id": "v-unknown", "vcodec": "vp9", "acodec": "none"}),
+    ]);
+    let unknown = audio(vec![
+        json!({"format_id": "v-unknown", "vcodec": "vp9", "acodec": "none"}),
+    ]);
+    let mut request = AddRequest {
+        url: "https://example.test/playlist".into(),
+        kind: DownloadKind::Video,
+        playlist: true,
+        max_height: Some(480),
+        audio_language: Some("tr".into()),
+        ..AddRequest::default()
+    };
+
+    let selector = format_selector(&request, &known).unwrap();
+    assert_eq!(
+        selected_format_ids(&selector, &known).unwrap(),
+        ["v-360", "a-tr"],
+        "{selector}: a format that fits wins over one without a height"
+    );
+    assert_eq!(
+        selected_format_ids(&selector, &unknown).unwrap(),
+        ["v-unknown", "a-tr"],
+        "{selector}"
+    );
+
+    request.playlist = false;
+    request.exact_height = Some(360);
+    request.max_height = Some(360);
+    assert_eq!(
+        format_selector(&request, &known).unwrap(),
+        "bestvideo[height=360]+bestaudio[language=tr]/best[height=360][language=tr]"
+    );
+}
+
 #[test]
 fn a_converted_audio_file_is_not_compared_with_the_source_track() {
     let info = media_info_from_json(&json!({"formats": [

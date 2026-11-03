@@ -3215,9 +3215,20 @@ fn selected_tracks_format(request: &AddRequest, info: &MediaInfo) -> Result<Stri
                 format!("{video}+{}", audio.id)
             });
         }
-        return Ok(format!(
-            "{video}+bestaudio{language}/best{height}{language}"
-        ));
+        let selector = format!("{video}+bestaudio{language}/best{height}{language}");
+        return Ok(match request.max_height {
+            // A format that reports no height is the last resort under a limit, as in
+            // `format_selector`.
+            Some(maximum)
+                if request.exact_height.is_none() && request.video_format_id.is_none() =>
+            {
+                format!(
+                    "{selector}/bestvideo[height<=?{maximum}]+bestaudio{language}/\
+                     best[height<=?{maximum}]{language}"
+                )
+            }
+            _ => selector,
+        });
     }
     if let Some(id) = &request.video_format_id {
         let selected = info
