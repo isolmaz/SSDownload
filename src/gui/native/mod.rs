@@ -5224,10 +5224,15 @@ unsafe fn refresh_notices(ui: &mut MainUi) {
         .map(|progress| progress.message.as_str())
         .unwrap_or("");
     let percent = progress.and_then(tool_percent);
-    let own = profile_text(&ui.app.paths().base_dir, &ui.snapshot.settings);
     // A background refresh of an installed toolchain runs silently.
     let refreshing = ui.snapshot.tools.iter().all(|tool| tool.installed);
     if ui.snapshot.installing_tools && !refreshing {
+        let shown_message = if message.is_empty() {
+            String::new()
+        } else {
+            let own = profile_text(&ui.app.paths().base_dir, &ui.snapshot.settings);
+            without_component_names(message, &own)
+        };
         let pending = crate::i18n::ui(
             "Gerekli bağımlılıklar indiriliyor",
             "Downloading required dependencies",
@@ -5238,13 +5243,13 @@ unsafe fn refresh_notices(ui: &mut MainUi) {
             notify(ui, NOTICE_TITLE, pending, false);
         } else if ui.dependency_notice.due(message, percent, now) {
             ui.dependency_notice.shown(message, percent, now);
-            let body = notice_body(&without_component_names(message, &own), percent);
+            let body = notice_body(&shown_message, percent);
             notify(ui, NOTICE_TITLE, &body, false);
         }
         // The same state the balloon carries stays on the status line for as
         // long as the install lasts, so it can be read without waiting for a
         // balloon to appear.
-        let body = notice_body(&without_component_names(message, &own), percent);
+        let body = notice_body(&shown_message, percent);
         let line = if body.is_empty() {
             pending.to_string()
         } else {
