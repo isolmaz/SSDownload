@@ -3025,6 +3025,62 @@ fn the_mp4_audio_pick_follows_the_extractors_preference_order() {
 }
 
 #[test]
+fn an_mp4_download_takes_a_format_without_a_height_under_a_limit_only_when_no_known_height_fits() {
+    let info = media_info_from_json(&json!({"formats": [
+        {"format_id": "v-unknown", "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "a-main", "vcodec": "none", "acodec": "mp4a.40.2"},
+        {"format_id": "c-360", "height": 360, "vcodec": "avc1.4d401e", "acodec": "mp4a.40.2"}
+    ]}))
+    .unwrap();
+    let request = |maximum| AddRequest {
+        url: "https://example.test/watch/1".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        max_height: Some(maximum),
+        ..AddRequest::default()
+    };
+    // The ready-made format with a known height fits; the video without a height is the last
+    // resort even though it pairs with a separate audio track.
+    assert_eq!(format_selector(&request(480), &info).unwrap(), "c-360");
+    assert_eq!(
+        format_selector(&request(240), &info).unwrap(),
+        "v-unknown+a-main"
+    );
+
+    // A playlist's expression resolves the same way for each entry.
+    let playlist = |maximum| AddRequest {
+        playlist: true,
+        ..request(maximum)
+    };
+    let resolved = |maximum| {
+        let selector = format_selector(&playlist(maximum), &info).unwrap();
+        selected_format_ids(&selector, &info).unwrap()
+    };
+    assert_eq!(resolved(480), ["c-360"]);
+    assert_eq!(resolved(240), ["v-unknown", "a-main"]);
+
+    let with_known_pair = media_info_from_json(&json!({"formats": [
+        {"format_id": "v-unknown", "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "v-360", "height": 360, "vcodec": "avc1.4d401e", "acodec": "none"},
+        {"format_id": "a-main", "vcodec": "none", "acodec": "mp4a.40.2"},
+        {"format_id": "c-360", "height": 360, "vcodec": "avc1.4d401e", "acodec": "mp4a.40.2"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        format_selector(&request(480), &with_known_pair).unwrap(),
+        "v-360+a-main"
+    );
+
+    let mut unlimited = request(480);
+    unlimited.max_height = None;
+    assert_eq!(
+        format_selector(&unlimited, &info).unwrap(),
+        "v-unknown+a-main",
+        "without a limit no format is a last resort, and a separate pair comes first as in the default selector"
+    );
+}
+
+#[test]
 fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
     let sampled = media_info_from_json(&json!({"formats": [
         {"format_id": "f-avc", "height": 720, "vcodec": "avc1.64001f", "acodec": "none"},
@@ -3054,7 +3110,10 @@ fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
     let selector = format_selector(&request, &sampled).unwrap();
     assert_eq!(
         selector,
-        format!("bestvideo[height<=?720]{video}+bestaudio{audio}/best[height<=?720]{video}{audio}")
+        format!(
+            "bestvideo[height<=720]{video}+bestaudio{audio}/best[height<=720]{video}{audio}/\
+             bestvideo[height<=?720]{video}+bestaudio{audio}/best[height<=?720]{video}{audio}"
+        )
     );
     assert_eq!(
         selected_format_ids(&selector, &sampled).unwrap(),

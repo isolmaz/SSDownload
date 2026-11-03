@@ -232,15 +232,13 @@ pub(super) fn best_mp4_audio<'a>(
 /// belong to a single entry; the codecs, the height and the audio language take the place of
 /// the ids. A `?` after `~=` and `<=` lets a format pass whose value the extractor did not
 /// report, as the checks on the sampled entry do (an HLS audio rendition has no `acodec`); an
-/// exact height must be reported.
+/// exact height must be reported. Under a height limit the formats that report a height come
+/// first and the ones that do not follow, as in [`format_selector`].
 pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> String {
-    let mut height = String::new();
-    if let Some(exact) = request.exact_height {
-        height.push_str(&format!("[height={exact}]"));
-    }
-    if let Some(maximum) = request.max_height {
-        height.push_str(&format!("[height<=?{maximum}]"));
-    }
+    let exact = request
+        .exact_height
+        .map(|exact| format!("[height={exact}]"))
+        .unwrap_or_default();
     let language = request
         .audio_language
         .as_ref()
@@ -248,59 +246,34 @@ pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> S
         .unwrap_or_default();
     let video = format!("[vcodec~=?'^({})']", MP4_VIDEO_CODECS.join("|"));
     let audio = format!("[acodec~=?'^({})']{language}", MP4_AUDIO_CODECS.join("|"));
-    if with_audio {
-        format!("bestvideo{height}{video}+bestaudio{audio}/best{height}{video}{audio}")
-    } else {
-        format!("bestvideo{height}{video}")
+    let expression = |height: &str| {
+        if with_audio {
+            format!("bestvideo{height}{video}+bestaudio{audio}/best{height}{video}{audio}")
+        } else {
+            format!("bestvideo{height}{video}")
+        }
+    };
+    match request.max_height {
+        Some(maximum) => format!(
+            "{}/{}",
+            expression(&format!("{exact}[height<={maximum}]")),
+            expression(&format!("{exact}[height<=?{maximum}]"))
+        ),
+        None => expression(&exact),
     }
 }
 
 /// The MP4-compatible selection resolved from the sampled entry: its format ids, or for a
-/// playlist a codec-filtered expression that fits the other entries too.
+/// playlist a codec-filtered expression that fits the other entries too. Under a height limit a
+/// format that reports no height is the last resort, as in [`format_selector`].
 pub(super) fn automatic_mp4_selector(request: &AddRequest, info: &MediaInfo) -> Result<String> {
-    let video_only = info
-        .formats
-        .iter()
-        .filter(|format| mp4_video_candidate(format, request))
-        .max_by(|left, right| {
-            (left.height.unwrap_or(0), left.width.unwrap_or(0))
-                .cmp(&(right.height.unwrap_or(0), right.width.unwrap_or(0)))
-        });
-    let audio_only = preferred_mp4_audio(request, info);
-    if let (Some(video), Some(audio)) = (video_only, audio_only) {
-        return Ok(if request.playlist {
-            playlist_mp4_selector(request, true)
-        } else {
-            format!("{}+{}", video.id, audio.id)
-        });
-    }
-    let combined = info
-        .formats
-        .iter()
-        .filter(|format| {
-            mp4_video_stream(format)
-                && mp4_audio_stream(format)
-                && requested_video_size(format, request)
-        })
-        .max_by(|left, right| {
-            (left.height.unwrap_or(0), left.width.unwrap_or(0))
-                .cmp(&(right.height.unwrap_or(0), right.width.unwrap_or(0)))
-        });
-    if let Some(combined) = combined {
-        return Ok(if request.playlist {
-            playlist_mp4_selector(request, true)
-        } else {
-            combined.id.clone()
-        });
-    }
-    if video_only_source(request, info) {
-        if let Some(video) = video_only {
-            return Ok(if request.playlist {
-                playlist_mp4_selector(request, false)
-            } else {
-                video.id.clone()
-            });
+    if request.max_height.is_some() {
+        if let Some(selector) = mp4_selection(request, info, true) {
+            return Ok(selector);
         }
+    }
+    if let Some(selector) = mp4_selection(request, info, false) {
+        return Ok(selector);
     }
     crate::bail_code!(
         crate::error_codes::MED_014,
@@ -310,6 +283,53 @@ pub(super) fn automatic_mp4_selector(request: &AddRequest, info: &MediaInfo) -> 
             "The source has no stream combination that can be remuxed into MP4 without loss; choose MKV"
         )
     )
+}
+
+/// The selection of [`automatic_mp4_selector`] from the formats that fit the requested size; with
+/// `reported_height` only from the ones that report a height.
+fn mp4_selection(request: &AddRequest, info: &MediaInfo, reported_height: bool) -> Option<String> {
+    let fits = |format: &MediaFormat| {
+        requested_video_size(format, request) && (!reported_height || format.height.is_some())
+    };
+    let tallest = |left: &&MediaFormat, right: &&MediaFormat| {
+        (left.height.unwrap_or(0), left.width.unwrap_or(0))
+            .cmp(&(right.height.unwrap_or(0), right.width.unwrap_or(0)))
+    };
+    let video_only = info
+        .formats
+        .iter()
+        .filter(|format| mp4_video_candidate(format, request) && fits(format))
+        .max_by(tallest);
+    let audio_only = preferred_mp4_audio(request, info);
+    if let (Some(video), Some(audio)) = (video_only, audio_only) {
+        return Some(if request.playlist {
+            playlist_mp4_selector(request, true)
+        } else {
+            format!("{}+{}", video.id, audio.id)
+        });
+    }
+    let combined = info
+        .formats
+        .iter()
+        .filter(|format| mp4_video_stream(format) && mp4_audio_stream(format) && fits(format))
+        .max_by(tallest);
+    if let Some(combined) = combined {
+        return Some(if request.playlist {
+            playlist_mp4_selector(request, true)
+        } else {
+            combined.id.clone()
+        });
+    }
+    if video_only_source(request, info) {
+        if let Some(video) = video_only {
+            return Some(if request.playlist {
+                playlist_mp4_selector(request, false)
+            } else {
+                video.id.clone()
+            });
+        }
+    }
+    None
 }
 
 pub(super) fn validate_container_selection(request: &AddRequest, info: &MediaInfo) -> Result<()> {
