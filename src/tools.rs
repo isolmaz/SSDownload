@@ -74,15 +74,24 @@ pub(crate) fn component_title(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// `text` that a program printed, with every name of a program behind a media component (yt-dlp,
-/// FFmpeg, ffprobe, Deno, BtbN) in any letter case replaced by what the component does; a name
-/// joined to a word by `-`, `_` or a file extension gets the words of the label joined by `-`. A
-/// name inside a longer word or in a word that holds `/` or `\` (a path or an address) stays.
-/// Only what a program printed goes through it: a path, file name, title or address of the user's
-/// own is shown as it is.
-pub(crate) fn without_component_names(text: &str) -> String {
+/// `text` with every name of a program behind a media component (yt-dlp, FFmpeg, ffprobe, Deno,
+/// BtbN) in any letter case replaced by what the component does; a name joined to a word, a path
+/// or an address by `-`, `_`, `/`, `\` or a file extension gets the words of the label joined by
+/// `-`, so the text keeps its shape. A name inside a longer word stays, and so does every
+/// occurrence of a string in `own` (the address, path, file name or title of the user's own, the
+/// folder of the profile), in any letter case, even where it holds a name.
+pub(crate) fn without_component_names(text: &str, own: &[String]) -> String {
     const NAMES: [&str; 5] = ["ffprobe", "ffmpeg", "yt-dlp", "deno", "btbn"];
     let lower = text.to_ascii_lowercase();
+    let mut kept: Vec<std::ops::Range<usize>> = Vec::new();
+    for part in own.iter().filter(|part| !part.is_empty()) {
+        let part = part.to_ascii_lowercase();
+        kept.extend(
+            lower
+                .match_indices(&part)
+                .map(|(start, found)| start..start + found.len()),
+        );
+    }
     let mut hits: Vec<(usize, &str, bool)> = NAMES
         .iter()
         .flat_map(|name| {
@@ -91,22 +100,21 @@ pub(crate) fn without_component_names(text: &str) -> String {
                 .map(move |(start, _)| (start, *name))
         })
         .filter_map(|(start, name)| {
+            let end = start + name.len();
+            if kept
+                .iter()
+                .any(|range| range.start < end && start < range.end)
+            {
+                return None;
+            }
             let before = text[..start].chars().next_back();
-            let mut after = text[start + name.len()..].chars();
+            let mut after = text[end..].chars();
             let next = after.next();
             if before.is_some_and(char::is_alphanumeric) || next.is_some_and(char::is_alphanumeric)
             {
                 return None;
             }
-            let separator = |c: char| matches!(c, '/' | '\\');
-            let head = text[..start].rsplit(char::is_whitespace).next();
-            let tail = text[start + name.len()..].split(char::is_whitespace).next();
-            if head.is_some_and(|word| word.contains(separator))
-                || tail.is_some_and(|word| word.contains(separator))
-            {
-                return None;
-            }
-            let joined = |c: Option<char>| matches!(c, Some('-' | '_'));
+            let joined = |c: Option<char>| matches!(c, Some('-' | '_' | '/' | '\\'));
             let glued = joined(before)
                 || joined(next)
                 || (next == Some('.') && after.next().is_some_and(char::is_alphanumeric));
@@ -3229,81 +3237,131 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    fn english_without_names(text: &str, own: &[&str]) -> String {
+        let own: Vec<String> = own.iter().map(|part| part.to_string()).collect();
+        crate::i18n::with_language("en", || without_component_names(text, &own))
+    }
+
     #[test]
     fn a_text_names_no_program_behind_a_component_in_any_letter_case() {
-        let english =
-            |text: &str| crate::i18n::with_language("en", || without_component_names(text));
         assert_eq!(
-            english("ERROR: ffmpeg exited; FFMPEG, FFprobe and Yt-Dlp need Deno or BTBN"),
+            english_without_names(
+                "ERROR: ffmpeg exited; FFMPEG, FFprobe and Yt-Dlp need Deno or BTBN",
+                &[]
+            ),
             "ERROR: converter exited; converter, media inspector and media component need runtime or media component"
         );
         assert_eq!(
-            crate::i18n::with_language("tr", || without_component_names("yt-dlp ve FFmpeg")),
+            crate::i18n::with_language("tr", || without_component_names("yt-dlp ve FFmpeg", &[])),
             "medya bileşeni ve dönüştürücü"
         );
-        assert_eq!(english("a text without a name"), "a text without a name");
-        assert_eq!(english(""), "");
+        assert_eq!(
+            english_without_names("a text without a name", &[]),
+            "a text without a name"
+        );
+        assert_eq!(english_without_names("", &[]), "");
     }
 
     #[test]
     fn a_name_inside_a_longer_word_stays_and_a_name_beside_punctuation_is_hidden() {
-        let english =
-            |text: &str| crate::i18n::with_language("en", || without_component_names(text));
         assert_eq!(
-            english("Denote the Denver video"),
+            english_without_names("Denote the Denver video", &[]),
             "Denote the Denver video"
         );
-        assert_eq!(english("undeno ffmpeg2 yt-dlpx"), "undeno ffmpeg2 yt-dlpx");
         assert_eq!(
-            english("(yt-dlp), \"Deno\" and Deno's: yt-dlp."),
+            english_without_names("undeno ffmpeg2 yt-dlpx", &[]),
+            "undeno ffmpeg2 yt-dlpx"
+        );
+        assert_eq!(
+            english_without_names("(yt-dlp), \"Deno\" and Deno's: yt-dlp.", &[]),
             "(media component), \"runtime\" and runtime's: media component."
         );
         assert_eq!(
             crate::i18n::with_language("tr", || without_component_names(
-                "Deno'nun sürümü ö yt-dlp"
+                "Deno'nun sürümü ö yt-dlp",
+                &[]
             )),
             "çalıştırma ortamı'nun sürümü ö medya bileşeni"
         );
     }
 
     #[test]
-    fn a_path_or_an_address_in_what_a_program_printed_is_never_rewritten() {
-        let english =
-            |text: &str| crate::i18n::with_language("en", || without_component_names(text));
+    fn a_name_in_a_path_or_an_address_is_hidden_and_the_path_keeps_its_shape() {
         assert_eq!(
-            english(r"ffmpeg: unable to open C:\Users\deno\Videos\ffmpeg.mp4: denied"),
-            r"converter: unable to open C:\Users\deno\Videos\ffmpeg.mp4: denied"
-        );
-        assert_eq!(
-            english(r"yt-dlp wrote \\deno\share\yt-dlp.exe and ./ffmpeg/out.mp4"),
-            r"media component wrote \\deno\share\yt-dlp.exe and ./ffmpeg/out.mp4"
-        );
-        assert_eq!(
-            english(
-                "Deno failed; see https://github.com/yt-dlp/yt-dlp/wiki#pass-cookies-to-yt-dlp"
+            english_without_names(
+                "Deno failed; see https://github.com/yt-dlp/yt-dlp/wiki#pass-cookies-to-yt-dlp and https://github.com/yt-dlp/yt-dlp/issues",
+                &[]
             ),
-            "runtime failed; see https://github.com/yt-dlp/yt-dlp/wiki#pass-cookies-to-yt-dlp"
+            "runtime failed; see https://github.com/media-component/media-component/wiki#pass-cookies-to-media-component and https://github.com/media-component/media-component/issues"
         );
         assert_eq!(
-            english("GET https://files.example/ffmpeg_tutorial?by=deno failed in ffmpeg"),
-            "GET https://files.example/ffmpeg_tutorial?by=deno failed in converter"
+            english_without_names(
+                r"ffmpeg: unable to open C:\data\tools\yt-dlp\yt-dlp.exe and ./ffprobe/out.mp4: denied",
+                &[]
+            ),
+            r"converter: unable to open C:\data\tools\media-component\media-component.exe and ./media-inspector/out.mp4: denied"
+        );
+        assert_eq!(
+            english_without_names(
+                "GET https://files.example/ffmpeg_tutorial?by=deno failed in ffmpeg",
+                &[]
+            ),
+            "GET https://files.example/converter_tutorial?by=runtime failed in converter"
         );
     }
 
     #[test]
-    fn a_name_joined_to_an_option_or_a_file_extension_keeps_the_shape_of_its_word() {
-        let english =
-            |text: &str| crate::i18n::with_language("en", || without_component_names(text));
+    fn the_strings_of_the_user_stay_where_they_occur_and_the_program_below_them_is_hidden() {
+        let profile = r"C:\Users\Deno\AppData\Local\SSDownload";
+        // The tool path the application itself quotes sits under the profile folder.
         assert_eq!(
-            english("deno.exe was not found; use --ffmpeg-location"),
+            english_without_names(
+                r"C:\Users\Deno\AppData\Local\SSDownload\tools\versions\7\ffmpeg\ffmpeg.exe was modified or corrupted, ffmpeg stopped",
+                &[profile]
+            ),
+            r"C:\Users\Deno\AppData\Local\SSDownload\tools\versions\7\converter\converter.exe was modified or corrupted, converter stopped"
+        );
+        assert_eq!(
+            english_without_names(
+                r"c:\users\deno\appdata\local\ssdownload\tools\.staging-x\yt-dlp\yt-dlp.exe",
+                &[profile]
+            ),
+            r"c:\users\deno\appdata\local\ssdownload\tools\.staging-x\media-component\media-component.exe"
+        );
+        let file = r"C:\Users\deno\Videos\my ffmpeg tutorial.mp4";
+        let address = "https://files.example/yt-dlp-guide.mp4";
+        assert_eq!(
+            english_without_names(
+                &format!("ffmpeg could not write {file} for yt-dlp ({address}), see https://github.com/yt-dlp/yt-dlp/issues"),
+                &[file, address]
+            ),
+            format!("converter could not write {file} for media component ({address}), see https://github.com/media-component/media-component/issues")
+        );
+        // Every occurrence is kept, a name beside the kept text is not.
+        assert_eq!(
+            english_without_names("ffmpeg ffmpeg-clip ffmpeg", &["ffmpeg-clip"]),
+            "converter ffmpeg-clip converter"
+        );
+        assert_eq!(
+            english_without_names("deno Deno deno", &["deno Deno"]),
+            "deno Deno runtime"
+        );
+        // An empty string of the user changes nothing.
+        assert_eq!(english_without_names("ffmpeg", &[""]), "converter");
+    }
+
+    #[test]
+    fn a_name_joined_to_an_option_or_a_file_extension_keeps_the_shape_of_its_word() {
+        assert_eq!(
+            english_without_names("deno.exe was not found; use --ffmpeg-location", &[]),
             "runtime.exe was not found; use --converter-location"
         );
         assert_eq!(
-            english("ffmpeg_i:-http_proxy and ffmpeg-n9.0-win64"),
+            english_without_names("ffmpeg_i:-http_proxy and ffmpeg-n9.0-win64", &[]),
             "converter_i:-http_proxy and converter-n9.0-win64"
         );
         assert_eq!(
-            english("yt-dlp.exe and yt-dlp_x86 and ffmpeg."),
+            english_without_names("yt-dlp.exe and yt-dlp_x86 and ffmpeg.", &[]),
             "media-component.exe and media-component_x86 and converter."
         );
     }
@@ -3318,7 +3376,7 @@ mod tests {
                     ("FFmpeg", "FFmpeg"),
                     ("ffprobe", "ffprobe"),
                 ] {
-                    let shown = without_component_names(&format!("{program} x"));
+                    let shown = without_component_names(&format!("{program} x"), &[]);
                     assert_eq!(
                         shown,
                         format!("{} x", component_label(name)),
@@ -3346,12 +3404,21 @@ mod tests {
 
     #[test]
     fn the_texts_of_an_install_name_a_component_by_what_it_does() {
-        let missing = std::env::temp_dir().join(format!("ssd-no-program-{}", Uuid::new_v4()));
+        // The program the application starts lives in a folder named after it, under the profile.
+        let profile = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        let missing = profile
+            .join("tools")
+            .join("versions")
+            .join("7")
+            .join("ffmpeg")
+            .join("ffmpeg.exe");
+        let own = [profile.display().to_string()];
         let shell = PathBuf::from(std::env::var_os("ComSpec").unwrap());
         for info in crate::i18n::LANGUAGES.iter() {
             crate::i18n::with_language(info.code, || {
                 let title = component_title("FFmpeg");
                 let label = component_label("FFmpeg");
+                let joined = label.replace(' ', "-");
                 // The label begins the text, or follows a colon at its end, so no language needs
                 // an article for it.
                 for (case, result) in [
@@ -3361,13 +3428,24 @@ mod tests {
                         validate_version(&shell, &["/C", "exit", "3"], "FFmpeg"),
                     ),
                 ] {
-                    let text = format!("{:#}", result.unwrap_err());
+                    let text = without_component_names(&format!("{:#}", result.unwrap_err()), &own);
                     assert!(text.starts_with(&title), "{} {case}: {text}", info.code);
                     assert!(
                         !text.to_lowercase().contains("ffmpeg"),
                         "{} {case}: {text}",
                         info.code
                     );
+                    if case == "not started" {
+                        assert!(
+                            text.contains(&format!(
+                                "{}{sep}tools{sep}versions{sep}7{sep}{joined}{sep}{joined}.exe",
+                                profile.display(),
+                                sep = std::path::MAIN_SEPARATOR
+                            )),
+                            "{} {case}: {text}",
+                            info.code
+                        );
+                    }
                 }
                 let empty = validate_version(&shell, &["/C", "rem"], "FFmpeg").unwrap_err();
                 let text = format!("{empty:#}");

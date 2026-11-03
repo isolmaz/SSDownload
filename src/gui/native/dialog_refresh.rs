@@ -128,7 +128,9 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             }
             refresh_media(dlg, f, &snapshot);
         }
-        DialogKind::Progress(f) => refresh_job_view(dlg.hwnd, dlg.error, f, &snapshot),
+        DialogKind::Progress(f) => {
+            refresh_job_view(dlg.hwnd, dlg.error, f, &snapshot, &dlg.app.paths().base_dir)
+        }
         DialogKind::Events(f) => refresh_event_list(f),
         DialogKind::JobLog(f) => refresh_job_log(f),
         _ => {}
@@ -166,6 +168,7 @@ pub(super) unsafe fn refresh_job_view(
     error: HWND,
     f: &mut ProgressFields,
     snapshot: &AppSnapshot,
+    profile: &Path,
 ) {
     if f.ids.is_empty() {
         set_text(
@@ -279,7 +282,7 @@ pub(super) unsafe fn refresh_job_view(
                 detail.push_str(&crate::i18n::ui_format!(
                     "Aşama: {0}\r\n",
                     "Phase: {0}\r\n",
-                    without_component_names(phase)
+                    without_component_names(phase, &job_own_text(job, profile))
                 ));
             }
             if let Some(message) = job.error.as_deref() {
@@ -288,7 +291,7 @@ pub(super) unsafe fn refresh_job_view(
                 detail.push_str(&crate::i18n::ui_format!(
                     "Hata: {message}\r\n",
                     "Error: {message}\r\n",
-                    message = without_component_names(message)
+                    message = without_component_names(message, &job_own_text(job, profile))
                 ));
             }
             if job.state == JobState::Completed {
@@ -1727,6 +1730,7 @@ pub(super) fn tools_report(
     progress: Option<&ToolProgress>,
     tools_dir: &Path,
 ) -> String {
+    let own = [tools_dir.display().to_string()];
     let mut body = String::new();
     for tool in tools {
         body.push_str(&crate::i18n::ui_format!(
@@ -1741,7 +1745,7 @@ pub(super) fn tools_report(
             if tool.version.is_empty() {
                 "-".to_string()
             } else {
-                without_component_names(&tool.version)
+                without_component_names(&tool.version, &own)
             },
             tools_dir.display()
         ));
@@ -1756,8 +1760,8 @@ pub(super) fn tools_report(
         body.push_str(&crate::i18n::ui_format!(
             "\r\n{0}: {1}\r\nİndirilen: {2}{3}",
             "\r\n{0}: {1}\r\nDownloaded: {2}{3}",
-            without_component_names(&p.name),
-            without_component_names(&p.message),
+            without_component_names(&p.name, &own),
+            without_component_names(&p.message, &own),
             format_bytes(p.downloaded),
             p.total
                 .map(|t| format!(" / {}", format_bytes(t)))

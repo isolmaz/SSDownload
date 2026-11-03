@@ -1544,7 +1544,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                     f.selected = index as usize;
                 }
                 let snapshot = dlg.app.snapshot();
-                refresh_job_view(dlg.hwnd, dlg.error, f, &snapshot);
+                refresh_job_view(dlg.hwnd, dlg.error, f, &snapshot, &dlg.app.paths().base_dir);
             }
             _ => {}
         },
