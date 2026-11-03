@@ -3941,7 +3941,7 @@ fn a_post_processor_marker_on_stderr_reaches_the_progress() {
     .unwrap();
 
     assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
-    let phase = crate::i18n::ui("FFmpeg ile işleniyor", "Processing with FFmpeg");
+    let phase = crate::i18n::ui("Medya işleniyor", "Processing the media");
     assert!(
         updates.iter().any(|update| update.processing
             && update.phase == phase

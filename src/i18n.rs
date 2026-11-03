@@ -1,8 +1,8 @@
 //! The interface language layer.
 //!
 //! The language is the persisted `Settings.ui_language` value, one of the codes in
-//! `LANGUAGES` (trimmed, compared case-insensitively); every other value — an empty string from
-//! a database written before the field existed included — keeps Turkish. A profile that has no
+//! `LANGUAGES` (trimmed, compared case-insensitively); every other value (an empty string from
+//! a database written before the field existed included) keeps Turkish. A profile that has no
 //! settings yet starts in the Windows display language (`system_language`); a stored choice is
 //! never replaced by it. The desktop applies the value when it opens the profile; the CLI and
 //! the native-messaging host never open the app, so they read it with `apply_profile_language`

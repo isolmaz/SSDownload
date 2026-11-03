@@ -5,8 +5,10 @@ use crate::{
         Action, AddRequest, AppSnapshot, AudioSelection, CompletionAction, DownloadKind,
         ExternalSubtitle, FolderRule, InspectRequest, Job, JobState, MediaFormat, MediaInfo,
         MediaLaunch, QueuePolicy, Settings, SiteCrawlRequest, SiteCrawlResult, SubtitleSelection,
-        SubtitleTrack, SyncPolicy, ToolProgress, UiMode, UsageModes, ONBOARDING_VERSION,
+        SubtitleTrack, SyncPolicy, ToolProgress, UiMode, UsageModes, UserMessage,
+        ONBOARDING_VERSION,
     },
+    tools::{without_component_names, OwnText},
 };
 use anyhow::{bail, Result};
 use chrono::{Local, NaiveDateTime, TimeZone};
@@ -78,7 +80,7 @@ const CLASS_MAIN: &str = crate::bridge::MAIN_WINDOW_CLASS;
 const CLASS_DIALOG: &str = "SSDownload.NativeDialog";
 /// The themed replacement for MessageBoxW.
 const CLASS_ALERT: &str = "SSDownload.AlertBox";
-const APP_TITLE: &str = "SSDownload — İndirme Yöneticisi";
+const APP_TITLE: &str = "SSDownload - İndirme Yöneticisi";
 const TIMER_REFRESH: usize = 1;
 const TIMER_DIALOG: usize = 2;
 /// Repaints the bars of processing jobs while any job is processing.
@@ -959,37 +961,6 @@ impl Drop for OleGuard {
     }
 }
 
-/// Component names as the user reads them. Outside developer mode the surface
-/// names what a component does instead of the upstream project it comes from;
-/// logs, the job log and the diagnostics package keep the raw text, which is
-/// why this is applied where the user reads it and nowhere else. Longest match
-/// first, so `ffprobe` is never eaten by `FFmpeg`.
-fn hidden_tool_names(text: &str) -> String {
-    let mut value = std::borrow::Cow::Borrowed(text);
-    for (name, replacement) in [
-        ("ffprobe", crate::i18n::ui("dönüştürücü", "converter")),
-        ("FFmpeg", crate::i18n::ui("dönüştürücü", "converter")),
-        (
-            "yt-dlp",
-            crate::i18n::ui("medya bileşeni", "media component"),
-        ),
-        ("Deno", crate::i18n::ui("çalıştırma ortamı", "runtime")),
-    ] {
-        if value.contains(name) {
-            value = std::borrow::Cow::Owned(value.replace(name, replacement));
-        }
-    }
-    value.into_owned()
-}
-/// User-facing text of one snapshot string: raw in developer mode, named by
-/// what it does otherwise.
-fn display_text(debug_mode: bool, text: &str) -> String {
-    if debug_mode {
-        text.to_string()
-    } else {
-        hidden_tool_names(text)
-    }
-}
 unsafe fn set_text(hwnd: HWND, value: &str) {
     if text(hwnd) != value {
         SetWindowTextW(hwnd, wide(value).as_ptr());
@@ -1140,7 +1111,7 @@ fn state_label(job: &Job) -> String {
     match job.state.plain_phase() {
         Some(plain) if phase == plain => label.to_string(),
         Some(plain) if phase.starts_with(plain) => phase.to_string(),
-        _ => format!("{label} — {phase}"),
+        _ => format!("{label} - {phase}"),
     }
 }
 fn format_bytes(value: u64) -> String {
@@ -1170,7 +1141,7 @@ fn format_progress(job: &Job) -> String {
 }
 fn format_speed(speed: u64) -> String {
     if speed == 0 {
-        "—".into()
+        "-".into()
     } else {
         format!("{}{}", format_bytes(speed), crate::i18n::ui("/sn", "/s"))
     }
@@ -1178,7 +1149,7 @@ fn format_speed(speed: u64) -> String {
 fn format_eta(eta: Option<u64>) -> String {
     match eta {
         Some(s) => format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60),
-        None => "—".into(),
+        None => "-".into(),
     }
 }
 /// A job address as the duplicate check compares it: parsed and re-serialized, so
@@ -1391,7 +1362,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
         let hwnd = CreateWindowExW(
             0,
             wide(CLASS_MAIN).as_ptr(),
-            wide(crate::i18n::ui(APP_TITLE, "SSDownload — Download Manager")).as_ptr(),
+            wide(crate::i18n::ui(APP_TITLE, "SSDownload - Download Manager")).as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -3513,8 +3484,7 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
             crate::i18n::ui("İş günl&üğü...", "Job &log..."),
         );
     }
-    // The media-tools surface is a developer/repair surface: it names the
-    // external media tools, so it only exists in developer mode.
+    // The media-tools surface is a repair surface and only exists in developer mode.
     if debug {
         append(
             tools,
@@ -3631,7 +3601,7 @@ unsafe fn apply_menu_mode(ui: &mut MainUi, snapshot: &AppSnapshot) {
     if language_changed {
         set_text(
             ui.hwnd,
-            crate::i18n::ui(APP_TITLE, "SSDownload — Download Manager"),
+            crate::i18n::ui(APP_TITLE, "SSDownload - Download Manager"),
         );
         let buttons = if modern() {
             MAIN_BUTTONS
@@ -4422,7 +4392,7 @@ unsafe fn sweep_processing_rows(ui: &MainUi) {
     }
 }
 
-/// "SSDownload 1.5.1 — 2 indiriliyor · 5,2 MB/sn" in the title and the tray tooltip,
+/// "SSDownload 1.5.1 - 2 indiriliyor · 5,2 MB/sn" in the title and the tray tooltip,
 /// plus a progress bar on the tray icon; each is rewritten only when it changes.
 unsafe fn update_title_and_tray(ui: &mut MainUi) {
     let running = ui
@@ -4458,7 +4428,7 @@ unsafe fn update_title_and_tray(ui: &mut MainUi) {
             format_speed(speed)
         )
     };
-    let title = format!("SSDownload {version} — {summary}{update}");
+    let title = format!("SSDownload {version} - {summary}{update}");
     if title != ui.title_text {
         SetWindowTextW(ui.hwnd, wide(&title).as_ptr());
         ui.title_text = title;
@@ -4770,55 +4740,61 @@ unsafe fn show_tour(ui: &mut MainUi, replay: bool) {
 
 const ABOUT_COPY: i32 = 100;
 const ABOUT_NOTES: i32 = 101;
-/// OK, the plain close, is the third button and stays the default.
-const ABOUT_FLAGS: MESSAGEBOX_STYLE = MB_ICONINFORMATION | MB_DEFBUTTON3;
+const ABOUT_LICENSES: i32 = 102;
+/// OK, the plain close, is the fourth button and stays the default.
+const ABOUT_FLAGS: MESSAGEBOX_STYLE = MB_ICONINFORMATION | MB_DEFBUTTON4;
 
 /// The About box's buttons, left to right. Every one of them closes the box
-/// (Copy and Release notes act once it is closed), so OK, which only closes it,
-/// is rightmost.
-fn about_buttons() -> [(i32, &'static str); 3] {
+/// (Copy, Release notes and Licenses act once it is closed), so OK, which only
+/// closes it, is rightmost.
+fn about_buttons() -> [(i32, &'static str); 4] {
     [
         (ABOUT_COPY, crate::i18n::ui("Kopyala", "Copy")),
         (
             ABOUT_NOTES,
             crate::i18n::ui("Sürüm notları", "Release notes"),
         ),
+        (ABOUT_LICENSES, crate::i18n::ui("Lisanslar", "Licenses")),
         (IDOK, crate::i18n::ui("Tamam", "OK")),
     ]
 }
 
-/// About: version, the media components' versions, copy and release notes.
-unsafe fn show_about(ui: &MainUi) {
-    let snapshot = ui.app.snapshot();
-    let tools = snapshot
-        .tools
-        .iter()
-        .map(|tool| {
-            format!(
-                "{} {}",
-                tool.name,
-                if tool.installed {
-                    tool.version.as_str()
-                } else {
-                    "—"
-                }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let body = format!(
-        "SSDownload {}\n{}\n\n{}\n\n{}",
+/// The third-party notices of this version in the repository.
+fn licenses_url() -> String {
+    format!(
+        "https://github.com/isolmaz/SSDownload/blob/v{}/THIRD-PARTY-NOTICES.txt",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// The page an About button opens, `None` for the buttons that open none.
+fn about_link(button: i32) -> Option<String> {
+    match button {
+        ABOUT_NOTES => Some("https://ssdownload.isolmaz.com/changelog.html".to_string()),
+        ABOUT_LICENSES => Some(licenses_url()),
+        _ => None,
+    }
+}
+
+/// What the About box says: SSDownload's version and description only.
+fn about_text() -> String {
+    format!(
+        "SSDownload {}\n{}\n\n{}",
         env!("CARGO_PKG_VERSION"),
         crate::i18n::ui(
             "Windows için dosya ve medya indirme yöneticisi.",
             "File and media download manager for Windows.",
         ),
-        tools,
         crate::i18n::ui(
             "DRM korumalı içerikler desteklenmez.",
             "DRM-protected content is not supported.",
         ),
-    );
+    )
+}
+
+/// About: version, description, copy, release notes and licenses.
+unsafe fn show_about(ui: &MainUi) {
+    let body = about_text();
     match run_alert_buttons(
         ui.hwnd,
         &body,
@@ -4829,17 +4805,19 @@ unsafe fn show_about(ui: &MainUi) {
         Some(ABOUT_COPY) => {
             set_clipboard_text(&body);
         }
-        Some(ABOUT_NOTES) => {
-            ShellExecuteW(
-                ui.hwnd,
-                wide("open").as_ptr(),
-                wide("https://ssdownload.isolmaz.com/changelog.html").as_ptr(),
-                null(),
-                null(),
-                SW_SHOWNORMAL,
-            );
+        Some(choice) => {
+            if let Some(url) = about_link(choice) {
+                ShellExecuteW(
+                    ui.hwnd,
+                    wide("open").as_ptr(),
+                    wide(&url).as_ptr(),
+                    null(),
+                    null(),
+                    SW_SHOWNORMAL,
+                );
+            }
         }
-        _ => {}
+        None => {}
     }
 }
 
@@ -5178,6 +5156,47 @@ fn notice_body(message: &str, percent: Option<u32>) -> String {
     }
 }
 
+/// What the user owns in a text the application shows: the folder of the profile, the download
+/// folder and the folders of the folder rules. The filter of the program names leaves these as
+/// they are.
+fn profile_text(profile: &Path, settings: &Settings) -> OwnText {
+    let mut own = OwnText::profile(profile);
+    own.strings
+        .push(settings.download_dir.display().to_string());
+    own.strings.extend(
+        settings
+            .folder_rules
+            .iter()
+            .map(|rule| rule.destination.display().to_string()),
+    );
+    own
+}
+
+/// What the user owns in text about `job`: its address, name and path, the folder that holds it
+/// and the folder of the profile. The filter of the program names leaves these as they are.
+fn job_own_text(job: &Job, profile: &Path) -> OwnText {
+    let mut own = OwnText::profile(profile);
+    own.strings.extend([
+        job.request.url.clone(),
+        job.name.clone(),
+        job.path.display().to_string(),
+    ]);
+    own.strings
+        .extend(job.path.parent().map(|dir| dir.display().to_string()));
+    own
+}
+
+/// The text of a message as the status line and a balloon show it: an error carries what a failed
+/// action reported, which can name a program behind a component, and any other message is the
+/// application's own text, which holds the folders, names and titles of the user as they are.
+fn shown_message(message: &UserMessage, profile: &Path, settings: &Settings) -> String {
+    if message.error {
+        without_component_names(&message.text, &profile_text(profile, settings))
+    } else {
+        message.text.clone()
+    }
+}
+
 /// Whole percent of a tool download, `None` until its size is known.
 fn tool_percent(progress: &ToolProgress) -> Option<u32> {
     let total = progress.total.filter(|total| *total > 0)?;
@@ -5191,12 +5210,12 @@ fn tool_percent(progress: &ToolProgress) -> Option<u32> {
 /// status line for as long as it lasts.
 unsafe fn refresh_notices(ui: &mut MainUi) {
     let now = Instant::now();
-    let debug = ui.snapshot.settings.debug_mode;
     let progress = ui.snapshot.tool_progress.as_ref();
     let message = progress
         .map(|progress| progress.message.as_str())
         .unwrap_or("");
     let percent = progress.and_then(tool_percent);
+    let own = profile_text(&ui.app.paths().base_dir, &ui.snapshot.settings);
     // A background refresh of an installed toolchain runs silently.
     let refreshing = ui.snapshot.tools.iter().all(|tool| tool.installed);
     if ui.snapshot.installing_tools && !refreshing {
@@ -5210,13 +5229,13 @@ unsafe fn refresh_notices(ui: &mut MainUi) {
             notify(ui, NOTICE_TITLE, pending, false);
         } else if ui.dependency_notice.due(message, percent, now) {
             ui.dependency_notice.shown(message, percent, now);
-            let body = notice_body(&display_text(debug, message), percent);
+            let body = notice_body(&without_component_names(message, &own), percent);
             notify(ui, NOTICE_TITLE, &body, false);
         }
         // The same state the balloon carries stays on the status line for as
         // long as the install lasts, so it can be read without waiting for a
         // balloon to appear.
-        let body = notice_body(&display_text(debug, message), percent);
+        let body = notice_body(&without_component_names(message, &own), percent);
         let line = if body.is_empty() {
             pending.to_string()
         } else {
@@ -5271,7 +5290,7 @@ unsafe fn refresh_notices(ui: &mut MainUi) {
     match crate::update::progress() {
         Some(update) => {
             let percent = update.percent();
-            let body = notice_body(&display_text(debug, &update.message), percent);
+            let body = notice_body(&update.message, percent);
             let notice_title = crate::i18n::ui(UPDATE_NOTICE_TITLE, "SSDownload update");
             let line = if update.version.is_empty() {
                 format!("{notice_title}: {body}")
@@ -5339,7 +5358,7 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     let seen_messages = ui.seen_messages;
     for item in snapshot.messages.iter().filter(|m| m.id > seen_messages) {
         ui.seen_messages = ui.seen_messages.max(item.id);
-        let message = display_text(snapshot.settings.debug_mode, &item.text);
+        let message = shown_message(item, &ui.app.paths().base_dir, &snapshot.settings);
         set_text(ui.status, &message);
         if item.error {
             notify(
@@ -5487,7 +5506,10 @@ unsafe fn update_status(ui: &MainUi) {
     if let Some(warning) = &ui.snapshot.warning {
         set_text(
             ui.status,
-            &display_text(ui.snapshot.settings.debug_mode, warning),
+            &without_component_names(
+                warning,
+                &profile_text(&ui.app.paths().base_dir, &ui.snapshot.settings),
+            ),
         );
     }
 }
@@ -5819,7 +5841,7 @@ fn short_error(job: &Job, value: &str) -> &'static str {
 fn error_summary(job: &Job, error: &str) -> String {
     let hint = short_error(job, error);
     match crate::error_codes::from_text(error) {
-        Some(code) => format!("{} — {hint}", crate::error_codes::labelled_message(code)),
+        Some(code) => format!("{} - {hint}", crate::error_codes::labelled_message(code)),
         None => hint.to_string(),
     }
 }
@@ -5943,7 +5965,11 @@ unsafe fn update_details(ui: &MainUi) {
                 }
             }
             (_, [job]) => match &job.error {
-                Some(error) => error.replace("\r\n", "\n").replace('\n', "\r\n"),
+                Some(error) => {
+                    without_component_names(error, &job_own_text(job, &ui.app.paths().base_dir))
+                        .replace("\r\n", "\n")
+                        .replace('\n', "\r\n")
+                }
                 None => crate::i18n::ui(
                     "Bu indirme için bir hata kaydedilmedi.",
                     "No error was recorded for this download.",
@@ -6007,7 +6033,7 @@ unsafe fn update_details(ui: &MainUi) {
         .start_at
         .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
         .map(|t| t.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| "—".into());
+        .unwrap_or_else(|| "-".into());
     let body = format!("{}: {}\r\n{}: {}\r\n{}: {}\r\n{}: {}\r\n{}: {}\r\n{}: {}\r\n{}: {}\r\n{}: {}\r\n{}: {}\r\n{}: {}{}",
         crate::i18n::ui("Ad", "Name"), job.name,
         crate::i18n::ui("Durum", "State"), state_label(job),
@@ -6019,7 +6045,7 @@ unsafe fn update_details(ui: &MainUi) {
         crate::i18n::ui("Zamanlama", "Schedule"), scheduled,
         crate::i18n::ui("Konum", "Location"), job.path.display(),
         crate::i18n::ui("URL", "URL"), display_url(&job.request.url),
-        job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), display_text(ui.snapshot.settings.debug_mode, &error_summary(job, error)))).unwrap_or_default());
+        job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), without_component_names(&error_summary(job, error), &job_own_text(job, &ui.app.paths().base_dir)))).unwrap_or_default());
     set_details(ui, &body);
     update_status(ui);
 }
@@ -6536,7 +6562,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
         if let Some(error) = error {
             message(
                 ui.hwnd,
-                &error,
+                &without_component_names(&error, &job_own_text(first, &ui.app.paths().base_dir)),
                 crate::i18n::ui("Hata ayrıntısı", "Error details"),
                 MB_OK | MB_ICONERROR,
             );
@@ -9705,7 +9731,7 @@ unsafe fn release_thumbnail(thumbnail: HWND) {
 /// Turns a picker into the job view of the download it just queued: the window
 /// keeps its place, its handoff and its size, and its title names what it is
 /// now showing.
-/// The download window's title: "Download — <file name>", "Download" while
+/// The download window's title: "Download - <file name>", "Download" while
 /// the name is not known yet, and the item count for a playlist's window.
 fn job_view_title(snapshot: &AppSnapshot, ids: &[String]) -> String {
     match ids {
@@ -9713,9 +9739,9 @@ fn job_view_title(snapshot: &AppSnapshot, ids: &[String]) -> String {
             .jobs
             .iter()
             .find(|job| &job.id == id && !job.name.trim().is_empty())
-            .map(|job| crate::i18n::ui_format!("İndirme — {0}", "Download — {0}", job.name))
+            .map(|job| crate::i18n::ui_format!("İndirme - {0}", "Download - {0}", job.name))
             .unwrap_or_else(|| crate::i18n::ui("İndirme", "Download").to_string()),
-        ids => crate::i18n::ui_format!("İndirme — {0} öğe", "Download — {0} items", ids.len()),
+        ids => crate::i18n::ui_format!("İndirme - {0} öğe", "Download - {0} items", ids.len()),
     }
 }
 
@@ -10124,12 +10150,40 @@ unsafe fn refresh_dialog_fonts(dlg: &mut DialogUi) {
     }
 }
 
+/// What the user owns in text shown in a dialog: what `profile_text` holds and what is typed or
+/// analysed in the dialog (addresses, folders, file names). The filter of the program names leaves
+/// these as they are.
+unsafe fn dialog_own_text(dlg: &DialogUi) -> OwnText {
+    let mut own = profile_text(&dlg.app.paths().base_dir, &dlg.app.snapshot().settings);
+    let typed = |hwnd| text(hwnd).trim().to_owned();
+    match &dlg.kind {
+        DialogKind::Add(f) => {
+            own.strings
+                .extend(text(f.urls).lines().map(|line| line.trim().to_owned()));
+            own.strings.extend([typed(f.dir), typed(f.filename)]);
+        }
+        DialogKind::Settings(f) => own.strings.push(typed(f.dir)),
+        DialogKind::Rules(f) => own.strings.push(typed(f.dir)),
+        DialogKind::Synchronization(f) => own.strings.extend([typed(f.url), typed(f.dir)]),
+        DialogKind::Crawler(f) => own.strings.push(typed(f.url)),
+        DialogKind::Media(f) => {
+            own.strings.extend([f.base.url.clone(), typed(f.name)]);
+            own.strings
+                .extend(f.base.directory.iter().map(|dir| dir.display().to_string()));
+        }
+        _ => {}
+    }
+    own
+}
+
 unsafe fn set_dialog_error(hwnd: HWND, error: HWND, value: &str, focus: HWND) {
-    // This line is read by the user, so it names the tools the way the rest of
-    // the surface does; the dialog's own state knows which surface that is.
     let state = dialog_state(hwnd);
-    let debug = !state.is_null() && (*state).app.snapshot().settings.debug_mode;
-    set_text(error, &display_text(debug, value));
+    let own = if state.is_null() {
+        OwnText::default()
+    } else {
+        dialog_own_text(&*state)
+    };
+    set_text(error, &without_component_names(value, &own));
     if !focus.is_null() {
         SetFocus(focus);
         if !state.is_null() {
@@ -10766,7 +10820,7 @@ mod tests {
         );
         assert_eq!(
             super::state_label(&job(JobState::Processing, "MP4")),
-            format!("{} — MP4", JobState::Processing.label())
+            format!("{} - MP4", JobState::Processing.label())
         );
         assert_eq!(
             super::state_label(&job(JobState::Paused, "MP4")),
@@ -10786,7 +10840,7 @@ mod tests {
                 job.phase = "MP4".into();
                 assert_eq!(
                     super::job_status(&job),
-                    format!("{} — MP4", JobState::Downloading.label()),
+                    format!("{} - MP4", JobState::Downloading.label()),
                     "{language}"
                 );
                 job.phase = "8 connections".into();
@@ -10864,7 +10918,7 @@ mod tests {
                 );
                 assert_eq!(
                     super::state_label(&job_in(JobState::Processing, &converting)),
-                    format!("{processing} — {converting}"),
+                    format!("{processing} - {converting}"),
                     "{code}: a phase that says more is added to the state"
                 );
             });
@@ -10972,15 +11026,16 @@ mod tests {
         let mut media = sample_job("media", JobState::Downloading);
         media.downloaded = 1000;
         let facts = job_facts(&media);
-        assert_eq!(facts[1], "—", "no size");
+        assert_eq!(facts[1], "-", "no size");
         assert_eq!(facts[2], format_bytes(1000));
-        assert_eq!(&facts[5..], ["—", "—"]);
+        assert_eq!(&facts[3..5], ["-", "-"], "no speed and no time left");
+        assert_eq!(&facts[5..], ["-", "-"]);
         // A source that refused a range, and a paused download's old ranges.
         let mut single = segmented_job(JobState::Paused);
         single.resumable = Some(false);
         let facts = job_facts(&single);
         assert_eq!(facts[5], crate::i18n::ui("Hayır", "No"));
-        assert_eq!(facts[6], "—", "a paused job has no connections");
+        assert_eq!(facts[6], "-", "a paused job has no connections");
     }
 
     #[test]
@@ -11080,7 +11135,13 @@ mod tests {
                     let mut show = |job: crate::model::Job| {
                         snapshot.jobs = std::sync::Arc::new(vec![job]);
                         if let DialogKind::Progress(f) = &mut (*raw).kind {
-                            refresh_job_view(hwnd, error, f, &snapshot);
+                            refresh_job_view(
+                                hwnd,
+                                error,
+                                f,
+                                &snapshot,
+                                &(*raw).app.paths().base_dir,
+                            );
                         }
                     };
                     let height = || {
@@ -11149,7 +11210,7 @@ mod tests {
                     let mut snapshot = (*raw).app.snapshot();
                     snapshot.jobs = std::sync::Arc::new(vec![segmented_job(JobState::Downloading)]);
                     if let DialogKind::Progress(f) = &mut (*raw).kind {
-                        refresh_job_view(hwnd, error, f, &snapshot);
+                        refresh_job_view(hwnd, error, f, &snapshot, &(*raw).app.paths().base_dir);
                     }
                     let row = [P_OPEN_FILE, P_OPEN_FOLDER, P_ACTION, P_CANCEL, P_CLOSE];
                     let rect = |id: i32| {
@@ -11206,10 +11267,11 @@ mod tests {
                     );
                     let error = (*raw).error;
                     let mut snapshot = (*raw).app.snapshot();
+                    let profile = std::cell::RefCell::new((*raw).app.paths().base_dir.clone());
                     let mut show = |job: crate::model::Job| {
                         snapshot.jobs = std::sync::Arc::new(vec![job]);
                         if let DialogKind::Progress(f) = &mut (*raw).kind {
-                            refresh_job_view(hwnd, error, f, &snapshot);
+                            refresh_job_view(hwnd, error, f, &snapshot, &profile.borrow());
                         }
                     };
                     let details = || match &(*raw).kind {
@@ -11232,7 +11294,7 @@ mod tests {
                     show(running);
                     assert_eq!(
                         text(hwnd),
-                        crate::i18n::ui_format!("İndirme — {0}", "Download — {0}", "report.zip"),
+                        crate::i18n::ui_format!("İndirme - {0}", "Download - {0}", "report.zip"),
                         "modern {in_modern}"
                     );
                     // The facts already show the state, size, speed and time left.
@@ -11291,6 +11353,93 @@ mod tests {
                         ),
                         "modern {in_modern}"
                     );
+                    // What a failed program printed names it in any letter case, in a path or an
+                    // address it quotes too; only the file, the folder and the address of the job
+                    // and the folder of the profile stay as they are.
+                    let folder = r"C:\Users\deno\Videos\my ffmpeg tutorial.mp4";
+                    let address = "https://files.example/yt-dlp-guide.mp4";
+                    let data = (*raw).app.paths().base_dir.display().to_string();
+                    let label = |name| crate::tools::component_label(name);
+                    let glued = |name| label(name).replace(' ', "-");
+                    let mut raw_failure = segmented_job(JobState::Failed);
+                    raw_failure.path = folder.into();
+                    raw_failure.request.url = address.into();
+                    raw_failure.error = Some(format!(
+                        r"ERROR: ffmpeg could not write C:\Users\deno\Videos\.ssdownload-work\jobs\1\x.part for yt-dlp, see {address} and https://github.com/yt-dlp/yt-dlp/issues; {data}\tools\versions\1\ffprobe\ffprobe.exe failed"
+                    ));
+                    show(raw_failure);
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}{}",
+                            crate::i18n::ui_format!(
+                                "Hata: {message}\r\n",
+                                "Error: {message}\r\n",
+                                message = format!(
+                                    r"ERROR: {} could not write C:\Users\deno\Videos\.ssdownload-work\jobs\1\x.part for {}, see {address} and https://github.com/{ytdlp}/{ytdlp}/issues; {data}\tools\versions\1\{probe}\{probe}.exe failed",
+                                    label("ffmpeg"),
+                                    label("yt-dlp"),
+                                    ytdlp = glued("yt-dlp"),
+                                    probe = glued("ffprobe"),
+                                )
+                            ),
+                            save_to(folder)
+                        ),
+                        "modern {in_modern}"
+                    );
+                    let mut waiting = segmented_job(JobState::Queued);
+                    waiting.path = folder.into();
+                    waiting.phase = format!("Waiting for ffmpeg, then {folder}");
+                    show(waiting);
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}{}",
+                            crate::i18n::ui_format!(
+                                "Aşama: {0}\r\n",
+                                "Phase: {0}\r\n",
+                                format!("Waiting for {}, then {folder}", label("ffmpeg"))
+                            ),
+                            save_to(folder)
+                        ),
+                        "modern {in_modern}"
+                    );
+                    // The folder of the profile is the user's own wherever it is: its name stays,
+                    // the program below it does not.
+                    let home = std::path::PathBuf::from(r"C:\Users\deno\AppData\Local\SSDownload");
+                    *profile.borrow_mut() = home.clone();
+                    let mut tool_failure = segmented_job(JobState::Failed);
+                    tool_failure.error = Some(format!(
+                        r"{}\tools\versions\1\ffprobe\ffprobe.exe could not be started",
+                        home.display()
+                    ));
+                    show(tool_failure);
+                    assert_eq!(
+                        details(),
+                        format!(
+                            "{}{}",
+                            crate::i18n::ui_format!(
+                                "Hata: {message}\r\n",
+                                "Error: {message}\r\n",
+                                message = format!(
+                                    r"{}\tools\versions\1\{probe}\{probe}.exe could not be started",
+                                    home.display(),
+                                    probe = glued("ffprobe"),
+                                )
+                            ),
+                            save_to("job")
+                        ),
+                        "modern {in_modern}: the folder of the profile stays"
+                    );
+                    let mut saved = segmented_job(JobState::Completed);
+                    saved.path = folder.into();
+                    show(saved);
+                    assert_eq!(
+                        details(),
+                        crate::i18n::ui_format!("Kayıt: {0}\r\n", "Saved: {0}\r\n", folder)
+                            .trim_end(),
+                        "modern {in_modern}: the saved file keeps the name the user gave it"
+                    );
                     show(segmented_job(JobState::Completed));
                     assert_eq!(
                         details(),
@@ -11316,6 +11465,330 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn a_dialog_error_line_names_no_program_behind_a_component() {
+        on_private_desktop(|| {
+            use super::*;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        self::add_kind(),
+                        620,
+                        add_window_height(false),
+                    );
+                    let error = (*raw).error;
+                    let typed = "https://files.example/yt-dlp-guide.mp4";
+                    let DialogKind::Add(f) = &(*raw).kind else {
+                        unreachable!()
+                    };
+                    set_text(f.urls, &format!("https://other.example/clip\r\n{typed}"));
+                    set_text(f.dir, r"Z:\Videos\my ffmpeg tutorials");
+                    set_text(f.filename, "my deno clip.mp4");
+                    let profile = (*raw).app.paths().base_dir.display().to_string();
+                    let download_dir = (*raw).app.snapshot().settings.download_dir;
+                    let own = dialog_own_text(&*raw);
+                    assert_eq!(
+                        own.strings,
+                        [
+                            profile.as_str(),
+                            download_dir.to_string_lossy().as_ref(),
+                            "https://other.example/clip",
+                            typed,
+                            r"Z:\Videos\my ffmpeg tutorials",
+                            "my deno clip.mp4",
+                        ],
+                        "modern {in_modern}: the profile and download folders, each address, the folder and the file name typed here"
+                    );
+                    assert_eq!(
+                        own.tools_dir,
+                        std::path::Path::new(&profile).join("tools"),
+                        "modern {in_modern}"
+                    );
+                    set_dialog_error(
+                        hwnd,
+                        error,
+                        "Install Deno for yt-dlp: ffprobe is missing",
+                        null_mut(),
+                    );
+                    let shown = text(error);
+                    set_dialog_error(
+                        hwnd,
+                        error,
+                        &format!(
+                            r"The download could not be added: ffmpeg failed for {typed}, see https://github.com/yt-dlp/yt-dlp/issues; {profile}\tools\versions\1\ffmpeg\ffmpeg.exe"
+                        ),
+                        null_mut(),
+                    );
+                    let with_paths = text(error);
+                    close_test_dialog(raw, hwnd, root);
+                    assert_eq!(
+                        shown,
+                        format!(
+                            "Install {} for {}: {} is missing",
+                            crate::tools::component_label("deno"),
+                            crate::tools::component_label("yt-dlp"),
+                            crate::tools::component_label("ffprobe")
+                        ),
+                        "modern {in_modern}"
+                    );
+                    let ytdlp = crate::tools::component_label("yt-dlp").replace(' ', "-");
+                    let ffmpeg = crate::tools::component_label("ffmpeg");
+                    let joined = ffmpeg.replace(' ', "-");
+                    assert_eq!(
+                        with_paths,
+                        format!(
+                            r"The download could not be added: {ffmpeg} failed for {typed}, see https://github.com/{ytdlp}/{ytdlp}/issues; {profile}\tools\versions\1\{joined}\{joined}.exe"
+                        ),
+                        "modern {in_modern}: the address typed here stays, the rest is hidden"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn a_status_message_hides_the_programs_of_an_error_and_keeps_the_text_of_the_user() {
+        use super::shown_message;
+        use crate::model::UserMessage;
+        let message = |text: String, error: bool| UserMessage { id: 1, text, error };
+        let profile = std::path::Path::new(r"C:\Users\deno\AppData\Local\SSDownload");
+        let settings = crate::model::Settings::default();
+        let folder = r"C:\Users\deno\Documents\my ffmpeg tutorial\reports";
+        let ready = crate::i18n::ui_format!(
+            "Hata raporu hazır. Klasör: {0} · ZIP: {1}",
+            "Failure report ready. Folder: {0} · ZIP: {1}",
+            folder,
+            format!("{folder}.zip")
+        );
+        assert_eq!(
+            shown_message(&message(ready.clone(), false), profile, &settings),
+            ready
+        );
+        let found = crate::i18n::ui_format!(
+            "Medya bulundu: {0}",
+            "Media found: {0}",
+            "Deno and ffmpeg: a tutorial"
+        );
+        assert_eq!(
+            shown_message(&message(found.clone(), false), profile, &settings),
+            found
+        );
+        let failed = crate::i18n::ui_format!(
+            "Video ve ses desteği: {error:#}",
+            "Video and audio support: {error:#}",
+            error = format!(
+                r"Deno could not start {}\tools\versions\1\deno\deno.exe, see https://github.com/yt-dlp/yt-dlp/issues",
+                profile.display()
+            )
+        );
+        let runtime = crate::tools::component_label("deno");
+        let (joined, ytdlp) = (
+            runtime.replace(' ', "-"),
+            crate::tools::component_label("yt-dlp").replace(' ', "-"),
+        );
+        assert_eq!(
+            shown_message(&message(failed, true), profile, &settings),
+            crate::i18n::ui_format!(
+                "Video ve ses desteği: {error:#}",
+                "Video and audio support: {error:#}",
+                error = format!(
+                    r"{runtime} could not start {}\tools\versions\1\{joined}\{joined}.exe, see https://github.com/{ytdlp}/{ytdlp}/issues",
+                    profile.display()
+                )
+            ),
+            "the folder of the profile stays, the program below it is hidden"
+        );
+    }
+
+    #[test]
+    fn a_status_message_keeps_the_download_and_rule_folders_of_the_user() {
+        use super::shown_message;
+        use crate::model::{Action, AddRequest, DownloadKind, FolderRule, Settings};
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-status-test-{}", uuid::Uuid::new_v4()));
+        let app =
+            crate::app::App::open(crate::paths::AppPaths::new(root.clone()).unwrap()).unwrap();
+        // A folder that is a file cannot be created, so the add fails and the engine names it.
+        let downloads = root.join("my deno downloads");
+        let blocker = root.join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        let rule_folder = blocker.join("my yt-dlp rule folder");
+        let mut settings = app.snapshot().settings;
+        settings.download_dir = downloads.clone();
+        settings.folder_rules = vec![FolderRule {
+            id: "rule".into(),
+            host: "files.example".into(),
+            include_subdomains: true,
+            kinds: Vec::new(),
+            destination: rule_folder.clone(),
+            priority: 1,
+            enabled: true,
+        }];
+        app.dispatch(Action::SetSettings { settings }).unwrap();
+        std::fs::remove_dir(&downloads).unwrap();
+        std::fs::write(&downloads, b"x").unwrap();
+        let base = app.paths().base_dir.clone();
+        for (host, folder, program, tail) in [
+            ("other.example", &downloads, "deno", "downloads"),
+            ("files.example", &rule_folder, "yt-dlp", "rule folder"),
+        ] {
+            let request = AddRequest {
+                url: format!("http://{host}/clip.zip"),
+                kind: DownloadKind::File,
+                ..Default::default()
+            };
+            app.dispatch(Action::Add { request }).unwrap_err();
+            let snapshot = app.snapshot();
+            let item = snapshot
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.error)
+                .expect("the failed add is reported on the status line");
+            let folder = folder.display().to_string();
+            let shown = shown_message(item, &base, &snapshot.settings);
+            assert!(shown.contains(&folder), "{host}: {shown}");
+            // Without the folder among the settings the name inside it is a program name.
+            let hidden = shown_message(item, &base, &Settings::default());
+            let label = crate::tools::component_label(program);
+            assert!(
+                hidden.contains(&format!("my {label} {tail}")),
+                "{host}: {hidden}"
+            );
+        }
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dialog_error_line_keeps_the_download_folder_the_user_typed() {
+        use super::{set_dialog_error, set_text, text, DialogKind, D_ADD_OK};
+        let typed_folder = |dialog: &HiddenDialog| {
+            // A folder below a file cannot be created, so the engine names the folder it was given.
+            let blocker = dialog.root.join("blocker");
+            std::fs::write(&blocker, b"x").unwrap();
+            blocker.join("my ffmpeg tutorials").display().to_string()
+        };
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let folder = typed_folder(dialog);
+            unsafe {
+                set_text(f.urls, "http://127.0.0.1:9/clip.zip");
+                set_text(f.dir, &folder);
+                command(dialog, D_ADD_OK);
+                let shown = text(dialog.error_line());
+                assert!(dialog.is_open(), "the add failed: {shown}");
+                assert!(shown.contains(&folder), "{shown}");
+                // A path the user never typed here keeps its folder names too: the word is a path.
+                let other = r"Z:\Videos\ffmpeg tutorials";
+                let error = format!("The download folder could not be created: {other}");
+                set_dialog_error(
+                    dialog.hwnd,
+                    dialog.error_line(),
+                    &error,
+                    std::ptr::null_mut(),
+                );
+                assert_eq!(text(dialog.error_line()), error);
+            }
+        });
+        with_dialog(
+            || settings_kind(crate::model::UiMode::Advanced),
+            720,
+            420,
+            |dialog| {
+                let DialogKind::Settings(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                let folder = typed_folder(dialog);
+                let error = format!(
+                    "Settings could not be saved: The download folder could not be created: {folder}"
+                );
+                unsafe {
+                    set_text(f.dir, &folder);
+                    set_dialog_error(
+                        dialog.hwnd,
+                        dialog.error_line(),
+                        &error,
+                        std::ptr::null_mut(),
+                    );
+                    assert_eq!(text(dialog.error_line()), error);
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn a_dialog_holds_the_folders_addresses_and_names_typed_in_it_as_the_users_own() {
+        use super::{dialog_own_text, set_text, DialogKind};
+        let folder = r"Z:\Videos\my ffmpeg tutorials";
+        let address = "https://files.example/yt-dlp-guide.zip";
+        let name = "my deno clip.mp4";
+        // What the dialog holds of the typed `expected` strings: those it leaves out.
+        let missing = |dialog: &HiddenDialog, expected: &[&str]| -> Vec<String> {
+            let own = unsafe { dialog_own_text(&*dialog.raw).strings };
+            expected
+                .iter()
+                .filter(|text| !own.iter().any(|part| part == *text))
+                .map(|text| text.to_string())
+                .collect()
+        };
+        let mut left_out = Vec::new();
+        left_out.extend(with_dialog(
+            || settings_kind(crate::model::UiMode::Advanced),
+            720,
+            420,
+            |dialog| {
+                let DialogKind::Settings(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                unsafe { set_text(f.dir, &format!(" {folder} ")) };
+                missing(dialog, &[folder])
+            },
+        ));
+        left_out.extend(with_dialog(rules_kind, 700, 470, |dialog| {
+            let DialogKind::Rules(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe { set_text(f.dir, folder) };
+            missing(dialog, &[folder])
+        }));
+        left_out.extend(with_dialog(sync_kind, 700, 470, |dialog| {
+            let DialogKind::Synchronization(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe {
+                set_text(f.dir, folder);
+                set_text(f.url, address);
+            }
+            missing(dialog, &[folder, address])
+        }));
+        left_out.extend(with_dialog(
+            || {
+                let mut kind = media_kind();
+                if let DialogKind::Media(f) = &mut kind {
+                    f.base.directory = Some(folder.into());
+                }
+                kind
+            },
+            640,
+            420,
+            |dialog| {
+                let DialogKind::Media(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                unsafe { set_text(f.name, name) };
+                missing(dialog, &[folder, name])
+            },
+        ));
+        assert!(
+            left_out.is_empty(),
+            "typed in a dialog but not among the user's own: {left_out:?}"
+        );
     }
 
     #[test]
@@ -11937,21 +12410,94 @@ mod tests {
     }
 
     #[test]
-    fn user_facing_text_never_names_the_managed_components_outside_developer_mode() {
-        let raw = "yt-dlp sürüm bilgisi alınamadı: ffprobe ve FFmpeg denetlenemedi, Deno eksik";
-        let shown = super::display_text(false, raw);
-        for name in ["yt-dlp", "ffprobe", "FFmpeg", "Deno"] {
-            assert!(
-                !shown.contains(name),
-                "{name} kullanıcı metnine sızdı: {shown}"
-            );
+    fn the_media_tools_report_names_no_program_behind_a_component_in_any_language() {
+        use crate::model::{ToolInfo, ToolProgress};
+        let versions = [
+            ("yt-dlp", "2026.03.17"),
+            (
+                "FFmpeg",
+                "ffmpeg version n9.0-12-gabcdef Copyright (c) 2000-2026 the FFmpeg developers",
+            ),
+            (
+                "ffprobe",
+                "ffprobe version n9.0-12-gabcdef Copyright (c) 2000-2026 the FFmpeg developers",
+            ),
+            (
+                "Deno",
+                "deno 2.5.6 (stable, release, x86_64-pc-windows-msvc)",
+            ),
+        ];
+        let tools: Vec<_> = versions
+            .iter()
+            .map(|(name, version)| ToolInfo {
+                name: (*name).into(),
+                installed: true,
+                version: (*version).into(),
+                path: std::path::PathBuf::from(format!(
+                    r"C:\data\tools\versions\1\{name}\{name}.exe"
+                )),
+            })
+            .collect();
+        let progress = ToolProgress {
+            name: "FFmpeg".into(),
+            message: "Downloading yt-dlp.exe and deno".into(),
+            downloaded: 10,
+            total: Some(20),
+        };
+        let folder = std::path::Path::new(r"C:\data\tools");
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let report = super::tools_report(&tools, Some(&progress), folder);
+                let lower = report.to_lowercase();
+                for name in ["ffmpeg", "ffprobe", "yt-dlp", "deno"] {
+                    assert!(!lower.contains(name), "{}: {name} in {report}", info.code);
+                }
+                for (name, _) in versions {
+                    assert!(
+                        report.contains(&format!("{}\r\n  ", crate::tools::component_title(name))),
+                        "{}: {name} is named by what it does: {report}",
+                        info.code
+                    );
+                }
+                assert_eq!(
+                    report.matches(r"C:\data\tools").count(),
+                    4,
+                    "{}: each component names the folder that holds them: {report}",
+                    info.code
+                );
+                assert!(report.contains("2026.03.17"), "{}: {report}", info.code);
+                assert!(
+                    report.contains("n9.0-12-gabcdef"),
+                    "{}: {report}",
+                    info.code
+                );
+            });
         }
-        // ffprobe is its own word, not a fragment of the FFmpeg rule, and the
-        // rest of the sentence is untouched.
-        assert!(shown.contains("dönüştürücü ve dönüştürücü"), "{shown}");
-        assert!(shown.contains("sürüm bilgisi alınamadı"), "{shown}");
-        // The developer surface keeps the upstream names verbatim.
-        assert_eq!(super::display_text(true, raw), raw);
+    }
+
+    #[test]
+    fn the_media_tools_report_keeps_the_profile_folder_and_hides_the_programs_below_it() {
+        use crate::model::ToolProgress;
+        let folder = std::path::Path::new(r"C:\Users\Deno\AppData\Local\SSDownload\tools");
+        let progress = ToolProgress {
+            name: "yt-dlp".into(),
+            message: format!(
+                r"Verifying {}\.staging-3\yt-dlp\yt-dlp.exe",
+                folder.display()
+            ),
+            downloaded: 10,
+            total: Some(20),
+        };
+        let report =
+            crate::i18n::with_language("en", || super::tools_report(&[], Some(&progress), folder));
+        assert!(
+            report.contains(&format!(
+                r"Verifying {}\.staging-3\media-component\media-component.exe",
+                folder.display()
+            )),
+            "{report}"
+        );
+        assert_eq!(report.to_lowercase().matches("deno").count(), 1, "{report}");
     }
 
     #[test]
@@ -12741,7 +13287,7 @@ mod tests {
                 ] {
                     snapshot.jobs = std::sync::Arc::new(vec![sample_job("job", state)]);
                     if let DialogKind::Progress(f) = &mut (*raw).kind {
-                        refresh_job_view(hwnd, error, f, &snapshot);
+                        refresh_job_view(hwnd, error, f, &snapshot, &(*raw).app.paths().base_dir);
                         shown.push(progress_state(f.progress));
                     }
                 }
@@ -12863,7 +13409,7 @@ mod tests {
                     job.downloaded = 1_400_000_000;
                     snapshot.jobs = std::sync::Arc::new(vec![job]);
                     if let DialogKind::Progress(f) = &mut (*raw).kind {
-                        refresh_job_view(hwnd, error, f, &snapshot);
+                        refresh_job_view(hwnd, error, f, &snapshot, &(*raw).app.paths().base_dir);
                     }
                 };
                 let DialogKind::Progress(f) = &(*raw).kind else {
@@ -17536,7 +18082,9 @@ mod tests {
 
     #[test]
     fn the_about_box_ends_with_ok_which_is_the_default_and_the_answer_to_escape() {
-        use super::{about_buttons, run_alert_buttons, ABOUT_COPY, ABOUT_FLAGS, ABOUT_NOTES};
+        use super::{
+            about_buttons, run_alert_buttons, ABOUT_COPY, ABOUT_FLAGS, ABOUT_LICENSES, ABOUT_NOTES,
+        };
         use windows_sys::Win32::UI::WindowsAndMessaging::IDOK;
 
         let about = || unsafe {
@@ -17551,7 +18099,10 @@ mod tests {
         let (answer, buttons) = answer_alert(about, press_escape);
         assert_eq!(answer, Some(IDOK), "Escape answers OK");
         let (from_the_left, tab_order) = alert_order(&buttons);
-        assert_eq!(from_the_left, [ABOUT_COPY, ABOUT_NOTES, IDOK]);
+        assert_eq!(
+            from_the_left,
+            [ABOUT_COPY, ABOUT_NOTES, ABOUT_LICENSES, IDOK]
+        );
         assert_eq!(tab_order, from_the_left, "Tab follows the buttons");
         assert_eq!(
             buttons
@@ -17562,12 +18113,108 @@ mod tests {
             [IDOK],
             "OK is the default button"
         );
-        for (index, expected) in [ABOUT_COPY, ABOUT_NOTES, IDOK].into_iter().enumerate() {
+        for (index, expected) in [ABOUT_COPY, ABOUT_NOTES, ABOUT_LICENSES, IDOK]
+            .into_iter()
+            .enumerate()
+        {
             let (answer, _) = answer_alert(about, click_button(index));
             assert_eq!(
                 answer,
                 Some(expected),
                 "button {index} from the left closes the box"
+            );
+        }
+    }
+
+    #[test]
+    fn the_about_text_is_ssdownload_s_own_and_names_no_other_program() {
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let text = super::about_text();
+                let language = info.code;
+                assert!(
+                    text.starts_with(&format!("SSDownload {}\n", env!("CARGO_PKG_VERSION"))),
+                    "{language}: {text}"
+                );
+                assert_eq!(
+                    text.lines().filter(|line| !line.is_empty()).count(),
+                    3,
+                    "{language}: the version, the description and the DRM note only: {text}"
+                );
+                let lower = text.to_lowercase();
+                for name in ["ffmpeg", "ffprobe", "yt-dlp", "deno", "btbn"] {
+                    assert!(!lower.contains(name), "{language}: {name} in {text}");
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn the_licenses_button_opens_the_notices_file_of_this_version_that_the_repository_holds() {
+        let url = super::licenses_url();
+        let path = url
+            .strip_prefix(&format!(
+                "https://github.com/isolmaz/SSDownload/blob/v{}/",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .unwrap_or_else(|| panic!("not the tag of this version: {url}"));
+        assert!(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(path)
+                .is_file(),
+            "{path} is not in the repository"
+        );
+    }
+
+    #[test]
+    fn the_about_buttons_open_the_release_notes_and_the_licenses_of_this_version() {
+        use super::{about_link, licenses_url, ABOUT_COPY, ABOUT_LICENSES, ABOUT_NOTES};
+        use windows_sys::Win32::UI::WindowsAndMessaging::IDOK;
+        assert_eq!(
+            about_link(ABOUT_NOTES).as_deref(),
+            Some("https://ssdownload.isolmaz.com/changelog.html")
+        );
+        assert_eq!(about_link(ABOUT_LICENSES), Some(licenses_url()));
+        assert_eq!(about_link(ABOUT_COPY), None);
+        assert_eq!(about_link(IDOK), None);
+    }
+
+    #[test]
+    fn the_packages_ship_no_license_files_and_the_installer_removes_old_copies() {
+        let read = |path: &str| {
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .unwrap_or_else(|error| panic!("{path}: {error}"))
+        };
+        let package = read("scripts/package.ps1");
+        let inventory = read("scripts/release-inventory.py");
+        let installer = read("packaging/installer.nsi");
+        for line in package.lines() {
+            let lower = line.to_lowercase();
+            assert!(
+                !lower.contains("third-party") && !lower.contains("licenses"),
+                "the portable ZIP gets no license files: {line}"
+            );
+        }
+        assert!(
+            !inventory.contains("copyfile") && !inventory.contains("copytree"),
+            "the inventory copies no license texts into the package"
+        );
+        for line in installer.lines().map(str::trim) {
+            let lower = line.to_lowercase();
+            if lower.starts_with("file ") || lower.starts_with("setoutpath ") {
+                assert!(
+                    !lower.contains("third-party") && !lower.contains("licenses"),
+                    "the installer installs no license files: {line}"
+                );
+            }
+        }
+        for removal in [
+            r#"Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt""#,
+            r#"RMDir /r "$INSTDIR\licenses""#,
+        ] {
+            assert!(
+                installer.lines().any(|line| line.trim() == removal),
+                "an installer upgrade removes the copy an earlier version installed: {removal}"
             );
         }
     }
@@ -20859,7 +21506,13 @@ mod tests {
                                 unreachable!()
                             };
                             f.ids = vec![failed.id.clone()];
-                            native::refresh_job_view(ui.hwnd, ui.error, f, &snapshot);
+                            native::refresh_job_view(
+                                ui.hwnd,
+                                ui.error,
+                                f,
+                                &snapshot,
+                                &ui.app.paths().base_dir,
+                            );
                             let (action, report) = (f.action, f.report);
                             assert_eq!(
                                 native::text(action),

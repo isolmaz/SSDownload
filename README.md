@@ -63,6 +63,6 @@ Checks run locally with `scripts\check.ps1` and on every pull request in GitHub 
 
 ## License
 
-[MIT](LICENSE.txt). yt-dlp, FFmpeg and Deno are not bundled; the app downloads them from their official releases. See [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
+[MIT](LICENSE.txt). yt-dlp, FFmpeg and Deno are not bundled; the app downloads them from their official releases. See [THIRD-PARTY-NOTICES.txt](https://github.com/isolmaz/SSDownload/blob/main/THIRD-PARTY-NOTICES.txt).
 
 Download only content you have the right to download. DRM-protected streams are not supported.

@@ -85,6 +85,35 @@ test("every language has the same keys and placeholders as English, none empty",
   assert.deepEqual(identical.sort(), ["kindVideo", "playerTitleFallback", "popupKindVideo", "videoTitleFallback"]);
 });
 
+// The em dash (U+2014) is left out of every text the user reads, and so are the names of the programs
+// the app downloads for media support; the pages say "media components" instead.
+const forbiddenIn = (where, text) => [
+  ...(/\u2014/.test(text) ? [`${where}: em dash`] : []),
+  ...(/ffmpeg|ffprobe|yt-dlp|\bdeno\b|btbn/i.test(text) ? [`${where}: names a media tool`] : [])
+];
+
+test("the scan for em dashes and media tool names finds both", () => {
+  assert.deepEqual(forbiddenIn("x", "a \u2014 b"), ["x: em dash"]);
+  assert.deepEqual(forbiddenIn("x", "Needs FFmpeg"), ["x: names a media tool"]);
+  assert.deepEqual(forbiddenIn("x", "yt-dlp \u2014 Deno"), ["x: em dash", "x: names a media tool"]);
+  assert.deepEqual(forbiddenIn("x", "Denote a hyphen - and a media component"), []);
+});
+
+test("no text the extension shows has an em dash or names a media tool", () => {
+  const { MESSAGES } = catalog();
+  const found = [];
+  for (const [language, texts] of Object.entries(MESSAGES)) {
+    for (const [key, text] of Object.entries(texts)) found.push(...forbiddenIn(`${language}/${key}`, text));
+  }
+  for (const name of fs.readdirSync(path.join(extensionDir, "_locales"))) {
+    for (const [key, entry] of Object.entries(json(`_locales/${name}/messages.json`))) {
+      found.push(...forbiddenIn(`_locales/${name}/${key}`, `${entry.message} ${entry.description}`));
+    }
+  }
+  for (const name of [...pages, "manifest.json", "codes.js"]) found.push(...forbiddenIn(name, read(name)));
+  assert.deepEqual(found, []);
+});
+
 test("every key the code asks for exists and no key is dead", () => {
   const { MESSAGES } = catalog();
   const used = new Map();

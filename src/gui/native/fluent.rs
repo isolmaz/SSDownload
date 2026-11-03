@@ -3763,7 +3763,7 @@ unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
             }
             text.left += slot + pad;
         }
-        let empty = length == 1 && buffer[0] == '—' as u16;
+        let empty = length == 1 && buffer[0] == '-' as u16;
         SetTextColor(
             dc,
             if column == COL_LOCATION || empty {
@@ -4179,7 +4179,7 @@ mod tests {
                 let card = control(
                     parent,
                     "BUTTON",
-                    "Basic — downloads",
+                    "Basic - downloads",
                     WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
                     0,
                     ID_WIZARD_SIMPLE,
@@ -4246,7 +4246,7 @@ mod tests {
                     let card = control(
                         parent,
                         "BUTTON",
-                        "Advanced — queues, rules, crawler, sync, logs",
+                        "Advanced - queues, rules, crawler, sync, logs",
                         WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
                         0,
                         ID_WIZARD_ADVANCED,

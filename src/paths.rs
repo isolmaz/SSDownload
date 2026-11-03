@@ -31,7 +31,7 @@ impl AppPaths {
         let download_dir = default_download_dir(&base_dir);
         let value = Self {
             database: base_dir.join(DATABASE_FILE),
-            tools_dir: base_dir.join("tools"),
+            tools_dir: tools_dir_of(&base_dir),
             base_dir,
             download_dir,
         };
@@ -54,6 +54,11 @@ impl AppPaths {
         let digest = Sha256::digest(path.to_string_lossy().to_lowercase().as_bytes());
         format!(r"\\.\pipe\SSDownload-{}", hex::encode(&digest[..12]))
     }
+}
+
+/// The folder of a profile that holds the media components the application installs.
+pub(crate) fn tools_dir_of(base_dir: &Path) -> PathBuf {
+    base_dir.join("tools")
 }
 
 /// Resolves the application profile directory without constructing `AppPaths`.

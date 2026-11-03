@@ -109,16 +109,15 @@ try {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot $Doc) -Destination $PackageRoot
     }
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'LICENSE.txt') -Destination $PackageRoot
-    Copy-Item -LiteralPath (Join-Path $ProjectRoot 'THIRD-PARTY-NOTICES.txt') -Destination $PackageRoot
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'assets\app.ico') -Destination $PackageRoot
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'packaging\register-native-host.cmd') -Destination $PackageRoot
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'packaging\unregister-native-host.cmd') -Destination $PackageRoot
 
-    $InventoryArgs = @((Join-Path $PSScriptRoot 'release-inventory.py'), '--output', $PackageRoot, '--nsis', $Makensis)
+    $InventoryArgs = @((Join-Path $PSScriptRoot 'release-inventory.py'), '--output', $PackageRoot)
     if ($Toolchain) { $InventoryArgs += @('--toolchain', $Toolchain) }
     if ($Offline) { $InventoryArgs += '--offline' }
     & python @InventoryArgs
-    if ($LASTEXITCODE) { throw 'License inventory generation failed' }
+    if ($LASTEXITCODE) { throw 'SBOM generation failed' }
     if ($Signing) {
         & (Join-Path $PSScriptRoot 'sign.ps1') -Path (Join-Path $PackageRoot 'ssdownload.exe') @SignArgs
         & (Join-Path $PSScriptRoot 'sign.ps1') -Path (Join-Path $PackageRoot 'ssdownload-cli.exe') @SignArgs

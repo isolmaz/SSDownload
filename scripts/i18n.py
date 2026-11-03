@@ -11,8 +11,9 @@ English text in `i18n/<code>.json`, a JSON object from English text to translati
                                      placeholder or menu marker a translation changes, two items
                                      of one menu that share an access letter in any language, a
                                      text the extractor cannot read, a window text written as a
-                                     bare literal instead of through ui(), or an out-of-date
-                                     i18n_catalog.rs
+                                     bare literal instead of through ui(), an em dash in a
+                                     string of the sources or a catalog, a media tool name in a
+                                     text the user reads, or an out-of-date i18n_catalog.rs
 """
 import json
 import pathlib
@@ -488,8 +489,78 @@ def bare_text_scan_problems():
     return [f"the bare-literal scan misreads its fixture: {found}"]
 
 
+# The user reads no em dash (U+2014), and no text names the programs the app downloads for media
+# support: the texts say "media components" and name what each one does.
+EM_DASH = "\u2014"
+MEDIA_TOOL_NAME = re.compile(r"ffmpeg|ffprobe|yt-dlp|\bdeno\b|btbn", re.I)
+
+
+def forbidden_in(text):
+    found = []
+    if EM_DASH in text:
+        found.append("an em dash")
+    if MEDIA_TOOL_NAME.search(text):
+        found.append("a media tool name")
+    return found
+
+
+def string_literals(source):
+    """(line, value) of every string literal of Rust `source`; comments are left out."""
+    text = code_only(source)
+    found, index = [], 0
+    while index < len(text):
+        if is_string_start(text, index):
+            end = skip_string(text, index)
+            value = literal_value(text[index:end])
+            if value is not None:
+                found.append((text[:index].count("\n") + 1, value))
+            index = end
+        elif text[index] == "'":
+            after = skip_char(text, index)
+            index = after if after != index else index + 1
+        else:
+            index += 1
+    return found
+
+
+def forbidden_text_problems(extraction, catalogs):
+    problems = []
+    for en, entry in extraction.entries.items():
+        for text in [en, *entry["tr"]]:
+            for kind in forbidden_in(text):
+                problems.append(f"{entry['where'][0]}: {json.dumps(text, ensure_ascii=False)[:80]} has {kind}")
+    for code, catalog in catalogs.items():
+        for en, translation in catalog.items():
+            if en in extraction.entries and isinstance(translation, str):
+                for kind in forbidden_in(translation):
+                    problems.append(f"i18n/{code}.json: the translation of {json.dumps(en, ensure_ascii=False)[:60]} has {kind}")
+    for path in sorted(SOURCE.rglob("*.rs")):
+        if path == GENERATED:
+            continue
+        for line, value in string_literals(path.read_text(encoding="utf-8")):
+            if EM_DASH in value:
+                problems.append(f"{path.relative_to(ROOT).as_posix()}:{line}: a string has an em dash; use a hyphen, a colon or a comma")
+    return problems
+
+
+# An em dash in a comment is not a text; one in a string, written out or escaped, is.
+FORBIDDEN_FIXTURE = "\n".join([
+    'let a = "Wait \u2014 here"; // a note \u2014 in a comment',
+    'let b = "' + chr(92) + 'u{2014}"; let c = "x";',
+])
+
+
+def forbidden_scan_problems():
+    """The scans for an em dash and a media tool name find what they must and nothing else."""
+    literals = string_literals(FORBIDDEN_FIXTURE)
+    names = [forbidden_in(text) for text in ("Processing with FFmpeg", "ytdlp is fine", "Deno 2", "a denote", "plain \u2014 text")]
+    if [line for line, value in literals if EM_DASH in value] == [1, 2] and names == [["a media tool name"], [], ["a media tool name"], [], ["an em dash"]]:
+        return []
+    return [f"the em dash and tool name scans misread their fixtures: {literals} {names}"]
+
+
 def check(extraction):
-    problems = list(extraction.problems) + bare_texts() + bare_text_scan_problems()
+    problems = list(extraction.problems) + bare_texts() + bare_text_scan_problems() + forbidden_scan_problems()
     catalogs = {}
     for code, _ in LANGUAGES:
         catalog = catalogs[code] = load_catalog(code)
@@ -513,6 +584,7 @@ def check(extraction):
             if en.endswith("\n") != translation.endswith("\n") or en.startswith("\n") != translation.startswith("\n"):
                 problems.append(f"{label}: leading or trailing line breaks differ")
     problems += menu_letter_clashes(catalogs)
+    problems += forbidden_text_problems(extraction, catalogs)
     if not GENERATED.exists() or GENERATED.read_text(encoding="utf-8") != generate(extraction):
         problems.append("src/i18n_catalog.rs is out of date: run python scripts/i18n.py build")
     return problems

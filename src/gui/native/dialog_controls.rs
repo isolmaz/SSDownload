@@ -119,8 +119,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Basit — indirmeler ve temel ayarlar",
-                    "Basic — essential downloads and settings",
+                    "Basit - indirmeler ve temel ayarlar",
+                    "Basic - essential downloads and settings",
                 ),
                 ID_WIZARD_SIMPLE,
             );
@@ -128,8 +128,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Gelişmiş — kuyruk, kurallar, gezgin, eşitleme, günlükler",
-                    "Advanced — queues, rules, crawler, sync, logs",
+                    "Gelişmiş - kuyruk, kurallar, gezgin, eşitleme, günlükler",
+                    "Advanced - queues, rules, crawler, sync, logs",
                 ),
                 ID_WIZARD_ADVANCED,
             );
@@ -138,8 +138,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Klasik — sade Windows görünümü",
-                    "Classic — the plain Windows look",
+                    "Klasik - sade Windows görünümü",
+                    "Classic - the plain Windows look",
                 ),
                 ID_WIZARD_CLASSIC,
             );
@@ -147,8 +147,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Modern — Windows 11 görünümü",
-                    "Modern — the Windows 11 look",
+                    "Modern - Windows 11 görünümü",
+                    "Modern - the Windows 11 look",
                 ),
                 ID_WIZARD_MODERN,
             );
@@ -165,8 +165,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Video — kalite, ses parçası, altyazı",
-                    "Video — quality, tracks, subtitles",
+                    "Video - kalite, ses parçası, altyazı",
+                    "Video - quality, tracks, subtitles",
                 ),
                 ID_WIZARD_VIDEO,
             );
@@ -174,8 +174,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Dosya — normal dosya bağlantıları",
-                    "File — regular file links",
+                    "Dosya - normal dosya bağlantıları",
+                    "File - regular file links",
                 ),
                 ID_WIZARD_FILE,
             );
@@ -183,8 +183,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Ses — sayfalardan yalnız ses",
-                    "Audio — audio only from pages and links",
+                    "Ses - sayfalardan yalnız ses",
+                    "Audio - audio only from pages and links",
                 ),
                 ID_WIZARD_AUDIO,
             );
@@ -629,8 +629,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Deneysel tarayıcı aktarımını etkinleştir — büyük dosyalarda bellek ve bütünlük sınırları geçerlidir",
-                    "Enable experimental browser transfer — memory and integrity limits apply to large files",
+                    "Deneysel tarayıcı aktarımını etkinleştir: büyük dosyalarda bellek ve bütünlük sınırları geçerlidir",
+                    "Enable experimental browser transfer: memory and integrity limits apply to large files",
                 ),
                 ID_SETTINGS_BROWSER_TRANSFER,
             );
@@ -1023,8 +1023,8 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 dlg.hwnd,
                 dlg.font,
                 crate::i18n::ui(
-                    "Video/ses indirmeleri için yt-dlp, FFmpeg ve Deno durumları:",
-                    "yt-dlp, FFmpeg and Deno status for video/audio downloads:",
+                    "Video/ses indirmeleri için medya bileşenlerinin durumu:",
+                    "Status of the media components for video/audio downloads:",
                 ),
                 0,
             );
@@ -2123,7 +2123,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             apply_font(f.list, dlg.font);
             for (index, (tr, en)) in JOB_FACTS.iter().enumerate() {
                 dialog_label(dlg.hwnd, dlg.font, crate::i18n::ui(tr, en), 0);
-                f.facts[index] = dialog_label(dlg.hwnd, dlg.font, "—", P_FACTS + index as i32);
+                f.facts[index] = dialog_label(dlg.hwnd, dlg.font, "-", P_FACTS + index as i32);
             }
             f.progress = control(
                 dlg.hwnd,
