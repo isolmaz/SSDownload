@@ -8195,6 +8195,9 @@ macro_rules! __ui_template_ar {
     ("{0} address(es) exported: {1}") => {
         "تم تصدير {0} من العناوين: {1}"
     };
+    ("{0} checksum") => {
+        "المجموع الاختباري لـ {0}"
+    };
     ("{0} connections") => {
         "الاتصالات: {0}"
     };
@@ -9051,6 +9054,9 @@ macro_rules! __ui_template_es {
     };
     ("{0} address(es) exported: {1}") => {
         "{0} dirección(es) exportada(s): {1}"
+    };
+    ("{0} checksum") => {
+        "Suma de comprobación de {0}"
     };
     ("{0} connections") => {
         "{0} conexiones"
@@ -9909,6 +9915,9 @@ macro_rules! __ui_template_pt {
     ("{0} address(es) exported: {1}") => {
         "{0} endereço(s) exportado(s): {1}"
     };
+    ("{0} checksum") => {
+        "Soma de verificação de {0}"
+    };
     ("{0} connections") => {
         "{0} conexões"
     };
@@ -10766,6 +10775,9 @@ macro_rules! __ui_template_fr {
     ("{0} address(es) exported: {1}") => {
         "{0} adresse(s) exportée(s) : {1}"
     };
+    ("{0} checksum") => {
+        "Somme de contrôle de {0}"
+    };
     ("{0} connections") => {
         "{0} connexions"
     };
@@ -11622,6 +11634,9 @@ macro_rules! __ui_template_de {
     };
     ("{0} address(es) exported: {1}") => {
         "{0} Adresse(n) exportiert: {1}"
+    };
+    ("{0} checksum") => {
+        "Prüfsumme von {0}"
     };
     ("{0} connections") => {
         "{0} Verbindungen"

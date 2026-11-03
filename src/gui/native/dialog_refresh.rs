@@ -78,7 +78,6 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             let body = tools_report(
                 &snapshot.tools,
                 snapshot.tool_progress.as_ref(),
-                snapshot.settings.debug_mode,
                 &dlg.app.paths().tools_dir,
             );
             if let Some(p) = &snapshot.tool_progress {
@@ -322,9 +321,8 @@ pub(super) unsafe fn refresh_job_view(
             can_open = job.state == JobState::Completed && job.remove_requested.is_none();
         }
     }
-    // The detail names the components the way the rest of the surface does; a
-    // phase or a failure reason can carry an upstream name.
-    let detail = display_text(snapshot.settings.debug_mode, &detail);
+    // A phase or a failure reason can carry the name of a program behind a component.
+    let detail = without_component_names(&detail);
     if detail != f.rendered {
         set_text(f.status, &detail);
         // Modern shows the status's scroll bar only while the text overflows.
@@ -1724,36 +1722,30 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
     result
 }
 
-/// The media tools report. Outside developer mode it names each component by what it does
-/// and gives the folder that holds them, not the upstream project and the file of each.
+/// The media tools report: each component by what it does, and the folder that holds them
+/// instead of the file of each.
 pub(super) fn tools_report(
     tools: &[crate::model::ToolInfo],
     progress: Option<&ToolProgress>,
-    debug: bool,
     tools_dir: &Path,
 ) -> String {
     let mut body = String::new();
     for tool in tools {
-        let location = if debug {
-            tool.path.as_path()
-        } else {
-            tools_dir
-        };
         body.push_str(&crate::i18n::ui_format!(
             "{0}\r\n  Durum: {1}\r\n  Sürüm: {2}\r\n  Konum: {3}\r\n\r\n",
             "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n",
-            display_text(debug, &tool.name),
+            crate::tools::component_title(&tool.name),
             if tool.installed {
                 crate::i18n::ui("Kurulu", "Installed")
             } else {
                 crate::i18n::ui("Kurulu değil", "Not installed")
             },
             if tool.version.is_empty() {
-                "-"
+                "-".to_string()
             } else {
-                &tool.version
+                without_component_names(&tool.version)
             },
-            location.display()
+            tools_dir.display()
         ));
     }
     if body.is_empty() {
@@ -1766,8 +1758,8 @@ pub(super) fn tools_report(
         body.push_str(&crate::i18n::ui_format!(
             "\r\n{0}: {1}\r\nİndirilen: {2}{3}",
             "\r\n{0}: {1}\r\nDownloaded: {2}{3}",
-            display_text(debug, &p.name),
-            display_text(debug, &p.message),
+            without_component_names(&p.name),
+            without_component_names(&p.message),
             format_bytes(p.downloaded),
             p.total
                 .map(|t| format!(" / {}", format_bytes(t)))

@@ -1652,6 +1652,7 @@
   "Status of the media components for video/audio downloads:": "حالة مكوّنات الوسائط لتنزيلات الفيديو والصوت:",
   "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n": "{0}\r\n  الحالة: {1}\r\n  الإصدار: {2}\r\n  الموقع: {3}\r\n\r\n",
   "{0} address(es) exported: {1}": "تم تصدير {0} من العناوين: {1}",
+  "{0} checksum": "المجموع الاختباري لـ {0}",
   "{0} connections": "الاتصالات: {0}",
   "{0} could not be created": "تعذّر إنشاء {0}",
   "{0} could not be opened": "تعذّر فتح {0}",

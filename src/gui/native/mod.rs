@@ -7,6 +7,7 @@ use crate::{
         MediaLaunch, QueuePolicy, Settings, SiteCrawlRequest, SiteCrawlResult, SubtitleSelection,
         SubtitleTrack, SyncPolicy, ToolProgress, UiMode, UsageModes, ONBOARDING_VERSION,
     },
+    tools::without_component_names,
 };
 use anyhow::{bail, Result};
 use chrono::{Local, NaiveDateTime, TimeZone};
@@ -959,40 +960,6 @@ impl Drop for OleGuard {
     }
 }
 
-/// Component names as the user reads them. Outside developer mode the surface
-/// names what a component does instead of the upstream project it comes from;
-/// logs, the job log and the diagnostics package keep the raw text, which is
-/// why this is applied where the user reads it and nowhere else. Longest match
-/// first, so `ffprobe` is never eaten by `FFmpeg`.
-fn hidden_tool_names(text: &str) -> String {
-    let mut value = std::borrow::Cow::Borrowed(text);
-    for (name, replacement) in [
-        (
-            "ffprobe",
-            crate::i18n::ui("medya inceleyici", "media inspector"),
-        ),
-        ("FFmpeg", crate::i18n::ui("dönüştürücü", "converter")),
-        (
-            "yt-dlp",
-            crate::i18n::ui("medya bileşeni", "media component"),
-        ),
-        ("Deno", crate::i18n::ui("çalıştırma ortamı", "runtime")),
-    ] {
-        if value.contains(name) {
-            value = std::borrow::Cow::Owned(value.replace(name, replacement));
-        }
-    }
-    value.into_owned()
-}
-/// User-facing text of one snapshot string: raw in developer mode, named by
-/// what it does otherwise.
-fn display_text(debug_mode: bool, text: &str) -> String {
-    if debug_mode {
-        text.to_string()
-    } else {
-        hidden_tool_names(text)
-    }
-}
 unsafe fn set_text(hwnd: HWND, value: &str) {
     if text(hwnd) != value {
         SetWindowTextW(hwnd, wide(value).as_ptr());
@@ -3516,8 +3483,7 @@ unsafe fn create_main_menu(mode: UiMode, debug: bool) -> HMENU {
             crate::i18n::ui("İş günl&üğü...", "Job &log..."),
         );
     }
-    // The media-tools surface is a developer/repair surface: it names the
-    // external media tools, so it only exists in developer mode.
+    // The media-tools surface is a repair surface and only exists in developer mode.
     if debug {
         append(
             tools,
@@ -4800,6 +4766,15 @@ fn licenses_url() -> String {
     )
 }
 
+/// The page an About button opens, `None` for the buttons that open none.
+fn about_link(button: i32) -> Option<String> {
+    match button {
+        ABOUT_NOTES => Some("https://ssdownload.isolmaz.com/changelog.html".to_string()),
+        ABOUT_LICENSES => Some(licenses_url()),
+        _ => None,
+    }
+}
+
 /// What the About box says: SSDownload's version and description only.
 fn about_text() -> String {
     format!(
@@ -4829,22 +4804,19 @@ unsafe fn show_about(ui: &MainUi) {
         Some(ABOUT_COPY) => {
             set_clipboard_text(&body);
         }
-        Some(choice @ (ABOUT_NOTES | ABOUT_LICENSES)) => {
-            let url = if choice == ABOUT_NOTES {
-                "https://ssdownload.isolmaz.com/changelog.html".to_string()
-            } else {
-                licenses_url()
-            };
-            ShellExecuteW(
-                ui.hwnd,
-                wide("open").as_ptr(),
-                wide(&url).as_ptr(),
-                null(),
-                null(),
-                SW_SHOWNORMAL,
-            );
+        Some(choice) => {
+            if let Some(url) = about_link(choice) {
+                ShellExecuteW(
+                    ui.hwnd,
+                    wide("open").as_ptr(),
+                    wide(&url).as_ptr(),
+                    null(),
+                    null(),
+                    SW_SHOWNORMAL,
+                );
+            }
         }
-        _ => {}
+        None => {}
     }
 }
 
@@ -5196,7 +5168,6 @@ fn tool_percent(progress: &ToolProgress) -> Option<u32> {
 /// status line for as long as it lasts.
 unsafe fn refresh_notices(ui: &mut MainUi) {
     let now = Instant::now();
-    let debug = ui.snapshot.settings.debug_mode;
     let progress = ui.snapshot.tool_progress.as_ref();
     let message = progress
         .map(|progress| progress.message.as_str())
@@ -5215,13 +5186,13 @@ unsafe fn refresh_notices(ui: &mut MainUi) {
             notify(ui, NOTICE_TITLE, pending, false);
         } else if ui.dependency_notice.due(message, percent, now) {
             ui.dependency_notice.shown(message, percent, now);
-            let body = notice_body(&display_text(debug, message), percent);
+            let body = notice_body(&without_component_names(message), percent);
             notify(ui, NOTICE_TITLE, &body, false);
         }
         // The same state the balloon carries stays on the status line for as
         // long as the install lasts, so it can be read without waiting for a
         // balloon to appear.
-        let body = notice_body(&display_text(debug, message), percent);
+        let body = notice_body(&without_component_names(message), percent);
         let line = if body.is_empty() {
             pending.to_string()
         } else {
@@ -5276,7 +5247,7 @@ unsafe fn refresh_notices(ui: &mut MainUi) {
     match crate::update::progress() {
         Some(update) => {
             let percent = update.percent();
-            let body = notice_body(&display_text(debug, &update.message), percent);
+            let body = notice_body(&without_component_names(&update.message), percent);
             let notice_title = crate::i18n::ui(UPDATE_NOTICE_TITLE, "SSDownload update");
             let line = if update.version.is_empty() {
                 format!("{notice_title}: {body}")
@@ -5344,7 +5315,7 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     let seen_messages = ui.seen_messages;
     for item in snapshot.messages.iter().filter(|m| m.id > seen_messages) {
         ui.seen_messages = ui.seen_messages.max(item.id);
-        let message = display_text(snapshot.settings.debug_mode, &item.text);
+        let message = without_component_names(&item.text);
         set_text(ui.status, &message);
         if item.error {
             notify(
@@ -5490,10 +5461,7 @@ unsafe fn update_status(ui: &MainUi) {
         ),
     );
     if let Some(warning) = &ui.snapshot.warning {
-        set_text(
-            ui.status,
-            &display_text(ui.snapshot.settings.debug_mode, warning),
-        );
+        set_text(ui.status, &without_component_names(warning));
     }
 }
 
@@ -5948,7 +5916,9 @@ unsafe fn update_details(ui: &MainUi) {
                 }
             }
             (_, [job]) => match &job.error {
-                Some(error) => error.replace("\r\n", "\n").replace('\n', "\r\n"),
+                Some(error) => without_component_names(error)
+                    .replace("\r\n", "\n")
+                    .replace('\n', "\r\n"),
                 None => crate::i18n::ui(
                     "Bu indirme için bir hata kaydedilmedi.",
                     "No error was recorded for this download.",
@@ -6024,7 +5994,7 @@ unsafe fn update_details(ui: &MainUi) {
         crate::i18n::ui("Zamanlama", "Schedule"), scheduled,
         crate::i18n::ui("Konum", "Location"), job.path.display(),
         crate::i18n::ui("URL", "URL"), display_url(&job.request.url),
-        job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), display_text(ui.snapshot.settings.debug_mode, &error_summary(job, error)))).unwrap_or_default());
+        job.error.as_ref().map(|error| format!("\r\n{}: {}", crate::i18n::ui("Hata", "Error"), without_component_names(&error_summary(job, error)))).unwrap_or_default());
     set_details(ui, &body);
     update_status(ui);
 }
@@ -6541,7 +6511,7 @@ unsafe fn show_job_menu(ui: &mut MainUi, position: LPARAM) {
         if let Some(error) = error {
             message(
                 ui.hwnd,
-                &error,
+                &without_component_names(&error),
                 crate::i18n::ui("Hata ayrıntısı", "Error details"),
                 MB_OK | MB_ICONERROR,
             );
@@ -10130,11 +10100,8 @@ unsafe fn refresh_dialog_fonts(dlg: &mut DialogUi) {
 }
 
 unsafe fn set_dialog_error(hwnd: HWND, error: HWND, value: &str, focus: HWND) {
-    // This line is read by the user, so it names the tools the way the rest of
-    // the surface does; the dialog's own state knows which surface that is.
     let state = dialog_state(hwnd);
-    let debug = !state.is_null() && (*state).app.snapshot().settings.debug_mode;
-    set_text(error, &display_text(debug, value));
+    set_text(error, &without_component_names(value));
     if !focus.is_null() {
         SetFocus(focus);
         if !state.is_null() {
@@ -10979,6 +10946,7 @@ mod tests {
         let facts = job_facts(&media);
         assert_eq!(facts[1], "-", "no size");
         assert_eq!(facts[2], format_bytes(1000));
+        assert_eq!(&facts[3..5], ["-", "-"], "no speed and no time left");
         assert_eq!(&facts[5..], ["-", "-"]);
         // A source that refused a range, and a paused download's old ranges.
         let mut single = segmented_job(JobState::Paused);
@@ -11296,6 +11264,27 @@ mod tests {
                         ),
                         "modern {in_modern}"
                     );
+                    // The raw text of a failed tool names its program in any letter case.
+                    let mut raw_failure = segmented_job(JobState::Failed);
+                    raw_failure.error = Some(
+                        "ERROR: ffmpeg exited with code 1, see https://github.com/yt-dlp/yt-dlp/issues"
+                            .into(),
+                    );
+                    show(raw_failure);
+                    let shown = details();
+                    for name in ["ffmpeg", "yt-dlp", "ffprobe", "deno", "btbn"] {
+                        assert!(
+                            !shown.to_lowercase().contains(name),
+                            "modern {in_modern}: {name} in {shown}"
+                        );
+                    }
+                    assert!(
+                        shown.contains(&format!(
+                            "ERROR: {} exited with code 1",
+                            crate::tools::component_label("ffmpeg")
+                        )),
+                        "modern {in_modern}: {shown}"
+                    );
                     show(segmented_job(JobState::Completed));
                     assert_eq!(
                         details(),
@@ -11317,6 +11306,42 @@ mod tests {
                         tops[1] - tops[0],
                         tops[2] - tops[1],
                         "modern {in_modern}: no gap after the status"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn a_dialog_error_line_names_no_program_behind_a_component() {
+        on_private_desktop(|| {
+            use super::*;
+            for in_modern in [false, true] {
+                unsafe {
+                    let (raw, hwnd, root) = theme_test_dialog(
+                        in_modern,
+                        DialogKind::Progress(ProgressFields::new(vec!["job".into()])),
+                        640,
+                        420,
+                    );
+                    let error = (*raw).error;
+                    set_dialog_error(
+                        hwnd,
+                        error,
+                        "Install Deno for yt-dlp: ffprobe is missing",
+                        null_mut(),
+                    );
+                    let shown = text(error);
+                    close_test_dialog(raw, hwnd, root);
+                    assert_eq!(
+                        shown,
+                        format!(
+                            "Install {} for {}: {} is missing",
+                            crate::tools::component_label("deno"),
+                            crate::tools::component_label("yt-dlp"),
+                            crate::tools::component_label("ffprobe")
+                        ),
+                        "modern {in_modern}"
                     );
                 }
             }
@@ -11942,32 +11967,29 @@ mod tests {
     }
 
     #[test]
-    fn user_facing_text_never_names_the_managed_components_outside_developer_mode() {
-        let raw = "yt-dlp sürüm bilgisi alınamadı: ffprobe ve FFmpeg denetlenemedi, Deno eksik";
-        let shown = super::display_text(false, raw);
-        for name in ["yt-dlp", "ffprobe", "FFmpeg", "Deno"] {
-            assert!(
-                !shown.contains(name),
-                "{name} kullanıcı metnine sızdı: {shown}"
-            );
-        }
-        // ffprobe is its own word, not a fragment of the FFmpeg rule, and the
-        // rest of the sentence is untouched.
-        assert!(shown.contains("medya inceleyici ve dönüştürücü"), "{shown}");
-        assert!(shown.contains("sürüm bilgisi alınamadı"), "{shown}");
-        // The developer surface keeps the upstream names verbatim.
-        assert_eq!(super::display_text(true, raw), raw);
-    }
-
-    #[test]
-    fn the_media_tools_report_names_no_upstream_program_outside_developer_mode() {
+    fn the_media_tools_report_names_no_program_behind_a_component_in_any_language() {
         use crate::model::{ToolInfo, ToolProgress};
-        let tools: Vec<_> = ["yt-dlp", "FFmpeg", "ffprobe", "Deno"]
+        let versions = [
+            ("yt-dlp", "2026.03.17"),
+            (
+                "FFmpeg",
+                "ffmpeg version n9.0-12-gabcdef Copyright (c) 2000-2026 the FFmpeg developers",
+            ),
+            (
+                "ffprobe",
+                "ffprobe version n9.0-12-gabcdef Copyright (c) 2000-2026 the FFmpeg developers",
+            ),
+            (
+                "Deno",
+                "deno 2.5.6 (stable, release, x86_64-pc-windows-msvc)",
+            ),
+        ];
+        let tools: Vec<_> = versions
             .iter()
-            .map(|name| ToolInfo {
+            .map(|(name, version)| ToolInfo {
                 name: (*name).into(),
                 installed: true,
-                version: String::new(),
+                version: (*version).into(),
                 path: std::path::PathBuf::from(format!(
                     r"C:\data\tools\versions\1\{name}\{name}.exe"
                 )),
@@ -11975,17 +11997,24 @@ mod tests {
             .collect();
         let progress = ToolProgress {
             name: "FFmpeg".into(),
-            message: "ffprobe".into(),
+            message: "Downloading yt-dlp.exe and deno".into(),
             downloaded: 10,
             total: Some(20),
         };
         let folder = std::path::Path::new(r"C:\data\tools");
         for info in crate::i18n::LANGUAGES.iter() {
             crate::i18n::with_language(info.code, || {
-                let report = super::tools_report(&tools, Some(&progress), false, folder);
+                let report = super::tools_report(&tools, Some(&progress), folder);
                 let lower = report.to_lowercase();
                 for name in ["ffmpeg", "ffprobe", "yt-dlp", "deno"] {
                     assert!(!lower.contains(name), "{}: {name} in {report}", info.code);
+                }
+                for (name, _) in versions {
+                    assert!(
+                        report.contains(&format!("{}\r\n  ", crate::tools::component_title(name))),
+                        "{}: {name} is named by what it does: {report}",
+                        info.code
+                    );
                 }
                 assert_eq!(
                     report.matches(r"C:\data\tools").count(),
@@ -11993,16 +12022,14 @@ mod tests {
                     "{}: each component names the folder that holds them: {report}",
                     info.code
                 );
+                assert!(report.contains("2026.03.17"), "{}: {report}", info.code);
+                assert!(
+                    report.contains("n9.0-12-gabcdef"),
+                    "{}: {report}",
+                    info.code
+                );
             });
         }
-        let raw = super::tools_report(&tools, Some(&progress), true, folder);
-        for name in ["yt-dlp", "FFmpeg", "ffprobe", "Deno"] {
-            assert!(raw.contains(name), "developer mode keeps {name}: {raw}");
-        }
-        assert!(
-            raw.contains(r"C:\data\tools\versions\1\ffprobe\ffprobe.exe"),
-            "{raw}"
-        );
     }
 
     #[test]
@@ -17669,6 +17696,59 @@ mod tests {
                 .is_file(),
             "{path} is not in the repository"
         );
+    }
+
+    #[test]
+    fn the_about_buttons_open_the_release_notes_and_the_licenses_of_this_version() {
+        use super::{about_link, licenses_url, ABOUT_COPY, ABOUT_LICENSES, ABOUT_NOTES};
+        use windows_sys::Win32::UI::WindowsAndMessaging::IDOK;
+        assert_eq!(
+            about_link(ABOUT_NOTES).as_deref(),
+            Some("https://ssdownload.isolmaz.com/changelog.html")
+        );
+        assert_eq!(about_link(ABOUT_LICENSES), Some(licenses_url()));
+        assert_eq!(about_link(ABOUT_COPY), None);
+        assert_eq!(about_link(IDOK), None);
+    }
+
+    #[test]
+    fn the_packages_ship_no_license_files_and_the_installer_removes_old_copies() {
+        let read = |path: &str| {
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .unwrap_or_else(|error| panic!("{path}: {error}"))
+        };
+        let package = read("scripts/package.ps1");
+        let inventory = read("scripts/release-inventory.py");
+        let installer = read("packaging/installer.nsi");
+        for line in package.lines() {
+            let lower = line.to_lowercase();
+            assert!(
+                !lower.contains("third-party") && !lower.contains("licenses"),
+                "the portable ZIP gets no license files: {line}"
+            );
+        }
+        assert!(
+            !inventory.contains("copyfile") && !inventory.contains("copytree"),
+            "the inventory copies no license texts into the package"
+        );
+        for line in installer.lines().map(str::trim) {
+            let lower = line.to_lowercase();
+            if lower.starts_with("file ") || lower.starts_with("setoutpath ") {
+                assert!(
+                    !lower.contains("third-party") && !lower.contains("licenses"),
+                    "the installer installs no license files: {line}"
+                );
+            }
+        }
+        for removal in [
+            r#"Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt""#,
+            r#"RMDir /r "$INSTDIR\licenses""#,
+        ] {
+            assert!(
+                installer.lines().any(|line| line.trim() == removal),
+                "an installer upgrade removes the copy an earlier version installed: {removal}"
+            );
+        }
     }
 
     /// Posts a key press to the window that has the focus, or to `alert` while no control has

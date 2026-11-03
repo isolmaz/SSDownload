@@ -53,6 +53,73 @@ const DENO_MAJOR: u64 = 2;
 /// pinned major version is older than this many releases, the install says so.
 const DENO_RELEASE_LIST: usize = 100;
 
+/// What a media component does, in the words every text the user reads uses for it. The names of
+/// the programs behind the components stay in logs, reports and code.
+pub(crate) fn component_label(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "ffprobe" => crate::i18n::ui("medya inceleyici", "media inspector"),
+        "ffmpeg" => crate::i18n::ui("dönüştürücü", "converter"),
+        "deno" => crate::i18n::ui("çalıştırma ortamı", "runtime"),
+        _ => crate::i18n::ui("medya bileşeni", "media component"),
+    }
+}
+
+/// `component_label` for the start of a sentence.
+pub(crate) fn component_title(name: &str) -> String {
+    let label = component_label(name);
+    let mut letters = label.chars();
+    letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default()
+}
+
+/// `text` with every name of a program behind a media component (yt-dlp, FFmpeg, ffprobe, Deno,
+/// BtbN) in any letter case replaced by what the component does. A name inside a longer word
+/// stays. A name joined to a path, an address or an option by `-`, `_`, `/`, `\` or a file
+/// extension gets the words joined by `-`, so the text keeps its shape.
+pub(crate) fn without_component_names(text: &str) -> String {
+    const NAMES: [&str; 5] = ["ffprobe", "ffmpeg", "yt-dlp", "deno", "btbn"];
+    let lower = text.to_ascii_lowercase();
+    let mut hits: Vec<(usize, &str, bool)> = NAMES
+        .iter()
+        .flat_map(|name| {
+            lower
+                .match_indices(name)
+                .map(move |(start, _)| (start, *name))
+        })
+        .filter_map(|(start, name)| {
+            let before = text[..start].chars().next_back();
+            let mut after = text[start + name.len()..].chars();
+            let next = after.next();
+            if before.is_some_and(char::is_alphanumeric) || next.is_some_and(char::is_alphanumeric)
+            {
+                return None;
+            }
+            let joined = |c: Option<char>| matches!(c, Some('-' | '_' | '/' | '\\'));
+            let glued = joined(before)
+                || joined(next)
+                || (next == Some('.') && after.next().is_some_and(char::is_alphanumeric));
+            Some((start, name, glued))
+        })
+        .collect();
+    hits.sort_unstable();
+    let mut shown = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (start, name, glued) in hits {
+        shown.push_str(&text[copied..start]);
+        let label = component_label(name);
+        if glued {
+            shown.push_str(&label.replace(' ', "-"));
+        } else {
+            shown.push_str(label);
+        }
+        copied = start + name.len();
+    }
+    shown.push_str(&text[copied..]);
+    shown
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallManifest {
     schema: u32,
@@ -329,7 +396,7 @@ pub(crate) fn ensure(
 
     let yt_checksum_text = fetch_text(
         &yt_sums.browser_download_url,
-        "yt-dlp checksum",
+        &checksum_label("yt-dlp"),
         control,
         network,
     )?;
@@ -341,7 +408,7 @@ pub(crate) fn ensure(
         &yt_asset,
         &yt_path,
         &yt_expected,
-        "yt-dlp",
+        &component_title("yt-dlp"),
         control,
         network,
         progress,
@@ -349,7 +416,7 @@ pub(crate) fn ensure(
 
     let deno_checksum_text = fetch_text(
         &deno_sums.browser_download_url,
-        "Deno checksum",
+        &checksum_label("Deno"),
         control,
         network,
     )?;
@@ -359,14 +426,14 @@ pub(crate) fn ensure(
         &deno_asset,
         &deno_zip,
         &deno_expected,
-        "Deno",
+        &component_title("Deno"),
         control,
         network,
         progress,
     )?;
     emit(
         progress,
-        "Deno",
+        &component_title("Deno"),
         crate::i18n::ui(
             "Doğrulanmış arşiv güvenle açılıyor",
             "Safely extracting the verified archive",
@@ -392,7 +459,7 @@ pub(crate) fn ensure(
 
     let ffmpeg_checksum_text = fetch_text(
         &ffmpeg_sums.browser_download_url,
-        "FFmpeg checksum",
+        &checksum_label("FFmpeg"),
         control,
         network,
     )?;
@@ -402,14 +469,14 @@ pub(crate) fn ensure(
         &ffmpeg_asset,
         &ffmpeg_zip,
         &ffmpeg_expected,
-        "FFmpeg",
+        &component_title("FFmpeg"),
         control,
         network,
         progress,
     )?;
     emit(
         progress,
-        "FFmpeg",
+        &component_title("FFmpeg"),
         crate::i18n::ui(
             "Doğrulanmış LGPL arşivi güvenle açılıyor",
             "Safely extracting the verified LGPL archive",
@@ -806,7 +873,7 @@ pub(crate) fn verified_toolchain(
                     crate::i18n::ui_format!(
                         "{name} etkin araç manifestinde bulunamadı",
                         "{name} was not found in the active tool manifest",
-                        name = name
+                        name = component_title(name)
                     )
                 )
             })?;
@@ -1096,6 +1163,10 @@ fn ffmpeg_branch(name: &str) -> Option<((u32, u32), bool)> {
     }
     let (major, minor) = branch.split_once('.')?;
     Some(((major.parse().ok()?, minor.parse().ok()?), shared))
+}
+
+fn checksum_label(name: &str) -> String {
+    crate::i18n::ui_format!("{0} sağlama toplamı", "{0} checksum", component_title(name))
 }
 
 fn fetch_text(
@@ -1676,12 +1747,13 @@ fn find_file_named(root: &Path, filename: &str) -> Option<PathBuf> {
 }
 
 fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<String> {
+    let title = component_title(name);
     let output =
         command_output_timeout(executable, args, Duration::from_secs(20)).with_context(|| {
             crate::i18n::ui_format!(
                 "{name} başlatılamadı",
                 "{name} could not be started",
-                name = name
+                name = title
             )
         })?;
     if !output.status.success() {
@@ -1691,7 +1763,7 @@ fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<Stri
                 "{name} sürüm doğrulaması başarısız: {0}",
                 "{name} version verification failed: {0}",
                 bounded(&String::from_utf8_lossy(&output.stderr), 4096),
-                name = name
+                name = title
             )
         );
     }
@@ -1703,9 +1775,9 @@ fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<Stri
             anyhow!(
                 "{}",
                 crate::i18n::ui_format!(
-                    "{name} sürüm çıktısı boş",
+                    "Sürüm çıktısı boş: {name}",
                     "The {name} version output is empty",
-                    name = name
+                    name = component_label(name)
                 )
             )
         })?;
@@ -1906,9 +1978,9 @@ fn read_manifest(path: &Path) -> Result<InstallManifest> {
                 anyhow!(
                     "{}",
                     crate::i18n::ui_format!(
-                        "Araç manifestinde {name} eksik",
+                        "{name} araç manifestinde eksik",
                         "{name} is missing from the tool manifest",
-                        name = name
+                        name = component_title(name)
                     )
                 )
             })?;
@@ -1926,7 +1998,7 @@ fn read_manifest(path: &Path) -> Result<InstallManifest> {
                 crate::i18n::ui_format!(
                     "{name} doğrulanmış dosya listesinde bulunamadı",
                     "{name} was not found in the verified file list",
-                    name = name
+                    name = component_title(name)
                 )
             );
         }
@@ -3141,5 +3213,138 @@ mod tests {
         assert!(!root.join("escaped.txt").exists());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_text_names_no_program_behind_a_component_in_any_letter_case() {
+        let english =
+            |text: &str| crate::i18n::with_language("en", || without_component_names(text));
+        assert_eq!(
+            english("ERROR: ffmpeg exited; FFMPEG, FFprobe and Yt-Dlp need Deno or BTBN"),
+            "ERROR: converter exited; converter, media inspector and media component need runtime or media component"
+        );
+        assert_eq!(
+            crate::i18n::with_language("tr", || without_component_names("yt-dlp ve FFmpeg")),
+            "medya bileşeni ve dönüştürücü"
+        );
+        assert_eq!(english("a text without a name"), "a text without a name");
+        assert_eq!(english(""), "");
+    }
+
+    #[test]
+    fn a_name_inside_a_longer_word_or_a_file_name_of_the_user_stays_readable() {
+        let english =
+            |text: &str| crate::i18n::with_language("en", || without_component_names(text));
+        assert_eq!(
+            english("Denote the Denver video"),
+            "Denote the Denver video"
+        );
+        assert_eq!(english("undeno ffmpeg2 yt-dlpx"), "undeno ffmpeg2 yt-dlpx");
+        // A name next to punctuation, a quote or non-ASCII text is a name of its own.
+        assert_eq!(
+            english("(yt-dlp), \"Deno\" and Deno's: yt-dlp."),
+            "(media component), \"runtime\" and runtime's: media component."
+        );
+        assert_eq!(
+            crate::i18n::with_language("tr", || without_component_names(
+                "Deno'nun sürümü ö yt-dlp"
+            )),
+            "çalıştırma ortamı'nun sürümü ö medya bileşeni"
+        );
+    }
+
+    #[test]
+    fn a_name_joined_to_a_path_an_address_or_an_option_keeps_the_shape_of_its_text() {
+        let english =
+            |text: &str| crate::i18n::with_language("en", || without_component_names(text));
+        assert_eq!(
+            english(r"C:\data\tools\yt-dlp\yt-dlp.exe and deno.exe"),
+            r"C:\data\tools\media-component\media-component.exe and runtime.exe"
+        );
+        assert_eq!(
+            english("https://github.com/yt-dlp/yt-dlp/wiki#pass-cookies-to-yt-dlp"),
+            "https://github.com/media-component/media-component/wiki#pass-cookies-to-media-component"
+        );
+        assert_eq!(
+            english("--ffmpeg-location and ffmpeg_i:-http_proxy and ffmpeg-n9.0-win64"),
+            "--converter-location and converter_i:-http_proxy and converter-n9.0-win64"
+        );
+    }
+
+    #[test]
+    fn every_language_names_a_component_by_what_it_does() {
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                for (name, program) in [
+                    ("yt-dlp", "yt-dlp"),
+                    ("Deno", "Deno"),
+                    ("FFmpeg", "FFmpeg"),
+                    ("ffprobe", "ffprobe"),
+                ] {
+                    let shown = without_component_names(&format!("{program} x"));
+                    assert_eq!(
+                        shown,
+                        format!("{} x", component_label(name)),
+                        "{}",
+                        info.code
+                    );
+                    assert!(!shown.to_lowercase().contains(&program.to_lowercase()));
+                    assert!(component_title(name)
+                        .chars()
+                        .next()
+                        .is_some_and(|first| !first.is_lowercase()));
+                }
+                let labels: std::collections::HashSet<_> = ["yt-dlp", "Deno", "FFmpeg", "ffprobe"]
+                    .map(component_label)
+                    .into();
+                assert_eq!(
+                    labels.len(),
+                    4,
+                    "{}: four components, four words",
+                    info.code
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_texts_of_an_install_name_a_component_by_what_it_does() {
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let failed =
+                    std::env::temp_dir().join(format!("ssd-no-program-{}", Uuid::new_v4()));
+                let error = validate_version(&failed, &[], "FFmpeg").unwrap_err();
+                let text = format!("{error:#}");
+                assert!(
+                    text.contains(&component_title("FFmpeg")),
+                    "{}: {text}",
+                    info.code
+                );
+                assert!(
+                    !text.to_lowercase().contains("ffmpeg"),
+                    "{}: {text}",
+                    info.code
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_checksum_of_a_download_is_named_by_what_the_component_does() {
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let label = checksum_label("yt-dlp");
+                assert!(
+                    label.contains(&component_title("yt-dlp")),
+                    "{}: {label}",
+                    info.code
+                );
+                assert!(
+                    !label.to_lowercase().contains("yt-dlp"),
+                    "{}: {label}",
+                    info.code
+                );
+            });
+        }
     }
 }

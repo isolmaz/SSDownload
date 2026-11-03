@@ -1652,6 +1652,7 @@
   "Status of the media components for video/audio downloads:": "Estado de los componentes multimedia para las descargas de vídeo/audio:",
   "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n": "{0}\r\n  Estado: {1}\r\n  Versión: {2}\r\n  Ubicación: {3}\r\n\r\n",
   "{0} address(es) exported: {1}": "{0} dirección(es) exportada(s): {1}",
+  "{0} checksum": "Suma de comprobación de {0}",
   "{0} connections": "{0} conexiones",
   "{0} could not be created": "No se ha podido crear {0}",
   "{0} could not be opened": "No se ha podido abrir {0}",
