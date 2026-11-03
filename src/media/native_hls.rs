@@ -254,6 +254,7 @@ pub(super) fn download_streams(
     progress(TransferProgress {
         downloaded: received,
         total: Some(received),
+        phase_name: "processing media",
         phase: crate::i18n::ui("Medya işleniyor", "Processing media").into(),
         processing: true,
         ..TransferProgress::default()
@@ -561,6 +562,11 @@ fn conversion_progress(
         speed: 0,
         eta: (share > 0.0 && elapsed >= Duration::from_secs(1))
             .then(|| (elapsed.as_secs_f64() * (1.0 - share) / share).round() as u64),
+        phase_name: if output.encodes {
+            "converting audio"
+        } else {
+            "copying audio"
+        },
         phase: if output.encodes {
             crate::i18n::ui_format!(
                 "Ses {0} biçimine dönüştürülüyor: %{1}",
@@ -1699,6 +1705,11 @@ impl Reporter {
             eta: (limited != Limited::Waiting)
                 .then(|| time_left(&streams))
                 .flatten(),
+            phase_name: match limited {
+                Limited::No => "downloading media",
+                Limited::Flowing => "downloading media under a request limit",
+                Limited::Waiting => "waiting for the server under a request limit",
+            },
             phase: match limited {
                 Limited::No => crate::i18n::ui("Medya indiriliyor", "Downloading media"),
                 Limited::Flowing => crate::i18n::ui(
@@ -2083,6 +2094,7 @@ mod tests {
         );
         assert!(start.processing);
         assert_eq!(start.phase, "Ses MP3 biçimine dönüştürülüyor: %0");
+        assert_eq!(start.phase_name, "converting audio");
         // A quarter written in 4 s leaves 12 s; under a second in, the rate says too little.
         let quarter = report(50.0, 4.0);
         assert_eq!(quarter.phase, "Ses MP3 biçimine dönüştürülüyor: %25");
@@ -2104,6 +2116,7 @@ mod tests {
             Duration::from_secs(1),
         );
         assert_eq!(copy.phase, "Ses M4A dosyasına kopyalanıyor: %50");
+        assert_eq!(copy.phase_name, "copying audio");
     }
 
     #[test]
@@ -3486,7 +3499,12 @@ mod tests {
         let start = Instant::now();
         let after = |millis| start + Duration::from_millis(millis);
         let mut reporter = Reporter::new(&received, start);
-        let mut phase = |now| reporter.report(&context, now).phase;
+        let mut names = Vec::new();
+        let mut phase = |now| {
+            let report = reporter.report(&context, now);
+            names.push(report.phase_name);
+            report.phase
+        };
         let (downloading, limiting, waiting) = (
             crate::i18n::ui("Medya indiriliyor", "Downloading media"),
             crate::i18n::ui(
@@ -3538,6 +3556,24 @@ mod tests {
             .settle(0, Settled::Done { sent: retry.sent }, after(3_300));
         assert_eq!(phase(after(3_300)), limiting);
         assert_eq!(phase(after(10_100)), downloading);
+        let (downloading, limiting, waiting) = (
+            "downloading media",
+            "downloading media under a request limit",
+            "waiting for the server under a request limit",
+        );
+        assert_eq!(
+            names,
+            [
+                downloading,
+                waiting,
+                waiting,
+                waiting,
+                limiting,
+                limiting,
+                limiting,
+                downloading
+            ]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

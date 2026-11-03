@@ -985,6 +985,11 @@ pub struct TransferProgress {
     pub speed: u64,
     pub eta: Option<u64>,
     pub phase: String,
+    /// The English name of the phase for the job log: the same for as long as the phase lasts
+    /// (`phase` may carry counts and percentages) and in every interface language. Empty when
+    /// the phase has no name of its own; the log then names the state.
+    #[serde(skip)]
+    pub phase_name: &'static str,
     /// The bytes are in and the result is being processed (joined, converted, checked); the
     /// job shows the processing state rather than a nearly full download.
     #[serde(default)]

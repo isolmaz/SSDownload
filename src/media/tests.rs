@@ -51,6 +51,30 @@ fn a_failed_lossless_merge_is_a_merge_failure_not_a_tls_one() {
     assert!(!network_media_failure(observed));
 }
 
+/// The job log names a failure stage in English, whichever stage key the classifier returned.
+#[test]
+fn every_failure_stage_has_an_english_name_for_the_job_log() {
+    let names: Vec<_> = FAILURE_STAGES
+        .iter()
+        .map(|(stage, _)| failure_stage_name(stage))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "discovery",
+            "main playlist",
+            "sub-playlist",
+            "selected audio",
+            "subtitle",
+            "initialization segment",
+            "media segment",
+            "verification",
+            "media source",
+        ]
+    );
+    assert_eq!(failure_stage_name("not a stage"), "media source");
+}
+
 #[test]
 fn secure_connection_and_name_failures_keep_their_kind() {
     let request = AddRequest {
@@ -2001,6 +2025,7 @@ fn live_gauge_measures_the_growing_part_file_while_it_is_open() {
         .expect("the first sample is immediate");
     assert_eq!(first.downloaded, 100 + 4096);
     assert_eq!(first.total, None);
+    assert_eq!(first.phase_name, "downloading media");
     assert!(
         gauge.sample(100, at(500)).is_none(),
         "samples are at most once per second"
@@ -3248,13 +3273,20 @@ fn the_processing_state_comes_from_the_tool_stage_not_the_phase_text() {
         process::handle_machine_line(
             &line,
             Instant::now(),
-            &mut |value| seen.push(value.processing),
+            &mut |value| seen.push((value.processing, value.phase_name)),
             &mut completed,
             &mut last_path,
             &mut gauge,
         );
     }
-    assert_eq!(seen, [false, true, true]);
+    assert_eq!(
+        seen,
+        [
+            (false, "downloading media"),
+            (true, "processing media"),
+            (true, "processing with ffmpeg")
+        ]
+    );
 }
 
 /// Plays a tool's progress lines into the monitor's gauge on a clock the test moves, waking the
@@ -3762,9 +3794,9 @@ fn a_post_processor_marker_on_stderr_reaches_the_progress() {
     assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
     let phase = crate::i18n::ui("FFmpeg ile işleniyor", "Processing with FFmpeg");
     assert!(
-        updates
-            .iter()
-            .any(|update| update.processing && update.phase == phase),
+        updates.iter().any(|update| update.processing
+            && update.phase == phase
+            && update.phase_name == "processing with ffmpeg"),
         "{updates:?}"
     );
 }

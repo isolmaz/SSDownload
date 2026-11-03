@@ -1160,6 +1160,7 @@ pub(crate) fn download(
                         total: Some(bytes),
                         speed: 0,
                         eta: None,
+                        phase_name: "restarting",
                         phase: error.to_string(),
                     });
                     download_http_from(
@@ -1272,6 +1273,7 @@ fn restart_from_zero(
         total,
         speed: 0,
         eta: None,
+        phase_name: "restarting",
         phase: crate::i18n::ui(
             "Kaynak kimliği kanıtlanamadı; baştan başlıyor",
             "The source identity could not be proven; restarting from the beginning",
@@ -1663,6 +1665,7 @@ fn download_http_single(
                     total: expected_total(expected, &ResponseHeaders::default(), remote),
                     speed: 0,
                     eta: None,
+                    phase_name: "retrying with one connection",
                     phase: crate::i18n::ui_format!("HTTP {status}; {0} sn sonra tek bağlantıyla yeniden denenecek", "HTTP {status}; retrying single connection in {0} s", delay.as_secs(), status = status),
                 });
                 wait_for_retry(control, delay)?;
@@ -1680,6 +1683,7 @@ fn download_http_single(
                     total: expected_total(expected, &ResponseHeaders::default(), remote),
                     speed: 0,
                     eta: None,
+                    phase_name: "retrying with one connection",
                     phase: crate::i18n::ui_format!("Geçici ağ hatası; {0} sn sonra tek bağlantıyla yeniden denenecek", "Transient network error; retrying single connection in {0} s", delay.as_secs()),
                 });
                 wait_for_retry(control, delay)?;
@@ -1840,6 +1844,7 @@ fn http_to_file(
                 total,
                 speed,
                 eta: eta(total, current, speed),
+                phase_name: "downloading",
                 phase: crate::i18n::ui("İndiriliyor", "Downloading").into(),
             });
             last_report = now;
@@ -1989,6 +1994,7 @@ fn http_to_file(
         total,
         speed,
         eta: eta(total, current, speed),
+        phase_name: "downloading",
         phase: crate::i18n::ui("İndiriliyor", "Downloading").into(),
     });
     Ok((headers, written))
@@ -2899,6 +2905,7 @@ fn download_segmented(
                             total: Some(total),
                             speed: 0,
                             eta: None,
+                            phase_name: "retrying with fewer connections",
                             phase: crate::i18n::ui_format!(
                                 "HTTP {status}; {0} sn sonra {1} bağlantıyla yeniden denenecek",
                                 "HTTP {status}; retrying in {0} s using {1} connections",
@@ -2934,6 +2941,7 @@ fn download_segmented(
                             total: Some(total),
                             speed: 0,
                             eta: None,
+                            phase_name: "retrying with fewer connections",
                             phase: crate::i18n::ui_format!(
                                 "Geçici ağ hatası; {0} sn sonra {1} bağlantıyla yeniden denenecek",
                                 "Transient network error; retrying in {0} s using {1} connections",
@@ -2979,6 +2987,7 @@ fn download_segmented(
                 speed,
                 eta: eta(Some(total), downloaded.min(total), speed),
                 // Shown after the state: "Downloading — 8 connections".
+                phase_name: "downloading",
                 phase: if effective_workers == 1 {
                     crate::i18n::ui("1 bağlantı", "1 connection").to_string()
                 } else {
@@ -3058,6 +3067,7 @@ fn download_segmented(
         speed: ((total.saturating_sub(baseline)) as f64
             / started.elapsed().as_secs_f64().max(0.001)) as u64,
         eta: Some(0),
+        phase_name: "completing",
         phase: crate::i18n::ui("Tamamlanıyor", "Completing").into(),
     });
     cleanup_legacy_segments(output);
@@ -3945,6 +3955,7 @@ fn download_ftp_resuming(
                     total: remote.total,
                     speed,
                     eta: eta(remote.total, current, speed),
+                    phase_name: "downloading over ftp",
                     phase: crate::i18n::ui("FTP indiriliyor", "Downloading over FTP").into(),
                 });
                 last = now;

@@ -408,15 +408,18 @@ pub(crate) fn download(
         control.mark_live();
         crate::logging::record_job(
             job_id,
-            crate::logging::Event::warn("download.live")
-                .detail(format!("{} canlı yayın kaydı", crate::error_codes::MED_009)),
+            crate::logging::Event::warn("download.live").detail(format!(
+                "{} live stream recording",
+                crate::error_codes::MED_009
+            )),
         );
     }
     // A live source has no end the app can predict: say so on every progress update instead of
     // the plain "Downloading media" that would read as a stuck download.
     let mut report = |mut update: TransferProgress| {
         if live && update.phase == crate::i18n::ui("Medya indiriliyor", "Downloading media") {
-            update.phase = if request.live_from_start && !from_start {
+            let from_now = request.live_from_start && !from_start;
+            update.phase = if from_now {
                 crate::i18n::ui(
                     "Site yayının başını sunmuyor; canlı yayın şu andan itibaren kaydediliyor",
                     "The site does not offer the stream's beginning; recording it from now on",
@@ -428,6 +431,11 @@ pub(crate) fn download(
                 )
             }
             .into();
+            update.phase_name = if from_now {
+                "recording a live stream from now on"
+            } else {
+                "recording a live stream"
+            };
         }
         progress(update);
     };
@@ -618,7 +626,7 @@ pub(crate) fn download(
             crate::logging::record_job(
                 job_id,
                 crate::logging::Event::info("download.native_hls").detail(format!(
-                    "parça={}",
+                    "streams={}",
                     streams
                         .iter()
                         .map(native_hls::NativeStream::summary)
@@ -687,6 +695,11 @@ pub(crate) fn download(
             total: None,
             speed: 0,
             eta: None,
+            phase_name: if restart_count == 0 {
+                "downloading media"
+            } else {
+                "continuing with the new speed limit"
+            },
             phase: if restart_count == 0 {
                 crate::i18n::ui("Medya indiriliyor", "Downloading media").into()
             } else {
@@ -747,6 +760,7 @@ pub(crate) fn download(
                     job_id,
                 )?;
                 progress(TransferProgress {
+                    phase_name: "reconnecting after a stall",
                     phase: crate::i18n::ui_format!(
                         "Aktarım ilerlemedi; bağlantı yenileniyor ({0}).",
                         "The transfer stalled; reconnecting ({0}).",
@@ -761,6 +775,7 @@ pub(crate) fn download(
             MonitorOutcome::Finished => {
                 progress(TransferProgress {
                     downloaded: completed_file_bytes(&completed_files),
+                    phase_name: "processing the live recording",
                     phase: crate::i18n::ui(
                         "Canlı kayıt bitirildi; kaydedilen kısım işleniyor",
                         "Live recording finished; processing the recorded part",
@@ -803,13 +818,14 @@ pub(crate) fn download(
                     if discarded.0 > 0 {
                         fragment_restarts = fragment_restarts.saturating_add(1);
                         progress(TransferProgress {
+                            phase_name: "restarting after a skipped fragment",
                             phase: crate::i18n::ui_format!("Parça atlandı; yarım kalan {0} dosya ({1:.1} MB) atılıp akış baştan indiriliyor (deneme {2}, {3} bağlantı).", "A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).", discarded.0, discarded.1 as f64 / (1024.0 * 1024.0), fragment_restarts + 1, fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)),
                             ..TransferProgress::default()
                         });
                         crate::logging::record_job(
                             job_id,
                             crate::logging::Event::warn("download.fragment_skip").detail(format!(
-                                "atılan dosya={} bayt={} deneme={}",
+                                "discarded files={} bytes={} attempt={}",
                                 discarded.0, discarded.1, fragment_restarts
                             )),
                         );
@@ -835,6 +851,7 @@ pub(crate) fn download(
                     if !compatibility_retry && is_forbidden(&error) && completed_files.is_empty() {
                         compatibility_retry = true;
                         progress(TransferProgress {
+                            phase_name: "retrying with a browser-compatible connection",
                             phase: crate::i18n::ui(
                                 "Sunucu 403 döndürdü; aynı kaynak tarayıcı uyumlu bağlantıyla bir kez deneniyor",
                                 "The server returned 403; retrying the same source once with a browser-compatible connection",
@@ -2066,8 +2083,10 @@ fn discard_fragmented_restart(
     if discarded.0 > 0 {
         crate::logging::record_job(
             job_id,
-            crate::logging::Event::warn("download.fragment_restart_discard")
-                .detail(format!("atılan dosya={} bayt={}", discarded.0, discarded.1)),
+            crate::logging::Event::warn("download.fragment_restart_discard").detail(format!(
+                "discarded files={} bytes={}",
+                discarded.0, discarded.1
+            )),
         );
     }
     Ok(())
@@ -2507,6 +2526,14 @@ const FAILURE_STAGES: [(&str, &str); 9] = [
     ("doğrulama", "verification"),
     ("medya kaynağı", "media source"),
 ];
+
+/// The English name of a failure stage returned by [`classify_download_error`], for the job log.
+pub(crate) fn failure_stage_name(stage: &str) -> &'static str {
+    FAILURE_STAGES
+        .iter()
+        .find(|(tr, _)| *tr == stage)
+        .map_or("media source", |(_, en)| en)
+}
 
 /// The wording of a failure stage returned by [`classify_download_error`].
 fn failure_stage_label(stage: &str) -> &'static str {

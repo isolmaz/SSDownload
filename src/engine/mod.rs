@@ -160,11 +160,11 @@ fn failure_event(job: &Job, message: &str) -> crate::logging::Event {
     let stage = if job.request.kind == DownloadKind::File
         && !transfer::request_requires_media_pipeline(&job.request)
     {
-        "dosya"
+        "file"
     } else {
-        stage
+        crate::media::failure_stage_name(stage)
     };
-    let detail = format!("aşama={stage} tür={kind} {message}");
+    let detail = format!("stage={stage} kind={kind} {message}");
     match crate::error_codes::from_text(message) {
         Some(code) => {
             crate::logging::Event::failure("job.fail", code, detail).host(source_host_of(job))
@@ -176,10 +176,63 @@ fn failure_event(job: &Job, message: &str) -> crate::logging::Event {
     }
 }
 
+/// The word the job log uses for a download kind, whatever the interface language.
+fn kind_name(kind: DownloadKind) -> &'static str {
+    match kind {
+        DownloadKind::Auto => "auto",
+        DownloadKind::File => "file",
+        DownloadKind::Video => "video",
+        DownloadKind::Audio => "audio",
+    }
+}
+
+/// The word the job log uses for a job state, whatever the interface language.
+fn state_name(state: JobState) -> &'static str {
+    match state {
+        JobState::Queued => "queued",
+        JobState::Scheduled => "scheduled",
+        JobState::Connecting => "connecting",
+        JobState::Downloading => "downloading",
+        JobState::Processing => "processing",
+        JobState::Paused => "paused",
+        JobState::AwaitingSource => "awaiting source",
+        JobState::Completed => "completed",
+        JobState::Failed => "failed",
+        JobState::Cancelled => "cancelled",
+    }
+}
+
+/// A count that the transfer may not know yet, for the job log.
+fn known(value: Option<u64>) -> String {
+    value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+}
+
+/// The state and phase of a download as the job log states them when either changes.
+fn stage_detail(state: JobState, phase_name: &str, progress: &TransferProgress) -> String {
+    format!(
+        "state={} phase={phase_name} total={}",
+        state_name(state),
+        known(progress.total)
+    )
+}
+
+/// The periodic account of a running transfer in the job log.
+fn progress_detail(progress: &TransferProgress) -> String {
+    format!(
+        "downloaded={} total={} speed={}B/s eta={}",
+        progress.downloaded,
+        known(progress.total),
+        progress.speed,
+        progress
+            .eta
+            .map_or_else(|| "unknown".to_owned(), |seconds| format!("{seconds}s"))
+    )
+}
+
 /// Short, human-readable summary of what was requested, for `job.add`.
 fn job_selection(job: &Job) -> String {
     let request = &job.request;
-    let mut parts = vec![format!("kind={:?}", request.kind).to_lowercase()];
+    let mut parts = vec![format!("kind={}", kind_name(request.kind))];
     if let Some(format) = &request.format_id {
         parts.push(format!("format={format}"));
     }
@@ -215,6 +268,8 @@ struct ActiveJob {
     last_persist: Instant,
     /// Last time a periodic progress sample was written to the event log.
     last_log: Instant,
+    /// The phase the job log last stated for this attempt.
+    phase_name: &'static str,
     /// Start of the current attempt, reported as the age of a progress sample.
     attempt_started: Instant,
     /// Started through "Hemen başlat": exempt from the concurrency limits.
@@ -482,7 +537,7 @@ impl Engine {
                                 .host(source_host_of(job))
                                 .outcome(crate::logging::Outcome::Ok)
                                 .detail(format!(
-                                    "kayıttan tamamlandı dosya={} bayt={}",
+                                    "completed from the record file={} bytes={}",
                                     crate::logging::file_name(&job.path),
                                     job.downloaded
                                 )),
@@ -1273,7 +1328,7 @@ impl Actor {
                 &job.id,
                 crate::logging::Event::info(if pause { "job.paused" } else { "job.resumed" })
                     .host(source_host_of(&job))
-                    .detail(job.phase.clone()),
+                    .detail(format!("state={}", state_name(job.state))),
             );
             self.jobs.insert(job.id.clone(), job);
         }
@@ -1623,9 +1678,9 @@ impl Actor {
                 .host(source_host_of(&job))
                 .outcome(crate::logging::Outcome::Skipped)
                 .detail(if delete_file {
-                    "kaldırıldı, dosya silinecek"
+                    "removed, the file will be deleted"
                 } else {
-                    "kaldırıldı, dosya korunacak"
+                    "removed, the file will be kept"
                 }),
         );
         let refresh_running = self
@@ -3424,19 +3479,24 @@ impl Actor {
                     .copied()
                     .unwrap_or(job.downloaded);
                 let delta = value.downloaded.saturating_sub(accounted);
-                let stage = value.phase.clone();
-                let stage_changed = job.phase != stage;
-                job.downloaded = value.downloaded;
-                job.total = value.total;
-                job.speed = value.speed;
-                job.eta = value.eta;
-                job.phase = stage.clone();
-                job.live = active.control.is_live();
-                job.state = if value.processing {
+                let state = if value.processing {
                     JobState::Processing
                 } else {
                     JobState::Downloading
                 };
+                let phase_name = if value.phase_name.is_empty() {
+                    state_name(state)
+                } else {
+                    value.phase_name
+                };
+                let stage_changed = job.state != state || active.phase_name != phase_name;
+                job.downloaded = value.downloaded;
+                job.total = value.total;
+                job.speed = value.speed;
+                job.eta = value.eta;
+                job.phase = value.phase.clone();
+                job.live = active.control.is_live();
+                job.state = state;
                 job.updated_at = Utc::now().timestamp();
                 // A downloader that starts again reports from the bytes it kept, fewer than this job
                 // may have counted; the count goes on from the most it has reached. A live
@@ -3459,11 +3519,12 @@ impl Actor {
                     active.last_persist = Instant::now();
                 }
                 if stage_changed {
+                    active.phase_name = phase_name;
                     crate::logging::record_job(
                         &id,
                         crate::logging::Event::info("job.stage")
                             .host(source_host_of(job))
-                            .detail(format!("{stage} toplam={:?}", value.total)),
+                            .detail(stage_detail(job.state, phase_name, &value)),
                     );
                 } else if active.last_log.elapsed() >= Duration::from_secs(15) {
                     active.last_log = Instant::now();
@@ -3472,10 +3533,7 @@ impl Actor {
                         crate::logging::Event::debug("job.progress")
                             .host(source_host_of(job))
                             .ms(active.attempt_started.elapsed().as_millis() as u64)
-                            .detail(format!(
-                                "indirilen={} toplam={:?} hız={} eta={:?}",
-                                value.downloaded, value.total, value.speed, value.eta
-                            )),
+                            .detail(progress_detail(&value)),
                     );
                 }
                 self.publish();
@@ -3702,16 +3760,15 @@ impl Actor {
                 job.state = JobState::Completed;
                 job.phase = crate::i18n::ui("Tamamlandı", "Completed").into();
                 job.request.forget_session();
-                let mark_warning = install::mark_download(&job.path, &job.request.url)
-                    .err()
-                    .map(|error| {
-                        crate::i18n::ui_format!(
-                            "Windows indirme işareti uygulanamadı: {error:#}",
-                            "Could not apply the Windows download mark: {error:#}",
-                            error = error
-                        )
-                    });
-                job.error = [result.warning, mark_warning.clone()]
+                let mark_error = install::mark_download(&job.path, &job.request.url).err();
+                let mark_warning = mark_error.as_ref().map(|error| {
+                    crate::i18n::ui_format!(
+                        "Windows indirme işareti uygulanamadı: {error:#}",
+                        "Could not apply the Windows download mark: {error:#}",
+                        error = error
+                    )
+                });
+                job.error = [result.warning, mark_warning]
                     .into_iter()
                     .flatten()
                     .reduce(|first, second| format!("{first}; {second}"));
@@ -3724,18 +3781,20 @@ impl Actor {
                         .ms(elapsed)
                         .outcome(crate::logging::Outcome::Ok)
                         .detail(format!(
-                            "dosya={} bayt={} deneme={}",
+                            "file={} bytes={} attempts={}",
                             crate::logging::file_name(&job.path),
                             result.bytes,
                             job.attempts.saturating_add(1)
                         )),
                 );
-                if let Some(warning) = &mark_warning {
+                if let Some(error) = &mark_error {
                     crate::logging::record_job(
                         id,
                         crate::logging::Event::warn("job.mark_failed")
                             .host(source_host_of(&job))
-                            .detail(warning.clone()),
+                            .detail(format!(
+                                "could not apply the Windows download mark: {error:#}"
+                            )),
                     );
                 }
             }
@@ -3792,7 +3851,7 @@ impl Actor {
                             failure_event(&job, &message)
                                 .outcome(crate::logging::Outcome::Retry)
                                 .detail(format!(
-                                    "{message} ({} sn sonra, deneme {})",
+                                    "{message} (retry in {} s, attempt {})",
                                     delay.as_secs(),
                                     job.attempts
                                 )),
@@ -4175,7 +4234,8 @@ impl Actor {
             crate::logging::Event::info("job.stage")
                 .host(source_host_of(job))
                 .detail(format!(
-                    "Bağlanıyor deneme={}",
+                    "state={} attempt={}",
+                    state_name(JobState::Connecting),
                     job.attempts.saturating_add(1)
                 )),
         );
@@ -4244,6 +4304,7 @@ impl Actor {
                 desired: DesiredStop::None,
                 last_persist: Instant::now(),
                 last_log: Instant::now(),
+                phase_name: "",
                 attempt_started: Instant::now(),
                 forced,
             },
