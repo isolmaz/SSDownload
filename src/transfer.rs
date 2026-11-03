@@ -974,13 +974,8 @@ pub(crate) fn prepare_auto(
     network: &NetworkGovernor,
 ) -> Result<(bool, Option<RemoteInfo>)> {
     let url = validate_source_url(&request.url)?;
-    // A selected stream, audio, subtitle, container, or playlist must stay in
-    // the media pipeline so its mux and verification contract cannot be skipped.
-    if request_requires_media_pipeline(request) || media_extension(&url) {
-        return Ok((true, None));
-    }
-    if url.scheme() == "ftp" {
-        return Ok((false, None));
+    if let Some(media) = auto_route(request, &url) {
+        return Ok((media, None));
     }
     let info = probe_http(request, url, control, network)?;
     let media = info
@@ -989,6 +984,36 @@ pub(crate) fn prepare_auto(
         .map(is_media_content_type)
         .unwrap_or(false);
     Ok((media, Some(info)))
+}
+
+/// Where an Auto request goes when its options and address settle it without asking the server:
+/// `Some(true)` is the media pipeline, `Some(false)` a direct download, `None` leaves it to the
+/// content type of the server's answer.
+fn auto_route(request: &AddRequest, url: &Url) -> Option<bool> {
+    // A selected stream, audio, subtitle, container, or playlist must stay in
+    // the media pipeline so its mux and verification contract cannot be skipped.
+    if request_requires_media_pipeline(request) || media_extension(url) {
+        Some(true)
+    } else if url.scheme() == "ftp" {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether an Auto request goes to the media pipeline, as far as its options and address show,
+/// which is all New download knows before it adds the job. Where `prepare_auto` settles the route
+/// without asking, this is that route. Otherwise the server's answer decides there, and here an
+/// address whose last part names a file that is not a web page's counts as a file and any other as
+/// a page, which is what a server answers for each.
+pub(crate) fn auto_expects_media(request: &AddRequest) -> bool {
+    let Ok(url) = validate_source_url(&request.url) else {
+        return true;
+    };
+    auto_route(request, &url).unwrap_or_else(|| {
+        !url_file_name(&url)
+            .is_some_and(|name| names_a_file(&name) && !is_html_name(Path::new(&name)))
+    })
 }
 
 #[derive(Debug)]

@@ -11499,6 +11499,82 @@ mod tests {
     }
 
     #[test]
+    fn an_automatic_address_opens_the_picker_when_the_engine_takes_it_for_media() {
+        use super::direct_file_request;
+        use crate::model::{AddRequest, DownloadKind, TransferControl};
+        use crate::network::NetworkGovernor;
+        use crate::test_http::{Config, Document, Server};
+        use crate::transfer::prepare_auto;
+        // Each address, the content type its server answers with and whether the engine takes
+        // it for media.
+        let addresses = [
+            (
+                "/pub/linux/kernel/v1.0/linux-1.0.tar.xz",
+                "application/x-xz",
+                false,
+            ),
+            (
+                "/pool/tool_1.2-3_amd64.deb",
+                "application/vnd.debian.binary-package",
+                false,
+            ),
+            ("/pool/tool-1.2.x86_64.rpm", "application/x-rpm", false),
+            ("/images/firmware.bin", "application/octet-stream", false),
+            ("/dumps/db.sql.zst", "application/zstd", false),
+            ("/dumps/db.tar.bz2", "application/x-bzip2", false),
+            ("/setup.zip", "application/zip", false),
+            ("/clip.mp4?token=abc", "video/mp4", false),
+            ("/watch?v=abc123", "text/html; charset=utf-8", true),
+            ("/video/12345", "text/html", true),
+            ("/index.html", "text/html", true),
+            ("/live/master.m3u8", "application/vnd.apple.mpegurl", true),
+            ("/stream/manifest.mpd", "application/dash+xml", true),
+        ];
+        let server = Server::start(Config {
+            documents: addresses
+                .iter()
+                .map(|(path, content_type, _)| Document {
+                    path: (*path).into(),
+                    status: 200,
+                    headers: vec![format!("Content-Type: {content_type}")],
+                    body: b"x".to_vec(),
+                    unframed: false,
+                })
+                .collect(),
+            ..Config::default()
+        });
+        let auto = |url: String| AddRequest {
+            url,
+            kind: DownloadKind::Auto,
+            ..AddRequest::default()
+        };
+        for (path, _, media) in addresses {
+            let request = auto(server.url(path));
+            let engine = prepare_auto(
+                &request,
+                &TransferControl::default(),
+                &NetworkGovernor::new(4),
+            )
+            .unwrap()
+            .0;
+            assert_eq!(engine, media, "the engine's decision for {path}");
+            assert_eq!(
+                !direct_file_request(&request),
+                engine,
+                "New download's decision for {path}"
+            );
+        }
+        // An FTP address is a file for both without a request being made.
+        let ftp = auto("ftp://files.example/pub/README".into());
+        assert!(direct_file_request(&ftp));
+        assert!(
+            !prepare_auto(&ftp, &TransferControl::default(), &NetworkGovernor::new(4))
+                .unwrap()
+                .0
+        );
+    }
+
+    #[test]
     fn the_pause_button_answers_to_the_keys_of_its_other_labels() {
         use super::pause_key_clicks;
         let tr = ["Durakla&t", "&Sürdür", "Durakla&t / Sürdür"];
