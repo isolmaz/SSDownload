@@ -2532,6 +2532,39 @@ fn a_failed_name_lookup_in_a_media_tool_message_is_retried() {
 }
 
 #[test]
+fn a_refused_or_reset_connection_in_a_media_tool_message_is_retried() {
+    let request = AddRequest {
+        url: "https://cdn.example/video.mp4".into(),
+        ..AddRequest::default()
+    };
+    // How the sockets of the tool's Python word them on Windows and on Linux.
+    for failure in [
+        "[WinError 10061] No connection could be made because the target machine actively refused it",
+        "[Errno 111] Connection refused",
+        "[WinError 10054] An existing connection was forcibly closed by the remote host",
+    ] {
+        let analysis = transfer_failure(
+            &request,
+            crate::media::inspection_failure(
+                &format!("ERROR: [generic] Unable to download webpage: <urlopen error {failure}>"),
+                &[],
+            ),
+        );
+        assert!(analysis.retryable, "{}", analysis.message);
+        let ended_by_it = transfer_failure(
+            &request,
+            crate::media::download_failure(
+                &format!("ERROR: unable to download video data: {failure}"),
+                &request,
+                true,
+                &[],
+            ),
+        );
+        assert!(ended_by_it.retryable, "{}", ended_by_it.message);
+    }
+}
+
+#[test]
 fn a_failed_attempt_leads_its_message_with_the_network_code_of_the_failure() {
     let request = AddRequest {
         url: "https://files.example.test/a".into(),

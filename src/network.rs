@@ -690,20 +690,33 @@ impl GovernedEasy {
         self.easy_mut().connect_timeout(timeout)
     }
 
-    /// The error a failed transfer reports: a connect that ran out of time in the pre-connect
-    /// callback is the timeout it was, not libcurl's "could not connect".
+    /// The error a failed transfer reports instead of libcurl's "could not connect": the timeout
+    /// when the connect ran out of time in the pre-connect callback, and a failed proxy handshake
+    /// when a proxy answered the `CONNECT` request with anything but success.
     pub(crate) fn reported_error(&self, error: curl::Error) -> curl::Error {
-        if error.is_couldnt_connect()
-            && self
-                .callbacks
-                .state
-                .connect_timed_out
-                .load(Ordering::Acquire)
-        {
-            curl::Error::new(curl_sys::CURLE_OPERATION_TIMEDOUT)
-        } else {
-            error
+        if !error.is_couldnt_connect() {
+            return error;
         }
+        if self
+            .callbacks
+            .state
+            .connect_timed_out
+            .load(Ordering::Acquire)
+        {
+            return curl::Error::new(curl_sys::CURLE_OPERATION_TIMEDOUT);
+        }
+        if self
+            .easy()
+            .http_connectcode()
+            .is_ok_and(|status| status >= 300)
+        {
+            let mut refused = curl::Error::new(crate::transfer::CURLE_PROXY);
+            if let Some(detail) = error.extra_description() {
+                refused.set_extra(detail.to_owned());
+            }
+            return refused;
+        }
+        error
     }
 
     pub(crate) fn network_error(&self) -> Option<String> {
@@ -2802,6 +2815,76 @@ mod tests {
         assert_eq!(
             crate::transfer::network_code(&reported),
             Some(crate::error_codes::NET_011),
+            "{reported:#}"
+        );
+    }
+
+    /// What libcurl says when `perform` fails for an HTTPS address through an HTTP proxy that
+    /// answers its `CONNECT` request with `reply` (`None`: it closes the connection instead), and
+    /// the error the download reports for it.
+    fn tunnel_failure(reply: Option<&'static str>) -> (curl::Error, anyhow::Error) {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = proxy.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(15)))
+                .unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            if let Some(reply) = reply {
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let url = url::Url::parse("https://download.example/file.bin").unwrap();
+        let mut easy = NetworkGovernor::new(1)
+            .easy_for_url(&url, &TransferControl::default())
+            .unwrap();
+        easy.url(url.as_str()).unwrap();
+        easy.proxy(&format!("http://127.0.0.1:{port}")).unwrap();
+        let error = easy.perform().unwrap_err();
+        let reported = crate::transfer::governed_transport_error(&easy, error.clone(), "test");
+        server.join().unwrap();
+        (error, reported)
+    }
+
+    #[test]
+    fn a_proxy_that_refuses_the_tunnel_is_reported_as_a_proxy_failure() {
+        for (status, reply) in [
+            (403, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"),
+            (
+                407,
+                "HTTP/1.1 407 Proxy Authentication Required\r\n\
+                 Proxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\n\r\n",
+            ),
+            (502, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"),
+        ] {
+            let (libcurl, reported) = tunnel_failure(Some(reply));
+            assert!(libcurl.is_couldnt_connect(), "{status}: {libcurl}");
+            assert_eq!(
+                crate::transfer::network_code(&reported),
+                Some(crate::error_codes::NET_003),
+                "{status}: {reported:#}"
+            );
+            assert!(
+                format!("{reported:#}").contains(&format!("response {status}")),
+                "the proxy's answer stays in the message: {reported:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_proxy_that_drops_the_tunnel_without_an_answer_is_a_closed_connection() {
+        let (_, reported) = tunnel_failure(None);
+        assert_eq!(
+            crate::transfer::network_code(&reported),
+            Some(crate::error_codes::NET_008),
             "{reported:#}"
         );
     }

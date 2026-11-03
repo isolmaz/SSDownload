@@ -2571,6 +2571,47 @@ fn the_code_of_a_failed_run_follows_its_final_error_line_not_an_earlier_item() {
 }
 
 #[test]
+fn a_download_and_an_analysis_give_the_same_text_the_same_refusal_code() {
+    let request = AddRequest {
+        url: "https://page.example/watch".into(),
+        ..AddRequest::default()
+    };
+    for (stderr, code) in [
+        // A 403 that the final line words as a sign-in demand is the 403: the job retries and
+        // waits for a new source as it does for any 403.
+        (
+            "ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden. Please sign in",
+            crate::error_codes::MED_007,
+        ),
+        // The 403 comes on a later line of the final error, after a first line that reads as a
+        // removal.
+        (
+            "ERROR: [youtube] abc123: Video unavailable\nHTTP Error 403: Forbidden",
+            crate::error_codes::MED_007,
+        ),
+        (
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            crate::error_codes::MED_007,
+        ),
+        (
+            "ERROR: [youtube] abc123: Private video. Sign in if you've been granted access to this video",
+            crate::error_codes::MED_008,
+        ),
+    ] {
+        assert_eq!(
+            code_of(&download_failure(stderr, &request, true, &[])),
+            Some(code),
+            "download: {stderr}"
+        );
+        assert_eq!(
+            code_of(&inspection_failure(stderr, &[])),
+            Some(code),
+            "analysis: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn a_403_starts_a_compatibility_retry_only_where_it_is_the_final_error_of_the_tool() {
     let stale =
         "WARNING: [generic] Unable to download webpage: HTTP Error 403: Forbidden. Retrying (1/3)";
@@ -3025,6 +3066,62 @@ fn the_mp4_audio_pick_follows_the_extractors_preference_order() {
 }
 
 #[test]
+fn an_mp4_download_takes_a_format_without_a_height_under_a_limit_only_when_no_known_height_fits() {
+    let info = media_info_from_json(&json!({"formats": [
+        {"format_id": "v-unknown", "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "a-main", "vcodec": "none", "acodec": "mp4a.40.2"},
+        {"format_id": "c-360", "height": 360, "vcodec": "avc1.4d401e", "acodec": "mp4a.40.2"}
+    ]}))
+    .unwrap();
+    let request = |maximum| AddRequest {
+        url: "https://example.test/watch/1".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        max_height: Some(maximum),
+        ..AddRequest::default()
+    };
+    // The ready-made format with a known height fits; the video without a height is the last
+    // resort even though it pairs with a separate audio track.
+    assert_eq!(format_selector(&request(480), &info).unwrap(), "c-360");
+    assert_eq!(
+        format_selector(&request(240), &info).unwrap(),
+        "v-unknown+a-main"
+    );
+
+    // A playlist's expression resolves the same way for each entry.
+    let playlist = |maximum| AddRequest {
+        playlist: true,
+        ..request(maximum)
+    };
+    let resolved = |maximum| {
+        let selector = format_selector(&playlist(maximum), &info).unwrap();
+        selected_format_ids(&selector, &info).unwrap()
+    };
+    assert_eq!(resolved(480), ["c-360"]);
+    assert_eq!(resolved(240), ["v-unknown", "a-main"]);
+
+    let with_known_pair = media_info_from_json(&json!({"formats": [
+        {"format_id": "v-unknown", "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "v-360", "height": 360, "vcodec": "avc1.4d401e", "acodec": "none"},
+        {"format_id": "a-main", "vcodec": "none", "acodec": "mp4a.40.2"},
+        {"format_id": "c-360", "height": 360, "vcodec": "avc1.4d401e", "acodec": "mp4a.40.2"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        format_selector(&request(480), &with_known_pair).unwrap(),
+        "v-360+a-main"
+    );
+
+    let mut unlimited = request(480);
+    unlimited.max_height = None;
+    assert_eq!(
+        format_selector(&unlimited, &info).unwrap(),
+        "v-unknown+a-main",
+        "without a limit no format is a last resort, and a separate pair comes first as in the default selector"
+    );
+}
+
+#[test]
 fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
     let sampled = media_info_from_json(&json!({"formats": [
         {"format_id": "f-avc", "height": 720, "vcodec": "avc1.64001f", "acodec": "none"},
@@ -3054,7 +3151,10 @@ fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
     let selector = format_selector(&request, &sampled).unwrap();
     assert_eq!(
         selector,
-        format!("bestvideo[height<=?720]{video}+bestaudio{audio}/best[height<=?720]{video}{audio}")
+        format!(
+            "bestvideo[height<=720]{video}+bestaudio{audio}/best[height<=720]{video}{audio}/\
+             bestvideo[height<=?720]{video}+bestaudio{audio}/best[height<=?720]{video}{audio}"
+        )
     );
     assert_eq!(
         selected_format_ids(&selector, &sampled).unwrap(),
@@ -3178,6 +3278,55 @@ fn a_playlist_with_an_audio_language_does_not_pin_the_sampled_entrys_ids() {
 
     request.playlist = false;
     assert_eq!(format_selector(&request, &sampled).unwrap(), "f-avc+f-tr");
+}
+
+/// A playlist entry that reports no height is the last resort under the limit, behind every
+/// entry format that reports one; a single item with an exact height stays strict.
+#[test]
+fn a_playlist_with_an_audio_language_and_a_height_limit_takes_a_format_without_a_height_last() {
+    let audio = |video: Vec<Value>| {
+        let mut formats = video;
+        formats.extend([
+            json!({"format_id": "a-en", "vcodec": "none", "acodec": "opus", "language": "en"}),
+            json!({"format_id": "a-tr", "vcodec": "none", "acodec": "opus", "language": "tr"}),
+        ]);
+        media_info_from_json(&json!({ "formats": formats })).unwrap()
+    };
+    let known = audio(vec![
+        json!({"format_id": "v-360", "height": 360, "vcodec": "vp9", "acodec": "none"}),
+        json!({"format_id": "v-unknown", "vcodec": "vp9", "acodec": "none"}),
+    ]);
+    let unknown = audio(vec![
+        json!({"format_id": "v-unknown", "vcodec": "vp9", "acodec": "none"}),
+    ]);
+    let mut request = AddRequest {
+        url: "https://example.test/playlist".into(),
+        kind: DownloadKind::Video,
+        playlist: true,
+        max_height: Some(480),
+        audio_language: Some("tr".into()),
+        ..AddRequest::default()
+    };
+
+    let selector = format_selector(&request, &known).unwrap();
+    assert_eq!(
+        selected_format_ids(&selector, &known).unwrap(),
+        ["v-360", "a-tr"],
+        "{selector}: a format that fits wins over one without a height"
+    );
+    assert_eq!(
+        selected_format_ids(&selector, &unknown).unwrap(),
+        ["v-unknown", "a-tr"],
+        "{selector}"
+    );
+
+    request.playlist = false;
+    request.exact_height = Some(360);
+    request.max_height = Some(360);
+    assert_eq!(
+        format_selector(&request, &known).unwrap(),
+        "bestvideo[height=360]+bestaudio[language=tr]/best[height=360][language=tr]"
+    );
 }
 
 #[test]

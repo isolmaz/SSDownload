@@ -2577,9 +2577,9 @@ fn failed_in_stage(error: anyhow::Error, phase: &str) -> anyhow::Error {
 }
 
 /// The error of a download whose tool failed, from the tool's output without its `[debug]` trace:
-/// `SSD-MED-008` when the origin refuses the media, `SSD-MED-007` when the tool's final error is a
-/// 403 and `SSD-MED-017` otherwise. The message names the failed stage and gives the tool's final
-/// error text.
+/// `SSD-MED-007` when the tool's final error is a 403, `SSD-MED-008` when the origin otherwise
+/// refuses the media and `SSD-MED-017` otherwise; [`inspection_failure`] checks in the same order.
+/// The message names the failed stage and gives the tool's final error text.
 pub(crate) fn download_failure(
     visible: &str,
     request: &AddRequest,
@@ -2588,10 +2588,10 @@ pub(crate) fn download_failure(
 ) -> anyhow::Error {
     let phase = classify_download_error(&useful_error(visible, redactions), request).0;
     let summary = useful_error(&final_error_text(visible), redactions);
-    let code = if site_access_blocked(visible) {
-        crate::error_codes::MED_008
-    } else if is_forbidden(&summary) {
+    let code = if is_forbidden(&summary) {
         crate::error_codes::MED_007
+    } else if site_access_blocked(visible) {
+        crate::error_codes::MED_008
     } else {
         crate::error_codes::MED_017
     };
@@ -3215,9 +3215,20 @@ fn selected_tracks_format(request: &AddRequest, info: &MediaInfo) -> Result<Stri
                 format!("{video}+{}", audio.id)
             });
         }
-        return Ok(format!(
-            "{video}+bestaudio{language}/best{height}{language}"
-        ));
+        let selector = format!("{video}+bestaudio{language}/best{height}{language}");
+        return Ok(match request.max_height {
+            // A format that reports no height is the last resort under a limit, as in
+            // `format_selector`.
+            Some(maximum)
+                if request.exact_height.is_none() && request.video_format_id.is_none() =>
+            {
+                format!(
+                    "{selector}/bestvideo[height<=?{maximum}]+bestaudio{language}/\
+                     best[height<=?{maximum}]{language}"
+                )
+            }
+            _ => selector,
+        });
     }
     if let Some(id) = &request.video_format_id {
         let selected = info
