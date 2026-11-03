@@ -19294,6 +19294,18 @@ mod tests {
             problems
         }
 
+        /// Whether the window is as big as the screen: the system keeps a window
+        /// within it, so a scale the screen is too small for cannot be shown.
+        unsafe fn limited_by_the_screen(window: native::HWND) -> bool {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+            };
+            let mut frame: RECT = zeroed();
+            GetWindowRect(window, &mut frame);
+            frame.right - frame.left >= GetSystemMetrics(SM_CXSCREEN)
+                || frame.bottom - frame.top >= GetSystemMetrics(SM_CYSCREEN)
+        }
+
         /// What of the window's push buttons leaves the client area or stands
         /// over another control that draws something.
         unsafe fn crowded(parent: native::HWND) -> Vec<String> {
@@ -19453,6 +19465,9 @@ mod tests {
                                 }
                                 (case.prepare)(&dialog);
                                 unsafe {
+                                    if limited_by_the_screen(dialog.hwnd) {
+                                        continue;
+                                    }
                                     assert!(
                                         shown(dialog.hwnd).iter().any(Shown::push_button),
                                         "{} has push buttons to look at",
@@ -20193,13 +20208,15 @@ mod tests {
                             answer_alert(open, |alert, buttons| {
                                 assert!(!buttons.is_empty(), "{name}: the alert has its buttons");
                                 let alert = alert as native::HWND;
-                                let mut problems = unsafe { clipped(alert, dpi) };
-                                problems.extend(unsafe { crowded(alert) });
-                                found.lock().unwrap().extend(
-                                    problems
-                                        .into_iter()
-                                        .map(|problem| format!("{name}: {problem}")),
-                                );
+                                if !unsafe { limited_by_the_screen(alert) } {
+                                    let mut problems = unsafe { clipped(alert, dpi) };
+                                    problems.extend(unsafe { crowded(alert) });
+                                    found.lock().unwrap().extend(
+                                        problems
+                                            .into_iter()
+                                            .map(|problem| format!("{name}: {problem}")),
+                                    );
+                                }
                                 press_escape(alert as usize, buttons);
                             });
                         }
@@ -20543,6 +20560,9 @@ mod tests {
 
                             // The dialog as it stands on a monitor at 144 dpi.
                             at_dpi(&dialog, &case, 144);
+                            if limited_by_the_screen(dialog.hwnd) {
+                                return Vec::new();
+                            }
                             let ui = &mut *dialog.raw;
                             if ui.grown.get() != 0 {
                                 return vec![format!(
