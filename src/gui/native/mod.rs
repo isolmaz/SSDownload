@@ -12891,11 +12891,28 @@ mod tests {
         }
     }
 
+    /// How many frames `bar` asks for over `ms` milliseconds of the message loop.
+    unsafe fn frames_asked_for(bar: super::HWND, ms: u64) -> u32 {
+        use super::BAR_SWEEP_TIMER;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE, WM_TIMER};
+
+        let mut asked = 0;
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < end {
+            let mut msg: MSG = std::mem::zeroed();
+            if PeekMessageW(&mut msg, bar, WM_TIMER, WM_TIMER, PM_REMOVE) != 0
+                && msg.wParam == BAR_SWEEP_TIMER
+            {
+                asked += 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        asked
+    }
+
     #[test]
     fn a_bar_whose_job_stops_processing_stops_asking_for_frames() {
-        use super::BAR_SWEEP_TIMER;
         use crate::model::JobState;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE, WM_TIMER};
 
         for (in_modern, dark) in [(true, false), (false, true)] {
             with_download_window(in_modern, dark, |bar, show| unsafe {
@@ -12904,23 +12921,36 @@ mod tests {
                 show(JobState::Completed);
                 // The frame that is already scheduled still comes.
                 run_message_loop(300);
-                let mut asked = 0;
-                let end = std::time::Instant::now() + std::time::Duration::from_millis(300);
-                while std::time::Instant::now() < end {
-                    let mut msg: MSG = std::mem::zeroed();
-                    if PeekMessageW(&mut msg, bar, WM_TIMER, WM_TIMER, PM_REMOVE) != 0
-                        && msg.wParam == BAR_SWEEP_TIMER
-                    {
-                        asked += 1;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
                 assert_eq!(
-                    asked, 0,
+                    frames_asked_for(bar, 300),
+                    0,
                     "modern {in_modern}, dark {dark}: a finished job's bar still asks for frames"
                 );
             });
         }
+    }
+
+    #[test]
+    fn a_bar_that_stops_painting_itself_mid_sweep_stops_asking_for_frames() {
+        use crate::model::JobState;
+
+        with_download_window(false, true, |bar, show| unsafe {
+            show(JobState::Processing);
+            run_message_loop(300);
+            // A live switch away from the dark scheme: the bar is left to the system.
+            let root = windows_sys::Win32::UI::WindowsAndMessaging::GetAncestor(
+                bar,
+                windows_sys::Win32::UI::WindowsAndMessaging::GA_ROOT,
+            );
+            super::apply_dark_mode(root, false);
+            // The frame that is already scheduled still comes.
+            run_message_loop(300);
+            assert_eq!(
+                frames_asked_for(bar, 300),
+                0,
+                "a bar that no longer paints itself keeps asking for frames"
+            );
+        });
     }
 
     /// Runs `body` on a fresh thread attached to a private desktop. A dialog's

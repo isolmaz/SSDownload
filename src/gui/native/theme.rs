@@ -1239,7 +1239,7 @@ pub(super) const BAR_SWEEP_TIMER: usize = 0x5357;
 /// Schedules the next frame of a bar painted by its `WM_PAINT`. comctl32 re-arms the timer
 /// of its marquee from its own paint only, so a bar that paints in its place has to do it
 /// itself. The chain ends on its own: a bar that no longer sweeps, or is not painted
-/// because it is hidden or covered, schedules nothing.
+/// because it is minimised or hidden, schedules nothing.
 pub(super) unsafe fn schedule_sweep(bar: HWND) {
     if GetWindowLongW(bar, GWL_STYLE) as u32 & PBS_MARQUEE != 0 {
         SetTimer(bar, BAR_SWEEP_TIMER, SWEEP_FRAME_MS, None);
@@ -2809,6 +2809,12 @@ pub(super) unsafe extern "system" fn progress_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // A frame already scheduled must be consumed whatever the scheme is by now, or the
+    // timer repeats for ever once the bar no longer paints itself.
+    if msg == WM_TIMER && wparam == BAR_SWEEP_TIMER {
+        sweep_due(hwnd);
+        return 0;
+    }
     if scheme_dark(hwnd) {
         match msg {
             WM_PAINT => {
@@ -2817,10 +2823,6 @@ pub(super) unsafe extern "system" fn progress_proc(
                 paint_progress(hwnd, dc);
                 EndPaint(hwnd, &paint);
                 schedule_sweep(hwnd);
-                return 0;
-            }
-            WM_TIMER if wparam == BAR_SWEEP_TIMER => {
-                sweep_due(hwnd);
                 return 0;
             }
             WM_PRINTCLIENT => {
