@@ -8,7 +8,7 @@ use crate::{
         SubtitleTrack, SyncPolicy, ToolProgress, UiMode, UsageModes, UserMessage,
         ONBOARDING_VERSION,
     },
-    tools::without_component_names,
+    tools::{without_component_names, OwnText},
 };
 use anyhow::{bail, Result};
 use chrono::{Local, NaiveDateTime, TimeZone};
@@ -5156,31 +5156,42 @@ fn notice_body(message: &str, percent: Option<u32>) -> String {
     }
 }
 
-/// The folder of the profile as the text of the user's own: it holds the user name and can sit in
-/// a folder of any name.
-fn profile_text(profile: &Path) -> [String; 1] {
-    [profile.display().to_string()]
+/// What the user owns in a text the application shows: the folder of the profile, the download
+/// folder and the folders of the folder rules. The filter of the program names leaves these as
+/// they are.
+fn profile_text(profile: &Path, settings: &Settings) -> OwnText {
+    let mut own = OwnText::profile(profile);
+    own.strings
+        .push(settings.download_dir.display().to_string());
+    own.strings.extend(
+        settings
+            .folder_rules
+            .iter()
+            .map(|rule| rule.destination.display().to_string()),
+    );
+    own
 }
 
 /// What the user owns in text about `job`: its address, name and path, the folder that holds it
 /// and the folder of the profile. The filter of the program names leaves these as they are.
-fn job_own_text(job: &Job, profile: &Path) -> Vec<String> {
-    let mut own = vec![
+fn job_own_text(job: &Job, profile: &Path) -> OwnText {
+    let mut own = OwnText::profile(profile);
+    own.strings.extend([
         job.request.url.clone(),
         job.name.clone(),
         job.path.display().to_string(),
-        profile.display().to_string(),
-    ];
-    own.extend(job.path.parent().map(|dir| dir.display().to_string()));
+    ]);
+    own.strings
+        .extend(job.path.parent().map(|dir| dir.display().to_string()));
     own
 }
 
 /// The text of a message as the status line and a balloon show it: an error carries what a failed
 /// action reported, which can name a program behind a component, and any other message is the
 /// application's own text, which holds the folders, names and titles of the user as they are.
-fn shown_message(message: &UserMessage, profile: &Path) -> String {
+fn shown_message(message: &UserMessage, profile: &Path, settings: &Settings) -> String {
     if message.error {
-        without_component_names(&message.text, &profile_text(profile))
+        without_component_names(&message.text, &profile_text(profile, settings))
     } else {
         message.text.clone()
     }
@@ -5204,7 +5215,7 @@ unsafe fn refresh_notices(ui: &mut MainUi) {
         .map(|progress| progress.message.as_str())
         .unwrap_or("");
     let percent = progress.and_then(tool_percent);
-    let own = profile_text(&ui.app.paths().base_dir);
+    let own = profile_text(&ui.app.paths().base_dir, &ui.snapshot.settings);
     // A background refresh of an installed toolchain runs silently.
     let refreshing = ui.snapshot.tools.iter().all(|tool| tool.installed);
     if ui.snapshot.installing_tools && !refreshing {
@@ -5347,7 +5358,7 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
     let seen_messages = ui.seen_messages;
     for item in snapshot.messages.iter().filter(|m| m.id > seen_messages) {
         ui.seen_messages = ui.seen_messages.max(item.id);
-        let message = shown_message(item, &ui.app.paths().base_dir);
+        let message = shown_message(item, &ui.app.paths().base_dir, &snapshot.settings);
         set_text(ui.status, &message);
         if item.error {
             notify(
@@ -5495,7 +5506,10 @@ unsafe fn update_status(ui: &MainUi) {
     if let Some(warning) = &ui.snapshot.warning {
         set_text(
             ui.status,
-            &without_component_names(warning, &profile_text(&ui.app.paths().base_dir)),
+            &without_component_names(
+                warning,
+                &profile_text(&ui.app.paths().base_dir, &ui.snapshot.settings),
+            ),
         );
     }
 }
@@ -10136,15 +10150,27 @@ unsafe fn refresh_dialog_fonts(dlg: &mut DialogUi) {
     }
 }
 
-/// What the user owns in text shown in a dialog: the addresses typed or analysed in it and the
-/// folder of the profile. The filter of the program names leaves these as they are.
-unsafe fn dialog_own_text(dlg: &DialogUi) -> Vec<String> {
-    let mut own = profile_text(&dlg.app.paths().base_dir).to_vec();
+/// What the user owns in text shown in a dialog: what `profile_text` holds and what is typed or
+/// analysed in the dialog (addresses, folders, file names). The filter of the program names leaves
+/// these as they are.
+unsafe fn dialog_own_text(dlg: &DialogUi) -> OwnText {
+    let mut own = profile_text(&dlg.app.paths().base_dir, &dlg.app.snapshot().settings);
+    let typed = |hwnd| text(hwnd).trim().to_owned();
     match &dlg.kind {
-        DialogKind::Add(f) => own.extend(text(f.urls).lines().map(|line| line.trim().to_owned())),
-        DialogKind::Media(f) => own.push(f.base.url.clone()),
-        DialogKind::Crawler(f) => own.push(text(f.url).trim().to_owned()),
-        DialogKind::Synchronization(f) => own.push(text(f.url).trim().to_owned()),
+        DialogKind::Add(f) => {
+            own.strings
+                .extend(text(f.urls).lines().map(|line| line.trim().to_owned()));
+            own.strings.extend([typed(f.dir), typed(f.filename)]);
+        }
+        DialogKind::Settings(f) => own.strings.push(typed(f.dir)),
+        DialogKind::Rules(f) => own.strings.push(typed(f.dir)),
+        DialogKind::Synchronization(f) => own.strings.extend([typed(f.url), typed(f.dir)]),
+        DialogKind::Crawler(f) => own.strings.push(typed(f.url)),
+        DialogKind::Media(f) => {
+            own.strings.extend([f.base.url.clone(), typed(f.name)]);
+            own.strings
+                .extend(f.base.directory.iter().map(|dir| dir.display().to_string()));
+        }
         _ => {}
     }
     own
@@ -10153,7 +10179,7 @@ unsafe fn dialog_own_text(dlg: &DialogUi) -> Vec<String> {
 unsafe fn set_dialog_error(hwnd: HWND, error: HWND, value: &str, focus: HWND) {
     let state = dialog_state(hwnd);
     let own = if state.is_null() {
-        Vec::new()
+        OwnText::default()
     } else {
         dialog_own_text(&*state)
     };
@@ -11459,11 +11485,27 @@ mod tests {
                         unreachable!()
                     };
                     set_text(f.urls, &format!("https://other.example/clip\r\n{typed}"));
+                    set_text(f.dir, r"Z:\Videos\my ffmpeg tutorials");
+                    set_text(f.filename, "my deno clip.mp4");
                     let profile = (*raw).app.paths().base_dir.display().to_string();
+                    let download_dir = (*raw).app.snapshot().settings.download_dir;
+                    let own = dialog_own_text(&*raw);
                     assert_eq!(
-                        dialog_own_text(&*raw),
-                        [profile.as_str(), "https://other.example/clip", typed],
-                        "modern {in_modern}: the profile folder and each address typed here"
+                        own.strings,
+                        [
+                            profile.as_str(),
+                            download_dir.to_string_lossy().as_ref(),
+                            "https://other.example/clip",
+                            typed,
+                            r"Z:\Videos\my ffmpeg tutorials",
+                            "my deno clip.mp4",
+                        ],
+                        "modern {in_modern}: the profile and download folders, each address, the folder and the file name typed here"
+                    );
+                    assert_eq!(
+                        own.tools_dir,
+                        std::path::Path::new(&profile).join("tools"),
+                        "modern {in_modern}"
                     );
                     set_dialog_error(
                         hwnd,
@@ -11513,6 +11555,7 @@ mod tests {
         use crate::model::UserMessage;
         let message = |text: String, error: bool| UserMessage { id: 1, text, error };
         let profile = std::path::Path::new(r"C:\Users\deno\AppData\Local\SSDownload");
+        let settings = crate::model::Settings::default();
         let folder = r"C:\Users\deno\Documents\my ffmpeg tutorial\reports";
         let ready = crate::i18n::ui_format!(
             "Hata raporu hazır. Klasör: {0} · ZIP: {1}",
@@ -11521,7 +11564,7 @@ mod tests {
             format!("{folder}.zip")
         );
         assert_eq!(
-            shown_message(&message(ready.clone(), false), profile),
+            shown_message(&message(ready.clone(), false), profile, &settings),
             ready
         );
         let found = crate::i18n::ui_format!(
@@ -11530,7 +11573,7 @@ mod tests {
             "Deno and ffmpeg: a tutorial"
         );
         assert_eq!(
-            shown_message(&message(found.clone(), false), profile),
+            shown_message(&message(found.clone(), false), profile, &settings),
             found
         );
         let failed = crate::i18n::ui_format!(
@@ -11547,7 +11590,7 @@ mod tests {
             crate::tools::component_label("yt-dlp").replace(' ', "-"),
         );
         assert_eq!(
-            shown_message(&message(failed, true), profile),
+            shown_message(&message(failed, true), profile, &settings),
             crate::i18n::ui_format!(
                 "Video ve ses desteği: {error:#}",
                 "Video and audio support: {error:#}",
@@ -11557,6 +11600,194 @@ mod tests {
                 )
             ),
             "the folder of the profile stays, the program below it is hidden"
+        );
+    }
+
+    #[test]
+    fn a_status_message_keeps_the_download_and_rule_folders_of_the_user() {
+        use super::shown_message;
+        use crate::model::{Action, AddRequest, DownloadKind, FolderRule, Settings};
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-status-test-{}", uuid::Uuid::new_v4()));
+        let app =
+            crate::app::App::open(crate::paths::AppPaths::new(root.clone()).unwrap()).unwrap();
+        // A folder that is a file cannot be created, so the add fails and the engine names it.
+        let downloads = root.join("my deno downloads");
+        let blocker = root.join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        let rule_folder = blocker.join("my yt-dlp rule folder");
+        let mut settings = app.snapshot().settings;
+        settings.download_dir = downloads.clone();
+        settings.folder_rules = vec![FolderRule {
+            id: "rule".into(),
+            host: "files.example".into(),
+            include_subdomains: true,
+            kinds: Vec::new(),
+            destination: rule_folder.clone(),
+            priority: 1,
+            enabled: true,
+        }];
+        app.dispatch(Action::SetSettings { settings }).unwrap();
+        std::fs::remove_dir(&downloads).unwrap();
+        std::fs::write(&downloads, b"x").unwrap();
+        let base = app.paths().base_dir.clone();
+        for (host, folder, program, tail) in [
+            ("other.example", &downloads, "deno", "downloads"),
+            ("files.example", &rule_folder, "yt-dlp", "rule folder"),
+        ] {
+            let request = AddRequest {
+                url: format!("http://{host}/clip.zip"),
+                kind: DownloadKind::File,
+                ..Default::default()
+            };
+            app.dispatch(Action::Add { request }).unwrap_err();
+            let snapshot = app.snapshot();
+            let item = snapshot
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.error)
+                .expect("the failed add is reported on the status line");
+            let folder = folder.display().to_string();
+            let shown = shown_message(item, &base, &snapshot.settings);
+            assert!(shown.contains(&folder), "{host}: {shown}");
+            // Without the folder among the settings the name inside it is a program name.
+            let hidden = shown_message(item, &base, &Settings::default());
+            let label = crate::tools::component_label(program);
+            assert!(
+                hidden.contains(&format!("my {label} {tail}")),
+                "{host}: {hidden}"
+            );
+        }
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dialog_error_line_keeps_the_download_folder_the_user_typed() {
+        use super::{set_dialog_error, set_text, text, DialogKind, D_ADD_OK};
+        let typed_folder = |dialog: &HiddenDialog| {
+            // A folder below a file cannot be created, so the engine names the folder it was given.
+            let blocker = dialog.root.join("blocker");
+            std::fs::write(&blocker, b"x").unwrap();
+            blocker.join("my ffmpeg tutorials").display().to_string()
+        };
+        with_dialog(add_kind, 620, 340, |dialog| {
+            let DialogKind::Add(f) = dialog.kind() else {
+                unreachable!()
+            };
+            let folder = typed_folder(dialog);
+            unsafe {
+                set_text(f.urls, "http://127.0.0.1:9/clip.zip");
+                set_text(f.dir, &folder);
+                command(dialog, D_ADD_OK);
+                let shown = text(dialog.error_line());
+                assert!(dialog.is_open(), "the add failed: {shown}");
+                assert!(shown.contains(&folder), "{shown}");
+                // A path the user never typed here keeps its folder names too: the word is a path.
+                let other = r"Z:\Videos\ffmpeg tutorials";
+                let error = format!("The download folder could not be created: {other}");
+                set_dialog_error(
+                    dialog.hwnd,
+                    dialog.error_line(),
+                    &error,
+                    std::ptr::null_mut(),
+                );
+                assert_eq!(text(dialog.error_line()), error);
+            }
+        });
+        with_dialog(
+            || settings_kind(crate::model::UiMode::Advanced),
+            720,
+            420,
+            |dialog| {
+                let DialogKind::Settings(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                let folder = typed_folder(dialog);
+                let error = format!(
+                    "Settings could not be saved: The download folder could not be created: {folder}"
+                );
+                unsafe {
+                    set_text(f.dir, &folder);
+                    set_dialog_error(
+                        dialog.hwnd,
+                        dialog.error_line(),
+                        &error,
+                        std::ptr::null_mut(),
+                    );
+                    assert_eq!(text(dialog.error_line()), error);
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn a_dialog_holds_the_folders_addresses_and_names_typed_in_it_as_the_users_own() {
+        use super::{dialog_own_text, set_text, DialogKind};
+        let folder = r"Z:\Videos\my ffmpeg tutorials";
+        let address = "https://files.example/yt-dlp-guide.zip";
+        let name = "my deno clip.mp4";
+        // What the dialog holds of the typed `expected` strings: those it leaves out.
+        let missing = |dialog: &HiddenDialog, expected: &[&str]| -> Vec<String> {
+            let own = unsafe { dialog_own_text(&*dialog.raw).strings };
+            expected
+                .iter()
+                .filter(|text| !own.iter().any(|part| part == *text))
+                .map(|text| text.to_string())
+                .collect()
+        };
+        let mut left_out = Vec::new();
+        left_out.extend(with_dialog(
+            || settings_kind(crate::model::UiMode::Advanced),
+            720,
+            420,
+            |dialog| {
+                let DialogKind::Settings(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                unsafe { set_text(f.dir, &format!(" {folder} ")) };
+                missing(dialog, &[folder])
+            },
+        ));
+        left_out.extend(with_dialog(rules_kind, 700, 470, |dialog| {
+            let DialogKind::Rules(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe { set_text(f.dir, folder) };
+            missing(dialog, &[folder])
+        }));
+        left_out.extend(with_dialog(sync_kind, 700, 470, |dialog| {
+            let DialogKind::Synchronization(f) = dialog.kind() else {
+                unreachable!()
+            };
+            unsafe {
+                set_text(f.dir, folder);
+                set_text(f.url, address);
+            }
+            missing(dialog, &[folder, address])
+        }));
+        left_out.extend(with_dialog(
+            || {
+                let mut kind = media_kind();
+                if let DialogKind::Media(f) = &mut kind {
+                    f.base.directory = Some(folder.into());
+                }
+                kind
+            },
+            640,
+            420,
+            |dialog| {
+                let DialogKind::Media(f) = dialog.kind() else {
+                    unreachable!()
+                };
+                unsafe { set_text(f.name, name) };
+                missing(dialog, &[folder, name])
+            },
+        ));
+        assert!(
+            left_out.is_empty(),
+            "typed in a dialog but not among the user's own: {left_out:?}"
         );
     }
 

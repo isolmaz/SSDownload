@@ -74,17 +74,40 @@ pub(crate) fn component_title(name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// What a text may quote that is not for the filter of the program names to touch.
+#[derive(Debug, Default)]
+pub(crate) struct OwnText {
+    /// Addresses, folders, file names and titles of the user's own that contain spaces or are not
+    /// paths, so no word of the text shows them as one.
+    pub(crate) strings: Vec<String>,
+    /// The folder the application installs its programs into.
+    pub(crate) tools_dir: PathBuf,
+}
+
+impl OwnText {
+    /// The folder of the profile: it holds the user name and can sit in a folder of any name.
+    pub(crate) fn profile(profile: &Path) -> Self {
+        Self {
+            strings: vec![profile.display().to_string()],
+            tools_dir: crate::paths::tools_dir_of(profile),
+        }
+    }
+}
+
 /// `text` with every name of a program behind a media component (yt-dlp, FFmpeg, ffprobe, Deno,
 /// BtbN) in any letter case replaced by what the component does; a name joined to a word, a path
 /// or an address by `-`, `_`, `/`, `\` or a file extension gets the words of the label joined by
-/// `-`, so the text keeps its shape. A name inside a longer word stays, and so does every
-/// occurrence of a string in `own` (the address, path, file name or title of the user's own, the
-/// folder of the profile), in any letter case, even where it holds a name.
-pub(crate) fn without_component_names(text: &str, own: &[String]) -> String {
+/// `-`, so the text keeps its shape. A name inside a longer word stays.
+///
+/// What is the user's own stays as it is: every occurrence of a string of `own`, and a file path
+/// (a word with a `\`, or one that begins like `C:/`, `/`, `./` or `../`). Below the tools folder
+/// of the application the names in a path are hidden and the folder up to it stays. An address
+/// is hidden unless `own` holds it.
+pub(crate) fn without_component_names(text: &str, own: &OwnText) -> String {
     const NAMES: [&str; 5] = ["ffprobe", "ffmpeg", "yt-dlp", "deno", "btbn"];
     let lower = text.to_ascii_lowercase();
     let mut kept: Vec<std::ops::Range<usize>> = Vec::new();
-    for part in own.iter().filter(|part| !part.is_empty()) {
+    for part in own.strings.iter().filter(|part| !part.is_empty()) {
         let part = part.to_ascii_lowercase();
         kept.extend(
             lower
@@ -92,6 +115,8 @@ pub(crate) fn without_component_names(text: &str, own: &[String]) -> String {
                 .map(|(start, found)| start..start + found.len()),
         );
     }
+    let (tools, below) = tools_folder_ranges(text, &own.tools_dir);
+    kept.extend(tools);
     let mut hits: Vec<(usize, &str, bool)> = NAMES
         .iter()
         .flat_map(|name| {
@@ -104,6 +129,11 @@ pub(crate) fn without_component_names(text: &str, own: &[String]) -> String {
             if kept
                 .iter()
                 .any(|range| range.start < end && start < range.end)
+            {
+                return None;
+            }
+            if !below.iter().any(|range| range.contains(&start))
+                && is_file_path(word_around(text, start, end))
             {
                 return None;
             }
@@ -136,6 +166,67 @@ pub(crate) fn without_component_names(text: &str, own: &[String]) -> String {
     }
     shown.push_str(&text[copied..]);
     shown
+}
+
+/// Where `text` quotes the tools folder `tools_dir` (in any letter case, with either separator, with
+/// or without the `\\?\` prefix): the ranges of the folder itself, and the ranges from its end to the
+/// end of the word, the paths of the programs below it.
+fn tools_folder_ranges(
+    text: &str,
+    tools_dir: &Path,
+) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    let key = |path: &str| path.to_ascii_lowercase().replace('/', "\\");
+    let folder = tools_dir.display().to_string();
+    let folder = key(folder.strip_prefix(r"\\?\").unwrap_or(&folder));
+    let folder = folder.trim_end_matches('\\');
+    let mut inside = Vec::new();
+    let mut below = Vec::new();
+    if folder.is_empty() {
+        return (inside, below);
+    }
+    for (start, found) in key(text).match_indices(folder) {
+        let end = start + found.len();
+        let ends_here = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|next| !(next.is_alphanumeric() || "_-.".contains(next)));
+        if ends_here {
+            inside.push(start..end);
+            let word_end = text[end..]
+                .find(char::is_whitespace)
+                .map_or(text.len(), |at| end + at);
+            below.push(end..word_end);
+        }
+    }
+    (inside, below)
+}
+
+/// The run of characters without whitespace that holds `start..end`.
+fn word_around(text: &str, start: usize, end: usize) -> &str {
+    let from = text[..start]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(at, c)| at + c.len_utf8());
+    let to = text[end..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |at| end + at);
+    &text[from..to]
+}
+
+/// Whether a word is a file path rather than an address or an ordinary word: it holds a `\`, or it
+/// begins like `C:/`, `/`, `./`, `../` or `~/` (a word such as `ffmpeg/ffprobe` is no path).
+fn is_file_path(word: &str) -> bool {
+    if word.contains("://") {
+        return false;
+    }
+    let word = word.trim_start_matches(['"', '\'', '`', '(', '[', '{', '<']);
+    let drive = matches!(word.as_bytes(), [letter, b':', b'/', ..] if letter.is_ascii_alphabetic());
+    word.contains('\\')
+        || drive
+        || ["/", "./", "../", "~/"]
+            .iter()
+            .any(|prefix| word.starts_with(prefix))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3238,7 +3329,14 @@ mod tests {
     }
 
     fn english_without_names(text: &str, own: &[&str]) -> String {
-        let own: Vec<String> = own.iter().map(|part| part.to_string()).collect();
+        english_without_names_in(text, own, "")
+    }
+
+    fn english_without_names_in(text: &str, own: &[&str], tools_dir: &str) -> String {
+        let own = OwnText {
+            strings: own.iter().map(|part| part.to_string()).collect(),
+            tools_dir: PathBuf::from(tools_dir),
+        };
         crate::i18n::with_language("en", || without_component_names(text, &own))
     }
 
@@ -3252,7 +3350,10 @@ mod tests {
             "ERROR: converter exited; converter, media inspector and media component need runtime or media component"
         );
         assert_eq!(
-            crate::i18n::with_language("tr", || without_component_names("yt-dlp ve FFmpeg", &[])),
+            crate::i18n::with_language("tr", || without_component_names(
+                "yt-dlp ve FFmpeg",
+                &OwnText::default()
+            )),
             "medya bileşeni ve dönüştürücü"
         );
         assert_eq!(
@@ -3279,14 +3380,14 @@ mod tests {
         assert_eq!(
             crate::i18n::with_language("tr", || without_component_names(
                 "Deno'nun sürümü ö yt-dlp",
-                &[]
+                &OwnText::default()
             )),
             "çalıştırma ortamı'nun sürümü ö medya bileşeni"
         );
     }
 
     #[test]
-    fn a_name_in_a_path_or_an_address_is_hidden_and_the_path_keeps_its_shape() {
+    fn a_name_in_an_address_or_below_the_tools_folder_is_hidden_and_keeps_its_shape() {
         assert_eq!(
             english_without_names(
                 "Deno failed; see https://github.com/yt-dlp/yt-dlp/wiki#pass-cookies-to-yt-dlp and https://github.com/yt-dlp/yt-dlp/issues",
@@ -3295,11 +3396,12 @@ mod tests {
             "runtime failed; see https://github.com/media-component/media-component/wiki#pass-cookies-to-media-component and https://github.com/media-component/media-component/issues"
         );
         assert_eq!(
-            english_without_names(
+            english_without_names_in(
                 r"ffmpeg: unable to open C:\data\tools\yt-dlp\yt-dlp.exe and ./ffprobe/out.mp4: denied",
-                &[]
+                &[],
+                r"C:\data\tools"
             ),
-            r"converter: unable to open C:\data\tools\media-component\media-component.exe and ./media-inspector/out.mp4: denied"
+            r"converter: unable to open C:\data\tools\media-component\media-component.exe and ./ffprobe/out.mp4: denied"
         );
         assert_eq!(
             english_without_names(
@@ -3314,17 +3416,20 @@ mod tests {
     fn the_strings_of_the_user_stay_where_they_occur_and_the_program_below_them_is_hidden() {
         let profile = r"C:\Users\Deno\AppData\Local\SSDownload";
         // The tool path the application itself quotes sits under the profile folder.
+        let tools = r"C:\Users\Deno\AppData\Local\SSDownload\tools";
         assert_eq!(
-            english_without_names(
+            english_without_names_in(
                 r"C:\Users\Deno\AppData\Local\SSDownload\tools\versions\7\ffmpeg\ffmpeg.exe was modified or corrupted, ffmpeg stopped",
-                &[profile]
+                &[profile],
+                tools
             ),
             r"C:\Users\Deno\AppData\Local\SSDownload\tools\versions\7\converter\converter.exe was modified or corrupted, converter stopped"
         );
         assert_eq!(
-            english_without_names(
+            english_without_names_in(
                 r"c:\users\deno\appdata\local\ssdownload\tools\.staging-x\yt-dlp\yt-dlp.exe",
-                &[profile]
+                &[profile],
+                tools
             ),
             r"c:\users\deno\appdata\local\ssdownload\tools\.staging-x\media-component\media-component.exe"
         );
@@ -3348,6 +3453,87 @@ mod tests {
         );
         // An empty string of the user changes nothing.
         assert_eq!(english_without_names("ffmpeg", &[""]), "converter");
+    }
+
+    #[test]
+    fn a_path_outside_the_tools_folder_stays_whatever_names_it_holds() {
+        let tools = r"C:\data\tools";
+        for text in [
+            r"The download folder could not be created: Z:\Videos\ffmpeg tutorials",
+            r"could not write Z:/Videos/yt-dlp/clip.mp4 and \\nas\share\Deno\clip.mp4",
+            r#"cannot open "Z:\Videos\deno" and '..\ffprobe\a.mp4' (.\ffmpeg\b.mp4)"#,
+            "failed in /mnt/yt-dlp/clip.mp4 and ./ffmpeg/out.mp4 and ../deno/x and ~/ffprobe/y",
+            r"D:\tools\ffmpeg\a.exe, C:\data\tools2\ffmpeg\a.exe and C:\data\toolsffmpeg\a.exe",
+        ] {
+            assert_eq!(english_without_names_in(text, &[], tools), text);
+        }
+        // A word with a slash that does not look like a path is text, and so is a name beside a path.
+        assert_eq!(
+            english_without_names_in("ffmpeg/ffprobe not found in Z:\\x\\yt-dlp", &[], tools),
+            "converter/media-inspector not found in Z:\\x\\yt-dlp"
+        );
+        assert_eq!(
+            english_without_names_in(r"Z:\Videos\my ffmpeg tutorials", &[], tools),
+            r"Z:\Videos\my converter tutorials",
+            "a folder with a space before the name is the user's own only when `own` holds it"
+        );
+        assert_eq!(
+            english_without_names_in(
+                r"Z:\Videos\my ffmpeg tutorials",
+                &[r"Z:\Videos\my ffmpeg tutorials"],
+                tools
+            ),
+            r"Z:\Videos\my ffmpeg tutorials"
+        );
+    }
+
+    #[test]
+    fn a_program_below_the_tools_folder_is_hidden_in_any_spelling_of_the_folder() {
+        let tools = r"C:\Users\John Deno\AppData\Local\SSDownload\tools";
+        // The folder up to the tools folder stays, with its space and the name in it.
+        assert_eq!(
+            english_without_names_in(
+                r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\ffmpeg\ffmpeg.exe was modified",
+                &[],
+                tools
+            ),
+            r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\converter\converter.exe was modified"
+        );
+        // Another letter case and the other separator.
+        assert_eq!(
+            english_without_names_in(
+                "c:/users/john deno/appdata/local/ssdownload/TOOLS/.staging-x/yt-dlp/yt-dlp.exe",
+                &[],
+                tools
+            ),
+            "c:/users/john deno/appdata/local/ssdownload/TOOLS/.staging-x/media-component/media-component.exe"
+        );
+        // The verbatim prefix in the text, in the folder, and quotes around the path.
+        assert_eq!(
+            english_without_names_in(
+                r#"failed: "\\?\C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\deno\deno.exe""#,
+                &[],
+                tools
+            ),
+            r#"failed: "\\?\C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\runtime\runtime.exe""#
+        );
+        assert_eq!(
+            english_without_names_in(
+                r"C:\Users\John Deno\AppData\Local\SSDownload\tools\.staging-3\yt-dlp\yt-dlp.exe",
+                &[],
+                r"\\?\C:\Users\John Deno\AppData\Local\SSDownload\tools"
+            ),
+            r"C:\Users\John Deno\AppData\Local\SSDownload\tools\.staging-3\media-component\media-component.exe"
+        );
+        // A name in the next word is hidden like anywhere else.
+        assert_eq!(
+            english_without_names_in(
+                r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\deno\deno.exe and Deno",
+                &[],
+                tools
+            ),
+            r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\runtime\runtime.exe and runtime"
+        );
     }
 
     #[test]
@@ -3376,7 +3562,8 @@ mod tests {
                     ("FFmpeg", "FFmpeg"),
                     ("ffprobe", "ffprobe"),
                 ] {
-                    let shown = without_component_names(&format!("{program} x"), &[]);
+                    let shown =
+                        without_component_names(&format!("{program} x"), &OwnText::default());
                     assert_eq!(
                         shown,
                         format!("{} x", component_label(name)),
@@ -3412,7 +3599,7 @@ mod tests {
             .join("7")
             .join("ffmpeg")
             .join("ffmpeg.exe");
-        let own = [profile.display().to_string()];
+        let own = OwnText::profile(&profile);
         let shell = PathBuf::from(std::env::var_os("ComSpec").unwrap());
         for info in crate::i18n::LANGUAGES.iter() {
             crate::i18n::with_language(info.code, || {
@@ -3428,7 +3615,8 @@ mod tests {
                         validate_version(&shell, &["/C", "exit", "3"], "FFmpeg"),
                     ),
                 ] {
-                    let text = without_component_names(&format!("{:#}", result.unwrap_err()), &own);
+                    let raw = format!("{:#}", result.unwrap_err());
+                    let text = without_component_names(&raw, &own);
                     assert!(text.starts_with(&title), "{} {case}: {text}", info.code);
                     assert!(
                         !text.to_lowercase().contains("ffmpeg"),
@@ -3436,15 +3624,20 @@ mod tests {
                         info.code
                     );
                     if case == "not started" {
-                        assert!(
-                            text.contains(&format!(
-                                "{}{sep}tools{sep}versions{sep}7{sep}{joined}{sep}{joined}.exe",
-                                profile.display(),
-                                sep = std::path::MAIN_SEPARATOR
-                            )),
-                            "{} {case}: {text}",
+                        // Only the two folder names and the file name change; the rest of the
+                        // path and of the text stays byte for byte.
+                        let hidden = format!(
+                            "{}{sep}tools{sep}versions{sep}7{sep}{joined}{sep}{joined}.exe",
+                            profile.display(),
+                            sep = std::path::MAIN_SEPARATOR
+                        );
+                        let expected = raw.replace(&missing.display().to_string(), &hidden);
+                        assert_ne!(
+                            expected, raw,
+                            "{} {case}: the error quotes the path",
                             info.code
                         );
+                        assert_eq!(text, expected, "{} {case}", info.code);
                     }
                 }
                 let empty = validate_version(&shell, &["/C", "rem"], "FFmpeg").unwrap_err();
