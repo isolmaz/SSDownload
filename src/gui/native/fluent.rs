@@ -2556,6 +2556,11 @@ pub(super) unsafe extern "system" fn modern_progress_proc(
                 let dc = BeginPaint(hwnd, &mut paint);
                 paint_modern_progress(hwnd, dc);
                 EndPaint(hwnd, &paint);
+                schedule_sweep(hwnd);
+                return 0;
+            }
+            WM_TIMER if wparam == BAR_SWEEP_TIMER => {
+                sweep_due(hwnd);
                 return 0;
             }
             WM_PRINTCLIENT => {

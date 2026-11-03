@@ -1233,6 +1233,25 @@ pub(super) fn sweep_clock() -> u64 {
     unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() }
 }
 
+/// The timer by which a progress bar that paints its own marquee asks for its next frame.
+pub(super) const BAR_SWEEP_TIMER: usize = 0x5357;
+
+/// Schedules the next frame of a bar painted by its `WM_PAINT`. comctl32 re-arms the timer
+/// of its marquee from its own paint only, so a bar that paints in its place has to do it
+/// itself. The chain ends on its own: a bar that no longer sweeps, or is not painted
+/// because it is hidden or covered, schedules nothing.
+pub(super) unsafe fn schedule_sweep(bar: HWND) {
+    if GetWindowLongW(bar, GWL_STYLE) as u32 & PBS_MARQUEE != 0 {
+        SetTimer(bar, BAR_SWEEP_TIMER, SWEEP_FRAME_MS, None);
+    }
+}
+
+/// The sweep timer of `bar` has run out: the bar is painted again.
+pub(super) unsafe fn sweep_due(bar: HWND) {
+    KillTimer(bar, BAR_SWEEP_TIMER);
+    InvalidateRect(bar, null(), 0);
+}
+
 /// The start and end, from the bar's left edge, of the block a bar `width` wide shows while
 /// its job is processing: the work left has no size, so instead of a full bar that looks
 /// finished, a block a third of the bar wide travels to one end and back.
@@ -2734,7 +2753,7 @@ pub(super) unsafe fn paint_progress(hwnd: HWND, dc: HDC) {
     let position = SendMessageW(hwnd, PBM_GETPOS, 0, 0) as i32;
     let span = (range.iHigh - range.iLow).max(1);
     let width = (client.right - client.left - 2).max(0);
-    // A marquee bar is repainted on each step of its own timer.
+    // A marquee bar is repainted on each step of its sweep timer (`schedule_sweep`).
     let (start, end) = if GetWindowLongW(hwnd, GWL_STYLE) as u32 & PBS_MARQUEE != 0 {
         processing_sweep(sweep_clock(), width)
     } else {
@@ -2797,6 +2816,11 @@ pub(super) unsafe extern "system" fn progress_proc(
                 let dc = BeginPaint(hwnd, &mut paint);
                 paint_progress(hwnd, dc);
                 EndPaint(hwnd, &paint);
+                schedule_sweep(hwnd);
+                return 0;
+            }
+            WM_TIMER if wparam == BAR_SWEEP_TIMER => {
+                sweep_due(hwnd);
                 return 0;
             }
             WM_PRINTCLIENT => {
