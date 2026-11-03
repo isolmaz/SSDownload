@@ -716,7 +716,7 @@ fn status_code(status: u32) -> Option<crate::error_codes::Code> {
 }
 
 /// `CURLE_PROXY`: the handshake with a proxy failed. curl-sys does not name it.
-const CURLE_PROXY: curl_sys::CURLcode = 97;
+pub(crate) const CURLE_PROXY: curl_sys::CURLcode = 97;
 
 fn curl_code(code: curl_sys::CURLcode) -> Option<crate::error_codes::Code> {
     use crate::error_codes::*;
