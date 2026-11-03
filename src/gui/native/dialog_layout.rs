@@ -3587,6 +3587,39 @@ unsafe fn widen_for_scroll_bar(dlg: &DialogUi) {
     }
 }
 
+/// Takes the size the system suggests for the monitor the dialog moved to and
+/// lays the dialog out at that scale. The window keeps the scroll bar's width
+/// only while the page still scrolls there: a dialog that its old screen was
+/// too short for would otherwise keep that width on a monitor that holds all
+/// of it.
+pub(super) unsafe fn dialog_dpi_changed(dlg: &mut DialogUi, suggested: &RECT) {
+    let (old_dpi, old_bar) = (dlg.dpi, scroll_bar_width(dlg, dlg.dpi));
+    refresh_dialog_fonts(dlg);
+    // The window's minimum width counts a bar that the new layout has not confirmed.
+    dlg.scroll_range.set(0);
+    SetWindowPos(
+        dlg.hwnd,
+        null_mut(),
+        suggested.left,
+        suggested.top,
+        suggested.right - suggested.left,
+        suggested.bottom - suggested.top,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+    layout_dialog(dlg);
+    // The page fits: the suggested width still holds the old bar at the new scale.
+    if old_bar > 0 && dlg.scroll_range.get() == 0 {
+        let mut frame: RECT = zeroed();
+        GetWindowRect(dlg.hwnd, &mut frame);
+        let old_bar = (old_bar as i64 * dlg.dpi as i64 / old_dpi as i64) as i32;
+        let (least, _) = dialog_min_track(dlg, dlg.dpi);
+        let width = (frame.right - frame.left - old_bar).max(least);
+        if width < frame.right - frame.left {
+            set_width(dlg, &frame, width);
+        }
+    }
+}
+
 /// A visible control of a dialog in the coordinates `MoveWindow` takes, and
 /// what fitting the dialog's text may do to it.
 #[derive(Clone)]

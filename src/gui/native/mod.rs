@@ -9284,21 +9284,10 @@ unsafe extern "system" fn dialog_proc(
             0
         }
         WM_DPICHANGED => {
-            let r = &*(lparam as *const RECT);
             // The resize lays the dialog out, which has to use the new DPI and
             // fonts: with the old ones its rows look too wide for the window
             // and the window is widened.
-            refresh_dialog_fonts(dlg);
-            SetWindowPos(
-                hwnd,
-                null_mut(),
-                r.left,
-                r.top,
-                r.right - r.left,
-                r.bottom - r.top,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-            layout_dialog(dlg);
+            dialog_dpi_changed(dlg, &*(lparam as *const RECT));
             0
         }
         WM_COMMAND => {
@@ -18841,8 +18830,9 @@ mod tests {
         use windows_sys::Win32::{
             Foundation::{POINT, RECT, SIZE},
             Graphics::Gdi::{
-                ClientToScreen, DeleteObject, DrawTextW, GetDC, ReleaseDC, SelectObject,
-                DT_CALCRECT, DT_EDITCONTROL, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK,
+                ClientToScreen, DeleteObject, DrawTextW, GetDC, GetWindowRgnBox, IntersectRect,
+                ReleaseDC, SelectObject, DT_CALCRECT, DT_EDITCONTROL, DT_NOPREFIX, DT_SINGLELINE,
+                DT_WORDBREAK, NULLREGION, RGN_ERROR,
             },
             UI::{
                 Controls::BCM_GETIDEALSIZE,
@@ -19083,7 +19073,8 @@ mod tests {
             ]
         }
 
-        /// A visible control with its rectangle on the screen.
+        /// A visible control with its rectangle on the screen and the part of it
+        /// that its window region leaves visible.
         struct Shown {
             hwnd: native::HWND,
             id: i32,
@@ -19091,9 +19082,17 @@ mod tests {
             style: u32,
             text: String,
             rect: RECT,
+            visible: RECT,
         }
 
         impl Shown {
+            /// Whether any part of the control shows: a dialog that scrolls its
+            /// page under a pinned bar cuts the controls below the bar to an
+            /// empty region.
+            fn seen(&self) -> bool {
+                self.visible.right > self.visible.left && self.visible.bottom > self.visible.top
+            }
+
             fn push_button(&self) -> bool {
                 self.class.eq_ignore_ascii_case("Button") && self.style & BS_TYPEMASK as u32 <= 1
             }
@@ -19126,6 +19125,36 @@ mod tests {
             }
         }
 
+        /// The part of `rect`, the rectangle of `window` on the screen, that the
+        /// window's region leaves visible.
+        unsafe fn visible_part(window: native::HWND, rect: RECT) -> RECT {
+            let empty = RECT {
+                left: rect.left,
+                top: rect.top,
+                right: rect.left,
+                bottom: rect.top,
+            };
+            let mut region: RECT = zeroed();
+            match GetWindowRgnBox(window, &mut region) {
+                RGN_ERROR => rect,
+                NULLREGION => empty,
+                _ => {
+                    let region = RECT {
+                        left: rect.left + region.left,
+                        top: rect.top + region.top,
+                        right: rect.left + region.right,
+                        bottom: rect.top + region.bottom,
+                    };
+                    let mut part: RECT = zeroed();
+                    if IntersectRect(&mut part, &rect, &region) != 0 {
+                        part
+                    } else {
+                        empty
+                    }
+                }
+            }
+        }
+
         unsafe fn shown(parent: native::HWND) -> Vec<Shown> {
             let mut controls = Vec::new();
             let mut child = GetWindow(parent, GW_CHILD);
@@ -19141,6 +19170,7 @@ mod tests {
                         style,
                         text: native::text(child).trim_end_matches('\0').to_string(),
                         rect,
+                        visible: visible_part(child, rect),
                     });
                 }
                 child = GetWindow(child, GW_HWNDNEXT);
@@ -19294,44 +19324,63 @@ mod tests {
             problems
         }
 
-        /// Whether the window is as big as the screen: the system keeps a window
-        /// within it, so a scale the screen is too small for cannot be shown.
-        unsafe fn limited_by_the_screen(window: native::HWND) -> bool {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-            };
+        /// Whether the window is as wide as the work area of its monitor, so that
+        /// nothing can make it wider.
+        unsafe fn fills_the_work_area(window: native::HWND) -> bool {
             let mut frame: RECT = zeroed();
             GetWindowRect(window, &mut frame);
-            frame.right - frame.left >= GetSystemMetrics(SM_CXSCREEN)
-                || frame.bottom - frame.top >= GetSystemMetrics(SM_CYSCREEN)
+            native::work_area(window)
+                .is_some_and(|work| frame.right - frame.left >= work.right - work.left)
         }
 
-        /// What of the window's push buttons leaves the client area or stands
-        /// over another control that draws something.
-        unsafe fn crowded(parent: native::HWND) -> Vec<String> {
+        /// What of the window's push buttons leaves the client area, judged by
+        /// the part of the button that shows.
+        unsafe fn outside_the_client(parent: native::HWND) -> Vec<String> {
             let (left, right) = client_span(parent);
-            let controls = shown(parent);
-            let mut problems = Vec::new();
-            for button in controls.iter().filter(|control| control.push_button()) {
-                if button.rect.left < left || button.rect.right > right {
-                    problems.push(format!(
+            shown(parent)
+                .iter()
+                .filter(|control| control.push_button() && control.seen())
+                .filter(|button| button.visible.left < left || button.visible.right > right)
+                .map(|button| {
+                    format!(
                         "{} (x {}..{}) leaves the client area (x {left}..{right})",
                         button.name(),
-                        button.rect.left,
-                        button.rect.right
-                    ));
-                }
+                        button.visible.left,
+                        button.visible.right
+                    )
+                })
+                .collect()
+        }
+
+        /// What of the window's push buttons stands over another control that
+        /// draws something, judged by the parts of both that show.
+        unsafe fn overlapping(parent: native::HWND) -> Vec<String> {
+            let controls = shown(parent);
+            let mut problems = Vec::new();
+            for button in controls
+                .iter()
+                .filter(|control| control.push_button() && control.seen())
+            {
                 for other in controls.iter().filter(|other| {
                     other.hwnd != button.hwnd
+                        && other.seen()
                         && !(other.class.eq_ignore_ascii_case("Static") && other.text.is_empty())
                 }) {
-                    let (a, b) = (button.rect, other.rect);
+                    let (a, b) = (button.visible, other.visible);
                     if a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
                     {
                         problems.push(format!("{} stands over {}", button.name(), other.name()));
                     }
                 }
             }
+            problems
+        }
+
+        /// What of the window's push buttons leaves the client area or stands
+        /// over another control that draws something.
+        unsafe fn crowded(parent: native::HWND) -> Vec<String> {
+            let mut problems = outside_the_client(parent);
+            problems.extend(overlapping(parent));
             problems
         }
 
@@ -19454,10 +19503,11 @@ mod tests {
         fn every_dialog_fits_its_buttons_and_labels_in_every_language_scheme_and_scale() {
             for_each_theme(|modern| {
                 let mut wrong = Vec::new();
+                let mut stuck = Vec::new();
                 for info in crate::i18n::LANGUAGES.iter() {
                     for (dark, dpi) in [(false, 96), (true, 96), (false, 144)] {
-                        let found = in_theme(info.code, modern, || {
-                            let mut found = Vec::new();
+                        let (found, cut) = in_theme(info.code, modern, || {
+                            let (mut found, mut cut) = (Vec::new(), Vec::new());
                             for case in cases() {
                                 let dialog = dialog(&case, dark);
                                 if dpi != 96 {
@@ -19465,9 +19515,6 @@ mod tests {
                                 }
                                 (case.prepare)(&dialog);
                                 unsafe {
-                                    if limited_by_the_screen(dialog.hwnd) {
-                                        continue;
-                                    }
                                     assert!(
                                         shown(dialog.hwnd).iter().any(Shown::push_button),
                                         "{} has push buttons to look at",
@@ -19475,22 +19522,42 @@ mod tests {
                                     );
                                     for problem in clipped(dialog.hwnd, (*dialog.raw).dpi)
                                         .into_iter()
-                                        .chain(crowded(dialog.hwnd))
+                                        .chain(overlapping(dialog.hwnd))
                                     {
                                         found.push(format!("{}: {problem}", case.name));
                                     }
+                                    // A scaled window as wide as its work area cannot be
+                                    // widened for a button that no longer fits: the screen is
+                                    // narrower than the dialog is designed for at this scale.
+                                    let outside = if dpi > 96 && fills_the_work_area(dialog.hwnd) {
+                                        &mut cut
+                                    } else {
+                                        &mut found
+                                    };
+                                    for problem in outside_the_client(dialog.hwnd) {
+                                        outside.push(format!("{}: {problem}", case.name));
+                                    }
                                 }
                             }
-                            found
+                            (found, cut)
                         });
-                        wrong.extend(found.into_iter().map(|problem| {
+                        let described = |problem: String| {
                             format!(
                                 "{} / {} / {dpi} dpi: {problem}",
                                 info.code,
                                 if dark { "dark" } else { "light" }
                             )
-                        }));
+                        };
+                        wrong.extend(found.into_iter().map(described));
+                        stuck.extend(cut.into_iter().map(described));
                     }
+                }
+                if !stuck.is_empty() {
+                    eprintln!(
+                        "{}: {} buttons outside a window as wide as its work area, not counted: {stuck:#?}",
+                        theme_name(modern),
+                        stuck.len()
+                    );
                 }
                 assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
             });
@@ -20167,12 +20234,14 @@ mod tests {
                 };
 
                 let mut wrong = Vec::new();
+                let mut stuck = Vec::new();
                 for (info, dpi) in crate::i18n::LANGUAGES
                     .iter()
                     .flat_map(|info| [96, 144, 192].map(move |dpi| (info, dpi)))
                 {
                     for dark in [false, true] {
                         let found = Mutex::new(Vec::new());
+                        let cut = Mutex::new(Vec::new());
                         for (name, buttons, flags) in in_theme(info.code, modern, alert_cases) {
                             let open = || {
                                 native::set_modern(modern);
@@ -20208,26 +20277,46 @@ mod tests {
                             answer_alert(open, |alert, buttons| {
                                 assert!(!buttons.is_empty(), "{name}: the alert has its buttons");
                                 let alert = alert as native::HWND;
-                                if !unsafe { limited_by_the_screen(alert) } {
-                                    let mut problems = unsafe { clipped(alert, dpi) };
-                                    problems.extend(unsafe { crowded(alert) });
-                                    found.lock().unwrap().extend(
-                                        problems
-                                            .into_iter()
-                                            .map(|problem| format!("{name}: {problem}")),
-                                    );
-                                }
+                                let mut problems = unsafe { clipped(alert, dpi) };
+                                problems.extend(unsafe { overlapping(alert) });
+                                found.lock().unwrap().extend(
+                                    problems
+                                        .into_iter()
+                                        .map(|problem| format!("{name}: {problem}")),
+                                );
+                                // A scaled alert as wide as its work area cannot be widened for
+                                // a row of buttons wider than the screen at this scale.
+                                let outside = unsafe { outside_the_client(alert) };
+                                let target = if dpi > 96 && unsafe { fills_the_work_area(alert) } {
+                                    &cut
+                                } else {
+                                    &found
+                                };
+                                target.lock().unwrap().extend(
+                                    outside
+                                        .into_iter()
+                                        .map(|problem| format!("{name}: {problem}")),
+                                );
                                 press_escape(alert as usize, buttons);
                             });
                         }
-                        wrong.extend(found.into_inner().unwrap().into_iter().map(|problem| {
+                        let described = |problem: String| {
                             format!(
                                 "{} / {} / {dpi} dpi: {problem}",
                                 info.code,
                                 if dark { "dark" } else { "light" }
                             )
-                        }));
+                        };
+                        wrong.extend(found.into_inner().unwrap().into_iter().map(described));
+                        stuck.extend(cut.into_inner().unwrap().into_iter().map(described));
                     }
+                }
+                if !stuck.is_empty() {
+                    eprintln!(
+                        "{}: {} buttons outside an alert as wide as its work area, not counted: {stuck:#?}",
+                        theme_name(modern),
+                        stuck.len()
+                    );
                 }
                 assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
             });
@@ -20537,12 +20626,22 @@ mod tests {
             });
         }
 
+        /// The largest scale up to 144 dpi at which the work area holds the whole
+        /// window of `case`; none when it holds it at no scale above 96 dpi.
+        unsafe fn largest_scale_the_screen_holds(window: native::HWND, case: &Case) -> Option<u32> {
+            let work = native::work_area(window)?;
+            let dpi = (96 * (work.right - work.left) / case.width)
+                .min(96 * (work.bottom - work.top) / case.height)
+                .min(144);
+            (dpi > 96).then_some(dpi as u32)
+        }
+
         #[test]
         fn a_dialog_that_changes_its_dpi_keeps_the_width_it_is_designed_for() {
             for_each_theme(|modern| {
                 use windows_sys::Win32::UI::WindowsAndMessaging::WM_DPICHANGED;
 
-                let mut wrong = Vec::new();
+                let (mut wrong, mut unchecked, mut checked) = (Vec::new(), Vec::new(), 0);
                 for (code, name, dark) in [
                     ("en", "site logins", false),
                     ("en", "queues", false),
@@ -20550,7 +20649,7 @@ mod tests {
                     ("de", "queues", false),
                     ("de", "queues", true),
                 ] {
-                    let found = in_theme(code, modern, || {
+                    let (found, scale) = in_theme(code, modern, || {
                         let case = cases().into_iter().find(|case| case.name == name).unwrap();
                         let dialog = dialog(&case, dark);
                         unsafe {
@@ -20558,17 +20657,22 @@ mod tests {
                             let mut frame: RECT = zeroed();
                             GetWindowRect(dialog.hwnd, &mut frame);
 
-                            // The dialog as it stands on a monitor at 144 dpi.
-                            at_dpi(&dialog, &case, 144);
-                            if limited_by_the_screen(dialog.hwnd) {
-                                return Vec::new();
-                            }
+                            // The dialog as it stands on a monitor at the largest scale
+                            // the screen holds it at.
+                            let Some(dpi) = largest_scale_the_screen_holds(dialog.hwnd, &case)
+                            else {
+                                return (Vec::new(), None);
+                            };
+                            at_dpi(&dialog, &case, dpi);
                             let ui = &mut *dialog.raw;
                             if ui.grown.get() != 0 {
-                                return vec![format!(
-                                "{name}: the dialog is {} wider than designed before the change",
-                                ui.grown.get()
-                            )];
+                                return (
+                                    vec![format!(
+                                        "{name}: the dialog is {} wider than designed before the change",
+                                        ui.grown.get()
+                                    )],
+                                    Some(dpi),
+                                );
                             }
 
                             // The monitor changes to 96 dpi: the system suggests the
@@ -20584,24 +20688,185 @@ mod tests {
                             let mut found = Vec::new();
                             if after != before || ui.grown.get() != 0 {
                                 found.push(format!(
-                                "{name} ({}): the window and its minimum went from {before:?} to {after:?}, {} wider",
+                                "{name} ({}) from {dpi} dpi: the window and its minimum went from {before:?} to {after:?}, {} wider",
                                 if dark { "dark" } else { "light" },
                                 ui.grown.get()
                             ));
                             }
-                            found
+                            (found, Some(dpi))
                         }
                     });
+                    match scale {
+                        Some(_) => checked += 1,
+                        None => unchecked.push(format!("{code}: {name}")),
+                    }
                     wrong.extend(
                         found
                             .into_iter()
                             .map(|problem| format!("{code}: {problem}")),
                     );
                 }
+                if !unchecked.is_empty() {
+                    eprintln!(
+                        "{}: the screen holds {} dialogs at no larger scale than 96 dpi: {unchecked:?}",
+                        theme_name(modern),
+                        unchecked.len()
+                    );
+                }
                 assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
+                assert!(
+                    checked > 0,
+                    "no dialog was checked: the screen holds none of them at a larger scale than 96 dpi"
+                );
             });
         }
 
+        /// A work area `height` high, wide enough for any dialog, for the windows
+        /// of this thread.
+        fn screen_of_height(height: i32) {
+            native::WORK_AREA.with(|area| {
+                area.set(Some(RECT {
+                    left: 0,
+                    top: 0,
+                    right: 3000,
+                    bottom: height,
+                }))
+            });
+        }
+
+        /// The size the system suggests for a dialog on the monitor it moved to.
+        #[derive(Clone, Copy)]
+        enum Suggested {
+            /// The size of the dialog's design there, on a screen that holds it.
+            Design,
+            /// The old width at the new scale and the design's height, on a screen
+            /// that holds it.
+            OldWidth,
+            /// The old size at the new scale, on a screen as short as the old one.
+            OldSize,
+        }
+
+        /// A dialog on a monitor at 120 dpi whose screen is 3/4 of the height the
+        /// dialog needs there, so that it scrolls and the scroll bar widens the
+        /// window, after it moved to a monitor at 96 dpi with the size the system
+        /// suggested: the window and its minimum width, and whether the page
+        /// scrolls.
+        unsafe fn moved_while_screen_bound(
+            case: &Case,
+            suggested: Suggested,
+        ) -> ((i32, i32), bool) {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, WM_DPICHANGED,
+            };
+            screen_of_height(2000);
+            let dialog = dialog(case, false);
+            let mut design: RECT = zeroed();
+            GetWindowRect(dialog.hwnd, &mut design);
+
+            at_dpi(&dialog, case, 120);
+            let short = native::scale(case.height, 120) * 3 / 4;
+            screen_of_height(short);
+            SetWindowPos(
+                dialog.hwnd,
+                null_mut(),
+                0,
+                0,
+                native::scale(case.width, 120),
+                short,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            let ui = &*dialog.raw;
+            assert!(
+                ui.scroll_range.get() > 0,
+                "{}: the dialog is too short for its content",
+                case.name
+            );
+            let mut bound: RECT = zeroed();
+            GetWindowRect(dialog.hwnd, &mut bound);
+            assert!(
+                bound.right - bound.left > native::scale(case.width, 120),
+                "{}: the scroll bar widens the window",
+                case.name
+            );
+
+            let at_96 = |extent: i32| extent * 96 / 120;
+            let suggested = match suggested {
+                Suggested::Design => {
+                    screen_of_height(2000);
+                    design
+                }
+                Suggested::OldWidth => {
+                    screen_of_height(2000);
+                    RECT {
+                        right: bound.left + at_96(bound.right - bound.left),
+                        bottom: bound.top + design.bottom - design.top,
+                        ..bound
+                    }
+                }
+                Suggested::OldSize => {
+                    screen_of_height(at_96(short));
+                    RECT {
+                        right: bound.left + at_96(bound.right - bound.left),
+                        bottom: bound.top + at_96(bound.bottom - bound.top),
+                        ..bound
+                    }
+                }
+            };
+            SendMessageW(
+                dialog.hwnd,
+                WM_DPICHANGED,
+                (96 << 16) | 96,
+                &suggested as *const RECT as isize,
+            );
+            (window_widths(dialog.hwnd), ui.scroll_range.get() > 0)
+        }
+
+        #[test]
+        fn a_screen_bound_dialog_moved_to_a_monitor_where_it_fits_drops_the_scroll_bars_widening() {
+            use windows_sys::Win32::UI::{
+                HiDpi::GetSystemMetricsForDpi, WindowsAndMessaging::SM_CXVSCROLL,
+            };
+            for_each_theme(|modern| {
+                let mut wrong = Vec::new();
+                // Dialogs that stay narrower than a small screen at 120 dpi.
+                for name in ["rename", "speed limit"] {
+                    let found = in_theme("en", modern, || {
+                        let case = cases().into_iter().find(|case| case.name == name).unwrap();
+                        let mut found = Vec::new();
+                        unsafe {
+                            screen_of_height(2000);
+                            let designed = window_widths(dialog(&case, false).hwnd);
+                            let bar = GetSystemMetricsForDpi(SM_CXVSCROLL, 96);
+
+                            // The monitor holds the dialog: nothing scrolls, so the
+                            // window is as wide as the design.
+                            for suggested in [Suggested::Design, Suggested::OldWidth] {
+                                let (after, scrolls) = moved_while_screen_bound(&case, suggested);
+                                if after != designed || scrolls {
+                                    found.push(format!(
+                                        "{name}: moved to a monitor that holds it, the window and its minimum went from {designed:?} to {after:?} and the page scrolls: {scrolls}"
+                                    ));
+                                }
+                            }
+
+                            // The monitor is as short as the screen was: the page still
+                            // scrolls, so the bar's width stays.
+                            let (after, scrolls) =
+                                moved_while_screen_bound(&case, Suggested::OldSize);
+                            let widened = (designed.0 + bar, designed.1 + bar);
+                            if after != widened || !scrolls {
+                                found.push(format!(
+                                    "{name}: moved to a monitor that is as short, the window and its minimum are {after:?}, not {widened:?}, and the page scrolls: {scrolls}"
+                                ));
+                            }
+                        }
+                        found
+                    });
+                    wrong.extend(found);
+                }
+                assert!(wrong.is_empty(), "{} problems: {wrong:#?}", wrong.len());
+            });
+        }
         #[test]
         fn a_dialog_widened_next_to_the_right_edge_of_the_screen_stays_on_it() {
             use windows_sys::Win32::{
