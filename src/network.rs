@@ -2190,6 +2190,65 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    /// libcurl puts the text of a Windows error (a failed certificate check, say) into its error
+    /// buffer as `FormatMessageA` writes it, in the process's ANSI code page, and the curl crate
+    /// reads the buffer as UTF-8: on a machine whose code page is not UTF-8 the text turns to
+    /// replacement characters. The manifest makes UTF-8 the code page, which Windows reads from it.
+    #[test]
+    fn the_manifest_makes_utf8_the_ansi_code_page() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::System::ApplicationInstallationAndServicing::{
+            CreateActCtxW, QueryActCtxSettingsW, ReleaseActCtx, ACTCTXW,
+        };
+
+        let manifest = include_str!("../assets/app.manifest").replace("@VERSION_QUAD@", "0.0.0.0");
+        let path = std::env::temp_dir().join(format!(
+            "ssdownload-code-page-{}.manifest",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, manifest).unwrap();
+        let source: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+        let namespace = wide("http://schemas.microsoft.com/SMI/2019/WindowsSettings");
+        let name = wide("activeCodePage");
+        let mut value = [0u16; 16];
+        let mut written = 0usize;
+        let found = unsafe {
+            let context = CreateActCtxW(&ACTCTXW {
+                cbSize: std::mem::size_of::<ACTCTXW>() as u32,
+                dwFlags: 0,
+                lpSource: source.as_ptr(),
+                wProcessorArchitecture: 0,
+                wLangId: 0,
+                lpAssemblyDirectory: std::ptr::null(),
+                lpResourceName: std::ptr::null(),
+                lpApplicationName: std::ptr::null(),
+                hModule: std::ptr::null_mut(),
+            });
+            let _ = std::fs::remove_file(&path);
+            assert!(
+                context as isize != -1,
+                "Windows accepts the manifest as an activation context"
+            );
+            let found = QueryActCtxSettingsW(
+                0,
+                context,
+                namespace.as_ptr(),
+                name.as_ptr(),
+                value.as_mut_ptr(),
+                value.len(),
+                &mut written,
+            );
+            ReleaseActCtx(context);
+            found
+        };
+        assert_ne!(found, 0, "the manifest sets activeCodePage");
+        assert_eq!(
+            String::from_utf16_lossy(&value[..written.saturating_sub(1)]),
+            "UTF-8"
+        );
+    }
+
     /// Opens a CONNECT tunnel through the proxy and returns the stream with the status line.
     fn open_tunnel(proxy: &ExternalProxy, target: &str) -> (TcpStream, String) {
         let (credentials, address) = proxy
