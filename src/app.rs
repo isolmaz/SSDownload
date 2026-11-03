@@ -725,14 +725,12 @@ impl App {
                         if let Err(rollback) =
                             install::set_autostart(self.paths(), previous.start_with_windows)
                         {
+                            let detail = format!(
+                                "The autostart setting could not be rolled back: {rollback:#}"
+                            );
                             crate::logging::record(
-                                crate::logging::Event::warn("app.autostart_rollback").detail(
-                                    crate::i18n::ui_format!(
-                                    "Otomatik başlatma ayarı geri alınamadı: {rollback:#}",
-                                    "The autostart setting could not be rolled back: {rollback:#}",
-                                    rollback = rollback
-                                ),
-                                ),
+                                crate::logging::Event::warn("app.autostart_rollback")
+                                    .detail(detail),
                             );
                         }
                     }

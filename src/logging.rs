@@ -1006,10 +1006,8 @@ impl Sink {
         }
         let delta = total - self.reported_drops;
         self.reported_drops = total;
-        let event = Event::warn("log.dropped").detail(crate::i18n::ui_format!(
-            "{delta} olay kuyruk dolduğu için yazılamadı",
-            "{delta} events were not written because the queue was full",
-            delta = delta
+        let event = Event::warn("log.dropped").detail(format!(
+            "{delta} events were not written because the queue was full"
         ));
         self.event_line(session, &event);
     }
@@ -1024,11 +1022,8 @@ impl Sink {
         }
         let delta = total - self.reported_write_failures;
         self.reported_write_failures = total;
-        let event = Event::warn("log.write_failed").detail(crate::i18n::ui_format!(
-            "{delta} günlük satırı diske yazılamadı",
-            "{delta} log lines could not be written to disk",
-            delta = delta
-        ));
+        let event = Event::warn("log.write_failed")
+            .detail(format!("{delta} log lines could not be written to disk"));
         self.event_line(session, &event);
     }
 

@@ -706,7 +706,7 @@ pub fn clean_legacy_extension_policies(app: crate::app::App) {
             let outcome = crate::extension::remove_legacy_policies();
             crate::logging::record(
                 crate::logging::Event::info("gui.extension_legacy_cleanup")
-                    .detail(format!("{outcome:?}")),
+                    .detail(outcome.log_text()),
             );
             if outcome != crate::extension::LegacyCleanup::NeedsElevation {
                 return;
@@ -1306,7 +1306,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             if let Err(error) = spawned {
                 crate::logging::record(
                     crate::logging::Event::warn("gui.tools_autostart_spawn").detail(format!(
-                        "Araç otomatik kurulum iş parçacığı başlatılamadı: {error}"
+                        "The tools auto-install thread could not be started: {error}"
                     )),
                 );
             }
@@ -4807,7 +4807,7 @@ unsafe fn begin_source_refresh(ui: &MainUi) {
                     crate::logging::Event::info("shell.open_page")
                         .host(crate::logging::host_of(&ticket.page_url).unwrap_or_default())
                         .detail(format!(
-                            "kaynak yenileme sayfası açılıyor path={}",
+                            "opening the source refresh page path={}",
                             crate::logging::sanitize(&ticket.page_url)
                         )),
                 );

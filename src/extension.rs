@@ -131,6 +131,14 @@ impl LegacyCleanup {
             ),
         }
     }
+
+    pub fn log_text(&self) -> &'static str {
+        match self {
+            LegacyCleanup::NothingFound => "no legacy policy entry found",
+            LegacyCleanup::Removed => "legacy policy entry removed",
+            LegacyCleanup::NeedsElevation => "legacy policy entry needs administrator rights",
+        }
+    }
 }
 
 /// Removes the force-install entries for our ID that versions up to 1.6.1

@@ -1119,7 +1119,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             if let Err(error) = refresh_queue_controls(dlg.hwnd, f, &dlg.app.snapshot()) {
                 crate::logging::record(
                     crate::logging::Event::warn("gui.queue_controls")
-                        .detail(format!("Kuyruk denetimleri yüklenemedi: {error:#}")),
+                        .detail(format!("The queue controls could not be loaded: {error:#}")),
                 );
             }
             SetTimer(dlg.hwnd, TIMER_DIALOG, 300, None);

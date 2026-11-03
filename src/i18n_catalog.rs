@@ -1400,7 +1400,6 @@ static AR: &[(&str, &str)] = &[
     ("converter", "المحوّل"),
     ("could not be decoded", "تعذّر فك ترميزه"),
     ("deno.exe was not found in the Deno archive", "لم يُعثر على deno.exe في أرشيف Deno"),
-    ("disallowed extension origin", "مصدر إضافة غير مسموح به"),
     ("discovery", "الاكتشاف"),
     ("error", "خطأ"),
     ("error detail truncated", "تم اختصار تفاصيل الخطأ"),
@@ -2848,7 +2847,6 @@ static ES: &[(&str, &str)] = &[
     ("converter", "conversor"),
     ("could not be decoded", "no se ha podido decodificar"),
     ("deno.exe was not found in the Deno archive", "No se ha encontrado deno.exe en el archivo de Deno"),
-    ("disallowed extension origin", "origen de extensión no permitido"),
     ("discovery", "detección"),
     ("error", "error"),
     ("error detail truncated", "detalle del error recortado"),
@@ -4296,7 +4294,6 @@ static PT: &[(&str, &str)] = &[
     ("converter", "conversor"),
     ("could not be decoded", "não pôde ser decodificado"),
     ("deno.exe was not found in the Deno archive", "deno.exe não foi encontrado no arquivo do Deno"),
-    ("disallowed extension origin", "origem de extensão não permitida"),
     ("discovery", "descoberta"),
     ("error", "erro"),
     ("error detail truncated", "detalhe do erro cortado"),
@@ -5744,7 +5741,6 @@ static FR: &[(&str, &str)] = &[
     ("converter", "convertisseur"),
     ("could not be decoded", "n'a pas pu être décodé"),
     ("deno.exe was not found in the Deno archive", "deno.exe est introuvable dans l'archive Deno"),
-    ("disallowed extension origin", "origine d'extension non autorisée"),
     ("discovery", "découverte"),
     ("error", "erreur"),
     ("error detail truncated", "détail d'erreur tronqué"),
@@ -7192,7 +7188,6 @@ static DE: &[(&str, &str)] = &[
     ("converter", "Konverter"),
     ("could not be decoded", "konnte nicht dekodiert werden"),
     ("deno.exe was not found in the Deno archive", "deno.exe wurde im Deno-Archiv nicht gefunden"),
-    ("disallowed extension origin", "nicht zugelassene Herkunft der Erweiterung"),
     ("discovery", "Erkennung"),
     ("error", "Fehler"),
     ("error detail truncated", "Fehlerdetail gekürzt"),
@@ -7605,9 +7600,6 @@ macro_rules! __ui_template_ar {
     ("The audio could not be converted: {0}") => {
         "تعذّر تحويل الصوت: {0}"
     };
-    ("The autostart setting could not be rolled back: {rollback:#}") => {
-        "تعذّر التراجع عن إعداد التشغيل التلقائي: {rollback:#}"
-    };
     ("The browser data could not be written to disk: {error}") => {
         "تعذّرت كتابة بيانات المتصفح على القرص: {error}"
     };
@@ -7715,9 +7707,6 @@ macro_rules! __ui_template_ar {
     };
     ("The folder could not be opened: {e:#}") => {
         "تعذّر فتح المجلد: {e:#}"
-    };
-    ("The install failure notice could not be started: {error}") => {
-        "تعذّر بدء إشعار فشل التثبيت: {error}"
     };
     ("The install path could not be determined: {error:#}{moved}") => {
         "تعذّر تحديد مسار التثبيت: {error:#}{moved}"
@@ -7848,9 +7837,6 @@ macro_rules! __ui_template_ar {
     ("The setup helper could not be started: {error}") => {
         "تعذّر بدء أداة مساعدة الإعداد: {error}"
     };
-    ("The skipped version could not be saved: {error:#}") => {
-        "تعذّر حفظ الإصدار الذي تم تخطيه: {error:#}"
-    };
     ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
         "استمر المصدر في إسقاط المقاطع؛ أُعيد بدء البث {0} مرة ولم يمكن ضمان السلامة. جرّب المصدر مرة أخرى لاحقًا."
     };
@@ -7883,12 +7869,6 @@ macro_rules! __ui_template_ar {
     };
     ("The update check failed: {error:#}") => {
         "فشل التحقق من التحديثات: {error:#}"
-    };
-    ("The update check thread could not be started: {error}") => {
-        "تعذّر بدء خيط التحقق من التحديثات: {error}"
-    };
-    ("The update check time could not be saved: {error:#}") => {
-        "تعذّر حفظ وقت التحقق من التحديثات: {error:#}"
     };
     ("The update could not be downloaded: {error:#}") => {
         "تعذّر تنزيل التحديث: {error:#}"
@@ -7955,9 +7935,6 @@ macro_rules! __ui_template_ar {
     };
     ("What's new in {0}") => {
         "ما الجديد في الإصدار {0}"
-    };
-    ("client version {0}") => {
-        "إصدار العميل {0}"
     };
     ("exit code {0}") => {
         "رمز الخروج {0}"
@@ -8045,12 +8022,6 @@ macro_rules! __ui_template_ar {
     };
     ("{count} download(s) added to the queue.") => {
         "تمت إضافة التنزيلات: {count} إلى قائمة الانتظار."
-    };
-    ("{delta} events were not written because the queue was full") => {
-        "لم تُكتب {delta} من الأحداث لأن قائمة الانتظار كانت ممتلئة"
-    };
-    ("{delta} log lines could not be written to disk") => {
-        "تعذّرت كتابة {delta} من أسطر السجل على القرص"
     };
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "العناوين الموجودة بالفعل في قائمة التنزيلات: {duplicates}.\n\nهل تريد استخدام المهام الموجودة، أم تنزيل نسخ جديدة؟"
@@ -8480,9 +8451,6 @@ macro_rules! __ui_template_es {
     ("The audio could not be converted: {0}") => {
         "No se ha podido convertir el audio: {0}"
     };
-    ("The autostart setting could not be rolled back: {rollback:#}") => {
-        "No se pudo revertir la configuración de inicio automático: {rollback:#}"
-    };
     ("The browser data could not be written to disk: {error}") => {
         "No se pudieron escribir los datos del navegador en el disco: {error}"
     };
@@ -8590,9 +8558,6 @@ macro_rules! __ui_template_es {
     };
     ("The folder could not be opened: {e:#}") => {
         "No se pudo abrir la carpeta: {e:#}"
-    };
-    ("The install failure notice could not be started: {error}") => {
-        "No se pudo iniciar el aviso de error de instalación: {error}"
     };
     ("The install path could not be determined: {error:#}{moved}") => {
         "No se pudo determinar la ruta de instalación: {error:#}{moved}"
@@ -8723,9 +8688,6 @@ macro_rules! __ui_template_es {
     ("The setup helper could not be started: {error}") => {
         "No se ha podido iniciar el asistente de instalación: {error}"
     };
-    ("The skipped version could not be saved: {error:#}") => {
-        "No se ha podido guardar la versión omitida: {error:#}"
-    };
     ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
         "El origen seguía perdiendo fragmentos; el flujo se ha reiniciado {0} vez(es) y no se ha podido garantizar la integridad. Volver a intentarlo con el origen más tarde."
     };
@@ -8758,12 +8720,6 @@ macro_rules! __ui_template_es {
     };
     ("The update check failed: {error:#}") => {
         "La comprobación de actualizaciones ha fallado: {error:#}"
-    };
-    ("The update check thread could not be started: {error}") => {
-        "No se ha podido iniciar el hilo de comprobación de actualizaciones: {error}"
-    };
-    ("The update check time could not be saved: {error:#}") => {
-        "No se ha podido guardar la marca de tiempo de la comprobación de actualizaciones: {error:#}"
     };
     ("The update could not be downloaded: {error:#}") => {
         "No se ha podido descargar la actualización: {error:#}"
@@ -8830,9 +8786,6 @@ macro_rules! __ui_template_es {
     };
     ("What's new in {0}") => {
         "Novedades de la versión {0}"
-    };
-    ("client version {0}") => {
-        "versión del cliente {0}"
     };
     ("exit code {0}") => {
         "código de salida {0}"
@@ -8920,12 +8873,6 @@ macro_rules! __ui_template_es {
     };
     ("{count} download(s) added to the queue.") => {
         "{count} descarga(s) añadida(s) a la cola."
-    };
-    ("{delta} events were not written because the queue was full") => {
-        "{delta} eventos no se han podido escribir porque la cola estaba llena"
-    };
-    ("{delta} log lines could not be written to disk") => {
-        "No se han podido escribir {delta} líneas de registro en el disco"
     };
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "{duplicates} dirección(es) ya están en la lista de descargas.\n\n¿Usar las tareas existentes o descargar copias nuevas?"
@@ -9355,9 +9302,6 @@ macro_rules! __ui_template_pt {
     ("The audio could not be converted: {0}") => {
         "Não foi possível converter o áudio: {0}"
     };
-    ("The autostart setting could not be rolled back: {rollback:#}") => {
-        "Não foi possível reverter a configuração de início automático: {rollback:#}"
-    };
     ("The browser data could not be written to disk: {error}") => {
         "Não foi possível gravar os dados do navegador no disco: {error}"
     };
@@ -9465,9 +9409,6 @@ macro_rules! __ui_template_pt {
     };
     ("The folder could not be opened: {e:#}") => {
         "Não foi possível abrir a pasta: {e:#}"
-    };
-    ("The install failure notice could not be started: {error}") => {
-        "Não foi possível iniciar o aviso de falha da instalação: {error}"
     };
     ("The install path could not be determined: {error:#}{moved}") => {
         "Não foi possível determinar o caminho de instalação: {error:#}{moved}"
@@ -9598,9 +9539,6 @@ macro_rules! __ui_template_pt {
     ("The setup helper could not be started: {error}") => {
         "Não foi possível iniciar o auxiliar de configuração: {error}"
     };
-    ("The skipped version could not be saved: {error:#}") => {
-        "Não foi possível salvar a versão ignorada: {error:#}"
-    };
     ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
         "A fonte continuou perdendo segmentos; o fluxo foi reiniciado {0} vez(es) e a integridade não pôde ser garantida. Tente a fonte novamente mais tarde."
     };
@@ -9633,12 +9571,6 @@ macro_rules! __ui_template_pt {
     };
     ("The update check failed: {error:#}") => {
         "A verificação de atualização falhou: {error:#}"
-    };
-    ("The update check thread could not be started: {error}") => {
-        "Não foi possível iniciar a thread de verificação de atualização: {error}"
-    };
-    ("The update check time could not be saved: {error:#}") => {
-        "Não foi possível salvar o horário da verificação de atualização: {error:#}"
     };
     ("The update could not be downloaded: {error:#}") => {
         "Não foi possível baixar a atualização: {error:#}"
@@ -9705,9 +9637,6 @@ macro_rules! __ui_template_pt {
     };
     ("What's new in {0}") => {
         "Novidades da versão {0}"
-    };
-    ("client version {0}") => {
-        "versão do cliente {0}"
     };
     ("exit code {0}") => {
         "código de saída {0}"
@@ -9795,12 +9724,6 @@ macro_rules! __ui_template_pt {
     };
     ("{count} download(s) added to the queue.") => {
         "{count} download(s) adicionado(s) à fila."
-    };
-    ("{delta} events were not written because the queue was full") => {
-        "{delta} eventos não foram gravados porque a fila estava cheia"
-    };
-    ("{delta} log lines could not be written to disk") => {
-        "{delta} linhas de log não puderam ser gravadas no disco"
     };
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "{duplicates} endereço(s) já estão na lista de downloads.\n\nUsar as tarefas existentes ou baixar novas cópias?"
@@ -10230,9 +10153,6 @@ macro_rules! __ui_template_fr {
     ("The audio could not be converted: {0}") => {
         "L'audio n'a pas pu être converti : {0}"
     };
-    ("The autostart setting could not be rolled back: {rollback:#}") => {
-        "Le paramètre de démarrage automatique n'a pas pu être annulé : {rollback:#}"
-    };
     ("The browser data could not be written to disk: {error}") => {
         "Les données du navigateur n'ont pas pu être écrites sur le disque : {error}"
     };
@@ -10340,9 +10260,6 @@ macro_rules! __ui_template_fr {
     };
     ("The folder could not be opened: {e:#}") => {
         "Le dossier n'a pas pu être ouvert : {e:#}"
-    };
-    ("The install failure notice could not be started: {error}") => {
-        "L'avis d'échec d'installation n'a pas pu être démarré : {error}"
     };
     ("The install path could not be determined: {error:#}{moved}") => {
         "Le chemin d'installation n'a pas pu être déterminé : {error:#}{moved}"
@@ -10473,9 +10390,6 @@ macro_rules! __ui_template_fr {
     ("The setup helper could not be started: {error}") => {
         "L'assistant d'installation n'a pas pu être démarré : {error}"
     };
-    ("The skipped version could not be saved: {error:#}") => {
-        "La version ignorée n'a pas pu être enregistrée : {error:#}"
-    };
     ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
         "La source a continuellement perdu des fragments ; le flux a été redémarré {0} fois et l'intégrité n'a pas pu être garantie. Réessayez la source plus tard."
     };
@@ -10508,12 +10422,6 @@ macro_rules! __ui_template_fr {
     };
     ("The update check failed: {error:#}") => {
         "La recherche de mise à jour a échoué : {error:#}"
-    };
-    ("The update check thread could not be started: {error}") => {
-        "Le thread de recherche de mise à jour n'a pas pu être démarré : {error}"
-    };
-    ("The update check time could not be saved: {error:#}") => {
-        "L'heure de la dernière recherche de mise à jour n'a pas pu être enregistrée : {error:#}"
     };
     ("The update could not be downloaded: {error:#}") => {
         "La mise à jour n'a pas pu être téléchargée : {error:#}"
@@ -10580,9 +10488,6 @@ macro_rules! __ui_template_fr {
     };
     ("What's new in {0}") => {
         "Nouveautés de la version {0}"
-    };
-    ("client version {0}") => {
-        "version du client {0}"
     };
     ("exit code {0}") => {
         "code de sortie {0}"
@@ -10670,12 +10575,6 @@ macro_rules! __ui_template_fr {
     };
     ("{count} download(s) added to the queue.") => {
         "{count} téléchargement(s) ajouté(s) à la file d'attente."
-    };
-    ("{delta} events were not written because the queue was full") => {
-        "{delta} événements n'ont pas été écrits parce que la file d'attente était pleine"
-    };
-    ("{delta} log lines could not be written to disk") => {
-        "{delta} lignes de journal n'ont pas pu être écrites sur le disque"
     };
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "{duplicates} adresse(s) figure(nt) déjà dans la liste des téléchargements.\n\nUtiliser les tâches existantes ou télécharger de nouvelles copies ?"
@@ -11105,9 +11004,6 @@ macro_rules! __ui_template_de {
     ("The audio could not be converted: {0}") => {
         "Das Audio konnte nicht umgewandelt werden: {0}"
     };
-    ("The autostart setting could not be rolled back: {rollback:#}") => {
-        "Die Autostart-Einstellung konnte nicht zurückgesetzt werden: {rollback:#}"
-    };
     ("The browser data could not be written to disk: {error}") => {
         "Die Browserdaten konnten nicht auf den Datenträger geschrieben werden: {error}"
     };
@@ -11215,9 +11111,6 @@ macro_rules! __ui_template_de {
     };
     ("The folder could not be opened: {e:#}") => {
         "Der Ordner konnte nicht geöffnet werden: {e:#}"
-    };
-    ("The install failure notice could not be started: {error}") => {
-        "Der Hinweis zum Installationsfehler konnte nicht gestartet werden: {error}"
     };
     ("The install path could not be determined: {error:#}{moved}") => {
         "Der Installationspfad konnte nicht ermittelt werden: {error:#}{moved}"
@@ -11348,9 +11241,6 @@ macro_rules! __ui_template_de {
     ("The setup helper could not be started: {error}") => {
         "Der Einrichtungshelfer konnte nicht gestartet werden: {error}"
     };
-    ("The skipped version could not be saved: {error:#}") => {
-        "Die übersprungene Version konnte nicht gespeichert werden: {error:#}"
-    };
     ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
         "Die Quelle hat wiederholt Fragmente verloren; der Stream wurde {0} Mal neu gestartet und die Integrität konnte nicht sichergestellt werden. Versuchen Sie es später erneut."
     };
@@ -11383,12 +11273,6 @@ macro_rules! __ui_template_de {
     };
     ("The update check failed: {error:#}") => {
         "Die Update-Prüfung ist fehlgeschlagen: {error:#}"
-    };
-    ("The update check thread could not be started: {error}") => {
-        "Der Thread für die Update-Prüfung konnte nicht gestartet werden: {error}"
-    };
-    ("The update check time could not be saved: {error:#}") => {
-        "Der Zeitstempel der Update-Prüfung konnte nicht gespeichert werden: {error:#}"
     };
     ("The update could not be downloaded: {error:#}") => {
         "Das Update konnte nicht heruntergeladen werden: {error:#}"
@@ -11455,9 +11339,6 @@ macro_rules! __ui_template_de {
     };
     ("What's new in {0}") => {
         "Neuerungen in Version {0}"
-    };
-    ("client version {0}") => {
-        "Client-Version {0}"
     };
     ("exit code {0}") => {
         "Exitcode {0}"
@@ -11545,12 +11426,6 @@ macro_rules! __ui_template_de {
     };
     ("{count} download(s) added to the queue.") => {
         "{count} Download(s) zur Warteschlange hinzugefügt."
-    };
-    ("{delta} events were not written because the queue was full") => {
-        "{delta} Ereignisse wurden nicht geschrieben, weil die Warteschlange voll war"
-    };
-    ("{delta} log lines could not be written to disk") => {
-        "{delta} Protokollzeilen konnten nicht auf den Datenträger geschrieben werden"
     };
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "{duplicates} Adresse(n) befinden sich bereits in der Downloadliste.\n\nVorhandene Aufträge verwenden oder neue Kopien herunterladen?"

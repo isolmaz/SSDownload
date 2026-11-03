@@ -883,7 +883,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                 if let Err(error) = spawned {
                     crate::logging::record(
                         crate::logging::Event::warn("gui.extension_install_spawn").detail(format!(
-                            "Eklenti kurulum iş parçacığı başlatılamadı: {error}"
+                            "The extension install thread could not be started: {error}"
                         )),
                     );
                 }

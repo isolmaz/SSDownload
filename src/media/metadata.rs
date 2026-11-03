@@ -20,7 +20,7 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
         crate::logging::record(crate::logging::Event::failure(
             "inspect.feed_address",
             crate::error_codes::MED_002,
-            "adres tek bir medya içermiyor",
+            "the address does not hold a single media item",
         ));
         crate::bail_code!(crate::error_codes::MED_002);
     }
@@ -33,7 +33,7 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
             crate::logging::record(crate::logging::Event::failure(
                 "inspect.drm",
                 crate::error_codes::MED_004,
-                format!("liste öğesi DRM korumalı: {title}"),
+                format!("the playlist item is DRM protected: {title}"),
             ));
             crate::bail_code!(
                 crate::error_codes::MED_004,
