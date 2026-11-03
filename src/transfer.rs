@@ -3153,7 +3153,7 @@ fn download_segmented(
                 total: Some(total),
                 speed,
                 eta: eta(Some(total), downloaded.min(total), speed),
-                // Shown after the state: "Downloading — 8 connections".
+                // Shown after the state: "Downloading - 8 connections".
                 phase_name: "downloading",
                 phase: if effective_workers == 1 {
                     crate::i18n::ui("1 bağlantı", "1 connection").to_string()

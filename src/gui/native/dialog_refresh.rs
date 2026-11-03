@@ -75,42 +75,13 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             }
         }
         DialogKind::Tools(f) => {
-            let mut body = String::new();
-            for tool in &snapshot.tools {
-                body.push_str(&crate::i18n::ui_format!(
-                    "{0}\r\n  Durum: {1}\r\n  Sürüm: {2}\r\n  Konum: {3}\r\n\r\n",
-                    "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n",
-                    tool.name,
-                    if tool.installed {
-                        crate::i18n::ui("Kurulu", "Installed")
-                    } else {
-                        crate::i18n::ui("Kurulu değil", "Not installed")
-                    },
-                    if tool.version.is_empty() {
-                        "—"
-                    } else {
-                        &tool.version
-                    },
-                    tool.path.display()
-                ));
-            }
-            if body.is_empty() {
-                body.push_str(crate::i18n::ui(
-                    "Henüz araç bilgisi bulunmuyor. Eksikleri kur düğmesi güvenli upstream sürümlerini indirir.",
-                    "No tool information yet. The install button downloads safe upstream versions for anything missing.",
-                ));
-            }
+            let body = tools_report(
+                &snapshot.tools,
+                snapshot.tool_progress.as_ref(),
+                snapshot.settings.debug_mode,
+                &dlg.app.paths().tools_dir,
+            );
             if let Some(p) = &snapshot.tool_progress {
-                body.push_str(&crate::i18n::ui_format!(
-                    "\r\n{0}: {1}\r\nİndirilen: {2}{3}",
-                    "\r\n{0}: {1}\r\nDownloaded: {2}{3}",
-                    p.name,
-                    p.message,
-                    format_bytes(p.downloaded),
-                    p.total
-                        .map(|t| format!(" / {}", format_bytes(t)))
-                        .unwrap_or_default()
-                ));
                 let percent = p
                     .total
                     .filter(|t| *t > 0)
@@ -438,14 +409,14 @@ pub(super) unsafe fn refresh_job_view(
         for id in &f.ids {
             match snapshot.jobs.iter().find(|job| job.id == *id) {
                 Some(job) => rows.push_str(&format!(
-                    "{} — {} · {}\r\n",
+                    "{} - {} · {}\r\n",
                     job.name,
                     state_label(job),
                     format_progress(job)
                 )),
                 None => rows.push_str(&crate::i18n::ui_format!(
-                    "{id} — kuyrukta değil\r\n",
-                    "{id} — not in the queue\r\n",
+                    "{id}: kuyrukta değil\r\n",
+                    "{id}: not in the queue\r\n",
                     id = id
                 )),
             }
@@ -738,7 +709,7 @@ pub(super) fn media_format_label(format: &MediaFormat) -> String {
         .map(|value| format!(" · {}", size_text(value, format.size_estimated)))
         .unwrap_or_default();
     format!(
-        "{} — {} · {}{}{}{}{}",
+        "{} - {} · {}{}{}{}{}",
         format.id, dimensions, format.extension, fps, codec, range, size
     )
 }
@@ -1130,7 +1101,7 @@ pub(super) unsafe fn populate_media(
             language: format.language.clone(),
         };
         let label = format!(
-            "{} — {}{}{}",
+            "{} - {}{}{}",
             format.id,
             format
                 .language
@@ -1180,7 +1151,7 @@ pub(super) unsafe fn populate_media(
     let default_subtitle = subtitle_default_index(&f.subtitle_values, info.is_live);
     for (index, subtitle) in f.subtitle_values.iter().enumerate() {
         let value = wide(&format!(
-            "{} — {}",
+            "{} - {}",
             subtitle.language,
             if subtitle.automatic {
                 crate::i18n::ui("otomatik", "automatic")
@@ -1762,6 +1733,59 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
     result
 }
 
+/// The media tools report. Outside developer mode it names each component by what it does
+/// and gives the folder that holds them, not the upstream project and the file of each.
+pub(super) fn tools_report(
+    tools: &[crate::model::ToolInfo],
+    progress: Option<&ToolProgress>,
+    debug: bool,
+    tools_dir: &Path,
+) -> String {
+    let mut body = String::new();
+    for tool in tools {
+        let location = if debug {
+            tool.path.as_path()
+        } else {
+            tools_dir
+        };
+        body.push_str(&crate::i18n::ui_format!(
+            "{0}\r\n  Durum: {1}\r\n  Sürüm: {2}\r\n  Konum: {3}\r\n\r\n",
+            "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n",
+            display_text(debug, &tool.name),
+            if tool.installed {
+                crate::i18n::ui("Kurulu", "Installed")
+            } else {
+                crate::i18n::ui("Kurulu değil", "Not installed")
+            },
+            if tool.version.is_empty() {
+                "-"
+            } else {
+                &tool.version
+            },
+            location.display()
+        ));
+    }
+    if body.is_empty() {
+        body.push_str(crate::i18n::ui(
+            "Henüz araç bilgisi bulunmuyor. Eksikleri kur düğmesi güvenli upstream sürümlerini indirir.",
+            "No tool information yet. The install button downloads safe upstream versions for anything missing.",
+        ));
+    }
+    if let Some(p) = progress {
+        body.push_str(&crate::i18n::ui_format!(
+            "\r\n{0}: {1}\r\nİndirilen: {2}{3}",
+            "\r\n{0}: {1}\r\nDownloaded: {2}{3}",
+            display_text(debug, &p.name),
+            display_text(debug, &p.message),
+            format_bytes(p.downloaded),
+            p.total
+                .map(|t| format!(" / {}", format_bytes(t)))
+                .unwrap_or_default()
+        ));
+    }
+    body
+}
+
 /// Where the job view's job comes from: the host of its address.
 pub(super) fn job_source(job: &Job) -> String {
     let host = url::Url::parse(job.request.url.trim())
@@ -1771,9 +1795,9 @@ pub(super) fn job_source(job: &Job) -> String {
     crate::i18n::ui_format!("Kaynak: {0}", "Source: {0}", host)
 }
 
-/// The values of `JOB_FACTS` for `job`, "—" where it has none.
+/// The values of `JOB_FACTS` for `job`, "-" where it has none.
 pub(super) fn job_facts(job: &Job) -> [String; JOB_FACTS.len()] {
-    let none = || "—".to_string();
+    let none = || "-".to_string();
     let downloaded = match job.total.filter(|total| *total > 0) {
         Some(total) => format!(
             "{} ({:.1}%)",

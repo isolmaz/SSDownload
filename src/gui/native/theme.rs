@@ -373,7 +373,7 @@ pub(super) unsafe fn draw_card_glyph(dc: HDC, id: i32, origin: POINT, size: i32,
 /// Splits a card's own caption into its title and its explanation, so the
 /// window text automation reads stays the full sentence.
 pub(super) fn card_text_parts(text: &str) -> (String, String) {
-    match text.split_once(" — ") {
+    match text.split_once(" - ") {
         Some((title, description)) => (title.to_string(), description.to_string()),
         None => (text.to_string(), String::new()),
     }

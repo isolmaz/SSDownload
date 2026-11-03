@@ -295,7 +295,7 @@ test("the toolbar switch flips discovery, persists it, and keeps the badge in st
   const last = (method) => h.actionCalls.filter(call => call.method === method).at(-1);
   assert.equal(last("setBadgeText").text, "AÇIK");
   assert.equal(last("setBadgeBackgroundColor").color, "#16803a");
-  assert.match(last("setTitle").title, /açık — ayarlar için tıklayın/);
+  assert.match(last("setTitle").title, /açık - ayarlar için tıklayın/);
 
   await h.content({ channel: "ssdownload-content", event: "scan", sources: [{ url: "https://files.example/one.pdf", kind: "file" }] });
   assert.equal((await h.state(7)).items.length, 1);
@@ -2929,7 +2929,7 @@ test("the desktop's language switches the context menus and the badge title, and
   assert.ok(!titles().some(title => /SSDownload ile|indir/.test(title)), "no Turkish title is left in an English menu");
   assert.equal(h.storage.local.uiLanguage, "en", "the worker stores the language for the popup and the pages");
   assert.equal(lastAction(h, "setBadgeText").text, "ON");
-  assert.equal(lastAction(h, "setTitle").title, "SSDownload: on — click for settings");
+  assert.equal(lastAction(h, "setTitle").title, "SSDownload: on - click for settings");
 
   language = "tr";
   await probeNow(h);
@@ -2939,7 +2939,7 @@ test("the desktop's language switches the context menus and the badge title, and
   assert.ok(!titles().some(title => /\b(?:Download|Open|Allow|Remove|Choose)\b/.test(title)), "no English title is left in a Turkish menu");
   assert.equal(h.storage.local.uiLanguage, "tr");
   assert.equal(lastAction(h, "setBadgeText").text, "AÇIK");
-  assert.match(lastAction(h, "setTitle").title, /açık — ayarlar için tıklayın/);
+  assert.match(lastAction(h, "setTitle").title, /açık - ayarlar için tıklayın/);
 
   language = "en";
   await probeNow(h);
@@ -3119,7 +3119,7 @@ test("the welcome page fills every text from the catalog in the stored language"
   assert.equal(document.documentElement.lang, "tr");
   const texts = Object.fromEntries(nodes.map(node => [node.attributes["data-i18n"], node.textContent]));
   assert.equal(texts.welcomeTitle, "SSDownload'u kurduğunuz için teşekkürler");
-  assert.equal(texts.welcomeDownload, "Windows uygulamasını indir — ücretsiz");
+  assert.equal(texts.welcomeDownload, "Windows uygulamasını indir - ücretsiz");
   assert.ok(nodes.every(node => node.textContent !== ""), "every data-i18n element received a text");
   assert.match(source("welcome.html"), /href="https:\/\/ssdownload\.isolmaz\.com\/download"/);
 });

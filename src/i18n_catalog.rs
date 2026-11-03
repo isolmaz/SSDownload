@@ -103,8 +103,8 @@ static AR: &[(&str, &str)] = &[
     ("Add the clipboard's link from anywhere with Ctrl+Shift+D", "أضِف رابط الحافظة من أي مكان باستخدام Ctrl+Shift+D"),
     ("Address copied to the clipboard.", "تم نسخ العنوان إلى الحافظة."),
     ("Advanced", "متقدّم"),
+    ("Advanced - queues, rules, crawler, sync, logs", "متقدّم - قوائم الانتظار، والقواعد، والزاحف، والمزامنة، والسجلات"),
     ("Advanced options", "خيارات متقدّمة"),
-    ("Advanced — queues, rules, crawler, sync, logs", "متقدّم — قوائم الانتظار، والقواعد، والزاحف، والمزامنة، والسجلات"),
     ("All", "الكل"),
     ("All download workers closed unexpectedly", "أُغلق جميع عمال التنزيل بشكل غير متوقع"),
     ("Also send over unencrypted HTTP", "أرسل أيضًا عبر اتصال HTTP غير مشفّر"),
@@ -117,17 +117,17 @@ static AR: &[(&str, &str)] = &[
     ("Apply", "تطبيق"),
     ("Archives", "الأرشيفات"),
     ("Audio", "الصوت"),
+    ("Audio - audio only from pages and links", "الصوت - الصوت فقط من الصفحات والروابط"),
     ("Audio conversion format:", "تنسيق تحويل الصوت:"),
     ("Audio downloads are disabled in Settings.", "تنزيلات الصوت معطّلة في الإعدادات."),
     ("Audio format id", "معرّف تنسيق الصوت"),
     ("Audio language", "لغة الصوت"),
     ("Audio only", "الصوت فقط"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "المسارات الصوتية (Ctrl/Shift؛ فارغ = الأصلي):"),
-    ("Audio — audio only from pages and links", "الصوت — الصوت فقط من الصفحات والروابط"),
     ("Automatic", "تلقائي"),
     ("Awaiting source", "بانتظار تحديث المصدر"),
     ("Basic", "أساسي"),
-    ("Basic — essential downloads and settings", "أساسي — التنزيلات والإعدادات الأساسية"),
+    ("Basic - essential downloads and settings", "أساسي - التنزيلات والإعدادات الأساسية"),
     ("Batch download...", "تنزيل دفعي..."),
     ("Battery saver is on: downloads are on hold", "توفير البطارية قيد التشغيل: التنزيلات متوقفة مؤقتًا"),
     ("Behaviour", "السلوك"),
@@ -161,7 +161,7 @@ static AR: &[(&str, &str)] = &[
     ("Choose how you want to use it. You can change this later in Settings.", "اختر طريقة الاستخدام. يمكنك تغيير ذلك لاحقًا من الإعدادات."),
     ("Choose only one operation per call.", "اختر عملية واحدة فقط في كل استدعاء."),
     ("Classic", "كلاسيكي"),
-    ("Classic — the plain Windows look", "كلاسيكي — مظهر Windows البسيط"),
+    ("Classic - the plain Windows look", "كلاسيكي - مظهر Windows البسيط"),
     ("Cleanup", "التنظيف"),
     ("Close", "إغلاق"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "أغلق المتصفح بالكامل وأعد فتحه، أو أضِف الإضافة من متجر Chrome الإلكتروني. يثبّت Edge إضافات متجر Chrome الإلكتروني أيضًا."),
@@ -196,8 +196,8 @@ static AR: &[(&str, &str)] = &[
     ("Copy address", "نسخ العنوان"),
     ("Copy addresses", "نسخ العناوين"),
     ("Could not be deleted; try again", "تعذّر الحذف؛ حاول مرة أخرى"),
-    ("Could not capture yt-dlp stderr", "تعذّر التقاط stderr من yt-dlp"),
-    ("Could not capture yt-dlp stdout", "تعذّر التقاط stdout من yt-dlp"),
+    ("Could not capture the media component's error output", "تعذّر التقاط مخرجات الأخطاء من مكوّن الوسائط"),
+    ("Could not capture the media component's output", "تعذّر التقاط مخرجات مكوّن الوسائط"),
     ("Could not download the external subtitle", "تعذّر تنزيل الترجمة الخارجية"),
     ("Could not move the browser media output to its target", "تعذّر نقل مخرجات وسائط المتصفح إلى وجهتها"),
     ("Could not move the selected stream output into the working file", "تعذّر نقل مخرجات البث المحدد إلى ملف العمل"),
@@ -265,7 +265,7 @@ static AR: &[(&str, &str)] = &[
     ("Earliest start (local time, YYYY-MM-DD HH:MM):", "أقرب وقت بدء (بالتوقيت المحلي، YYYY-MM-DD HH:MM):"),
     ("Embedded and external subtitles cannot be mixed in one request.", "لا يمكن الجمع بين الترجمات المضمّنة والخارجية في طلب واحد."),
     ("Embedded subtitles (Ctrl/Shift, multiple):", "الترجمات المضمّنة (Ctrl/Shift، متعددة):"),
-    ("Enable experimental browser transfer — memory and integrity limits apply to large files", "تفعيل النقل التجريبي عبر المتصفح — تنطبق حدود الذاكرة والسلامة على الملفات الكبيرة"),
+    ("Enable experimental browser transfer: memory and integrity limits apply to large files", "تفعيل النقل التجريبي عبر المتصفح: تنطبق حدود الذاكرة والسلامة على الملفات الكبيرة"),
     ("End (HH:MM):", "إلى (HH:MM):"),
     ("End:", "النهاية:"),
     ("Enter a single URL to download a video.", "أدخل عنوان URL واحدًا لتنزيل الفيديو."),
@@ -301,12 +301,12 @@ static AR: &[(&str, &str)] = &[
     ("Failed", "فشل"),
     ("Fetching current version information", "جارٍ جلب معلومات الإصدار الحالي"),
     ("File", "ملف"),
+    ("File - regular file links", "الملفات - روابط الملفات العادية"),
     ("File and media download manager for Windows.", "مدير تنزيل الملفات والوسائط لنظام Windows."),
     ("File downloads are disabled in Settings.", "تنزيلات الملفات معطّلة في الإعدادات."),
     ("File name (optional, for a single URL):", "اسم الملف (اختياري، لعنوان URL واحد):"),
     ("File name:", "اسم الملف:"),
     ("File size:", "حجم الملف:"),
-    ("File — regular file links", "الملفات — روابط الملفات العادية"),
     ("Filter", "عامل التصفية"),
     ("Finish live recordin&g and keep it", "إن&هاء التسجيل المباشر والاحتفاظ به"),
     ("Finish live recording and keep it", "إنهاء التسجيل المباشر والاحتفاظ به"),
@@ -378,6 +378,7 @@ static AR: &[(&str, &str)] = &[
     ("Later", "لاحقًا"),
     ("Latest events (newest at bottom):", "أحدث الأحداث (الأحدث في الأسفل):"),
     ("Legacy subtitle selection and explicit subtitle tracks cannot be combined.", "لا يمكن الجمع بين اختيار الترجمة القديم ومسارات الترجمة الصريحة."),
+    ("Licenses", "التراخيص"),
     ("Limit daily working hours", "تحديد ساعات العمل اليومية"),
     ("Link found", "تم العثور على رابط"),
     ("Live recording finished; processing the recorded part", "انتهى التسجيل المباشر؛ جارٍ معالجة الجزء المسجَّل"),
@@ -439,7 +440,7 @@ static AR: &[(&str, &str)] = &[
     ("Minimize to the notification area when closing the window", "التصغير إلى منطقة الإشعارات عند إغلاق النافذة"),
     ("Missing components are installed.", "تم تثبيت المكونات المفقودة."),
     ("Modern", "حديث"),
-    ("Modern — the Windows 11 look", "حديث — مظهر Windows 11"),
+    ("Modern - the Windows 11 look", "حديث - مظهر Windows 11"),
     ("Move selected job", "نقل المهمة المحددة"),
     ("Move to bottom\tAlt+End", "نقل إلى الأسفل\tAlt+End"),
     ("Move to queue", "نقل إلى قائمة الانتظار"),
@@ -469,7 +470,7 @@ static AR: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "لم يُعثر على أي رابط HTTP/HTTPS في النص الذي تم إفلاته."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "لم يُعثر على ترميز صوت متوافق مع MP4 باللغة المحددة؛ اختر MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "لم يُعثر على ترميز فيديو متوافق مع MP4 بالدقة المحددة؛ اختر MKV"),
-    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "لم يُعثر على ملف ZIP لفرع إصدار FFmpeg (Windows x64، ترخيص LGPL) في أحدث إصدار من BtbN"),
+    ("No Windows x64 LGPL converter release-branch ZIP asset was found in the latest upstream release", "لم يُعثر على ملف ZIP لفرع إصدار المحوّل (Windows x64، ترخيص LGPL) في أحدث إصدار أصلي"),
     ("No active completion countdown.", "لا يوجد عد تنازلي نشط لإجراء الاكتمال."),
     ("No active downloads.", "لا توجد تنزيلات نشطة."),
     ("No capacity for the network connection became free in time", "لم تتوفر سعة للاتصال بالشبكة في الوقت المناسب"),
@@ -490,7 +491,7 @@ static AR: &[(&str, &str)] = &[
     ("No proxy", "بدون خادم وكيل"),
     ("No refreshable source page was saved for this job.", "لم يُحفظ أي صفحة مصدر قابلة للتحديث لهذه المهمة."),
     ("No running SSDownload instance was found", "لم يُعثر على نسخة SSDownload قيد التشغيل"),
-    ("No suitable stable yt-dlp release was found", "لم يُعثر على إصدار مستقر مناسب من yt-dlp"),
+    ("No suitable stable media component release was found", "لم يُعثر على إصدار مستقر مناسب من مكوّن الوسائط"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "لا توجد معلومات عن الأدوات بعد. يقوم زر «تثبيت المفقود» بتنزيل الإصدارات الأصلية الآمنة لأي أداة مفقودة."),
     ("Normal", "عادي"),
     ("Not all selected audio streams were found in the browser transfer", "لم يُعثر على جميع مسارات الصوت المحددة في النقل عبر المتصفح"),
@@ -553,7 +554,7 @@ static AR: &[(&str, &str)] = &[
     ("Priority:", "الأولوية:"),
     ("Processing", "جارٍ المعالجة"),
     ("Processing media", "جارٍ معالجة الوسائط"),
-    ("Processing with FFmpeg", "جارٍ المعالجة باستخدام FFmpeg"),
+    ("Processing the media", "جارٍ معالجة الوسائط"),
     ("Program arguments (JSON)", "وسيطات البرنامج (JSON)"),
     ("Programs", "البرامج"),
     ("Progress", "التقدم"),
@@ -633,6 +634,8 @@ static AR: &[(&str, &str)] = &[
     ("SHA-256 verified", "تم التحقق من SHA-256"),
     ("SOCKS5 authentication was rejected", "تم رفض مصادقة SOCKS5"),
     ("SSD-TOL-002 The tool archive exceeds the 1 GiB limit", "SSD-TOL-002 أرشيف الأداة يتجاوز حد 1 GiB"),
+    ("SSDownload - Download Manager", "SSDownload - مدير التنزيلات"),
+    ("SSDownload - native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload - مدير الملفات والفيديو والصوت الأصلي لنظام Windows\n\nssdownload.exe                         فتح سطح المكتب\n  --background                          البدء في منطقة الإشعارات\n  --data-dir DIR                        مجلد بيانات مستخدم منفصل\n  --add URL                             الإضافة إلى قائمة الانتظار\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    الإضافة من ملف AddRequest بصيغة JSON\n  --action-json FILE                     تشغيل ملف إجراء بصيغة JSON (مثل زحف موقع)\n  --inspect URL                          طباعة معلومات الفيديو والصوت بصيغة JSON\n  --status [--status-offset 0 --status-limit 100]   حالة مقسّمة إلى صفحات بصيغة JSON\n  --diagnose [--diagnose-hours 24]      ملخص سجل الأحداث بصيغة JSON (الموقع، الرمز، النتيجة)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    حفظ ملف إعدادات بصيغة JSON\n  --install-tools [--update-tools]       تثبيت أدوات الوسائط المتحقَّق منها\n  --setup-tools                          تثبيت أدوات الوسائط المفقودة دون تشغيل التطبيق\n  --browser-setup                        فتح إعداد المتصفح\n  --remove-extension-policies            إزالة سياسة إضافة المتصفح القديمة\n  --register-host | --unregister-host    تسجيل Native Messaging\n  --enable-autostart | --disable-autostart   البدء عند تسجيل الدخول\n  --quit                                 إغلاق التطبيق قيد التشغيل\n  --debug                                وضع المطوّر (يتخطى المعالج والتثبيت التلقائي للأدوات)\n  --version | --help\n\nDRM غير مدعوم. تعتمد حدود الشبكة والجلسة على الموقع.\n"),
     ("SSDownload adds the extension to Chrome and Edge itself. The next time you open the browser, click <b>Enable extension</b> on the <b>New extension added</b> notice.", "يضيف SSDownload الإضافة إلى Chrome وEdge بنفسه. عند فتح المتصفح في المرة القادمة، انقر على <b>تفعيل الإضافة</b> في إشعار <b>تمت إضافة إضافة جديدة</b>."),
     ("SSDownload browser extension", "إضافة SSDownload للمتصفح"),
     ("SSDownload could not be started in the background", "تعذّر تشغيل SSDownload في الخلفية"),
@@ -643,8 +646,6 @@ static AR: &[(&str, &str)] = &[
     ("SSDownload started but the local channel did not become ready.", "بدأ SSDownload لكن القناة المحلية لم تصبح جاهزة."),
     ("SSDownload update", "تحديث SSDownload"),
     ("SSDownload update error", "خطأ في تحديث SSDownload"),
-    ("SSDownload — Download Manager", "SSDownload — مدير التنزيلات"),
-    ("SSDownload — native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload — مدير الملفات والفيديو والصوت الأصلي لنظام Windows\n\nssdownload.exe                         فتح سطح المكتب\n  --background                          البدء في منطقة الإشعارات\n  --data-dir DIR                        مجلد بيانات مستخدم منفصل\n  --add URL                             الإضافة إلى قائمة الانتظار\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    الإضافة من ملف AddRequest بصيغة JSON\n  --action-json FILE                     تشغيل ملف إجراء بصيغة JSON (مثل زحف موقع)\n  --inspect URL                          طباعة معلومات الفيديو والصوت بصيغة JSON\n  --status [--status-offset 0 --status-limit 100]   حالة مقسّمة إلى صفحات بصيغة JSON\n  --diagnose [--diagnose-hours 24]      ملخص سجل الأحداث بصيغة JSON (الموقع، الرمز، النتيجة)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    حفظ ملف إعدادات بصيغة JSON\n  --install-tools [--update-tools]       تثبيت أدوات الوسائط المتحقَّق منها\n  --setup-tools                          تثبيت أدوات الوسائط المفقودة دون تشغيل التطبيق\n  --browser-setup                        فتح إعداد المتصفح\n  --remove-extension-policies            إزالة سياسة إضافة المتصفح القديمة\n  --register-host | --unregister-host    تسجيل Native Messaging\n  --enable-autostart | --disable-autostart   البدء عند تسجيل الدخول\n  --quit                                 إغلاق التطبيق قيد التشغيل\n  --debug                                وضع المطوّر (يتخطى المعالج والتثبيت التلقائي للأدوات)\n  --version | --help\n\nDRM غير مدعوم. تعتمد حدود الشبكة والجلسة على الموقع.\n"),
     ("Safely extracting the verified LGPL archive", "جارٍ فك ضغط أرشيف LGPL المتحقَّق منه بأمان"),
     ("Safely extracting the verified archive", "جارٍ فك ضغط الأرشيف المتحقَّق منه بأمان"),
     ("Save", "حفظ"),
@@ -715,6 +716,7 @@ static AR: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "جارٍ بدء التثبيت؛ سيُعاد فتح التطبيق"),
     ("State", "الحالة"),
     ("States", "الحالات"),
+    ("Status of the media components for video/audio downloads:", "حالة مكوّنات الوسائط لتنزيلات الفيديو والصوت:"),
     ("Status:", "الحالة:"),
     ("Stream integrity could not be verified", "تعذّر التحقق من سلامة البث"),
     ("Subtitle embedding is only supported for video output", "دمج الترجمة مدعوم لمخرجات الفيديو فقط"),
@@ -733,11 +735,6 @@ static AR: &[(&str, &str)] = &[
     ("Text files (*.txt)|*.txt|All files (*.*)|*.*|", "ملفات نصية (*.txt)|*.txt|جميع الملفات (*.*)|*.*|"),
     ("The Chrome Native Messaging manifest could not be written", "تعذّرت كتابة ملف manifest الخاص بـ Native Messaging في Chrome"),
     ("The Chrome extension folder could not be converted to a URL", "تعذّر تحويل مجلد إضافة Chrome إلى عنوان URL"),
-    ("The Deno archive could not be extracted", "تعذّر فك ضغط أرشيف Deno"),
-    ("The Deno version information could not be retrieved", "تعذّر الحصول على معلومات إصدار Deno"),
-    ("The FFmpeg archive could not be extracted", "تعذّر فك ضغط أرشيف FFmpeg"),
-    ("The FFmpeg release does not include an upstream SHA-256 checksum file", "لا يتضمن إصدار FFmpeg ملف المجموع الاختباري SHA-256 الأصلي"),
-    ("The FFmpeg version information could not be retrieved", "تعذّر الحصول على معلومات إصدار FFmpeg"),
     ("The FTP connection was stopped while waiting for capacity", "توقّف اتصال FTP أثناء انتظار توفر السعة"),
     ("The FTP partial file's identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning", "تعذّر إثبات هوية ملف FTP الجزئي؛ لا يمكن إعادة استخدامه، وستبدأ المحاولة التالية التنزيل من البداية"),
     ("The FTP server information could not be retrieved", "تعذّر الحصول على معلومات خادم FTP"),
@@ -867,6 +864,10 @@ static AR: &[(&str, &str)] = &[
     ("The connection count must be a number", "يجب أن يكون عدد الاتصالات رقمًا"),
     ("The connection timed out", "انتهت مهلة الاتصال"),
     ("The connection was reset by the peer", "أعاد الطرف الآخر ضبط الاتصال"),
+    ("The converter archive could not be extracted", "تعذّر فك ضغط أرشيف المحوّل"),
+    ("The converter release does not include an upstream SHA-256 checksum file", "لا يتضمن إصدار المحوّل ملف المجموع الاختباري SHA-256 الأصلي"),
+    ("The converter version information could not be retrieved", "تعذّر الحصول على معلومات إصدار المحوّل"),
+    ("The converter was not found in its archive", "لم يُعثر على المحوّل في أرشيفه"),
     ("The cookie folder could not be created", "تعذّر إنشاء مجلد ملفات تعريف الارتباط"),
     ("The cookie limit for the selected source chain was exceeded", "تم تجاوز حد ملفات تعريف الارتباط لسلسلة المصدر المحددة"),
     ("The cookie partition key does not match the source page context", "مفتاح partition لملف تعريف الارتباط لا يطابق سياق صفحة المصدر"),
@@ -1021,11 +1022,19 @@ static AR: &[(&str, &str)] = &[
     ("The main window class could not be registered", "تعذّر تسجيل فئة النافذة الرئيسية"),
     ("The main window could not be created", "تعذّر إنشاء النافذة الرئيسية"),
     ("The manifest is not UTF-8", "ملف manifest ليس بترميز UTF-8"),
+    ("The media component did not return valid media information", "لم يُرجع مكوّن الوسائط معلومات وسائط صالحة"),
+    ("The media component failed without giving details", "فشل مكوّن الوسائط دون تقديم تفاصيل"),
+    ("The media component printed no output file line", "لم يطبع مكوّن الوسائط سطر ملف المخرجات"),
+    ("The media component printed no post-processor line", "لم يطبع مكوّن الوسائط أي سطر للمعالجة اللاحقة"),
+    ("The media component printed no progress line", "لم يطبع مكوّن الوسائط أي سطر تقدّم"),
+    ("The media component version information could not be retrieved", "تعذّر الحصول على معلومات إصدار مكوّن الوسائط"),
     ("The media components folder could not be created", "تعذّر إنشاء مجلد مكونات الوسائط"),
     ("The media could not be analyzed.", "تعذّر تحليل الوسائط."),
     ("The media extractor failed", "فشلت أداة استخراج الوسائط (extractor)"),
     ("The media file type is missing", "نوع ملف الوسائط مفقود"),
     ("The media input worker stopped", "توقّف عامل إدخال الوسائط"),
+    ("The media inspector did not print JSON", "لم يطبع فاحص الوسائط بيانات JSON"),
+    ("The media inspector was not found in the converter archive", "لم يُعثر على فاحص الوسائط في أرشيف المحوّل"),
     ("The media is geo restricted, removed, or requires sign-in", "الوسائط مقيّدة جغرافيًا أو مُزالة أو تتطلب تسجيل الدخول"),
     ("The media output queue limit was exceeded; the incomplete playlist was not published", "تم تجاوز حد قائمة انتظار مخرجات الوسائط؛ لم تُنشر قائمة التشغيل غير المكتملة"),
     ("The media process could not be assigned to the owned Windows Job object", "تعذّر ربط عملية الوسائط بكائن Windows Job المملوك"),
@@ -1149,6 +1158,9 @@ static AR: &[(&str, &str)] = &[
     ("The resume response did not prove the source identity; the partial file cannot be reused and the next attempt restarts the download from the beginning", "لم تُثبت استجابة الاستئناف هوية المصدر؛ لا يمكن إعادة استخدام الملف الجزئي، وستبدأ المحاولة التالية التنزيل من البداية"),
     ("The retry backoff duration exceeds the supported time range", "مدة التراجع قبل إعادة المحاولة تتجاوز نطاق الوقت المدعوم"),
     ("The retry limit cannot exceed 20.", "لا يمكن أن يتجاوز حد إعادة المحاولة 20."),
+    ("The runtime archive could not be extracted", "تعذّر فك ضغط أرشيف بيئة التشغيل"),
+    ("The runtime version information could not be retrieved", "تعذّر الحصول على معلومات إصدار بيئة التشغيل"),
+    ("The runtime was not found in its archive", "لم يُعثر على بيئة التشغيل في أرشيفها"),
     ("The same external subtitle cannot be selected more than once", "لا يمكن اختيار الترجمة الخارجية نفسها أكثر من مرة"),
     ("The same libcurl transfer cannot wait for additional connection capacity", "لا يمكن لنقل libcurl نفسه انتظار سعة اتصال إضافية"),
     ("The same request id is already queued", "معرّف الطلب نفسه موجود في قائمة الانتظار بالفعل"),
@@ -1337,7 +1349,6 @@ static AR: &[(&str, &str)] = &[
     ("The work folder is missing", "مجلد العمل مفقود"),
     ("The working folder contains a redirect", "يحتوي مجلد العمل على إعادة توجيه"),
     ("The working folder is missing", "مجلد العمل مفقود"),
-    ("The yt-dlp version information could not be retrieved", "تعذّر الحصول على معلومات إصدار yt-dlp"),
     ("Theme:", "السمة:"),
     ("There are no downloads to export.", "لا توجد تنزيلات لتصديرها."),
     ("There is no active browser transfer for this job.", "لا يوجد نقل نشط عبر المتصفح لهذه المهمة."),
@@ -1403,6 +1414,7 @@ static AR: &[(&str, &str)] = &[
     ("Verifying the downloaded executable files", "جارٍ التحقق من الملفات التنفيذية المُنزَّلة"),
     ("Verifying the update", "جارٍ التحقق من التحديث"),
     ("Video", "الفيديو"),
+    ("Video - quality, tracks, subtitles", "الفيديو - الجودة، والمسارات، والترجمات"),
     ("Video and audio inspection is disabled for your usage purpose.", "فحص الفيديو والصوت معطّل لغرض الاستخدام الخاص بك."),
     ("Video and audio support could not be downloaded · Tools > Install media support", "تعذّر تنزيل دعم الفيديو والصوت · الأدوات > تثبيت دعم الوسائط"),
     ("Video and audio support could not be downloaded. Try again via Tools > Install media support.", "تعذّر تنزيل دعم الفيديو والصوت. حاول مرة أخرى عبر الأدوات > تثبيت دعم الوسائط."),
@@ -1413,7 +1425,6 @@ static AR: &[(&str, &str)] = &[
     ("Video format id", "معرّف تنسيق الفيديو"),
     ("Video or audio downloading is disabled in Settings.", "تنزيل الفيديو أو الصوت معطّل في الإعدادات."),
     ("Video preferences", "تفضيلات الفيديو"),
-    ("Video — quality, tracks, subtitles", "الفيديو — الجودة، والمسارات، والترجمات"),
     ("Video/audio setup stopped because of an unexpected error.", "توقّف إعداد الفيديو والصوت بسبب خطأ غير متوقع."),
     ("Video/audio support is already being prepared.", "دعم الفيديو والصوت قيد التحضير بالفعل."),
     ("Wait for the media analysis to finish first.", "انتظر حتى ينتهي تحليل الوسائط أولًا."),
@@ -1441,15 +1452,11 @@ static AR: &[(&str, &str)] = &[
     ("completed", "مكتمل"),
     ("converter", "المحوّل"),
     ("could not be decoded", "تعذّر فك ترميزه"),
-    ("deno.exe was not found in the Deno archive", "لم يُعثر على deno.exe في أرشيف Deno"),
     ("discovery", "الاكتشاف"),
     ("error", "خطأ"),
     ("error detail truncated", "تم اختصار تفاصيل الخطأ"),
     ("errors", "الأخطاء"),
     ("failed", "فشل"),
-    ("ffmpeg.exe was not found in the FFmpeg archive", "لم يُعثر على ffmpeg.exe في أرشيف FFmpeg"),
-    ("ffprobe did not print JSON", "لم يطبع ffprobe بيانات JSON"),
-    ("ffprobe.exe was not found in the FFmpeg archive", "لم يُعثر على ffprobe.exe في أرشيف FFmpeg"),
     ("file", "ملف"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "مقطع التهيئة"),
@@ -1467,6 +1474,7 @@ static AR: &[(&str, &str)] = &[
     ("main playlist", "قائمة التشغيل الرئيسية"),
     ("manual", "يدوي"),
     ("media component", "مكوّن الوسائط"),
+    ("media inspector", "فاحص الوسائط"),
     ("media segment", "مقطع الوسائط"),
     ("media source", "مصدر الوسائط"),
     ("not in the queue", "ليست في قائمة الانتظار"),
@@ -1495,12 +1503,6 @@ static AR: &[(&str, &str)] = &[
     ("update", "التحديث"),
     ("verification", "التحقق"),
     ("video", "فيديو"),
-    ("yt-dlp did not return valid JSON media information", "لم يُرجع yt-dlp معلومات وسائط بصيغة JSON صالحة"),
-    ("yt-dlp failed without giving details", "فشل yt-dlp دون تقديم تفاصيل"),
-    ("yt-dlp printed no output file line", "لم يطبع yt-dlp سطر ملف المخرجات"),
-    ("yt-dlp printed no post-processor line", "لم يطبع yt-dlp أي سطر للمعالجة اللاحقة"),
-    ("yt-dlp printed no progress line", "لم يطبع yt-dlp أي سطر تقدّم"),
-    ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "حالة yt-dlp وFFmpeg وDeno لتنزيلات الفيديو والصوت:"),
 ];
 
 static ES: &[(&str, &str)] = &[
@@ -1592,8 +1594,8 @@ static ES: &[(&str, &str)] = &[
     ("Add the clipboard's link from anywhere with Ctrl+Shift+D", "Añadir el enlace del portapapeles desde cualquier lugar con Ctrl+Shift+D"),
     ("Address copied to the clipboard.", "Dirección copiada al portapapeles."),
     ("Advanced", "Avanzado"),
+    ("Advanced - queues, rules, crawler, sync, logs", "Avanzado - colas, reglas, rastreador, sincronización, registros"),
     ("Advanced options", "Opciones avanzadas"),
-    ("Advanced — queues, rules, crawler, sync, logs", "Avanzado — colas, reglas, rastreador, sincronización, registros"),
     ("All", "Todas"),
     ("All download workers closed unexpectedly", "Todos los trabajadores de descarga se cerraron inesperadamente"),
     ("Also send over unencrypted HTTP", "Enviar también por HTTP sin cifrar"),
@@ -1606,17 +1608,17 @@ static ES: &[(&str, &str)] = &[
     ("Apply", "Aplicar"),
     ("Archives", "Archivos"),
     ("Audio", "Audio"),
+    ("Audio - audio only from pages and links", "Audio - solo audio de páginas y enlaces"),
     ("Audio conversion format:", "Formato de conversión de audio:"),
     ("Audio downloads are disabled in Settings.", "Las descargas de audio están desactivadas en Configuración."),
     ("Audio format id", "ID de formato de audio"),
     ("Audio language", "Idioma del audio"),
     ("Audio only", "Solo audio"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "Pistas de audio (Ctrl/Mayús; vacío = original):"),
-    ("Audio — audio only from pages and links", "Audio — solo audio de páginas y enlaces"),
     ("Automatic", "Automático"),
     ("Awaiting source", "Esperando actualización del origen"),
     ("Basic", "Básico"),
-    ("Basic — essential downloads and settings", "Básico — descargas y ajustes esenciales"),
+    ("Basic - essential downloads and settings", "Básico - descargas y ajustes esenciales"),
     ("Batch download...", "Descarga por lotes..."),
     ("Battery saver is on: downloads are on hold", "Ahorro de batería activado: descargas en espera"),
     ("Behaviour", "Comportamiento"),
@@ -1650,7 +1652,7 @@ static ES: &[(&str, &str)] = &[
     ("Choose how you want to use it. You can change this later in Settings.", "Elegir cómo se va a usar. Se puede cambiar más tarde en Configuración."),
     ("Choose only one operation per call.", "Solo se puede elegir una operación por llamada."),
     ("Classic", "Clásico"),
-    ("Classic — the plain Windows look", "Clásico — el aspecto sencillo de Windows"),
+    ("Classic - the plain Windows look", "Clásico - el aspecto sencillo de Windows"),
     ("Cleanup", "Limpieza"),
     ("Close", "Cerrar"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "Cerrar el navegador por completo y volver a abrirlo, o añadir la extensión desde Chrome Web Store. Edge también instala extensiones de Chrome Web Store."),
@@ -1685,8 +1687,8 @@ static ES: &[(&str, &str)] = &[
     ("Copy address", "Copiar dirección"),
     ("Copy addresses", "Copiar direcciones"),
     ("Could not be deleted; try again", "No se pudo eliminar; se puede volver a intentar"),
-    ("Could not capture yt-dlp stderr", "No se pudo capturar stderr de yt-dlp"),
-    ("Could not capture yt-dlp stdout", "No se pudo capturar stdout de yt-dlp"),
+    ("Could not capture the media component's error output", "No se pudo capturar la salida de error del componente multimedia"),
+    ("Could not capture the media component's output", "No se pudo capturar la salida del componente multimedia"),
     ("Could not download the external subtitle", "No se pudo descargar el subtítulo externo"),
     ("Could not move the browser media output to its target", "No se pudo mover la salida multimedia del navegador a su destino"),
     ("Could not move the selected stream output into the working file", "No se pudo mover la salida del flujo seleccionado al archivo de trabajo"),
@@ -1754,7 +1756,7 @@ static ES: &[(&str, &str)] = &[
     ("Earliest start (local time, YYYY-MM-DD HH:MM):", "Inicio más temprano (hora local, AAAA-MM-DD HH:MM):"),
     ("Embedded and external subtitles cannot be mixed in one request.", "No se pueden mezclar subtítulos incrustados y externos en una misma solicitud."),
     ("Embedded subtitles (Ctrl/Shift, multiple):", "Subtítulos incrustados (Ctrl/Mayús, varios):"),
-    ("Enable experimental browser transfer — memory and integrity limits apply to large files", "Activar la transferencia experimental desde el navegador — los límites de memoria e integridad se aplican a los archivos grandes"),
+    ("Enable experimental browser transfer: memory and integrity limits apply to large files", "Activar la transferencia experimental desde el navegador: los límites de memoria e integridad se aplican a los archivos grandes"),
     ("End (HH:MM):", "Fin (HH:MM):"),
     ("End:", "Fin:"),
     ("Enter a single URL to download a video.", "Introducir una sola URL para descargar un vídeo."),
@@ -1790,12 +1792,12 @@ static ES: &[(&str, &str)] = &[
     ("Failed", "Fallida"),
     ("Fetching current version information", "Obteniendo información de la versión actual"),
     ("File", "Archivo"),
+    ("File - regular file links", "Archivo - enlaces de archivos normales"),
     ("File and media download manager for Windows.", "Administrador de descargas de archivos y multimedia para Windows."),
     ("File downloads are disabled in Settings.", "Las descargas de archivos están desactivadas en Configuración."),
     ("File name (optional, for a single URL):", "Nombre de archivo (opcional, para una sola URL):"),
     ("File name:", "Nombre de archivo:"),
     ("File size:", "Tamaño del archivo:"),
-    ("File — regular file links", "Archivo — enlaces de archivos normales"),
     ("Filter", "Filtro"),
     ("Finish live recordin&g and keep it", "Terminar la grabación en directo y &conservarla"),
     ("Finish live recording and keep it", "Terminar la grabación en directo y conservarla"),
@@ -1867,6 +1869,7 @@ static ES: &[(&str, &str)] = &[
     ("Later", "Más tarde"),
     ("Latest events (newest at bottom):", "Últimos eventos (los más recientes abajo):"),
     ("Legacy subtitle selection and explicit subtitle tracks cannot be combined.", "La selección de subtítulos antigua y las pistas de subtítulos explícitas no se pueden combinar."),
+    ("Licenses", "Licencias"),
     ("Limit daily working hours", "Limitar horas de trabajo diarias"),
     ("Link found", "Enlace encontrado"),
     ("Live recording finished; processing the recorded part", "Grabación en directo finalizada; procesando la parte grabada"),
@@ -1928,7 +1931,7 @@ static ES: &[(&str, &str)] = &[
     ("Minimize to the notification area when closing the window", "Minimizar al área de notificación al cerrar la ventana"),
     ("Missing components are installed.", "Se instalaron los componentes que faltaban."),
     ("Modern", "Moderno"),
-    ("Modern — the Windows 11 look", "Moderno — el aspecto de Windows 11"),
+    ("Modern - the Windows 11 look", "Moderno - el aspecto de Windows 11"),
     ("Move selected job", "Mover tarea"),
     ("Move to bottom\tAlt+End", "Mover al final\tAlt+End"),
     ("Move to queue", "Mover a la cola"),
@@ -1958,7 +1961,7 @@ static ES: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "No se encontró ningún enlace HTTP/HTTPS en el texto soltado."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "No se encontró ningún códec de audio compatible con MP4 en el idioma seleccionado; elija MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "No se encontró ningún códec de vídeo compatible con MP4 en la resolución seleccionada; elija MKV"),
-    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "No se encontró el archivo ZIP de una rama de versión de FFmpeg LGPL para Windows x64 en la última versión de BtbN"),
+    ("No Windows x64 LGPL converter release-branch ZIP asset was found in the latest upstream release", "No se encontró el archivo ZIP de una rama de versión del conversor LGPL para Windows x64 en la última versión del proyecto original"),
     ("No active completion countdown.", "No hay ninguna cuenta atrás de finalización activa."),
     ("No active downloads.", "No hay descargas activas."),
     ("No capacity for the network connection became free in time", "No quedó capacidad libre para la conexión de red a tiempo"),
@@ -1979,7 +1982,7 @@ static ES: &[(&str, &str)] = &[
     ("No proxy", "Sin proxy"),
     ("No refreshable source page was saved for this job.", "No se guardó ninguna página de origen actualizable para esta tarea."),
     ("No running SSDownload instance was found", "No se encontró ninguna instancia de SSDownload en ejecución"),
-    ("No suitable stable yt-dlp release was found", "No se encontró ninguna versión estable adecuada de yt-dlp"),
+    ("No suitable stable media component release was found", "No se encontró ninguna versión estable adecuada del componente multimedia"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Todavía no hay información de herramientas. El botón de instalación descarga versiones seguras del proyecto original de lo que falte."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "No se encontraron todos los flujos de audio seleccionados en la transferencia desde el navegador"),
@@ -2042,7 +2045,7 @@ static ES: &[(&str, &str)] = &[
     ("Priority:", "Prioridad:"),
     ("Processing", "Procesando"),
     ("Processing media", "Procesando contenido multimedia"),
-    ("Processing with FFmpeg", "Procesando con FFmpeg"),
+    ("Processing the media", "Procesando el contenido multimedia"),
     ("Program arguments (JSON)", "Argumentos del programa (JSON)"),
     ("Programs", "Programas"),
     ("Progress", "Progreso"),
@@ -2122,6 +2125,8 @@ static ES: &[(&str, &str)] = &[
     ("SHA-256 verified", "SHA-256 verificado"),
     ("SOCKS5 authentication was rejected", "Se rechazó la autenticación SOCKS5"),
     ("SSD-TOL-002 The tool archive exceeds the 1 GiB limit", "SSD-TOL-002 El archivo de la herramienta supera el límite de 1 GiB"),
+    ("SSDownload - Download Manager", "SSDownload - Administrador de descargas"),
+    ("SSDownload - native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload - administrador nativo de archivos, vídeo y audio para Windows\n\nssdownload.exe                         Abrir la aplicación de escritorio\n  --background                          Iniciar en el área de notificación\n  --data-dir CARPETA                    Carpeta de datos de usuario independiente\n  --add URL                             Añadir a la cola\n    --kind auto|file|video|audio\n    --output CARPETA --name ARCHIVO\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id ID_UNICO\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle IDIOMA --playlist --referer URL --start-at UNIX_O_RFC3339\n  --request-json ARCHIVO                 Añadir desde un archivo JSON de AddRequest\n  --action-json ARCHIVO                  Ejecutar un archivo JSON de acción (p. ej., un rastreo de sitio)\n  --inspect URL                          Mostrar la información de vídeo/audio en JSON\n  --status [--status-offset 0 --status-limit 100]   Estado paginado en JSON\n  --diagnose [--diagnose-hours 24]      Resumen del registro de eventos en JSON (sitio, código, resultado)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings ARCHIVO                 Guardar un archivo JSON de configuración\n  --install-tools [--update-tools]       Instalar las herramientas multimedia verificadas\n  --setup-tools                          Instalar las herramientas multimedia que falten sin iniciar la aplicación\n  --browser-setup                        Abrir la configuración del navegador\n  --remove-extension-policies            Quitar la política heredada de extensiones del navegador\n  --register-host | --unregister-host    Registro de Native Messaging\n  --enable-autostart | --disable-autostart   Iniciar al iniciar sesión\n  --quit                                 Cerrar la aplicación en ejecución\n  --debug                                Modo de desarrollador (omite el asistente y la instalación automática de herramientas)\n  --version | --help\n\nDRM no es compatible. Los límites de red y de sesión dependen del sitio.\n"),
     ("SSDownload adds the extension to Chrome and Edge itself. The next time you open the browser, click <b>Enable extension</b> on the <b>New extension added</b> notice.", "SSDownload añade la extensión a Chrome y Edge por su cuenta. La próxima vez que se abra el navegador, en el aviso <b>Nueva extensión añadida</b> hay que hacer clic en <b>Activar extensión</b>."),
     ("SSDownload browser extension", "Extensión del navegador SSDownload"),
     ("SSDownload could not be started in the background", "No se pudo iniciar SSDownload en segundo plano"),
@@ -2132,8 +2137,6 @@ static ES: &[(&str, &str)] = &[
     ("SSDownload started but the local channel did not become ready.", "SSDownload se inició, pero el canal local no estuvo listo."),
     ("SSDownload update", "Actualización de SSDownload"),
     ("SSDownload update error", "Error de actualización de SSDownload"),
-    ("SSDownload — Download Manager", "SSDownload — Administrador de descargas"),
-    ("SSDownload — native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload — administrador nativo de archivos, vídeo y audio para Windows\n\nssdownload.exe                         Abrir la aplicación de escritorio\n  --background                          Iniciar en el área de notificación\n  --data-dir CARPETA                    Carpeta de datos de usuario independiente\n  --add URL                             Añadir a la cola\n    --kind auto|file|video|audio\n    --output CARPETA --name ARCHIVO\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id ID_UNICO\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle IDIOMA --playlist --referer URL --start-at UNIX_O_RFC3339\n  --request-json ARCHIVO                 Añadir desde un archivo JSON de AddRequest\n  --action-json ARCHIVO                  Ejecutar un archivo JSON de acción (p. ej., un rastreo de sitio)\n  --inspect URL                          Mostrar la información de vídeo/audio en JSON\n  --status [--status-offset 0 --status-limit 100]   Estado paginado en JSON\n  --diagnose [--diagnose-hours 24]      Resumen del registro de eventos en JSON (sitio, código, resultado)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings ARCHIVO                 Guardar un archivo JSON de configuración\n  --install-tools [--update-tools]       Instalar las herramientas multimedia verificadas\n  --setup-tools                          Instalar las herramientas multimedia que falten sin iniciar la aplicación\n  --browser-setup                        Abrir la configuración del navegador\n  --remove-extension-policies            Quitar la política heredada de extensiones del navegador\n  --register-host | --unregister-host    Registro de Native Messaging\n  --enable-autostart | --disable-autostart   Iniciar al iniciar sesión\n  --quit                                 Cerrar la aplicación en ejecución\n  --debug                                Modo de desarrollador (omite el asistente y la instalación automática de herramientas)\n  --version | --help\n\nDRM no es compatible. Los límites de red y de sesión dependen del sitio.\n"),
     ("Safely extracting the verified LGPL archive", "Extrayendo de forma segura el archivo LGPL verificado"),
     ("Safely extracting the verified archive", "Extrayendo de forma segura el archivo verificado"),
     ("Save", "Guardar"),
@@ -2204,6 +2207,7 @@ static ES: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Iniciando la instalación; la aplicación se volverá a abrir"),
     ("State", "Estado"),
     ("States", "Estados"),
+    ("Status of the media components for video/audio downloads:", "Estado de los componentes multimedia para las descargas de vídeo/audio:"),
     ("Status:", "Estado:"),
     ("Stream integrity could not be verified", "No se pudo verificar la integridad del flujo"),
     ("Subtitle embedding is only supported for video output", "La incrustación de subtítulos solo es compatible con la salida de vídeo"),
@@ -2222,11 +2226,6 @@ static ES: &[(&str, &str)] = &[
     ("Text files (*.txt)|*.txt|All files (*.*)|*.*|", "Archivos de texto (*.txt)|*.txt|Todos los archivos (*.*)|*.*|"),
     ("The Chrome Native Messaging manifest could not be written", "No se pudo escribir el manifiesto de Native Messaging de Chrome"),
     ("The Chrome extension folder could not be converted to a URL", "No se pudo convertir la carpeta de la extensión de Chrome en una URL"),
-    ("The Deno archive could not be extracted", "No se pudo extraer el archivo de Deno"),
-    ("The Deno version information could not be retrieved", "No se pudo obtener la información de versión de Deno"),
-    ("The FFmpeg archive could not be extracted", "No se pudo extraer el archivo de FFmpeg"),
-    ("The FFmpeg release does not include an upstream SHA-256 checksum file", "La versión de FFmpeg no incluye el archivo de suma de comprobación SHA-256 del proyecto original"),
-    ("The FFmpeg version information could not be retrieved", "No se pudo obtener la información de versión de FFmpeg"),
     ("The FTP connection was stopped while waiting for capacity", "La conexión FTP se detuvo mientras esperaba capacidad"),
     ("The FTP partial file's identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning", "No se pudo demostrar la identidad del archivo parcial de FTP; no se puede reutilizar y el siguiente intento reinicia la descarga desde el principio"),
     ("The FTP server information could not be retrieved", "No se pudo obtener la información del servidor FTP"),
@@ -2356,6 +2355,10 @@ static ES: &[(&str, &str)] = &[
     ("The connection count must be a number", "El número de conexiones debe ser un valor numérico"),
     ("The connection timed out", "Se agotó el tiempo de espera de la conexión"),
     ("The connection was reset by the peer", "El otro extremo ha restablecido la conexión"),
+    ("The converter archive could not be extracted", "No se pudo extraer el archivo del conversor"),
+    ("The converter release does not include an upstream SHA-256 checksum file", "La versión del conversor no incluye el archivo de suma de comprobación SHA-256 del proyecto original"),
+    ("The converter version information could not be retrieved", "No se pudo obtener la información de versión del conversor"),
+    ("The converter was not found in its archive", "No se ha encontrado el conversor en su archivo"),
     ("The cookie folder could not be created", "No se pudo crear la carpeta de cookies"),
     ("The cookie limit for the selected source chain was exceeded", "Se superó el límite de cookies de la cadena de origen seleccionada"),
     ("The cookie partition key does not match the source page context", "La clave de partición de cookies no coincide con el contexto de la página de origen"),
@@ -2510,11 +2513,19 @@ static ES: &[(&str, &str)] = &[
     ("The main window class could not be registered", "No se pudo registrar la clase de la ventana principal"),
     ("The main window could not be created", "No se pudo crear la ventana principal"),
     ("The manifest is not UTF-8", "El manifiesto no está en UTF-8"),
+    ("The media component did not return valid media information", "El componente multimedia no ha devuelto información multimedia válida"),
+    ("The media component failed without giving details", "El componente multimedia ha fallado sin proporcionar detalles"),
+    ("The media component printed no output file line", "El componente multimedia no imprimió la línea del archivo de salida"),
+    ("The media component printed no post-processor line", "El componente multimedia no imprimió ninguna línea de posprocesamiento"),
+    ("The media component printed no progress line", "El componente multimedia no imprimió ninguna línea de progreso"),
+    ("The media component version information could not be retrieved", "No se pudo obtener la información de versión del componente multimedia"),
     ("The media components folder could not be created", "No se pudo crear la carpeta de componentes multimedia"),
     ("The media could not be analyzed.", "No se pudo analizar el contenido multimedia."),
     ("The media extractor failed", "El extractor multimedia ha fallado"),
     ("The media file type is missing", "Falta el tipo de archivo multimedia"),
     ("The media input worker stopped", "El trabajador de entrada multimedia se detuvo"),
+    ("The media inspector did not print JSON", "El inspector multimedia no imprimió JSON"),
+    ("The media inspector was not found in the converter archive", "No se ha encontrado el inspector multimedia en el archivo del conversor"),
     ("The media is geo restricted, removed, or requires sign-in", "El contenido multimedia tiene restricciones geográficas, se ha eliminado o requiere iniciar sesión"),
     ("The media output queue limit was exceeded; the incomplete playlist was not published", "Se superó el límite de la cola de salida multimedia; la lista de reproducción incompleta no se publicó"),
     ("The media process could not be assigned to the owned Windows Job object", "No se pudo asignar el proceso multimedia al objeto Windows Job propio"),
@@ -2638,6 +2649,9 @@ static ES: &[(&str, &str)] = &[
     ("The resume response did not prove the source identity; the partial file cannot be reused and the next attempt restarts the download from the beginning", "La respuesta de reanudación no demostró la identidad del origen; el archivo parcial no se puede reutilizar y el siguiente intento reinicia la descarga desde el principio"),
     ("The retry backoff duration exceeds the supported time range", "La duración de la espera entre reintentos supera el intervalo de tiempo admitido"),
     ("The retry limit cannot exceed 20.", "El límite de reintentos no puede superar 20."),
+    ("The runtime archive could not be extracted", "No se pudo extraer el archivo del entorno de ejecución"),
+    ("The runtime version information could not be retrieved", "No se pudo obtener la información de versión del entorno de ejecución"),
+    ("The runtime was not found in its archive", "No se ha encontrado el entorno de ejecución en su archivo"),
     ("The same external subtitle cannot be selected more than once", "El mismo subtítulo externo no se puede seleccionar más de una vez"),
     ("The same libcurl transfer cannot wait for additional connection capacity", "La misma transferencia de libcurl no puede esperar capacidad de conexión adicional"),
     ("The same request id is already queued", "El mismo ID de solicitud ya está en cola"),
@@ -2826,7 +2840,6 @@ static ES: &[(&str, &str)] = &[
     ("The work folder is missing", "Falta la carpeta de trabajo"),
     ("The working folder contains a redirect", "La carpeta de trabajo contiene una redirección"),
     ("The working folder is missing", "Falta la carpeta de trabajo"),
-    ("The yt-dlp version information could not be retrieved", "No se ha podido obtener la información de versión de yt-dlp"),
     ("Theme:", "Tema:"),
     ("There are no downloads to export.", "No hay descargas que exportar."),
     ("There is no active browser transfer for this job.", "No hay ninguna transferencia en curso desde el navegador para esta tarea."),
@@ -2892,6 +2905,7 @@ static ES: &[(&str, &str)] = &[
     ("Verifying the downloaded executable files", "Verificando los archivos ejecutables descargados"),
     ("Verifying the update", "Verificando la actualización"),
     ("Video", "Vídeo"),
+    ("Video - quality, tracks, subtitles", "Vídeo - calidad, pistas, subtítulos"),
     ("Video and audio inspection is disabled for your usage purpose.", "El análisis de vídeo y audio está desactivado para el modo de uso actual."),
     ("Video and audio support could not be downloaded · Tools > Install media support", "No se ha podido descargar la compatibilidad con vídeo y audio · Herramientas > Instalar compatibilidad multimedia"),
     ("Video and audio support could not be downloaded. Try again via Tools > Install media support.", "No se ha podido descargar la compatibilidad con vídeo y audio. Volver a intentarlo desde Herramientas > Instalar compatibilidad multimedia."),
@@ -2902,7 +2916,6 @@ static ES: &[(&str, &str)] = &[
     ("Video format id", "ID de formato de vídeo"),
     ("Video or audio downloading is disabled in Settings.", "La descarga de vídeo o audio está desactivada en Configuración."),
     ("Video preferences", "Preferencias de vídeo"),
-    ("Video — quality, tracks, subtitles", "Vídeo — calidad, pistas, subtítulos"),
     ("Video/audio setup stopped because of an unexpected error.", "La preparación de la compatibilidad con vídeo/audio se ha detenido por un error inesperado."),
     ("Video/audio support is already being prepared.", "La compatibilidad con vídeo/audio ya se está preparando."),
     ("Wait for the media analysis to finish first.", "Primero debe terminar el análisis multimedia."),
@@ -2930,15 +2943,11 @@ static ES: &[(&str, &str)] = &[
     ("completed", "completada"),
     ("converter", "conversor"),
     ("could not be decoded", "no se ha podido decodificar"),
-    ("deno.exe was not found in the Deno archive", "No se ha encontrado deno.exe en el archivo de Deno"),
     ("discovery", "detección"),
     ("error", "error"),
     ("error detail truncated", "detalle del error recortado"),
     ("errors", "errores"),
     ("failed", "fallida"),
-    ("ffmpeg.exe was not found in the FFmpeg archive", "No se ha encontrado ffmpeg.exe en el archivo de FFmpeg"),
-    ("ffprobe did not print JSON", "ffprobe no imprimió JSON"),
-    ("ffprobe.exe was not found in the FFmpeg archive", "No se ha encontrado ffprobe.exe en el archivo de FFmpeg"),
     ("file", "archivo"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "segmento de inicialización"),
@@ -2956,6 +2965,7 @@ static ES: &[(&str, &str)] = &[
     ("main playlist", "lista principal"),
     ("manual", "manual"),
     ("media component", "componente multimedia"),
+    ("media inspector", "inspector multimedia"),
     ("media segment", "segmento multimedia"),
     ("media source", "origen multimedia"),
     ("not in the queue", "no está en la cola"),
@@ -2984,12 +2994,6 @@ static ES: &[(&str, &str)] = &[
     ("update", "actualización"),
     ("verification", "verificación"),
     ("video", "vídeo"),
-    ("yt-dlp did not return valid JSON media information", "yt-dlp no ha devuelto información multimedia JSON válida"),
-    ("yt-dlp failed without giving details", "yt-dlp ha fallado sin proporcionar detalles"),
-    ("yt-dlp printed no output file line", "yt-dlp no imprimió la línea del archivo de salida"),
-    ("yt-dlp printed no post-processor line", "yt-dlp no imprimió ninguna línea de posprocesamiento"),
-    ("yt-dlp printed no progress line", "yt-dlp no imprimió ninguna línea de progreso"),
-    ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Estado de yt-dlp, FFmpeg y Deno para las descargas de vídeo/audio:"),
 ];
 
 static PT: &[(&str, &str)] = &[
@@ -3081,8 +3085,8 @@ static PT: &[(&str, &str)] = &[
     ("Add the clipboard's link from anywhere with Ctrl+Shift+D", "Adicione o link da área de transferência de qualquer lugar com Ctrl+Shift+D"),
     ("Address copied to the clipboard.", "Endereço copiado para a área de transferência."),
     ("Advanced", "Avançado"),
+    ("Advanced - queues, rules, crawler, sync, logs", "Avançado - filas, regras, rastreador, sincronização, logs"),
     ("Advanced options", "Opções avançadas"),
-    ("Advanced — queues, rules, crawler, sync, logs", "Avançado — filas, regras, rastreador, sincronização, logs"),
     ("All", "Todos"),
     ("All download workers closed unexpectedly", "Todos os trabalhadores de download foram encerrados inesperadamente"),
     ("Also send over unencrypted HTTP", "Também enviar por HTTP não criptografado"),
@@ -3095,17 +3099,17 @@ static PT: &[(&str, &str)] = &[
     ("Apply", "Aplicar"),
     ("Archives", "Arquivos compactados"),
     ("Audio", "Áudio"),
+    ("Audio - audio only from pages and links", "Áudio - só o áudio de páginas e links"),
     ("Audio conversion format:", "Formato de conversão de áudio:"),
     ("Audio downloads are disabled in Settings.", "Downloads de áudio estão desativados nas Configurações."),
     ("Audio format id", "ID do formato de áudio"),
     ("Audio language", "Idioma do áudio"),
     ("Audio only", "Somente áudio"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "Faixas de áudio (Ctrl/Shift; vazio = original):"),
-    ("Audio — audio only from pages and links", "Áudio — só o áudio de páginas e links"),
     ("Automatic", "Automático"),
     ("Awaiting source", "Aguardando a fonte"),
     ("Basic", "Básico"),
-    ("Basic — essential downloads and settings", "Básico — downloads e configurações essenciais"),
+    ("Basic - essential downloads and settings", "Básico - downloads e configurações essenciais"),
     ("Batch download...", "Download em lote..."),
     ("Battery saver is on: downloads are on hold", "Economia de bateria ativada: downloads suspensos"),
     ("Behaviour", "Comportamento"),
@@ -3139,7 +3143,7 @@ static PT: &[(&str, &str)] = &[
     ("Choose how you want to use it. You can change this later in Settings.", "Escolha como deseja usá-lo. Você pode alterar isso depois em Configurações."),
     ("Choose only one operation per call.", "Escolha apenas uma operação por chamada."),
     ("Classic", "Clássico"),
-    ("Classic — the plain Windows look", "Clássico — a aparência simples do Windows"),
+    ("Classic - the plain Windows look", "Clássico - a aparência simples do Windows"),
     ("Cleanup", "Limpeza"),
     ("Close", "Fechar"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "Feche o navegador completamente e abra-o novamente, ou adicione a extensão pela Chrome Web Store. O Edge também instala extensões da Chrome Web Store."),
@@ -3174,8 +3178,8 @@ static PT: &[(&str, &str)] = &[
     ("Copy address", "Copiar endereço"),
     ("Copy addresses", "Copiar endereços"),
     ("Could not be deleted; try again", "Não pôde ser excluído; tente novamente"),
-    ("Could not capture yt-dlp stderr", "Não foi possível capturar o stderr do yt-dlp"),
-    ("Could not capture yt-dlp stdout", "Não foi possível capturar o stdout do yt-dlp"),
+    ("Could not capture the media component's error output", "Não foi possível capturar a saída de erro do componente de mídia"),
+    ("Could not capture the media component's output", "Não foi possível capturar a saída do componente de mídia"),
     ("Could not download the external subtitle", "Não foi possível baixar a legenda externa"),
     ("Could not move the browser media output to its target", "Não foi possível mover a saída de mídia do navegador para o destino"),
     ("Could not move the selected stream output into the working file", "Não foi possível mover a saída do fluxo selecionado para o arquivo de trabalho"),
@@ -3243,7 +3247,7 @@ static PT: &[(&str, &str)] = &[
     ("Earliest start (local time, YYYY-MM-DD HH:MM):", "Início mais cedo (hora local, AAAA-MM-DD HH:MM):"),
     ("Embedded and external subtitles cannot be mixed in one request.", "Legendas embutidas e externas não podem ser misturadas em uma mesma solicitação."),
     ("Embedded subtitles (Ctrl/Shift, multiple):", "Legendas embutidas (Ctrl/Shift, múltiplas):"),
-    ("Enable experimental browser transfer — memory and integrity limits apply to large files", "Ativar a transferência experimental pelo navegador — limites de memória e integridade se aplicam a arquivos grandes"),
+    ("Enable experimental browser transfer: memory and integrity limits apply to large files", "Ativar a transferência experimental pelo navegador: limites de memória e integridade se aplicam a arquivos grandes"),
     ("End (HH:MM):", "Fim (HH:MM):"),
     ("End:", "Fim:"),
     ("Enter a single URL to download a video.", "Digite uma única URL para baixar um vídeo."),
@@ -3279,12 +3283,12 @@ static PT: &[(&str, &str)] = &[
     ("Failed", "Falhou"),
     ("Fetching current version information", "Obtendo informações da versão atual"),
     ("File", "Arquivo"),
+    ("File - regular file links", "Arquivo - links de arquivos comuns"),
     ("File and media download manager for Windows.", "Gerenciador de downloads de arquivos e mídia para Windows."),
     ("File downloads are disabled in Settings.", "Downloads de arquivos estão desativados nas Configurações."),
     ("File name (optional, for a single URL):", "Nome do arquivo (opcional, para uma única URL):"),
     ("File name:", "Nome do arquivo:"),
     ("File size:", "Tamanho do arquivo:"),
-    ("File — regular file links", "Arquivo — links de arquivos comuns"),
     ("Filter", "Filtro"),
     ("Finish live recordin&g and keep it", "&Concluir a gravação ao vivo e mantê-la"),
     ("Finish live recording and keep it", "Concluir a gravação ao vivo e mantê-la"),
@@ -3356,6 +3360,7 @@ static PT: &[(&str, &str)] = &[
     ("Later", "Mais tarde"),
     ("Latest events (newest at bottom):", "Eventos mais recentes (os mais novos no final):"),
     ("Legacy subtitle selection and explicit subtitle tracks cannot be combined.", "A seleção de legenda legada e as faixas de legenda explícitas não podem ser combinadas."),
+    ("Licenses", "Licenças"),
     ("Limit daily working hours", "Limitar horas de trabalho diárias"),
     ("Link found", "Link encontrado"),
     ("Live recording finished; processing the recorded part", "Gravação ao vivo concluída; processando a parte gravada"),
@@ -3417,7 +3422,7 @@ static PT: &[(&str, &str)] = &[
     ("Minimize to the notification area when closing the window", "Minimizar para a área de notificação ao fechar a janela"),
     ("Missing components are installed.", "Os componentes ausentes foram instalados."),
     ("Modern", "Moderno"),
-    ("Modern — the Windows 11 look", "Moderno — a aparência do Windows 11"),
+    ("Modern - the Windows 11 look", "Moderno - a aparência do Windows 11"),
     ("Move selected job", "Mover tarefa"),
     ("Move to bottom\tAlt+End", "Mover para o fim\tAlt+End"),
     ("Move to queue", "Mover para a fila"),
@@ -3447,7 +3452,7 @@ static PT: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Nenhum link HTTP/HTTPS foi encontrado no texto arrastado."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "Nenhum codec de áudio compatível com MP4 foi encontrado no idioma selecionado; escolha MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Nenhum codec de vídeo compatível com MP4 foi encontrado na resolução selecionada; escolha MKV"),
-    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Nenhum arquivo ZIP de uma ramificação de versão do FFmpeg LGPL para Windows x64 foi encontrado na versão mais recente da BtbN"),
+    ("No Windows x64 LGPL converter release-branch ZIP asset was found in the latest upstream release", "Nenhum arquivo ZIP de uma ramificação de versão do conversor LGPL para Windows x64 foi encontrado na versão upstream mais recente"),
     ("No active completion countdown.", "Nenhuma contagem regressiva de conclusão ativa."),
     ("No active downloads.", "Nenhum download ativo."),
     ("No capacity for the network connection became free in time", "Não ficou disponível capacidade para a conexão de rede a tempo"),
@@ -3468,7 +3473,7 @@ static PT: &[(&str, &str)] = &[
     ("No proxy", "Sem proxy"),
     ("No refreshable source page was saved for this job.", "Nenhuma página de origem atualizável foi salva para esta tarefa."),
     ("No running SSDownload instance was found", "Nenhuma instância em execução do SSDownload foi encontrada"),
-    ("No suitable stable yt-dlp release was found", "Nenhuma versão estável adequada do yt-dlp foi encontrada"),
+    ("No suitable stable media component release was found", "Nenhuma versão estável adequada do componente de mídia foi encontrada"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Ainda não há informações de ferramentas. O botão Instalar ausentes baixa versões upstream seguras para o que estiver faltando."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Nem todos os fluxos de áudio selecionados foram encontrados na transferência pelo navegador"),
@@ -3531,7 +3536,7 @@ static PT: &[(&str, &str)] = &[
     ("Priority:", "Prioridade:"),
     ("Processing", "Processando"),
     ("Processing media", "Processando mídia"),
-    ("Processing with FFmpeg", "Processando com FFmpeg"),
+    ("Processing the media", "Processando a mídia"),
     ("Program arguments (JSON)", "Argumentos do programa (JSON)"),
     ("Programs", "Programas"),
     ("Progress", "Progresso"),
@@ -3611,6 +3616,8 @@ static PT: &[(&str, &str)] = &[
     ("SHA-256 verified", "SHA-256 verificado"),
     ("SOCKS5 authentication was rejected", "A autenticação SOCKS5 foi rejeitada"),
     ("SSD-TOL-002 The tool archive exceeds the 1 GiB limit", "SSD-TOL-002 O arquivo compactado da ferramenta excede o limite de 1 GiB"),
+    ("SSDownload - Download Manager", "SSDownload - Gerenciador de downloads"),
+    ("SSDownload - native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload - gerenciador nativo de arquivos/vídeos/áudios para Windows\n\nssdownload.exe                         Abrir o aplicativo de desktop\n  --background                          Iniciar na bandeja do sistema\n  --data-dir DIR                        Pasta de dados do usuário separada\n  --add URL                             Adicionar à fila\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Adicionar a partir de um arquivo JSON de AddRequest\n  --action-json FILE                     Executar um arquivo JSON de ação (ex.: um rastreamento de site)\n  --inspect URL                          Mostrar informações de vídeo/áudio em JSON\n  --status [--status-offset 0 --status-limit 100]   JSON de status paginado\n  --diagnose [--diagnose-hours 24]      Resumo do log de eventos em JSON (site, código, resultado)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Salvar um arquivo JSON de Configurações\n  --install-tools [--update-tools]       Instalar as ferramentas de mídia verificadas\n  --setup-tools                          Instalar as ferramentas de mídia ausentes sem iniciar o aplicativo\n  --browser-setup                        Abrir a configuração do navegador\n  --remove-extension-policies            Remover a política de extensão legada do navegador\n  --register-host | --unregister-host    Registro do Native Messaging\n  --enable-autostart | --disable-autostart   Iniciar ao fazer login\n  --quit                                 Fechar o aplicativo em execução\n  --debug                                Modo de desenvolvedor (pula o assistente e a instalação automática de ferramentas)\n  --version | --help\n\nDRM não é suportado. Os limites de rede e de sessão dependem do site.\n"),
     ("SSDownload adds the extension to Chrome and Edge itself. The next time you open the browser, click <b>Enable extension</b> on the <b>New extension added</b> notice.", "O SSDownload adiciona a extensão ao Chrome e ao Edge por conta própria. Na próxima vez que você abrir o navegador, clique em <b>Ativar extensão</b> no aviso <b>Nova extensão adicionada</b>."),
     ("SSDownload browser extension", "Extensão do navegador SSDownload"),
     ("SSDownload could not be started in the background", "Não foi possível iniciar o SSDownload em segundo plano"),
@@ -3621,8 +3628,6 @@ static PT: &[(&str, &str)] = &[
     ("SSDownload started but the local channel did not become ready.", "O SSDownload foi iniciado, mas o canal local não ficou pronto."),
     ("SSDownload update", "Atualização do SSDownload"),
     ("SSDownload update error", "Erro na atualização do SSDownload"),
-    ("SSDownload — Download Manager", "SSDownload — Gerenciador de downloads"),
-    ("SSDownload — native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload — gerenciador nativo de arquivos/vídeos/áudios para Windows\n\nssdownload.exe                         Abrir o aplicativo de desktop\n  --background                          Iniciar na bandeja do sistema\n  --data-dir DIR                        Pasta de dados do usuário separada\n  --add URL                             Adicionar à fila\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Adicionar a partir de um arquivo JSON de AddRequest\n  --action-json FILE                     Executar um arquivo JSON de ação (ex.: um rastreamento de site)\n  --inspect URL                          Mostrar informações de vídeo/áudio em JSON\n  --status [--status-offset 0 --status-limit 100]   JSON de status paginado\n  --diagnose [--diagnose-hours 24]      Resumo do log de eventos em JSON (site, código, resultado)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Salvar um arquivo JSON de Configurações\n  --install-tools [--update-tools]       Instalar as ferramentas de mídia verificadas\n  --setup-tools                          Instalar as ferramentas de mídia ausentes sem iniciar o aplicativo\n  --browser-setup                        Abrir a configuração do navegador\n  --remove-extension-policies            Remover a política de extensão legada do navegador\n  --register-host | --unregister-host    Registro do Native Messaging\n  --enable-autostart | --disable-autostart   Iniciar ao fazer login\n  --quit                                 Fechar o aplicativo em execução\n  --debug                                Modo de desenvolvedor (pula o assistente e a instalação automática de ferramentas)\n  --version | --help\n\nDRM não é suportado. Os limites de rede e de sessão dependem do site.\n"),
     ("Safely extracting the verified LGPL archive", "Extraindo com segurança o arquivo LGPL verificado"),
     ("Safely extracting the verified archive", "Extraindo com segurança o arquivo verificado"),
     ("Save", "Salvar"),
@@ -3693,6 +3698,7 @@ static PT: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Iniciando a instalação; o aplicativo será reaberto"),
     ("State", "Estado"),
     ("States", "Estados"),
+    ("Status of the media components for video/audio downloads:", "Status dos componentes de mídia para downloads de vídeo/áudio:"),
     ("Status:", "Estado:"),
     ("Stream integrity could not be verified", "A integridade do fluxo não pôde ser verificada"),
     ("Subtitle embedding is only supported for video output", "A incorporação de legendas só é suportada para saída de vídeo"),
@@ -3711,11 +3717,6 @@ static PT: &[(&str, &str)] = &[
     ("Text files (*.txt)|*.txt|All files (*.*)|*.*|", "Arquivos de texto (*.txt)|*.txt|Todos os arquivos (*.*)|*.*|"),
     ("The Chrome Native Messaging manifest could not be written", "Não foi possível gravar o manifesto do Native Messaging do Chrome"),
     ("The Chrome extension folder could not be converted to a URL", "A pasta da extensão do Chrome não pôde ser convertida em URL"),
-    ("The Deno archive could not be extracted", "Não foi possível extrair o arquivo do Deno"),
-    ("The Deno version information could not be retrieved", "Não foi possível obter as informações de versão do Deno"),
-    ("The FFmpeg archive could not be extracted", "Não foi possível extrair o arquivo do FFmpeg"),
-    ("The FFmpeg release does not include an upstream SHA-256 checksum file", "A versão do FFmpeg não inclui um arquivo de soma de verificação SHA-256 upstream"),
-    ("The FFmpeg version information could not be retrieved", "Não foi possível obter as informações de versão do FFmpeg"),
     ("The FTP connection was stopped while waiting for capacity", "A conexão FTP foi interrompida enquanto aguardava capacidade"),
     ("The FTP partial file's identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning", "A identidade do arquivo parcial do FTP não pôde ser comprovada; ele não pode ser reutilizado e a próxima tentativa reinicia o download desde o início"),
     ("The FTP server information could not be retrieved", "Não foi possível obter as informações do servidor FTP"),
@@ -3845,6 +3846,10 @@ static PT: &[(&str, &str)] = &[
     ("The connection count must be a number", "O número de conexões deve ser um número"),
     ("The connection timed out", "A conexão expirou"),
     ("The connection was reset by the peer", "A conexão foi redefinida pelo outro lado"),
+    ("The converter archive could not be extracted", "Não foi possível extrair o arquivo do conversor"),
+    ("The converter release does not include an upstream SHA-256 checksum file", "A versão do conversor não inclui um arquivo de soma de verificação SHA-256 upstream"),
+    ("The converter version information could not be retrieved", "Não foi possível obter as informações de versão do conversor"),
+    ("The converter was not found in its archive", "O conversor não foi encontrado no arquivo dele"),
     ("The cookie folder could not be created", "Não foi possível criar a pasta de cookies"),
     ("The cookie limit for the selected source chain was exceeded", "O limite de cookies da cadeia de origem selecionada foi excedido"),
     ("The cookie partition key does not match the source page context", "A chave de partição do cookie não corresponde ao contexto da página de origem"),
@@ -3999,11 +4004,19 @@ static PT: &[(&str, &str)] = &[
     ("The main window class could not be registered", "Não foi possível registrar a classe da janela principal"),
     ("The main window could not be created", "Não foi possível criar a janela principal"),
     ("The manifest is not UTF-8", "O manifesto não está em UTF-8"),
+    ("The media component did not return valid media information", "O componente de mídia não retornou informações de mídia válidas"),
+    ("The media component failed without giving details", "O componente de mídia falhou sem fornecer detalhes"),
+    ("The media component printed no output file line", "O componente de mídia não imprimiu a linha do arquivo de saída"),
+    ("The media component printed no post-processor line", "O componente de mídia não imprimiu nenhuma linha de pós-processamento"),
+    ("The media component printed no progress line", "O componente de mídia não imprimiu nenhuma linha de progresso"),
+    ("The media component version information could not be retrieved", "Não foi possível obter as informações de versão do componente de mídia"),
     ("The media components folder could not be created", "Não foi possível criar a pasta dos componentes de mídia"),
     ("The media could not be analyzed.", "Não foi possível analisar a mídia."),
     ("The media extractor failed", "O extrator de mídia falhou"),
     ("The media file type is missing", "O tipo de arquivo de mídia está ausente"),
     ("The media input worker stopped", "O trabalhador de entrada de mídia parou"),
+    ("The media inspector did not print JSON", "O inspetor de mídia não imprimiu JSON"),
+    ("The media inspector was not found in the converter archive", "O inspetor de mídia não foi encontrado no arquivo do conversor"),
     ("The media is geo restricted, removed, or requires sign-in", "A mídia tem restrição geográfica, foi removida ou exige login"),
     ("The media output queue limit was exceeded; the incomplete playlist was not published", "O limite da fila de saída de mídia foi excedido; a playlist incompleta não foi publicada"),
     ("The media process could not be assigned to the owned Windows Job object", "Não foi possível atribuir o processo de mídia ao objeto Job do Windows próprio"),
@@ -4127,6 +4140,9 @@ static PT: &[(&str, &str)] = &[
     ("The resume response did not prove the source identity; the partial file cannot be reused and the next attempt restarts the download from the beginning", "A resposta de retomada não comprovou a identidade da fonte; o arquivo parcial não pode ser reutilizado e a próxima tentativa reinicia o download desde o início"),
     ("The retry backoff duration exceeds the supported time range", "A duração do recuo de nova tentativa excede o intervalo de tempo suportado"),
     ("The retry limit cannot exceed 20.", "O limite de novas tentativas não pode exceder 20."),
+    ("The runtime archive could not be extracted", "Não foi possível extrair o arquivo do ambiente de execução"),
+    ("The runtime version information could not be retrieved", "Não foi possível obter as informações de versão do ambiente de execução"),
+    ("The runtime was not found in its archive", "O ambiente de execução não foi encontrado no arquivo dele"),
     ("The same external subtitle cannot be selected more than once", "A mesma legenda externa não pode ser selecionada mais de uma vez"),
     ("The same libcurl transfer cannot wait for additional connection capacity", "A mesma transferência libcurl não pode aguardar capacidade de conexão adicional"),
     ("The same request id is already queued", "O mesmo ID de solicitação já está na fila"),
@@ -4315,7 +4331,6 @@ static PT: &[(&str, &str)] = &[
     ("The work folder is missing", "A pasta de trabalho está ausente"),
     ("The working folder contains a redirect", "A pasta de trabalho contém um redirecionamento"),
     ("The working folder is missing", "A pasta de trabalho está ausente"),
-    ("The yt-dlp version information could not be retrieved", "Não foi possível obter as informações de versão do yt-dlp"),
     ("Theme:", "Tema:"),
     ("There are no downloads to export.", "Não há downloads para exportar."),
     ("There is no active browser transfer for this job.", "Não há transferência ativa pelo navegador para esta tarefa."),
@@ -4381,6 +4396,7 @@ static PT: &[(&str, &str)] = &[
     ("Verifying the downloaded executable files", "Verificando os arquivos executáveis baixados"),
     ("Verifying the update", "Verificando a atualização"),
     ("Video", "Vídeo"),
+    ("Video - quality, tracks, subtitles", "Vídeo - qualidade, faixas, legendas"),
     ("Video and audio inspection is disabled for your usage purpose.", "A análise de vídeo e áudio está desativada para a sua finalidade de uso."),
     ("Video and audio support could not be downloaded · Tools > Install media support", "Não foi possível baixar o suporte a vídeo e áudio · Ferramentas > Instalar suporte a mídia"),
     ("Video and audio support could not be downloaded. Try again via Tools > Install media support.", "Não foi possível baixar o suporte a vídeo e áudio. Tente novamente por Ferramentas > Instalar suporte a mídia."),
@@ -4391,7 +4407,6 @@ static PT: &[(&str, &str)] = &[
     ("Video format id", "ID do formato de vídeo"),
     ("Video or audio downloading is disabled in Settings.", "O download de vídeo ou áudio está desativado nas Configurações."),
     ("Video preferences", "Preferências de vídeo"),
-    ("Video — quality, tracks, subtitles", "Vídeo — qualidade, faixas, legendas"),
     ("Video/audio setup stopped because of an unexpected error.", "A configuração de vídeo/áudio foi interrompida por um erro inesperado."),
     ("Video/audio support is already being prepared.", "O suporte a vídeo/áudio já está sendo preparado."),
     ("Wait for the media analysis to finish first.", "Aguarde primeiro a conclusão da análise de mídia."),
@@ -4419,15 +4434,11 @@ static PT: &[(&str, &str)] = &[
     ("completed", "concluído"),
     ("converter", "conversor"),
     ("could not be decoded", "não pôde ser decodificado"),
-    ("deno.exe was not found in the Deno archive", "deno.exe não foi encontrado no arquivo do Deno"),
     ("discovery", "descoberta"),
     ("error", "erro"),
     ("error detail truncated", "detalhe do erro cortado"),
     ("errors", "erros"),
     ("failed", "falhou"),
-    ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe não foi encontrado no arquivo do FFmpeg"),
-    ("ffprobe did not print JSON", "O ffprobe não imprimiu JSON"),
-    ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe não foi encontrado no arquivo do FFmpeg"),
     ("file", "arquivo"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "segmento de inicialização"),
@@ -4445,6 +4456,7 @@ static PT: &[(&str, &str)] = &[
     ("main playlist", "playlist principal"),
     ("manual", "manual"),
     ("media component", "componente de mídia"),
+    ("media inspector", "inspetor de mídia"),
     ("media segment", "segmento de mídia"),
     ("media source", "fonte de mídia"),
     ("not in the queue", "não está na fila"),
@@ -4473,12 +4485,6 @@ static PT: &[(&str, &str)] = &[
     ("update", "atualização"),
     ("verification", "verificação"),
     ("video", "vídeo"),
-    ("yt-dlp did not return valid JSON media information", "o yt-dlp não retornou informações de mídia em JSON válido"),
-    ("yt-dlp failed without giving details", "o yt-dlp falhou sem fornecer detalhes"),
-    ("yt-dlp printed no output file line", "O yt-dlp não imprimiu a linha do arquivo de saída"),
-    ("yt-dlp printed no post-processor line", "O yt-dlp não imprimiu nenhuma linha de pós-processamento"),
-    ("yt-dlp printed no progress line", "O yt-dlp não imprimiu nenhuma linha de progresso"),
-    ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Status do yt-dlp, FFmpeg e Deno para downloads de vídeo/áudio:"),
 ];
 
 static FR: &[(&str, &str)] = &[
@@ -4570,8 +4576,8 @@ static FR: &[(&str, &str)] = &[
     ("Add the clipboard's link from anywhere with Ctrl+Shift+D", "Ajoutez le lien du presse-papiers depuis n'importe où avec Ctrl+Shift+D"),
     ("Address copied to the clipboard.", "Adresse copiée dans le presse-papiers."),
     ("Advanced", "Avancé"),
+    ("Advanced - queues, rules, crawler, sync, logs", "Avancé - files d'attente, règles, exploration, synchro, journaux"),
     ("Advanced options", "Options avancées"),
-    ("Advanced — queues, rules, crawler, sync, logs", "Avancé — files d'attente, règles, exploration, synchro, journaux"),
     ("All", "Tous"),
     ("All download workers closed unexpectedly", "Tous les processus de téléchargement se sont arrêtés de manière inattendue"),
     ("Also send over unencrypted HTTP", "Envoyer aussi via HTTP non chiffré"),
@@ -4584,17 +4590,17 @@ static FR: &[(&str, &str)] = &[
     ("Apply", "Appliquer"),
     ("Archives", "Archives"),
     ("Audio", "Audio"),
+    ("Audio - audio only from pages and links", "Audio - l'audio seul des pages et liens"),
     ("Audio conversion format:", "Format de conversion audio :"),
     ("Audio downloads are disabled in Settings.", "Les téléchargements audio sont désactivés dans les paramètres."),
     ("Audio format id", "Identifiant du format audio"),
     ("Audio language", "Langue audio"),
     ("Audio only", "Audio uniquement"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "Pistes audio (Ctrl/Maj ; vide = originale) :"),
-    ("Audio — audio only from pages and links", "Audio — l'audio seul des pages et liens"),
     ("Automatic", "Automatique"),
     ("Awaiting source", "En attente de la source"),
     ("Basic", "De base"),
-    ("Basic — essential downloads and settings", "De base — téléchargements et réglages essentiels"),
+    ("Basic - essential downloads and settings", "De base - téléchargements et réglages essentiels"),
     ("Batch download...", "Téléchargement en lot..."),
     ("Battery saver is on: downloads are on hold", "Économiseur de batterie actif : téléchargements suspendus"),
     ("Behaviour", "Comportement"),
@@ -4628,7 +4634,7 @@ static FR: &[(&str, &str)] = &[
     ("Choose how you want to use it. You can change this later in Settings.", "Choisissez son mode d'utilisation. Vous pourrez le modifier plus tard dans les paramètres."),
     ("Choose only one operation per call.", "Choisissez une seule opération par appel."),
     ("Classic", "Classique"),
-    ("Classic — the plain Windows look", "Classique — l'apparence Windows sobre"),
+    ("Classic - the plain Windows look", "Classique - l'apparence Windows sobre"),
     ("Cleanup", "Nettoyage"),
     ("Close", "Fermer"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "Fermez complètement le navigateur puis rouvrez-le, ou ajoutez l'extension depuis le Chrome Web Store. Edge installe aussi les extensions du Chrome Web Store."),
@@ -4663,8 +4669,8 @@ static FR: &[(&str, &str)] = &[
     ("Copy address", "Copier l'adresse"),
     ("Copy addresses", "Copier les adresses"),
     ("Could not be deleted; try again", "Impossible de supprimer ; réessayez"),
-    ("Could not capture yt-dlp stderr", "Impossible de capturer stderr de yt-dlp"),
-    ("Could not capture yt-dlp stdout", "Impossible de capturer stdout de yt-dlp"),
+    ("Could not capture the media component's error output", "Impossible de capturer la sortie d'erreur du composant média"),
+    ("Could not capture the media component's output", "Impossible de capturer la sortie du composant média"),
     ("Could not download the external subtitle", "Impossible de télécharger le sous-titre externe"),
     ("Could not move the browser media output to its target", "Impossible de déplacer le média produit par le navigateur vers sa destination"),
     ("Could not move the selected stream output into the working file", "Impossible de déplacer la sortie du flux sélectionné dans le fichier de travail"),
@@ -4732,7 +4738,7 @@ static FR: &[(&str, &str)] = &[
     ("Earliest start (local time, YYYY-MM-DD HH:MM):", "Début au plus tôt (heure locale, AAAA-MM-JJ HH:MM) :"),
     ("Embedded and external subtitles cannot be mixed in one request.", "Les sous-titres intégrés et externes ne peuvent pas être mélangés dans une même requête."),
     ("Embedded subtitles (Ctrl/Shift, multiple):", "Sous-titres intégrés (Ctrl/Maj, plusieurs) :"),
-    ("Enable experimental browser transfer — memory and integrity limits apply to large files", "Activer le transfert expérimental par le navigateur — les limites de mémoire et d'intégrité s'appliquent aux gros fichiers"),
+    ("Enable experimental browser transfer: memory and integrity limits apply to large files", "Activer le transfert expérimental par le navigateur : les limites de mémoire et d'intégrité s'appliquent aux gros fichiers"),
     ("End (HH:MM):", "Fin (HH:MM) :"),
     ("End:", "Fin :"),
     ("Enter a single URL to download a video.", "Saisissez une seule URL pour télécharger une vidéo."),
@@ -4768,12 +4774,12 @@ static FR: &[(&str, &str)] = &[
     ("Failed", "Échec"),
     ("Fetching current version information", "Récupération des informations de la version actuelle"),
     ("File", "Fichier"),
+    ("File - regular file links", "Fichier - liens de fichiers classiques"),
     ("File and media download manager for Windows.", "Gestionnaire de téléchargements de fichiers et de médias pour Windows."),
     ("File downloads are disabled in Settings.", "Les téléchargements de fichiers sont désactivés dans les paramètres."),
     ("File name (optional, for a single URL):", "Nom de fichier (facultatif, pour une seule URL) :"),
     ("File name:", "Nom du fichier :"),
     ("File size:", "Taille du fichier :"),
-    ("File — regular file links", "Fichier — liens de fichiers classiques"),
     ("Filter", "Filtre"),
     ("Finish live recordin&g and keep it", "Terminer l'enre&gistrement en direct et le conserver"),
     ("Finish live recording and keep it", "Terminer l'enregistrement en direct et le conserver"),
@@ -4845,6 +4851,7 @@ static FR: &[(&str, &str)] = &[
     ("Later", "Plus tard"),
     ("Latest events (newest at bottom):", "Derniers événements (les plus récents en bas) :"),
     ("Legacy subtitle selection and explicit subtitle tracks cannot be combined.", "L'ancienne sélection de sous-titres et les pistes de sous-titres explicites ne peuvent pas être combinées."),
+    ("Licenses", "Licences"),
     ("Limit daily working hours", "Limiter les heures quotidiennes"),
     ("Link found", "Lien trouvé"),
     ("Live recording finished; processing the recorded part", "Enregistrement en direct terminé ; traitement de la partie enregistrée"),
@@ -4906,7 +4913,7 @@ static FR: &[(&str, &str)] = &[
     ("Minimize to the notification area when closing the window", "Réduire dans la zone de notification à la fermeture de la fenêtre"),
     ("Missing components are installed.", "Les composants manquants ont été installés."),
     ("Modern", "Moderne"),
-    ("Modern — the Windows 11 look", "Moderne — l'apparence de Windows 11"),
+    ("Modern - the Windows 11 look", "Moderne - l'apparence de Windows 11"),
     ("Move selected job", "Déplacer la tâche"),
     ("Move to bottom\tAlt+End", "Déplacer en bas\tAlt+End"),
     ("Move to queue", "Déplacer vers la file d'attente"),
@@ -4936,7 +4943,7 @@ static FR: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Aucun lien HTTP/HTTPS n'a été trouvé dans le texte déposé."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "Aucun codec audio compatible MP4 n'a été trouvé dans la langue sélectionnée ; choisissez MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Aucun codec vidéo compatible MP4 n'a été trouvé à la résolution sélectionnée ; choisissez MKV"),
-    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Aucun fichier ZIP d'une branche de version FFmpeg LGPL Windows x64 n'a été trouvé dans la dernière version de BtbN"),
+    ("No Windows x64 LGPL converter release-branch ZIP asset was found in the latest upstream release", "Aucun fichier ZIP d'une branche de version du convertisseur LGPL Windows x64 n'a été trouvé dans la dernière version amont"),
     ("No active completion countdown.", "Aucun compte à rebours de fin n'est actif."),
     ("No active downloads.", "Aucun téléchargement en cours."),
     ("No capacity for the network connection became free in time", "Aucune capacité n'a été libérée à temps pour la connexion réseau"),
@@ -4957,7 +4964,7 @@ static FR: &[(&str, &str)] = &[
     ("No proxy", "Aucun proxy"),
     ("No refreshable source page was saved for this job.", "Aucune page source actualisable n'a été enregistrée pour cette tâche."),
     ("No running SSDownload instance was found", "Aucune instance SSDownload en cours d'exécution n'a été trouvée"),
-    ("No suitable stable yt-dlp release was found", "Aucune version stable adaptée de yt-dlp n'a été trouvée"),
+    ("No suitable stable media component release was found", "Aucune version stable adaptée du composant média n'a été trouvée"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Aucune information sur les outils pour l'instant. Le bouton Installer les manquants télécharge les versions amont sûres pour les éléments absents."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Tous les flux audio sélectionnés n'ont pas été trouvés dans le transfert par le navigateur"),
@@ -5020,7 +5027,7 @@ static FR: &[(&str, &str)] = &[
     ("Priority:", "Priorité :"),
     ("Processing", "Traitement"),
     ("Processing media", "Traitement du média"),
-    ("Processing with FFmpeg", "Traitement avec FFmpeg"),
+    ("Processing the media", "Traitement du média"),
     ("Program arguments (JSON)", "Arguments du programme (JSON)"),
     ("Programs", "Programmes"),
     ("Progress", "Progression"),
@@ -5100,6 +5107,8 @@ static FR: &[(&str, &str)] = &[
     ("SHA-256 verified", "SHA-256 vérifié"),
     ("SOCKS5 authentication was rejected", "L'authentification SOCKS5 a été refusée"),
     ("SSD-TOL-002 The tool archive exceeds the 1 GiB limit", "SSD-TOL-002 L'archive de l'outil dépasse la limite de 1 GiB"),
+    ("SSDownload - Download Manager", "SSDownload - Gestionnaire de téléchargements"),
+    ("SSDownload - native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload - gestionnaire natif de fichiers, vidéos et audio pour Windows\n\nssdownload.exe                         Ouvrir l'application de bureau\n  --background                          Démarrer dans la zone de notification\n  --data-dir DOSSIER                    Dossier de données utilisateur séparé\n  --add URL                             Ajouter à la file d'attente\n    --kind auto|file|video|audio\n    --output DOSSIER --name FICHIER\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id ID_UNIQUE\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OU_RFC3339\n  --request-json FICHIER                 Ajouter depuis un fichier JSON AddRequest\n  --action-json FICHIER                  Exécuter un fichier JSON d'action (par ex. une exploration de site)\n  --inspect URL                          Afficher les informations vidéo/audio en JSON\n  --status [--status-offset 0 --status-limit 100]   JSON de statut paginé\n  --diagnose [--diagnose-hours 24]      Résumé du journal des événements en JSON (site, code, résultat)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FICHIER                 Enregistrer un fichier JSON de paramètres\n  --install-tools [--update-tools]       Installer les outils média vérifiés\n  --setup-tools                          Installer les outils média manquants sans démarrer l'application\n  --browser-setup                        Ouvrir la configuration du navigateur\n  --remove-extension-policies            Supprimer l'ancienne stratégie d'extension du navigateur\n  --register-host | --unregister-host    Enregistrement Native Messaging\n  --enable-autostart | --disable-autostart   Démarrer à l'ouverture de session\n  --quit                                 Fermer l'application en cours d'exécution\n  --debug                                Mode développeur (ignore l'assistant et l'installation automatique des outils)\n  --version | --help\n\nDRM non pris en charge. Les limites réseau et de session dépendent du site.\n"),
     ("SSDownload adds the extension to Chrome and Edge itself. The next time you open the browser, click <b>Enable extension</b> on the <b>New extension added</b> notice.", "SSDownload ajoute lui-même l'extension à Chrome et Edge. À la prochaine ouverture du navigateur, cliquez sur <b>Activer l'extension</b> dans l'avis <b>Nouvelle extension ajoutée</b>."),
     ("SSDownload browser extension", "Extension de navigateur SSDownload"),
     ("SSDownload could not be started in the background", "SSDownload n'a pas pu être démarré en arrière-plan"),
@@ -5110,8 +5119,6 @@ static FR: &[(&str, &str)] = &[
     ("SSDownload started but the local channel did not become ready.", "SSDownload a démarré mais le canal local n'a pas été établi."),
     ("SSDownload update", "Mise à jour de SSDownload"),
     ("SSDownload update error", "Erreur de mise à jour de SSDownload"),
-    ("SSDownload — Download Manager", "SSDownload — Gestionnaire de téléchargements"),
-    ("SSDownload — native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload — gestionnaire natif de fichiers, vidéos et audio pour Windows\n\nssdownload.exe                         Ouvrir l'application de bureau\n  --background                          Démarrer dans la zone de notification\n  --data-dir DOSSIER                    Dossier de données utilisateur séparé\n  --add URL                             Ajouter à la file d'attente\n    --kind auto|file|video|audio\n    --output DOSSIER --name FICHIER\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id ID_UNIQUE\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OU_RFC3339\n  --request-json FICHIER                 Ajouter depuis un fichier JSON AddRequest\n  --action-json FICHIER                  Exécuter un fichier JSON d'action (par ex. une exploration de site)\n  --inspect URL                          Afficher les informations vidéo/audio en JSON\n  --status [--status-offset 0 --status-limit 100]   JSON de statut paginé\n  --diagnose [--diagnose-hours 24]      Résumé du journal des événements en JSON (site, code, résultat)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FICHIER                 Enregistrer un fichier JSON de paramètres\n  --install-tools [--update-tools]       Installer les outils média vérifiés\n  --setup-tools                          Installer les outils média manquants sans démarrer l'application\n  --browser-setup                        Ouvrir la configuration du navigateur\n  --remove-extension-policies            Supprimer l'ancienne stratégie d'extension du navigateur\n  --register-host | --unregister-host    Enregistrement Native Messaging\n  --enable-autostart | --disable-autostart   Démarrer à l'ouverture de session\n  --quit                                 Fermer l'application en cours d'exécution\n  --debug                                Mode développeur (ignore l'assistant et l'installation automatique des outils)\n  --version | --help\n\nDRM non pris en charge. Les limites réseau et de session dépendent du site.\n"),
     ("Safely extracting the verified LGPL archive", "Extraction sécurisée de l'archive LGPL vérifiée"),
     ("Safely extracting the verified archive", "Extraction sécurisée de l'archive vérifiée"),
     ("Save", "Enregistrer"),
@@ -5182,6 +5189,7 @@ static FR: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Lancement de l'installation ; l'application sera rouverte"),
     ("State", "État"),
     ("States", "États"),
+    ("Status of the media components for video/audio downloads:", "État des composants média pour les téléchargements vidéo/audio :"),
     ("Status:", "État :"),
     ("Stream integrity could not be verified", "L'intégrité du flux n'a pas pu être vérifiée"),
     ("Subtitle embedding is only supported for video output", "L'intégration des sous-titres n'est prise en charge que pour une sortie vidéo"),
@@ -5200,11 +5208,6 @@ static FR: &[(&str, &str)] = &[
     ("Text files (*.txt)|*.txt|All files (*.*)|*.*|", "Fichiers texte (*.txt)|*.txt|Tous les fichiers (*.*)|*.*|"),
     ("The Chrome Native Messaging manifest could not be written", "Le manifeste Native Messaging de Chrome n'a pas pu être écrit"),
     ("The Chrome extension folder could not be converted to a URL", "Le dossier de l'extension Chrome n'a pas pu être converti en URL"),
-    ("The Deno archive could not be extracted", "L'archive Deno n'a pas pu être extraite"),
-    ("The Deno version information could not be retrieved", "Les informations de version de Deno n'ont pas pu être récupérées"),
-    ("The FFmpeg archive could not be extracted", "L'archive FFmpeg n'a pas pu être extraite"),
-    ("The FFmpeg release does not include an upstream SHA-256 checksum file", "La version de FFmpeg ne comprend pas de fichier de somme de contrôle SHA-256 amont"),
-    ("The FFmpeg version information could not be retrieved", "Les informations de version de FFmpeg n'ont pas pu être récupérées"),
     ("The FTP connection was stopped while waiting for capacity", "La connexion FTP a été arrêtée pendant l'attente de capacité"),
     ("The FTP partial file's identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning", "L'identité du fichier partiel FTP n'a pas pu être prouvée ; il ne peut pas être réutilisé et la prochaine tentative recommence le téléchargement depuis le début"),
     ("The FTP server information could not be retrieved", "Les informations du serveur FTP n'ont pas pu être récupérées"),
@@ -5334,6 +5337,10 @@ static FR: &[(&str, &str)] = &[
     ("The connection count must be a number", "Le nombre de connexions doit être un nombre"),
     ("The connection timed out", "La connexion a expiré"),
     ("The connection was reset by the peer", "La connexion a été réinitialisée par le correspondant"),
+    ("The converter archive could not be extracted", "L'archive du convertisseur n'a pas pu être extraite"),
+    ("The converter release does not include an upstream SHA-256 checksum file", "La version du convertisseur ne comprend pas de fichier de somme de contrôle SHA-256 amont"),
+    ("The converter version information could not be retrieved", "Les informations de version du convertisseur n'ont pas pu être récupérées"),
+    ("The converter was not found in its archive", "Le convertisseur est introuvable dans son archive"),
     ("The cookie folder could not be created", "Le dossier des cookies n'a pas pu être créé"),
     ("The cookie limit for the selected source chain was exceeded", "La limite de cookies de la chaîne de source sélectionnée a été dépassée"),
     ("The cookie partition key does not match the source page context", "La clé de partition des cookies ne correspond pas au contexte de la page source"),
@@ -5488,11 +5495,19 @@ static FR: &[(&str, &str)] = &[
     ("The main window class could not be registered", "La classe de la fenêtre principale n'a pas pu être enregistrée"),
     ("The main window could not be created", "La fenêtre principale n'a pas pu être créée"),
     ("The manifest is not UTF-8", "Le manifeste n'est pas en UTF-8"),
+    ("The media component did not return valid media information", "Le composant média n'a pas renvoyé d'informations média valides"),
+    ("The media component failed without giving details", "Le composant média a échoué sans donner de détails"),
+    ("The media component printed no output file line", "Le composant média n'a pas affiché la ligne du fichier de sortie"),
+    ("The media component printed no post-processor line", "Le composant média n'a affiché aucune ligne de post-traitement"),
+    ("The media component printed no progress line", "Le composant média n'a affiché aucune ligne de progression"),
+    ("The media component version information could not be retrieved", "Les informations de version du composant média n'ont pas pu être récupérées"),
     ("The media components folder could not be created", "Le dossier des composants média n'a pas pu être créé"),
     ("The media could not be analyzed.", "Le média n'a pas pu être analysé."),
     ("The media extractor failed", "L'extracteur média a échoué"),
     ("The media file type is missing", "Le type de fichier média est manquant"),
     ("The media input worker stopped", "Le processus d'entrée média s'est arrêté"),
+    ("The media inspector did not print JSON", "L'inspecteur média n'a pas affiché de JSON"),
+    ("The media inspector was not found in the converter archive", "L'inspecteur média est introuvable dans l'archive du convertisseur"),
     ("The media is geo restricted, removed, or requires sign-in", "Le média est soumis à une restriction géographique, a été supprimé ou nécessite une connexion"),
     ("The media output queue limit was exceeded; the incomplete playlist was not published", "La limite de la file d'attente de sortie média a été dépassée ; la liste de lecture incomplète n'a pas été publiée"),
     ("The media process could not be assigned to the owned Windows Job object", "Le processus média n'a pas pu être affecté à l'objet Job Windows qui lui est propre"),
@@ -5616,6 +5631,9 @@ static FR: &[(&str, &str)] = &[
     ("The resume response did not prove the source identity; the partial file cannot be reused and the next attempt restarts the download from the beginning", "La réponse de reprise n'a pas prouvé l'identité de la source ; le fichier partiel ne peut pas être réutilisé et la prochaine tentative recommence le téléchargement depuis le début"),
     ("The retry backoff duration exceeds the supported time range", "La durée d'attente avant nouvelle tentative dépasse la plage de temps prise en charge"),
     ("The retry limit cannot exceed 20.", "Le nombre maximal de nouvelles tentatives ne peut pas dépasser 20."),
+    ("The runtime archive could not be extracted", "L'archive de l'environnement d'exécution n'a pas pu être extraite"),
+    ("The runtime version information could not be retrieved", "Les informations de version de l'environnement d'exécution n'ont pas pu être récupérées"),
+    ("The runtime was not found in its archive", "L'environnement d'exécution est introuvable dans son archive"),
     ("The same external subtitle cannot be selected more than once", "Le même sous-titre externe ne peut pas être sélectionné plus d'une fois"),
     ("The same libcurl transfer cannot wait for additional connection capacity", "Le même transfert libcurl ne peut pas attendre une capacité de connexion supplémentaire"),
     ("The same request id is already queued", "Le même identifiant de requête est déjà en file d'attente"),
@@ -5804,7 +5822,6 @@ static FR: &[(&str, &str)] = &[
     ("The work folder is missing", "Le dossier de travail est manquant"),
     ("The working folder contains a redirect", "Le dossier de travail contient une redirection"),
     ("The working folder is missing", "Le dossier de travail est manquant"),
-    ("The yt-dlp version information could not be retrieved", "Les informations de version de yt-dlp n'ont pas pu être récupérées"),
     ("Theme:", "Thème :"),
     ("There are no downloads to export.", "Il n'y a aucun téléchargement à exporter."),
     ("There is no active browser transfer for this job.", "Aucun transfert par le navigateur n'est actif pour cette tâche."),
@@ -5870,6 +5887,7 @@ static FR: &[(&str, &str)] = &[
     ("Verifying the downloaded executable files", "Vérification des fichiers exécutables téléchargés"),
     ("Verifying the update", "Vérification de la mise à jour"),
     ("Video", "Vidéo"),
+    ("Video - quality, tracks, subtitles", "Vidéo - qualité, pistes, sous-titres"),
     ("Video and audio inspection is disabled for your usage purpose.", "L'analyse vidéo et audio est désactivée pour votre mode d'utilisation."),
     ("Video and audio support could not be downloaded · Tools > Install media support", "La prise en charge vidéo et audio n'a pas pu être téléchargée · Outils > Installer la prise en charge des médias"),
     ("Video and audio support could not be downloaded. Try again via Tools > Install media support.", "La prise en charge vidéo et audio n'a pas pu être téléchargée. Réessayez via Outils > Installer la prise en charge des médias."),
@@ -5880,7 +5898,6 @@ static FR: &[(&str, &str)] = &[
     ("Video format id", "Identifiant du format vidéo"),
     ("Video or audio downloading is disabled in Settings.", "Le téléchargement de vidéos ou d'audio est désactivé dans les paramètres."),
     ("Video preferences", "Préférences vidéo"),
-    ("Video — quality, tracks, subtitles", "Vidéo — qualité, pistes, sous-titres"),
     ("Video/audio setup stopped because of an unexpected error.", "La configuration vidéo/audio s'est arrêtée à cause d'une erreur inattendue."),
     ("Video/audio support is already being prepared.", "La prise en charge vidéo/audio est déjà en cours de préparation."),
     ("Wait for the media analysis to finish first.", "Attendez d'abord la fin de l'analyse du média."),
@@ -5908,15 +5925,11 @@ static FR: &[(&str, &str)] = &[
     ("completed", "terminé"),
     ("converter", "convertisseur"),
     ("could not be decoded", "n'a pas pu être décodé"),
-    ("deno.exe was not found in the Deno archive", "deno.exe est introuvable dans l'archive Deno"),
     ("discovery", "découverte"),
     ("error", "erreur"),
     ("error detail truncated", "détail d'erreur tronqué"),
     ("errors", "erreurs"),
     ("failed", "échoué"),
-    ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe est introuvable dans l'archive FFmpeg"),
-    ("ffprobe did not print JSON", "ffprobe n'a pas affiché de JSON"),
-    ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe est introuvable dans l'archive FFmpeg"),
     ("file", "fichier"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "segment d'initialisation"),
@@ -5934,6 +5947,7 @@ static FR: &[(&str, &str)] = &[
     ("main playlist", "liste de lecture principale"),
     ("manual", "manuel"),
     ("media component", "composant média"),
+    ("media inspector", "inspecteur média"),
     ("media segment", "segment média"),
     ("media source", "source média"),
     ("not in the queue", "absent de la file d'attente"),
@@ -5962,12 +5976,6 @@ static FR: &[(&str, &str)] = &[
     ("update", "mise à jour"),
     ("verification", "vérification"),
     ("video", "vidéo"),
-    ("yt-dlp did not return valid JSON media information", "yt-dlp n'a pas renvoyé d'informations média JSON valides"),
-    ("yt-dlp failed without giving details", "yt-dlp a échoué sans donner de détails"),
-    ("yt-dlp printed no output file line", "yt-dlp n'a pas affiché la ligne du fichier de sortie"),
-    ("yt-dlp printed no post-processor line", "yt-dlp n'a affiché aucune ligne de post-traitement"),
-    ("yt-dlp printed no progress line", "yt-dlp n'a affiché aucune ligne de progression"),
-    ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "État de yt-dlp, FFmpeg et Deno pour les téléchargements vidéo/audio :"),
 ];
 
 static DE: &[(&str, &str)] = &[
@@ -6059,8 +6067,8 @@ static DE: &[(&str, &str)] = &[
     ("Add the clipboard's link from anywhere with Ctrl+Shift+D", "Link aus der Zwischenablage von überall mit Ctrl+Shift+D hinzufügen"),
     ("Address copied to the clipboard.", "Adresse in die Zwischenablage kopiert."),
     ("Advanced", "Erweitert"),
+    ("Advanced - queues, rules, crawler, sync, logs", "Erweitert - Warteschlangen, Regeln, Crawler, Sync, Protokolle"),
     ("Advanced options", "Erweiterte Optionen"),
-    ("Advanced — queues, rules, crawler, sync, logs", "Erweitert — Warteschlangen, Regeln, Crawler, Sync, Protokolle"),
     ("All", "Alle"),
     ("All download workers closed unexpectedly", "Alle Download-Worker wurden unerwartet beendet"),
     ("Also send over unencrypted HTTP", "Auch über unverschlüsseltes HTTP senden"),
@@ -6073,17 +6081,17 @@ static DE: &[(&str, &str)] = &[
     ("Apply", "Übernehmen"),
     ("Archives", "Archive"),
     ("Audio", "Audio"),
+    ("Audio - audio only from pages and links", "Audio - nur Ton aus Seiten und Links"),
     ("Audio conversion format:", "Audio-Konvertierungsformat:"),
     ("Audio downloads are disabled in Settings.", "Audio-Downloads sind in den Einstellungen deaktiviert."),
     ("Audio format id", "Audioformat-ID"),
     ("Audio language", "Audiosprache"),
     ("Audio only", "Nur Audio"),
     ("Audio tracks (Ctrl/Shift; empty = original):", "Audiospuren (Ctrl/Shift; leer = Original):"),
-    ("Audio — audio only from pages and links", "Audio — nur Ton aus Seiten und Links"),
     ("Automatic", "Automatisch"),
     ("Awaiting source", "Warte auf Quelle"),
     ("Basic", "Einfach"),
-    ("Basic — essential downloads and settings", "Einfach — Downloads und wichtige Einstellungen"),
+    ("Basic - essential downloads and settings", "Einfach - Downloads und wichtige Einstellungen"),
     ("Batch download...", "Stapel-Download..."),
     ("Battery saver is on: downloads are on hold", "Energiesparmodus aktiv: Downloads werden zurückgehalten"),
     ("Behaviour", "Verhalten"),
@@ -6117,7 +6125,7 @@ static DE: &[(&str, &str)] = &[
     ("Choose how you want to use it. You can change this later in Settings.", "Wählen Sie, wie Sie es verwenden möchten. Sie können dies später in den Einstellungen ändern."),
     ("Choose only one operation per call.", "Wählen Sie pro Aufruf nur einen Vorgang."),
     ("Classic", "Klassisch"),
-    ("Classic — the plain Windows look", "Klassisch — das schlichte Windows-Aussehen"),
+    ("Classic - the plain Windows look", "Klassisch - das schlichte Windows-Aussehen"),
     ("Cleanup", "Bereinigung"),
     ("Close", "Schließen"),
     ("Close the browser completely and reopen it, or add the extension from the Chrome Web Store. Edge installs Chrome Web Store extensions too.", "Schließen Sie den Browser vollständig und öffnen Sie ihn erneut, oder installieren Sie die Erweiterung aus dem Chrome Web Store. Edge installiert Erweiterungen aus dem Chrome Web Store ebenfalls."),
@@ -6152,8 +6160,8 @@ static DE: &[(&str, &str)] = &[
     ("Copy address", "Adresse kopieren"),
     ("Copy addresses", "Adressen kopieren"),
     ("Could not be deleted; try again", "Konnte nicht gelöscht werden; versuchen Sie es erneut"),
-    ("Could not capture yt-dlp stderr", "yt-dlp-stderr konnte nicht erfasst werden"),
-    ("Could not capture yt-dlp stdout", "yt-dlp-stdout konnte nicht erfasst werden"),
+    ("Could not capture the media component's error output", "Die Fehlerausgabe der Medienkomponente konnte nicht erfasst werden"),
+    ("Could not capture the media component's output", "Die Ausgabe der Medienkomponente konnte nicht erfasst werden"),
     ("Could not download the external subtitle", "Der externe Untertitel konnte nicht heruntergeladen werden"),
     ("Could not move the browser media output to its target", "Die Browser-Mediendatei konnte nicht an ihr Ziel verschoben werden"),
     ("Could not move the selected stream output into the working file", "Die ausgewählte Stream-Ausgabe konnte nicht in die Arbeitsdatei verschoben werden"),
@@ -6221,7 +6229,7 @@ static DE: &[(&str, &str)] = &[
     ("Earliest start (local time, YYYY-MM-DD HH:MM):", "Frühester Start (Ortszeit, JJJJ-MM-TT HH:MM):"),
     ("Embedded and external subtitles cannot be mixed in one request.", "Eingebettete und externe Untertitel können nicht in einer Anfrage gemischt werden."),
     ("Embedded subtitles (Ctrl/Shift, multiple):", "Eingebettete Untertitel (Ctrl/Shift, mehrere):"),
-    ("Enable experimental browser transfer — memory and integrity limits apply to large files", "Experimentelle Browser-Übertragung aktivieren — Speicher- und Integritätsgrenzen gelten für große Dateien"),
+    ("Enable experimental browser transfer: memory and integrity limits apply to large files", "Experimentelle Browser-Übertragung aktivieren: Speicher- und Integritätsgrenzen gelten für große Dateien"),
     ("End (HH:MM):", "Ende (HH:MM):"),
     ("End:", "Ende:"),
     ("Enter a single URL to download a video.", "Geben Sie eine einzelne URL ein, um ein Video herunterzuladen."),
@@ -6257,12 +6265,12 @@ static DE: &[(&str, &str)] = &[
     ("Failed", "Fehlgeschlagen"),
     ("Fetching current version information", "Aktuelle Versionsinformationen werden abgerufen"),
     ("File", "Datei"),
+    ("File - regular file links", "Datei - normale Dateilinks"),
     ("File and media download manager for Windows.", "Datei- und Medien-Download-Manager für Windows."),
     ("File downloads are disabled in Settings.", "Datei-Downloads sind in den Einstellungen deaktiviert."),
     ("File name (optional, for a single URL):", "Dateiname (optional, für eine einzelne URL):"),
     ("File name:", "Dateiname:"),
     ("File size:", "Dateigröße:"),
-    ("File — regular file links", "Datei — normale Dateilinks"),
     ("Filter", "Filter"),
     ("Finish live recordin&g and keep it", "Live-Aufnahme beenden und be&halten"),
     ("Finish live recording and keep it", "Live-Aufnahme beenden und behalten"),
@@ -6334,6 +6342,7 @@ static DE: &[(&str, &str)] = &[
     ("Later", "Später"),
     ("Latest events (newest at bottom):", "Neueste Ereignisse (neueste unten):"),
     ("Legacy subtitle selection and explicit subtitle tracks cannot be combined.", "Die ältere Untertitelauswahl und ausdrückliche Untertitelspuren können nicht kombiniert werden."),
+    ("Licenses", "Lizenzen"),
     ("Limit daily working hours", "Tägliche Arbeitszeiten begrenzen"),
     ("Link found", "Link gefunden"),
     ("Live recording finished; processing the recorded part", "Live-Aufnahme beendet; aufgenommener Teil wird verarbeitet"),
@@ -6395,7 +6404,7 @@ static DE: &[(&str, &str)] = &[
     ("Minimize to the notification area when closing the window", "Beim Schließen des Fensters in den Infobereich minimieren"),
     ("Missing components are installed.", "Fehlende Komponenten wurden installiert."),
     ("Modern", "Modern"),
-    ("Modern — the Windows 11 look", "Modern — das Aussehen von Windows 11"),
+    ("Modern - the Windows 11 look", "Modern - das Aussehen von Windows 11"),
     ("Move selected job", "Auftrag verschieben"),
     ("Move to bottom\tAlt+End", "Nach unten verschieben\tAlt+End"),
     ("Move to queue", "In Warteschlange verschieben"),
@@ -6425,7 +6434,7 @@ static DE: &[(&str, &str)] = &[
     ("No HTTP/HTTPS link was found in the dropped text.", "Im abgelegten Text wurde kein HTTP/HTTPS-Link gefunden."),
     ("No MP4-compatible audio codec was found in the selected language; choose MKV", "In der ausgewählten Sprache wurde kein MP4-kompatibler Audio-Codec gefunden; wählen Sie MKV"),
     ("No MP4-compatible video codec was found at the selected resolution; choose MKV", "Bei der ausgewählten Auflösung wurde kein MP4-kompatibler Video-Codec gefunden; wählen Sie MKV"),
-    ("No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release", "Im neuesten BtbN-Release wurde keine ZIP-Datei eines FFmpeg-Release-Zweigs (Windows x64, LGPL) gefunden"),
+    ("No Windows x64 LGPL converter release-branch ZIP asset was found in the latest upstream release", "Im neuesten Upstream-Release wurde keine ZIP-Datei eines Release-Zweigs des Konverters (Windows x64, LGPL) gefunden"),
     ("No active completion countdown.", "Kein aktiver Countdown bis zum Abschluss."),
     ("No active downloads.", "Keine aktiven Downloads."),
     ("No capacity for the network connection became free in time", "Für die Netzwerkverbindung wurde nicht rechtzeitig Kapazität frei"),
@@ -6446,7 +6455,7 @@ static DE: &[(&str, &str)] = &[
     ("No proxy", "Kein Proxy"),
     ("No refreshable source page was saved for this job.", "Für diesen Auftrag wurde keine aktualisierbare Quellseite gespeichert."),
     ("No running SSDownload instance was found", "Keine laufende SSDownload-Instanz gefunden"),
-    ("No suitable stable yt-dlp release was found", "Es wurde kein geeignetes stabiles yt-dlp-Release gefunden"),
+    ("No suitable stable media component release was found", "Es wurde kein geeignetes stabiles Release der Medienkomponente gefunden"),
     ("No tool information yet. The install button downloads safe upstream versions for anything missing.", "Noch keine Werkzeuginformationen. Die Schaltfläche „Fehlende installieren“ lädt für alles Fehlende sichere Upstream-Versionen herunter."),
     ("Normal", "Normal"),
     ("Not all selected audio streams were found in the browser transfer", "Nicht alle ausgewählten Audio-Streams wurden in der Browser-Übertragung gefunden"),
@@ -6509,7 +6518,7 @@ static DE: &[(&str, &str)] = &[
     ("Priority:", "Priorität:"),
     ("Processing", "Wird verarbeitet"),
     ("Processing media", "Medien werden verarbeitet"),
-    ("Processing with FFmpeg", "Verarbeitung mit FFmpeg"),
+    ("Processing the media", "Medien werden verarbeitet"),
     ("Program arguments (JSON)", "Programmargumente (JSON)"),
     ("Programs", "Programme"),
     ("Progress", "Fortschritt"),
@@ -6589,6 +6598,8 @@ static DE: &[(&str, &str)] = &[
     ("SHA-256 verified", "SHA-256 geprüft"),
     ("SOCKS5 authentication was rejected", "SOCKS5-Authentifizierung wurde abgelehnt"),
     ("SSD-TOL-002 The tool archive exceeds the 1 GiB limit", "SSD-TOL-002 Das Werkzeugarchiv überschreitet das Limit von 1 GiB"),
+    ("SSDownload - Download Manager", "SSDownload - Download-Manager"),
+    ("SSDownload - native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload - nativer Windows-Datei-, Video- und Audio-Manager\n\nssdownload.exe                         Desktop öffnen\n  --background                          Im Infobereich starten\n  --data-dir ORDNER                     Separater Benutzerdatenordner\n  --add URL                             Zur Warteschlange hinzufügen\n    --kind auto|file|video|audio\n    --output ORDNER --name DATEI\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id EINDEUTIGE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle SPRACHE --playlist --referer URL --start-at UNIX_ODER_RFC3339\n  --request-json DATEI                   Aus einer AddRequest-JSON-Datei hinzufügen\n  --action-json DATEI                    Eine Aktions-JSON-Datei ausführen (z. B. einen Website-Crawl)\n  --inspect URL                          Video- und Audioinformationen als JSON ausgeben\n  --status [--status-offset 0 --status-limit 100]   Seitenweises Status-JSON\n  --diagnose [--diagnose-hours 24]      Zusammenfassung des Ereignisprotokolls als JSON (Website, Code, Ergebnis)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings DATEI                   Eine Einstellungs-JSON-Datei speichern\n  --install-tools [--update-tools]       Die geprüften Medienwerkzeuge installieren\n  --setup-tools                          Fehlende Medienwerkzeuge installieren, ohne die App zu starten\n  --browser-setup                        Browser-Einrichtung öffnen\n  --remove-extension-policies            Die alte Browser-Erweiterungsrichtlinie entfernen\n  --register-host | --unregister-host    Native-Messaging-Registrierung\n  --enable-autostart | --disable-autostart   Start bei der Anmeldung\n  --quit                                 Die laufende App beenden\n  --debug                                Entwicklermodus (überspringt den Assistenten und die automatische Werkzeuginstallation)\n  --version | --help\n\nDRM wird nicht unterstützt. Netzwerk- und Sitzungsgrenzen hängen von der Website ab.\n"),
     ("SSDownload adds the extension to Chrome and Edge itself. The next time you open the browser, click <b>Enable extension</b> on the <b>New extension added</b> notice.", "SSDownload fügt die Erweiterung selbst zu Chrome und Edge hinzu. Klicken Sie beim nächsten Öffnen des Browsers im Hinweis <b>Neue Erweiterung hinzugefügt</b> auf <b>Erweiterung aktivieren</b>."),
     ("SSDownload browser extension", "SSDownload-Browsererweiterung"),
     ("SSDownload could not be started in the background", "SSDownload konnte nicht im Hintergrund gestartet werden"),
@@ -6599,8 +6610,6 @@ static DE: &[(&str, &str)] = &[
     ("SSDownload started but the local channel did not become ready.", "SSDownload wurde gestartet, der lokale Kanal ist aber nicht bereit."),
     ("SSDownload update", "SSDownload-Update"),
     ("SSDownload update error", "SSDownload-Update-Fehler"),
-    ("SSDownload — Download Manager", "SSDownload — Download-Manager"),
-    ("SSDownload — native Windows file/video/audio manager\n\nssdownload.exe                         Open the desktop\n  --background                          Start in the system tray\n  --data-dir DIR                        Separate user data folder\n  --add URL                             Add to the queue\n    --kind auto|file|video|audio\n    --output DIR --name FILE\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id UNIQUE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle LANG --playlist --referer URL --start-at UNIX_OR_RFC3339\n  --request-json FILE                    Add from an AddRequest JSON file\n  --action-json FILE                     Run an action JSON file (e.g. a site crawl)\n  --inspect URL                          Print video/audio information as JSON\n  --status [--status-offset 0 --status-limit 100]   Paged status JSON\n  --diagnose [--diagnose-hours 24]      Event log summary JSON (site, code, outcome)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings FILE                    Save a Settings JSON file\n  --install-tools [--update-tools]       Install the verified media tools\n  --setup-tools                          Install missing media tools without starting the app\n  --browser-setup                        Open the browser setup\n  --remove-extension-policies            Remove the legacy browser extension policy\n  --register-host | --unregister-host    Native Messaging registration\n  --enable-autostart | --disable-autostart   Start at sign-in\n  --quit                                 Close the running app\n  --debug                                Developer mode (skips the wizard and the automatic tool install)\n  --version | --help\n\nDRM is not supported. Network and session limits depend on the site.\n", "SSDownload — nativer Windows-Datei-, Video- und Audio-Manager\n\nssdownload.exe                         Desktop öffnen\n  --background                          Im Infobereich starten\n  --data-dir ORDNER                     Separater Benutzerdatenordner\n  --add URL                             Zur Warteschlange hinzufügen\n    --kind auto|file|video|audio\n    --output ORDNER --name DATEI\n    --connections 1..16 --sha256 HEX\n    --container mp4|mkv --max-height 1080\n    --request-id EINDEUTIGE_ID\n    --format FORMAT_ID --audio-format best|mp3|m4a|opus|flac\n    --subtitle SPRACHE --playlist --referer URL --start-at UNIX_ODER_RFC3339\n  --request-json DATEI                   Aus einer AddRequest-JSON-Datei hinzufügen\n  --action-json DATEI                    Eine Aktions-JSON-Datei ausführen (z. B. einen Website-Crawl)\n  --inspect URL                          Video- und Audioinformationen als JSON ausgeben\n  --status [--status-offset 0 --status-limit 100]   Seitenweises Status-JSON\n  --diagnose [--diagnose-hours 24]      Zusammenfassung des Ereignisprotokolls als JSON (Website, Code, Ergebnis)\n  --pause ID | --resume ID | --remove ID [--delete-file]\n  --pause-all | --resume-all | --clear-completed\n  --set-settings DATEI                   Eine Einstellungs-JSON-Datei speichern\n  --install-tools [--update-tools]       Die geprüften Medienwerkzeuge installieren\n  --setup-tools                          Fehlende Medienwerkzeuge installieren, ohne die App zu starten\n  --browser-setup                        Browser-Einrichtung öffnen\n  --remove-extension-policies            Die alte Browser-Erweiterungsrichtlinie entfernen\n  --register-host | --unregister-host    Native-Messaging-Registrierung\n  --enable-autostart | --disable-autostart   Start bei der Anmeldung\n  --quit                                 Die laufende App beenden\n  --debug                                Entwicklermodus (überspringt den Assistenten und die automatische Werkzeuginstallation)\n  --version | --help\n\nDRM wird nicht unterstützt. Netzwerk- und Sitzungsgrenzen hängen von der Website ab.\n"),
     ("Safely extracting the verified LGPL archive", "Das geprüfte LGPL-Archiv wird sicher entpackt"),
     ("Safely extracting the verified archive", "Das geprüfte Archiv wird sicher entpackt"),
     ("Save", "Speichern"),
@@ -6671,6 +6680,7 @@ static DE: &[(&str, &str)] = &[
     ("Starting the installation; the application will reopen", "Installation wird gestartet; die Anwendung wird wieder geöffnet"),
     ("State", "Status"),
     ("States", "Zustände"),
+    ("Status of the media components for video/audio downloads:", "Status der Medienkomponenten für Video- und Audio-Downloads:"),
     ("Status:", "Status:"),
     ("Stream integrity could not be verified", "Die Integrität des Streams konnte nicht geprüft werden"),
     ("Subtitle embedding is only supported for video output", "Das Einbetten von Untertiteln wird nur für Videoausgabe unterstützt"),
@@ -6689,11 +6699,6 @@ static DE: &[(&str, &str)] = &[
     ("Text files (*.txt)|*.txt|All files (*.*)|*.*|", "Textdateien (*.txt)|*.txt|Alle Dateien (*.*)|*.*|"),
     ("The Chrome Native Messaging manifest could not be written", "Das Chrome-Native-Messaging-Manifest konnte nicht geschrieben werden"),
     ("The Chrome extension folder could not be converted to a URL", "Der Chrome-Erweiterungsordner konnte nicht in eine URL umgewandelt werden"),
-    ("The Deno archive could not be extracted", "Das Deno-Archiv konnte nicht entpackt werden"),
-    ("The Deno version information could not be retrieved", "Die Deno-Versionsinformationen konnten nicht abgerufen werden"),
-    ("The FFmpeg archive could not be extracted", "Das FFmpeg-Archiv konnte nicht entpackt werden"),
-    ("The FFmpeg release does not include an upstream SHA-256 checksum file", "Das FFmpeg-Release enthält keine Upstream-SHA-256-Prüfsummendatei"),
-    ("The FFmpeg version information could not be retrieved", "Die FFmpeg-Versionsinformationen konnten nicht abgerufen werden"),
     ("The FTP connection was stopped while waiting for capacity", "Die FTP-Verbindung wurde beim Warten auf freie Kapazität gestoppt"),
     ("The FTP partial file's identity could not be proven; it cannot be reused and the next attempt restarts the download from the beginning", "Die Identität der unvollständigen FTP-Datei konnte nicht nachgewiesen werden; sie kann nicht wiederverwendet werden, und der nächste Versuch startet den Download von vorn"),
     ("The FTP server information could not be retrieved", "Die FTP-Serverinformationen konnten nicht abgerufen werden"),
@@ -6823,6 +6828,10 @@ static DE: &[(&str, &str)] = &[
     ("The connection count must be a number", "Die Anzahl der Verbindungen muss eine Zahl sein"),
     ("The connection timed out", "Zeitüberschreitung bei der Verbindung"),
     ("The connection was reset by the peer", "Die Verbindung wurde von der Gegenstelle zurückgesetzt"),
+    ("The converter archive could not be extracted", "Das Archiv des Konverters konnte nicht entpackt werden"),
+    ("The converter release does not include an upstream SHA-256 checksum file", "Das Release des Konverters enthält keine Upstream-SHA-256-Prüfsummendatei"),
+    ("The converter version information could not be retrieved", "Die Versionsinformationen des Konverters konnten nicht abgerufen werden"),
+    ("The converter was not found in its archive", "Der Konverter wurde in seinem Archiv nicht gefunden"),
     ("The cookie folder could not be created", "Der Cookie-Ordner konnte nicht erstellt werden"),
     ("The cookie limit for the selected source chain was exceeded", "Das Cookie-Limit für die ausgewählte Quellenkette wurde überschritten"),
     ("The cookie partition key does not match the source page context", "Der Cookie-Partitionsschlüssel stimmt nicht mit dem Kontext der Quellseite überein"),
@@ -6977,11 +6986,19 @@ static DE: &[(&str, &str)] = &[
     ("The main window class could not be registered", "Die Fensterklasse des Hauptfensters konnte nicht registriert werden"),
     ("The main window could not be created", "Das Hauptfenster konnte nicht erstellt werden"),
     ("The manifest is not UTF-8", "Das Manifest ist nicht UTF-8"),
+    ("The media component did not return valid media information", "Die Medienkomponente hat keine gültigen Medieninformationen zurückgegeben"),
+    ("The media component failed without giving details", "Die Medienkomponente ist ohne Details fehlgeschlagen"),
+    ("The media component printed no output file line", "Die Medienkomponente hat keine Zeile mit der Ausgabedatei ausgegeben"),
+    ("The media component printed no post-processor line", "Die Medienkomponente hat keine Zeile der Nachbearbeitung ausgegeben"),
+    ("The media component printed no progress line", "Die Medienkomponente hat keine Fortschrittszeile ausgegeben"),
+    ("The media component version information could not be retrieved", "Die Versionsinformationen der Medienkomponente konnten nicht abgerufen werden"),
     ("The media components folder could not be created", "Der Ordner für Medienkomponenten konnte nicht erstellt werden"),
     ("The media could not be analyzed.", "Die Medien konnten nicht analysiert werden."),
     ("The media extractor failed", "Der Medien-Extraktor ist fehlgeschlagen"),
     ("The media file type is missing", "Der Medien-Dateityp fehlt"),
     ("The media input worker stopped", "Der Worker für die Medieneingabe wurde gestoppt"),
+    ("The media inspector did not print JSON", "Der Medieninspektor hat kein JSON ausgegeben"),
+    ("The media inspector was not found in the converter archive", "Der Medieninspektor wurde im Archiv des Konverters nicht gefunden"),
     ("The media is geo restricted, removed, or requires sign-in", "Die Medien sind geografisch eingeschränkt, entfernt oder erfordern eine Anmeldung"),
     ("The media output queue limit was exceeded; the incomplete playlist was not published", "Das Limit der Medienausgabe-Warteschlange wurde überschritten; die unvollständige Playlist wurde nicht veröffentlicht"),
     ("The media process could not be assigned to the owned Windows Job object", "Der Medienprozess konnte nicht dem eigenen Windows-Job-Objekt zugewiesen werden"),
@@ -7105,6 +7122,9 @@ static DE: &[(&str, &str)] = &[
     ("The resume response did not prove the source identity; the partial file cannot be reused and the next attempt restarts the download from the beginning", "Die Antwort zur Fortsetzung hat die Quellidentität nicht nachgewiesen; die unvollständige Datei kann nicht wiederverwendet werden, und der nächste Versuch startet den Download von vorn"),
     ("The retry backoff duration exceeds the supported time range", "Die Dauer des Wiederholungsabstands überschreitet den unterstützten Zeitbereich"),
     ("The retry limit cannot exceed 20.", "Das Wiederholungslimit darf 20 nicht überschreiten."),
+    ("The runtime archive could not be extracted", "Das Archiv der Laufzeitumgebung konnte nicht entpackt werden"),
+    ("The runtime version information could not be retrieved", "Die Versionsinformationen der Laufzeitumgebung konnten nicht abgerufen werden"),
+    ("The runtime was not found in its archive", "Die Laufzeitumgebung wurde in ihrem Archiv nicht gefunden"),
     ("The same external subtitle cannot be selected more than once", "Derselbe externe Untertitel kann nicht mehrfach ausgewählt werden"),
     ("The same libcurl transfer cannot wait for additional connection capacity", "Dieselbe libcurl-Übertragung kann nicht auf zusätzliche Verbindungskapazität warten"),
     ("The same request id is already queued", "Dieselbe Anfrage-ID ist bereits in der Warteschlange"),
@@ -7293,7 +7313,6 @@ static DE: &[(&str, &str)] = &[
     ("The work folder is missing", "Der Arbeitsordner fehlt"),
     ("The working folder contains a redirect", "Der Arbeitsordner enthält eine Umleitung"),
     ("The working folder is missing", "Der Arbeitsordner fehlt"),
-    ("The yt-dlp version information could not be retrieved", "Die yt-dlp-Versionsinformationen konnten nicht abgerufen werden"),
     ("Theme:", "Design:"),
     ("There are no downloads to export.", "Es gibt keine Downloads zum Exportieren."),
     ("There is no active browser transfer for this job.", "Für diesen Auftrag gibt es keine aktive Browser-Übertragung."),
@@ -7359,6 +7378,7 @@ static DE: &[(&str, &str)] = &[
     ("Verifying the downloaded executable files", "Die heruntergeladenen ausführbaren Dateien werden geprüft"),
     ("Verifying the update", "Update wird geprüft"),
     ("Video", "Video"),
+    ("Video - quality, tracks, subtitles", "Video - Qualität, Spuren, Untertitel"),
     ("Video and audio inspection is disabled for your usage purpose.", "Die Video- und Audioanalyse ist für Ihren Verwendungszweck deaktiviert."),
     ("Video and audio support could not be downloaded · Tools > Install media support", "Video- und Audiounterstützung konnte nicht heruntergeladen werden · Extras > Medienunterstützung installieren"),
     ("Video and audio support could not be downloaded. Try again via Tools > Install media support.", "Video- und Audiounterstützung konnte nicht heruntergeladen werden. Versuchen Sie es erneut über Extras > Medienunterstützung installieren."),
@@ -7369,7 +7389,6 @@ static DE: &[(&str, &str)] = &[
     ("Video format id", "Videoformat-ID"),
     ("Video or audio downloading is disabled in Settings.", "Das Herunterladen von Video oder Audio ist in den Einstellungen deaktiviert."),
     ("Video preferences", "Video-Einstellungen"),
-    ("Video — quality, tracks, subtitles", "Video — Qualität, Spuren, Untertitel"),
     ("Video/audio setup stopped because of an unexpected error.", "Die Einrichtung der Video- und Audiounterstützung wurde wegen eines unerwarteten Fehlers beendet."),
     ("Video/audio support is already being prepared.", "Video- und Audiounterstützung wird bereits vorbereitet."),
     ("Wait for the media analysis to finish first.", "Warten Sie zuerst, bis die Medienanalyse abgeschlossen ist."),
@@ -7397,15 +7416,11 @@ static DE: &[(&str, &str)] = &[
     ("completed", "abgeschlossen"),
     ("converter", "Konverter"),
     ("could not be decoded", "konnte nicht dekodiert werden"),
-    ("deno.exe was not found in the Deno archive", "deno.exe wurde im Deno-Archiv nicht gefunden"),
     ("discovery", "Erkennung"),
     ("error", "Fehler"),
     ("error detail truncated", "Fehlerdetail gekürzt"),
     ("errors", "Fehler"),
     ("failed", "fehlgeschlagen"),
-    ("ffmpeg.exe was not found in the FFmpeg archive", "ffmpeg.exe wurde im FFmpeg-Archiv nicht gefunden"),
-    ("ffprobe did not print JSON", "ffprobe hat kein JSON ausgegeben"),
-    ("ffprobe.exe was not found in the FFmpeg archive", "ffprobe.exe wurde im FFmpeg-Archiv nicht gefunden"),
     ("file", "Datei"),
     ("https://example.com/file[001-010].zip", "https://example.com/file[001-010].zip"),
     ("initialization segment", "Initialisierungssegment"),
@@ -7423,6 +7438,7 @@ static DE: &[(&str, &str)] = &[
     ("main playlist", "Haupt-Playlist"),
     ("manual", "manuell"),
     ("media component", "Medienkomponente"),
+    ("media inspector", "Medieninspektor"),
     ("media segment", "Medien-Segment"),
     ("media source", "Medienquelle"),
     ("not in the queue", "nicht in der Warteschlange"),
@@ -7451,12 +7467,6 @@ static DE: &[(&str, &str)] = &[
     ("update", "Update"),
     ("verification", "Prüfung"),
     ("video", "Video"),
-    ("yt-dlp did not return valid JSON media information", "yt-dlp hat keine gültigen JSON-Medieninformationen zurückgegeben"),
-    ("yt-dlp failed without giving details", "yt-dlp ist ohne Details fehlgeschlagen"),
-    ("yt-dlp printed no output file line", "yt-dlp hat keine Zeile mit der Ausgabedatei ausgegeben"),
-    ("yt-dlp printed no post-processor line", "yt-dlp hat keine Zeile der Nachbearbeitung ausgegeben"),
-    ("yt-dlp printed no progress line", "yt-dlp hat keine Fortschrittszeile ausgegeben"),
-    ("yt-dlp, FFmpeg and Deno status for video/audio downloads:", "Status von yt-dlp, FFmpeg und Deno für Video- und Audio-Downloads:"),
 ];
 
 #[doc(hidden)]
@@ -7561,14 +7571,14 @@ macro_rules! __ui_template_ar {
     ("Diagnostic package ready. Folder: {0} · ZIP: {1}") => {
         "حزمة التشخيص جاهزة. المجلد: {0} · ZIP: {1}"
     };
+    ("Download - {0}") => {
+        "تنزيل - {0}"
+    };
+    ("Download - {0} items") => {
+        "تنزيل - العناصر: {0}"
+    };
     ("Download not found: {id}") => {
         "لم يُعثر على التنزيل: {id}"
-    };
-    ("Download — {0}") => {
-        "تنزيل — {0}"
-    };
-    ("Download — {0} items") => {
-        "تنزيل — العناصر: {0}"
     };
     ("Downloadable video options could not be verified for this source.{status}") => {
         "تعذّر التحقق من خيارات الفيديو القابلة للتنزيل لهذا المصدر.{status}"
@@ -7581,9 +7591,6 @@ macro_rules! __ui_template_ar {
     };
     ("Error: {message}\r\n") => {
         "خطأ: {message}\r\n"
-    };
-    ("FFmpeg did not generate the test clip ({0}): {1}") => {
-        "لم يُنشئ FFmpeg مقطع الاختبار ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "نقل FTP غير مكتمل: {bytes}/{total} بايت"
@@ -7660,11 +7667,11 @@ macro_rules! __ui_template_ar {
     ("Missing value for {flag}") => {
         "القيمة مفقودة لـ {flag}"
     };
-    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
-        "لا يوجد إصدار مستقر من Deno {0}.x ضمن أحدث {1} إصدارًا من Deno؛ هذا الإصدار من التطبيق مرتبط بإصدار Deno قديم جدًا"
+    ("No stable release of the runtime {0}.x is among the newest {1} releases; this version of the application is tied to a runtime version that is too old") => {
+        "لا يوجد إصدار مستقر من بيئة التشغيل {0}.x ضمن أحدث {1} إصدارًا؛ هذا الإصدار من التطبيق مرتبط بإصدار قديم جدًا من بيئة التشغيل"
     };
-    ("No stable release of Deno {0}.x was found") => {
-        "لم يُعثر على إصدار مستقر من Deno {0}.x"
+    ("No stable release of the runtime {0}.x was found") => {
+        "لم يُعثر على إصدار مستقر من بيئة التشغيل {0}.x"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "لم يُعثر على SHA-256 صالح لـ {filename} في ملف المجموع الاختباري الأصلي"
@@ -7840,6 +7847,9 @@ macro_rules! __ui_template_ar {
     ("The completion action could not be started: {error}") => {
         "تعذّر بدء إجراء الاكتمال: {error}"
     };
+    ("The converter did not generate the test clip ({0}): {1}") => {
+        "لم يُنشئ المحوّل مقطع الاختبار ({0}): {1}"
+    };
     ("The damaged database could not be moved aside: {0}") => {
         "تعذّر نقل قاعدة البيانات التالفة جانبًا: {0}"
     };
@@ -7957,8 +7967,14 @@ macro_rules! __ui_template_ar {
     ("The media analysis output exceeded the {0} MB limit") => {
         "تجاوزت مخرجات تحليل الوسائط حد {0} MB"
     };
+    ("The media component failed ({0}): {1}") => {
+        "فشل مكوّن الوسائط ({0}): {1}"
+    };
     ("The media could not be queued: {e:#}") => {
         "تعذّرت إضافة الوسائط إلى قائمة الانتظار: {e:#}"
+    };
+    ("The media inspector could not read the output ({0})") => {
+        "تعذّرت على فاحص الوسائط قراءة المخرجات ({0})"
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "تعذّر بدء عملية الوسائط بعد ربطها بـ Windows Job (NTSTATUS 0x{0:08x})"
@@ -8161,9 +8177,6 @@ macro_rules! __ui_template_ar {
     ("expected {0}, received {1}") => {
         "المتوقع {0}، والمستلم {1}"
     };
-    ("ffprobe could not read the output ({0})") => {
-        "تعذّرت على ffprobe قراءة المخرجات ({0})"
-    };
     ("the local channel did not answer for {0} seconds") => {
         "لم تستجب القناة المحلية خلال {0} ث"
     };
@@ -8175,9 +8188,6 @@ macro_rules! __ui_template_ar {
     };
     ("the output file {0} does not exist") => {
         "ملف المخرجات {0} غير موجود"
-    };
-    ("yt-dlp failed ({0}): {1}") => {
-        "فشل yt-dlp ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  الحالة: {1}\r\n  الإصدار: {2}\r\n  الموقع: {3}\r\n\r\n"
@@ -8242,8 +8252,8 @@ macro_rules! __ui_template_ar {
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "العناوين الموجودة بالفعل في قائمة التنزيلات: {duplicates}.\n\nهل تريد استخدام المهام الموجودة، أم تنزيل نسخ جديدة؟"
     };
-    ("{id} — not in the queue\r\n") => {
-        "{id} — ليست في قائمة الانتظار\r\n"
+    ("{id}: not in the queue\r\n") => {
+        "{id}: ليست في قائمة الانتظار\r\n"
     };
     ("{kind} downloads are disabled for your usage purpose. Enable them in Settings > Usage purpose.") => {
         "تنزيلات {kind} معطّلة لغرض الاستخدام الخاص بك. فعّلها من الإعدادات > غرض الاستخدام."
@@ -8418,14 +8428,14 @@ macro_rules! __ui_template_es {
     ("Diagnostic package ready. Folder: {0} · ZIP: {1}") => {
         "Paquete de diagnóstico listo. Carpeta: {0} · ZIP: {1}"
     };
+    ("Download - {0}") => {
+        "Descarga - {0}"
+    };
+    ("Download - {0} items") => {
+        "Descarga - {0} elementos"
+    };
     ("Download not found: {id}") => {
         "No se encontró la descarga: {id}"
-    };
-    ("Download — {0}") => {
-        "Descarga — {0}"
-    };
-    ("Download — {0} items") => {
-        "Descarga — {0} elementos"
     };
     ("Downloadable video options could not be verified for this source.{status}") => {
         "No se han podido verificar las opciones de vídeo descargables para este origen.{status}"
@@ -8438,9 +8448,6 @@ macro_rules! __ui_template_es {
     };
     ("Error: {message}\r\n") => {
         "Error: {message}\r\n"
-    };
-    ("FFmpeg did not generate the test clip ({0}): {1}") => {
-        "FFmpeg no generó el clip de prueba ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transferencia FTP incompleta: {bytes}/{total} bytes"
@@ -8517,11 +8524,11 @@ macro_rules! __ui_template_es {
     ("Missing value for {flag}") => {
         "Falta el valor de {flag}"
     };
-    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
-        "Ninguna versión estable de Deno {0}.x figura entre las {1} versiones más recientes de Deno; esta versión de la aplicación está vinculada a una versión de Deno demasiado antigua"
+    ("No stable release of the runtime {0}.x is among the newest {1} releases; this version of the application is tied to a runtime version that is too old") => {
+        "Ninguna versión estable del entorno de ejecución {0}.x figura entre las {1} versiones más recientes; esta versión de la aplicación está vinculada a una versión del entorno de ejecución demasiado antigua"
     };
-    ("No stable release of Deno {0}.x was found") => {
-        "No se encontró ninguna versión estable de Deno {0}.x"
+    ("No stable release of the runtime {0}.x was found") => {
+        "No se encontró ninguna versión estable del entorno de ejecución {0}.x"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "No se encontró un SHA-256 válido para {filename} en el archivo de suma de comprobación del proyecto original"
@@ -8697,6 +8704,9 @@ macro_rules! __ui_template_es {
     ("The completion action could not be started: {error}") => {
         "No se pudo iniciar la acción al finalizar: {error}"
     };
+    ("The converter did not generate the test clip ({0}): {1}") => {
+        "El conversor no generó el clip de prueba ({0}): {1}"
+    };
     ("The damaged database could not be moved aside: {0}") => {
         "No se pudo apartar la base de datos dañada: {0}"
     };
@@ -8814,8 +8824,14 @@ macro_rules! __ui_template_es {
     ("The media analysis output exceeded the {0} MB limit") => {
         "La salida del análisis multimedia superó el límite de {0} MB"
     };
+    ("The media component failed ({0}): {1}") => {
+        "El componente multimedia falló ({0}): {1}"
+    };
     ("The media could not be queued: {e:#}") => {
         "No se pudo añadir el contenido multimedia a la cola: {e:#}"
+    };
+    ("The media inspector could not read the output ({0})") => {
+        "El inspector multimedia no pudo leer la salida ({0})"
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "No se pudo iniciar el proceso multimedia tras asignarlo al objeto Windows Job (NTSTATUS 0x{0:08x})"
@@ -9018,9 +9034,6 @@ macro_rules! __ui_template_es {
     ("expected {0}, received {1}") => {
         "esperado {0}, recibido {1}"
     };
-    ("ffprobe could not read the output ({0})") => {
-        "ffprobe no pudo leer la salida ({0})"
-    };
     ("the local channel did not answer for {0} seconds") => {
         "el canal local no ha respondido durante {0} segundos"
     };
@@ -9032,9 +9045,6 @@ macro_rules! __ui_template_es {
     };
     ("the output file {0} does not exist") => {
         "el archivo de salida {0} no existe"
-    };
-    ("yt-dlp failed ({0}): {1}") => {
-        "yt-dlp falló ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Estado: {1}\r\n  Versión: {2}\r\n  Ubicación: {3}\r\n\r\n"
@@ -9099,8 +9109,8 @@ macro_rules! __ui_template_es {
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "{duplicates} dirección(es) ya están en la lista de descargas.\n\n¿Usar las tareas existentes o descargar copias nuevas?"
     };
-    ("{id} — not in the queue\r\n") => {
-        "{id} — no está en la cola\r\n"
+    ("{id}: not in the queue\r\n") => {
+        "{id}: no está en la cola\r\n"
     };
     ("{kind} downloads are disabled for your usage purpose. Enable them in Settings > Usage purpose.") => {
         "Las descargas de {kind} están desactivadas para el modo de uso actual. Se pueden activar en Configuración > Modo de uso."
@@ -9275,14 +9285,14 @@ macro_rules! __ui_template_pt {
     ("Diagnostic package ready. Folder: {0} · ZIP: {1}") => {
         "Pacote de diagnóstico pronto. Pasta: {0} · ZIP: {1}"
     };
+    ("Download - {0}") => {
+        "Download - {0}"
+    };
+    ("Download - {0} items") => {
+        "Download - {0} itens"
+    };
     ("Download not found: {id}") => {
         "Download não encontrado: {id}"
-    };
-    ("Download — {0}") => {
-        "Download — {0}"
-    };
-    ("Download — {0} items") => {
-        "Download — {0} itens"
     };
     ("Downloadable video options could not be verified for this source.{status}") => {
         "As opções de vídeo disponíveis para download não puderam ser verificadas para esta fonte.{status}"
@@ -9295,9 +9305,6 @@ macro_rules! __ui_template_pt {
     };
     ("Error: {message}\r\n") => {
         "Erro: {message}\r\n"
-    };
-    ("FFmpeg did not generate the test clip ({0}): {1}") => {
-        "O FFmpeg não gerou o clipe de teste ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transferência FTP incompleta: {bytes}/{total} bytes"
@@ -9374,11 +9381,11 @@ macro_rules! __ui_template_pt {
     ("Missing value for {flag}") => {
         "Valor ausente para {flag}"
     };
-    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
-        "Nenhuma versão estável do Deno {0}.x está entre as {1} versões mais recentes do Deno; esta versão do aplicativo está vinculada a uma versão do Deno muito antiga"
+    ("No stable release of the runtime {0}.x is among the newest {1} releases; this version of the application is tied to a runtime version that is too old") => {
+        "Nenhuma versão estável do ambiente de execução {0}.x está entre as {1} versões mais recentes; esta versão do aplicativo está vinculada a uma versão do ambiente de execução muito antiga"
     };
-    ("No stable release of Deno {0}.x was found") => {
-        "Nenhuma versão estável do Deno {0}.x foi encontrada"
+    ("No stable release of the runtime {0}.x was found") => {
+        "Nenhuma versão estável do ambiente de execução {0}.x foi encontrada"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "Nenhum SHA-256 válido para {filename} foi encontrado no arquivo de soma de verificação upstream"
@@ -9554,6 +9561,9 @@ macro_rules! __ui_template_pt {
     ("The completion action could not be started: {error}") => {
         "Não foi possível iniciar a ação de conclusão: {error}"
     };
+    ("The converter did not generate the test clip ({0}): {1}") => {
+        "O conversor não gerou o clipe de teste ({0}): {1}"
+    };
     ("The damaged database could not be moved aside: {0}") => {
         "Não foi possível mover o banco de dados danificado para o lado: {0}"
     };
@@ -9671,8 +9681,14 @@ macro_rules! __ui_template_pt {
     ("The media analysis output exceeded the {0} MB limit") => {
         "A saída da análise de mídia excedeu o limite de {0} MB"
     };
+    ("The media component failed ({0}): {1}") => {
+        "O componente de mídia falhou ({0}): {1}"
+    };
     ("The media could not be queued: {e:#}") => {
         "Não foi possível adicionar a mídia à fila: {e:#}"
+    };
+    ("The media inspector could not read the output ({0})") => {
+        "O inspetor de mídia não conseguiu ler a saída ({0})"
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Não foi possível iniciar o processo de mídia após a atribuição ao Job do Windows (NTSTATUS 0x{0:08x})"
@@ -9875,9 +9891,6 @@ macro_rules! __ui_template_pt {
     ("expected {0}, received {1}") => {
         "esperado {0}, recebido {1}"
     };
-    ("ffprobe could not read the output ({0})") => {
-        "O ffprobe não conseguiu ler a saída ({0})"
-    };
     ("the local channel did not answer for {0} seconds") => {
         "o canal local não respondeu por {0} segundos"
     };
@@ -9889,9 +9902,6 @@ macro_rules! __ui_template_pt {
     };
     ("the output file {0} does not exist") => {
         "o arquivo de saída {0} não existe"
-    };
-    ("yt-dlp failed ({0}): {1}") => {
-        "O yt-dlp falhou ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Versão: {2}\r\n  Local: {3}\r\n\r\n"
@@ -9956,8 +9966,8 @@ macro_rules! __ui_template_pt {
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "{duplicates} endereço(s) já estão na lista de downloads.\n\nUsar as tarefas existentes ou baixar novas cópias?"
     };
-    ("{id} — not in the queue\r\n") => {
-        "{id} — não está na fila\r\n"
+    ("{id}: not in the queue\r\n") => {
+        "{id}: não está na fila\r\n"
     };
     ("{kind} downloads are disabled for your usage purpose. Enable them in Settings > Usage purpose.") => {
         "Os downloads de {kind} estão desativados para a sua finalidade de uso. Ative-os em Configurações > Finalidade de uso."
@@ -10132,14 +10142,14 @@ macro_rules! __ui_template_fr {
     ("Diagnostic package ready. Folder: {0} · ZIP: {1}") => {
         "Archive de diagnostic prête. Dossier : {0} · ZIP : {1}"
     };
+    ("Download - {0}") => {
+        "Téléchargement - {0}"
+    };
+    ("Download - {0} items") => {
+        "Téléchargement - {0} éléments"
+    };
     ("Download not found: {id}") => {
         "Téléchargement introuvable : {id}"
-    };
-    ("Download — {0}") => {
-        "Téléchargement — {0}"
-    };
-    ("Download — {0} items") => {
-        "Téléchargement — {0} éléments"
     };
     ("Downloadable video options could not be verified for this source.{status}") => {
         "Les options vidéo téléchargeables n'ont pas pu être vérifiées pour cette source.{status}"
@@ -10152,9 +10162,6 @@ macro_rules! __ui_template_fr {
     };
     ("Error: {message}\r\n") => {
         "Erreur : {message}\r\n"
-    };
-    ("FFmpeg did not generate the test clip ({0}): {1}") => {
-        "FFmpeg n'a pas généré le clip de test ({0}) : {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "Transfert FTP incomplet : {bytes}/{total} octets"
@@ -10231,11 +10238,11 @@ macro_rules! __ui_template_fr {
     ("Missing value for {flag}") => {
         "Valeur manquante pour {flag}"
     };
-    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
-        "Aucune version stable de Deno {0}.x ne figure parmi les {1} versions les plus récentes de Deno ; cette version de l'application est liée à une version de Deno trop ancienne"
+    ("No stable release of the runtime {0}.x is among the newest {1} releases; this version of the application is tied to a runtime version that is too old") => {
+        "Aucune version stable de l'environnement d'exécution {0}.x ne figure parmi les {1} versions les plus récentes ; cette version de l'application est liée à une version de l'environnement d'exécution trop ancienne"
     };
-    ("No stable release of Deno {0}.x was found") => {
-        "Aucune version stable de Deno {0}.x n'a été trouvée"
+    ("No stable release of the runtime {0}.x was found") => {
+        "Aucune version stable de l'environnement d'exécution {0}.x n'a été trouvée"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "Aucun SHA-256 valide pour {filename} n'a été trouvé dans le fichier de somme de contrôle amont"
@@ -10411,6 +10418,9 @@ macro_rules! __ui_template_fr {
     ("The completion action could not be started: {error}") => {
         "L'action de fin n'a pas pu être démarrée : {error}"
     };
+    ("The converter did not generate the test clip ({0}): {1}") => {
+        "Le convertisseur n'a pas généré le clip de test ({0}) : {1}"
+    };
     ("The damaged database could not be moved aside: {0}") => {
         "La base de données endommagée n'a pas pu être mise de côté : {0}"
     };
@@ -10528,8 +10538,14 @@ macro_rules! __ui_template_fr {
     ("The media analysis output exceeded the {0} MB limit") => {
         "La sortie de l'analyse du média a dépassé la limite de {0} MB"
     };
+    ("The media component failed ({0}): {1}") => {
+        "Le composant média a échoué ({0}) : {1}"
+    };
     ("The media could not be queued: {e:#}") => {
         "Le média n'a pas pu être mis en file d'attente : {e:#}"
+    };
+    ("The media inspector could not read the output ({0})") => {
+        "L'inspecteur média n'a pas pu lire la sortie ({0})"
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Le processus média n'a pas pu démarrer après l'affectation au Job Windows (NTSTATUS 0x{0:08x})"
@@ -10732,9 +10748,6 @@ macro_rules! __ui_template_fr {
     ("expected {0}, received {1}") => {
         "attendu {0}, reçu {1}"
     };
-    ("ffprobe could not read the output ({0})") => {
-        "ffprobe n'a pas pu lire la sortie ({0})"
-    };
     ("the local channel did not answer for {0} seconds") => {
         "le canal local n'a pas répondu pendant {0} secondes"
     };
@@ -10746,9 +10759,6 @@ macro_rules! __ui_template_fr {
     };
     ("the output file {0} does not exist") => {
         "le fichier de sortie {0} n'existe pas"
-    };
-    ("yt-dlp failed ({0}): {1}") => {
-        "yt-dlp a échoué ({0}) : {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  État : {1}\r\n  Version : {2}\r\n  Emplacement : {3}\r\n\r\n"
@@ -10813,8 +10823,8 @@ macro_rules! __ui_template_fr {
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "{duplicates} adresse(s) figure(nt) déjà dans la liste des téléchargements.\n\nUtiliser les tâches existantes ou télécharger de nouvelles copies ?"
     };
-    ("{id} — not in the queue\r\n") => {
-        "{id} — absent de la file d'attente\r\n"
+    ("{id}: not in the queue\r\n") => {
+        "{id} : absent de la file d'attente\r\n"
     };
     ("{kind} downloads are disabled for your usage purpose. Enable them in Settings > Usage purpose.") => {
         "Les téléchargements de type {kind} sont désactivés pour votre mode d'utilisation. Activez-les dans Paramètres > Mode d'utilisation."
@@ -10989,14 +10999,14 @@ macro_rules! __ui_template_de {
     ("Diagnostic package ready. Folder: {0} · ZIP: {1}") => {
         "Diagnosepaket bereit. Ordner: {0} · ZIP: {1}"
     };
+    ("Download - {0}") => {
+        "Download - {0}"
+    };
+    ("Download - {0} items") => {
+        "Download - {0} Einträge"
+    };
     ("Download not found: {id}") => {
         "Download nicht gefunden: {id}"
-    };
-    ("Download — {0}") => {
-        "Download — {0}"
-    };
-    ("Download — {0} items") => {
-        "Download — {0} Einträge"
     };
     ("Downloadable video options could not be verified for this source.{status}") => {
         "Die herunterladbaren Videooptionen konnten für diese Quelle nicht geprüft werden.{status}"
@@ -11009,9 +11019,6 @@ macro_rules! __ui_template_de {
     };
     ("Error: {message}\r\n") => {
         "Fehler: {message}\r\n"
-    };
-    ("FFmpeg did not generate the test clip ({0}): {1}") => {
-        "FFmpeg hat den Testclip nicht erzeugt ({0}): {1}"
     };
     ("FTP transfer incomplete: {bytes}/{total} bytes") => {
         "FTP-Übertragung unvollständig: {bytes}/{total} Byte"
@@ -11088,11 +11095,11 @@ macro_rules! __ui_template_de {
     ("Missing value for {flag}") => {
         "Fehlender Wert für {flag}"
     };
-    ("No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old") => {
-        "Unter den neuesten {1} Deno-Releases ist kein stabiles Release von Deno {0}.x; diese Version der Anwendung ist an eine zu alte Deno-Version gebunden"
+    ("No stable release of the runtime {0}.x is among the newest {1} releases; this version of the application is tied to a runtime version that is too old") => {
+        "Unter den neuesten {1} Releases ist kein stabiles Release der Laufzeitumgebung {0}.x; diese Version der Anwendung ist an eine zu alte Version der Laufzeitumgebung gebunden"
     };
-    ("No stable release of Deno {0}.x was found") => {
-        "Es wurde kein stabiles Release von Deno {0}.x gefunden"
+    ("No stable release of the runtime {0}.x was found") => {
+        "Es wurde kein stabiles Release der Laufzeitumgebung {0}.x gefunden"
     };
     ("No valid SHA-256 for {filename} was found in the upstream checksum file") => {
         "In der Upstream-Prüfsummendatei wurde keine gültige SHA-256 für {filename} gefunden"
@@ -11268,6 +11275,9 @@ macro_rules! __ui_template_de {
     ("The completion action could not be started: {error}") => {
         "Die Aktion nach Abschluss konnte nicht gestartet werden: {error}"
     };
+    ("The converter did not generate the test clip ({0}): {1}") => {
+        "Der Konverter hat den Testclip nicht erzeugt ({0}): {1}"
+    };
     ("The damaged database could not be moved aside: {0}") => {
         "Die beschädigte Datenbank konnte nicht beiseitegelegt werden: {0}"
     };
@@ -11385,8 +11395,14 @@ macro_rules! __ui_template_de {
     ("The media analysis output exceeded the {0} MB limit") => {
         "Die Ausgabe der Medienanalyse überschritt das Limit von {0} MB"
     };
+    ("The media component failed ({0}): {1}") => {
+        "Die Medienkomponente ist fehlgeschlagen ({0}): {1}"
+    };
     ("The media could not be queued: {e:#}") => {
         "Die Medien konnten nicht in die Warteschlange gestellt werden: {e:#}"
+    };
+    ("The media inspector could not read the output ({0})") => {
+        "Der Medieninspektor konnte die Ausgabe nicht lesen ({0})"
     };
     ("The media process could not be started after the Windows Job assignment (NTSTATUS 0x{0:08x})") => {
         "Der Medienprozess konnte nach der Zuweisung zum Windows-Job-Objekt nicht gestartet werden (NTSTATUS 0x{0:08x})"
@@ -11589,9 +11605,6 @@ macro_rules! __ui_template_de {
     ("expected {0}, received {1}") => {
         "erwartet {0}, erhalten {1}"
     };
-    ("ffprobe could not read the output ({0})") => {
-        "ffprobe konnte die Ausgabe nicht lesen ({0})"
-    };
     ("the local channel did not answer for {0} seconds") => {
         "der lokale Kanal hat {0} Sekunden lang nicht geantwortet"
     };
@@ -11603,9 +11616,6 @@ macro_rules! __ui_template_de {
     };
     ("the output file {0} does not exist") => {
         "die Ausgabedatei {0} existiert nicht"
-    };
-    ("yt-dlp failed ({0}): {1}") => {
-        "yt-dlp ist fehlgeschlagen ({0}): {1}"
     };
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Speicherort: {3}\r\n\r\n"
@@ -11670,8 +11680,8 @@ macro_rules! __ui_template_de {
     ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "{duplicates} Adresse(n) befinden sich bereits in der Downloadliste.\n\nVorhandene Aufträge verwenden oder neue Kopien herunterladen?"
     };
-    ("{id} — not in the queue\r\n") => {
-        "{id} — nicht in der Warteschlange\r\n"
+    ("{id}: not in the queue\r\n") => {
+        "{id}: nicht in der Warteschlange\r\n"
     };
     ("{kind} downloads are disabled for your usage purpose. Enable them in Settings > Usage purpose.") => {
         "{kind}-Downloads sind für Ihren Verwendungszweck deaktiviert. Aktivieren Sie sie unter Einstellungen > Verwendungszweck."

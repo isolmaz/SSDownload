@@ -261,8 +261,8 @@ pub(crate) fn ensure(
             network,
         )
         .context(crate::i18n::ui(
-            "yt-dlp sürüm bilgisi alınamadı",
-            "The yt-dlp version information could not be retrieved",
+            "Medya bileşeninin sürüm bilgisi alınamadı",
+            "The media component version information could not be retrieved",
         ))
     })?
     else {
@@ -277,8 +277,8 @@ pub(crate) fn ensure(
         network,
     )
     .context(crate::i18n::ui(
-        "Deno sürüm bilgisi alınamadı",
-        "The Deno version information could not be retrieved",
+        "Çalıştırma ortamının sürüm bilgisi alınamadı",
+        "The runtime version information could not be retrieved",
     ))?;
     let deno_release = newest_deno_release(deno_releases)?;
     let ffmpeg_release: GithubRelease = github_json(
@@ -287,8 +287,8 @@ pub(crate) fn ensure(
         network,
     )
     .context(crate::i18n::ui(
-        "FFmpeg sürüm bilgisi alınamadı",
-        "The FFmpeg version information could not be retrieved",
+        "Dönüştürücünün sürüm bilgisi alınamadı",
+        "The converter version information could not be retrieved",
     ))?;
 
     let yt_asset = exact_asset(&yt_release, "yt-dlp.exe")?;
@@ -313,8 +313,8 @@ pub(crate) fn ensure(
             anyhow!(
                 "{}",
                 crate::i18n::ui(
-                    "FFmpeg yayını upstream SHA-256 checksum dosyası içermiyor",
-                    "The FFmpeg release does not include an upstream SHA-256 checksum file"
+                    "Dönüştürücü yayını upstream SHA-256 checksum dosyası içermiyor",
+                    "The converter release does not include an upstream SHA-256 checksum file"
                 )
             )
         })?;
@@ -376,16 +376,16 @@ pub(crate) fn ensure(
     );
     let deno_dir = staging.join("deno");
     extract_zip_safely(&deno_zip, &deno_dir).context(crate::i18n::ui(
-        "Deno arşivi açılamadı",
-        "The Deno archive could not be extracted",
+        "Çalıştırma ortamı arşivi açılamadı",
+        "The runtime archive could not be extracted",
     ))?;
     fs::remove_file(&deno_zip).ok();
     let deno_path = find_file_named(&deno_dir, "deno.exe").ok_or_else(|| {
         anyhow!(
             "{}",
             crate::i18n::ui(
-                "Deno arşivinde deno.exe bulunamadı",
-                "deno.exe was not found in the Deno archive"
+                "Çalıştırma ortamı arşivinde bulunamadı",
+                "The runtime was not found in its archive"
             )
         )
     })?;
@@ -419,16 +419,16 @@ pub(crate) fn ensure(
     );
     let ffmpeg_dir = staging.join("ffmpeg");
     extract_zip_safely(&ffmpeg_zip, &ffmpeg_dir).context(crate::i18n::ui(
-        "FFmpeg arşivi açılamadı",
-        "The FFmpeg archive could not be extracted",
+        "Dönüştürücü arşivi açılamadı",
+        "The converter archive could not be extracted",
     ))?;
     fs::remove_file(&ffmpeg_zip).ok();
     let ffmpeg_path = find_file_named(&ffmpeg_dir, "ffmpeg.exe").ok_or_else(|| {
         anyhow!(
             "{}",
             crate::i18n::ui(
-                "FFmpeg arşivinde ffmpeg.exe bulunamadı",
-                "ffmpeg.exe was not found in the FFmpeg archive"
+                "Dönüştürücü arşivinde bulunamadı",
+                "The converter was not found in its archive"
             )
         )
     })?;
@@ -436,8 +436,8 @@ pub(crate) fn ensure(
         anyhow!(
             "{}",
             crate::i18n::ui(
-                "FFmpeg arşivinde ffprobe.exe bulunamadı",
-                "ffprobe.exe was not found in the FFmpeg archive"
+                "Medya inceleyici, dönüştürücü arşivinde bulunamadı",
+                "The media inspector was not found in the converter archive"
             )
         )
     })?;
@@ -1003,8 +1003,8 @@ fn newest_deno_release(releases: Vec<GithubRelease>) -> Result<GithubRelease> {
                 anyhow!(
                     "{}",
                     crate::i18n::ui_format!(
-                        "Deno {0}. sürüm serisinden kararlı bir yayın son {1} Deno yayını arasında yok; uygulamanın bu sürümü çok eski bir Deno sürümüne bağlı",
-                        "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old",
+                        "Çalıştırma ortamının {0}. sürüm serisinden kararlı bir yayın son {1} yayın arasında yok; uygulamanın bu sürümü çok eski bir çalıştırma ortamı sürümüne bağlı",
+                        "No stable release of the runtime {0}.x is among the newest {1} releases; this version of the application is tied to a runtime version that is too old",
                         DENO_MAJOR,
                         DENO_RELEASE_LIST
                     )
@@ -1013,8 +1013,8 @@ fn newest_deno_release(releases: Vec<GithubRelease>) -> Result<GithubRelease> {
                 anyhow!(
                     "{}",
                     crate::i18n::ui_format!(
-                        "Deno {0}. sürüm serisinde kararlı bir yayın bulunamadı",
-                        "No stable release of Deno {0}.x was found",
+                        "Çalıştırma ortamının {0}. sürüm serisinde kararlı bir yayın bulunamadı",
+                        "No stable release of the runtime {0}.x was found",
                         DENO_MAJOR
                     )
                 )
@@ -1063,8 +1063,8 @@ fn choose_ffmpeg_branch_asset(release: &GithubRelease, pinned: (u32, u32)) -> Re
             anyhow!(
                 "{}",
                 crate::i18n::ui(
-                    "BtbN latest yayınında Windows x64 LGPL FFmpeg sürüm dalı ZIP varlığı bulunamadı",
-                    "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release"
+                    "Son upstream yayınında Windows x64 LGPL dönüştürücü sürüm dalı ZIP varlığı bulunamadı",
+                    "No Windows x64 LGPL converter release-branch ZIP asset was found in the latest upstream release"
                 )
             )
         })
@@ -2047,8 +2047,8 @@ fn yt_dlp_release(
             anyhow!(
                 "{}",
                 crate::i18n::ui(
-                    "Uygun kararlı bir yt-dlp yayını bulunamadı",
-                    "No suitable stable yt-dlp release was found"
+                    "Uygun kararlı bir medya bileşeni yayını bulunamadı",
+                    "No suitable stable media component release was found"
                 )
             )
         })
@@ -2565,7 +2565,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(format!("{error:#}").contains("yt-dlp failed"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("The media component failed"),
+            "{error:#}"
+        );
         assert!(!paths.tools_dir.join(MANIFEST_FILE).exists());
         assert!(!paths.tools_dir.join("versions").join("new").exists());
         assert!(!staging.exists());

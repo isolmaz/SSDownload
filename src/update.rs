@@ -1012,7 +1012,7 @@ pub(crate) struct UpdateContext<'a> {
 }
 
 enum CheckOutcome {
-    /// Feed unreachable or invalid — updater silently stands down.
+    /// Feed unreachable or invalid; updater silently stands down.
     Silent,
     /// Feed version is not newer, or the user asked to skip it.
     NotNewer,

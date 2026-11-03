@@ -22,8 +22,8 @@
     // ---- toolbar popup, badge and action title
     stateOn: "ON",
     stateOff: "OFF",
-    actionTitleOn: "SSDownload: on — click for settings",
-    actionTitleOff: "SSDownload: off — click for settings",
+    actionTitleOn: "SSDownload: on - click for settings",
+    actionTitleOff: "SSDownload: off - click for settings",
     actionTitleOneCompleted: "SSDownload: 1 download completed",
     actionTitleCompleted: "SSDownload: {0} downloads completed",
     popupDetection: "Detection",
@@ -53,7 +53,7 @@
     setupInstalled: "Already installed? Open Tools → Browser setup in the app and restart the browser.",
     welcomeTitle: "Thanks for installing SSDownload",
     welcomeText: "One more step: the extension works together with the free SSDownload app for Windows 10 and 11. Install the app, and the download button appears on the videos you play.",
-    welcomeDownload: "Download the app for Windows — free",
+    welcomeDownload: "Download the app for Windows - free",
     welcomePrivacy: "No account, no telemetry: everything stays on your PC.",
 
     // ---- in-page tile and page status
@@ -287,8 +287,8 @@
     // ---- toolbar popup, badge and action title
     stateOn: "AÇIK",
     stateOff: "KAPALI",
-    actionTitleOn: "SSDownload: açık — ayarlar için tıklayın",
-    actionTitleOff: "SSDownload: kapalı — ayarlar için tıklayın",
+    actionTitleOn: "SSDownload: açık - ayarlar için tıklayın",
+    actionTitleOff: "SSDownload: kapalı - ayarlar için tıklayın",
     actionTitleOneCompleted: "SSDownload: 1 indirme tamamlandı",
     actionTitleCompleted: "SSDownload: {0} indirme tamamlandı",
     popupDetection: "Algılama",
@@ -318,7 +318,7 @@
     setupInstalled: "Zaten kurulu mu? Uygulamada Araçlar → Tarayıcı kurulumu'nu açın ve tarayıcıyı yeniden başlatın.",
     welcomeTitle: "SSDownload'u kurduğunuz için teşekkürler",
     welcomeText: "Bir adım kaldı: eklenti, Windows 10 ve 11 için ücretsiz SSDownload uygulamasıyla birlikte çalışır. Uygulamayı kurun; oynattığınız videoların üzerinde indirme düğmesi görünür.",
-    welcomeDownload: "Windows uygulamasını indir — ücretsiz",
+    welcomeDownload: "Windows uygulamasını indir - ücretsiz",
     welcomePrivacy: "Hesap yok, telemetri yok: her şey bilgisayarınızda kalır.",
 
     // ---- in-page tile and page status
@@ -552,8 +552,8 @@
     // ---- toolbar popup, badge and action title
     stateOn: "تشغيل",
     stateOff: "إيقاف",
-    actionTitleOn: "SSDownload: مُفعَّل — انقر للإعدادات",
-    actionTitleOff: "SSDownload: مُعطَّل — انقر للإعدادات",
+    actionTitleOn: "SSDownload: مُفعَّل - انقر للإعدادات",
+    actionTitleOff: "SSDownload: مُعطَّل - انقر للإعدادات",
     actionTitleOneCompleted: "SSDownload: اكتمل تنزيل واحد",
     actionTitleCompleted: "SSDownload: التنزيلات المكتملة: {0}",
     popupDetection: "الاكتشاف",
@@ -583,7 +583,7 @@
     setupInstalled: "مثبّت بالفعل؟ افتح في التطبيق الأدوات ← إعداد المتصفح، ثم أعد تشغيل المتصفح.",
     welcomeTitle: "شكرًا لتثبيتك SSDownload",
     welcomeText: "خطوة أخيرة: تعمل الإضافة مع تطبيق SSDownload المجاني لنظامي Windows 10 و11. ثبّت التطبيق، وسيظهر زر التنزيل على الفيديوهات التي تشغّلها.",
-    welcomeDownload: "تنزيل تطبيق Windows — مجاني",
+    welcomeDownload: "تنزيل تطبيق Windows - مجاني",
     welcomePrivacy: "لا حساب ولا قياس عن بُعد: كل شيء يبقى على جهازك.",
 
     // ---- in-page tile and page status
@@ -817,8 +817,8 @@
     // ---- toolbar popup, badge and action title
     stateOn: "ON",
     stateOff: "OFF",
-    actionTitleOn: "SSDownload: activado — clic para abrir la configuración",
-    actionTitleOff: "SSDownload: desactivado — clic para abrir la configuración",
+    actionTitleOn: "SSDownload: activado - clic para abrir la configuración",
+    actionTitleOff: "SSDownload: desactivado - clic para abrir la configuración",
     actionTitleOneCompleted: "SSDownload: 1 descarga completada",
     actionTitleCompleted: "SSDownload: {0} descargas completadas",
     popupDetection: "Detección",
@@ -848,7 +848,7 @@
     setupInstalled: "¿Ya está instalada? Abrir Herramientas → Instalación del navegador en la aplicación y reiniciar el navegador.",
     welcomeTitle: "Gracias por instalar SSDownload",
     welcomeText: "Falta un paso: la extensión funciona junto con la aplicación gratuita SSDownload para Windows 10 y 11. Al instalar la aplicación, aparecerá el botón de descarga en los vídeos que se reproducen.",
-    welcomeDownload: "Descargar la aplicación para Windows — gratis",
+    welcomeDownload: "Descargar la aplicación para Windows - gratis",
     welcomePrivacy: "Sin cuenta ni telemetría: todo permanece en el equipo.",
 
     // ---- in-page tile and page status
@@ -1082,8 +1082,8 @@
     // ---- toolbar popup, badge and action title
     stateOn: "ON",
     stateOff: "OFF",
-    actionTitleOn: "SSDownload: ligado — clique para configurações",
-    actionTitleOff: "SSDownload: desligado — clique para configurações",
+    actionTitleOn: "SSDownload: ligado - clique para configurações",
+    actionTitleOff: "SSDownload: desligado - clique para configurações",
     actionTitleOneCompleted: "SSDownload: 1 download concluído",
     actionTitleCompleted: "SSDownload: {0} downloads concluídos",
     popupDetection: "Detecção",
@@ -1113,7 +1113,7 @@
     setupInstalled: "Já instalado? Abra Ferramentas → Configurar o navegador no aplicativo e reinicie o navegador.",
     welcomeTitle: "Obrigado por instalar o SSDownload",
     welcomeText: "Falta mais um passo: a extensão funciona junto com o aplicativo SSDownload gratuito para Windows 10 e 11. Instale o aplicativo, e o botão de download aparecerá nos vídeos que você reproduzir.",
-    welcomeDownload: "Baixar o aplicativo para Windows — gratuito",
+    welcomeDownload: "Baixar o aplicativo para Windows - gratuito",
     welcomePrivacy: "Sem conta e sem telemetria: tudo fica no seu computador.",
 
     // ---- in-page tile and page status
@@ -1347,8 +1347,8 @@
     // ---- toolbar popup, badge and action title
     stateOn: "ON",
     stateOff: "OFF",
-    actionTitleOn: "SSDownload : activé — cliquez pour ouvrir les paramètres",
-    actionTitleOff: "SSDownload : désactivé — cliquez pour ouvrir les paramètres",
+    actionTitleOn: "SSDownload : activé - cliquez pour ouvrir les paramètres",
+    actionTitleOff: "SSDownload : désactivé - cliquez pour ouvrir les paramètres",
     actionTitleOneCompleted: "SSDownload : 1 téléchargement terminé",
     actionTitleCompleted: "SSDownload : {0} téléchargements terminés",
     popupDetection: "Détection",
@@ -1378,7 +1378,7 @@
     setupInstalled: "Déjà installée ? Dans l'application, ouvrez Outils → Configuration du navigateur, puis redémarrez le navigateur.",
     welcomeTitle: "Merci d'avoir installé SSDownload",
     welcomeText: "Encore une étape : l'extension fonctionne avec l'application SSDownload gratuite pour Windows 10 et 11. Installez l'application : le bouton de téléchargement apparaît sur les vidéos que vous lisez.",
-    welcomeDownload: "Télécharger l'application pour Windows — gratuite",
+    welcomeDownload: "Télécharger l'application pour Windows - gratuite",
     welcomePrivacy: "Pas de compte, pas de télémétrie : tout reste sur votre ordinateur.",
 
     // ---- in-page tile and page status
@@ -1612,8 +1612,8 @@
     // ---- toolbar popup, badge and action title
     stateOn: "EIN",
     stateOff: "AUS",
-    actionTitleOn: "SSDownload: ein — zum Öffnen der Einstellungen klicken",
-    actionTitleOff: "SSDownload: aus — zum Öffnen der Einstellungen klicken",
+    actionTitleOn: "SSDownload: ein - zum Öffnen der Einstellungen klicken",
+    actionTitleOff: "SSDownload: aus - zum Öffnen der Einstellungen klicken",
     actionTitleOneCompleted: "SSDownload: 1 Download abgeschlossen",
     actionTitleCompleted: "SSDownload: {0} Downloads abgeschlossen",
     popupDetection: "Erkennung",
@@ -1643,7 +1643,7 @@
     setupInstalled: "Bereits installiert? Öffnen Sie in der App Extras → Browser-Einrichtung und starten Sie den Browser neu.",
     welcomeTitle: "Danke für die Installation von SSDownload",
     welcomeText: "Noch ein Schritt: Die Erweiterung arbeitet mit der kostenlosen SSDownload-App für Windows 10 und 11 zusammen. Installieren Sie die App, dann erscheint die Download-Schaltfläche auf den Videos, die Sie abspielen.",
-    welcomeDownload: "App für Windows herunterladen — kostenlos",
+    welcomeDownload: "App für Windows herunterladen - kostenlos",
     welcomePrivacy: "Kein Konto, keine Telemetrie: Alles bleibt auf Ihrem PC.",
 
     // ---- in-page tile and page status

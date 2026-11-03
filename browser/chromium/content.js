@@ -361,13 +361,13 @@ async function handOver(buildRequest) {
 // `document`, and propagation reaches them before a listener on the tile itself is ever
 // called: the player opens a pop-under from the user's gesture, or it swallows the event so
 // the tile never sees the click at all. These listeners are added while this script runs at
-// document_start — the document executes no script of its own until this whole script has
-// finished — so the shield is the first listener of the capture path: an event aimed at one
+// document_start (the document executes no script of its own until this whole script has
+// finished), so the shield is the first listener of the capture path: an event aimed at one
 // of our tiles stops there, and the tile's own submission runs from that same point, once
 // per user gesture.
 //
-// A tile is recognised by object identity alone (`ownTiles`), so nothing the page writes —
-// text, class, attribute — can make one of its own controls pass for the affordance, and
+// A tile is recognised by object identity alone (`ownTiles`), so nothing the page writes
+// (text, class, attribute) can make one of its own controls pass for the affordance, and
 // nothing about the page is filtered: an event aimed anywhere else is dispatched exactly as
 // the page wrote it, and the browser's own default actions (focus, the pointer's active
 // state, the click a keyboard activation generates) are never cancelled.
@@ -451,8 +451,8 @@ function ownTileTarget(event) {
 }
 
 // Every phase a tile is activated through is resolved here, before the page can see it. The
-// phases this swallows are painted here too — a listener on the tile itself would never run
-// for them — while the phases the page may keep (enter, leave, cancel) stay on the tile.
+// phases this swallows are painted here too (a listener on the tile itself would never run
+// for them) while the phases the page may keep (enter, leave, cancel) stay on the tile.
 function ownTileEvent(event) {
   const tile = ownTileTarget(event);
   if (!tile) return;

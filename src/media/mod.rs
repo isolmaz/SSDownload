@@ -194,8 +194,8 @@ fn inspect_document_with_tools(
         );
     }
     let value: Value = serde_json::from_slice(&captured.stdout).context(crate::i18n::ui(
-        "yt-dlp geçerli JSON medya bilgisi döndürmedi",
-        "yt-dlp did not return valid JSON media information",
+        "Medya bileşeni geçerli medya bilgisi döndürmedi",
+        "The media component did not return valid media information",
     ))?;
     let info = media_info_from_json(&value)?;
     validate_single_selection(&info, request.playlist)?;
