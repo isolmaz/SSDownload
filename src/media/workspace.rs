@@ -682,12 +682,13 @@ pub(crate) fn prepare_source_refresh(
         headers: next.headers.clone(),
         referer: next.referer.clone(),
         page_url: next.page_url.clone(),
+        top_page_url: next.top_page_url.clone(),
         session_cookies: next.session_cookies.clone(),
         playlist: next.playlist,
         ..InspectRequest::default()
     };
     let toolchain = tools::verified_toolchain(paths, control)?;
-    let (inspection, info) =
+    let (inspection, info, _) =
         inspect_document_with_tools(&inspect_request, &toolchain, control, network)?;
     if control.stop_requested() {
         bail!(crate::i18n::ui(

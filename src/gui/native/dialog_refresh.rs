@@ -1476,6 +1476,7 @@ pub(super) unsafe fn renew_source(hwnd: HWND, error: HWND, app: App, f: &MediaFi
     let headers = f.base.headers.clone();
     let session_cookies = f.base.session_cookies.clone();
     let referer = f.base.referer.clone();
+    let top_page_url = f.base.top_page_url.clone();
     // The same editable name the queue path forwards: a rebind renames the
     // pending job's target instead of keeping the stale one.
     let extension = f
@@ -1517,6 +1518,7 @@ pub(super) unsafe fn renew_source(hwnd: HWND, error: HWND, app: App, f: &MediaFi
             request.headers = headers;
             request.session_cookies = session_cookies;
             request.referer = referer;
+            request.top_page_url = top_page_url;
             if let Some(name) = rename {
                 request.filename = Some(name);
             }

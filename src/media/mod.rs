@@ -102,17 +102,96 @@ fn inspect_with_tools(
     control: &TransferControl,
     network: &NetworkGovernor,
 ) -> Result<MediaInfo> {
-    let (value, info) = inspect_document_with_tools(request, toolchain, control, network)?;
-    remember_inspection(request, &value);
+    let (value, info, url) = inspect_document_with_tools(request, toolchain, control, network)?;
+    remember_inspection(request, &value, &url);
     Ok(info)
 }
 
+/// The tool's document and what it holds for the source, with the address the tool analysed: the
+/// request's own, or the page that embeds it.
 fn inspect_document_with_tools(
     request: &InspectRequest,
     toolchain: &tools::VerifiedTools,
     control: &TransferControl,
     network: &NetworkGovernor,
-) -> Result<(Value, MediaInfo)> {
+) -> Result<(Value, MediaInfo, String)> {
+    let ((value, info), url) = analyse_with_page_fallback(request, |attempt| {
+        run_inspection(attempt, toolchain, control, network)
+    })?;
+    Ok((value, info, url))
+}
+
+/// How one run of the tool for one address ended.
+enum Run<T> {
+    Done(T),
+    /// The tool's error output, kept apart from the error it becomes so that a run another
+    /// address makes good is never logged as a failure.
+    Failed {
+        stderr: String,
+        redactions: Vec<String>,
+    },
+}
+
+/// Runs `run` for the request's address. A media frame's own address can be a player page the
+/// tool has no extractor for while the page that embeds it is one, so when the tool answers that
+/// it does not support the address and the request names another page it sits in, `run` is
+/// called once more for that page and never again. Returns the answer with the address it is for.
+fn analyse_with_page_fallback<T>(
+    request: &InspectRequest,
+    mut run: impl FnMut(&InspectRequest) -> Result<Run<T>>,
+) -> Result<(T, String)> {
+    let (stderr, redactions) = match run(request)? {
+        Run::Done(answer) => return Ok((answer, request.url.clone())),
+        Run::Failed { stderr, redactions } => (stderr, redactions),
+    };
+    let Some(page) = page_fallback(request, &stderr) else {
+        return Err(inspection_failure(&stderr, &redactions));
+    };
+    crate::logging::record(
+        crate::logging::Event::info("inspect.page_fallback")
+            .host(crate::logging::host_of(&request.url).unwrap_or_default()),
+    );
+    let page_request = InspectRequest {
+        url: page.to_owned(),
+        top_page_url: None,
+        ..request.clone()
+    };
+    match run(&page_request)? {
+        Run::Done(answer) => Ok((answer, page_request.url)),
+        Run::Failed { stderr, redactions } => Err(inspection_failure(&stderr, &redactions)),
+    }
+}
+
+/// The page to analyse in place of `request.url`, when the tool's final error says it does not
+/// support `request.url` and the request names another page the media sits in: the top page, else
+/// the page the handoff came from (the only page an extension that sends no top page names).
+fn page_fallback<'a>(request: &'a InspectRequest, stderr: &str) -> Option<&'a str> {
+    let page = request
+        .top_page_url
+        .as_deref()
+        .or(request.page_url.as_deref())
+        .filter(|page| *page != request.url && validate_web_url(page).is_ok())?;
+    unsupported_url(stderr, &request.url).then_some(page)
+}
+
+/// Whether the tool's final error is "Unsupported URL: <url>" for this very address; the same
+/// words about another address (one a redirect led to) are not the answer for this one.
+fn unsupported_url(stderr: &str, url: &str) -> bool {
+    final_error_line(stderr).is_some_and(|line| {
+        line.rsplit_once("Unsupported URL: ").is_some_and(|(_, printed)| {
+            let printed = printed.trim();
+            printed == url
+                || matches!((Url::parse(printed), Url::parse(url)), (Ok(printed), Ok(url)) if printed == url)
+        })
+    })
+}
+
+fn run_inspection(
+    request: &InspectRequest,
+    toolchain: &tools::VerifiedTools,
+    control: &TransferControl,
+    network: &NetworkGovernor,
+) -> Result<Run<(Value, MediaInfo)>> {
     let yt_dlp = &toolchain.yt_dlp;
     let deno = &toolchain.deno;
     let ffmpeg = &toolchain.ffmpeg;
@@ -182,7 +261,10 @@ fn inspect_document_with_tools(
         )?;
     }
     if !captured.status.success() {
-        return Err(inspection_failure(&captured.stderr, &secrets.redactions));
+        return Ok(Run::Failed {
+            stderr: captured.stderr,
+            redactions: std::mem::take(&mut secrets.redactions),
+        });
     }
     if captured.stdout.len() > MAX_INSPECT_OUTPUT {
         crate::bail_code!(
@@ -201,7 +283,7 @@ fn inspect_document_with_tools(
     ))?;
     let info = media_info_from_json(&value)?;
     validate_single_selection(&info, request.playlist)?;
-    Ok((value, info))
+    Ok(Run::Done((value, info)))
 }
 
 /// The error of an analysis whose tool failed. The user sees the tool's final error text; the
@@ -252,8 +334,9 @@ pub(crate) fn inspection_failure(stderr: &str, redactions: &[String]) -> anyhow:
 /// quality and press Download, short enough for the signed addresses inside it to hold.
 const INSPECTION_REUSE: Duration = Duration::from_secs(120);
 
-/// The picker's latest analysis, keyed by everything that shapes it.
-static RECENT_INSPECTION: Mutex<Option<(String, Instant, Value)>> = Mutex::new(None);
+/// The picker's latest analysis with the address the tool analysed, keyed by everything that
+/// shapes it.
+static RECENT_INSPECTION: Mutex<Option<(String, Instant, Value, String)>> = Mutex::new(None);
 
 fn inspection_key(request: &InspectRequest) -> String {
     use sha2::{Digest, Sha256};
@@ -263,6 +346,7 @@ fn inspection_key(request: &InspectRequest) -> String {
         &request.session_cookies,
         &request.referer,
         &request.page_url,
+        &request.top_page_url,
         request.playlist,
         request.live_from_start,
     ))
@@ -270,29 +354,33 @@ fn inspection_key(request: &InspectRequest) -> String {
     hex::encode(Sha256::digest(identity))
 }
 
-fn remember_inspection(request: &InspectRequest, value: &Value) {
+fn remember_inspection(request: &InspectRequest, value: &Value, url: &str) {
     *RECENT_INSPECTION
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        Some((inspection_key(request), Instant::now(), value.clone()));
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((
+        inspection_key(request),
+        Instant::now(),
+        value.clone(),
+        url.to_owned(),
+    ));
 }
 
 /// The analysis the picker just made for this exact source, taken once: a download started
 /// from the picker does not run yt-dlp a second time, and a retry analyzes afresh.
-fn reuse_inspection(request: &InspectRequest) -> Option<(Value, MediaInfo)> {
+fn reuse_inspection(request: &InspectRequest) -> Option<(Value, MediaInfo, String)> {
     let mut recent = RECENT_INSPECTION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let matches = recent.as_ref().is_some_and(|(key, at, _)| {
+    let matches = recent.as_ref().is_some_and(|(key, at, _, _)| {
         at.elapsed() < INSPECTION_REUSE && *key == inspection_key(request)
     });
     if !matches {
         return None;
     }
-    let (_, _, value) = recent.take()?;
+    let (_, _, value, url) = recent.take()?;
     let info = media_info_from_json(&value).ok()?;
     validate_single_selection(&info, request.playlist).ok()?;
-    Some((value, info))
+    Some((value, info, url))
 }
 
 fn validate_single_selection(info: &MediaInfo, playlist: bool) -> Result<()> {
@@ -337,6 +425,8 @@ pub(crate) fn download(
 
     let effective_referer = request.referer.as_deref();
     let toolchain = tools::verified_toolchain(paths, control)?;
+    // The address the tool is started with when no analysis is loaded into it: the analysed one.
+    let mut source_url = request.url.clone();
     let (mut info, source_capture, selector, failure_stages, from_start) =
         if let Some((pinned, evidence)) = load_pinned_source_for_request(output, request)? {
             let info = media_info_from_json(&pinned.inspection)?;
@@ -361,6 +451,7 @@ pub(crate) fn download(
                 headers: request.headers.clone(),
                 referer: effective_referer.map(str::to_string),
                 page_url: request.page_url.clone(),
+                top_page_url: request.top_page_url.clone(),
                 session_cookies: request.session_cookies.clone(),
                 playlist: request.playlist,
                 live_from_start: request.live_from_start,
@@ -377,7 +468,7 @@ pub(crate) fn download(
                 inspected =
                     inspect_document_with_tools(&inspect_request, &toolchain, control, network);
             }
-            let (inspection, info) = inspected.map_err(|error| {
+            let (inspection, info, analysed_url) = inspected.map_err(|error| {
                 let phase = if media_manifest_url(&request.url) {
                     "ana liste"
                 } else {
@@ -385,6 +476,7 @@ pub(crate) fn download(
                 };
                 failed_in_stage(error, phase)
             })?;
+            source_url = analysed_url;
             let from_start = from_start_formats(&inspection);
             let selector = format_selector(request, &info)?;
             let failure_stages =
@@ -465,7 +557,7 @@ pub(crate) fn download(
     };
 
     let mut secrets = SensitiveInputs::create_for_download(
-        &request.url,
+        &source_url,
         &request.headers,
         effective_referer,
         request.page_url.as_deref(),
@@ -3414,17 +3506,30 @@ mod output_validation_tests {
             ..picked.clone()
         };
 
-        remember_inspection(&picked, &analysis);
+        let embedded = InspectRequest {
+            top_page_url: Some("https://site.example/watch".into()),
+            ..picked.clone()
+        };
+
+        remember_inspection(&picked, &analysis, picked.url.as_str());
         // A different source neither gets nor discards it.
         assert!(reuse_inspection(&other).is_none());
-        let (value, info) = reuse_inspection(&picked).expect("the picker's analysis");
+        // The page that embeds the source is part of what shapes the analysis.
+        assert!(reuse_inspection(&embedded).is_none());
+        let (value, info, url) = reuse_inspection(&picked).expect("the picker's analysis");
         assert_eq!(value, analysis);
         assert_eq!(info.title, "Film");
+        assert_eq!(url, picked.url);
         // Taken once: a retry analyzes afresh.
         assert!(reuse_inspection(&picked).is_none());
 
-        remember_inspection(&picked, &analysis);
-        if let Some((_, at, _)) = RECENT_INSPECTION.lock().unwrap().as_mut() {
+        // The address the tool analysed travels with the analysis.
+        remember_inspection(&embedded, &analysis, "https://site.example/watch");
+        let (_, _, url) = reuse_inspection(&embedded).expect("the analysis of the page");
+        assert_eq!(url, "https://site.example/watch");
+
+        remember_inspection(&picked, &analysis, picked.url.as_str());
+        if let Some((_, at, _, _)) = RECENT_INSPECTION.lock().unwrap().as_mut() {
             *at = Instant::now() - INSPECTION_REUSE;
         }
         assert!(reuse_inspection(&picked).is_none());

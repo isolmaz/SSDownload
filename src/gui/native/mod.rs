@@ -9044,6 +9044,7 @@ unsafe fn show_media_dialog(owner: HWND, app: App, base: AddRequest) {
         session_cookies: base.session_cookies.clone(),
         referer: base.referer.clone(),
         page_url: base.page_url.clone(),
+        top_page_url: base.top_page_url.clone(),
         playlist: base.playlist,
         live_from_start: false,
     };

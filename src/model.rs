@@ -167,6 +167,11 @@ pub struct AddRequest {
     /// The page this download was handed off from: cookie/source context only, never an
     /// HTTP Referer. `referer` keeps the network value exactly as the browser observed it.
     pub page_url: Option<String>,
+    /// The tab's own address when the media sits in a frame of it (`page_url` is then the
+    /// frame's): the page that embeds a player the media tool cannot use by its own address.
+    /// Left out of the record while absent, so earlier jobs keep their record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_page_url: Option<String>,
     /// Page markup the browser captured at handoff time, already bounded by the
     /// extension. It can carry session-bound markup, so it stays inside the
     /// profile: the job record seals it like the rest of the job, no
@@ -261,6 +266,7 @@ impl Default for AddRequest {
             session_cookies: Vec::new(),
             referer: None,
             page_url: None,
+            top_page_url: None,
             page_html: None,
             source_identity: None,
             format_id: None,
@@ -303,6 +309,9 @@ pub struct InspectRequest {
     /// partition cookies and is never sent as an HTTP Referer; `referer` stays the observed
     /// network value, and neither substitutes for the other.
     pub page_url: Option<String>,
+    /// The page that embeds the frame `url` belongs to. When the media tool does not support
+    /// `url`, the analysis runs once more for this page, or for `page_url` when none is named.
+    pub top_page_url: Option<String>,
     pub playlist: bool,
     /// Analyze a live stream as downloaded from its beginning (yt-dlp `--live-from-start`).
     pub live_from_start: bool,

@@ -4498,3 +4498,210 @@ fn an_evidence_request_is_sent_only_with_a_millisecond_or_more_left() {
         "a request is never given more than its own limit"
     );
 }
+
+const FRAME: &str = "https://player.example/embed/frame.html";
+const EMBEDDING_PAGE: &str = "https://clips.example/watch/7";
+
+fn framed_media(top_page_url: Option<&str>) -> InspectRequest {
+    InspectRequest {
+        url: FRAME.into(),
+        headers: [("Accept".to_owned(), "*/*".to_owned())].into(),
+        referer: Some("https://clips.example/".into()),
+        page_url: Some(FRAME.into()),
+        top_page_url: top_page_url.map(Into::into),
+        playlist: true,
+        ..InspectRequest::default()
+    }
+}
+
+/// What the tool prints when it has no extractor for an address.
+fn unsupported(address: &str) -> String {
+    format!("WARNING: [generic] Falling back on generic information extractor\nERROR: Unsupported URL: {address}")
+}
+
+/// Runs the fallback against a tool that supports only the addresses in `supported` and fails
+/// every other with `failure(address)`; returns the outcome and every request the tool was asked.
+fn analyse_with(
+    request: &InspectRequest,
+    supported: &[&str],
+    failure: impl Fn(&str) -> String,
+) -> (Result<(&'static str, String)>, Vec<InspectRequest>) {
+    let mut asked = Vec::new();
+    let outcome = analyse_with_page_fallback(request, |attempt| {
+        asked.push(attempt.clone());
+        Ok(if supported.contains(&attempt.url.as_str()) {
+            Run::Done("analysis")
+        } else {
+            Run::Failed {
+                stderr: failure(&attempt.url),
+                redactions: Vec::new(),
+            }
+        })
+    });
+    (outcome, asked)
+}
+
+#[test]
+fn an_address_the_tool_does_not_support_is_analysed_as_the_page_that_embeds_it() {
+    let request = framed_media(Some(EMBEDDING_PAGE));
+    let (outcome, asked) = analyse_with(&request, &[EMBEDDING_PAGE], unsupported);
+    assert_eq!(
+        outcome.unwrap(),
+        ("analysis", EMBEDDING_PAGE.to_owned()),
+        "the answer says which address it is for"
+    );
+    assert_eq!(asked.len(), 2);
+    let wire = |request: &InspectRequest| serde_json::to_value(request).unwrap();
+    assert_eq!(wire(&asked[0]), wire(&request));
+    assert_eq!(
+        wire(&asked[1]),
+        wire(&InspectRequest {
+            url: EMBEDDING_PAGE.into(),
+            top_page_url: None,
+            ..request
+        }),
+        "the page is analysed under the request's own context and without a page to fall back to"
+    );
+}
+
+#[test]
+fn without_a_top_page_the_page_the_handoff_came_from_is_the_one_to_fall_back_to() {
+    // An embed the page lists is handed over with the page as its `page_url`.
+    let embed = InspectRequest {
+        url: FRAME.into(),
+        page_url: Some(EMBEDDING_PAGE.into()),
+        ..InspectRequest::default()
+    };
+    let (outcome, asked) = analyse_with(&embed, &[EMBEDDING_PAGE], unsupported);
+    assert_eq!(outcome.unwrap(), ("analysis", EMBEDDING_PAGE.to_owned()));
+    assert_eq!(
+        asked.iter().map(|ask| ask.url.as_str()).collect::<Vec<_>>(),
+        [FRAME, EMBEDDING_PAGE]
+    );
+
+    // A top page named beside it is the one that wins.
+    let nested = InspectRequest {
+        top_page_url: Some(EMBEDDING_PAGE.into()),
+        page_url: Some("https://player.example/embed/outer.html".into()),
+        ..embed
+    };
+    let (outcome, asked) = analyse_with(&nested, &[EMBEDDING_PAGE], unsupported);
+    assert_eq!(outcome.unwrap(), ("analysis", EMBEDDING_PAGE.to_owned()));
+    assert_eq!(asked.len(), 2);
+}
+
+#[test]
+fn an_address_the_tool_supports_is_analysed_once_whatever_page_embeds_it() {
+    let (outcome, asked) = analyse_with(
+        &framed_media(Some(EMBEDDING_PAGE)),
+        &[FRAME, EMBEDDING_PAGE],
+        unsupported,
+    );
+    assert_eq!(outcome.unwrap(), ("analysis", FRAME.to_owned()));
+    assert_eq!(asked.len(), 1);
+}
+
+#[test]
+fn only_the_unsupported_address_answer_sends_the_analysis_to_the_page() {
+    let request = framed_media(Some(EMBEDDING_PAGE));
+    for stderr in [
+        "ERROR: [generic] Unable to download webpage: HTTP Error 404: Not Found",
+        "ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden",
+        "ERROR: Sign in to confirm you're not a bot",
+        "ERROR: This video is DRM protected",
+        // The same words about another address, which a redirect led to, are no answer for this one.
+        "ERROR: Unsupported URL: https://elsewhere.example/other.html",
+        // Only the final error decides: an earlier unsupported address ended in another way.
+        "ERROR: Unsupported URL: https://player.example/embed/frame.html\nERROR: [generic] Unable to download webpage: timed out",
+    ] {
+        let (outcome, asked) = analyse_with(&request, &[EMBEDDING_PAGE], |_| stderr.to_owned());
+        assert!(outcome.is_err(), "{stderr}");
+        assert_eq!(asked.len(), 1, "{stderr}");
+    }
+}
+
+#[test]
+fn a_failure_other_than_unsupported_keeps_its_own_code() {
+    let (outcome, _) = analyse_with(
+        &framed_media(Some(EMBEDDING_PAGE)),
+        &[EMBEDDING_PAGE],
+        |_| "ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden".into(),
+    );
+    assert_eq!(
+        code_of(&outcome.unwrap_err()),
+        Some(crate::error_codes::MED_007)
+    );
+}
+
+#[test]
+fn no_page_to_fall_back_to_leaves_the_analysis_as_it_was() {
+    let equal = framed_media(Some(FRAME));
+    let invalid_page = framed_media(Some("ftp://clips.example/watch/7"));
+    let unparsable = framed_media(Some("watch/7"));
+    for request in [framed_media(None), equal, invalid_page, unparsable] {
+        let (error, asked) = crate::i18n::with_language("en", || {
+            let (outcome, asked) = analyse_with(&request, &[EMBEDDING_PAGE], unsupported);
+            (format!("{:#}", outcome.unwrap_err()), asked)
+        });
+        assert_eq!(
+            error,
+            format!("SSD-MED-006 Media analysis failed: ERROR: Unsupported URL: {FRAME}"),
+            "{:?}",
+            request.top_page_url
+        );
+        assert_eq!(asked.len(), 1, "{:?}", request.top_page_url);
+    }
+}
+
+#[test]
+fn the_page_is_asked_once_even_when_the_tool_does_not_support_it_either() {
+    let request = framed_media(Some(EMBEDDING_PAGE));
+    let (error, asked) = crate::i18n::with_language("en", || {
+        let (outcome, asked) = analyse_with(&request, &[], unsupported);
+        (format!("{:#}", outcome.unwrap_err()), asked)
+    });
+    assert_eq!(
+        error,
+        format!("SSD-MED-006 Media analysis failed: ERROR: Unsupported URL: {EMBEDDING_PAGE}"),
+        "the last answer is the one reported"
+    );
+    assert_eq!(
+        asked.iter().map(|ask| ask.url.as_str()).collect::<Vec<_>>(),
+        [FRAME, EMBEDDING_PAGE]
+    );
+    assert_eq!(
+        asked[1].top_page_url, None,
+        "the page has no page to fall back to"
+    );
+}
+
+#[test]
+fn a_run_that_cannot_complete_is_not_retried_on_the_page() {
+    let mut asked = 0;
+    let outcome = analyse_with_page_fallback::<()>(&framed_media(Some(EMBEDDING_PAGE)), |_| {
+        asked += 1;
+        Err(anyhow!("the tool could not be started"))
+    });
+    assert!(outcome.is_err());
+    assert_eq!(asked, 1);
+}
+
+#[test]
+fn the_tool_names_an_address_the_way_it_was_given() {
+    assert!(unsupported_url(&unsupported(FRAME), FRAME));
+    assert!(unsupported_url(
+        "ERROR: [generic] Unsupported URL: https://player.example/embed/frame.html  \n",
+        FRAME
+    ));
+    // The same address spelled as the tool normalizes it.
+    assert!(unsupported_url(
+        "ERROR: Unsupported URL: https://PLAYER.example:443/embed/frame.html",
+        FRAME
+    ));
+    assert!(!unsupported_url(
+        "ERROR: Unsupported URL: https://player.example/embed/other.html",
+        FRAME
+    ));
+    assert!(!unsupported_url("ERROR: Unsupported URL", FRAME));
+    assert!(!unsupported_url("", FRAME));
+}
