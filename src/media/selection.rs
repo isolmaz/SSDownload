@@ -43,7 +43,7 @@ pub(super) fn format_selector(request: &AddRequest, info: &MediaInfo) -> Result<
                 crate::logging::Event::failure(
                     "inspect.drm",
                     crate::error_codes::MED_003,
-                    format!("seçilen biçim DRM korumalı: {id}"),
+                    format!("the selected format is DRM protected: {id}"),
                 )
                 .host(crate::logging::host_of(&request.url).unwrap_or_default()),
             );

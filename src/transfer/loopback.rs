@@ -6664,10 +6664,13 @@ fn a_stop_during_a_digest_lookup_ends_the_download_at_once_and_publishes_nothing
     let control = TransferControl::default();
     forget_verified();
     let stopped = std::sync::Mutex::new(None);
+    let ended = std::sync::atomic::AtomicBool::new(false);
     let error = with_lookup_limit(Duration::from_secs(60), || {
         thread::scope(|scope| {
             scope.spawn(|| {
-                for _ in 0..2000 {
+                // The lookup is awaited for as long as the download runs, which a slow machine
+                // may take; a download that ends without one stops the wait.
+                while !ended.load(Ordering::Acquire) {
                     if !server.lookups().is_empty() {
                         *stopped.lock().unwrap() = Some(Instant::now());
                         control.pause();
@@ -6676,7 +6679,9 @@ fn a_stop_during_a_digest_lookup_ends_the_download_at_once_and_publishes_nothing
                     thread::sleep(Duration::from_millis(5));
                 }
             });
-            fetch(&request, &output, &control, 1, 1, &mut |_| {}).unwrap_err()
+            let result = fetch(&request, &output, &control, 1, 1, &mut |_| {});
+            ended.store(true, Ordering::Release);
+            result.unwrap_err()
         })
     });
     let waited = stopped
@@ -6685,7 +6690,9 @@ fn a_stop_during_a_digest_lookup_ends_the_download_at_once_and_publishes_nothing
         .expect("the lookup never reached the server")
         .elapsed();
     assert!(!is_trf_003(&error), "{error:#}");
-    assert!(waited < Duration::from_secs(30), "{waited:?}");
+    // The progress callback polls for a stop about once a second, while the lookup itself would
+    // take a minute.
+    assert!(waited < Duration::from_secs(10), "{waited:?}");
     assert!(!output.exists());
     assert!(part_path(&output).exists());
     assert_eq!(verified_by(), []);

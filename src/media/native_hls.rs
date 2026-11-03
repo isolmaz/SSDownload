@@ -1350,7 +1350,7 @@ impl WorkerContext<'_> {
                         crate::logging::Event::warn("media.segment_retry")
                             .host(self.shared.host_names[host].clone())
                             .detail(format!(
-                                "{} segment {} deneme {}: {reason}",
+                                "{} segment {} attempt {}: {reason}",
                                 stream.role, task.index, task.attempt
                             )),
                     );
@@ -3889,12 +3889,14 @@ mod tests {
                 ));
             });
             // The download stalls when ten seconds pass without a new request, however long the
-            // whole of it takes.
+            // whole of it takes, but it also fails when it sends requests for two minutes
+            // without ending: 24 segments of 2000 bytes take seconds.
+            let hung_at = Instant::now() + Duration::from_secs(120);
             let mut requests = 0;
             let fetched = loop {
                 match receiver.recv_timeout(Duration::from_secs(10)) {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                        if server.log().len() > requests =>
+                        if server.log().len() > requests && Instant::now() < hung_at =>
                     {
                         requests = server.log().len();
                     }
@@ -3903,7 +3905,9 @@ mod tests {
             };
             // A stalled download is stopped so that the scope can end.
             control.cancel();
-            let joins = fetched.expect("the download stalled").unwrap();
+            let joins = fetched
+                .expect("the download stalled or never ended")
+                .unwrap();
             assert_eq!(
                 fs::read(&joins[0].joined).unwrap(),
                 pattern(1, 2000).repeat(24)

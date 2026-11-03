@@ -540,6 +540,16 @@ enum Previous {
     KeptReported,
 }
 
+impl Previous {
+    fn log_text(self) -> &'static str {
+        match self {
+            Previous::Missing => "no working set installed",
+            Previous::Kept => "working set kept, automatic install",
+            Previous::KeptReported => "working set kept, install asked for by the user",
+        }
+    }
+}
+
 fn previous_set(installed: &[ToolInfo], automatic: bool) -> Previous {
     match (installed.iter().all(|tool| tool.installed), automatic) {
         (false, _) => Previous::Missing,
@@ -648,10 +658,13 @@ fn install_candidate(
             bail!("{}", tools_stopped());
         }
         Err(error) => {
-            crate::logging::record(
-                crate::logging::Event::warn("tools.selftest_failed")
-                    .detail(format!("{}: {error:#}; {previous:?}", manifest.install_id)),
-            );
+            crate::logging::record(crate::logging::Event::warn("tools.selftest_failed").detail(
+                format!(
+                    "{}: {error:#}; {}",
+                    manifest.install_id,
+                    previous.log_text()
+                ),
+            ));
             if previous == Previous::Kept {
                 remember_self_test_failure(paths, unix_seconds());
             }

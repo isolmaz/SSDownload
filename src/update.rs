@@ -910,13 +910,11 @@ fn report_install_failure(paths: &AppPaths) {
             });
         });
     if let Err(error) = spawned {
-        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
-            crate::i18n::ui_format!(
-                "Kurulum hatası bildirimi başlatılamadı: {error}",
-                "The install failure notice could not be started: {error}",
-                error = error
-            ),
-        ));
+        crate::logging::record(
+            crate::logging::Event::warn("update.check_spawn").detail(format!(
+                "The install failure notice could not be started: {error}"
+            )),
+        );
     }
 }
 
@@ -1312,11 +1310,7 @@ fn stamp_update_check(app: &crate::app::App) {
     stamped.last_update_check = chrono::Local::now().timestamp();
     if let Err(error) = app.update_settings_quiet(stamped) {
         crate::logging::record(crate::logging::Event::warn("update.settings_save").detail(
-            crate::i18n::ui_format!(
-                "Güncelleme denetim damgası kaydedilemedi: {error:#}",
-                "The update check time could not be saved: {error:#}",
-                error = error
-            ),
+            format!("The update check time could not be saved: {error:#}"),
         ));
     }
 }
@@ -1382,11 +1376,7 @@ pub fn startup_check(app: crate::app::App) {
                         if let Err(error) = app.update_settings_quiet(next) {
                             crate::logging::record(
                                 crate::logging::Event::warn("update.settings_save").detail(
-                                    crate::i18n::ui_format!(
-                                        "Atlanan sürüm kaydedilemedi: {error:#}",
-                                        "The skipped version could not be saved: {error:#}",
-                                        error = error
-                                    ),
+                                    format!("The skipped version could not be saved: {error:#}"),
                                 ),
                             );
                         }
@@ -1396,13 +1386,11 @@ pub fn startup_check(app: crate::app::App) {
             }
         });
     if let Err(error) = spawned {
-        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
-            crate::i18n::ui_format!(
-                "Güncelleme denetim iş parçacığı başlatılamadı: {error}",
-                "The update check thread could not be started: {error}",
-                error = error
-            ),
-        ));
+        crate::logging::record(
+            crate::logging::Event::warn("update.check_spawn").detail(format!(
+                "The update check thread could not be started: {error}"
+            )),
+        );
     }
 }
 
@@ -1463,10 +1451,8 @@ pub fn check_now(app: crate::app::App) {
                                     if let Err(error) = app.update_settings_quiet(next) {
                                         crate::logging::record(
                                             crate::logging::Event::warn("update.settings_save")
-                                                .detail(crate::i18n::ui_format!(
-                                                "Atlanan sürüm kaydedilemedi: {error:#}",
-                                                "The skipped version could not be saved: {error:#}",
-                                                error = error
+                                                .detail(format!(
+                                                "The skipped version could not be saved: {error:#}"
                                             )),
                                         );
                                     }
@@ -1492,13 +1478,11 @@ pub fn check_now(app: crate::app::App) {
             }
         });
     if let Err(error) = spawned {
-        crate::logging::record(crate::logging::Event::warn("update.check_spawn").detail(
-            crate::i18n::ui_format!(
-                "Güncelleme denetim iş parçacığı başlatılamadı: {error}",
-                "The update check thread could not be started: {error}",
-                error = error
-            ),
-        ));
+        crate::logging::record(
+            crate::logging::Event::warn("update.check_spawn").detail(format!(
+                "The update check thread could not be started: {error}"
+            )),
+        );
     }
 }
 

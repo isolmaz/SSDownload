@@ -1489,7 +1489,7 @@ fn proxy_client(mut client: TcpStream, shared: Arc<ProxyShared>) {
                 crate::logging::Event::warn("proxy.reject")
                     .host(parsed.host.clone())
                     .detail(format!(
-                        "Yerel ağ aracısı tünel kapasitesi dolu; istek bekleme sonrası reddedildi ({} open={})",
+                        "The local network helper has no tunnel capacity left; the request was rejected after waiting ({} open={})",
                         shared.governor.usage_summary(&parsed.host),
                         shared.open_tunnels()
                     )),
