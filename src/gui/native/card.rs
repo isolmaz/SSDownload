@@ -3,6 +3,7 @@
 //! taskbar, follow the colour scheme (the system colours in high contrast) and can
 //! be pinned on top. What a card offers to press is a push button of the card whose
 //! face the card draws, so the keyboard and screen readers reach it like any other.
+//! The Modern theme draws the same cards as flyouts.
 
 use super::*;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -20,6 +21,28 @@ const ROW: i32 = 54;
 const FOOTER: i32 = 40;
 const PANEL_ROWS: usize = 5;
 const FIRST_CONTROL_ID: i32 = 100;
+/// Modern's card, in epx: its width, the padding at its sides, the header, one
+/// download's row and the footer under the rows, and the size of a target the
+/// pointer hits (a header glyph, a pause button, a footer button).
+const MODERN_WIDTH: i32 = 360;
+const MODERN_PAD: i32 = 16;
+const MODERN_HEADER: i32 = 48;
+const MODERN_ROW: i32 = 66;
+const MODERN_FOOTER: i32 = 48;
+const MODERN_TARGET: i32 = 32;
+
+fn card_width(modern: bool) -> i32 {
+    if modern {
+        MODERN_WIDTH
+    } else {
+        CARD_WIDTH
+    }
+}
+
+/// The height of a Modern card that lists `rows` downloads.
+fn modern_height(rows: i32, dpi: u32) -> i32 {
+    scale(MODERN_HEADER + MODERN_ROW * rows + MODERN_FOOTER, dpi)
+}
 
 #[derive(Clone)]
 pub(super) enum CardKind {
@@ -87,6 +110,23 @@ struct Colours {
     /// The glyphs that mark something on: a held pin, pause and resume.
     mark: u32,
     contrast: bool,
+    /// Modern's palette; `None` in Classic.
+    modern: Option<CardColours>,
+}
+
+/// The colours a Modern card paints with.
+#[derive(Clone, Copy, PartialEq)]
+struct CardColours {
+    palette: MainPalette,
+    /// The palette of the footer's buttons, which sit on the flyout surface.
+    controls: MainPalette,
+    border: u32,
+    /// The plates under a glyph button the pointer is on and under one it presses.
+    plate: (u32, u32),
+    /// A glyph's colour on its plate where the plate is the system highlight.
+    on_plate: Option<u32>,
+    /// The check mark on the completion disc.
+    mark: u32,
 }
 
 struct CardUi {
@@ -97,6 +137,8 @@ struct CardUi {
     dpi: u32,
     font: HFONT,
     bold: HFONT,
+    /// Modern's Caption font; null in Classic.
+    small: HFONT,
     pinned: bool,
     /// A completion card the user pinned stays until it is closed.
     keep: bool,
@@ -167,14 +209,16 @@ pub(super) unsafe fn open_card(owner: HWND, app: App, kind: CardKind) {
 /// cannot be created.
 unsafe fn create_card(owner: HWND, app: App, kind: CardKind, dpi: u32) -> HWND {
     let pinned = matches!(kind, CardKind::Done(_));
+    let (font, bold, small) = card_fonts(dpi);
     let raw = Box::into_raw(Box::new(CardUi {
         app,
         owner,
         hwnd: null_mut(),
         kind,
         dpi,
-        font: make_font(dpi, 9, FW_NORMAL as i32),
-        bold: make_font(dpi, 9, FW_SEMIBOLD as i32),
+        font,
+        bold,
+        small,
         pinned,
         keep: false,
         opened: Instant::now(),
@@ -191,7 +235,7 @@ unsafe fn create_card(owner: HWND, app: App, kind: CardKind, dpi: u32) -> HWND {
         WS_POPUP | WS_CLIPCHILDREN,
         0,
         0,
-        scale(CARD_WIDTH, dpi),
+        scale(card_width(modern()), dpi),
         height,
         null_mut(),
         null_mut(),
@@ -199,8 +243,7 @@ unsafe fn create_card(owner: HWND, app: App, kind: CardKind, dpi: u32) -> HWND {
         raw.cast(),
     );
     if hwnd.is_null() {
-        DeleteObject((*raw).font as HGDIOBJ);
-        DeleteObject((*raw).bold as HGDIOBJ);
+        delete_card_fonts(&*raw);
         drop(Box::from_raw(raw));
         return null_mut();
     }
@@ -224,12 +267,45 @@ unsafe fn create_card(owner: HWND, app: App, kind: CardKind, dpi: u32) -> HWND {
 /// that opened a card may sit on another monitor with another scale, which
 /// would draw the card too large or too small where it actually appears.
 unsafe fn primary_dpi() -> u32 {
-    let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+    dpi_at(POINT { x: 0, y: 0 })
+}
+
+/// DPI of the monitor `point` is on, of the nearest one when it is on none.
+pub(super) unsafe fn dpi_at(point: POINT) -> u32 {
+    let monitor = MonitorFromPoint(
+        point,
+        windows_sys::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST,
+    );
     let (mut x, mut y) = (0u32, 0u32);
     if !monitor.is_null() && GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y) == 0 {
         x.max(96)
     } else {
         GetDpiForSystem().max(96)
+    }
+}
+
+/// The fonts of a card at `dpi`: the body, its bold and, in Modern, the caption.
+unsafe fn card_fonts(dpi: u32) -> (HFONT, HFONT, HFONT) {
+    if modern() {
+        (
+            ramp_font(dpi, BODY_PX, false),
+            ramp_font_weight(dpi, BODY_PX, false, FW_SEMIBOLD as i32),
+            ramp_font(dpi, CAPTION_PX, true),
+        )
+    } else {
+        (
+            make_font(dpi, 9, FW_NORMAL as i32),
+            make_font(dpi, 9, FW_SEMIBOLD as i32),
+            null_mut(),
+        )
+    }
+}
+
+unsafe fn delete_card_fonts(card: &CardUi) {
+    for font in [card.font, card.bold, card.small] {
+        if !font.is_null() {
+            DeleteObject(font as HGDIOBJ);
+        }
     }
 }
 
@@ -265,7 +341,11 @@ fn in_panel(job: &Job) -> bool {
 unsafe fn card_height(card: &CardUi) -> i32 {
     let snapshot = card.app.snapshot();
     let rows = card_jobs(&card.kind, &snapshot).len().max(1) as i32;
-    scale(HEADER + ROW * rows + FOOTER, card.dpi)
+    if modern() {
+        modern_height(rows, card.dpi)
+    } else {
+        scale(HEADER + ROW * rows + FOOTER, card.dpi)
+    }
 }
 
 /// A burst of finished downloads would stack cards past the top of the screen,
@@ -312,7 +392,7 @@ unsafe fn stack_cards() {
             continue;
         }
         let gap = scale(12, (*raw).dpi);
-        let width = scale(CARD_WIDTH, (*raw).dpi);
+        let width = scale(card_width(modern()), (*raw).dpi);
         let height = card_height(&*raw);
         let top = bottom - gap - height;
         SetWindowPos(
@@ -335,6 +415,7 @@ unsafe fn stack_cards() {
 /// The colours of a card as COLORREF (BGR). In high contrast they are the system's: window,
 /// its text, highlight and button face.
 unsafe fn colours(dark: bool, contrast: bool) -> Colours {
+    let modern = modern().then(|| card_colours(dark, scheme_palette(dark), contrast));
     if contrast {
         let text = GetSysColor(COLOR_WINDOWTEXT);
         return Colours {
@@ -348,6 +429,7 @@ unsafe fn colours(dark: bool, contrast: bool) -> Colours {
             face_text: GetSysColor(COLOR_BTNTEXT),
             mark: text,
             contrast,
+            modern,
         };
     }
     let (surface, text, muted, track, accent, line) = if dark {
@@ -366,6 +448,7 @@ unsafe fn colours(dark: bool, contrast: bool) -> Colours {
         face_text: text,
         mark: accent,
         contrast,
+        modern,
     }
 }
 
@@ -429,73 +512,542 @@ enum Glyph {
     Play,
 }
 
-/// Small line icons drawn with GDI, centred in `rect`; no icon font is needed.
+/// Small line icons drawn as smoothed vector shapes, centred in `rect`; no icon
+/// font is needed.
 unsafe fn draw_glyph(dc: HDC, glyph: Glyph, rect: RECT, colour: u32, dpi: u32) {
-    let cx = (rect.left + rect.right) / 2;
-    let cy = (rect.top + rect.bottom) / 2;
     let r = scale(5, dpi);
-    let pen = CreatePen(PS_SOLID, scale(2, dpi).max(1), colour);
-    let brush = CreateSolidBrush(colour);
-    let old_pen = SelectObject(dc, pen as HGDIOBJ);
-    let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    match glyph {
-        Glyph::Close => {
-            MoveToEx(dc, cx - r, cy - r, null_mut());
-            LineTo(dc, cx + r + 1, cy + r + 1);
-            MoveToEx(dc, cx + r, cy - r, null_mut());
-            LineTo(dc, cx - r - 1, cy + r + 1);
-        }
+    let half = r + 3;
+    // The centre lies on a pixel corner, so even strokes keep sharp straight
+    // edges. `e` is how far a glyph reaches from it.
+    let (c, r) = (half as f32, r as f32);
+    let e = r + 1.0;
+    let stroke = scale(2, dpi).max(1) as f32;
+    let shapes = match glyph {
+        Glyph::Close => vec![
+            Shape::Line((c - r, c - r), (c + r, c + r), stroke),
+            Shape::Line((c + r, c - r), (c - r, c + r), stroke),
+        ],
         Glyph::Pin | Glyph::Pinned => {
-            if matches!(glyph, Glyph::Pinned) {
-                SelectObject(dc, brush as HGDIOBJ);
-            }
-            Ellipse(dc, cx - r + 1, cy - r - 2, cx + r, cy + r - 3);
-            MoveToEx(dc, cx, cy + r - 3, null_mut());
-            LineTo(dc, cx, cy + r + 3);
+            let head = [c - e + 0.5, c - e - 2.0, c + e - 0.5, c + e - 3.0];
+            vec![
+                if matches!(glyph, Glyph::Pinned) {
+                    Shape::Ellipse(head)
+                } else {
+                    Shape::Ring(head, stroke)
+                },
+                Shape::Rect(
+                    [
+                        c - stroke / 2.0,
+                        head[3] - stroke,
+                        c + stroke / 2.0,
+                        c + e + 2.0,
+                    ],
+                    0.0,
+                ),
+            ]
         }
-        Glyph::Expand => {
-            Rectangle(dc, cx - r, cy - r, cx + r + 1, cy + r + 1);
-        }
+        Glyph::Expand => vec![Shape::Frame([c - e, c - e, c + e, c + e], 0.0, stroke)],
         Glyph::Pause => {
-            let width = scale(3, dpi);
-            let left = RECT {
-                left: cx - r,
-                top: cy - r,
-                right: cx - r + width,
-                bottom: cy + r + 1,
-            };
-            FillRect(dc, &left, brush);
-            let right = RECT {
-                left: cx + r + 1 - width,
-                top: cy - r,
-                right: cx + r + 1,
-                bottom: cy + r + 1,
-            };
-            FillRect(dc, &right, brush);
+            let width = scale(3, dpi) as f32;
+            vec![
+                Shape::Rect([c - e, c - e, c - e + width, c + e], 0.0),
+                Shape::Rect([c + e - width, c - e, c + e, c + e], 0.0),
+            ]
         }
-        Glyph::Play => {
-            SelectObject(dc, brush as HGDIOBJ);
-            let points = [
-                POINT {
-                    x: cx - r + 1,
-                    y: cy - r,
-                },
-                POINT {
-                    x: cx + r + 1,
-                    y: cy,
-                },
-                POINT {
-                    x: cx - r + 1,
-                    y: cy + r,
-                },
-            ];
-            Polygon(dc, points.as_ptr(), 3);
+        Glyph::Play => vec![Shape::Triangle([
+            (c - r, c - e),
+            (c + e + 1.0, c),
+            (c - r, c + e),
+        ])],
+    };
+    paint_shapes(
+        dc,
+        (rect.left + rect.right) / 2 - half,
+        (rect.top + rect.bottom) / 2 - half,
+        2 * half,
+        &shapes,
+        colour,
+    );
+}
+
+/// The card's title: what it shows.
+fn card_title(kind: &CardKind, snapshot: &AppSnapshot) -> String {
+    match kind {
+        CardKind::Done(_) => crate::i18n::ui("İndirme tamamlandı", "Download complete").to_string(),
+        CardKind::Panel => {
+            // The rows are capped; the title still counts every listed download.
+            let total = snapshot.jobs.iter().filter(|job| in_panel(job)).count();
+            crate::i18n::ui_format!("İndirmeler ({total})", "Downloads ({total})", total = total)
+        }
+        CardKind::Jobs(_) => "SSDownload".to_string(),
+    }
+}
+
+/// The line under a download's bar.
+fn card_detail(job: &Job) -> String {
+    match job.state {
+        JobState::Completed => crate::i18n::ui_format!(
+            "Tamamlandı · {0}",
+            "Completed · {0}",
+            format_bytes(job.downloaded)
+        ),
+        JobState::Downloading | JobState::Processing | JobState::Connecting => format!(
+            "{} · {} · {}",
+            format_progress(job),
+            format_speed(job.speed),
+            format_eta(job.eta)
+        ),
+        _ => state_label(job),
+    }
+}
+
+/// The colour of the line under a download's bar.
+fn detail_colour(palette: &MainPalette, state: JobState) -> u32 {
+    match state {
+        JobState::Completed => palette.success,
+        JobState::Failed | JobState::Cancelled => palette.critical,
+        _ => palette.secondary,
+    }
+}
+
+/// The footer's buttons of a card that lists `jobs`, with what each does.
+fn card_buttons(kind: &CardKind, jobs: &[&Job]) -> Vec<(String, CardAction)> {
+    match kind {
+        CardKind::Done(id) => vec![
+            (
+                crate::i18n::ui("Aç", "Open").to_string(),
+                CardAction::OpenFile(id.clone()),
+            ),
+            (
+                crate::i18n::ui("Klasörde göster", "Show in folder").to_string(),
+                CardAction::OpenFolder(id.clone()),
+            ),
+        ],
+        CardKind::Panel => vec![(
+            crate::i18n::ui("Tümünü duraklat", "Pause all").to_string(),
+            CardAction::PauseAll,
+        )],
+        CardKind::Jobs(ids) => {
+            let done = jobs
+                .iter()
+                .find(|job| job.state == JobState::Completed)
+                .map(|job| job.id.clone());
+            match done {
+                Some(id) if ids.len() == 1 => vec![
+                    (
+                        crate::i18n::ui("Aç", "Open").to_string(),
+                        CardAction::OpenFile(id.clone()),
+                    ),
+                    (
+                        crate::i18n::ui("Klasörde göster", "Show in folder").to_string(),
+                        CardAction::OpenFolder(id),
+                    ),
+                ],
+                _ => vec![(
+                    crate::i18n::ui("Pencereyi aç", "Open window").to_string(),
+                    CardAction::Expand,
+                )],
+            }
         }
     }
-    SelectObject(dc, old_pen);
-    SelectObject(dc, old_brush);
-    DeleteObject(pen as HGDIOBJ);
-    DeleteObject(brush as HGDIOBJ);
+}
+
+/// The glyph buttons at the end of a card's header, rightmost first: what each shows, does
+/// and is called, and whether it marks something on (a held pin).
+fn header_glyphs(done: bool, held: bool) -> Vec<(Glyph, CardAction, bool, String)> {
+    let mut glyphs = vec![
+        (
+            Glyph::Close,
+            CardAction::Close,
+            false,
+            crate::i18n::ui("Kapat", "Close").to_string(),
+        ),
+        (
+            if held { Glyph::Pinned } else { Glyph::Pin },
+            CardAction::Pin,
+            held,
+            if held {
+                crate::i18n::ui("Sabitlemeyi kaldır", "Unpin")
+            } else {
+                crate::i18n::ui("Sabitle", "Pin")
+            }
+            .to_string(),
+        ),
+    ];
+    if !done {
+        glyphs.push((
+            Glyph::Expand,
+            CardAction::Expand,
+            false,
+            crate::i18n::ui("Genişlet", "Expand").to_string(),
+        ));
+    }
+    glyphs
+}
+
+/// The pause or resume button of a download's row: its glyph and its name.
+fn toggle_look(job: &Job) -> (Glyph, String) {
+    let resume = matches!(
+        job.state,
+        JobState::Paused | JobState::Failed | JobState::Cancelled
+    );
+    if resume {
+        (
+            Glyph::Play,
+            crate::i18n::ui_format!("Sürdür: {0}", "Resume: {0}", job.name),
+        )
+    } else {
+        (
+            Glyph::Pause,
+            crate::i18n::ui_format!("Duraklat: {0}", "Pause: {0}", job.name),
+        )
+    }
+}
+
+/// Modern's colours of a card in the scheme `dark` names, from `palette`. High
+/// contrast keeps the system colours: its border is the text colour, a plate is
+/// the highlight and a glyph on it the highlight's text.
+fn card_colours(dark: bool, palette: MainPalette, high: bool) -> CardColours {
+    let surface = palette.flyout;
+    if high {
+        return CardColours {
+            controls: MainPalette {
+                base: surface,
+                ..palette
+            },
+            border: palette.text,
+            plate: (palette.hover, palette.control_pressed),
+            on_plate: Some(palette.on_accent),
+            mark: palette.on_accent,
+            palette,
+        };
+    }
+    CardColours {
+        controls: on_card(
+            MainPalette {
+                card: surface,
+                ..palette
+            },
+            dark,
+        ),
+        border: over(if dark { 0x33000000 } else { 0x0f000000 }, surface),
+        plate: flyout_plates(dark, surface),
+        on_plate: None,
+        mark: if dark { 0x000000 } else { 0xffffff },
+        palette,
+    }
+}
+
+/// What a Modern card paints: the downloads and the state it shows.
+struct ModernCard<'a> {
+    kind: &'a CardKind,
+    snapshot: &'a AppSnapshot,
+    dpi: u32,
+    colours: CardColours,
+    /// The pin is shown as taken.
+    held: bool,
+    body: HFONT,
+    strong: HFONT,
+    small: HFONT,
+}
+
+/// What the face of a Modern card's button shows besides what it is.
+#[derive(Clone, Copy, Default)]
+struct Face {
+    hot: bool,
+    pressed: bool,
+    focused: bool,
+}
+
+/// A Modern card with everything but its buttons: a flyout surface with a thin
+/// border, a header with the title, a row for each download (its name, a progress
+/// bar, its state). Returns the buttons the card has room for, which draw
+/// themselves with `paint_modern_control`.
+unsafe fn paint_modern(dc: HDC, client: RECT, card: &ModernCard) -> Vec<Control> {
+    let d = card.dpi;
+    let s = |value: i32| scale(value, d);
+    let colours = &card.colours;
+    let palette = colours.palette;
+    let surface = palette.flyout;
+    fill_colour(dc, &client, surface);
+    for edge in [
+        RECT {
+            bottom: client.top + 1,
+            ..client
+        },
+        RECT {
+            top: client.bottom - 1,
+            ..client
+        },
+        RECT {
+            right: client.left + 1,
+            ..client
+        },
+        RECT {
+            left: client.right - 1,
+            ..client
+        },
+    ] {
+        fill_colour(dc, &edge, colours.border);
+    }
+    let mut controls: Vec<Control> = Vec::new();
+    let pad = s(MODERN_PAD);
+    let target = s(MODERN_TARGET);
+    let jobs = card_jobs(card.kind, card.snapshot);
+    let done = matches!(card.kind, CardKind::Done(_));
+
+    // The header: a completion's mark, the title and the buttons at the end.
+    let mut left = pad;
+    if done {
+        let size = s(20);
+        let unit = size as f32 / 20.0;
+        let stroke = (1.6 * unit).max(1.5);
+        paint_shapes(
+            dc,
+            pad,
+            s(14),
+            size,
+            &[Shape::Ellipse([0.0, 0.0, size as f32, size as f32])],
+            palette.success,
+        );
+        paint_shapes(
+            dc,
+            pad,
+            s(14),
+            size,
+            &[
+                Shape::Line((5.5 * unit, 10.5 * unit), (8.8 * unit, 13.8 * unit), stroke),
+                Shape::Line((8.8 * unit, 13.8 * unit), (14.5 * unit, 6.8 * unit), stroke),
+            ],
+            colours.mark,
+        );
+        left = pad + size + s(8);
+    }
+    let mut right = client.right - s(8);
+    for (glyph, action, marked, name) in header_glyphs(done, card.held) {
+        let rect = RECT {
+            left: right - target,
+            top: s(8),
+            right,
+            bottom: s(8) + target,
+        };
+        controls.push(Control {
+            rect,
+            action,
+            name,
+            look: Look::Glyph(glyph, marked),
+        });
+        right -= target;
+    }
+    // The controls are listed in reading order, which is the order Tab visits them in.
+    controls.reverse();
+    let title = RECT {
+        left,
+        top: s(8),
+        right: right - s(4),
+        bottom: s(8) + target,
+    };
+    text_at(
+        dc,
+        card.strong,
+        palette.text,
+        &card_title(card.kind, card.snapshot),
+        title,
+        DT_LEFT | DT_VCENTER,
+    );
+
+    // One row for each download.
+    let mut y = s(MODERN_HEADER);
+    if jobs.is_empty() {
+        let message = RECT {
+            left: pad,
+            top: y,
+            right: client.right - pad,
+            bottom: y + s(24),
+        };
+        text_at(
+            dc,
+            card.body,
+            palette.secondary,
+            crate::i18n::ui("Etkin indirme yok.", "No active downloads."),
+            message,
+            DT_LEFT | DT_VCENTER,
+        );
+        y += s(MODERN_ROW);
+    }
+    let width = client.right - pad - pad;
+    for job in &jobs {
+        let toggles = !done && can_pause_or_resume(job);
+        let name = RECT {
+            left: pad,
+            top: y,
+            right: client.right - pad - if toggles { s(24) } else { 0 },
+            bottom: y + s(24),
+        };
+        text_at(
+            dc,
+            card.strong,
+            palette.text,
+            &job.name,
+            name,
+            DT_LEFT | DT_VCENTER,
+        );
+        if toggles {
+            // The glyph ends at the padding; the target reaches past it.
+            let (glyph, name) = toggle_look(job);
+            controls.push(Control {
+                rect: RECT {
+                    left: client.right - pad + s(8) - target,
+                    top: y + s(12) - target / 2,
+                    right: client.right - pad + s(8),
+                    bottom: y + s(12) - target / 2 + target,
+                },
+                action: CardAction::Toggle(job.id.clone()),
+                name,
+                look: Look::Glyph(glyph, true),
+            });
+        }
+        // A 1 px track with a 3 px rounded fill on it, as the list's bar.
+        let line = s(1).max(1);
+        let thickness = s(3).max(3);
+        let middle = y + s(32);
+        fill_colour(
+            dc,
+            &RECT {
+                left: pad,
+                top: middle - line / 2,
+                right: pad + width,
+                bottom: middle - line / 2 + line,
+            },
+            palette.strong_stroke,
+        );
+        let (start, end) = if job.state == JobState::Processing {
+            processing_sweep(sweep_clock(), width)
+        } else {
+            let fraction = progress_fraction(job.state, job.downloaded, job.total).unwrap_or(0.0);
+            (0, (width as f64 * fraction).round() as i32)
+        };
+        if end > start {
+            round_rect(
+                dc,
+                &RECT {
+                    left: pad + start,
+                    top: middle - thickness / 2,
+                    right: pad + end,
+                    bottom: middle - thickness / 2 + thickness,
+                },
+                thickness / 2,
+                state_fill(&palette, job.state),
+                None,
+            );
+        }
+        let colour = detail_colour(&palette, job.state);
+        let detail = RECT {
+            left: pad,
+            top: y + s(38),
+            right: client.right - pad,
+            bottom: y + s(54),
+        };
+        text_at(
+            dc,
+            card.small,
+            colour,
+            &card_detail(job),
+            detail,
+            DT_LEFT | DT_VCENTER,
+        );
+        y += s(MODERN_ROW);
+    }
+
+    // The footer: the actions, the one that opens the file in the accent colour. A
+    // button's window reaches its focus ring past the face.
+    let ring = s(FOCUS_MARGIN);
+    let mut x = pad;
+    for (label, action) in card_buttons(card.kind, &jobs) {
+        let previous = SelectObject(dc, card.body as HGDIOBJ);
+        let text_width = label_width(dc, &label);
+        SelectObject(dc, previous);
+        let face = RECT {
+            left: x,
+            top: y,
+            right: x + (text_width + 2 * s(16)).max(s(80)),
+            bottom: y + target,
+        };
+        x = face.right + s(8);
+        controls.push(Control {
+            rect: inflate(face, ring, ring),
+            action,
+            name: label.clone(),
+            look: Look::Label(label),
+        });
+    }
+    controls
+}
+
+/// Paints the face of one of a Modern card's buttons into `area` of `dc`: a glyph on the
+/// plate the pointer earns, or a footer button, the one that opens the file in the accent
+/// colour.
+unsafe fn paint_modern_control(
+    dc: HDC,
+    area: RECT,
+    control: &Control,
+    face: Face,
+    colours: &CardColours,
+    font: HFONT,
+    dpi: u32,
+) {
+    let palette = colours.palette;
+    match &control.look {
+        Look::Glyph(glyph, marked) => {
+            fill_colour(dc, &area, palette.flyout);
+            let plate = if face.pressed {
+                Some(colours.plate.1)
+            } else if face.hot {
+                Some(colours.plate.0)
+            } else {
+                None
+            };
+            if face.focused {
+                focus_plate(
+                    dc,
+                    &area,
+                    scale(CORNER, dpi),
+                    dpi,
+                    &palette,
+                    plate.unwrap_or(palette.flyout),
+                );
+            } else if let Some(plate) = plate {
+                round_rect(dc, &area, scale(CORNER, dpi), plate, None);
+            }
+            let colour = match glyph {
+                Glyph::Pause | Glyph::Play => palette.text,
+                Glyph::Pin | Glyph::Pinned if *marked => link_colour(&colours.controls),
+                _ => palette.secondary,
+            };
+            let colour = colours.on_plate.filter(|_| face.hot).unwrap_or(colour);
+            draw_glyph(dc, *glyph, area, colour, dpi);
+        }
+        Look::Label(label) => {
+            let characters: Vec<u16> = label.encode_utf16().collect();
+            paint_button(
+                dc,
+                area,
+                dpi,
+                &colours.controls,
+                font,
+                &characters,
+                None,
+                ButtonState {
+                    primary: matches!(control.action, CardAction::OpenFile(_)),
+                    disabled: false,
+                    pressed: face.pressed && face.hot,
+                    hot: face.hot,
+                    focused: face.focused,
+                    underline: false,
+                },
+            );
+        }
+    }
 }
 
 /// Paints everything of a card except its controls, which are buttons of their own, and
@@ -504,6 +1056,31 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
     let d = card.dpi;
     let mut client: RECT = zeroed();
     GetClientRect(card.hwnd, &mut client);
+    if let Some(modern) = colours.modern {
+        let controls = paint_modern(
+            dc,
+            client,
+            &ModernCard {
+                kind: &card.kind,
+                snapshot,
+                dpi: d,
+                colours: modern,
+                // A completion card is always on top; its pin means "stay until closed".
+                held: if matches!(card.kind, CardKind::Done(_)) {
+                    card.keep
+                } else {
+                    card.pinned
+                },
+                body: card.font,
+                strong: card.bold,
+                small: card.small,
+            },
+        );
+        return Painted {
+            title: card_title(&card.kind, snapshot),
+            controls,
+        };
+    }
     fill(dc, client, colours.surface);
     // One-pixel frame for the light scheme, where the shadow alone is faint.
     let frame = CreateSolidBrush(colours.line);
@@ -512,15 +1089,7 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
     let mut controls = Vec::new();
     let pad = scale(14, d);
     let jobs = card_jobs(&card.kind, snapshot);
-    let title = match &card.kind {
-        CardKind::Done(_) => crate::i18n::ui("İndirme tamamlandı", "Download complete").to_string(),
-        CardKind::Panel => {
-            // The rows are capped; the title still counts every listed download.
-            let total = snapshot.jobs.iter().filter(|job| in_panel(job)).count();
-            crate::i18n::ui_format!("İndirmeler ({total})", "Downloads ({total})", total = total)
-        }
-        CardKind::Jobs(_) => "SSDownload".to_string(),
-    };
+    let title = card_title(&card.kind, snapshot);
     let header = RECT {
         left: pad,
         top: 0,
@@ -544,32 +1113,7 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
     } else {
         card.pinned
     };
-    let mut glyphs = vec![
-        (
-            Glyph::Close,
-            CardAction::Close,
-            false,
-            crate::i18n::ui("Kapat", "Close"),
-        ),
-        (
-            if held { Glyph::Pinned } else { Glyph::Pin },
-            CardAction::Pin,
-            held,
-            if held {
-                crate::i18n::ui("Sabitlemeyi kaldır", "Unpin")
-            } else {
-                crate::i18n::ui("Sabitle", "Pin")
-            },
-        ),
-    ];
-    if !matches!(card.kind, CardKind::Done(_)) {
-        glyphs.push((
-            Glyph::Expand,
-            CardAction::Expand,
-            false,
-            crate::i18n::ui("Genişlet", "Expand"),
-        ));
-    }
+    let glyphs = header_glyphs(matches!(card.kind, CardKind::Done(_)), held);
     for (symbol, action, marked, name) in glyphs {
         controls.push(Control {
             rect: RECT {
@@ -579,7 +1123,7 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
                 bottom: scale(5, d) + glyph,
             },
             action,
-            name: name.to_string(),
+            name,
             look: Look::Glyph(symbol, marked),
         });
         x -= glyph;
@@ -620,10 +1164,7 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
             DT_LEFT | DT_VCENTER,
         );
         if !matches!(card.kind, CardKind::Done(_)) && can_pause_or_resume(job) {
-            let resume = matches!(
-                job.state,
-                JobState::Paused | JobState::Failed | JobState::Cancelled
-            );
+            let (glyph, name) = toggle_look(job);
             controls.push(Control {
                 rect: RECT {
                     left: client.right - pad - scale(26, d),
@@ -632,12 +1173,8 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
                     bottom: y + scale(28, d),
                 },
                 action: CardAction::Toggle(job.id.clone()),
-                name: if resume {
-                    crate::i18n::ui_format!("Sürdür: {0}", "Resume: {0}", job.name)
-                } else {
-                    crate::i18n::ui_format!("Duraklat: {0}", "Pause: {0}", job.name)
-                },
-                look: Look::Glyph(if resume { Glyph::Play } else { Glyph::Pause }, true),
+                name,
+                look: Look::Glyph(glyph, true),
             });
         }
         let bar = RECT {
@@ -672,20 +1209,7 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
             }
         };
         fill(dc, filled, state_colour(job, colours));
-        let detail = match job.state {
-            JobState::Completed => crate::i18n::ui_format!(
-                "Tamamlandı · {0}",
-                "Completed · {0}",
-                format_bytes(job.downloaded)
-            ),
-            JobState::Downloading | JobState::Processing | JobState::Connecting => format!(
-                "{} · {} · {}",
-                format_progress(job),
-                format_speed(job.speed),
-                format_eta(job.eta)
-            ),
-            _ => state_label(job),
-        };
+        let detail = card_detail(job);
         let detail_rect = RECT {
             left: pad,
             top: y + scale(34, d),
@@ -705,44 +1229,7 @@ unsafe fn paint_card(card: &CardUi, dc: HDC, snapshot: &AppSnapshot, colours: &C
     // Footer actions.
     let footer_top = y + scale(4, d);
     let button_h = scale(28, d);
-    let buttons: Vec<(String, CardAction)> = match &card.kind {
-        CardKind::Done(id) => vec![
-            (
-                crate::i18n::ui("Aç", "Open").to_string(),
-                CardAction::OpenFile(id.clone()),
-            ),
-            (
-                crate::i18n::ui("Klasörde göster", "Show in folder").to_string(),
-                CardAction::OpenFolder(id.clone()),
-            ),
-        ],
-        CardKind::Panel => vec![(
-            crate::i18n::ui("Tümünü duraklat", "Pause all").to_string(),
-            CardAction::PauseAll,
-        )],
-        CardKind::Jobs(ids) => {
-            let done = jobs
-                .iter()
-                .find(|job| job.state == JobState::Completed)
-                .map(|job| job.id.clone());
-            match done {
-                Some(id) if ids.len() == 1 => vec![
-                    (
-                        crate::i18n::ui("Aç", "Open").to_string(),
-                        CardAction::OpenFile(id.clone()),
-                    ),
-                    (
-                        crate::i18n::ui("Klasörde göster", "Show in folder").to_string(),
-                        CardAction::OpenFolder(id),
-                    ),
-                ],
-                _ => vec![(
-                    crate::i18n::ui("Pencereyi aç", "Open window").to_string(),
-                    CardAction::Expand,
-                )],
-            }
-        }
-    };
+    let buttons = card_buttons(&card.kind, &jobs);
     let mut bx = pad;
     for (label, action) in buttons {
         let width = scale(14, d) + scale(7, d) * label.chars().count() as i32;
@@ -770,6 +1257,10 @@ unsafe fn draw_control(card: &CardUi, draw: &NMCUSTOMDRAW, control: &Control) {
     };
     let dc = draw.hdc;
     let area = draw.rc;
+    if let Some(modern) = &colours.modern {
+        draw_modern_control(card, draw, control, modern);
+        return;
+    }
     fill(dc, area, colours.surface);
     let mut focus = area;
     match &control.look {
@@ -813,6 +1304,44 @@ unsafe fn draw_control(card: &CardUi, draw: &NMCUSTOMDRAW, control: &Control) {
     if held & BST_FOCUS != 0 && cues & UISF_HIDEFOCUS == 0 {
         DrawFocusRect(dc, &focus);
     }
+}
+
+/// Draws one control of a Modern card on the face of its push button. The pointer's
+/// state is the button's own: it is on it, and it presses it while it is still on it.
+unsafe fn draw_modern_control(
+    card: &CardUi,
+    draw: &NMCUSTOMDRAW,
+    control: &Control,
+    colours: &CardColours,
+) {
+    let button = draw.hdr.hwndFrom;
+    let hot = !GetPropW(button, hot_prop()).is_null();
+    let face = Face {
+        hot,
+        pressed: hot && !GetPropW(button, pressed_prop()).is_null(),
+        focused: SendMessageW(button, BM_GETSTATE, 0, 0) as u32 & BST_FOCUS != 0
+            && SendMessageW(button, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0,
+    };
+    // The glyph buttons paint in several steps; the buffer shows them whole.
+    let area = draw.rc;
+    let (width, height) = (area.right - area.left, area.bottom - area.top);
+    let memory = CreateCompatibleDC(draw.hdc);
+    SetLayout(memory, GetLayout(draw.hdc));
+    let bitmap = CreateCompatibleBitmap(draw.hdc, width, height);
+    let old = SelectObject(memory, bitmap as HGDIOBJ);
+    let local = RECT {
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+    };
+    paint_modern_control(memory, local, control, face, colours, card.font, card.dpi);
+    BitBlt(
+        draw.hdc, area.left, area.top, width, height, memory, 0, 0, SRCCOPY,
+    );
+    SelectObject(memory, old);
+    DeleteObject(bitmap as HGDIOBJ);
+    DeleteDC(memory);
 }
 
 fn same_rect(a: &RECT, b: &RECT) -> bool {
@@ -952,6 +1481,19 @@ unsafe fn click(button: HWND) {
     );
 }
 
+fn pressed_prop() -> *const u16 {
+    static NAME: std::sync::LazyLock<Vec<u16>> =
+        std::sync::LazyLock::new(|| wide("SSDownload.CardButtonPressed"));
+    NAME.as_ptr()
+}
+
+/// A Modern button shows the pointer on it and pressing it, which Classic's does not.
+unsafe fn repaint_modern(button: HWND) {
+    if modern() {
+        InvalidateRect(button, null(), 0);
+    }
+}
+
 /// A button of a card is pressed by the mouse without taking the focus or activating the
 /// card: the user keeps working in the window they were in. The keyboard and screen readers
 /// press it through the dialog manager and `BM_CLICK` as for any button.
@@ -962,9 +1504,33 @@ unsafe extern "system" fn card_button_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_MOUSEMOVE if GetPropW(hwnd, hot_prop()).is_null() => {
+            SetPropW(hwnd, hot_prop(), 1usize as HANDLE);
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            TrackMouseEvent(&mut track);
+            repaint_modern(hwnd);
+            call_previous(hwnd, msg, wparam, lparam)
+        }
+        WM_MOUSELEAVE => {
+            RemovePropW(hwnd, hot_prop());
+            repaint_modern(hwnd);
+            call_previous(hwnd, msg, wparam, lparam)
+        }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
             SetCapture(hwnd);
+            SetPropW(hwnd, pressed_prop(), 1usize as HANDLE);
+            repaint_modern(hwnd);
             0
+        }
+        WM_CAPTURECHANGED => {
+            RemovePropW(hwnd, pressed_prop());
+            repaint_modern(hwnd);
+            call_previous(hwnd, msg, wparam, lparam)
         }
         WM_LBUTTONUP if GetCapture() == hwnd => {
             ReleaseCapture();
@@ -986,6 +1552,8 @@ unsafe extern "system" fn card_button_proc(
         WM_NCDESTROY => {
             let result = call_previous(hwnd, msg, wparam, lparam);
             RemovePropW(hwnd, subclass_prop());
+            RemovePropW(hwnd, hot_prop());
+            RemovePropW(hwnd, pressed_prop());
             result
         }
         _ => call_previous(hwnd, msg, wparam, lparam),
@@ -995,11 +1563,9 @@ unsafe extern "system" fn card_button_proc(
 /// The monitor of the card changed its scale: the fonts and the size are those of the new
 /// scale, and the cards are stacked again.
 unsafe fn card_dpi_changed(card: &mut CardUi, dpi: u32) {
-    DeleteObject(card.font as HGDIOBJ);
-    DeleteObject(card.bold as HGDIOBJ);
+    delete_card_fonts(card);
     card.dpi = dpi;
-    card.font = make_font(dpi, 9, FW_NORMAL as i32);
-    card.bold = make_font(dpi, 9, FW_SEMIBOLD as i32);
+    (card.font, card.bold, card.small) = card_fonts(dpi);
     stack_cards();
     InvalidateRect(card.hwnd, null(), 0);
 }
@@ -1199,8 +1765,7 @@ unsafe extern "system" fn card_proc(
         WM_DESTROY => {
             CARDS.with(|cards| cards.borrow_mut().retain(|value| *value != hwnd));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            DeleteObject(card.font as HGDIOBJ);
-            DeleteObject(card.bold as HGDIOBJ);
+            delete_card_fonts(card);
             drop(Box::from_raw(raw));
             stack_cards();
             0
@@ -1213,12 +1778,58 @@ unsafe extern "system" fn card_proc(
 mod tests {
     use super::*;
     use crate::gui::native::tests::{
-        on_private_desktop, register_test_classes, with_common_controls_6, ShiftHeld,
+        on_private_desktop as on_desktop, register_test_classes, with_common_controls_6, ShiftHeld,
     };
     use crate::model::{Action as ModelAction, AddRequest};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetActiveWindow, SetActiveWindow, VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB,
     };
+
+    thread_local! {
+        /// The theme the card tests of this thread run in.
+        static IN_MODERN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// `on_private_desktop`, in the theme of the test that calls it.
+    fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+        let in_modern = IN_MODERN.with(std::cell::Cell::get);
+        on_desktop(move || {
+            set_modern(in_modern);
+            body()
+        })
+    }
+
+    /// Runs `body` in Classic, then in Modern, and fails with what each theme found.
+    fn in_each_theme(body: impl Fn(bool)) {
+        let mut failed = Vec::new();
+        for in_modern in [false, true] {
+            IN_MODERN.with(|theme| theme.set(in_modern));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(in_modern)));
+            if let Err(panic) = result {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
+                    .unwrap_or_default();
+                failed.push(format!(
+                    "{}: {message}",
+                    if in_modern { "modern" } else { "classic" }
+                ));
+            }
+        }
+        IN_MODERN.with(|theme| theme.set(false));
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// Runs `body` in Modern only.
+    fn in_modern(body: impl FnOnce()) {
+        IN_MODERN.with(|theme| theme.set(true));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        IN_MODERN.with(|theme| theme.set(false));
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
 
     #[test]
     fn a_card_minimized_from_one_download_stands_in_for_its_completion_card() {
@@ -1385,72 +1996,80 @@ mod tests {
 
     #[test]
     fn every_control_of_a_card_has_a_name_in_every_language() {
-        for info in crate::i18n::LANGUAGES.iter() {
-            for kind in [jobs as fn(&str) -> CardKind, done, |_| CardKind::Panel] {
-                with_card_in(info.code, kind, 96, false, |card| unsafe {
-                    let buttons = card.buttons();
-                    assert!(
-                        buttons.len() >= 3,
-                        "{}: a card has its pin, its close button and an action",
-                        info.code
-                    );
-                    for (_, name, _) in &buttons {
+        in_each_theme(|_| {
+            for info in crate::i18n::LANGUAGES.iter() {
+                for kind in [jobs as fn(&str) -> CardKind, done, |_| CardKind::Panel] {
+                    with_card_in(info.code, kind, 96, false, |card| unsafe {
+                        let buttons = card.buttons();
                         assert!(
-                            !name.trim().is_empty(),
-                            "{}: a control without a name",
+                            buttons.len() >= 3,
+                            "{}: a card has its pin, its close button and an action",
                             info.code
                         );
-                    }
-                });
+                        for (_, name, _) in &buttons {
+                            assert!(
+                                !name.trim().is_empty(),
+                                "{}: a control without a name",
+                                info.code
+                            );
+                        }
+                    });
+                }
             }
-        }
+        });
     }
 
     #[test]
     fn the_controls_of_a_card_are_buttons_named_for_what_they_do_in_reading_order() {
-        with_card(jobs, |card| unsafe {
-            let names: Vec<String> = card.buttons().into_iter().map(|button| button.1).collect();
-            assert_eq!(
-                names,
-                [
-                    "Expand".to_owned(),
-                    "Pin".into(),
-                    "Close".into(),
-                    format!("Pause: {}", card.job_name()),
-                    "Open window".into(),
-                ]
-            );
-        });
-        with_card(done, |card| unsafe {
-            let names: Vec<String> = card.buttons().into_iter().map(|button| button.1).collect();
-            assert_eq!(names, ["Pin", "Close", "Open", "Show in folder"]);
-            assert_eq!(
-                window_text(card.hwnd),
-                "Download complete",
-                "the card itself is named for what it shows"
-            );
+        in_each_theme(|_| {
+            with_card(jobs, |card| unsafe {
+                let names: Vec<String> =
+                    card.buttons().into_iter().map(|button| button.1).collect();
+                assert_eq!(
+                    names,
+                    [
+                        "Expand".to_owned(),
+                        "Pin".into(),
+                        "Close".into(),
+                        format!("Pause: {}", card.job_name()),
+                        "Open window".into(),
+                    ]
+                );
+            });
+            with_card(done, |card| unsafe {
+                let names: Vec<String> =
+                    card.buttons().into_iter().map(|button| button.1).collect();
+                assert_eq!(names, ["Pin", "Close", "Open", "Show in folder"]);
+                assert_eq!(
+                    window_text(card.hwnd),
+                    "Download complete",
+                    "the card itself is named for what it shows"
+                );
+            });
         });
     }
 
     #[test]
     fn a_card_that_appears_does_not_take_the_focus() {
-        on_private_desktop(|| {
-            with_common_controls_6(|| unsafe {
-                let owner = control(null_mut(), "STATIC", "owner", WS_POPUP | WS_VISIBLE, 0, 0);
-                SetActiveWindow(owner);
-                assert_eq!(GetActiveWindow(), owner, "the window the user works in");
-                let card = Fixture::open(jobs, 96, false);
-                assert!(IsWindowVisible(card.hwnd) != 0, "the card is shown");
-                assert!(!card.buttons().is_empty(), "the card has its buttons");
-                assert_eq!(GetActiveWindow(), owner, "the card did not take over");
-                let focus = GetFocus();
-                assert!(
-                    focus != card.hwnd && GetAncestor(focus, GA_ROOT) != card.hwnd,
-                    "no control of the card has the focus"
-                );
-                drop(card);
-                DestroyWindow(owner);
-            })
+        in_each_theme(|_| {
+            on_private_desktop(|| {
+                with_common_controls_6(|| unsafe {
+                    let owner = control(null_mut(), "STATIC", "owner", WS_POPUP | WS_VISIBLE, 0, 0);
+                    SetActiveWindow(owner);
+                    assert_eq!(GetActiveWindow(), owner, "the window the user works in");
+                    let card = Fixture::open(jobs, 96, false);
+                    assert!(IsWindowVisible(card.hwnd) != 0, "the card is shown");
+                    assert!(!card.buttons().is_empty(), "the card has its buttons");
+                    assert_eq!(GetActiveWindow(), owner, "the card did not take over");
+                    let focus = GetFocus();
+                    assert!(
+                        focus != card.hwnd && GetAncestor(focus, GA_ROOT) != card.hwnd,
+                        "no control of the card has the focus"
+                    );
+                    drop(card);
+                    DestroyWindow(owner);
+                })
+            });
         });
     }
 
@@ -1464,243 +2083,268 @@ mod tests {
 
     #[test]
     fn a_click_on_the_card_itself_activates_it() {
-        on_private_desktop(|| {
-            with_common_controls_6(|| {
-                crate::i18n::with_language("en", || unsafe {
-                    let other = control(null_mut(), "STATIC", "other", WS_POPUP | WS_VISIBLE, 0, 0);
-                    let card = Fixture::open(jobs, 96, false);
-                    SetActiveWindow(other);
-                    assert_eq!(GetActiveWindow(), other, "another window is active");
-                    SendMessageW(card.hwnd, WM_MOUSEMOVE, 0, at(1, 1));
-                    assert_eq!(GetActiveWindow(), other, "no click, no activation");
-                    SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
-                    assert_eq!(GetActiveWindow(), card.hwnd, "a click on the card");
-                    drop(card);
-                    DestroyWindow(other);
+        in_each_theme(|_| {
+            on_private_desktop(|| {
+                with_common_controls_6(|| {
+                    crate::i18n::with_language("en", || unsafe {
+                        let other =
+                            control(null_mut(), "STATIC", "other", WS_POPUP | WS_VISIBLE, 0, 0);
+                        let card = Fixture::open(jobs, 96, false);
+                        SetActiveWindow(other);
+                        assert_eq!(GetActiveWindow(), other, "another window is active");
+                        SendMessageW(card.hwnd, WM_MOUSEMOVE, 0, at(1, 1));
+                        assert_eq!(GetActiveWindow(), other, "no click, no activation");
+                        SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
+                        assert_eq!(GetActiveWindow(), card.hwnd, "a click on the card");
+                        drop(card);
+                        DestroyWindow(other);
+                    })
                 })
-            })
+            });
         });
     }
 
     #[test]
     fn a_click_on_a_button_of_a_card_presses_it_and_leaves_the_active_window_and_the_focus_alone() {
-        on_private_desktop(|| {
-            with_common_controls_6(|| {
-                crate::i18n::with_language("en", || unsafe {
-                    let other = control(null_mut(), "STATIC", "other", WS_POPUP | WS_VISIBLE, 0, 0);
-                    let card = Fixture::open(jobs, 96, false);
-                    SetActiveWindow(other);
-                    let (active, focus) = (GetActiveWindow(), GetFocus());
-                    assert_eq!(active, other, "another window is active");
-                    let pin = card.buttons()[1].0;
-                    assert!(!(*card.card()).pinned);
-                    SendMessageW(pin, WM_LBUTTONDOWN, MK_LBUTTON, at(4, 4));
-                    assert_eq!(GetCapture(), pin, "the button holds the mouse");
-                    assert!(
-                        !(*card.card()).pinned,
-                        "nothing is pressed before the button is let go"
-                    );
-                    SendMessageW(pin, WM_LBUTTONUP, 0, at(4, 4));
-                    assert!(GetCapture().is_null(), "the mouse is let go");
-                    assert!((*card.card()).pinned, "the click pressed the pin");
-                    // A press that is let go outside the button is no click.
-                    SendMessageW(pin, WM_LBUTTONDOWN, MK_LBUTTON, at(4, 4));
-                    SendMessageW(pin, WM_LBUTTONUP, 0, at(-40, -40));
-                    assert!((*card.card()).pinned, "a press let go outside the button");
-                    // A double click is a second press.
-                    SendMessageW(pin, WM_LBUTTONDBLCLK, MK_LBUTTON, at(4, 4));
-                    SendMessageW(pin, WM_LBUTTONUP, 0, at(4, 4));
-                    assert!(!(*card.card()).pinned, "a double click");
-                    SendMessageW(pin, BM_CLICK, 0, 0);
-                    assert!((*card.card()).pinned, "a screen reader presses it too");
-                    assert_eq!(GetActiveWindow(), active, "the card was not activated");
-                    assert_eq!(GetFocus(), focus, "no button took the focus");
-                    drop(card);
-                    DestroyWindow(other);
+        in_each_theme(|_| {
+            on_private_desktop(|| {
+                with_common_controls_6(|| {
+                    crate::i18n::with_language("en", || unsafe {
+                        let other =
+                            control(null_mut(), "STATIC", "other", WS_POPUP | WS_VISIBLE, 0, 0);
+                        let card = Fixture::open(jobs, 96, false);
+                        SetActiveWindow(other);
+                        let (active, focus) = (GetActiveWindow(), GetFocus());
+                        assert_eq!(active, other, "another window is active");
+                        let pin = card.buttons()[1].0;
+                        assert!(!(*card.card()).pinned);
+                        SendMessageW(pin, WM_LBUTTONDOWN, MK_LBUTTON, at(4, 4));
+                        assert_eq!(GetCapture(), pin, "the button holds the mouse");
+                        assert!(
+                            !(*card.card()).pinned,
+                            "nothing is pressed before the button is let go"
+                        );
+                        SendMessageW(pin, WM_LBUTTONUP, 0, at(4, 4));
+                        assert!(GetCapture().is_null(), "the mouse is let go");
+                        assert!((*card.card()).pinned, "the click pressed the pin");
+                        // A press that is let go outside the button is no click.
+                        SendMessageW(pin, WM_LBUTTONDOWN, MK_LBUTTON, at(4, 4));
+                        SendMessageW(pin, WM_LBUTTONUP, 0, at(-40, -40));
+                        assert!((*card.card()).pinned, "a press let go outside the button");
+                        // A double click is a second press.
+                        SendMessageW(pin, WM_LBUTTONDBLCLK, MK_LBUTTON, at(4, 4));
+                        SendMessageW(pin, WM_LBUTTONUP, 0, at(4, 4));
+                        assert!(!(*card.card()).pinned, "a double click");
+                        SendMessageW(pin, BM_CLICK, 0, 0);
+                        assert!((*card.card()).pinned, "a screen reader presses it too");
+                        assert_eq!(GetActiveWindow(), active, "the card was not activated");
+                        assert_eq!(GetFocus(), focus, "no button took the focus");
+                        drop(card);
+                        DestroyWindow(other);
+                    })
                 })
-            })
+            });
         });
     }
 
     #[test]
     fn once_a_card_is_active_tab_enter_space_and_escape_work_in_it() {
-        with_card(jobs, |card| unsafe {
-            let main = control(null_mut(), "STATIC", "main", WS_POPUP, 0, 0);
-            SetActiveWindow(card.hwnd);
-            assert_eq!(GetActiveWindow(), card.hwnd, "the card is active");
-            let buttons = card.buttons();
-            // Tab walks the controls in reading order and wraps around.
-            let mut visited = Vec::new();
-            for _ in 0..=buttons.len() {
-                assert!(
-                    press(main, card.hwnd, VK_TAB),
-                    "the dialog manager takes Tab"
-                );
-                visited.push(GetFocus());
-            }
-            let expected: Vec<HWND> = buttons
-                .iter()
-                .map(|button| button.0)
-                .chain([buttons[0].0])
-                .collect();
-            assert_eq!(visited, expected, "Tab visits the controls in order");
-            // Shift+Tab walks back, around the start.
-            {
-                let _shift = ShiftHeld::new();
-                for back in [buttons.len() - 1, buttons.len() - 2] {
-                    assert!(press(main, card.hwnd, VK_TAB), "Shift+Tab is taken");
-                    assert_eq!(GetFocus(), buttons[back].0, "Shift+Tab goes back");
+        in_each_theme(|_| {
+            with_card(jobs, |card| unsafe {
+                let main = control(null_mut(), "STATIC", "main", WS_POPUP, 0, 0);
+                SetActiveWindow(card.hwnd);
+                assert_eq!(GetActiveWindow(), card.hwnd, "the card is active");
+                let buttons = card.buttons();
+                // Tab walks the controls in reading order and wraps around.
+                let mut visited = Vec::new();
+                for _ in 0..=buttons.len() {
+                    assert!(
+                        press(main, card.hwnd, VK_TAB),
+                        "the dialog manager takes Tab"
+                    );
+                    visited.push(GetFocus());
                 }
-            }
-            // Enter presses the control that has the focus.
-            SetFocus(buttons[1].0);
-            assert!(!(*card.card()).pinned);
-            assert!(press(main, card.hwnd, VK_RETURN), "Enter is taken");
-            assert!((*card.card()).pinned, "Enter pressed the pin");
-            // Space presses it too.
-            SendMessageW(buttons[1].0, WM_KEYDOWN, VK_SPACE as usize, 0);
-            SendMessageW(buttons[1].0, WM_KEYUP, VK_SPACE as usize, 0);
-            assert!(!(*card.card()).pinned, "Space pressed the pin again");
-            // Escape closes the card.
-            assert!(press(main, card.hwnd, VK_ESCAPE), "Escape is taken");
-            assert_eq!(IsWindow(card.hwnd), 0, "Escape closed the card");
-            DestroyWindow(main);
+                let expected: Vec<HWND> = buttons
+                    .iter()
+                    .map(|button| button.0)
+                    .chain([buttons[0].0])
+                    .collect();
+                assert_eq!(visited, expected, "Tab visits the controls in order");
+                // Shift+Tab walks back, around the start.
+                {
+                    let _shift = ShiftHeld::new();
+                    for back in [buttons.len() - 1, buttons.len() - 2] {
+                        assert!(press(main, card.hwnd, VK_TAB), "Shift+Tab is taken");
+                        assert_eq!(GetFocus(), buttons[back].0, "Shift+Tab goes back");
+                    }
+                }
+                // Enter presses the control that has the focus.
+                SetFocus(buttons[1].0);
+                assert!(!(*card.card()).pinned);
+                assert!(press(main, card.hwnd, VK_RETURN), "Enter is taken");
+                assert!((*card.card()).pinned, "Enter pressed the pin");
+                // Space presses it too.
+                SendMessageW(buttons[1].0, WM_KEYDOWN, VK_SPACE as usize, 0);
+                SendMessageW(buttons[1].0, WM_KEYUP, VK_SPACE as usize, 0);
+                assert!(!(*card.card()).pinned, "Space pressed the pin again");
+                // Escape closes the card.
+                assert!(press(main, card.hwnd, VK_ESCAPE), "Escape is taken");
+                assert_eq!(IsWindow(card.hwnd), 0, "Escape closed the card");
+                DestroyWindow(main);
+            });
         });
     }
 
     #[test]
     fn a_completion_card_the_user_activated_leaves_unless_a_button_has_the_keyboard() {
-        with_card(done, |card| unsafe {
-            let stale = || Instant::now() - DONE_LIFETIME - Duration::from_secs(1);
-            SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
-            assert_eq!(GetActiveWindow(), card.hwnd, "the user clicked the card");
-            SetFocus(card.buttons()[0].0);
-            (*card.card()).opened = stale();
-            SendMessageW(card.hwnd, WM_TIMER, TIMER_CARD, 0);
-            assert_ne!(
-                IsWindow(card.hwnd),
-                0,
-                "a card with the keyboard in one of its buttons stays"
-            );
-            SetFocus(card.hwnd);
-            assert_eq!(GetActiveWindow(), card.hwnd, "the card is still active");
-            (*card.card()).opened = stale();
-            SendMessageW(card.hwnd, WM_TIMER, TIMER_CARD, 0);
-            assert_eq!(IsWindow(card.hwnd), 0, "an active card nobody uses leaves");
+        in_each_theme(|_| {
+            with_card(done, |card| unsafe {
+                let stale = || Instant::now() - DONE_LIFETIME - Duration::from_secs(1);
+                SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
+                assert_eq!(GetActiveWindow(), card.hwnd, "the user clicked the card");
+                SetFocus(card.buttons()[0].0);
+                (*card.card()).opened = stale();
+                SendMessageW(card.hwnd, WM_TIMER, TIMER_CARD, 0);
+                assert_ne!(
+                    IsWindow(card.hwnd),
+                    0,
+                    "a card with the keyboard in one of its buttons stays"
+                );
+                SetFocus(card.hwnd);
+                assert_eq!(GetActiveWindow(), card.hwnd, "the card is still active");
+                (*card.card()).opened = stale();
+                SendMessageW(card.hwnd, WM_TIMER, TIMER_CARD, 0);
+                assert_eq!(IsWindow(card.hwnd), 0, "an active card nobody uses leaves");
+            });
         });
     }
 
     #[test]
     fn an_ampersand_in_the_name_of_a_download_is_no_access_key_of_its_button() {
-        on_private_desktop(|| {
-            with_common_controls_6(|| {
-                crate::i18n::with_language("en", || unsafe {
-                    let main = control(null_mut(), "STATIC", "main", WS_POPUP, 0, 0);
-                    let card = Fixture::open_named(jobs, 96, false, Some("AT&T-report.zip"));
-                    // The engine numbers a name that an earlier run of this test claimed.
-                    let name = card.job_name();
-                    assert!(name.starts_with("AT&T-report"), "{name}");
-                    let buttons = card.buttons();
-                    assert_eq!(
-                        buttons[3].1,
-                        format!("Pause: {}", name.replace('&', "&&")),
-                        "the button shows the ampersand"
-                    );
-                    let state = || card.app.snapshot().jobs[0].state;
-                    let before = state();
-                    SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
-                    SetFocus(buttons[0].0);
-                    let mut msg: MSG = zeroed();
-                    msg.hwnd = GetFocus();
-                    msg.message = WM_CHAR;
-                    msg.wParam = 't' as usize;
-                    dialog_message(main, &msg);
-                    assert_eq!(
-                        state(),
-                        before,
-                        "the letter after the ampersand pauses nothing"
-                    );
-                    drop(card);
-                    DestroyWindow(main);
+        in_each_theme(|_| {
+            on_private_desktop(|| {
+                with_common_controls_6(|| {
+                    crate::i18n::with_language("en", || unsafe {
+                        let main = control(null_mut(), "STATIC", "main", WS_POPUP, 0, 0);
+                        let card = Fixture::open_named(jobs, 96, false, Some("AT&T-report.zip"));
+                        // The engine numbers a name that an earlier run of this test claimed.
+                        let name = card.job_name();
+                        assert!(name.starts_with("AT&T-report"), "{name}");
+                        let buttons = card.buttons();
+                        assert_eq!(
+                            buttons[3].1,
+                            format!("Pause: {}", name.replace('&', "&&")),
+                            "the button shows the ampersand"
+                        );
+                        let state = || card.app.snapshot().jobs[0].state;
+                        let before = state();
+                        SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
+                        SetFocus(buttons[0].0);
+                        let mut msg: MSG = zeroed();
+                        msg.hwnd = GetFocus();
+                        msg.message = WM_CHAR;
+                        msg.wParam = 't' as usize;
+                        dialog_message(main, &msg);
+                        assert_eq!(
+                            state(),
+                            before,
+                            "the letter after the ampersand pauses nothing"
+                        );
+                        drop(card);
+                        DestroyWindow(main);
+                    })
                 })
-            })
+            });
         });
     }
 
     #[test]
     fn the_buttons_of_a_card_follow_the_order_of_the_list_when_it_changes() {
-        with_card(jobs, |card| unsafe {
-            let place = RECT {
-                left: 10,
-                top: 40,
-                right: 60,
-                bottom: 60,
-            };
-            let sync = |names: [&str; 3]| {
-                let controls = names
-                    .iter()
-                    .map(|name| Control {
-                        rect: place,
-                        action: CardAction::Toggle((*name).to_owned()),
-                        name: (*name).to_owned(),
-                        look: Look::Label((*name).to_owned()),
-                    })
-                    .collect();
-                let painted = Painted {
-                    title: "title".to_owned(),
-                    controls,
+        in_each_theme(|_| {
+            with_card(jobs, |card| unsafe {
+                let place = RECT {
+                    left: 10,
+                    top: 40,
+                    right: 60,
+                    bottom: 60,
                 };
-                sync_controls(&mut *card.card(), painted, colours(false, false));
-            };
-            let order = || {
-                card.buttons()
-                    .into_iter()
-                    .map(|button| button.1)
-                    .collect::<Vec<_>>()
-            };
-            sync(["a", "b", "c"]);
-            assert_eq!(order(), ["a", "b", "c"]);
-            let windows: Vec<HWND> = card.buttons().into_iter().map(|button| button.0).collect();
-            sync(["c", "a", "b"]);
-            assert_eq!(
-                order(),
-                ["c", "a", "b"],
-                "Tab visits them in the order of the list"
-            );
-            let now: Vec<HWND> = card.buttons().into_iter().map(|button| button.0).collect();
-            assert_eq!(
-                now,
-                [windows[2], windows[0], windows[1]],
-                "the windows are kept"
-            );
+                let sync = |names: [&str; 3]| {
+                    let controls = names
+                        .iter()
+                        .map(|name| Control {
+                            rect: place,
+                            action: CardAction::Toggle((*name).to_owned()),
+                            name: (*name).to_owned(),
+                            look: Look::Label((*name).to_owned()),
+                        })
+                        .collect();
+                    let painted = Painted {
+                        title: "title".to_owned(),
+                        controls,
+                    };
+                    sync_controls(&mut *card.card(), painted, colours(false, false));
+                };
+                let order = || {
+                    card.buttons()
+                        .into_iter()
+                        .map(|button| button.1)
+                        .collect::<Vec<_>>()
+                };
+                sync(["a", "b", "c"]);
+                assert_eq!(order(), ["a", "b", "c"]);
+                let windows: Vec<HWND> =
+                    card.buttons().into_iter().map(|button| button.0).collect();
+                sync(["c", "a", "b"]);
+                assert_eq!(
+                    order(),
+                    ["c", "a", "b"],
+                    "Tab visits them in the order of the list"
+                );
+                let now: Vec<HWND> = card.buttons().into_iter().map(|button| button.0).collect();
+                assert_eq!(
+                    now,
+                    [windows[2], windows[0], windows[1]],
+                    "the windows are kept"
+                );
+            });
         });
     }
 
     #[test]
     fn the_footer_of_an_empty_panel_stands_below_its_text() {
-        with_card(
-            |_| CardKind::Panel,
-            |card| unsafe {
-                // The only download is scheduled for later, so the panel lists none.
-                let buttons = card.buttons();
-                let pause_all = buttons
-                    .iter()
-                    .find(|button| button.1 == "Pause all")
-                    .expect("the panel offers Pause all");
-                assert!(
-                    pause_all.2.top >= scale(HEADER + ROW, 96),
-                    "the button at {} px is below the text row that ends at {} px",
-                    pause_all.2.top,
-                    scale(HEADER + ROW, 96)
-                );
-                let mut frame: RECT = zeroed();
-                GetWindowRect(card.hwnd, &mut frame);
-                assert!(
-                    pause_all.2.bottom <= frame.bottom - frame.top,
-                    "the button is inside the card"
-                );
-            },
-        );
+        in_each_theme(|in_modern| {
+            with_card(
+                |_| CardKind::Panel,
+                |card| unsafe {
+                    // The only download is scheduled for later, so the panel lists none.
+                    let buttons = card.buttons();
+                    let pause_all = buttons
+                        .iter()
+                        .find(|button| button.1 == "Pause all")
+                        .expect("the panel offers Pause all");
+                    // A Modern button's window reaches past its face for the focus ring.
+                    let (text_end, ring) = if in_modern {
+                        (
+                            scale(MODERN_HEADER + MODERN_ROW, 96),
+                            scale(FOCUS_MARGIN, 96),
+                        )
+                    } else {
+                        (scale(HEADER + ROW, 96), 0)
+                    };
+                    assert!(
+                        pause_all.2.top + ring >= text_end,
+                        "the button at {} px is below the text row that ends at {text_end} px",
+                        pause_all.2.top + ring,
+                    );
+                    let mut frame: RECT = zeroed();
+                    GetWindowRect(card.hwnd, &mut frame);
+                    assert!(
+                        pause_all.2.bottom <= frame.bottom - frame.top,
+                        "the button is inside the card"
+                    );
+                },
+            );
+        });
     }
 
     /// The controls of a card with their places, the size of its window and the height of
@@ -1734,54 +2378,60 @@ mod tests {
 
     #[test]
     fn a_card_moved_to_another_scale_takes_the_fonts_and_sizes_of_that_scale() {
-        for (from, to) in [(96, 144), (144, 96), (96, 192)] {
-            let made = with_card_in("en", jobs, to, false, |card| unsafe { shape(card) });
-            let before = with_card_in("en", jobs, from, false, |card| unsafe { shape(card) });
-            let moved = with_card_in("en", jobs, from, false, |card| unsafe {
-                SendMessageW(card.hwnd, WM_DPICHANGED, ((to << 16) | to) as usize, 0);
-                UpdateWindow(card.hwnd);
-                shape(card)
-            });
-            assert_ne!(before, made, "{from} and {to} dpi make different cards");
-            assert_eq!(
-                moved, made,
-                "{from} -> {to} dpi: the card is not the one made for {to} dpi"
-            );
-        }
+        in_each_theme(|_| {
+            for (from, to) in [(96, 144), (144, 96), (96, 192)] {
+                let made = with_card_in("en", jobs, to, false, |card| unsafe { shape(card) });
+                let before = with_card_in("en", jobs, from, false, |card| unsafe { shape(card) });
+                let moved = with_card_in("en", jobs, from, false, |card| unsafe {
+                    SendMessageW(card.hwnd, WM_DPICHANGED, ((to << 16) | to) as usize, 0);
+                    UpdateWindow(card.hwnd);
+                    shape(card)
+                });
+                assert_ne!(before, made, "{from} and {to} dpi make different cards");
+                assert_eq!(
+                    moved, made,
+                    "{from} -> {to} dpi: the card is not the one made for {to} dpi"
+                );
+            }
+        });
     }
 
     #[test]
     fn a_mirrored_card_mirrors_its_controls() {
-        let places = |card: &Fixture| unsafe {
-            let mut frame: RECT = zeroed();
-            GetWindowRect(card.hwnd, &mut frame);
-            let places: Vec<(bool, RECT)> = card
-                .buttons()
-                .into_iter()
-                .map(|(button, _, rect)| {
-                    let own = GetWindowLongPtrW(button, GWL_EXSTYLE) as u32 & WS_EX_LAYOUTRTL;
-                    (own != 0, rect)
-                })
-                .collect();
-            (frame.right - frame.left, places)
-        };
-        let plain = with_card(jobs, places);
-        let mirrored = with_card_in("ar", jobs, 96, true, places);
-        let width = plain.0;
-        assert_eq!(width, mirrored.0, "the card is as wide as before");
-        assert_eq!(plain.1.len(), mirrored.1.len(), "the same controls");
-        for (left, right) in plain.1.iter().zip(&mirrored.1) {
-            assert!(
-                !left.0 && right.0,
-                "the controls follow the card's direction"
-            );
-            assert_eq!(
-                (left.1.left, left.1.right),
-                (width - right.1.right, width - right.1.left),
-                "a control stands at the mirror image of its place"
-            );
-            assert_eq!((left.1.top, left.1.bottom), (right.1.top, right.1.bottom));
-        }
+        in_each_theme(|in_modern| {
+            let places = |card: &Fixture| unsafe {
+                let mut frame: RECT = zeroed();
+                GetWindowRect(card.hwnd, &mut frame);
+                let places: Vec<(bool, RECT)> = card
+                    .buttons()
+                    .into_iter()
+                    .map(|(button, _, rect)| {
+                        let own = GetWindowLongPtrW(button, GWL_EXSTYLE) as u32 & WS_EX_LAYOUTRTL;
+                        (own != 0, rect)
+                    })
+                    .collect();
+                (frame.right - frame.left, places)
+            };
+            // A Modern button is as wide as its label, so the card it is compared to
+            // reads the same language.
+            let plain = with_card_in(if in_modern { "ar" } else { "en" }, jobs, 96, false, places);
+            let mirrored = with_card_in("ar", jobs, 96, true, places);
+            let width = plain.0;
+            assert_eq!(width, mirrored.0, "the card is as wide as before");
+            assert_eq!(plain.1.len(), mirrored.1.len(), "the same controls");
+            for (left, right) in plain.1.iter().zip(&mirrored.1) {
+                assert!(
+                    !left.0 && right.0,
+                    "the controls follow the card's direction"
+                );
+                assert_eq!(
+                    (left.1.left, left.1.right),
+                    (width - right.1.right, width - right.1.left),
+                    "a control stands at the mirror image of its place"
+                );
+                assert_eq!((left.1.top, left.1.bottom), (right.1.top, right.1.bottom));
+            }
+        });
     }
 
     /// A 32-bit bitmap in a device context, to read back what is painted into it.
@@ -1910,34 +2560,841 @@ mod tests {
 
     #[test]
     fn a_card_keeps_the_windows_of_the_controls_that_stay_and_the_focus_of_one_that_goes() {
-        with_card(jobs, |card| unsafe {
-            SetActiveWindow(card.hwnd);
-            let before = card.buttons();
-            let (header, toggle) = (&before[..3], before[3].0);
-            SetFocus(toggle);
-            assert_eq!(GetFocus(), toggle, "the focus is on Pause");
+        in_each_theme(|_| {
+            with_card(jobs, |card| unsafe {
+                SetActiveWindow(card.hwnd);
+                let before = card.buttons();
+                let (header, toggle) = (&before[..3], before[3].0);
+                SetFocus(toggle);
+                assert_eq!(GetFocus(), toggle, "the focus is on Pause");
 
-            // The download completes: Pause goes, and the footer offers its file.
-            let ui = &mut *card.card();
-            let mut snapshot = card.app.snapshot();
-            std::sync::Arc::make_mut(&mut snapshot.jobs)[0].state = JobState::Completed;
-            let colours = colours(false, false);
-            let page = Dib::new(scale(CARD_WIDTH, 96), card_height(ui));
-            let painted = paint_card(ui, page.dc, &snapshot, &colours);
-            sync_controls(ui, painted, colours);
+                // The download completes: Pause goes, and the footer offers its file.
+                let ui = &mut *card.card();
+                let mut snapshot = card.app.snapshot();
+                std::sync::Arc::make_mut(&mut snapshot.jobs)[0].state = JobState::Completed;
+                let colours = colours(false, false);
+                let page = Dib::new(scale(card_width(modern()), 96), card_height(ui));
+                let painted = paint_card(ui, page.dc, &snapshot, &colours);
+                sync_controls(ui, painted, colours);
 
-            let after = card.buttons();
-            let names: Vec<&str> = after.iter().map(|button| button.1.as_str()).collect();
-            assert_eq!(names, ["Expand", "Pin", "Close", "Open", "Show in folder"]);
-            for (kept, now) in header.iter().zip(&after) {
-                assert_eq!(kept.0, now.0, "{} keeps its window", kept.1);
+                let after = card.buttons();
+                let names: Vec<&str> = after.iter().map(|button| button.1.as_str()).collect();
+                assert_eq!(names, ["Expand", "Pin", "Close", "Open", "Show in folder"]);
+                for (kept, now) in header.iter().zip(&after) {
+                    assert_eq!(kept.0, now.0, "{} keeps its window", kept.1);
+                }
+                assert_eq!(IsWindow(toggle), 0, "the Pause button is gone");
+                assert_eq!(
+                    GetFocus(),
+                    card.hwnd,
+                    "the focus moves to the card, not to nothing"
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn card_glyphs_smooth_their_slopes_and_curves_and_keep_straight_edges_sharp() {
+        let counts = |glyph, dpi| {
+            let pixels = unsafe {
+                on_white(24, |dc| {
+                    let rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 24,
+                        bottom: 24,
+                    };
+                    draw_glyph(dc, glyph, rect, 0, dpi)
+                })
+            };
+            let solid = pixels.iter().filter(|&&pixel| pixel == 0).count();
+            let blended = pixels
+                .iter()
+                .filter(|&&pixel| pixel != 0 && pixel != 0xffffff)
+                .count();
+            (solid, blended)
+        };
+        for dpi in [96, 144] {
+            for glyph in [Glyph::Close, Glyph::Pin, Glyph::Pinned, Glyph::Play] {
+                let (solid, blended) = counts(glyph, dpi);
+                assert!(
+                    solid > 0 && blended > 0,
+                    "{dpi}: {solid} solid, {blended} blended"
+                );
             }
-            assert_eq!(IsWindow(toggle), 0, "the Pause button is gone");
+            for glyph in [Glyph::Expand, Glyph::Pause] {
+                let (solid, blended) = counts(glyph, dpi);
+                assert!(
+                    solid > 0 && blended == 0,
+                    "{dpi}: {solid} solid, {blended} blended"
+                );
+            }
+        }
+    }
+
+    /// An app on a temporary data directory, and that directory.
+    fn temp_app() -> (App, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("ssdownload-card-{}", uuid::Uuid::new_v4()));
+        let paths = crate::paths::AppPaths::new(root.clone()).unwrap();
+        (App::open(paths).unwrap(), root)
+    }
+
+    /// A snapshot that lists `jobs`.
+    fn snapshot_of(jobs: Vec<Job>) -> AppSnapshot {
+        static BASE: std::sync::OnceLock<AppSnapshot> = std::sync::OnceLock::new();
+        let base = BASE.get_or_init(|| {
+            let (app, root) = temp_app();
+            let snapshot = app.snapshot();
+            app.shutdown();
+            for _ in 0..10 {
+                if std::fs::remove_dir_all(&root).is_ok() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            snapshot
+        });
+        AppSnapshot {
+            jobs: std::sync::Arc::new(jobs),
+            ..base.clone()
+        }
+    }
+
+    fn job(name: &str, state: JobState, downloaded: u64, total: Option<u64>) -> Job {
+        Job {
+            downloaded,
+            total,
+            ..super::super::tests::sample_job(name, state)
+        }
+    }
+
+    fn running(name: &str) -> Job {
+        job(name, JobState::Downloading, 5, Some(10))
+    }
+
+    /// A DIB pixel (0x00RRGGBB) as the palette writes it (a COLORREF).
+    fn colorref(pixel: u32) -> u32 {
+        ((pixel & 0xff) << 16) | (pixel & 0xff00) | (pixel >> 16)
+    }
+
+    /// A Modern card painted on a DIB: its pixels, size, buttons and colours.
+    struct Shot {
+        pixels: Vec<u32>,
+        width: i32,
+        height: i32,
+        controls: Vec<Control>,
+        colours: CardColours,
+        dpi: u32,
+    }
+
+    impl Shot {
+        fn at(&self, x: i32, y: i32) -> u32 {
+            colorref(self.pixels[(y * self.width + x) as usize])
+        }
+
+        fn s(&self, epx: i32) -> i32 {
+            scale(epx, self.dpi)
+        }
+
+        /// The middle of the button `index`.
+        fn middle(&self, index: usize) -> POINT {
+            let rect = self.controls[index].rect;
+            POINT {
+                x: (rect.left + rect.right) / 2,
+                y: (rect.top + rect.bottom) / 2,
+            }
+        }
+
+        /// The place of the button `index` that is called `name`: the `nth` of that name.
+        fn index_of(&self, name: &str, nth: usize) -> usize {
+            self.controls
+                .iter()
+                .enumerate()
+                .filter(|(_, control)| action_name(&control.action) == name)
+                .nth(nth)
+                .unwrap_or_else(|| panic!("a {name} button, number {nth}"))
+                .0
+        }
+
+        /// The face of the button `index`: its window reaches the focus ring past it, which
+        /// only a button with a label has room for.
+        fn face(&self, index: usize) -> RECT {
+            let control = &self.controls[index];
+            match control.look {
+                Look::Label(_) => {
+                    inflate(control.rect, -self.s(FOCUS_MARGIN), -self.s(FOCUS_MARGIN))
+                }
+                Look::Glyph(..) => control.rect,
+            }
+        }
+    }
+
+    /// Where the pointer is on a card and where it pressed.
+    type Pointer = (Option<POINT>, Option<POINT>);
+
+    /// `kind` over `jobs` painted in `colours`, its buttons in the state the pointer gives
+    /// them as the buttons themselves read it: hot while it is on them, pressed while the
+    /// press began on them and the pointer is still there.
+    fn shoot_in(
+        kind: &CardKind,
+        jobs: Vec<Job>,
+        dpi: u32,
+        colours: CardColours,
+        (pointer, press): Pointer,
+    ) -> Shot {
+        unsafe {
+            let snapshot = snapshot_of(jobs);
+            let rows = card_jobs(kind, &snapshot).len().max(1) as i32;
+            let (width, height) = (scale(MODERN_WIDTH, dpi), modern_height(rows, dpi));
+            let client = RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            };
+            let fonts = [
+                ramp_font(dpi, BODY_PX, false),
+                ramp_font_weight(dpi, BODY_PX, false, FW_SEMIBOLD as i32),
+                ramp_font(dpi, CAPTION_PX, true),
+            ];
+            let mut controls = Vec::new();
+            let pixels = on_white_rect(width, height, |dc| {
+                controls = paint_modern(
+                    dc,
+                    client,
+                    &ModernCard {
+                        kind,
+                        snapshot: &snapshot,
+                        dpi,
+                        colours,
+                        held: false,
+                        body: fonts[0],
+                        strong: fonts[1],
+                        small: fonts[2],
+                    },
+                );
+                for control in &controls {
+                    let over =
+                        |at: Option<POINT>| at.is_some_and(|at| PtInRect(&control.rect, at) != 0);
+                    let hot = over(pointer);
+                    let face = Face {
+                        hot,
+                        pressed: hot && over(press),
+                        focused: false,
+                    };
+                    paint_modern_control(dc, control.rect, control, face, &colours, fonts[0], dpi);
+                }
+            });
+            for font in fonts {
+                DeleteObject(font as HGDIOBJ);
+            }
+            Shot {
+                pixels,
+                width,
+                height,
+                controls,
+                colours,
+                dpi,
+            }
+        }
+    }
+
+    /// `shoot_in` in the colours of the scheme `dark` names.
+    fn shoot(kind: &CardKind, jobs: Vec<Job>, dpi: u32, dark: bool, pointer: Pointer) -> Shot {
+        let colours = card_colours(dark, unsafe { scheme_palette(dark) }, false);
+        shoot_in(kind, jobs, dpi, colours, pointer)
+    }
+
+    fn action_name(action: &CardAction) -> &'static str {
+        match action {
+            CardAction::Toggle(_) => "toggle",
+            CardAction::PauseAll => "pause all",
+            CardAction::OpenFile(_) => "open file",
+            CardAction::OpenFolder(_) => "open folder",
+            CardAction::Expand => "expand",
+            CardAction::Pin => "pin",
+            CardAction::Close => "close",
+        }
+    }
+
+    /// A card of each kind with the downloads it lists and the buttons it paints, in the
+    /// order Tab visits them.
+    fn card_samples() -> Vec<(CardKind, Vec<Job>, Vec<&'static str>)> {
+        let long = "an-extremely-long-file-name-for-a-download-that-has-to-be-shortened.tar.gz";
+        vec![
+            (
+                CardKind::Panel,
+                vec![
+                    running(long),
+                    job("paused.iso", JobState::Paused, 3, Some(10)),
+                ],
+                vec!["expand", "pin", "close", "toggle", "toggle", "pause all"],
+            ),
+            (
+                CardKind::Panel,
+                Vec::new(),
+                vec!["expand", "pin", "close", "pause all"],
+            ),
+            (
+                CardKind::Done("done.bin".into()),
+                vec![job("done.bin", JobState::Completed, 10, Some(10))],
+                vec!["pin", "close", "open file", "open folder"],
+            ),
+            (
+                CardKind::Jobs(vec!["a.bin".into(), "b.bin".into()]),
+                vec![running("a.bin"), job("b.bin", JobState::Paused, 1, Some(9))],
+                vec!["expand", "pin", "close", "toggle", "toggle", "expand"],
+            ),
+            (
+                CardKind::Jobs(vec!["c.bin".into()]),
+                vec![job("c.bin", JobState::Completed, 10, Some(10))],
+                vec!["expand", "pin", "close", "open file", "open folder"],
+            ),
+        ]
+    }
+
+    /// The colours of four high contrast themes, as COLORREFs (0x00BBGGRR): white on
+    /// black, black on white, and a light and a dark one with a coloured highlight.
+    fn high_contrast_themes() -> [SystemColours; 4] {
+        [
+            SystemColours {
+                window: 0x000000,
+                text: 0xffffff,
+                face: 0x000000,
+                button_text: 0xffffff,
+                highlight: 0xffeb1a,
+                highlight_text: 0x000000,
+                gray_text: 0x3ff23f,
+            },
+            SystemColours {
+                window: 0xffffff,
+                text: 0x000000,
+                face: 0xffffff,
+                button_text: 0x000000,
+                highlight: 0x6e0037,
+                highlight_text: 0xffffff,
+                gray_text: 0x000060,
+            },
+            SystemColours {
+                window: 0x202020,
+                text: 0xffffff,
+                face: 0x202020,
+                button_text: 0xffffff,
+                highlight: 0xefe38e,
+                highlight_text: 0x000000,
+                gray_text: 0x3ff23f,
+            },
+            SystemColours {
+                window: 0xffffff,
+                text: 0x000000,
+                face: 0xffffff,
+                button_text: 0x000000,
+                highlight: 0x527f03,
+                highlight_text: 0xffffff,
+                gray_text: 0x000060,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_modern_card_fits_its_buttons_in_every_language_scheme_and_scale() {
+        for info in crate::i18n::LANGUAGES {
+            crate::i18n::with_language(info.code, || {
+                for dark in [false, true] {
+                    for dpi in [96, 144] {
+                        for (kind, jobs, expected) in card_samples() {
+                            let shot = shoot(&kind, jobs, dpi, dark, (None, None));
+                            let context =
+                                format!("{} dark={dark} dpi={dpi} {expected:?}", info.code);
+                            let names: Vec<_> = shot
+                                .controls
+                                .iter()
+                                .map(|control| action_name(&control.action))
+                                .collect();
+                            assert_eq!(names, expected, "{context}");
+                            let (target, pad) = (shot.s(MODERN_TARGET), shot.s(MODERN_PAD));
+                            for (index, control) in shot.controls.iter().enumerate() {
+                                let rect = control.rect;
+                                let edges = (rect.left, rect.top, rect.right, rect.bottom);
+                                let context =
+                                    format!("{context} {} {edges:?}", action_name(&control.action));
+                                assert!(
+                                    rect.left >= 0
+                                        && rect.top >= 0
+                                        && rect.right <= shot.width
+                                        && rect.bottom <= shot.height,
+                                    "{context}: leaves the card"
+                                );
+                                let face = shot.face(index);
+                                assert_eq!(face.bottom - face.top, target, "{context}");
+                                match control.look {
+                                    Look::Glyph(..) => {
+                                        assert_eq!(face.right - face.left, target, "{context}")
+                                    }
+                                    Look::Label(_) => {
+                                        assert!(face.left >= pad, "{context}");
+                                        assert!(face.right <= shot.width - pad, "{context}");
+                                        assert!(
+                                            face.bottom <= shot.height - shot.s(8),
+                                            "{context}"
+                                        );
+                                        assert!(face.right - face.left >= shot.s(80), "{context}");
+                                    }
+                                }
+                                for other in shot.controls.iter().skip(index + 1) {
+                                    let (a, b) = (rect, other.rect);
+                                    assert!(
+                                        a.right <= b.left
+                                            || b.right <= a.left
+                                            || a.bottom <= b.top
+                                            || b.bottom <= a.top,
+                                        "{context}: stands over {}",
+                                        action_name(&other.action)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn a_modern_card_is_the_flyout_surface_inside_a_one_pixel_border() {
+        for dark in [false, true] {
+            for dpi in [96, 144] {
+                let (kind, jobs, _) = card_samples().remove(2);
+                let shot = shoot(&kind, jobs, dpi, dark, (None, None));
+                let (w, h) = (shot.width, shot.height);
+                let surface = shot.colours.palette.flyout;
+                let context = format!("dark={dark} dpi={dpi}");
+                // Right of the footer's buttons nothing is painted.
+                let empty = shot.at(w - shot.s(MODERN_PAD) - 4, h - shot.s(MODERN_FOOTER) / 2);
+                assert_eq!(empty, surface, "{context}");
+                let border = shot.at(0, h / 2);
+                assert_ne!(border, surface, "{context}");
+                for (x, y) in [(w - 1, h / 2), (w / 2, 0), (w / 2, h - 1), (0, 0)] {
+                    assert_eq!(shot.at(x, y), border, "{context} ({x}, {y})");
+                }
+                for (x, y) in [(1, h / 2), (w - 2, h / 2), (w / 2, 1), (w / 2, h - 2)] {
+                    assert_eq!(shot.at(x, y), surface, "{context} ({x}, {y})");
+                }
+                // The border is a visible step off the surface.
+                assert!(contrast(border, surface) >= 1.05, "{context}");
+            }
+        }
+    }
+
+    /// The pixel a few epx in from a button's left edge: inside its plate, clear of its glyph.
+    fn beside_glyph(shot: &Shot, rect: &RECT) -> (i32, i32) {
+        (rect.left + shot.s(3), (rect.top + rect.bottom) / 2)
+    }
+
+    /// Whether every pixel of `a` and `b` that differs lies inside `area`.
+    fn differs_only_in(a: &Shot, b: &Shot, area: RECT) -> bool {
+        (0..a.height).all(|y| {
+            (0..a.width).all(|x| {
+                let inside = x >= area.left && x < area.right && y >= area.top && y < area.bottom;
+                inside || a.at(x, y) == b.at(x, y)
+            })
+        })
+    }
+
+    #[test]
+    fn a_pointer_on_a_glyph_button_paints_its_plate_and_a_press_a_stronger_one() {
+        let (kind, jobs, _) = card_samples().remove(0);
+        for dark in [false, true] {
+            for dpi in [96, 144] {
+                let shoot_at = |pointer| shoot(&kind, jobs.clone(), dpi, dark, pointer);
+                let rest = shoot_at((None, None));
+                let (hover, pressed) = rest.colours.plate;
+                let surface = rest.colours.palette.flyout;
+                let context = format!("dark={dark} dpi={dpi}");
+                // Each plate is a visible step off the flyout it lies on, a press a stronger one.
+                assert!(contrast(hover, surface) >= 1.05, "{context}: hover");
+                assert!(contrast(pressed, surface) >= 1.1, "{context}: press");
+                assert!(
+                    contrast(pressed, surface) > contrast(hover, surface),
+                    "{context}"
+                );
+                // The close button, and the first row's pause button.
+                for index in [rest.index_of("close", 0), rest.index_of("toggle", 0)] {
+                    let rect = rest.controls[index].rect;
+                    let (x, y) = beside_glyph(&rest, &rect);
+                    let middle = Some(rest.middle(index));
+                    let hot = shoot_at((middle, None));
+                    let down = shoot_at((middle, middle));
+                    let context = format!("{context} button {index}");
+                    assert_eq!(rest.at(x, y), surface, "{context}");
+                    assert_eq!(hot.at(x, y), hover, "{context}");
+                    assert_eq!(down.at(x, y), pressed, "{context}");
+                    assert!(differs_only_in(&rest, &hot, rect), "{context}");
+                    assert!(differs_only_in(&rest, &down, rect), "{context}");
+                    // A press shows only while the pointer is still on the pressed button.
+                    let off = Some(rest.middle(rest.index_of("pin", 0)));
+                    assert!(
+                        differs_only_in(
+                            &rest,
+                            &shoot_at((off, middle)),
+                            rest.controls[rest.index_of("pin", 0)].rect
+                        ),
+                        "{context}: a press the pointer left"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_footer_button_takes_its_hover_and_pressed_face_and_the_primary_one_the_accent() {
+        let (kind, jobs, _) = card_samples().remove(2);
+        for dark in [false, true] {
+            for dpi in [96, 144] {
+                let shoot_at = |pointer| shoot(&kind, jobs.clone(), dpi, dark, pointer);
+                let rest = shoot_at((None, None));
+                let controls = rest.colours.controls;
+                // Open (the primary action) and Show in folder.
+                let (open, folder) = (
+                    rest.index_of("open file", 0),
+                    rest.index_of("open folder", 0),
+                );
+                let context = format!("dark={dark} dpi={dpi}");
+                let (x, y) = beside_glyph(&rest, &rest.face(open));
+                assert_eq!(rest.at(x, y), rest.colours.palette.accent, "{context}");
+                let on_open = Some(rest.middle(open));
+                assert_eq!(
+                    shoot_at((on_open, None)).at(x, y),
+                    controls.accent_hover,
+                    "{context}"
+                );
+                assert_eq!(
+                    shoot_at((on_open, on_open)).at(x, y),
+                    controls.accent_pressed,
+                    "{context}"
+                );
+                let (x, y) = beside_glyph(&rest, &rest.face(folder));
+                assert_eq!(rest.at(x, y), controls.control, "{context}");
+                let on_folder = Some(rest.middle(folder));
+                let hot = shoot_at((on_folder, None));
+                let down = shoot_at((on_folder, on_folder));
+                assert_eq!(hot.at(x, y), controls.control_hover, "{context}");
+                assert_eq!(down.at(x, y), controls.control_pressed, "{context}");
+                let area = rest.controls[folder].rect;
+                assert!(differs_only_in(&rest, &hot, area), "{context}");
+                assert!(differs_only_in(&rest, &down, area), "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_completion_card_carries_the_success_mark() {
+        for dark in [false, true] {
+            for dpi in [96, 144] {
+                let marked = |index: usize| {
+                    let (kind, jobs, _) = card_samples().remove(index);
+                    let shot = shoot(&kind, jobs, dpi, dark, (None, None));
+                    let header = shot.s(MODERN_HEADER);
+                    let success = shot.colours.palette.success;
+                    (0..header)
+                        .flat_map(|y| (0..shot.width).map(move |x| (x, y)))
+                        .filter(|&(x, y)| shot.at(x, y) == success)
+                        .count()
+                };
+                let context = format!("dark={dark} dpi={dpi}");
+                // The disc is 20 epx across; its tick is cut out of it.
+                assert!(marked(2) > 150, "{context}: {}", marked(2));
+                for index in [0, 1, 3, 4] {
+                    assert_eq!(marked(index), 0, "{context} sample {index}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_downloads_bar_fills_to_its_progress_in_its_state_colour() {
+        for dark in [false, true] {
+            for dpi in [96, 144] {
+                let bar = |kind: &CardKind, job: Job| {
+                    let shot = shoot(kind, vec![job], dpi, dark, (None, None));
+                    let y = shot.s(MODERN_HEADER) + shot.s(32);
+                    let width = shot.width - 2 * shot.s(MODERN_PAD);
+                    let at = |fraction: f64| {
+                        shot.at(shot.s(MODERN_PAD) + (width as f64 * fraction) as i32, y)
+                    };
+                    (at(0.25), at(0.75), shot.colours.palette)
+                };
+                let context = format!("dark={dark} dpi={dpi}");
+                let (early, late, palette) = bar(&CardKind::Panel, running("half.bin"));
+                assert_eq!(
+                    early, palette.accent,
+                    "{context}: a running bar fills from the left"
+                );
+                assert_eq!(
+                    late, palette.strong_stroke,
+                    "{context}: the rest is the track"
+                );
+                let done = job("full.bin", JobState::Completed, 10, Some(10));
+                let (early, late, _) = bar(&CardKind::Done("full.bin".into()), done);
+                assert_eq!(
+                    (early, late),
+                    (palette.success, palette.success),
+                    "{context}"
+                );
+                let failed = job("broken.bin", JobState::Failed, 3, Some(10));
+                let (early, late, _) = bar(&CardKind::Jobs(vec!["broken.bin".into()]), failed);
+                assert_eq!(
+                    (early, late),
+                    (palette.critical, palette.critical),
+                    "{context}"
+                );
+                let paused = job("held.bin", JobState::Paused, 5, Some(10));
+                let (early, late, _) = bar(&CardKind::Panel, paused);
+                assert_eq!(early, palette.caution, "{context}");
+                assert_eq!(late, palette.strong_stroke, "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_detail_line_reads_on_the_card_surface_in_every_state_and_scheme() {
+        let states = [
+            JobState::Queued,
+            JobState::Scheduled,
+            JobState::Connecting,
+            JobState::Downloading,
+            JobState::Processing,
+            JobState::Paused,
+            JobState::AwaitingSource,
+            JobState::Completed,
+            JobState::Failed,
+            JobState::Cancelled,
+        ];
+        for dark in [false, true] {
+            let palette = unsafe { scheme_palette(dark) };
+            for state in states {
+                let colour = detail_colour(&palette, state);
+                assert!(
+                    contrast(colour, palette.flyout) >= 4.5,
+                    "dark={dark} {state:?}: {colour:06x} on {:06x}",
+                    palette.flyout
+                );
+            }
             assert_eq!(
-                GetFocus(),
-                card.hwnd,
-                "the focus moves to the card, not to nothing"
+                detail_colour(&palette, JobState::Completed),
+                palette.success
             );
+            assert_eq!(detail_colour(&palette, JobState::Failed), palette.critical);
+            assert_eq!(
+                detail_colour(&palette, JobState::Cancelled),
+                palette.critical
+            );
+            assert_eq!(
+                detail_colour(&palette, JobState::Downloading),
+                palette.secondary
+            );
+            assert_eq!(detail_colour(&palette, JobState::Paused), palette.secondary);
+        }
+    }
+
+    #[test]
+    fn the_check_mark_reads_on_the_success_disc_in_both_schemes() {
+        for dark in [false, true] {
+            let colours = card_colours(dark, unsafe { scheme_palette(dark) }, false);
+            assert!(
+                contrast(colours.mark, colours.palette.success) >= 4.5,
+                "dark={dark}"
+            );
+        }
+    }
+
+    #[test]
+    fn high_contrast_keeps_the_system_colours_on_every_part_of_a_card() {
+        for theme in high_contrast_themes() {
+            for dark in [false, true] {
+                let colours = card_colours(dark, system_palette(&theme), true);
+                let context = format!(
+                    "dark={dark} window={:06x} highlight={:06x}",
+                    theme.window, theme.highlight
+                );
+                // The buttons keep the face the system gives them, which its button text reads on.
+                assert_eq!(colours.controls.base, theme.window, "{context}");
+                assert_eq!(colours.controls.control, theme.face, "{context}");
+                assert!(
+                    contrast(theme.button_text, colours.controls.control) >= 4.5,
+                    "{context}"
+                );
+                // The border is the text colour, which the window reads against.
+                assert_eq!(colours.border, theme.text, "{context}");
+                assert!(contrast(colours.border, theme.window) >= 4.5, "{context}");
+                // A plate is the highlight, under a glyph in the highlight's text.
+                let on_plate = colours
+                    .on_plate
+                    .expect("a glyph on a plate has its own colour");
+                for plate in [colours.plate.0, colours.plate.1] {
+                    assert_eq!(plate, theme.highlight, "{context}");
+                    assert!(contrast(plate, theme.window) >= 3.0, "{context}");
+                    assert!(contrast(on_plate, plate) >= 4.5, "{context}");
+                }
+                // The check mark reads on the disc the highlight fills.
+                assert!(
+                    contrast(colours.mark, colours.palette.success) >= 4.5,
+                    "{context}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_card_in_high_contrast_paints_its_border_plate_glyph_and_mark_in_those_colours() {
+        let (kind, jobs, _) = card_samples().remove(2);
+        for theme in high_contrast_themes() {
+            for dpi in [96, 144] {
+                let colours = card_colours(false, system_palette(&theme), true);
+                let shoot_at = |pointer| shoot_in(&kind, jobs.clone(), dpi, colours, pointer);
+                let rest = shoot_at((None, None));
+                let context = format!(
+                    "dpi={dpi} window={:06x} highlight={:06x}",
+                    theme.window, theme.highlight
+                );
+                assert_eq!(rest.at(0, rest.height / 2), theme.text, "{context}: border");
+                assert_eq!(
+                    rest.at(1, rest.height / 2),
+                    theme.window,
+                    "{context}: surface"
+                );
+                // The disc is the highlight and the tick on it the highlight's text.
+                let unit = rest.s(20) as f32 / 20.0;
+                let pad = rest.s(MODERN_PAD);
+                let disc = (pad + (10.0 * unit) as i32, rest.s(14) + (3.0 * unit) as i32);
+                let tick = (pad + (8.8 * unit) as i32, rest.s(14) + (13.8 * unit) as i32);
+                assert_eq!(rest.at(disc.0, disc.1), theme.highlight, "{context}: disc");
+                assert_eq!(
+                    rest.at(tick.0, tick.1),
+                    theme.highlight_text,
+                    "{context}: tick"
+                );
+                // The pointer on the close button fills its plate with the highlight and draws
+                // the glyph in the highlight's text; a press keeps that look.
+                let close = rest.index_of("close", 0);
+                let on_close = Some(rest.middle(close));
+                for pointer in [(on_close, None), (on_close, on_close)] {
+                    let shot = shoot_at(pointer);
+                    let rect = shot.controls[close].rect;
+                    let (x, y) = beside_glyph(&shot, &rect);
+                    assert_eq!(shot.at(x, y), theme.highlight, "{context}: plate");
+                    let middle = shot.middle(close);
+                    let reach = shot.s(6);
+                    let inside = |colour: u32| {
+                        (middle.y - reach..middle.y + reach)
+                            .flat_map(|y| (middle.x - reach..middle.x + reach).map(move |x| (x, y)))
+                            .filter(|&(x, y)| shot.at(x, y) == colour)
+                            .count()
+                    };
+                    assert!(inside(theme.highlight_text) > 0, "{context}: glyph");
+                    assert_eq!(inside(theme.text), 0, "{context}: glyph in the text colour");
+                }
+            }
+        }
+    }
+
+    /// The face of the push button `button`, painted the way it paints itself on the screen.
+    unsafe fn face_of(button: HWND, rect: &RECT) -> Dib {
+        let face = Dib::new(rect.right - rect.left, rect.bottom - rect.top);
+        SendMessageW(
+            button,
+            WM_PRINTCLIENT,
+            face.dc as usize,
+            PRF_CLIENT as isize,
+        );
+        face
+    }
+
+    #[test]
+    fn a_button_of_a_modern_card_shows_the_pointer_on_it_and_a_press_that_began_on_it() {
+        in_modern(|| {
+            with_card(jobs, |card| unsafe {
+                let modern = (*card.card())
+                    .colours
+                    .and_then(|colours| colours.modern)
+                    .expect("a Modern card is painted in Modern's colours");
+                let (pin, _, rect) = card.buttons().remove(1);
+                let beside = || {
+                    let face = face_of(pin, &rect);
+                    face.colour(scale(3, 96), face.height / 2)
+                };
+                // A change of look has the button repaint itself.
+                let repaints = |message: u32, wparam: usize, lparam: isize| {
+                    UpdateWindow(pin);
+                    SendMessageW(pin, message, wparam, lparam);
+                    windows_sys::Win32::Graphics::Gdi::GetUpdateRect(pin, null_mut(), 0) != 0
+                };
+                assert_eq!(beside(), modern.palette.flyout, "at rest");
+                assert!(
+                    repaints(WM_MOUSEMOVE, 0, at(10, 10)),
+                    "the pointer came onto it"
+                );
+                assert_eq!(beside(), modern.plate.0, "the pointer is on it");
+                assert!(
+                    repaints(WM_LBUTTONDOWN, MK_LBUTTON, at(10, 10)),
+                    "the press began"
+                );
+                assert_eq!(beside(), modern.plate.1, "it is pressed");
+                assert!(repaints(WM_MOUSELEAVE, 0, 0), "the pointer left it");
+                assert_eq!(
+                    beside(),
+                    modern.palette.flyout,
+                    "a press shows only while the pointer is on the button"
+                );
+                SendMessageW(pin, WM_MOUSEMOVE, 0, at(10, 10));
+                assert_eq!(
+                    beside(),
+                    modern.plate.1,
+                    "the pointer came back to the press"
+                );
+                SendMessageW(pin, WM_LBUTTONUP, 0, at(-40, -40));
+                assert!(!(*card.card()).pinned, "a press let go outside is no click");
+                assert_eq!(
+                    beside(),
+                    modern.plate.0,
+                    "the press is over, the pointer is still on it"
+                );
+                SendMessageW(pin, WM_MOUSELEAVE, 0, 0);
+                assert_eq!(beside(), modern.palette.flyout, "the pointer left");
+            });
+        });
+    }
+
+    #[test]
+    fn a_button_of_a_modern_card_shows_the_keyboard_focus_only_while_the_cues_are_shown() {
+        in_modern(|| {
+            with_card(jobs, |card| unsafe {
+                let modern = (*card.card())
+                    .colours
+                    .and_then(|colours| colours.modern)
+                    .expect("a Modern card is painted in Modern's colours");
+                let (pin, _, rect) = card.buttons().remove(1);
+                let top = || {
+                    let face = face_of(pin, &rect);
+                    face.colour(face.width / 2, 1)
+                };
+                let cues = |shown: bool| {
+                    let action = if shown { UIS_CLEAR } else { UIS_SET };
+                    SendMessageW(
+                        card.hwnd,
+                        WM_UPDATEUISTATE,
+                        (action | (UISF_HIDEFOCUS << 16)) as usize,
+                        0,
+                    );
+                };
+                SetFocus(pin);
+                cues(false);
+                assert_eq!(top(), modern.palette.flyout, "the cues are hidden");
+                cues(true);
+                assert_eq!(top(), modern.palette.focus_outer, "the focus ring");
+                SetFocus(null_mut());
+                assert_eq!(top(), modern.palette.flyout, "no focus, no ring");
+            });
         });
     }
 }

@@ -38,6 +38,16 @@ pub(super) struct AlertUi {
     pub(super) margin: i32,
     pub(super) gap: i32,
     pub(super) row: i32,
+    /// The height under the body and the link: the button row and its
+    /// margins, or Modern's command bar and the margin above it.
+    pub(super) bar: i32,
+    /// Laid out and painted in the Modern look.
+    pub(super) modern: bool,
+    /// Modern's card colour and a brush of it for the controls on the card,
+    /// made again when the colour changes. The DC brush cannot serve: the
+    /// icon control paints through a buffer of its own, where that brush is
+    /// white.
+    pub(super) card_brush: (u32, HBRUSH),
     pub(super) icon_column: i32,
     pub(super) text_width: i32,
     pub(super) body_height: i32,
@@ -167,27 +177,38 @@ pub(super) unsafe fn alert_is_dark(owner: HWND) -> bool {
     let main = FindWindowW(wide(CLASS_MAIN).as_ptr(), null());
     !main.is_null() && scheme_dark(main)
 }
+/// The width of an alert button whose label is `extent` wide.
+fn alert_button_width(extent: i32, dpi: u32, modern: bool) -> i32 {
+    if modern {
+        (extent + scale(32, dpi)).max(scale(96, dpi))
+    } else {
+        (extent + scale(28, dpi)).max(scale(80, dpi))
+    }
+}
 /// The width of a button in `font`, the font the alert draws its buttons with at
 /// `dpi`; the font exists before the window does, so the box can be sized for
 /// its buttons.
-pub(super) unsafe fn alert_measure_button(font: HFONT, dpi: u32, label: &str) -> i32 {
+pub(super) unsafe fn alert_measure_button(font: HFONT, dpi: u32, modern: bool, label: &str) -> i32 {
     let mut text = wide(label);
     let dc = GetDC(null_mut());
     if dc.is_null() {
-        return scale(80, dpi);
+        return alert_button_width(0, dpi, modern);
     }
     let previous = SelectObject(dc, font as HGDIOBJ);
     let mut size: SIZE = zeroed();
     GetTextExtentPoint32W(dc, text.as_mut_ptr(), text.len() as i32, &mut size);
     SelectObject(dc, previous);
     ReleaseDC(null_mut(), dc);
-    (size.cx + scale(28, dpi)).max(scale(80, dpi))
+    alert_button_width(size.cx, dpi, modern)
 }
 /// The sizes an alert is laid out with at one DPI.
 struct AlertMetrics {
     margin: i32,
     gap: i32,
     row: i32,
+    /// The height under the body and the link: the button row and its margins, or
+    /// Modern's command bar and the margin above it.
+    bar: i32,
     icon_column: i32,
     text_width: i32,
     body_height: i32,
@@ -197,14 +218,24 @@ struct AlertMetrics {
     client_height: i32,
 }
 
+/// The font an alert draws its text and buttons with at `dpi`.
+unsafe fn alert_font(dpi: u32, modern: bool) -> HFONT {
+    if modern {
+        ramp_font(dpi, BODY_PX, false)
+    } else {
+        make_font(dpi, 9, FW_NORMAL as i32)
+    }
+}
+
 /// Measures an alert at `dpi` with `font`: the body wrapped to the text column,
-/// the link under it and the row of `buttons`. The body scrolls when it is taller
-/// than 70% of `work_height`, unless `scroll` says which kind of body the alert
-/// already has.
+/// the link under it and the row of `buttons`. Modern's buttons sit on a command
+/// bar under the message. The body scrolls when it is taller than 70% of
+/// `work_height`, unless `scroll` says which kind of body the alert already has.
 #[allow(clippy::too_many_arguments)]
 unsafe fn alert_metrics(
     font: HFONT,
     dpi: u32,
+    modern: bool,
     body: &str,
     has_icon: bool,
     link: Option<&str>,
@@ -212,12 +243,30 @@ unsafe fn alert_metrics(
     work_height: i32,
     scroll: Option<bool>,
 ) -> AlertMetrics {
-    let margin = scale(12, dpi);
+    let (margin, row) = if modern {
+        (scale(ADD_PAD, dpi), scale(ADD_FIELD, dpi))
+    } else {
+        (scale(12, dpi), scale(24, dpi))
+    };
     let gap = scale(8, dpi);
-    let row = scale(24, dpi);
+    let bar = if modern {
+        margin + scale(ADD_FOOTER, dpi)
+    } else {
+        gap + row + margin
+    };
     let icon_size = scale(32, dpi);
     let icon_column = if has_icon { icon_size + gap } else { 0 };
-    let text_width = scale(340, dpi);
+    let buttons_width = buttons
+        .iter()
+        .map(|label| alert_measure_button(font, dpi, modern, label))
+        .sum::<i32>()
+        + gap * (buttons.len() as i32 - 1);
+    let mut text_width = scale(340, dpi);
+    if modern {
+        // The message is as wide as the command bar needs for the buttons, so that
+        // the longest labels fit between its paddings.
+        text_width = text_width.max(buttons_width - icon_column);
+    }
     let wrapped = wrapped_height(font, body, text_width).max(if has_icon { icon_size } else { 0 });
     let link_height = link.map_or(0, |label| wrapped_height(font, label, text_width));
     let link_block = if link_height > 0 {
@@ -226,11 +275,8 @@ unsafe fn alert_metrics(
         0
     };
     // Caption, borders, the link and the button row come out of the space the body may take.
-    let cap = alert_body_cap(
-        work_height,
-        2 * margin + gap + row + scale(48, dpi) + link_block,
-    )
-    .max(icon_size);
+    let cap =
+        alert_body_cap(work_height, margin + bar + scale(48, dpi) + link_block).max(icon_size);
     let scroll = scroll.unwrap_or(wrapped > cap);
     let body_height = wrapped.min(cap);
     let text_width = if scroll {
@@ -238,22 +284,18 @@ unsafe fn alert_metrics(
     } else {
         text_width
     };
-    let buttons_width = buttons
-        .iter()
-        .map(|label| alert_measure_button(font, dpi, label))
-        .sum::<i32>()
-        + gap * (buttons.len() as i32 - 1);
     AlertMetrics {
         margin,
         gap,
         row,
+        bar,
         icon_column,
         text_width,
         body_height,
         scroll,
         link_height,
         client_width: (text_width + icon_column).max(buttons_width) + 2 * margin,
-        client_height: margin + body_height + link_block + gap + row + margin,
+        client_height: margin + body_height + link_block + bar,
     }
 }
 
@@ -282,7 +324,7 @@ pub(super) unsafe fn alert_layout(ui: &AlertUi) {
     } else {
         0
     };
-    let body_height = (client.bottom - ui.margin - ui.row - ui.gap - ui.margin - link_block).max(1);
+    let body_height = (client.bottom - ui.margin - ui.bar - link_block).max(1);
     if !ui.body_handle.is_null() {
         MoveWindow(
             ui.body_handle,
@@ -303,17 +345,24 @@ pub(super) unsafe fn alert_layout(ui: &AlertUi) {
             1,
         );
     }
-    // Buttons sit bottom-right, in MessageBoxW's order, one gap apart.
+    // Buttons sit bottom-right, in MessageBoxW's order, one gap apart. A
+    // Modern button's window reaches its focus ring past the face.
+    let ring = if ui.modern {
+        scale(FOCUS_MARGIN, ui.dpi)
+    } else {
+        0
+    };
+    let top = client.bottom - ui.margin - ui.row;
     let mut x = client.right - ui.margin;
     for button in ui.buttons.iter().rev() {
-        let width = alert_measure_button(ui.font, ui.dpi, button.label);
+        let width = alert_measure_button(ui.font, ui.dpi, ui.modern, button.label);
         x -= width;
         MoveWindow(
             button.handle,
-            x,
-            client.bottom - ui.margin - ui.row,
-            width,
-            ui.row,
+            x - ring,
+            top - ring,
+            width + 2 * ring,
+            ui.row + 2 * ring,
             1,
         );
         x -= ui.gap;
@@ -336,7 +385,8 @@ pub(super) unsafe fn alert_create(ui: &mut AlertUi) {
                 | ES_MULTILINE as u32
                 | ES_READONLY as u32
                 | ES_AUTOVSCROLL as u32,
-            WS_EX_CLIENTEDGE,
+            // Modern's text lies flat on the card, like the report of Media tools.
+            if ui.modern { 0 } else { WS_EX_CLIENTEDGE },
             ALERT_BODY_ID,
         )
     } else {
@@ -374,9 +424,10 @@ pub(super) unsafe fn alert_create(ui: &mut AlertUi) {
             ALERT_LINK_ID,
         );
         apply_font(ui.link_handle, ui.font);
-        if ui.dark {
+        if ui.dark || ui.modern {
             // The link then takes the colour the window answers WM_CTLCOLORSTATIC with:
-            // its own blue is too dark for the dark surface.
+            // its own blue is too dark for the dark surface, and Modern's link is in the
+            // accent colour.
             let mut item: LITEM = zeroed();
             item.mask = LIF_ITEMINDEX | LIF_STATE;
             item.state = LIS_DEFAULTCOLORS;
@@ -391,6 +442,37 @@ pub(super) unsafe fn alert_create(ui: &mut AlertUi) {
     alert_layout(ui);
 }
 pub(super) unsafe fn paint_alert(ui: &AlertUi, dc: HDC, client: &RECT) {
+    if ui.modern {
+        // The message on the card, the buttons on the command bar under it.
+        let palette = main_palette(ui.hwnd);
+        let bar = client.bottom - scale(ADD_FOOTER, ui.dpi);
+        fill_colour(
+            dc,
+            &RECT {
+                bottom: bar,
+                ..*client
+            },
+            palette.card,
+        );
+        fill_colour(
+            dc,
+            &RECT {
+                top: bar,
+                ..*client
+            },
+            palette.base,
+        );
+        fill_colour(
+            dc,
+            &RECT {
+                top: bar,
+                bottom: bar + 1,
+                ..*client
+            },
+            palette.stroke,
+        );
+        return;
+    }
     FillRect(
         dc,
         client,
@@ -414,11 +496,12 @@ pub(super) unsafe fn paint_alert(ui: &AlertUi, dc: HDC, client: &RECT) {
 /// The alert moved to a monitor at `dpi`: the fonts and sizes of the new scale
 /// first, then the window is given the size they need.
 unsafe fn alert_dpi_changed(ui: &mut AlertUi, dpi: u32, suggested: &RECT) {
-    let font = make_font(dpi, 9, FW_NORMAL as i32);
+    let font = alert_font(dpi, ui.modern);
     let labels: Vec<&str> = ui.buttons.iter().map(|button| button.label).collect();
     let metrics = alert_metrics(
         font,
         dpi,
+        ui.modern,
         &ui.body,
         !ui.icon.is_null(),
         ui.link.as_ref().map(|link| link.label.as_str()),
@@ -437,6 +520,7 @@ unsafe fn alert_dpi_changed(ui: &mut AlertUi, dpi: u32, suggested: &RECT) {
     ui.margin = metrics.margin;
     ui.gap = metrics.gap;
     ui.row = metrics.row;
+    ui.bar = metrics.bar;
     ui.icon_column = metrics.icon_column;
     ui.text_width = metrics.text_width;
     ui.body_height = metrics.body_height;
@@ -505,6 +589,22 @@ pub(super) unsafe extern "system" fn alert_proc(
             }
             0
         }
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT if ui.modern => {
+            let palette = main_palette(hwnd);
+            let dc = wparam as HDC;
+            SetTextColor(
+                dc,
+                alert_text_colour(&palette, lparam as HWND == ui.link_handle),
+            );
+            SetBkColor(dc, palette.card);
+            if ui.card_brush.1.is_null() || ui.card_brush.0 != palette.card {
+                if !ui.card_brush.1.is_null() {
+                    DeleteObject(ui.card_brush.1 as HGDIOBJ);
+                }
+                ui.card_brush = (palette.card, CreateSolidBrush(palette.card));
+            }
+            ui.card_brush.1 as LRESULT
+        }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT => {
             SetTextColor(
                 wparam as HDC,
@@ -527,6 +627,9 @@ pub(super) unsafe extern "system" fn alert_proc(
         // default when focus leaves the buttons. Answering from `ui.default` keeps that
         // answer fixed; the button style moves with focus and would answer in a circle.
         DM_GETDEFID => ((DC_HASDEFID << 16) | ui.default as u32) as LRESULT,
+        WM_NOTIFY if ui.modern && (*(lparam as *const NMHDR)).code == NM_CUSTOMDRAW => {
+            paint_alert_button(ui, &*(lparam as *const NMCUSTOMDRAW))
+        }
         WM_NOTIFY => {
             let header = &*(lparam as *const NMHDR);
             if header.idFrom == ALERT_LINK_ID as usize
@@ -585,6 +688,52 @@ pub(super) unsafe extern "system" fn alert_proc(
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
+/// The text colour of a control on a Modern alert's card: the link colour for its
+/// link, else the text colour.
+fn alert_text_colour(palette: &MainPalette, link: bool) -> u32 {
+    if link {
+        unsafe { link_colour(palette) }
+    } else {
+        palette.text
+    }
+}
+/// Paints a button of a Modern alert as a WinUI button, the default one in
+/// the accent colour; any other custom draw is left to the control.
+unsafe fn paint_alert_button(ui: &AlertUi, draw: &NMCUSTOMDRAW) -> LRESULT {
+    let Some(button) = ui
+        .buttons
+        .iter()
+        .find(|button| button.handle == draw.hdr.hwndFrom)
+    else {
+        return CDRF_DODEFAULT as LRESULT;
+    };
+    if draw.dwDrawStage != CDDS_PREPAINT {
+        return CDRF_DODEFAULT as LRESULT;
+    }
+    let state = draw.uItemState;
+    let disabled = state & CDIS_DISABLED != 0;
+    let look = ButtonState {
+        primary: button.id == ui.default,
+        disabled,
+        pressed: !disabled && state & CDIS_SELECTED != 0,
+        hot: !disabled && state & CDIS_HOT != 0,
+        focused: state & CDIS_FOCUS != 0
+            && SendMessageW(button.handle, WM_QUERYUISTATE, 0, 0) as u32 & UISF_HIDEFOCUS == 0,
+        underline: state & CDIS_SHOWKEYBOARDCUES != 0,
+    };
+    let label: Vec<u16> = text(button.handle).encode_utf16().collect();
+    paint_button(
+        draw.hdc,
+        draw.rc,
+        ui.dpi,
+        &main_palette(ui.hwnd),
+        ui.font,
+        &label,
+        None,
+        look,
+    );
+    CDRF_SKIPDEFAULT as LRESULT
+}
 #[cfg(test)]
 thread_local! {
     /// The DPI the alerts of this thread are made for, instead of their owner's:
@@ -640,12 +789,14 @@ pub(super) unsafe fn run_alert_linked(
     .max(96);
     #[cfg(test)]
     let dpi = ALERT_DPI.with(std::cell::Cell::get).unwrap_or(dpi);
-    let font = make_font(dpi, 9, FW_NORMAL as i32);
+    let modern = modern();
+    let font = alert_font(dpi, modern);
     let labels: Vec<&str> = plan.iter().map(|(_, label)| *label).collect();
     let AlertMetrics {
         margin,
         gap,
         row,
+        bar,
         icon_column,
         text_width,
         body_height,
@@ -656,6 +807,7 @@ pub(super) unsafe fn run_alert_linked(
     } = alert_metrics(
         font,
         dpi,
+        modern,
         body,
         !icon.is_null(),
         link.as_ref().map(|link| link.label.as_str()),
@@ -695,6 +847,9 @@ pub(super) unsafe fn run_alert_linked(
         margin,
         gap,
         row,
+        bar,
+        modern,
+        card_brush: (0, null_mut()),
         icon_column,
         text_width,
         body_height,
@@ -783,6 +938,9 @@ pub(super) unsafe fn run_alert_linked(
     if !font.is_null() {
         DeleteObject(font as HGDIOBJ);
     }
+    if !(*raw).card_brush.1.is_null() {
+        DeleteObject((*raw).card_brush.1 as HGDIOBJ);
+    }
     drop(Box::from_raw(raw));
     Some(result)
 }
@@ -798,8 +956,29 @@ pub(super) unsafe fn message(owner: HWND, body: &str, title: &str, flags: MESSAG
 
 #[cfg(test)]
 mod tests {
-    use super::{alert_body_cap, alert_escape};
+    use super::{alert_body_cap, alert_escape, alert_text_colour};
+    use crate::gui::native::fluent::{fluent_palette, AccentShades};
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDCANCEL, IDNO, IDOK, IDYES};
+
+    #[test]
+    fn a_modern_alert_s_link_is_in_the_accent_only_where_that_reads_on_its_card() {
+        let accent = |colour| AccentShades {
+            dark1: colour,
+            light2: colour,
+        };
+        // A pale yellow accent on the light card, a deep navy on the dark one.
+        let light = fluent_palette(false, accent(0x80f0ff));
+        assert_eq!(alert_text_colour(&light, true), light.text);
+        let dark = fluent_palette(true, accent(0x401010));
+        assert_eq!(alert_text_colour(&dark, true), dark.text);
+        // The accents that read are kept, and the rest of the text is never the accent.
+        let light = fluent_palette(false, accent(0x401010));
+        assert_eq!(alert_text_colour(&light, true), light.accent);
+        assert_eq!(alert_text_colour(&light, false), light.text);
+        let dark = fluent_palette(true, accent(0x80f0ff));
+        assert_eq!(alert_text_colour(&dark, true), dark.accent);
+        assert_eq!(alert_text_colour(&dark, false), dark.text);
+    }
 
     #[test]
     fn body_cap_is_seventy_percent_of_the_work_area_minus_the_chrome() {

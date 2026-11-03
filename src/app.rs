@@ -41,6 +41,8 @@ struct UiState {
     messages: Vec<UserMessage>,
     next_message: u64,
     show_window_seq: u64,
+    /// Browser hand-overs whose download window the main window has not opened yet.
+    job_views: Vec<String>,
     quit_requested: bool,
     /// Current browser handoff. The native picker opens from this and ends with it.
     media_launch: Option<MediaLaunch>,
@@ -134,6 +136,7 @@ impl App {
                     messages: Vec::new(),
                     next_message: 1,
                     show_window_seq: 0,
+                    job_views: Vec::new(),
                     quit_requested: false,
                     media_launch: None,
                     launch_seq: 0,
@@ -247,6 +250,11 @@ impl App {
     }
     pub fn dispatch(&self, action: Action) -> Result<()> {
         self.dispatch_result(action).map(|_| ())
+    }
+    /// Takes the jobs whose download window a browser hand-over asked for.
+    pub(crate) fn take_job_views(&self) -> Vec<String> {
+        let mut ui = self.inner.ui.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut ui.job_views)
     }
     /// Ends a browser handoff once its picker closes, so the next click starts fresh.
     pub(crate) fn clear_media_launch(&self, launch_seq: u64) {
@@ -436,11 +444,18 @@ impl App {
                 );
             }
             let mut result = crate::model::CommandResult::default();
+            let browser = matches!(action, Action::BrowserAdd { .. });
             match &mut action {
-                Action::Add { request } => {
+                Action::Add { request } | Action::BrowserAdd { request } => {
                     validate_url(&request.url, false)?;
                     result.request_id = request.request_id.clone();
                     result.job_ids = self.inner.engine.add(request.clone())?;
+                    if let [id] = result.job_ids.as_slice() {
+                        if browser && request.starts_now() {
+                            let mut ui = self.inner.ui.lock().unwrap_or_else(|e| e.into_inner());
+                            ui.job_views.push(id.clone());
+                        }
+                    }
                     let count = result.job_ids.len();
                     self.message(
                         crate::i18n::ui_format!(
@@ -647,6 +662,7 @@ impl App {
             | Action::RunSynchronization { .. }
             | Action::CrawlSite { .. }
             | Action::AddCrawlCandidates { .. }
+            | Action::BrowserAdd { .. }
             | Action::BrowserTransfer { .. } => {
                 bail!(
                     "{}",

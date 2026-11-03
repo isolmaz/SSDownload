@@ -556,6 +556,8 @@ fn conversion_progress(
     let share = (written.as_secs_f64() / length).min(1.0);
     let percent = (share * 100.0) as u32;
     TransferProgress {
+        ranges: None,
+        resumable: None,
         processing: true,
         downloaded: received,
         total: Some(received),
@@ -1696,6 +1698,8 @@ impl Reporter {
         let limited = context.shared.limited(now, self.waiting_since);
         self.waiting_since = (limited == Limited::Waiting).then_some(now);
         TransferProgress {
+            ranges: None,
+            resumable: None,
             processing: false,
             downloaded: self.downloaded,
             total: streams.iter().map(|stream| stream.size).sum(),
