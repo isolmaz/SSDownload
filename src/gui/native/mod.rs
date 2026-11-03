@@ -11527,6 +11527,11 @@ mod tests {
             ("/watch?v=abc123", "text/html; charset=utf-8", true),
             ("/video/12345", "text/html", true),
             ("/index.html", "text/html", true),
+            ("/watch.php?v=1", "text/html", true),
+            ("/default.aspx", "text/html", true),
+            ("/@john.doe", "text/html", true),
+            ("/details/foo.bar", "text/html", true),
+            ("/u/jane.smith", "text/html", true),
             ("/live/master.m3u8", "application/vnd.apple.mpegurl", true),
             ("/stream/manifest.mpd", "application/dash+xml", true),
         ];
