@@ -1582,37 +1582,11 @@ pub(super) unsafe fn renew_source(hwnd: HWND, error: HWND, app: App, f: &MediaFi
 }
 
 pub(super) fn direct_file_request(request: &AddRequest) -> bool {
-    if request.kind == DownloadKind::File {
-        return true;
+    match request.kind {
+        DownloadKind::File => true,
+        DownloadKind::Auto => !crate::transfer::auto_expects_media(request),
+        DownloadKind::Video | DownloadKind::Audio => false,
     }
-    if request.kind != DownloadKind::Auto {
-        return false;
-    }
-    url::Url::parse(&request.url).is_ok_and(|url| {
-        url.scheme() == "ftp"
-            || std::path::Path::new(url.path())
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| {
-                    matches!(
-                        e.to_ascii_lowercase().as_str(),
-                        "zip"
-                            | "exe"
-                            | "msi"
-                            | "pdf"
-                            | "rar"
-                            | "7z"
-                            | "iso"
-                            | "dmg"
-                            | "tar"
-                            | "gz"
-                            | "jpg"
-                            | "png"
-                            | "docx"
-                            | "xlsx"
-                    )
-                })
-    })
 }
 
 /// Stores or clears this site's remembered choice from the picker's switch.

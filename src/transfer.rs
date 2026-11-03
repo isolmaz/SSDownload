@@ -974,13 +974,8 @@ pub(crate) fn prepare_auto(
     network: &NetworkGovernor,
 ) -> Result<(bool, Option<RemoteInfo>)> {
     let url = validate_source_url(&request.url)?;
-    // A selected stream, audio, subtitle, container, or playlist must stay in
-    // the media pipeline so its mux and verification contract cannot be skipped.
-    if request_requires_media_pipeline(request) || media_extension(&url) {
-        return Ok((true, None));
-    }
-    if url.scheme() == "ftp" {
-        return Ok((false, None));
+    if let Some(media) = auto_route(request, &url) {
+        return Ok((media, None));
     }
     let info = probe_http(request, url, control, network)?;
     let media = info
@@ -989,6 +984,34 @@ pub(crate) fn prepare_auto(
         .map(is_media_content_type)
         .unwrap_or(false);
     Ok((media, Some(info)))
+}
+
+/// Where an Auto request goes when its options and address settle it without asking the server:
+/// `Some(true)` is the media pipeline, `Some(false)` a direct download, `None` leaves it to the
+/// content type of the server's answer.
+fn auto_route(request: &AddRequest, url: &Url) -> Option<bool> {
+    // A selected stream, audio, subtitle, container, or playlist must stay in
+    // the media pipeline so its mux and verification contract cannot be skipped.
+    if request_requires_media_pipeline(request) || media_extension(url) {
+        Some(true)
+    } else if url.scheme() == "ftp" {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether an Auto request goes to the media pipeline, as far as its options and address show,
+/// which is all New download knows before it adds the job. Where `prepare_auto` settles the route
+/// without asking, this is that route. Otherwise the server's answer decides there, and here an
+/// address whose last part ends in the extension of a known file type counts as a file, which a
+/// server answers with the file, and any other address as a page.
+pub(crate) fn auto_expects_media(request: &AddRequest) -> bool {
+    let Ok(url) = validate_source_url(&request.url) else {
+        return true;
+    };
+    auto_route(request, &url)
+        .unwrap_or_else(|| !url_file_name(&url).is_some_and(|name| names_a_known_file(&name)))
 }
 
 #[derive(Debug)]
@@ -5789,6 +5812,28 @@ fn names_a_file(name: &str) -> bool {
         .is_some_and(|extension| extension.chars().any(char::is_alphabetic))
 }
 
+/// The extensions of the files that a server sends as a download, whatever their site: archives
+/// and compressed files, packages and installers, binaries and data, documents, images, audio
+/// and video. The extension of a web page (`html`, `php`, `aspx`) and an unknown one are not
+/// here, and neither are the playlists `m3u8` and `mpd`, which belong to the media pipeline.
+const FILE_EXTENSIONS: &[&str] = &[
+    "7z", "bz2", "cab", "gz", "lz", "lzma", "rar", "tar", "tbz2", "tgz", "txz", "xz", "zip", "zst",
+    "apk", "appx", "deb", "dmg", "exe", "img", "iso", "jar", "msi", "msix", "pkg", "rpm", "bin",
+    "dat", "csv", "doc", "docx", "epub", "json", "md", "odp", "ods", "odt", "pdf", "ppt", "pptx",
+    "rtf", "txt", "xls", "xlsx", "xml", "avif", "bmp", "gif", "heic", "ico", "jpeg", "jpg", "png",
+    "svg", "tif", "tiff", "webp", "aac", "flac", "m4a", "mka", "mp3", "oga", "ogg", "opus", "wav",
+    "wma", "3gp", "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "webm", "wmv",
+];
+
+/// Whether `name` ends in the extension of a known file type (`linux-1.0.tar.xz`, `setup.exe`).
+fn names_a_known_file(name: &str) -> bool {
+    crate::output::real_extension(Path::new(name)).is_some_and(|extension| {
+        FILE_EXTENSIONS
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(extension))
+    })
+}
+
 /// Decodes `%XX` escapes; `None` when an escape is malformed or the bytes are not UTF-8.
 fn percent_decode_utf8(value: &str) -> Option<String> {
     let input = value.as_bytes();
@@ -6544,6 +6589,99 @@ mod tests {
         ] {
             assert!(!is_html_name(Path::new(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn an_automatic_address_is_a_file_only_by_the_extension_of_a_known_file_type() {
+        let expects_media = |url: &str| auto_expects_media(&local_request(url.into()));
+        for name in [
+            "a.zip",
+            "a.7z",
+            "a.rar",
+            "a.tar",
+            "a.gz",
+            "a.tgz",
+            "linux-1.0.tar.xz",
+            "db.sql.zst",
+            "a.bz2",
+            "a.lz",
+            "a.lzma",
+            "a.cab",
+            "setup.exe",
+            "SETUP.EXE",
+            "a.msi",
+            "a.msix",
+            "a.appx",
+            "tool_1.2-3_amd64.deb",
+            "tool-1.2.x86_64.rpm",
+            "a.apk",
+            "a.dmg",
+            "a.pkg",
+            "a.iso",
+            "a.img",
+            "firmware.bin",
+            "a.dat",
+            "a.pdf",
+            "a.docx",
+            "a.xlsx",
+            "a.pptx",
+            "a.odt",
+            "a.epub",
+            "a.txt",
+            "a.csv",
+            "a.json",
+            "a.jpg",
+            "a.jpeg",
+            "a.png",
+            "a.gif",
+            "a.webp",
+            "a.svg",
+            "clip.mp4",
+            "a.mkv",
+            "a.webm",
+            "a.mp3",
+            "a.m4a",
+        ] {
+            assert!(
+                !expects_media(&format!("https://files.example/pub/{name}?token=1")),
+                "{name}"
+            );
+        }
+        for name in [
+            "watch.php",
+            "default.aspx",
+            "page.asp",
+            "index.jsp",
+            "view.cgi",
+            "index.cfm",
+            "run.pl",
+            "app.py",
+            "index.html",
+            "index.htm",
+            "@john.doe",
+            "jane.smith",
+            "foo.bar",
+            "archive.unknown",
+            "v1.2",
+            "12345",
+            "",
+        ] {
+            assert!(
+                expects_media(&format!("https://site.example/u/{name}?v=1")),
+                "{name}"
+            );
+        }
+        assert!(expects_media("https://site.example/"));
+        // A name with a known extension still goes to the media tools when the options need
+        // them, and a playlist's name does so whatever the options.
+        let playlist = AddRequest {
+            playlist: true,
+            ..local_request("https://files.example/a.zip".into())
+        };
+        assert!(auto_expects_media(&playlist));
+        assert!(expects_media("https://files.example/live/master.m3u8"));
+        assert!(expects_media("https://files.example/stream/manifest.mpd"));
+        assert!(!expects_media("ftp://files.example/pub/README"));
     }
 
     #[test]
