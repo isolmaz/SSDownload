@@ -223,11 +223,11 @@ function hlsChildren(text, base) { return hlsRelations(text,base).filter(item=>i
     if (predicate()) return true;
     throw new Error(`waitFor timed out after ${timeoutMs}ms: ${String(predicate)}`);
   }
-  async function content(message, tabId = 7, frameId = 0, tabTitle) {
+  async function content(message, tabId = 7, frameId = 0, tabTitle, tabUrl) {
     message={...message,sources:message.sources?.map(s=>({...s,playerId:s.playerId||message.players?.find(p=>p.urls?.includes(s.url))?.id}))};
     const listener = events.message.listeners.at(-1);
     let reply = null;
-    assert.equal(listener(message, { id: "test-extension", url: message.pageUrl || "https://site.example/watch", tab: tabTitle === undefined ? { id: tabId } : { id: tabId, title: tabTitle }, frameId }, value => { reply = value; }), true);
+    assert.equal(listener(message, { id: "test-extension", url: message.pageUrl || "https://site.example/watch", tab: { id: tabId, ...(tabTitle === undefined ? {} : { title: tabTitle }), ...(tabUrl === undefined ? {} : { url: tabUrl }) }, frameId }, value => { reply = value; }), true);
     for (let round = 0; round < 8; round += 1) {
       await Promise.resolve();
       await new Promise(resolve => setImmediate(resolve));
@@ -379,6 +379,70 @@ test("a title that names the content is still handed over as the file name", asy
   assert.equal(await suggestedName({ pageTitle: "A Film - Clips", tabTitle: "A Film - Clips" }), "A Film - Clips", "the site may end a title");
   assert.equal(await suggestedName({ pageTitle: "Clips", tabTitle: "A Film (2011)" }), "A Film (2011)", "a site-only page title yields to the tab's title");
   assert.equal(await suggestedName({ pageUrl: "https://watch.example/v/1", pageTitle: "Moviehub 2", tabTitle: "Moviehub 2", siteNames: ["Moviehub"] }), "Moviehub 2");
+});
+
+test("a placeholder of the extension, in any of its languages, is not handed over as the file name", async () => {
+  const catalog = vm.createContext({});
+  loadI18n(catalog);
+  const messages = JSON.parse(vm.runInContext("JSON.stringify(SSDownloadI18n.MESSAGES)", catalog));
+  const placeholders = Object.values(messages).flatMap(language => [language.videoTitleFallback, language.playerTitleFallback.replace("{0}", "3"), language.embedTitleFallback]);
+  assert.equal(placeholders.length, 21);
+  assert.ok(placeholders.includes("Vídeo 3") && placeholders.includes("فيديو"));
+  for (const title of placeholders) assert.equal(await suggestedName({ pageTitle: title, tabTitle: title }), null, title);
+  assert.equal(await suggestedName({ pageTitle: "Video Game Night", tabTitle: "Video Game Night" }), "Video Game Night", "a title that only starts with a placeholder's word");
+});
+
+test("a page with no title reports none, whatever the language, so no placeholder reaches the file name", async () => {
+  const ready = { status: "ready", usageModes: { video: true, file: true, audio: true }, siteEntries: true };
+  for (const browserLanguage of ["es", "pt", "fr", "ar", "tr", "de", "en"]) {
+    const h = contentHarness({ browserLanguage, reply: ready });
+    await vm.runInContext("refreshUsageModes()", h.context);
+    const scans = h.sent.filter(message => message.event === "scan");
+    assert.ok(scans.length > 0, browserLanguage);
+    assert.deepEqual(scans.map(message => message.pageTitle), scans.map(() => ""), browserLanguage);
+  }
+  const titled = contentHarness({ reply: ready, nodes: { 'meta[property="og:title"]': [{ content: "Shared Film" }] } });
+  titled.document.title = "Tab Film";
+  assert.equal(vm.runInContext("pageTitle()", titled.context), "Shared Film", "the title the page shares wins");
+  const plain = contentHarness({ reply: ready });
+  plain.document.title = "Tab Film";
+  assert.equal(vm.runInContext("pageTitle()", plain.context), "Tab Film");
+});
+
+test("a leading unread count does not hide that a title only names the site", async () => {
+  assert.equal(await suggestedName({ pageTitle: "(3) Clips", tabTitle: "(3) Clips" }), null);
+  assert.equal(await suggestedName({ pageUrl: "https://watch.example/v/1", pageTitle: "(12) Moviehub", tabTitle: "(12) Moviehub", siteNames: ["Moviehub"] }), null);
+  assert.equal(await suggestedName({ pageTitle: "(3) A Film (2011)", tabTitle: "(3) A Film (2011)" }), "(3) A Film (2011)", "a title that names the content is not rewritten");
+  assert.equal(await suggestedName({ pageTitle: "(1917)", tabTitle: "(1917)" }), "(1917)", "a number that is the whole title is no count");
+});
+
+test("no site name is built into the rules for a title", async () => {
+  assert.equal(await suggestedName({ pageTitle: "YouTube", tabTitle: "YouTube" }), "YouTube", "a title that is not the label of the page's address names content");
+  assert.equal(await suggestedName({ pageUrl: "https://www.youtube.com/watch?v=abc", pageTitle: "YouTube", tabTitle: "YouTube" }), null, "the label of the page's own address is the site");
+});
+
+test("untitled players are told apart by number in every language", async () => {
+  const h = backgroundHarness({ browserLanguage: "es" });
+  const [one, two] = ["https://cdn.example/one.m3u8", "https://cdn.example/two.m3u8"];
+  const page = { channel: "ssdownload-content", documentId: "d", pageUrl: "https://clips.example/watch", pageTitle: "",
+    players: [{ id: "1", title: "", urls: [one], active: true }, { id: "2", title: "", urls: [two], active: true }],
+    sources: [one, two].map((url, index) => ({ url, contentType: "application/vnd.apple.mpegurl", playerId: String(index + 1) })) };
+  await h.content({ ...page, event: "scan" }, 7, 0, "");
+  assert.deepEqual((await h.state(7)).videos.map(video => video.title).sort(), ["Vídeo 1", "Vídeo 2"]);
+});
+
+test("without a record of the top document the tab title is judged against the tab's address", async () => {
+  const send = async tabTitle => {
+    const h = backgroundHarness();
+    const manifest = "https://cdn.example/master.m3u8";
+    const frame = { channel: "ssdownload-content", documentId: "frame", pageUrl: "https://player.example/embed", pageTitle: "MobiPlayer",
+      players: [{ id: "p1", urls: [manifest], active: true }], sources: [{ url: manifest, contentType: "application/vnd.apple.mpegurl", playerId: "p1" }] };
+    await h.content({ ...frame, event: "scan" }, 7, 2, tabTitle, "https://clips.example/");
+    await h.content({ ...frame, event: "download-video", mediaKind: "video", playerId: "p1" }, 7, 2, tabTitle, "https://clips.example/");
+    return h.nativeRequests.find(request => request?.action?.type === "browser_media").action.request.filename;
+  };
+  assert.equal(await send("Clips"), null);
+  assert.equal(await send("A Film (2011)"), "A Film (2011)");
 });
 
 test("a tab title that only names the top document's site is not handed over for a player in a frame", async () => {

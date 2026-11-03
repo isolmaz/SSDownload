@@ -2,11 +2,30 @@
 
 use super::*;
 
+/// What the browser extension calls a video, a player or an embed that has no title, in each
+/// language it speaks. It sends one of them, with the player's number after it, as the file
+/// name; it names nothing.
+const EXTENSION_PLACEHOLDERS: [&str; 12] = [
+    "Video",
+    "Vídeo",
+    "Vidéo",
+    "فيديو",
+    "الفيديو",
+    "Embedded player",
+    "Gömülü oynatıcı",
+    "مشغّل مضمَّن",
+    "Reproductor incrustado",
+    "Reprodutor incorporado",
+    "Lecteur intégré",
+    "Eingebetteter Player",
+];
+
 /// The name the picker's field starts from: the name the request carries, or the analysed
 /// title with the container's `extension`. A browser handoff (`browser_handoff`) carries the
 /// title of the page, and a page whose title is only its site's name (a feed, or a single-page
-/// site that has not named the video yet) carries that name for every video it plays, so such
-/// a name gives way to the title. A name the user typed is kept whatever it says.
+/// site that has not named the video yet) carries that name for every video it plays, as does
+/// a placeholder of the extension for an untitled one, so such a name gives way to the title.
+/// A name the user typed is kept whatever it says.
 pub(crate) fn picker_file_name(
     request: &AddRequest,
     browser_handoff: bool,
@@ -18,7 +37,10 @@ pub(crate) fn picker_file_name(
         .as_deref()
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .filter(|name| !(browser_handoff && names_only_the_site(name, request, info)))
+        .filter(|name| {
+            !(browser_handoff
+                && (is_extension_placeholder(name) || names_only_the_site(name, request, info)))
+        })
         .map(str::to_owned)
         .unwrap_or_else(|| {
             format!(
@@ -28,9 +50,19 @@ pub(crate) fn picker_file_name(
         })
 }
 
+/// Whether `name` is one of the extension's placeholders, with or without the player's number.
+fn is_extension_placeholder(name: &str) -> bool {
+    let name = letters_and_digits(name);
+    let stem = name.trim_end_matches(|character: char| character.is_ascii_digit());
+    EXTENSION_PLACEHOLDERS
+        .iter()
+        .any(|placeholder| letters_and_digits(placeholder) == stem)
+}
+
 /// Whether `name` is no more than the name of the site the media comes from: the extractor's
 /// name for it, or a label of the host (not the top-level one) of the analysed page, the page
-/// the browser handed over or the media address. Case, spaces and punctuation do not matter.
+/// the browser handed over or the media address, in its Unicode form as well as its ASCII one.
+/// Case, spaces, punctuation and a leading unread count do not matter.
 fn names_only_the_site(name: &str, request: &AddRequest, info: &MediaInfo) -> bool {
     let name = letters_and_digits(name);
     if name.is_empty() {
@@ -48,20 +80,37 @@ fn names_only_the_site(name: &str, request: &AddRequest, info: &MediaInfo) -> bo
     .flatten()
     .filter_map(|address| Url::parse(address).ok())
     .any(|address| match address.host() {
-        Some(url::Host::Domain(host)) => host
-            .rsplit('.')
-            .skip(1)
-            .any(|label| letters_and_digits(label) == name),
+        Some(url::Host::Domain(host)) => {
+            let unicode = url::quirks::domain_to_unicode(host);
+            host.rsplit('.')
+                .skip(1)
+                .chain(unicode.rsplit('.').skip(1))
+                .any(|label| letters_and_digits(label) == name)
+        }
         _ => false,
     })
 }
 
 fn letters_and_digits(value: &str) -> String {
-    value
+    without_unread_count(value)
         .chars()
-        .filter(|character| character.is_alphanumeric())
         .flat_map(char::to_lowercase)
+        .filter(|character| character.is_alphanumeric())
         .collect()
+}
+
+/// A tab title leads with the unread count some sites keep there: `(3) Clips`.
+fn without_unread_count(value: &str) -> &str {
+    let value = value.trim();
+    value
+        .strip_prefix('(')
+        .and_then(|rest| rest.split_once(')'))
+        .filter(|(count, rest)| {
+            !count.is_empty()
+                && count.bytes().all(|byte| byte.is_ascii_digit())
+                && rest.starts_with(char::is_whitespace)
+        })
+        .map_or(value, |(_, rest)| rest.trim_start())
 }
 
 #[cfg(test)]
@@ -154,6 +203,129 @@ mod tests {
         let info = info("Real Title", "Moviehub", "https://clips.example/watch");
         let request = request(Some("Clips"), MEDIA, Some("https://clips.example/watch"));
         assert_eq!(picker_file_name(&request, false, &info, "mkv"), "Clips");
+    }
+
+    #[test]
+    fn a_placeholder_of_the_extension_gives_way_to_the_media_title_in_every_language() {
+        let info = info("Real Title", "Generic", "https://clips.example/watch");
+        for name in [
+            "Video",
+            "Video 3",
+            "Vídeo 12",
+            "Vidéo",
+            "فيديو",
+            "الفيديو 4",
+            "Embedded player",
+            "Gömülü oynatıcı",
+            "مشغّل مضمَّن",
+            "Reproductor incrustado",
+            "Reprodutor incorporado",
+            "Lecteur intégré",
+            "Eingebetteter Player 2",
+            " VIDEO 7 ",
+            "(3) Video",
+        ] {
+            assert_eq!(
+                picker_file_name(&request(Some(name), MEDIA, None), true, &info, "mp4"),
+                "Real Title.mp4",
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_that_only_starts_with_a_placeholder_word_is_kept() {
+        let info = info("Real Title", "Generic", "https://clips.example/watch");
+        for name in ["Video Game Night", "Video 2: Finale", "Player One"] {
+            assert_eq!(
+                picker_file_name(&request(Some(name), MEDIA, None), true, &info, "mp4"),
+                name
+            );
+        }
+        assert_eq!(
+            picker_file_name(&request(Some("Video 3"), MEDIA, None), false, &info, "mp4"),
+            "Video 3",
+            "a name the user typed is kept"
+        );
+    }
+
+    #[test]
+    fn the_known_placeholders_cover_the_wording_of_every_extension_language() {
+        let catalog = include_str!("../../browser/chromium/i18n.js");
+        let placeholders: Vec<String> = catalog
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| {
+                [
+                    "videoTitleFallback",
+                    "playerTitleFallback",
+                    "embedTitleFallback",
+                ]
+                .into_iter()
+                .find_map(|key| {
+                    line.strip_prefix(key)?
+                        .strip_prefix(": \"")?
+                        .strip_suffix("\",")
+                })
+            })
+            .map(|text| text.replace("{0}", "3"))
+            .collect();
+        assert_eq!(placeholders.len(), 21, "{placeholders:?}");
+        for placeholder in placeholders {
+            assert!(is_extension_placeholder(&placeholder), "{placeholder}");
+        }
+    }
+
+    #[test]
+    fn a_leading_unread_count_does_not_hide_a_site_name() {
+        let info = info("Real Title", "Moviehub", "https://clips.example/watch");
+        for name in ["(3) Clips", "(12)   MovieHub", " (7) clips "] {
+            assert_eq!(
+                picker_file_name(
+                    &request(Some(name), MEDIA, Some("https://clips.example/watch")),
+                    true,
+                    &info,
+                    "mp4"
+                ),
+                "Real Title.mp4",
+                "{name}"
+            );
+        }
+        for name in ["(3) Real Film", "(1917)", "(3)Clips", "(x) Clips"] {
+            assert_eq!(
+                picker_file_name(
+                    &request(Some(name), MEDIA, Some("https://clips.example/watch")),
+                    true,
+                    &info,
+                    "mp4"
+                ),
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn a_site_name_is_matched_in_the_unicode_form_of_an_international_host() {
+        let info = info("Real Title", "Generic", MEDIA);
+        let request = request(Some("Bücher"), "https://bücher.example/v/master.m3u8", None);
+        assert_eq!(
+            picker_file_name(&request, true, &info, "mp4"),
+            "Real Title.mp4"
+        );
+    }
+
+    #[test]
+    fn a_site_name_with_a_dotted_capital_i_is_matched() {
+        let info = info("Real Title", "Generic", MEDIA);
+        let request = request(
+            Some("İnstagram"),
+            "https://instagram.example/v/1.m3u8",
+            None,
+        );
+        assert_eq!(
+            picker_file_name(&request, true, &info, "mp4"),
+            "Real Title.mp4"
+        );
     }
 
     #[test]

@@ -111,7 +111,7 @@ function collectPlayerSignals() {
 }
 function pageUrl() { return /^https?:/.test(location.href) ? location.href : /^https?:/.test(document.baseURI) ? document.baseURI : document.referrer; }
 function pageTitle() {
-  return document.querySelector?.('meta[property="og:title"]')?.content || document.title || t("videoTitleFallback");
+  return document.querySelector?.('meta[property="og:title"]')?.content || document.title || "";
 }
 // The names the document gives its own site. A title equal to one of them names the site, not
 // the content, and is never suggested as a file name.
