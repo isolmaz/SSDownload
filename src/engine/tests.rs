@@ -2532,7 +2532,7 @@ fn a_failed_name_lookup_in_a_media_tool_message_is_retried() {
 }
 
 #[test]
-fn a_refused_or_reset_connection_in_a_media_tool_message_is_retried() {
+fn a_refused_reset_or_aborted_connection_in_a_media_tool_message_is_retried() {
     let request = AddRequest {
         url: "https://cdn.example/video.mp4".into(),
         ..AddRequest::default()
@@ -2542,6 +2542,8 @@ fn a_refused_or_reset_connection_in_a_media_tool_message_is_retried() {
         "[WinError 10061] No connection could be made because the target machine actively refused it",
         "[Errno 111] Connection refused",
         "[WinError 10054] An existing connection was forcibly closed by the remote host",
+        "[WinError 10053] An established connection was aborted by the software in your host machine",
+        "[Errno 103] Software caused connection abort",
     ] {
         let analysis = transfer_failure(
             &request,
