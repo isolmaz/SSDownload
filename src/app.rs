@@ -741,14 +741,12 @@ impl App {
                         if let Err(rollback) =
                             install::set_autostart(self.paths(), previous.start_with_windows)
                         {
+                            let detail = format!(
+                                "The autostart setting could not be rolled back: {rollback:#}"
+                            );
                             crate::logging::record(
-                                crate::logging::Event::warn("app.autostart_rollback").detail(
-                                    crate::i18n::ui_format!(
-                                    "Otomatik başlatma ayarı geri alınamadı: {rollback:#}",
-                                    "The autostart setting could not be rolled back: {rollback:#}",
-                                    rollback = rollback
-                                ),
-                                ),
+                                crate::logging::Event::warn("app.autostart_rollback")
+                                    .detail(detail),
                             );
                         }
                     }
@@ -1860,6 +1858,7 @@ fn diagnostic_error_kind(kind: &str) -> &'static str {
         "not_found" => "not_found",
         "timeout" => "timeout",
         "verification" => "verification",
+        "merge" => "merge",
         _ => "other",
     }
 }
@@ -2481,6 +2480,11 @@ mod tests {
         assert_eq!(exported["failed_stage"], "source");
         assert_eq!(exported["request_role"], "source");
         assert_eq!(exported["error_kind"], "other");
+
+        job.error = Some("SSD-TRF-002 The video and audio streams could not be merged losslessly: [matroska @ 0] Error muxing a packet".into());
+        let exported = diagnostic_job(&job);
+        assert_eq!(exported["failed_stage"], "source");
+        assert_eq!(exported["error_kind"], "merge");
     }
 
     #[test]

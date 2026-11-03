@@ -16,8 +16,11 @@ pub(crate) struct Store {
     connection: Connection,
     pub warnings: Vec<String>,
     /// The state, phase and error of each held job record (see `hold`).
-    held: HashMap<String, (JobState, String, Option<String>)>,
+    held: HashMap<String, HeldRecord>,
 }
+
+/// The state, phase and error that a held job record keeps.
+pub(crate) type HeldRecord = (JobState, String, Option<String>);
 
 impl Store {
     /// Opens the database. A file SQLite reports as not a database or malformed is moved
@@ -258,8 +261,9 @@ impl Store {
         );
     }
 
-    pub(crate) fn release(&mut self, id: &str) {
-        self.held.remove(id);
+    /// Ends the hold and returns the record it kept.
+    pub(crate) fn release(&mut self, id: &str) -> Option<HeldRecord> {
+        self.held.remove(id)
     }
 
     fn encode(&self, job: &Job) -> Result<String> {

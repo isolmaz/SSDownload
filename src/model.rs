@@ -356,6 +356,15 @@ impl JobState {
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
+    /// What a media transfer calls its phase while it only does what this state says. A
+    /// longer phase that starts with it states the same activity and adds to it.
+    pub fn plain_phase(self) -> Option<&'static str> {
+        match self {
+            Self::Downloading => Some(crate::i18n::ui("Medya indiriliyor", "Downloading media")),
+            Self::Processing => Some(crate::i18n::ui("Medya işleniyor", "Processing media")),
+            _ => None,
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::Queued => crate::i18n::ui("Sırada", "Queued"),
@@ -1013,6 +1022,11 @@ pub struct TransferProgress {
     pub speed: u64,
     pub eta: Option<u64>,
     pub phase: String,
+    /// The English name of the phase for the job log: the same for as long as the phase lasts
+    /// (`phase` may carry counts and percentages) and in every interface language. Empty when
+    /// the phase has no name of its own; the log then names the state.
+    #[serde(skip)]
+    pub phase_name: &'static str,
     /// The bytes are in and the result is being processed (joined, converted, checked); the
     /// job shows the processing state rather than a nearly full download.
     #[serde(default)]
@@ -1054,6 +1068,9 @@ pub struct TransferControl {
     retained: Arc<Mutex<Option<(u64, u64)>>>,
     /// A request of the attempt was answered 429 or 503.
     throttled: Arc<AtomicBool>,
+    /// The number of busy workers each paced write divided the speed limit by, for tests.
+    #[cfg(test)]
+    pub(crate) paced_by: Arc<Mutex<Vec<u64>>>,
 }
 impl TransferControl {
     pub fn pause(&self) {

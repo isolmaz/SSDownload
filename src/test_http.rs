@@ -146,6 +146,13 @@ pub struct Config {
     pub head_etag: Option<String>,
     /// The `HEAD` answer carries no validators and no `Content-Length`.
     pub head_bare: bool,
+    /// A `HEAD` is read and the connection is then closed without an answer, as a server that
+    /// cannot handle the method does. The request is logged with status 0 and no answer time.
+    pub head_dropped: bool,
+    /// A `HEAD` is read and then never answered, as a server that swallows the method does: the
+    /// connection stays silent until the client closes it or `STALL_LIMIT` has passed. The
+    /// request is logged with status 0 and no answer time.
+    pub head_hung: bool,
     /// Without it a `GET` answer has no `Content-Length` and its body ends with the connection.
     pub get_length_header: bool,
     pub etag: EtagKind,
@@ -232,6 +239,8 @@ pub struct Config {
     pub content_type_from: Option<(usize, String)>,
     /// `Content-Disposition` of every such answer.
     pub content_disposition: Option<String>,
+    /// The first bytes of every body version, in place of the pattern's.
+    pub body_start: Vec<u8>,
     /// Header lines added to every `HEAD` and `GET` answer that carries the file's headers.
     pub extra_headers: Vec<String>,
     /// Header lines added to the `HEAD` answer only.
@@ -256,6 +265,8 @@ impl Default for Config {
             head_not_allowed: false,
             head_etag: None,
             head_bare: false,
+            head_dropped: false,
+            head_hung: false,
             get_length_header: true,
             etag: EtagKind::Strong,
             vary_etag: false,
@@ -294,6 +305,7 @@ impl Default for Config {
             content_type: None,
             content_type_from: None,
             content_disposition: None,
+            body_start: Vec::new(),
             extra_headers: Vec::new(),
             head_extra_headers: Vec::new(),
             head_statuses: Vec::new(),
@@ -884,6 +896,10 @@ struct Reply {
     omit_length: bool,
     /// A fixed body sent after the head, to any method but `HEAD`.
     document: Option<Vec<u8>>,
+    /// Nothing is sent and the connection is closed.
+    dropped: bool,
+    /// Nothing is sent and the connection stays open.
+    hung: bool,
 }
 
 impl Reply {
@@ -897,6 +913,8 @@ impl Reply {
             close: false,
             omit_length: false,
             document: None,
+            dropped: false,
+            hung: false,
         }
     }
 }
@@ -1163,6 +1181,14 @@ fn plan(shared: &Shared, request: &Request, index: usize, over_limit: bool) -> R
 
     let size = config.size;
     match request.method.as_str() {
+        "HEAD" if config.head_dropped => Reply {
+            dropped: true,
+            ..Reply::empty(0)
+        },
+        "HEAD" if config.head_hung => Reply {
+            hung: true,
+            ..Reply::empty(0)
+        },
         "HEAD" if config.head_not_allowed => {
             let mut reply = Reply::empty(405);
             reply.headers.push("Allow: GET".into());
@@ -1340,6 +1366,13 @@ fn answer(
     if let Some(delay) = config.lookup_delay.filter(|_| is_lookup(&request.path)) {
         thread::sleep(delay);
     }
+    if reply.dropped {
+        return false;
+    }
+    if reply.hung {
+        hold(shared, stream);
+        return false;
+    }
     // Noted before the answer goes out, so that a client that has its answer finds it logged.
     shared.log.lock().unwrap()[position].answered = Some(Instant::now());
     let mut head = format!("HTTP/1.1 {} {}\r\n", reply.status, reason(reply.status));
@@ -1376,14 +1409,22 @@ fn answer(
         .filter(|&(stalled, after)| place == Some(stalled) && after < sent)
         .map(|(_, after)| after);
     let body = &shared.body_bytes;
+    let lead = config.body_start.as_slice();
     let delivered = match stall {
         Some(after) => {
-            write_body(stream, body, reply.version, start, after, rate)
+            write_body(stream, body, (reply.version, lead), start, after, rate)
                 && match wait_for_takeover(shared, stream, position, start, start + length) {
                     None => false,
                     Some(taken) if config.hold_at_takeover => {
                         let until = taken.saturating_sub(start + after);
-                        if write_body(stream, body, reply.version, start + after, until, rate) {
+                        if write_body(
+                            stream,
+                            body,
+                            (reply.version, lead),
+                            start + after,
+                            until,
+                            rate,
+                        ) {
                             hold(shared, stream);
                         }
                         false
@@ -1391,7 +1432,7 @@ fn answer(
                     Some(_) => write_body(
                         stream,
                         body,
-                        reply.version,
+                        (reply.version, lead),
                         start + after,
                         sent - after,
                         rate,
@@ -1401,17 +1442,19 @@ fn answer(
         None => {
             let burst = config.burst.min(sent);
             let (after, rest) = (start + burst, sent - burst);
-            write_body(stream, body, reply.version, start, burst, None)
-                && write_body(stream, body, reply.version, after, rest, rate)
+            write_body(stream, body, (reply.version, lead), start, burst, None)
+                && write_body(stream, body, (reply.version, lead), after, rest, rate)
         }
     };
     delivered && sent == length && !reply.close
 }
 
+/// Sends `length` body bytes from `start`: body `version` of the pattern, except that its first
+/// bytes are `lead` when that is given.
 fn write_body(
     stream: &mut TcpStream,
     counter: &AtomicU64,
-    version: u8,
+    (version, lead): (u8, &[u8]),
     start: u64,
     length: u64,
     rate: Option<u64>,
@@ -1426,6 +1469,13 @@ fn write_body(
     while sent < length {
         let count = (length - sent).min(chunk_size as u64) as usize;
         fill(version, start + sent, &mut chunk[..count]);
+        if let Some(from) = usize::try_from(start + sent)
+            .ok()
+            .filter(|from| *from < lead.len())
+        {
+            let covered = (lead.len() - from).min(count);
+            chunk[..covered].copy_from_slice(&lead[from..from + covered]);
+        }
         if stream.write_all(&chunk[..count]).is_err() {
             return false;
         }
@@ -1750,6 +1800,44 @@ mod tests {
         let mut connection = connect(&refusing);
         assert_eq!(request(&mut connection, "HEAD", "/", &[]).status, 405);
         assert_eq!(request(&mut connection, "GET", "/", &[]).status, 200);
+    }
+
+    #[test]
+    fn a_dropped_head_gets_no_answer_and_every_other_request_is_served() {
+        let server = Server::start(Config {
+            head_dropped: true,
+            ..config(1000)
+        });
+        assert!(try_request(&mut connect(&server), "HEAD", "/", &[]).is_none());
+        let part = request(&mut connect(&server), "GET", "/", &["Range: bytes=0-0"]);
+        assert_eq!((part.status, part.body.len()), (206, 1));
+
+        let log = server.log();
+        assert_eq!((log[0].method.as_str(), log[0].status), ("HEAD", 0));
+        assert!(log[0].answered.is_none());
+        assert_eq!((log[1].method.as_str(), log[1].status), ("GET", 206));
+    }
+
+    #[test]
+    fn a_hung_head_gets_no_answer_until_the_client_gives_up_and_every_other_request_is_served() {
+        let server = Server::start(Config {
+            head_hung: true,
+            ..config(1000)
+        });
+        let mut waiting = connect(&server);
+        waiting
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        assert!(try_request(&mut waiting, "HEAD", "/", &[]).is_none());
+        drop(waiting);
+        let part = request(&mut connect(&server), "GET", "/", &["Range: bytes=0-0"]);
+        assert_eq!((part.status, part.body.len()), (206, 1));
+
+        let log = server.log();
+        assert_eq!((log[0].method.as_str(), log[0].status), ("HEAD", 0));
+        assert!(log[0].answered.is_none());
+        assert_eq!((log[1].method.as_str(), log[1].status), ("GET", 206));
     }
 
     #[test]

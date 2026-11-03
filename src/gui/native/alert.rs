@@ -177,27 +177,6 @@ pub(super) unsafe fn alert_is_dark(owner: HWND) -> bool {
     let main = FindWindowW(wide(CLASS_MAIN).as_ptr(), null());
     !main.is_null() && scheme_dark(main)
 }
-/// The width of `label` in `font` (the DC's own font when `font` is 0), measured on
-/// `window`'s DC; 0 when there is none.
-unsafe fn alert_label_extent(window: HWND, font: isize, label: &str) -> i32 {
-    let mut text = wide(label);
-    let dc = GetDC(window);
-    if dc.is_null() {
-        return 0;
-    }
-    let previous = if font == 0 {
-        null_mut()
-    } else {
-        SelectObject(dc, font as HGDIOBJ)
-    };
-    let mut size: SIZE = zeroed();
-    GetTextExtentPoint32W(dc, text.as_mut_ptr(), text.len() as i32, &mut size);
-    if !previous.is_null() {
-        SelectObject(dc, previous);
-    }
-    ReleaseDC(window, dc);
-    size.cx
-}
 /// The width of an alert button whose label is `extent` wide.
 fn alert_button_width(extent: i32, dpi: u32, modern: bool) -> i32 {
     if modern {
@@ -206,16 +185,123 @@ fn alert_button_width(extent: i32, dpi: u32, modern: bool) -> i32 {
         (extent + scale(28, dpi)).max(scale(80, dpi))
     }
 }
-pub(super) unsafe fn alert_measure_button(ui: &AlertUi, label: &str) -> i32 {
-    // The alert window never takes a font, so Classic's labels are measured in the
-    // DC's own; Modern's buttons are painted in the font the alert holds.
-    let font = if ui.modern {
-        ui.font as isize
-    } else {
-        SendMessageW(ui.hwnd, WM_GETFONT, 0, 0)
-    };
-    alert_button_width(alert_label_extent(ui.hwnd, font, label), ui.dpi, ui.modern)
+/// The width of a button in `font`, the font the alert draws its buttons with at
+/// `dpi`; the font exists before the window does, so the box can be sized for
+/// its buttons.
+pub(super) unsafe fn alert_measure_button(font: HFONT, dpi: u32, modern: bool, label: &str) -> i32 {
+    let mut text = wide(label);
+    let dc = GetDC(null_mut());
+    if dc.is_null() {
+        return alert_button_width(0, dpi, modern);
+    }
+    let previous = SelectObject(dc, font as HGDIOBJ);
+    let mut size: SIZE = zeroed();
+    GetTextExtentPoint32W(dc, text.as_mut_ptr(), text.len() as i32, &mut size);
+    SelectObject(dc, previous);
+    ReleaseDC(null_mut(), dc);
+    alert_button_width(size.cx, dpi, modern)
 }
+/// The sizes an alert is laid out with at one DPI.
+struct AlertMetrics {
+    margin: i32,
+    gap: i32,
+    row: i32,
+    /// The height under the body and the link: the button row and its margins, or
+    /// Modern's command bar and the margin above it.
+    bar: i32,
+    icon_column: i32,
+    text_width: i32,
+    body_height: i32,
+    scroll: bool,
+    link_height: i32,
+    client_width: i32,
+    client_height: i32,
+}
+
+/// The font an alert draws its text and buttons with at `dpi`.
+unsafe fn alert_font(dpi: u32, modern: bool) -> HFONT {
+    if modern {
+        ramp_font(dpi, BODY_PX, false)
+    } else {
+        make_font(dpi, 9, FW_NORMAL as i32)
+    }
+}
+
+/// Measures an alert at `dpi` with `font`: the body wrapped to the text column,
+/// the link under it and the row of `buttons`. Modern's buttons sit on a command
+/// bar under the message. The body scrolls when it is taller than 70% of
+/// `work_height`, unless `scroll` says which kind of body the alert already has.
+#[allow(clippy::too_many_arguments)]
+unsafe fn alert_metrics(
+    font: HFONT,
+    dpi: u32,
+    modern: bool,
+    body: &str,
+    has_icon: bool,
+    link: Option<&str>,
+    buttons: &[&str],
+    work_height: i32,
+    scroll: Option<bool>,
+) -> AlertMetrics {
+    let (margin, row) = if modern {
+        (scale(ADD_PAD, dpi), scale(ADD_FIELD, dpi))
+    } else {
+        (scale(12, dpi), scale(24, dpi))
+    };
+    let gap = scale(8, dpi);
+    let bar = if modern {
+        margin + scale(ADD_FOOTER, dpi)
+    } else {
+        gap + row + margin
+    };
+    let icon_size = scale(32, dpi);
+    let icon_column = if has_icon { icon_size + gap } else { 0 };
+    let buttons_width = buttons
+        .iter()
+        .map(|label| alert_measure_button(font, dpi, modern, label))
+        .sum::<i32>()
+        + gap * (buttons.len() as i32 - 1);
+    let mut text_width = scale(340, dpi);
+    if modern {
+        // The message is as wide as the command bar needs for the buttons, so that
+        // the longest labels fit between its paddings.
+        text_width = text_width.max(buttons_width - icon_column);
+    }
+    let wrapped = wrapped_height(font, body, text_width).max(if has_icon { icon_size } else { 0 });
+    let link_height = link.map_or(0, |label| wrapped_height(font, label, text_width));
+    let link_block = if link_height > 0 {
+        gap + link_height
+    } else {
+        0
+    };
+    // Caption, borders, the link and the button row come out of the space the body may take.
+    let cap =
+        alert_body_cap(work_height, margin + bar + scale(48, dpi) + link_block).max(icon_size);
+    let scroll = scroll.unwrap_or(wrapped > cap);
+    let body_height = wrapped.min(cap);
+    let text_width = if scroll {
+        text_width + GetSystemMetrics(SM_CXVSCROLL) + scale(8, dpi)
+    } else {
+        text_width
+    };
+    AlertMetrics {
+        margin,
+        gap,
+        row,
+        bar,
+        icon_column,
+        text_width,
+        body_height,
+        scroll,
+        link_height,
+        client_width: (text_width + icon_column).max(buttons_width) + 2 * margin,
+        client_height: margin + body_height + link_block + bar,
+    }
+}
+
+/// The window style an alert is created with.
+const ALERT_STYLE: u32 = WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
+
 pub(super) unsafe fn alert_layout(ui: &AlertUi) {
     let mut client: RECT = zeroed();
     if GetClientRect(ui.hwnd, &mut client) == 0 {
@@ -269,7 +355,7 @@ pub(super) unsafe fn alert_layout(ui: &AlertUi) {
     let top = client.bottom - ui.margin - ui.row;
     let mut x = client.right - ui.margin;
     for button in ui.buttons.iter().rev() {
-        let width = alert_measure_button(ui, button.label);
+        let width = alert_measure_button(ui.font, ui.dpi, ui.modern, button.label);
         x -= width;
         MoveWindow(
             button.handle,
@@ -407,6 +493,63 @@ pub(super) unsafe fn paint_alert(ui: &AlertUi, dc: HDC, client: &RECT) {
     }
 }
 
+/// The alert moved to a monitor at `dpi`: the fonts and sizes of the new scale
+/// first, then the window is given the size they need.
+unsafe fn alert_dpi_changed(ui: &mut AlertUi, dpi: u32, suggested: &RECT) {
+    let font = alert_font(dpi, ui.modern);
+    let labels: Vec<&str> = ui.buttons.iter().map(|button| button.label).collect();
+    let metrics = alert_metrics(
+        font,
+        dpi,
+        ui.modern,
+        &ui.body,
+        !ui.icon.is_null(),
+        ui.link.as_ref().map(|link| link.label.as_str()),
+        &labels,
+        alert_work_height(ui.hwnd),
+        Some(ui.scroll),
+    );
+    let mut child = GetWindow(ui.hwnd, GW_CHILD);
+    while !child.is_null() {
+        apply_font(child, font);
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    DeleteObject(ui.font as HGDIOBJ);
+    ui.font = font;
+    ui.dpi = dpi;
+    ui.margin = metrics.margin;
+    ui.gap = metrics.gap;
+    ui.row = metrics.row;
+    ui.bar = metrics.bar;
+    ui.icon_column = metrics.icon_column;
+    ui.text_width = metrics.text_width;
+    ui.body_height = metrics.body_height;
+    ui.link_height = metrics.link_height;
+    let mut frame = RECT {
+        left: 0,
+        top: 0,
+        right: metrics.client_width,
+        bottom: metrics.client_height,
+    };
+    AdjustWindowRectExForDpi(
+        &mut frame,
+        ALERT_STYLE,
+        0,
+        GetWindowLongPtrW(ui.hwnd, GWL_EXSTYLE) as u32,
+        dpi,
+    );
+    SetWindowPos(
+        ui.hwnd,
+        null_mut(),
+        suggested.left,
+        suggested.top,
+        frame.right - frame.left,
+        frame.bottom - frame.top,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+    alert_layout(ui);
+}
+
 pub(super) unsafe extern "system" fn alert_proc(
     hwnd: HWND,
     msg: u32,
@@ -427,6 +570,10 @@ pub(super) unsafe extern "system" fn alert_proc(
     match msg {
         WM_CREATE => {
             alert_create(ui);
+            0
+        }
+        WM_DPICHANGED => {
+            alert_dpi_changed(ui, loword(wparam) as u32, &*(lparam as *const RECT));
             0
         }
         WM_ERASEBKGND | WM_PAINT | WM_PRINTCLIENT => {
@@ -587,6 +734,12 @@ unsafe fn paint_alert_button(ui: &AlertUi, draw: &NMCUSTOMDRAW) -> LRESULT {
     );
     CDRF_SKIPDEFAULT as LRESULT
 }
+#[cfg(test)]
+thread_local! {
+    /// The DPI the alerts of this thread are made for, instead of their owner's:
+    /// a test machine has one monitor at one scale.
+    pub(super) static ALERT_DPI: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
 /// Themed, content-sized replacement for MessageBoxW. Returns None when the
 /// window cannot be created, so the caller can fall back to the system box.
 pub(super) unsafe fn run_alert(
@@ -634,73 +787,35 @@ pub(super) unsafe fn run_alert_linked(
         GetDpiForWindow(owner)
     }
     .max(96);
+    #[cfg(test)]
+    let dpi = ALERT_DPI.with(std::cell::Cell::get).unwrap_or(dpi);
     let modern = modern();
-    // Modern's command bar holds the buttons under the message, as its
-    // dialogs' does.
-    let (font, margin, row) = if modern {
-        (
-            ramp_font(dpi, BODY_PX, false),
-            scale(ADD_PAD, dpi),
-            scale(ADD_FIELD, dpi),
-        )
-    } else {
-        (
-            make_font(dpi, 9, FW_NORMAL as i32),
-            scale(12, dpi),
-            scale(24, dpi),
-        )
-    };
-    let gap = scale(8, dpi);
-    let bar = if modern {
-        margin + scale(ADD_FOOTER, dpi)
-    } else {
-        gap + row + margin
-    };
-    let icon_size = scale(32, dpi);
-    let icon_column = if icon.is_null() { 0 } else { icon_size + gap };
-    let mut text_width = scale(340, dpi);
-    if modern {
-        // The message is as wide as the command bar needs for the buttons, so that
-        // the longest labels fit between its paddings.
-        let buttons: i32 = plan
-            .iter()
-            .map(|(_, label)| {
-                alert_button_width(
-                    alert_label_extent(null_mut(), font as isize, label),
-                    dpi,
-                    true,
-                )
-            })
-            .sum::<i32>()
-            + gap * (plan.len() as i32 - 1);
-        text_width = text_width.max(buttons - icon_column);
-    }
-    let wrapped =
-        wrapped_height(font, body, text_width).max(if icon.is_null() { 0 } else { icon_size });
-    let link_height = link
-        .as_ref()
-        .map_or(0, |link| wrapped_height(font, &link.label, text_width));
-    let link_block = if link_height > 0 {
-        gap + link_height
-    } else {
-        0
-    };
-    // Caption, borders, the link and the button row come out of the space the body may take.
-    let cap = alert_body_cap(
+    let font = alert_font(dpi, modern);
+    let labels: Vec<&str> = plan.iter().map(|(_, label)| *label).collect();
+    let AlertMetrics {
+        margin,
+        gap,
+        row,
+        bar,
+        icon_column,
+        text_width,
+        body_height,
+        scroll,
+        link_height,
+        client_width,
+        client_height,
+    } = alert_metrics(
+        font,
+        dpi,
+        modern,
+        body,
+        !icon.is_null(),
+        link.as_ref().map(|link| link.label.as_str()),
+        &labels,
         alert_work_height(owner),
-        margin + bar + scale(48, dpi) + link_block,
-    )
-    .max(icon_size);
-    let scroll = wrapped > cap;
-    let body_height = wrapped.min(cap);
-    let text_width = if scroll {
-        text_width + GetSystemMetrics(SM_CXVSCROLL) + scale(8, dpi)
-    } else {
-        text_width
-    };
-    let client_width = text_width + icon_column + 2 * margin;
-    let client_height = margin + body_height + link_block + bar;
-    let style = WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
+        None,
+    );
+    let style = ALERT_STYLE;
     let ex_style = owned_layout(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT);
     let mut frame = RECT {
         left: 0,

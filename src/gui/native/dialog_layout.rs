@@ -2124,6 +2124,19 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             InvalidateRect(dlg.hwnd, &strip, 0);
         }
     }
+    if w > 0 && IsIconic(dlg.hwnd) == 0 {
+        widen_for_scroll_bar(dlg);
+        if dlg.layout_pass.get() != pass {
+            return;
+        }
+        let outside = fit_text(dlg, (m, w - m));
+        if outside > 0 {
+            widen_dialog(dlg, outside);
+            if dlg.layout_pass.get() != pass {
+                return;
+            }
+        }
+    }
     if offset > 0 {
         let mut child = GetWindow(dlg.hwnd, GW_CHILD);
         while !child.is_null() {
@@ -3161,7 +3174,9 @@ pub(super) unsafe fn job_view_rows(dlg: &DialogUi, f: &ProgressFields, h: i32, p
     // The file name, with Minimize and Keep on top at the end of its row.
     let pin = GetDlgItem(dlg.hwnd, P_PIN);
     let mini_w = add_button_width(dlg, P_MINI, 84);
-    let pin_w = text_width(pin) + check_text_inset(dlg.dpi);
+    // A text longer than the row has room for is cut, not set over the title.
+    let pin_w =
+        (text_width(pin) + check_text_inset(dlg.dpi)).min((room - mini_w - 2 * s(r.gap)) / 2);
     let tools_w = mini_w + s(r.gap) + pin_w;
     let title_w = room - tools_w - s(r.gap);
     let title_h = lines(f.summary, f.title_font, title_w);
@@ -3493,4 +3508,435 @@ mod tests {
         assert_eq!(share_row(&shared, 500), vec![200, 100, 200]);
         assert_eq!(share_row(&shared, 50), vec![0, 100, 0]);
     }
+}
+
+/// The narrowest the window may be, and the shortest: its design size, what
+/// fitting its text has added, and the scroll bar's width while the bar takes
+/// room from the client area, so the rows keep the width they are laid out for.
+/// The width never exceeds the monitor's work area, which the window cannot.
+pub(super) unsafe fn dialog_min_track(dlg: &DialogUi, dpi: u32) -> (i32, i32) {
+    let (x, y) = clamp_min_track(dlg.hwnd, dpi, dlg.design.0 + dlg.grown.get(), dlg.design.1);
+    let x = x + scroll_bar_width(dlg, dpi);
+    (
+        work_area(dlg.hwnd).map_or(x, |work| x.min(work.right - work.left)),
+        y,
+    )
+}
+
+/// The width the scroll bar takes from the client area, zero while it is
+/// hidden: the dark scheme never shows it.
+unsafe fn scroll_bar_width(dlg: &DialogUi, dpi: u32) -> i32 {
+    if dlg.scroll_range.get() > 0 && !dialog_is_dark(dlg) {
+        GetSystemMetricsForDpi(SM_CXVSCROLL, dpi)
+    } else {
+        0
+    }
+}
+
+/// Scrolls the dialog just far enough for the control that holds the focus to
+/// show completely, a margin away from the edge it came in from, or as far from
+/// it as the window leaves room for. A control taller than the window shows its
+/// top.
+pub(super) unsafe fn reveal_focus(dlg: &DialogUi) {
+    if dlg.scroll_range.get() <= 0 {
+        return;
+    }
+    let mut control = GetFocus();
+    while !control.is_null() && GetParent(control) != dlg.hwnd {
+        control = GetParent(control);
+    }
+    if control.is_null() {
+        return;
+    }
+    let mut client: RECT = zeroed();
+    GetClientRect(dlg.hwnd, &mut client);
+    let mut rect: RECT = zeroed();
+    GetWindowRect(control, &mut rect);
+    MapWindowPoints(null_mut(), dlg.hwnd, (&mut rect as *mut RECT).cast(), 2);
+    let mut margin = scale(DIALOG_GAP, dlg.dpi);
+    let height = rect.bottom - rect.top;
+    let tall = height > client.bottom - 2 * margin;
+    if tall && height <= client.bottom {
+        // It fits the window, but not with a margin on both sides.
+        margin = (client.bottom - height) / 2;
+    }
+    let by = if rect.top < 0 || (rect.bottom > client.bottom && tall) {
+        rect.top - margin
+    } else if rect.bottom > client.bottom {
+        rect.bottom + margin - client.bottom
+    } else {
+        0
+    };
+    if by != 0 {
+        dlg.scroll_y
+            .set(dlg.scroll_y.get().saturating_add(by).max(0));
+        layout_dialog(dlg);
+    }
+}
+
+/// Widens the window by the scroll bar's width when it appears.
+unsafe fn widen_for_scroll_bar(dlg: &DialogUi) {
+    if scroll_bar_width(dlg, dlg.dpi) == 0 {
+        return;
+    }
+    let mut frame: RECT = zeroed();
+    GetWindowRect(dlg.hwnd, &mut frame);
+    let (least, _) = dialog_min_track(dlg, dlg.dpi);
+    if frame.right - frame.left < least {
+        set_width(dlg, &frame, least);
+    }
+}
+
+/// A visible control of a dialog in the coordinates `MoveWindow` takes, and
+/// what fitting the dialog's text may do to it.
+#[derive(Clone)]
+struct Fitted {
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    /// Left edge and width where the layout put it.
+    placed: (i32, i32),
+    /// The width its text needs; zero for a control that is not fitted to its text.
+    need: i32,
+    /// A label or a check box: it takes the room its row has inside the dialog
+    /// and never widens the window.
+    label: bool,
+    /// The narrowest it can be squeezed to.
+    least: i32,
+}
+
+/// The width a check box or radio button needs for its box and its text, as
+/// the system measures it; zero when it cannot say.
+unsafe fn ideal_width(button: HWND) -> i32 {
+    let mut size: SIZE = zeroed();
+    if SendMessageW(
+        button,
+        BCM_GETIDEALSIZE,
+        0,
+        (&mut size as *mut SIZE) as LPARAM,
+    ) != 0
+    {
+        size.cx
+    } else {
+        0
+    }
+}
+
+/// A check box or radio button that shows its text on one line.
+fn one_line_check(style: u32) -> bool {
+    let kind = (style & BS_TYPEMASK as u32) as i32;
+    matches!(
+        kind,
+        BS_CHECKBOX | BS_AUTOCHECKBOX | BS_RADIOBUTTON | BS_AUTORADIOBUTTON
+    ) && style & (BS_PUSHLIKE | BS_MULTILINE) as u32 == 0
+}
+
+unsafe fn fitted_controls(dlg: &DialogUi) -> Vec<Fitted> {
+    // A Modern button keeps 16 epx on each side of its label and its window reaches
+    // its focus ring past the face.
+    let padding = if modern() {
+        scale(32, dlg.dpi) + 2 * scale(FOCUS_MARGIN, dlg.dpi)
+    } else {
+        scale(BUTTON_TEXT_PADDING, dlg.dpi)
+    };
+    let mut items = Vec::new();
+    let mut child = GetWindow(dlg.hwnd, GW_CHILD);
+    while !child.is_null() {
+        let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
+        if style & WS_VISIBLE == 0 {
+            child = GetWindow(child, GW_HWNDNEXT);
+            continue;
+        }
+        let mut rect: RECT = zeroed();
+        GetWindowRect(child, &mut rect);
+        // The two points are taken as a rectangle: in a mirrored dialog its
+        // left edge comes back measured from the client area's right edge,
+        // which is where `MoveWindow` counts from.
+        let mut corners = [
+            POINT {
+                x: rect.left,
+                y: rect.top,
+            },
+            POINT {
+                x: rect.right,
+                y: rect.bottom,
+            },
+        ];
+        MapWindowPoints(null_mut(), dlg.hwnd, corners.as_mut_ptr(), 2);
+        let (x, w) = (corners[0].x, corners[1].x - corners[0].x);
+        let (y, h) = (corners[0].y, corners[1].y - corners[0].y);
+        if w > 0 && h > 0 {
+            let class = window_class(child);
+            let mut label = class.eq_ignore_ascii_case("Static");
+            let (need, least) = if class.eq_ignore_ascii_case("Button") {
+                let kind = style & BS_TYPEMASK as u32;
+                let push = kind == BS_PUSHBUTTON as u32 || kind == BS_DEFPUSHBUTTON as u32;
+                if push {
+                    (text_width(child) + padding, w)
+                } else if one_line_check(style) {
+                    label = true;
+                    let need = ideal_width(child);
+                    (need, if need > 0 { need.min(w) } else { w })
+                } else {
+                    (0, w)
+                }
+            } else if label {
+                let single_line = style & 0x1f <= 2 && h <= scale(DIALOG_ROW, dlg.dpi);
+                let need = if single_line { text_width(child) } else { 0 };
+                (
+                    need,
+                    if need > 0 {
+                        need.min(w)
+                    } else {
+                        w.min(scale(48, dlg.dpi))
+                    },
+                )
+            } else {
+                (0, w.min(scale(96, dlg.dpi)))
+            };
+            items.push(Fitted {
+                hwnd: child,
+                x,
+                y,
+                w,
+                h,
+                placed: (x, w),
+                need,
+                label,
+                least,
+            });
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    items
+}
+
+fn level(a: &Fitted, b: &Fitted) -> bool {
+    let shared = (a.y + a.h).min(b.y + b.h) - a.y.max(b.y);
+    shared * 2 >= a.h.min(b.h)
+}
+
+/// Widens `items[n]` by `extra`, towards the trailing side for `dir` 1 and the
+/// leading side for -1, by squeezing and then moving the controls level with it
+/// on that side. Returns how far something ended outside `limits`, how far
+/// outside the row it stood in, and how much moved.
+fn widen(
+    items: &mut [Fitted],
+    n: usize,
+    dir: i32,
+    (low, high): (i32, i32),
+    gap: i32,
+    extra: i32,
+) -> (i32, i32, i32) {
+    let row: Vec<usize> = (0..items.len())
+        .filter(|&i| level(&items[n], &items[i]))
+        .collect();
+    let row_low = row.iter().map(|&i| items[i].placed.0).min().unwrap_or(low);
+    let row_high = row
+        .iter()
+        .map(|&i| items[i].placed.0 + items[i].placed.1)
+        .max()
+        .unwrap_or(high);
+    if dir < 0 {
+        items[n].x -= extra;
+    }
+    items[n].w += extra;
+    items[n].least = items[n].w;
+    let mut moved = 0;
+    let mut pushed = vec![n];
+    while let Some(a) = pushed.pop() {
+        for b in 0..items.len() {
+            if b == a || !level(&items[a], &items[b]) {
+                continue;
+            }
+            let (from, to) = (items[a].placed, items[b].placed);
+            let apart = if dir > 0 {
+                to.0 - (from.0 + from.1)
+            } else {
+                from.0 - (to.0 + to.1)
+            };
+            if apart < 0 {
+                continue;
+            }
+            let wanted = apart.clamp(gap / 2, gap);
+            let over = if dir > 0 {
+                items[a].x + items[a].w + wanted - items[b].x
+            } else {
+                items[b].x + items[b].w + wanted - items[a].x
+            };
+            if over <= 0 {
+                continue;
+            }
+            let squeeze = over.min(items[b].w - items[b].least).max(0);
+            if dir > 0 {
+                items[b].x += squeeze;
+            }
+            items[b].w -= squeeze;
+            if over > squeeze {
+                items[b].x += dir * (over - squeeze);
+                pushed.push(b);
+            }
+            moved += over;
+        }
+    }
+    let (mut outside, mut outside_row) = (0, 0);
+    for item in items.iter().filter(|item| (item.x, item.w) != item.placed) {
+        outside = outside.max(low - item.x).max(item.x + item.w - high);
+        outside_row = outside_row
+            .max(row_low - item.x)
+            .max(item.x + item.w - row_high);
+    }
+    (outside, outside_row, moved)
+}
+
+/// Makes every push button, one-line label and one-line check box as wide as
+/// its text needs, keeping the rows they stand in aligned: a control grows on
+/// the side that costs its row least, and what is in the way is squeezed or
+/// moved over. Only a push button may make the dialog grow. A label, which often
+/// shows what the user typed or what a source called its file, and a check box
+/// take what their row can give inside `limits`, after the buttons, and stay cut
+/// where that is not enough.
+/// Returns how much wider the client area has to be for the buttons to stay
+/// inside `limits`, zero when they fit.
+unsafe fn fit_text(dlg: &DialogUi, limits: (i32, i32)) -> i32 {
+    let mut items = fitted_controls(dlg);
+    let gap = scale(DIALOG_GAP, dlg.dpi);
+    let mut outside = 0;
+    for label in [false, true] {
+        for n in 0..items.len() {
+            if items[n].label != label || items[n].need <= items[n].w {
+                continue;
+            }
+            let want = items[n].need - items[n].w;
+            let mut best = None;
+            for dir in [1, -1] {
+                let mut extra = want;
+                let (trial, cost) = loop {
+                    let mut trial = items.clone();
+                    let cost = widen(&mut trial, n, dir, limits, gap, extra);
+                    if !label || cost.0 == 0 {
+                        break (trial, cost);
+                    }
+                    extra -= cost.0;
+                    if extra <= 0 {
+                        break (items.clone(), (0, 0, 0));
+                    }
+                };
+                let rank = if label {
+                    (want - extra.max(0), cost.1, cost.2)
+                } else {
+                    cost
+                };
+                if best.as_ref().is_none_or(|(_, kept, _)| rank < *kept) {
+                    best = Some((trial, rank, cost.0));
+                }
+            }
+            if let Some((fitted, _, beyond)) = best {
+                items = fitted;
+                outside = outside.max(beyond);
+            }
+        }
+    }
+    for item in items.iter().filter(|item| (item.x, item.w) != item.placed) {
+        MoveWindow(item.hwnd, item.x, item.y, item.w, item.h, 1);
+    }
+    outside
+}
+
+/// Widens the window by `extra` client pixels, as far as its monitor allows,
+/// and remembers the width its rows need so the window cannot be shrunk back
+/// below it. That width is rounded down so the minimum never exceeds the
+/// window.
+unsafe fn widen_dialog(dlg: &DialogUi, extra: i32) {
+    let mut frame: RECT = zeroed();
+    GetWindowRect(dlg.hwnd, &mut frame);
+    let width = frame.right - frame.left;
+    let room = work_area(dlg.hwnd).map_or(extra, |work| work.right - work.left - width);
+    let by = extra.min(room);
+    if by <= 0 {
+        return;
+    }
+    let needed = width + extra - scroll_bar_width(dlg, dlg.dpi);
+    dlg.grown.set(
+        dlg.grown
+            .get()
+            .max((needed as i64 * 96 / dlg.dpi as i64) as i32 - dlg.design.0),
+    );
+    set_width(dlg, &frame, width + by);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The work area of the monitor the windows of this thread stand on, instead
+    /// of the real one: a test machine has the monitors it has.
+    pub(super) static WORK_AREA: std::cell::Cell<Option<RECT>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) unsafe fn work_area(hwnd: HWND) -> Option<RECT> {
+    #[cfg(test)]
+    if let Some(area) = WORK_AREA.with(std::cell::Cell::get) {
+        return Some(area);
+    }
+    let mut monitor: MONITORINFO = zeroed();
+    monitor.cbSize = size_of::<MONITORINFO>() as u32;
+    (GetMonitorInfoW(
+        MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+        &mut monitor,
+    ) != 0)
+        .then_some(monitor.rcWork)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The whole of a second monitor next to the one `WORK_AREA` stands for.
+    pub(super) static OTHER_MONITOR: std::cell::Cell<Option<RECT>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether `rect` reaches a monitor other than the one `hwnd` stands on.
+pub(super) unsafe fn reaches_another_monitor(hwnd: HWND, rect: &RECT) -> bool {
+    #[cfg(test)]
+    if WORK_AREA.with(std::cell::Cell::get).is_some() {
+        return OTHER_MONITOR
+            .with(std::cell::Cell::get)
+            .is_some_and(|other| {
+                let mut common: RECT = zeroed();
+                IntersectRect(&mut common, rect, &other) != 0
+            });
+    }
+    let home = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    [
+        (rect.left, rect.top),
+        (rect.right - 1, rect.top),
+        (rect.left, rect.bottom - 1),
+        (rect.right - 1, rect.bottom - 1),
+    ]
+    .into_iter()
+    .any(|(x, y)| {
+        let monitor = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL);
+        !monitor.is_null() && monitor != home
+    })
+}
+
+/// Gives the window `width`, and moves it left when this pushes its right edge
+/// out of the work area it stood inside; a window that already reached beyond
+/// the work area stays where it is.
+unsafe fn set_width(dlg: &DialogUi, frame: &RECT, width: i32) {
+    let left = work_area(dlg.hwnd).map_or(frame.left, |work| {
+        if frame.right <= work.right && frame.left + width > work.right {
+            (work.right - width).max(work.left)
+        } else {
+            frame.left
+        }
+    });
+    SetWindowPos(
+        dlg.hwnd,
+        null_mut(),
+        left,
+        frame.top,
+        width,
+        frame.bottom - frame.top,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }

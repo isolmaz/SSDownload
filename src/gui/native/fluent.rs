@@ -854,7 +854,7 @@ pub(super) unsafe fn main_control_colour(ui: &MainUi, dc: HDC, control: HWND) ->
     Some(GetStockObject(DC_BRUSH) as LRESULT)
 }
 
-fn hot_prop() -> *const u16 {
+pub(super) fn hot_prop() -> *const u16 {
     static NAME: std::sync::LazyLock<Vec<u16>> =
         std::sync::LazyLock::new(|| wide("SSDownload.ButtonHot"));
     NAME.as_ptr()
