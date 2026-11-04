@@ -74,6 +74,29 @@ pub(crate) fn component_title(name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The version a program prints for its version option, without the rest of its banner: the word
+/// after "version" when it holds a digit (`ffmpeg version N-1-gabc Copyright ...`), else the first
+/// word that starts with a digit (`deno 2.9.8 (stable, ...)`), else the line itself (`2026.10.26`).
+pub(crate) fn version_number(banner: &str) -> String {
+    let line = banner.lines().find(|line| !line.trim().is_empty());
+    let words: Vec<&str> = line.unwrap_or_default().split_whitespace().collect();
+    let after_keyword = words
+        .iter()
+        .position(|word| word.eq_ignore_ascii_case("version"))
+        .and_then(|at| words.get(at + 1))
+        .filter(|word| word.contains(|c: char| c.is_ascii_digit()));
+    let numbered = || {
+        words
+            .iter()
+            .find(|word| word.starts_with(|first: char| first.is_ascii_digit()))
+    };
+    match (after_keyword, words.len()) {
+        (Some(version), _) => (*version).to_owned(),
+        (None, 1) => words[0].to_owned(),
+        (None, _) => numbered().map_or_else(|| words.join(" "), |version| (*version).to_owned()),
+    }
+}
+
 /// What a text may quote that is not for the filter of the program names to touch.
 #[derive(Debug, Default)]
 pub(crate) struct OwnText {
@@ -3375,6 +3398,74 @@ mod tests {
         assert!(!root.join("escaped.txt").exists());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_version_of_a_program_is_read_from_its_version_output() {
+        for (banner, version) in [
+            (
+                "ffmpeg version N-128198-g37515cfd87-20261029 Copyright (c) 2000-2026 the FFmpeg developers",
+                "N-128198-g37515cfd87-20261029",
+            ),
+            (
+                "ffprobe version 9.0.1-essentials_build-www.gyan.dev Copyright (c) 2007-2026 the FFmpeg developers",
+                "9.0.1-essentials_build-www.gyan.dev",
+            ),
+            (
+                "\r\n  FFMPEG Version n9.0-12-gabcdef Copyright (c) 2000-2026",
+                "n9.0-12-gabcdef",
+            ),
+            ("2026.10.26", "2026.10.26"),
+            ("deno 2.5.6 (stable, release, x86_64-pc-windows-msvc)", "2.5.6"),
+            ("a program with no number", "a program with no number"),
+            (
+                "unsupported version of Python",
+                "unsupported version of Python",
+            ),
+            ("unsupported version of Python 3.14", "3.14"),
+            ("", ""),
+        ] {
+            assert_eq!(version_number(banner), version, "{banner:?}");
+        }
+    }
+
+    #[test]
+    fn a_secure_connection_the_release_download_cannot_make_is_shown_in_the_words_of_the_app() {
+        let (url, server) = crate::test_http::tls_refuser();
+        let error = fetch_bytes(
+            &url,
+            1024,
+            None,
+            &TransferControl::default(),
+            &NetworkGovernor::new(4),
+        )
+        .expect_err("the handshake fails");
+        server.join().unwrap();
+        let raw = format!("{error:#}");
+        let shown = crate::transfer::shown_error(&error);
+        let reason = crate::transfer::tls_failure(&error).expect("a refused secure connection");
+        assert_eq!(shown, reason.shown(), "{raw}");
+        assert!(
+            raw.to_lowercase().contains("schannel") && !shown.to_lowercase().contains("schannel"),
+            "the system's own sentence is in the log text only: {raw} / {shown}"
+        );
+
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("https://{}/", closed.local_addr().unwrap());
+        drop(closed);
+        let error = fetch_bytes(
+            &url,
+            1024,
+            None,
+            &TransferControl::default(),
+            &NetworkGovernor::new(4),
+        )
+        .expect_err("nothing listens");
+        assert_eq!(
+            crate::transfer::shown_error(&error),
+            format!("{error:#}"),
+            "a failure that is no refused secure connection is shown as it is"
+        );
     }
 
     fn english_without_names(text: &str, own: &[&str]) -> String {

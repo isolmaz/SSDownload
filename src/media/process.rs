@@ -666,7 +666,7 @@ impl DownloadGauge {
                 "downloading media"
             },
             phase: if processing {
-                crate::i18n::ui("Medya işleniyor", "Processing media")
+                crate::model::processing_phase()
             } else {
                 crate::i18n::ui("Medya indiriliyor", "Downloading media")
             }
@@ -887,7 +887,7 @@ pub(super) fn handle_machine_line(
             speed: 0,
             eta: None,
             phase_name: "processing with ffmpeg",
-            phase: crate::i18n::ui("Medya işleniyor", "Processing the media").into(),
+            phase: crate::model::processing_phase().into(),
             processing: true,
         });
     } else if let Some(json_path) = line.strip_prefix(FILE_PREFIX) {

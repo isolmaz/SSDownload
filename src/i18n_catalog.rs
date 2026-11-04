@@ -62,7 +62,11 @@ static AR: &[(&str, &str)] = &[
     ("&View", "&عرض"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
+    ("1 address is already in the list", "عنوان واحد موجود بالفعل في القائمة"),
     ("1 connection", "اتصال واحد"),
+    ("1 download added", "تمت إضافة تنزيل واحد"),
+    ("1 download added to the queue.", "تمت إضافة تنزيل واحد إلى قائمة الانتظار."),
+    ("1 quarantined job record could be read again and was restored.", "أمكن قراءة سجل مهمة معزول واحد مجددًا، وأُعيد إلى القائمة."),
     ("512 KB/s", "512 KB/s"),
     ("<li>Open <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) in the address bar.</li><li>Turn on <b>Developer mode</b>.</li><li>Choose <b>Load unpacked</b> and select the folder below.</li>", "<li>افتح <b>chrome://extensions</b> (في Edge: <b>edge://extensions</b>) من شريط العناوين.</li><li>فعّل <b>وضع المطوّر</b>.</li><li>اختر <b>تحميل إضافة غير مضغوطة</b> وحدد المجلد أدناه.</li>"),
     ("A Chrome/Edge policy entry written by an older SSDownload version blocks the browser extension.\n\nRemove it with administrator approval?", "مدخل سياسة Chrome/Edge كتبه إصدار أقدم من SSDownload ويمنع إضافة المتصفح.\n\nهل تريد إزالته بموافقة المسؤول؟"),
@@ -554,7 +558,6 @@ static AR: &[(&str, &str)] = &[
     ("Priority:", "الأولوية:"),
     ("Processing", "جارٍ المعالجة"),
     ("Processing media", "جارٍ معالجة الوسائط"),
-    ("Processing the media", "جارٍ معالجة الوسائط"),
     ("Program arguments (JSON)", "وسيطات البرنامج (JSON)"),
     ("Programs", "البرامج"),
     ("Progress", "التقدم"),
@@ -706,6 +709,7 @@ static AR: &[(&str, &str)] = &[
     ("Speed &limit...", "حد الس&رعة..."),
     ("Speed limit", "حد السرعة"),
     ("Speed limit (KiB/s, 0 = unlimited):", "حد السرعة (KiB/s، 0 = غير محدود):"),
+    ("Speed limit for the selected download (KiB/s, 0 = global limit):", "حد السرعة للتنزيل المحدد (KiB/s، 0 = الحد العام):"),
     ("Start", "بدء"),
     ("Start (HH:MM):", "البدء (HH:MM):"),
     ("Start at Windows sign-in", "البدء عند تسجيل الدخول إلى Windows"),
@@ -830,6 +834,7 @@ static AR: &[(&str, &str)] = &[
     ("The browser transfer file was not found", "لم يُعثر على ملف النقل عبر المتصفح"),
     ("The browser transfer record is too large", "سجل النقل عبر المتصفح كبير جدًا"),
     ("The browser transfer record version is not valid", "إصدار سجل النقل عبر المتصفح غير صالح"),
+    ("The browser transfer sender exited; 1 network permit is kept safely until the Chrome request is confirmed", "أُغلق مرسِل النقل عبر المتصفح؛ يتم الاحتفاظ بإذن شبكة واحد بأمان حتى يتم تأكيد طلب Chrome"),
     ("The browser transfer sender exited; a new request cannot be authorized.", "أُغلق مرسِل النقل عبر المتصفح؛ لا يمكن تفويض طلب جديد."),
     ("The browser transfer sender exited; the authorization was revoked", "أُغلق مرسِل النقل عبر المتصفح؛ أُلغي التفويض"),
     ("The browser transfer sender identity is missing", "هوية مرسِل النقل عبر المتصفح مفقودة"),
@@ -1199,6 +1204,11 @@ static AR: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "أعاد الخادم الرمز 403؛ جارٍ إعادة المحاولة مرة واحدة على المصدر نفسه باتصال متوافق مع المتصفح"),
     ("The server sent an invalid or changed response", "أرسل الخادم استجابة غير صالحة أو متغيّرة"),
     ("The server timed out waiting for the request (408)", "انتهت مهلة انتظار الخادم للطلب (408)"),
+    ("The server's certificate has been revoked", "تم إبطال شهادة الخادم"),
+    ("The server's certificate has expired or is not valid yet", "انتهت صلاحية شهادة الخادم أو أنها غير سارية بعد"),
+    ("The server's certificate or security settings were not accepted", "لم يتم قبول شهادة الخادم أو إعدادات الأمان الخاصة به"),
+    ("The server's certificate was issued by an authority this computer does not trust", "صدرت شهادة الخادم من جهة لا يثق بها هذا الكمبيوتر"),
+    ("The server's certificate was not issued for this address", "لم تصدر شهادة الخادم لهذا العنوان"),
     ("The server's retry delay exceeds the supported range", "مدة إعادة المحاولة التي حدّدها الخادم تتجاوز النطاق المدعوم"),
     ("The session cookie could not be converted to a safe Netscape file", "تعذّر تحويل ملف تعريف ارتباط الجلسة إلى ملف Netscape آمن"),
     ("The session cookie's host scope is invalid", "نطاق المضيف لملف تعريف ارتباط الجلسة غير صالح"),
@@ -1360,6 +1370,7 @@ static AR: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "لا يمكن استخدام هذا الإجراء من سياق المتصفح"),
     ("This action must be called through the result-producing command path.", "يجب استدعاء هذا الإجراء عبر مسار الأمر المُنتِج للنتيجة."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "لا يحتوي هذا العنوان على عنصر وسائط واحد (قد يكون قائمة تشغيل أو صفحة هبوط). افتح الصفحة الخاصة بالفيديو وابدأ التنزيل من هناك"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "هذا العنوان موجود بالفعل في قائمة التنزيلات.\n\nهل تريد استخدام المهمة الحالية، أم تنزيل نسخة جديدة؟"),
     ("This file is in use by another SSDownload process.", "هذا الملف مستخدم من عملية SSDownload أخرى."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "هذا التثبيت مسجَّل لملف بيانات مختلف؛ تم الاحتفاظ بتسجيل الملف الآخر"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "هذه قائمة التنزيلات. انقر نقرًا مزدوجًا على صف لفتح الملف؛ وتحتوي قائمة النقر بالزر الأيمن على الإيقاف المؤقت والنقل للأعلى ونسخ العنوان وغيرها. اسحب الصفوف لتغيير ترتيبها."),
@@ -1553,7 +1564,11 @@ static ES: &[(&str, &str)] = &[
     ("&View", "&Ver"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
+    ("1 address is already in the list", "1 dirección ya está en la lista"),
     ("1 connection", "1 conexión"),
+    ("1 download added", "1 descarga añadida"),
+    ("1 download added to the queue.", "1 descarga añadida a la cola."),
+    ("1 quarantined job record could be read again and was restored.", "1 registro de tarea en cuarentena se ha podido leer de nuevo y se ha restaurado."),
     ("512 KB/s", "512 KB/s"),
     ("<li>Open <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) in the address bar.</li><li>Turn on <b>Developer mode</b>.</li><li>Choose <b>Load unpacked</b> and select the folder below.</li>", "<li>Abrir <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) en la barra de direcciones.</li><li>Activar el <b>Modo de desarrollador</b>.</li><li>Elegir <b>Cargar descomprimida</b> y seleccionar la carpeta que aparece abajo.</li>"),
     ("A Chrome/Edge policy entry written by an older SSDownload version blocks the browser extension.\n\nRemove it with administrator approval?", "Una entrada de directiva de Chrome/Edge escrita por una versión anterior de SSDownload bloquea la extensión del navegador.\n\n¿Quitarla con la aprobación de un administrador?"),
@@ -2045,7 +2060,6 @@ static ES: &[(&str, &str)] = &[
     ("Priority:", "Prioridad:"),
     ("Processing", "Procesando"),
     ("Processing media", "Procesando contenido multimedia"),
-    ("Processing the media", "Procesando el contenido multimedia"),
     ("Program arguments (JSON)", "Argumentos del programa (JSON)"),
     ("Programs", "Programas"),
     ("Progress", "Progreso"),
@@ -2197,6 +2211,7 @@ static ES: &[(&str, &str)] = &[
     ("Speed &limit...", "Límite de &velocidad..."),
     ("Speed limit", "Límite de velocidad"),
     ("Speed limit (KiB/s, 0 = unlimited):", "Velocidad máx. (KiB/s, 0 = sin límite):"),
+    ("Speed limit for the selected download (KiB/s, 0 = global limit):", "Límite de velocidad para la descarga seleccionada (KiB/s, 0 = límite global):"),
     ("Start", "Iniciar"),
     ("Start (HH:MM):", "Inicio (HH:MM):"),
     ("Start at Windows sign-in", "Iniciar al iniciar sesión en Windows"),
@@ -2321,6 +2336,7 @@ static ES: &[(&str, &str)] = &[
     ("The browser transfer file was not found", "No se encontró el archivo de la transferencia desde el navegador"),
     ("The browser transfer record is too large", "El registro de la transferencia desde el navegador es demasiado grande"),
     ("The browser transfer record version is not valid", "La versión del registro de la transferencia desde el navegador no es válida"),
+    ("The browser transfer sender exited; 1 network permit is kept safely until the Chrome request is confirmed", "El emisor de la transferencia desde el navegador se cerró; 1 permiso de red se conserva de forma segura hasta que se confirme la solicitud de Chrome"),
     ("The browser transfer sender exited; a new request cannot be authorized.", "El emisor de la transferencia desde el navegador se cerró; no se puede autorizar una nueva solicitud."),
     ("The browser transfer sender exited; the authorization was revoked", "El emisor de la transferencia desde el navegador se cerró; se ha revocado la autorización"),
     ("The browser transfer sender identity is missing", "Falta la identidad del emisor de la transferencia desde el navegador"),
@@ -2690,6 +2706,11 @@ static ES: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "El servidor ha devuelto 403; se reintenta una vez el mismo origen con una conexión compatible con el navegador"),
     ("The server sent an invalid or changed response", "El servidor ha enviado una respuesta no válida o modificada"),
     ("The server timed out waiting for the request (408)", "El servidor agotó el tiempo de espera de la solicitud (408)"),
+    ("The server's certificate has been revoked", "El certificado del servidor ha sido revocado"),
+    ("The server's certificate has expired or is not valid yet", "El certificado del servidor ha caducado o aún no es válido"),
+    ("The server's certificate or security settings were not accepted", "No se aceptó el certificado o la configuración de seguridad del servidor"),
+    ("The server's certificate was issued by an authority this computer does not trust", "El certificado del servidor lo emitió una entidad en la que este equipo no confía"),
+    ("The server's certificate was not issued for this address", "El certificado del servidor no se emitió para esta dirección"),
     ("The server's retry delay exceeds the supported range", "La espera de reintento del servidor supera el intervalo admitido"),
     ("The session cookie could not be converted to a safe Netscape file", "No se ha podido convertir la cookie de sesión en un archivo Netscape seguro"),
     ("The session cookie's host scope is invalid", "El ámbito de host de la cookie de sesión no es válido"),
@@ -2851,6 +2872,7 @@ static ES: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "Esta acción no se puede usar desde el contexto del navegador"),
     ("This action must be called through the result-producing command path.", "Esta acción debe llamarse a través de la ruta de comandos que devuelve resultados."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "Esta dirección no contiene ningún elemento multimedia (puede ser una lista de reproducción o una página de destino). Abrir la página propia del vídeo e iniciar allí la descarga"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "Esta dirección ya está en la lista de descargas.\n\n¿Usar la tarea existente o descargar una copia nueva?"),
     ("This file is in use by another SSDownload process.", "Este archivo está en uso por otro proceso de SSDownload."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "Esta instalación está registrada para otro perfil de datos; se conserva el registro del otro perfil"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "Esta es la lista de descargas. Hacer doble clic en una fila abre el archivo; el menú contextual incluye pausar, subir, copiar la dirección y más. Arrastrar las filas permite cambiar el orden."),
@@ -3044,7 +3066,11 @@ static PT: &[(&str, &str)] = &[
     ("&View", "E&xibir"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
+    ("1 address is already in the list", "1 endereço já está na lista"),
     ("1 connection", "1 conexão"),
+    ("1 download added", "1 download adicionado"),
+    ("1 download added to the queue.", "1 download adicionado à fila."),
+    ("1 quarantined job record could be read again and was restored.", "1 registro de tarefa em quarentena pôde ser lido novamente e foi restaurado."),
     ("512 KB/s", "512 KB/s"),
     ("<li>Open <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) in the address bar.</li><li>Turn on <b>Developer mode</b>.</li><li>Choose <b>Load unpacked</b> and select the folder below.</li>", "<li>Abra <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) na barra de endereço.</li><li>Ative o <b>Modo do desenvolvedor</b>.</li><li>Escolha <b>Carregar sem compactação</b> e selecione a pasta abaixo.</li>"),
     ("A Chrome/Edge policy entry written by an older SSDownload version blocks the browser extension.\n\nRemove it with administrator approval?", "Uma entrada de política do Chrome/Edge gravada por uma versão antiga do SSDownload está bloqueando a extensão do navegador.\n\nRemover com aprovação do administrador?"),
@@ -3536,7 +3562,6 @@ static PT: &[(&str, &str)] = &[
     ("Priority:", "Prioridade:"),
     ("Processing", "Processando"),
     ("Processing media", "Processando mídia"),
-    ("Processing the media", "Processando a mídia"),
     ("Program arguments (JSON)", "Argumentos do programa (JSON)"),
     ("Programs", "Programas"),
     ("Progress", "Progresso"),
@@ -3688,6 +3713,7 @@ static PT: &[(&str, &str)] = &[
     ("Speed &limit...", "Limite de &velocidade..."),
     ("Speed limit", "Limite de velocidade"),
     ("Speed limit (KiB/s, 0 = unlimited):", "Limite de vel. (KiB/s, 0 = ilimitado):"),
+    ("Speed limit for the selected download (KiB/s, 0 = global limit):", "Limite de velocidade para o download selecionado (KiB/s, 0 = limite geral):"),
     ("Start", "Iniciar"),
     ("Start (HH:MM):", "Início (HH:MM):"),
     ("Start at Windows sign-in", "Iniciar ao fazer login no Windows"),
@@ -3812,6 +3838,7 @@ static PT: &[(&str, &str)] = &[
     ("The browser transfer file was not found", "O arquivo da transferência do navegador não foi encontrado"),
     ("The browser transfer record is too large", "O registro da transferência do navegador é grande demais"),
     ("The browser transfer record version is not valid", "A versão do registro da transferência do navegador não é válida"),
+    ("The browser transfer sender exited; 1 network permit is kept safely until the Chrome request is confirmed", "O remetente da transferência do navegador foi encerrado; 1 permissão de rede é mantida com segurança até a confirmação da solicitação do Chrome"),
     ("The browser transfer sender exited; a new request cannot be authorized.", "O remetente da transferência do navegador foi encerrado; uma nova solicitação não pode ser autorizada."),
     ("The browser transfer sender exited; the authorization was revoked", "O remetente da transferência do navegador foi encerrado; a autorização foi revogada"),
     ("The browser transfer sender identity is missing", "A identidade do remetente da transferência do navegador está ausente"),
@@ -4181,6 +4208,11 @@ static PT: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "O servidor retornou 403; tentando a mesma fonte mais uma vez com uma conexão compatível com o navegador"),
     ("The server sent an invalid or changed response", "O servidor enviou uma resposta inválida ou alterada"),
     ("The server timed out waiting for the request (408)", "O servidor esgotou o tempo de espera da solicitação (408)"),
+    ("The server's certificate has been revoked", "O certificado do servidor foi revogado"),
+    ("The server's certificate has expired or is not valid yet", "O certificado do servidor expirou ou ainda não é válido"),
+    ("The server's certificate or security settings were not accepted", "O certificado ou as configurações de segurança do servidor não foram aceitos"),
+    ("The server's certificate was issued by an authority this computer does not trust", "O certificado do servidor foi emitido por uma autoridade em que este computador não confia"),
+    ("The server's certificate was not issued for this address", "O certificado do servidor não foi emitido para este endereço"),
     ("The server's retry delay exceeds the supported range", "O atraso de nova tentativa do servidor excede o intervalo suportado"),
     ("The session cookie could not be converted to a safe Netscape file", "Não foi possível converter o cookie de sessão para um arquivo Netscape seguro"),
     ("The session cookie's host scope is invalid", "O escopo de host do cookie de sessão é inválido"),
@@ -4342,6 +4374,7 @@ static PT: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "Esta ação não pode ser usada a partir do contexto do navegador"),
     ("This action must be called through the result-producing command path.", "Esta ação deve ser chamada pelo caminho de comando que produz resultados."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "Este endereço não contém um único item de mídia (pode ser uma playlist ou página de entrada). Abra a própria página do vídeo e inicie o download por lá"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "Este endereço já está na lista de downloads.\n\nUsar a tarefa existente ou baixar uma nova cópia?"),
     ("This file is in use by another SSDownload process.", "Este arquivo está em uso por outro processo do SSDownload."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "Esta instalação está registrada para outro perfil de dados; o registro do outro perfil foi mantido"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "Esta é a lista de downloads. Clique duas vezes em uma linha para abrir o arquivo; o menu do botão direito tem pausar, mover para cima, copiar endereço e mais. Arraste as linhas para mudar a ordem."),
@@ -4535,7 +4568,11 @@ static FR: &[(&str, &str)] = &[
     ("&View", "Affi&chage"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
+    ("1 address is already in the list", "1 adresse figure déjà dans la liste"),
     ("1 connection", "1 connexion"),
+    ("1 download added", "1 téléchargement ajouté"),
+    ("1 download added to the queue.", "1 téléchargement ajouté à la file d'attente."),
+    ("1 quarantined job record could be read again and was restored.", "1 enregistrement de tâche mis en quarantaine a pu être relu et restauré."),
     ("512 KB/s", "512 KB/s"),
     ("<li>Open <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) in the address bar.</li><li>Turn on <b>Developer mode</b>.</li><li>Choose <b>Load unpacked</b> and select the folder below.</li>", "<li>Ouvrez <b>chrome://extensions</b> (Edge : <b>edge://extensions</b>) dans la barre d'adresse.</li><li>Activez le <b>mode développeur</b>.</li><li>Choisissez <b>Charger l'extension non empaquetée</b> et sélectionnez le dossier ci-dessous.</li>"),
     ("A Chrome/Edge policy entry written by an older SSDownload version blocks the browser extension.\n\nRemove it with administrator approval?", "Une entrée de stratégie Chrome/Edge écrite par une ancienne version de SSDownload bloque l'extension du navigateur.\n\nLa supprimer avec l'approbation de l'administrateur ?"),
@@ -5027,7 +5064,6 @@ static FR: &[(&str, &str)] = &[
     ("Priority:", "Priorité :"),
     ("Processing", "Traitement"),
     ("Processing media", "Traitement du média"),
-    ("Processing the media", "Traitement du média"),
     ("Program arguments (JSON)", "Arguments du programme (JSON)"),
     ("Programs", "Programmes"),
     ("Progress", "Progression"),
@@ -5179,6 +5215,7 @@ static FR: &[(&str, &str)] = &[
     ("Speed &limit...", "&Limite de vitesse..."),
     ("Speed limit", "Limite de vitesse"),
     ("Speed limit (KiB/s, 0 = unlimited):", "Limite de vitesse (KiB/s, 0 = illimitée) :"),
+    ("Speed limit for the selected download (KiB/s, 0 = global limit):", "Limite de vitesse pour le téléchargement sélectionné (KiB/s, 0 = limite globale) :"),
     ("Start", "Démarrer"),
     ("Start (HH:MM):", "Début (HH:MM) :"),
     ("Start at Windows sign-in", "Démarrer avec Windows"),
@@ -5303,6 +5340,7 @@ static FR: &[(&str, &str)] = &[
     ("The browser transfer file was not found", "Le fichier du transfert par le navigateur est introuvable"),
     ("The browser transfer record is too large", "L'enregistrement du transfert par le navigateur est trop volumineux"),
     ("The browser transfer record version is not valid", "La version de l'enregistrement du transfert par le navigateur n'est pas valide"),
+    ("The browser transfer sender exited; 1 network permit is kept safely until the Chrome request is confirmed", "L'émetteur du transfert par le navigateur s'est arrêté ; 1 autorisation réseau est conservée en sécurité jusqu'à la confirmation de la requête Chrome"),
     ("The browser transfer sender exited; a new request cannot be authorized.", "L'émetteur du transfert par le navigateur s'est arrêté ; une nouvelle requête ne peut pas être autorisée."),
     ("The browser transfer sender exited; the authorization was revoked", "L'émetteur du transfert par le navigateur s'est arrêté ; l'autorisation a été révoquée"),
     ("The browser transfer sender identity is missing", "L'identité de l'émetteur du transfert par le navigateur est manquante"),
@@ -5672,6 +5710,11 @@ static FR: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "Le serveur a renvoyé 403 ; nouvelle tentative unique sur la même source avec une connexion compatible avec le navigateur"),
     ("The server sent an invalid or changed response", "Le serveur a envoyé une réponse invalide ou modifiée"),
     ("The server timed out waiting for the request (408)", "Le serveur a dépassé le délai d'attente de la requête (408)"),
+    ("The server's certificate has been revoked", "Le certificat du serveur a été révoqué"),
+    ("The server's certificate has expired or is not valid yet", "Le certificat du serveur a expiré ou n'est pas encore valide"),
+    ("The server's certificate or security settings were not accepted", "Le certificat ou les paramètres de sécurité du serveur n'ont pas été acceptés"),
+    ("The server's certificate was issued by an authority this computer does not trust", "Le certificat du serveur a été délivré par une autorité à laquelle cet ordinateur ne fait pas confiance"),
+    ("The server's certificate was not issued for this address", "Le certificat du serveur n'a pas été délivré pour cette adresse"),
     ("The server's retry delay exceeds the supported range", "Le délai de nouvelle tentative du serveur dépasse la plage prise en charge"),
     ("The session cookie could not be converted to a safe Netscape file", "Le cookie de session n'a pas pu être converti en fichier Netscape sûr"),
     ("The session cookie's host scope is invalid", "La portée d'hôte du cookie de session est invalide"),
@@ -5833,6 +5876,7 @@ static FR: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "Cette action ne peut pas être utilisée depuis le contexte du navigateur"),
     ("This action must be called through the result-producing command path.", "Cette action doit être appelée via la commande qui produit le résultat."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "Cette adresse ne contient pas un seul élément média (il peut s'agir d'une liste de lecture ou d'une page d'accueil). Ouvrez la page propre à la vidéo et lancez le téléchargement à partir de celle-ci"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "Cette adresse figure déjà dans la liste des téléchargements.\n\nUtiliser la tâche existante ou télécharger une nouvelle copie ?"),
     ("This file is in use by another SSDownload process.", "Ce fichier est utilisé par un autre processus SSDownload."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "Cette installation est enregistrée pour un autre profil de données ; l'enregistrement de l'autre profil est conservé"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "Voici la liste des téléchargements. Double-cliquez sur une ligne pour ouvrir le fichier ; le menu contextuel contient la mise en pause, le déplacement vers le haut, la copie de l'adresse et plus encore. Faites glisser les lignes pour changer leur ordre."),
@@ -6026,7 +6070,11 @@ static DE: &[(&str, &str)] = &[
     ("&View", "&Ansicht"),
     ("/s", "/s"),
     ("1 MB/s", "1 MB/s"),
+    ("1 address is already in the list", "1 Adresse ist bereits in der Liste"),
     ("1 connection", "1 Verbindung"),
+    ("1 download added", "1 Download hinzugefügt"),
+    ("1 download added to the queue.", "1 Download zur Warteschlange hinzugefügt."),
+    ("1 quarantined job record could be read again and was restored.", "1 Auftragsdatensatz aus der Quarantäne konnte erneut gelesen und wiederhergestellt werden."),
     ("512 KB/s", "512 KB/s"),
     ("<li>Open <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) in the address bar.</li><li>Turn on <b>Developer mode</b>.</li><li>Choose <b>Load unpacked</b> and select the folder below.</li>", "<li>Öffnen Sie <b>chrome://extensions</b> (Edge: <b>edge://extensions</b>) in der Adressleiste.</li><li>Aktivieren Sie den <b>Entwicklermodus</b>.</li><li>Wählen Sie <b>Entpackte Erweiterung laden</b> und den unten stehenden Ordner aus.</li>"),
     ("A Chrome/Edge policy entry written by an older SSDownload version blocks the browser extension.\n\nRemove it with administrator approval?", "Ein Chrome-/Edge-Richtlinieneintrag einer älteren SSDownload-Version blockiert die Browser-Erweiterung.\n\nSoll er mit Administratorbestätigung entfernt werden?"),
@@ -6518,7 +6566,6 @@ static DE: &[(&str, &str)] = &[
     ("Priority:", "Priorität:"),
     ("Processing", "Wird verarbeitet"),
     ("Processing media", "Medien werden verarbeitet"),
-    ("Processing the media", "Medien werden verarbeitet"),
     ("Program arguments (JSON)", "Programmargumente (JSON)"),
     ("Programs", "Programme"),
     ("Progress", "Fortschritt"),
@@ -6670,6 +6717,7 @@ static DE: &[(&str, &str)] = &[
     ("Speed &limit...", "&Geschwindigkeitslimit..."),
     ("Speed limit", "Geschwindigkeitslimit"),
     ("Speed limit (KiB/s, 0 = unlimited):", "Limit (KiB/s, 0 = unbegrenzt):"),
+    ("Speed limit for the selected download (KiB/s, 0 = global limit):", "Geschwindigkeitslimit für den ausgewählten Download (KiB/s, 0 = globales Limit):"),
     ("Start", "Starten"),
     ("Start (HH:MM):", "Start (HH:MM):"),
     ("Start at Windows sign-in", "Bei der Windows-Anmeldung starten"),
@@ -6794,6 +6842,7 @@ static DE: &[(&str, &str)] = &[
     ("The browser transfer file was not found", "Die Datei der Browser-Übertragung wurde nicht gefunden"),
     ("The browser transfer record is too large", "Der Datensatz der Browser-Übertragung ist zu groß"),
     ("The browser transfer record version is not valid", "Die Version des Datensatzes der Browser-Übertragung ist ungültig"),
+    ("The browser transfer sender exited; 1 network permit is kept safely until the Chrome request is confirmed", "Der Sender der Browser-Übertragung wurde beendet; 1 Netzwerkerlaubnis wird sicher aufbewahrt, bis die Chrome-Anfrage bestätigt ist"),
     ("The browser transfer sender exited; a new request cannot be authorized.", "Der Sender der Browser-Übertragung wurde beendet; für eine neue Anfrage kann keine Autorisierung erteilt werden."),
     ("The browser transfer sender exited; the authorization was revoked", "Der Sender der Browser-Übertragung wurde beendet; die Autorisierung wurde widerrufen"),
     ("The browser transfer sender identity is missing", "Die Identität des Browser-Übertragungssenders fehlt"),
@@ -7163,6 +7212,11 @@ static DE: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "Der Server hat 403 zurückgegeben; die gleiche Quelle wird einmal über eine browserkompatible Verbindung erneut versucht"),
     ("The server sent an invalid or changed response", "Der Server hat eine ungültige oder geänderte Antwort gesendet"),
     ("The server timed out waiting for the request (408)", "Der Server hat beim Warten auf die Anfrage das Zeitlimit überschritten (408)"),
+    ("The server's certificate has been revoked", "Das Zertifikat des Servers wurde widerrufen"),
+    ("The server's certificate has expired or is not valid yet", "Das Zertifikat des Servers ist abgelaufen oder noch nicht gültig"),
+    ("The server's certificate or security settings were not accepted", "Das Zertifikat oder die Sicherheitseinstellungen des Servers wurden nicht akzeptiert"),
+    ("The server's certificate was issued by an authority this computer does not trust", "Das Zertifikat des Servers wurde von einer Stelle ausgestellt, der dieser Computer nicht vertraut"),
+    ("The server's certificate was not issued for this address", "Das Zertifikat des Servers wurde nicht für diese Adresse ausgestellt"),
     ("The server's retry delay exceeds the supported range", "Die Wiederholungsverzögerung des Servers überschreitet den unterstützten Bereich"),
     ("The session cookie could not be converted to a safe Netscape file", "Das Sitzungscookie konnte nicht in eine sichere Netscape-Datei umgewandelt werden"),
     ("The session cookie's host scope is invalid", "Der Hostbereich des Sitzungscookies ist ungültig"),
@@ -7324,6 +7378,7 @@ static DE: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "Diese Aktion kann nicht aus dem Browserkontext verwendet werden"),
     ("This action must be called through the result-producing command path.", "Diese Aktion muss über den Befehlspfad mit Ergebnisausgabe aufgerufen werden."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "Diese Adresse enthält kein einzelnes Medienelement (möglicherweise eine Playlist oder Einstiegsseite). Öffnen Sie die eigene Seite des Videos und starten Sie den Download dort"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "Diese Adresse befindet sich bereits in der Downloadliste.\n\nVorhandenen Auftrag verwenden oder neue Kopie herunterladen?"),
     ("This file is in use by another SSDownload process.", "Diese Datei wird von einem anderen SSDownload-Prozess verwendet."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "Diese Installation ist für ein anderes Datenprofil registriert; die Registrierung des anderen Profils bleibt erhalten"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "Dies ist die Downloadliste. Ein Doppelklick auf eine Zeile öffnet die Datei; das Kontextmenü mit der rechten Maustaste enthält Pausieren, Nach oben verschieben, Adresse kopieren und mehr. Ziehen Sie Zeilen, um ihre Reihenfolge zu ändern."),
@@ -7514,11 +7569,17 @@ macro_rules! __ui_template_ar {
     ("&Install update ({version})...") => {
         "ت&ثبيت التحديث ({version})..."
     };
+    (", 1 page could not be fetched: {0}") => {
+        "، تعذّر جلب صفحة واحدة: {0}"
+    };
     (", {0} pages could not be fetched: {1}") => {
         "، تعذّر جلب {0} من الصفحات: {1}"
     };
-    ("A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).") => {
-        "تم تخطي مقطع؛ تم تجاهل {0} من الملفات غير المكتملة ({1:.1} MB) وإعادة بدء البث (المحاولة {2}، الاتصالات: {3})."
+    ("1 address exported: {0}") => {
+        "تم تصدير عنوان واحد: {0}"
+    };
+    ("A fragment was skipped; unfinished files discarded: {0} ({1:.1} MB). The stream restarts (attempt {2}, connections: {3}).") => {
+        "تم تخطي مقطع؛ الملفات غير المكتملة المتجاهلة: {0} ({1:.1} MB). يُعاد بدء البث (المحاولة {2}، الاتصالات: {3})."
     };
     ("A redirect to another site was not followed: {host}") => {
         "لم يتم اتباع إعادة التوجيه إلى موقع آخر: {host}"
@@ -7787,7 +7848,7 @@ macro_rules! __ui_template_ar {
     ("Source: {0}") => {
         "المصدر: {0}"
     };
-    ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
+    ("Speed limit for the {0} selected downloads (KiB/s, 0 = global limit):") => {
         "حد السرعة للتنزيلات المحددة: {0} (KiB/s، 0 = الحد العام):"
     };
     ("Startup setting could not be applied: {error}") => {
@@ -7838,7 +7899,7 @@ macro_rules! __ui_template_ar {
     ("The browser media streams could not be merged losslessly: {0}") => {
         "تعذّر دمج البثوث الخاصة بوسائط المتصفح دون فقد: {0}"
     };
-    ("The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed") => {
+    ("The browser transfer sender exited; {newly_orphaned} network permits are kept safely until the Chrome request is confirmed") => {
         "أُغلق مرسِل النقل عبر المتصفح؛ يتم الاحتفاظ بـ {newly_orphaned} من أذونات الشبكة بأمان حتى يتم تأكيد طلب Chrome"
     };
     ("The closed browser transfer could not be paused: {error}") => {
@@ -8078,7 +8139,7 @@ macro_rules! __ui_template_ar {
     ("The setup helper could not be started: {error}") => {
         "تعذّر بدء أداة مساعدة الإعداد: {error}"
     };
-    ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
+    ("The source kept dropping fragments; the stream was restarted {0} times and integrity could not be ensured. Try the source again later.") => {
         "استمر المصدر في إسقاط المقاطع؛ أُعيد بدء البث {0} مرة ولم يمكن ضمان السلامة. جرّب المصدر مرة أخرى لاحقًا."
     };
     ("The source refresh could not be saved and the work state could not be restored: {error:#}") => {
@@ -8198,7 +8259,7 @@ macro_rules! __ui_template_ar {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  الحالة: {1}\r\n  الإصدار: {2}\r\n  الموقع: {3}\r\n\r\n"
     };
-    ("{0} address(es) exported: {1}") => {
+    ("{0} addresses exported: {1}") => {
         "تم تصدير {0} من العناوين: {1}"
     };
     ("{0} connections") => {
@@ -8234,12 +8295,6 @@ macro_rules! __ui_template_ar {
     ("{0}{1}{2}\r\nSource: {3}{live_note}{playlist_note}{status}") => {
         "{0}{1}{2}\r\nالمصدر: {3}{live_note}{playlist_note}{status}"
     };
-    ("{added} download(s) added") => {
-        "تمت إضافة التنزيلات: {added}"
-    };
-    ("{added} download(s) added, {skipped} address(es) already in the list") => {
-        "تمت إضافة التنزيلات: {added}، والعناوين الموجودة في القائمة بالفعل: {skipped}"
-    };
     ("{a}, audio only") => {
         "{a}، الصوت فقط"
     };
@@ -8249,13 +8304,16 @@ macro_rules! __ui_template_ar {
     ("{context} (Windows error code {code})") => {
         "{context} (رمز خطأ Windows: {code})"
     };
-    ("{count} download(s) added") => {
+    ("{count} addresses are already in the list") => {
+        "العناوين الموجودة بالفعل في القائمة: {count}"
+    };
+    ("{count} downloads added") => {
         "تمت إضافة التنزيلات: {count}"
     };
-    ("{count} download(s) added to the queue.") => {
+    ("{count} downloads added to the queue.") => {
         "تمت إضافة التنزيلات: {count} إلى قائمة الانتظار."
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "العناوين الموجودة بالفعل في قائمة التنزيلات: {duplicates}.\n\nهل تريد استخدام المهام الموجودة، أم تنزيل نسخ جديدة؟"
     };
     ("{id}: not in the queue\r\n") => {
@@ -8321,7 +8379,7 @@ macro_rules! __ui_template_ar {
     ("{quota}The completion action will run in {remaining} seconds; you can cancel it.") => {
         "{quota}سيُنفَّذ إجراء الاكتمال خلال {remaining} ث؛ يمكنك إلغاؤه."
     };
-    ("{restored} quarantined job record(s) could be read again and were restored.") => {
+    ("{restored} quarantined job records could be read again and were restored.") => {
         "أمكن قراءة {restored} من سجلات المهام المعزولة مجددًا، وأُعيدت إلى القائمة."
     };
     ("{v}, video only") => {
@@ -8377,11 +8435,17 @@ macro_rules! __ui_template_es {
     ("&Install update ({version})...") => {
         "&Instalar actualización ({version})..."
     };
+    (", 1 page could not be fetched: {0}") => {
+        ", no se ha podido obtener 1 página: {0}"
+    };
     (", {0} pages could not be fetched: {1}") => {
         ", no se han podido obtener {0} páginas: {1}"
     };
-    ("A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).") => {
-        "Se omitió un fragmento; se descartaron {0} archivo(s) incompleto(s) ({1:.1} MB) y el flujo se reinicia (intento {2}, {3} conexión(es))."
+    ("1 address exported: {0}") => {
+        "1 dirección exportada: {0}"
+    };
+    ("A fragment was skipped; unfinished files discarded: {0} ({1:.1} MB). The stream restarts (attempt {2}, connections: {3}).") => {
+        "Se omitió un fragmento; archivos incompletos descartados: {0} ({1:.1} MB). El flujo se reinicia (intento {2}, conexiones: {3})."
     };
     ("A redirect to another site was not followed: {host}") => {
         "No se siguió una redirección a otro sitio: {host}"
@@ -8650,8 +8714,8 @@ macro_rules! __ui_template_es {
     ("Source: {0}") => {
         "Origen: {0}"
     };
-    ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
-        "Límite de velocidad para {0} descarga(s) seleccionada(s) (KiB/s, 0 = límite global):"
+    ("Speed limit for the {0} selected downloads (KiB/s, 0 = global limit):") => {
+        "Límite de velocidad para las {0} descargas seleccionadas (KiB/s, 0 = límite global):"
     };
     ("Startup setting could not be applied: {error}") => {
         "No se pudo aplicar la configuración de inicio: {error}"
@@ -8701,8 +8765,8 @@ macro_rules! __ui_template_es {
     ("The browser media streams could not be merged losslessly: {0}") => {
         "No se pudieron combinar sin pérdida los flujos multimedia del navegador: {0}"
     };
-    ("The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed") => {
-        "El emisor de la transferencia desde el navegador se cerró; {newly_orphaned} permiso(s) de red se conservan de forma segura hasta que se confirme la solicitud de Chrome"
+    ("The browser transfer sender exited; {newly_orphaned} network permits are kept safely until the Chrome request is confirmed") => {
+        "El emisor de la transferencia desde el navegador se cerró; {newly_orphaned} permisos de red se conservan de forma segura hasta que se confirme la solicitud de Chrome"
     };
     ("The closed browser transfer could not be paused: {error}") => {
         "No se pudo pausar la transferencia desde el navegador que se cerró: {error}"
@@ -8941,8 +9005,8 @@ macro_rules! __ui_template_es {
     ("The setup helper could not be started: {error}") => {
         "No se ha podido iniciar el asistente de instalación: {error}"
     };
-    ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
-        "El origen seguía perdiendo fragmentos; el flujo se ha reiniciado {0} vez(es) y no se ha podido garantizar la integridad. Volver a intentarlo con el origen más tarde."
+    ("The source kept dropping fragments; the stream was restarted {0} times and integrity could not be ensured. Try the source again later.") => {
+        "El origen seguía perdiendo fragmentos; el flujo se ha reiniciado {0} veces y no se ha podido garantizar la integridad. Volver a intentarlo con el origen más tarde."
     };
     ("The source refresh could not be saved and the work state could not be restored: {error:#}") => {
         "No se ha podido guardar la actualización del origen ni restaurar el estado de trabajo: {error:#}"
@@ -9061,8 +9125,8 @@ macro_rules! __ui_template_es {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Estado: {1}\r\n  Versión: {2}\r\n  Ubicación: {3}\r\n\r\n"
     };
-    ("{0} address(es) exported: {1}") => {
-        "{0} dirección(es) exportada(s): {1}"
+    ("{0} addresses exported: {1}") => {
+        "{0} direcciones exportadas: {1}"
     };
     ("{0} connections") => {
         "{0} conexiones"
@@ -9097,12 +9161,6 @@ macro_rules! __ui_template_es {
     ("{0}{1}{2}\r\nSource: {3}{live_note}{playlist_note}{status}") => {
         "{0}{1}{2}\r\nOrigen: {3}{live_note}{playlist_note}{status}"
     };
-    ("{added} download(s) added") => {
-        "{added} descarga(s) añadida(s)"
-    };
-    ("{added} download(s) added, {skipped} address(es) already in the list") => {
-        "{added} descarga(s) añadida(s), {skipped} dirección(es) ya en la lista"
-    };
     ("{a}, audio only") => {
         "{a}, solo audio"
     };
@@ -9112,14 +9170,17 @@ macro_rules! __ui_template_es {
     ("{context} (Windows error code {code})") => {
         "{context} (código de error de Windows {code})"
     };
-    ("{count} download(s) added") => {
-        "{count} descarga(s) añadida(s)"
+    ("{count} addresses are already in the list") => {
+        "{count} direcciones ya están en la lista"
     };
-    ("{count} download(s) added to the queue.") => {
-        "{count} descarga(s) añadida(s) a la cola."
+    ("{count} downloads added") => {
+        "{count} descargas añadidas"
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
-        "{duplicates} dirección(es) ya están en la lista de descargas.\n\n¿Usar las tareas existentes o descargar copias nuevas?"
+    ("{count} downloads added to the queue.") => {
+        "{count} descargas añadidas a la cola."
+    };
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+        "{duplicates} direcciones ya están en la lista de descargas.\n\n¿Usar las tareas existentes o descargar copias nuevas?"
     };
     ("{id}: not in the queue\r\n") => {
         "{id}: no está en la cola\r\n"
@@ -9184,8 +9245,8 @@ macro_rules! __ui_template_es {
     ("{quota}The completion action will run in {remaining} seconds; you can cancel it.") => {
         "{quota}La acción de finalización se ejecutará en {remaining} segundos; se puede cancelar."
     };
-    ("{restored} quarantined job record(s) could be read again and were restored.") => {
-        "{restored} registro(s) de tarea en cuarentena se han podido leer de nuevo y se han restaurado."
+    ("{restored} quarantined job records could be read again and were restored.") => {
+        "{restored} registros de tarea en cuarentena se han podido leer de nuevo y se han restaurado."
     };
     ("{v}, video only") => {
         "{v}, solo vídeo"
@@ -9240,11 +9301,17 @@ macro_rules! __ui_template_pt {
     ("&Install update ({version})...") => {
         "&Instalar atualização ({version})..."
     };
+    (", 1 page could not be fetched: {0}") => {
+        ", 1 página não pôde ser obtida: {0}"
+    };
     (", {0} pages could not be fetched: {1}") => {
         ", {0} páginas não puderam ser obtidas: {1}"
     };
-    ("A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).") => {
-        "Um segmento foi ignorado; {0} arquivo(s) inacabado(s) ({1:.1} MB) descartado(s) e o fluxo reinicia (tentativa {2}, {3} conexão(ões))."
+    ("1 address exported: {0}") => {
+        "1 endereço exportado: {0}"
+    };
+    ("A fragment was skipped; unfinished files discarded: {0} ({1:.1} MB). The stream restarts (attempt {2}, connections: {3}).") => {
+        "Um segmento foi ignorado; arquivos inacabados descartados: {0} ({1:.1} MB). O fluxo reinicia (tentativa {2}, conexões: {3})."
     };
     ("A redirect to another site was not followed: {host}") => {
         "Um redirecionamento para outro site não foi seguido: {host}"
@@ -9513,8 +9580,8 @@ macro_rules! __ui_template_pt {
     ("Source: {0}") => {
         "Origem: {0}"
     };
-    ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
-        "Limite de velocidade para o(s) {0} download(s) selecionado(s) (KiB/s, 0 = limite geral):"
+    ("Speed limit for the {0} selected downloads (KiB/s, 0 = global limit):") => {
+        "Limite de velocidade para os {0} downloads selecionados (KiB/s, 0 = limite geral):"
     };
     ("Startup setting could not be applied: {error}") => {
         "A configuração de inicialização não pôde ser aplicada: {error}"
@@ -9564,8 +9631,8 @@ macro_rules! __ui_template_pt {
     ("The browser media streams could not be merged losslessly: {0}") => {
         "Não foi possível mesclar sem perdas os fluxos de mídia do navegador: {0}"
     };
-    ("The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed") => {
-        "O remetente da transferência do navegador foi encerrado; {newly_orphaned} permissão(ões) de rede são mantidas com segurança até a confirmação da solicitação do Chrome"
+    ("The browser transfer sender exited; {newly_orphaned} network permits are kept safely until the Chrome request is confirmed") => {
+        "O remetente da transferência do navegador foi encerrado; {newly_orphaned} permissões de rede são mantidas com segurança até a confirmação da solicitação do Chrome"
     };
     ("The closed browser transfer could not be paused: {error}") => {
         "Não foi possível pausar a transferência do navegador encerrada: {error}"
@@ -9804,8 +9871,8 @@ macro_rules! __ui_template_pt {
     ("The setup helper could not be started: {error}") => {
         "Não foi possível iniciar o auxiliar de configuração: {error}"
     };
-    ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
-        "A fonte continuou perdendo segmentos; o fluxo foi reiniciado {0} vez(es) e a integridade não pôde ser garantida. Tente a fonte novamente mais tarde."
+    ("The source kept dropping fragments; the stream was restarted {0} times and integrity could not be ensured. Try the source again later.") => {
+        "A fonte continuou perdendo segmentos; o fluxo foi reiniciado {0} vezes e a integridade não pôde ser garantida. Tente a fonte novamente mais tarde."
     };
     ("The source refresh could not be saved and the work state could not be restored: {error:#}") => {
         "Não foi possível salvar a atualização da fonte e o estado de trabalho não pôde ser restaurado: {error:#}"
@@ -9924,8 +9991,8 @@ macro_rules! __ui_template_pt {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Versão: {2}\r\n  Local: {3}\r\n\r\n"
     };
-    ("{0} address(es) exported: {1}") => {
-        "{0} endereço(s) exportado(s): {1}"
+    ("{0} addresses exported: {1}") => {
+        "{0} endereços exportados: {1}"
     };
     ("{0} connections") => {
         "{0} conexões"
@@ -9960,12 +10027,6 @@ macro_rules! __ui_template_pt {
     ("{0}{1}{2}\r\nSource: {3}{live_note}{playlist_note}{status}") => {
         "{0}{1}{2}\r\nFonte: {3}{live_note}{playlist_note}{status}"
     };
-    ("{added} download(s) added") => {
-        "{added} download(s) adicionado(s)"
-    };
-    ("{added} download(s) added, {skipped} address(es) already in the list") => {
-        "{added} download(s) adicionado(s), {skipped} endereço(s) já na lista"
-    };
     ("{a}, audio only") => {
         "{a}, somente áudio"
     };
@@ -9975,14 +10036,17 @@ macro_rules! __ui_template_pt {
     ("{context} (Windows error code {code})") => {
         "{context} (código de erro do Windows {code})"
     };
-    ("{count} download(s) added") => {
-        "{count} download(s) adicionado(s)"
+    ("{count} addresses are already in the list") => {
+        "{count} endereços já estão na lista"
     };
-    ("{count} download(s) added to the queue.") => {
-        "{count} download(s) adicionado(s) à fila."
+    ("{count} downloads added") => {
+        "{count} downloads adicionados"
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
-        "{duplicates} endereço(s) já estão na lista de downloads.\n\nUsar as tarefas existentes ou baixar novas cópias?"
+    ("{count} downloads added to the queue.") => {
+        "{count} downloads adicionados à fila."
+    };
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+        "{duplicates} endereços já estão na lista de downloads.\n\nUsar as tarefas existentes ou baixar novas cópias?"
     };
     ("{id}: not in the queue\r\n") => {
         "{id}: não está na fila\r\n"
@@ -10047,8 +10111,8 @@ macro_rules! __ui_template_pt {
     ("{quota}The completion action will run in {remaining} seconds; you can cancel it.") => {
         "{quota}A ação de conclusão será executada em {remaining} segundos; você pode cancelá-la."
     };
-    ("{restored} quarantined job record(s) could be read again and were restored.") => {
-        "{restored} registro(s) de tarefa em quarentena puderam ser lidos novamente e foram restaurados."
+    ("{restored} quarantined job records could be read again and were restored.") => {
+        "{restored} registros de tarefa em quarentena puderam ser lidos novamente e foram restaurados."
     };
     ("{v}, video only") => {
         "{v}, somente vídeo"
@@ -10103,11 +10167,17 @@ macro_rules! __ui_template_fr {
     ("&Install update ({version})...") => {
         "&Installer la mise à jour ({version})..."
     };
-    (", {0} pages could not be fetched: {1}") => {
-        ", {0} page(s) n'ont pas pu être récupérées : {1}"
+    (", 1 page could not be fetched: {0}") => {
+        ", 1 page n'a pas pu être récupérée : {0}"
     };
-    ("A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).") => {
-        "Un fragment a été ignoré ; {0} fichier(s) inachevé(s) ({1:.1} MB) supprimé(s) et le flux redémarre (tentative {2}, {3} connexion(s))."
+    (", {0} pages could not be fetched: {1}") => {
+        ", {0} pages n'ont pas pu être récupérées : {1}"
+    };
+    ("1 address exported: {0}") => {
+        "1 adresse exportée : {0}"
+    };
+    ("A fragment was skipped; unfinished files discarded: {0} ({1:.1} MB). The stream restarts (attempt {2}, connections: {3}).") => {
+        "Un fragment a été ignoré ; fichiers inachevés supprimés : {0} ({1:.1} MB). Le flux redémarre (tentative {2}, connexions : {3})."
     };
     ("A redirect to another site was not followed: {host}") => {
         "Une redirection vers un autre site n'a pas été suivie : {host}"
@@ -10376,8 +10446,8 @@ macro_rules! __ui_template_fr {
     ("Source: {0}") => {
         "Source : {0}"
     };
-    ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
-        "Limite de vitesse pour le ou les {0} téléchargement(s) sélectionné(s) (KiB/s, 0 = limite globale) :"
+    ("Speed limit for the {0} selected downloads (KiB/s, 0 = global limit):") => {
+        "Limite de vitesse pour les {0} téléchargements sélectionnés (KiB/s, 0 = limite globale) :"
     };
     ("Startup setting could not be applied: {error}") => {
         "Le paramètre de démarrage n'a pas pu être appliqué : {error}"
@@ -10427,8 +10497,8 @@ macro_rules! __ui_template_fr {
     ("The browser media streams could not be merged losslessly: {0}") => {
         "Les flux média du navigateur n'ont pas pu être fusionnés sans perte : {0}"
     };
-    ("The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed") => {
-        "L'émetteur du transfert par le navigateur s'est arrêté ; {newly_orphaned} autorisation(s) réseau sont conservées en sécurité jusqu'à la confirmation de la requête Chrome"
+    ("The browser transfer sender exited; {newly_orphaned} network permits are kept safely until the Chrome request is confirmed") => {
+        "L'émetteur du transfert par le navigateur s'est arrêté ; {newly_orphaned} autorisations réseau sont conservées en sécurité jusqu'à la confirmation de la requête Chrome"
     };
     ("The closed browser transfer could not be paused: {error}") => {
         "Le transfert par le navigateur fermé n'a pas pu être mis en pause : {error}"
@@ -10667,7 +10737,7 @@ macro_rules! __ui_template_fr {
     ("The setup helper could not be started: {error}") => {
         "L'assistant d'installation n'a pas pu être démarré : {error}"
     };
-    ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
+    ("The source kept dropping fragments; the stream was restarted {0} times and integrity could not be ensured. Try the source again later.") => {
         "La source a continuellement perdu des fragments ; le flux a été redémarré {0} fois et l'intégrité n'a pas pu être garantie. Réessayez la source plus tard."
     };
     ("The source refresh could not be saved and the work state could not be restored: {error:#}") => {
@@ -10787,8 +10857,8 @@ macro_rules! __ui_template_fr {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  État : {1}\r\n  Version : {2}\r\n  Emplacement : {3}\r\n\r\n"
     };
-    ("{0} address(es) exported: {1}") => {
-        "{0} adresse(s) exportée(s) : {1}"
+    ("{0} addresses exported: {1}") => {
+        "{0} adresses exportées : {1}"
     };
     ("{0} connections") => {
         "{0} connexions"
@@ -10823,12 +10893,6 @@ macro_rules! __ui_template_fr {
     ("{0}{1}{2}\r\nSource: {3}{live_note}{playlist_note}{status}") => {
         "{0}{1}{2}\r\nSource : {3}{live_note}{playlist_note}{status}"
     };
-    ("{added} download(s) added") => {
-        "{added} téléchargement(s) ajouté(s)"
-    };
-    ("{added} download(s) added, {skipped} address(es) already in the list") => {
-        "{added} téléchargement(s) ajouté(s), {skipped} adresse(s) déjà dans la liste"
-    };
     ("{a}, audio only") => {
         "{a}, audio uniquement"
     };
@@ -10838,14 +10902,17 @@ macro_rules! __ui_template_fr {
     ("{context} (Windows error code {code})") => {
         "{context} (code d'erreur Windows {code})"
     };
-    ("{count} download(s) added") => {
-        "{count} téléchargement(s) ajouté(s)"
+    ("{count} addresses are already in the list") => {
+        "{count} adresses figurent déjà dans la liste"
     };
-    ("{count} download(s) added to the queue.") => {
-        "{count} téléchargement(s) ajouté(s) à la file d'attente."
+    ("{count} downloads added") => {
+        "{count} téléchargements ajoutés"
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
-        "{duplicates} adresse(s) figure(nt) déjà dans la liste des téléchargements.\n\nUtiliser les tâches existantes ou télécharger de nouvelles copies ?"
+    ("{count} downloads added to the queue.") => {
+        "{count} téléchargements ajoutés à la file d'attente."
+    };
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+        "{duplicates} adresses figurent déjà dans la liste des téléchargements.\n\nUtiliser les tâches existantes ou télécharger de nouvelles copies ?"
     };
     ("{id}: not in the queue\r\n") => {
         "{id} : absent de la file d'attente\r\n"
@@ -10910,8 +10977,8 @@ macro_rules! __ui_template_fr {
     ("{quota}The completion action will run in {remaining} seconds; you can cancel it.") => {
         "{quota}L'action de fin s'exécutera dans {remaining} secondes ; vous pouvez l'annuler."
     };
-    ("{restored} quarantined job record(s) could be read again and were restored.") => {
-        "{restored} enregistrement(s) de tâche mis en quarantaine ont pu être relus et restaurés."
+    ("{restored} quarantined job records could be read again and were restored.") => {
+        "{restored} enregistrements de tâche mis en quarantaine ont pu être relus et restaurés."
     };
     ("{v}, video only") => {
         "{v}, vidéo uniquement"
@@ -10966,11 +11033,17 @@ macro_rules! __ui_template_de {
     ("&Install update ({version})...") => {
         "Update i&nstallieren ({version})..."
     };
+    (", 1 page could not be fetched: {0}") => {
+        ", 1 Seite konnte nicht abgerufen werden: {0}"
+    };
     (", {0} pages could not be fetched: {1}") => {
         ", {0} Seiten konnten nicht abgerufen werden: {1}"
     };
-    ("A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).") => {
-        "Ein Fragment wurde übersprungen; {0} unvollständige Datei(en) ({1:.1} MB) verworfen, und der Stream startet neu (Versuch {2}, {3} Verbindung(en))."
+    ("1 address exported: {0}") => {
+        "1 Adresse exportiert: {0}"
+    };
+    ("A fragment was skipped; unfinished files discarded: {0} ({1:.1} MB). The stream restarts (attempt {2}, connections: {3}).") => {
+        "Ein Fragment wurde übersprungen; verworfene unvollständige Dateien: {0} ({1:.1} MB). Der Stream startet neu (Versuch {2}, Verbindungen: {3})."
     };
     ("A redirect to another site was not followed: {host}") => {
         "Eine Weiterleitung auf eine andere Website wurde nicht verfolgt: {host}"
@@ -11239,7 +11312,7 @@ macro_rules! __ui_template_de {
     ("Source: {0}") => {
         "Quelle: {0}"
     };
-    ("Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):") => {
+    ("Speed limit for the {0} selected downloads (KiB/s, 0 = global limit):") => {
         "Geschwindigkeitslimit für die {0} ausgewählten Downloads (KiB/s, 0 = globales Limit):"
     };
     ("Startup setting could not be applied: {error}") => {
@@ -11290,8 +11363,8 @@ macro_rules! __ui_template_de {
     ("The browser media streams could not be merged losslessly: {0}") => {
         "Die Browser-Medienstreams konnten nicht verlustfrei zusammengeführt werden: {0}"
     };
-    ("The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed") => {
-        "Der Sender der Browser-Übertragung wurde beendet; {newly_orphaned} Netzwerkerlaubnis(se) werden sicher aufbewahrt, bis die Chrome-Anfrage bestätigt ist"
+    ("The browser transfer sender exited; {newly_orphaned} network permits are kept safely until the Chrome request is confirmed") => {
+        "Der Sender der Browser-Übertragung wurde beendet; {newly_orphaned} Netzwerkerlaubnisse werden sicher aufbewahrt, bis die Chrome-Anfrage bestätigt ist"
     };
     ("The closed browser transfer could not be paused: {error}") => {
         "Die geschlossene Browser-Übertragung konnte nicht pausiert werden: {error}"
@@ -11530,7 +11603,7 @@ macro_rules! __ui_template_de {
     ("The setup helper could not be started: {error}") => {
         "Der Einrichtungshelfer konnte nicht gestartet werden: {error}"
     };
-    ("The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.") => {
+    ("The source kept dropping fragments; the stream was restarted {0} times and integrity could not be ensured. Try the source again later.") => {
         "Die Quelle hat wiederholt Fragmente verloren; der Stream wurde {0} Mal neu gestartet und die Integrität konnte nicht sichergestellt werden. Versuchen Sie es später erneut."
     };
     ("The source refresh could not be saved and the work state could not be restored: {error:#}") => {
@@ -11650,8 +11723,8 @@ macro_rules! __ui_template_de {
     ("{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n") => {
         "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Speicherort: {3}\r\n\r\n"
     };
-    ("{0} address(es) exported: {1}") => {
-        "{0} Adresse(n) exportiert: {1}"
+    ("{0} addresses exported: {1}") => {
+        "{0} Adressen exportiert: {1}"
     };
     ("{0} connections") => {
         "{0} Verbindungen"
@@ -11686,12 +11759,6 @@ macro_rules! __ui_template_de {
     ("{0}{1}{2}\r\nSource: {3}{live_note}{playlist_note}{status}") => {
         "{0}{1}{2}\r\nQuelle: {3}{live_note}{playlist_note}{status}"
     };
-    ("{added} download(s) added") => {
-        "{added} Download(s) hinzugefügt"
-    };
-    ("{added} download(s) added, {skipped} address(es) already in the list") => {
-        "{added} Download(s) hinzugefügt, {skipped} Adresse(n) bereits in der Liste"
-    };
     ("{a}, audio only") => {
         "{a}, nur Audio"
     };
@@ -11701,14 +11768,17 @@ macro_rules! __ui_template_de {
     ("{context} (Windows error code {code})") => {
         "{context} (Windows-Fehlercode {code})"
     };
-    ("{count} download(s) added") => {
-        "{count} Download(s) hinzugefügt"
+    ("{count} addresses are already in the list") => {
+        "{count} Adressen sind bereits in der Liste"
     };
-    ("{count} download(s) added to the queue.") => {
-        "{count} Download(s) zur Warteschlange hinzugefügt."
+    ("{count} downloads added") => {
+        "{count} Downloads hinzugefügt"
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
-        "{duplicates} Adresse(n) befinden sich bereits in der Downloadliste.\n\nVorhandene Aufträge verwenden oder neue Kopien herunterladen?"
+    ("{count} downloads added to the queue.") => {
+        "{count} Downloads zur Warteschlange hinzugefügt."
+    };
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+        "{duplicates} Adressen befinden sich bereits in der Downloadliste.\n\nVorhandene Aufträge verwenden oder neue Kopien herunterladen?"
     };
     ("{id}: not in the queue\r\n") => {
         "{id}: nicht in der Warteschlange\r\n"
@@ -11773,8 +11843,8 @@ macro_rules! __ui_template_de {
     ("{quota}The completion action will run in {remaining} seconds; you can cancel it.") => {
         "{quota}Die Aktion nach Abschluss wird in {remaining} Sekunden ausgeführt; Sie können sie abbrechen."
     };
-    ("{restored} quarantined job record(s) could be read again and were restored.") => {
-        "{restored} Auftragsdatensatz/-sätze aus der Quarantäne konnten erneut gelesen und wiederhergestellt werden."
+    ("{restored} quarantined job records could be read again and were restored.") => {
+        "{restored} Auftragsdatensätze aus der Quarantäne konnten erneut gelesen und wiederhergestellt werden."
     };
     ("{v}, video only") => {
         "{v}, nur Video"

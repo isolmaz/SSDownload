@@ -1226,7 +1226,7 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
             let candidate = info.formats.iter().rev().find(|format| {
                 let kind = match base {
                     "bestvideo" => {
-                        stream_present(format.video_codec.as_deref())
+                        !stream_absent(format.video_codec.as_deref())
                             && stream_absent(format.audio_codec.as_deref())
                     }
                     "bestaudio" => {

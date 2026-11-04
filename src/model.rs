@@ -370,7 +370,7 @@ impl JobState {
     pub fn plain_phase(self) -> Option<&'static str> {
         match self {
             Self::Downloading => Some(crate::i18n::ui("Medya indiriliyor", "Downloading media")),
-            Self::Processing => Some(crate::i18n::ui("Medya işleniyor", "Processing media")),
+            Self::Processing => Some(processing_phase()),
             _ => None,
         }
     }
@@ -390,6 +390,12 @@ impl JobState {
             Self::Cancelled => crate::i18n::ui("İptal edildi", "Cancelled"),
         }
     }
+}
+
+/// The phase every media transfer reports while it only processes; `JobState::plain_phase` of
+/// `Processing`, so the list shows the state once.
+pub fn processing_phase() -> &'static str {
+    crate::i18n::ui("Medya işleniyor", "Processing media")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

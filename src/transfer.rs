@@ -741,6 +741,115 @@ fn curl_code(code: curl_sys::CURLcode) -> Option<crate::error_codes::Code> {
     }
 }
 
+/// Why a secure connection was refused, as far as the Windows status in libcurl's message tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TlsFailure {
+    UntrustedRoot,
+    Expired,
+    WrongName,
+    Revoked,
+    Other,
+}
+
+impl TlsFailure {
+    /// The reason in the interface language; the system's own sentence about the status is in the
+    /// language of Windows and stays in the log.
+    pub(crate) fn text(self) -> &'static str {
+        match self {
+            Self::UntrustedRoot => crate::i18n::ui(
+                "Sunucunun sertifikası, bu bilgisayarın güvenmediği bir yetkili tarafından verilmiş",
+                "The server's certificate was issued by an authority this computer does not trust",
+            ),
+            Self::Expired => crate::i18n::ui(
+                "Sunucunun sertifikasının süresi dolmuş veya henüz geçerli değil",
+                "The server's certificate has expired or is not valid yet",
+            ),
+            Self::WrongName => crate::i18n::ui(
+                "Sunucunun sertifikası bu adres için verilmemiş",
+                "The server's certificate was not issued for this address",
+            ),
+            Self::Revoked => crate::i18n::ui(
+                "Sunucunun sertifikası iptal edilmiş",
+                "The server's certificate has been revoked",
+            ),
+            Self::Other => crate::i18n::ui(
+                "Sunucunun sertifikası veya güvenlik ayarları kabul edilmedi",
+                "The server's certificate or security settings were not accepted",
+            ),
+        }
+    }
+
+    /// The reason as an interface shows a refused secure connection, with its registry code.
+    pub(crate) fn shown(self) -> String {
+        let error = anyhow!("{}", self.text());
+        format!(
+            "{:#}",
+            crate::error_codes::with_code(error, crate::error_codes::NET_002)
+        )
+    }
+
+    /// The class of a Windows status (`SEC_E_*`, `CERT_E_*`, `CRYPT_E_*`), `Other` when it is none
+    /// of the four or unknown.
+    fn of_status(status: Option<i32>) -> Self {
+        use windows_sys::Win32::Foundation::*;
+        match status {
+            Some(
+                SEC_E_UNTRUSTED_ROOT
+                | CERT_E_UNTRUSTEDROOT
+                | CERT_E_UNTRUSTEDCA
+                | CERT_E_UNTRUSTEDTESTROOT
+                | CERT_E_CHAINING,
+            ) => Self::UntrustedRoot,
+            Some(SEC_E_CERT_EXPIRED | CERT_E_EXPIRED | CERT_E_VALIDITYPERIODNESTING) => {
+                Self::Expired
+            }
+            Some(SEC_E_WRONG_PRINCIPAL | CERT_E_CN_NO_MATCH | CERT_E_INVALID_NAME) => {
+                Self::WrongName
+            }
+            Some(CRYPT_E_REVOKED | CERT_E_REVOKED) => Self::Revoked,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The Windows status libcurl's message names as `(0x80090325)`; the number reads the same in every
+/// Windows language.
+fn windows_status(message: &str) -> Option<i32> {
+    let digits = message.split("(0x").nth(1)?.get(..8)?;
+    if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16)
+        .ok()
+        .map(|status| status as i32)
+}
+
+/// What an error chain that ends in a refused secure connection says about the reason, for a
+/// failure that has no code of its own yet. None for any other failure.
+pub(crate) fn tls_failure(error: &anyhow::Error) -> Option<TlsFailure> {
+    if crate::error_codes::code_of(error).is_some() {
+        return None;
+    }
+    error.chain().find_map(|cause| {
+        let error = cause.downcast_ref::<curl::Error>()?;
+        (curl_code(error.code()) == Some(crate::error_codes::NET_002))
+            .then(|| TlsFailure::of_status(error.extra_description().and_then(windows_status)))
+    })
+}
+
+/// `error` as an interface shows it: a refused secure connection reads as its reason in the
+/// language of the application, and the system's own sentence about it, in the language of
+/// Windows, goes to the log. Any other error reads as it is.
+pub(crate) fn shown_error(error: &anyhow::Error) -> String {
+    let Some(tls) = tls_failure(error) else {
+        return format!("{error:#}");
+    };
+    crate::logging::record(
+        crate::logging::Event::warn("transfer.tls_refused").detail(format!("{error:#}")),
+    );
+    tls.shown()
+}
+
 /// Whether the chain carries a kept partial file awaiting a proven source.
 pub(crate) fn preserves_partial(error: &anyhow::Error) -> bool {
     error
@@ -7167,6 +7276,50 @@ mod tests {
             staged.url,
             source_url_digest(&validate_source_url(&next.url).unwrap())
         );
+    }
+
+    #[test]
+    fn a_refused_secure_connection_is_shown_in_the_words_of_the_app_and_any_other_error_as_it_is() {
+        use TlsFailure::*;
+        // What libcurl reports for a certificate that Windows refuses, with the sentence Windows
+        // adds in its own language.
+        let refused = |code, status: &str| {
+            let mut error = curl::Error::new(code);
+            error.set_extra(format!(
+                "schannel: {status} - Sertifika zinciri güvenilmeyen bir yetkili tarafından verildi."
+            ));
+            anyhow::Error::new(error).context("The HTTPS transfer failed")
+        };
+        let peer = curl_sys::CURLE_PEER_FAILED_VERIFICATION;
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                for (status, reason) in [
+                    ("SEC_E_UNTRUSTED_ROOT (0x80090325)", UntrustedRoot),
+                    ("SEC_E_CERT_EXPIRED (0x80090328)", Expired),
+                    ("SEC_E_WRONG_PRINCIPAL (0x80090322)", WrongName),
+                    ("CRYPT_E_REVOKED (0x80092010)", Revoked),
+                    ("SEC_E_CERT_UNKNOWN (0x80090327)", Other),
+                ] {
+                    let shown = shown_error(&refused(peer, status));
+                    assert_eq!(shown, reason.shown(), "{}: {status}", info.code);
+                    assert!(
+                        shown.starts_with("SSD-NET-002 ")
+                            && shown.ends_with(reason.text())
+                            && !shown.contains("Sertifika")
+                            && !shown.contains("schannel"),
+                        "{}: {shown}",
+                        info.code
+                    );
+                }
+            });
+        }
+        let timed_out = refused(
+            curl_sys::CURLE_OPERATION_TIMEDOUT,
+            "SEC_E_UNTRUSTED_ROOT (0x80090325)",
+        );
+        assert_eq!(shown_error(&timed_out), format!("{timed_out:#}"));
+        let plain = anyhow!("The disk is full");
+        assert_eq!(shown_error(&plain), "The disk is full");
     }
 
     #[test]

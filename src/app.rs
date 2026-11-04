@@ -456,15 +456,7 @@ impl App {
                             ui.job_views.push(id.clone());
                         }
                     }
-                    let count = result.job_ids.len();
-                    self.message(
-                        crate::i18n::ui_format!(
-                            "{count} indirme eklendi",
-                            "{count} download(s) added",
-                            count = count
-                        ),
-                        false,
-                    );
+                    self.message(downloads_added_text(result.job_ids.len()), false);
                     return Ok(result);
                 }
                 Action::Inspect { request } => {
@@ -696,14 +688,7 @@ impl App {
             Action::Add { request } => {
                 validate_url(&request.url, false)?;
                 let count = self.inner.engine.add(request)?.len();
-                self.message(
-                    crate::i18n::ui_format!(
-                        "{count} indirme kuyruğa eklendi.",
-                        "{count} download(s) added to the queue.",
-                        count = count
-                    ),
-                    false,
-                );
+                self.message(downloads_queued_text(count), false);
             }
             Action::Pause { id } => self.inner.engine.pause(&id)?,
             Action::Resume { id } => self.inner.engine.resume(&id)?,
@@ -923,11 +908,7 @@ impl App {
                                     )
                                 }
                                 Err(error) => {
-                                    let text = crate::i18n::ui_format!(
-                                        "Video ve ses desteği: {error:#}",
-                                        "Video and audio support: {error:#}",
-                                        error = error
-                                    );
+                                    let text = media_support_failure_text(&error);
                                     ui.tools_error = Some(text.clone());
                                     (text, true)
                                 }
@@ -1233,16 +1214,7 @@ impl App {
             };
             jobs.extend(self.inner.engine.add(request)?);
         }
-        let added = jobs.len();
-        self.message(
-            crate::i18n::ui_format!(
-                "{added} indirme eklendi, {skipped} adres zaten listede",
-                "{added} download(s) added, {skipped} address(es) already in the list",
-                added = added,
-                skipped = skipped
-            ),
-            false,
-        );
+        self.message(crawl_added_text(jobs.len(), skipped), false);
         Ok(jobs)
     }
 
@@ -1416,6 +1388,70 @@ impl App {
     }
 }
 
+/// What the video and audio support says when it could not be prepared. A refused secure
+/// connection is told in the words of the application; the system's own sentence about it goes
+/// to the log.
+fn media_support_failure_text(error: &anyhow::Error) -> String {
+    crate::i18n::ui_format!(
+        "Video ve ses desteği: {error:#}",
+        "Video and audio support: {error:#}",
+        error = crate::transfer::shown_error(error)
+    )
+}
+
+/// What the status line says after `count` downloads were added; the form for one is a text of
+/// its own so every language words it itself.
+pub(crate) fn downloads_added_text(count: usize) -> String {
+    if count == 1 {
+        crate::i18n::ui("1 indirme eklendi", "1 download added").to_owned()
+    } else {
+        crate::i18n::ui_format!(
+            "{count} indirme eklendi",
+            "{count} downloads added",
+            count = count
+        )
+    }
+}
+
+fn downloads_queued_text(count: usize) -> String {
+    if count == 1 {
+        crate::i18n::ui(
+            "1 indirme kuyruğa eklendi.",
+            "1 download added to the queue.",
+        )
+        .to_owned()
+    } else {
+        crate::i18n::ui_format!(
+            "{count} indirme kuyruğa eklendi.",
+            "{count} downloads added to the queue.",
+            count = count
+        )
+    }
+}
+
+/// What the status line says after the candidates of a site scan were added: `skipped` of them
+/// were already in the list.
+fn crawl_added_text(added: usize, skipped: usize) -> String {
+    let mut text = downloads_added_text(added);
+    if skipped > 0 {
+        text.push_str(". ");
+        text.push_str(&addresses_in_list_text(skipped));
+    }
+    text
+}
+
+fn addresses_in_list_text(count: usize) -> String {
+    if count == 1 {
+        crate::i18n::ui("1 adres zaten listede", "1 address is already in the list").to_owned()
+    } else {
+        crate::i18n::ui_format!(
+            "{count} adres zaten listede",
+            "{count} addresses are already in the list",
+            count = count
+        )
+    }
+}
+
 fn public_page_url(value: &str) -> Option<String> {
     let mut url = url::Url::parse(value).ok()?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -1565,7 +1601,7 @@ fn crawl_site(
             body.len() >= cap && failure.as_ref().is_some_and(|error| error.is_write_error());
         if let Some(error) = failure.filter(|_| !capped) {
             failed_pages += 1;
-            last_failure = Some(format!("{error:#}"));
+            last_failure = Some(crate::transfer::shown_error(&anyhow::Error::new(error)));
             if body.len() < cap {
                 continue;
             }
@@ -2123,6 +2159,56 @@ mod tests {
     }
 
     #[test]
+    fn site_crawl_reports_a_refused_secure_connection_in_the_words_of_the_app() {
+        let (url, server) = crate::test_http::tls_refuser();
+        let result = crawl_site(
+            SiteCrawlRequest {
+                url,
+                request_id: Some("crawl-tls".into()),
+                policy: Some(SiteCrawlerPolicy {
+                    max_depth: 0,
+                    same_host_only: true,
+                    allowed_kinds: vec![DownloadKind::File],
+                    max_pages: 1,
+                    max_candidates: 10,
+                    max_response_bytes: 4096,
+                    max_total_bytes: 1024 * 1024,
+                }),
+            },
+            &Settings::default(),
+            &crate::network::NetworkGovernor::new(2),
+        );
+        server.join().unwrap();
+        let text = format!("{:#}", result.expect_err("the only page cannot be fetched"));
+        assert!(
+            text.contains(&crate::transfer::TlsFailure::Other.shown())
+                && !text.to_lowercase().contains("schannel"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_media_support_failure_names_a_refused_secure_connection_in_the_words_of_the_app() {
+        let mut refused = curl::Error::new(curl_sys::CURLE_PEER_FAILED_VERIFICATION);
+        refused.set_extra("schannel: SEC_E_UNTRUSTED_ROOT (0x80090325) - Sertifika zinciri".into());
+        let error = anyhow::Error::new(refused).context("The HTTPS transfer failed");
+        crate::i18n::with_language("en", || {
+            let text = media_support_failure_text(&error);
+            assert_eq!(
+                text,
+                format!(
+                    "Video and audio support: {}",
+                    crate::transfer::TlsFailure::UntrustedRoot.shown()
+                )
+            );
+            assert_eq!(
+                media_support_failure_text(&anyhow::anyhow!("The disk is full")),
+                "Video and audio support: The disk is full"
+            );
+        });
+    }
+
+    #[test]
     fn site_crawl_scans_a_page_larger_than_the_cap_up_to_the_cap() {
         use std::io::{Read as _, Write as _};
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -2205,6 +2291,47 @@ mod tests {
             "{:?}",
             result.candidates
         );
+    }
+
+    #[test]
+    fn the_status_texts_about_added_downloads_and_known_addresses_are_worded_for_one_and_for_several(
+    ) {
+        use crate::i18n::assert_worded_by_count;
+
+        assert_worded_by_count(downloads_added_text);
+        assert_worded_by_count(downloads_queued_text);
+        assert_worded_by_count(addresses_in_list_text);
+        crate::i18n::with_language("en", || {
+            assert_eq!(downloads_added_text(1), "1 download added");
+            assert_eq!(downloads_added_text(2), "2 downloads added");
+            assert_eq!(downloads_queued_text(1), "1 download added to the queue.");
+            assert_eq!(
+                addresses_in_list_text(1),
+                "1 address is already in the list"
+            );
+            assert_eq!(crawl_added_text(2, 0), "2 downloads added");
+            assert_eq!(
+                crawl_added_text(1, 3),
+                "1 download added. 3 addresses are already in the list"
+            );
+        });
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                assert_eq!(
+                    crawl_added_text(2, 0),
+                    downloads_added_text(2),
+                    "{}: nothing known, nothing said",
+                    info.code
+                );
+                let both = crawl_added_text(2, 3);
+                assert!(
+                    both.starts_with(&downloads_added_text(2))
+                        && both.ends_with(&addresses_in_list_text(3)),
+                    "{}: {both}",
+                    info.code
+                );
+            });
+        }
     }
 
     #[test]

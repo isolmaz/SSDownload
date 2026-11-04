@@ -3523,6 +3523,34 @@ fn a_playlist_mp4_selector_picks_the_pair_a_single_item_picks_when_the_audio_nam
     }
 }
 
+/// A video format that reports no codec at all is a video-only format for yt-dlp (`vcodec` is not
+/// `none`), so the evidence selector resolves the pair a single item picks.
+#[test]
+fn the_evidence_selector_takes_a_video_format_that_names_no_video_codec() {
+    let info = media_info_from_json(&json!({"formats": [
+        {"format_id": "a-m4a", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2"},
+        {"format_id": "v-1080", "ext": "mp4", "height": 1080, "acodec": "none"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        selected_format_ids("bestvideo", &info).unwrap(),
+        ["v-1080"],
+        "a format without a codec is not an audio-only one"
+    );
+    let single = video_request("mp4", None);
+    let playlist = AddRequest {
+        playlist: true,
+        ..single.clone()
+    };
+    let selector = format_selector(&playlist, &info).unwrap();
+    assert_eq!(selected_ids(&single, &info), ["v-1080", "a-m4a"]);
+    assert_eq!(
+        selected_format_ids(&selector, &info).unwrap(),
+        ["v-1080", "a-m4a"],
+        "{selector}"
+    );
+}
+
 #[test]
 fn the_evidence_selector_follows_ytdlp_for_a_format_without_the_filtered_field() {
     let info = media_info_from_json(&json!({"formats": [
@@ -3743,6 +3771,50 @@ fn the_processing_state_comes_from_the_tool_stage_not_the_phase_text() {
             (true, "processing with ffmpeg")
         ]
     );
+}
+
+/// The list leaves out a phase that only repeats its state, which it knows by the plain phase of
+/// the state; a transfer that words the same activity differently shows "Processing - Processing
+/// the media".
+#[test]
+fn a_transfer_that_only_downloads_or_processes_reports_the_plain_phase_of_that_state() {
+    use crate::model::JobState;
+    for info in crate::i18n::LANGUAGES.iter() {
+        crate::i18n::with_language(info.code, || {
+            let mut seen = Vec::new();
+            let mut gauge = DownloadGauge::new(0);
+            for line in [
+                format!("{PROGRESS_PREFIX}downloading	100	1000"),
+                format!("{PROGRESS_PREFIX}finished	1000	1000"),
+                format!("{POSTPROCESS_PREFIX}started"),
+            ] {
+                process::handle_machine_line(
+                    &line,
+                    Instant::now(),
+                    &mut |value| seen.push((value.processing, value.phase)),
+                    &mut HashSet::new(),
+                    &mut None,
+                    &mut gauge,
+                );
+            }
+            let state = |processing| {
+                if processing {
+                    JobState::Processing
+                } else {
+                    JobState::Downloading
+                }
+            };
+            assert_eq!(seen.len(), 3, "{}", info.code);
+            for (processing, phase) in seen {
+                assert_eq!(
+                    Some(phase.as_str()),
+                    state(processing).plain_phase(),
+                    "{}: {processing}",
+                    info.code
+                );
+            }
+        });
+    }
 }
 
 /// Plays a tool's progress lines into the monitor's gauge on a clock the test moves, waking the
@@ -4236,19 +4308,24 @@ fn a_post_processor_marker_on_stderr_reaches_the_progress() {
     let mut running =
         tool_running("[Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\")");
     let mut updates = Vec::new();
-    let outcome = monitor_download(
-        &mut running,
-        &TransferControl::default(),
-        0,
-        &mut |update| updates.push(update),
-        &mut HashSet::new(),
-        &mut None,
-        None,
-    )
+    // A phase and the plain phase that differ in wording still read alike in Turkish.
+    let outcome = crate::i18n::with_language("en", || {
+        monitor_download(
+            &mut running,
+            &TransferControl::default(),
+            0,
+            &mut |update| updates.push(update),
+            &mut HashSet::new(),
+            &mut None,
+            None,
+        )
+    })
     .unwrap();
 
     assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
-    let phase = crate::i18n::ui("Medya işleniyor", "Processing the media");
+    let phase = crate::i18n::with_language("en", || {
+        crate::model::JobState::Processing.plain_phase().unwrap()
+    });
     assert!(
         updates.iter().any(|update| update.processing
             && update.phase == phase

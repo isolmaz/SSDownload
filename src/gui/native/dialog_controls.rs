@@ -7,6 +7,28 @@ const SS_ENDELLIPSIS_STYLE: isize = 0x4000;
 const SS_LEFTNOWORDWRAP_STYLE: isize = 0x000C;
 const SS_TYPE_MASK: isize = 0x001F;
 
+/// The caption of the speed limit field: the overall limit when nothing is selected, else the
+/// limit of the `selected` downloads.
+pub(super) fn speed_limit_text(selected: usize) -> String {
+    match selected {
+        0 => crate::i18n::ui(
+            "Genel hız sınırı (KiB/sn, 0 = sınırsız):",
+            "Overall speed limit (KiB/s, 0 = unlimited):",
+        )
+        .to_owned(),
+        1 => crate::i18n::ui(
+            "Seçili indirme için hız sınırı (KiB/sn, 0 = genel sınır):",
+            "Speed limit for the selected download (KiB/s, 0 = global limit):",
+        )
+        .to_owned(),
+        count => crate::i18n::ui_format!(
+            "Seçili {0} indirme için hız sınırı (KiB/sn, 0 = genel sınır):",
+            "Speed limit for the {0} selected downloads (KiB/s, 0 = global limit):",
+            count
+        ),
+    }
+}
+
 /// The window property holding the error line's tooltip on its dialog.
 fn error_tip_prop() -> *const u16 {
     static NAME: std::sync::LazyLock<Vec<u16>> =
@@ -1502,24 +1524,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             refresh_event_list(f);
         }
         DialogKind::Speed(f) => {
-            dialog_label(
-                dlg.hwnd,
-                dlg.font,
-                &if f.ids.is_empty() {
-                    crate::i18n::ui(
-                        "Genel hız sınırı (KiB/sn, 0 = sınırsız):",
-                        "Overall speed limit (KiB/s, 0 = unlimited):",
-                    )
-                    .to_string()
-                } else {
-                    crate::i18n::ui_format!(
-                        "Seçili {0} indirme için hız sınırı (KiB/sn, 0 = genel sınır):",
-                        "Speed limit for the {0} selected download(s) (KiB/s, 0 = global limit):",
-                        f.ids.len()
-                    )
-                },
-                0,
-            );
+            dialog_label(dlg.hwnd, dlg.font, &speed_limit_text(f.ids.len()), 0);
             f.edit = dialog_edit(dlg.hwnd, dlg.font, SP_EDIT, false, true);
             set_text(f.edit, &f.initial.to_string());
             dialog_button(
