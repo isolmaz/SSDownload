@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/video.gif" width="860" alt="The SSDownload button on a video opens the quality picker. 720p is chosen, Download turns the picker into the download's window, and the download then runs in the queue beside other jobs and ends with a completion card.">
+  <img src="docs/media/video.gif" width="860" alt="The SSDownload button on a video is dragged to another spot on the player and its menu is opened and closed without a choice. Clicking the button opens the quality picker, 720p is chosen, Download turns the picker into the download's window, and the download then runs in the queue beside other jobs and ends with a completion card.">
 </p>
 
 ## Features
@@ -30,11 +30,11 @@
 - **Privacy:** no account, no telemetry and no SSDownload server. The app connects only to the sources you download from and to GitHub, for updates and media support. See [PRIVACY.md](PRIVACY.md).
 
 <p align="center">
-  <img src="docs/media/themes.gif" width="860" alt="Settings switches the look: ticking the dark title bar and controls turns the Classic window dark at once, and choosing the Modern theme applies after a restart, in light or dark.">
+  <img src="docs/media/light-dark.gif" width="860" alt="Settings turns the Classic window dark at once when the dark title bar and controls are ticked. In the dark window, a waiting download is dragged to the top of the queue, one running download is paused and then resumed from the mini panel, and the tray menu sets a speed limit of 1 MB/s.">
 </p>
 
 <p align="center">
-  <img src="docs/media/queue.gif" width="860" alt="The main window with a queue of files and media: a waiting download is dragged to the top, one running download is paused and then resumed from the mini panel, and the tray menu sets a speed limit of 1 MB/s.">
+  <img src="docs/media/themes.gif" width="860" alt="Settings changes the theme from Classic to Modern, which applies after a restart, and the window then changes to Modern in place, first in light and then in dark.">
 </p>
 
 ## Install
