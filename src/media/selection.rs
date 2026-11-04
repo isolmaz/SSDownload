@@ -301,8 +301,10 @@ pub(super) fn best_mp4_audio<'a>(
 /// belong to a single entry; the codecs, the height and the audio language take the place of
 /// the ids. A `?` after `~=` and `<=` lets a format pass whose value the extractor did not
 /// report, as the checks on the sampled entry do (an HLS audio rendition has no `acodec`); an
-/// exact height must be reported. Under a height limit the formats that report a height come
-/// first and the ones that do not follow, as in [`format_selector`].
+/// exact height must be reported. A format with an extension in [`NON_MP4_EXTENSIONS`] is left
+/// out, which is how [`mp4_fit`] judges a format that names no codec. Under a height limit the
+/// formats that report a height come first and the ones that do not follow, as in
+/// [`format_selector`].
 pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> String {
     let exact = request
         .exact_height
@@ -315,11 +317,18 @@ pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> S
         .unwrap_or_default();
     let video = format!("[vcodec~=?'^({})']", MP4_VIDEO_CODECS.join("|"));
     let audio = format!("[acodec~=?'^({})']{language}", MP4_AUDIO_CODECS.join("|"));
+    let extension: String = NON_MP4_EXTENSIONS
+        .iter()
+        .map(|excluded| format!("[ext!={excluded}]"))
+        .collect();
     let expression = |height: &str| {
         if with_audio {
-            format!("bestvideo{height}{video}+bestaudio{audio}/best{height}{video}{audio}")
+            format!(
+                "bestvideo{height}{video}{extension}+bestaudio{audio}{extension}\
+                 /best{height}{video}{audio}{extension}"
+            )
         } else {
-            format!("bestvideo{height}{video}")
+            format!("bestvideo{height}{video}{extension}")
         }
     };
     match request.max_height {

@@ -1375,7 +1375,7 @@ pub(super) unsafe fn queue_media(
         Ok(Some(name)) => request.filename = Some(name),
         Ok(None) => {
             if !f.loaded_title.is_empty() {
-                let title = crate::engine::safe_filename(&f.loaded_title, "video");
+                let title = crate::engine::safe_title_filename(&f.loaded_title, "video");
                 request.filename = Some(format!("{title}.{extension}"));
             }
         }

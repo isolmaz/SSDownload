@@ -1748,8 +1748,8 @@ fn media_publication_moves_only_the_final_file_out_of_private_workspace() {
 
 #[test]
 fn a_download_without_a_name_is_saved_under_its_title_and_never_over_a_file() {
-    let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
+    let folder = crate::test_http::TempDir::new("media-title");
+    let root = folder.0.clone();
     let output = root.join("watch");
     let request = AddRequest {
         url: "https://video.example/watch?v=1".into(),
@@ -1794,7 +1794,6 @@ fn a_download_without_a_name_is_saved_under_its_title_and_never_over_a_file() {
         save(&root.join("chosen"), Some("chosen.mp4")),
         root.join("chosen.mp4")
     );
-    fs::remove_dir_all(root).unwrap();
 }
 
 fn source_evidence() -> MediaSourceEvidence {
@@ -3334,12 +3333,16 @@ fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
     };
     let video = "[vcodec~=?'^(avc|h264|hevc|h265|hev1|hvc1|dvh1|dvhe|av01|av1|mpeg4|mp4v)']";
     let audio = "[acodec~=?'^(aac|mp4a|alac|mp3|ac3|ac-3|eac3|ec-3)']";
+    let outside_mp4 = "[ext!=ogv][ext!=ogg][ext!=oga][ext!=ogx][ext!=opus][ext!=webm]\
+                       [ext!=weba][ext!=wmv][ext!=wma][ext!=asf][ext!=flac]";
     let selector = format_selector(&request, &sampled).unwrap();
     assert_eq!(
         selector,
         format!(
-            "bestvideo[height<=720]{video}+bestaudio{audio}/best[height<=720]{video}{audio}/\
-             bestvideo[height<=?720]{video}+bestaudio{audio}/best[height<=?720]{video}{audio}"
+            "bestvideo[height<=720]{video}{outside_mp4}+bestaudio{audio}{outside_mp4}\
+             /best[height<=720]{video}{audio}{outside_mp4}\
+             /bestvideo[height<=?720]{video}{outside_mp4}+bestaudio{audio}{outside_mp4}\
+             /best[height<=?720]{video}{audio}{outside_mp4}"
         )
     );
     assert_eq!(
@@ -3399,6 +3402,35 @@ fn a_playlist_mp4_selector_keeps_formats_without_a_codec_or_a_height() {
     assert_eq!(
         selected_format_ids(&selector, &other).unwrap(),
         ["s-video", "s-audio"]
+    );
+}
+
+/// A source that offers an MP4 and a taller Ogg video and names no codecs: the codec filters
+/// let both pass, so the extension decides, as it does for a single item.
+#[test]
+fn a_playlist_mp4_selector_leaves_out_codecless_formats_of_containers_mp4_cannot_hold() {
+    let info = mp4_and_ogg_analysis();
+    let playlist = AddRequest {
+        playlist: true,
+        ..video_request("mp4", None)
+    };
+    let selector = format_selector(&playlist, &info).unwrap();
+    assert_eq!(
+        selected_format_ids(&selector, &info).unwrap(),
+        ["0"],
+        "{selector}"
+    );
+
+    let separate_streams = media_info_from_json(&json!({"formats": [
+        {"format_id": "video", "ext": "mp4", "vcodec": "avc1.4d401f", "acodec": "none"},
+        {"format_id": "audio", "ext": "m4a", "vcodec": "none"},
+        {"format_id": "audio-webm", "ext": "webm", "vcodec": "none"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        selected_format_ids(&selector, &separate_streams).unwrap(),
+        ["video", "audio"],
+        "the audio stream without a codec that is last in the list is a WebM one"
     );
 }
 
