@@ -3819,6 +3819,7 @@ impl Actor {
                 let retryable = failure.retryable;
                 let retry_after = failure.retry_after;
                 let message = failure.message;
+                let logged = failure.logged;
                 job.speed = 0;
                 job.eta = None;
                 job.error = Some(message.clone());
@@ -3845,7 +3846,7 @@ impl Actor {
                         crate::logging::Event::warn("job.source_lost")
                             .host(source_host_of(&job))
                             .outcome(crate::logging::Outcome::Failed)
-                            .detail(message.clone()),
+                            .detail(logged.clone()),
                     );
                 } else if retryable && job.attempts <= self.settings.retry_limit as u32 {
                     let delay = retry_after.unwrap_or_else(|| {
@@ -3865,10 +3866,10 @@ impl Actor {
                         );
                         crate::logging::record_job(
                             id,
-                            failure_event(&job, &message)
+                            failure_event(&job, &logged)
                                 .outcome(crate::logging::Outcome::Retry)
                                 .detail(format!(
-                                    "{message} (retry in {} s, attempt {})",
+                                    "{logged} (retry in {} s, attempt {})",
                                     delay.as_secs(),
                                     job.attempts
                                 )),
@@ -3886,7 +3887,7 @@ impl Actor {
                     job.state = JobState::Failed;
                     job.phase = crate::i18n::ui("Başarısız", "Failed").into();
                     self.retry_at.remove(id);
-                    crate::logging::record_job(id, failure_event(&job, &message));
+                    crate::logging::record_job(id, failure_event(&job, &logged));
                 }
                 // Only the user starts a failed job again, and with nothing kept it downloads from
                 // the beginning: a new download, which its queue's quota counts again.
@@ -5306,7 +5307,11 @@ mod tests;
 
 #[derive(Debug)]
 struct TransferFailure {
+    /// What the job shows as its error.
     message: String,
+    /// What the job log records: the whole error, with the system's own wording of a refused
+    /// secure connection, which is in the language of Windows.
+    logged: String,
     retryable: bool,
     retry_after: Option<Duration>,
     source_refresh: bool,
@@ -5321,16 +5326,25 @@ struct TransferFailure {
 }
 
 fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailure {
+    let tls = transfer::tls_failure(&error);
     let error = match transfer::network_code(&error) {
         Some(code) => crate::error_codes::with_code(error, code),
         None => error,
     };
     let detail = format!("{error:#}");
+    let shown = match tls {
+        Some(tls) => format!(
+            "{:#}",
+            crate::error_codes::with_code(anyhow!("{}", tls.text()), crate::error_codes::NET_002)
+        ),
+        None => detail.clone(),
+    };
     TransferFailure {
         retryable: retryable_error(&error),
         retry_after: transfer::retry_after(&error),
         source_refresh: source_refresh_needed(request, &error),
-        message: safe_error(request, &detail),
+        message: safe_error(request, &shown),
+        logged: safe_error(request, &detail),
         progressed: false,
         kept_nothing: false,
         throttled: transfer::http_status(&error)

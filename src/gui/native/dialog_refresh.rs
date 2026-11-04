@@ -1761,7 +1761,7 @@ pub(super) fn tools_report(
             if tool.version.is_empty() {
                 "-".to_string()
             } else {
-                without_component_names(&tool.version, &own)
+                without_component_names(&crate::tools::version_number(&tool.version), &own)
             },
             tools_dir.display()
         ));

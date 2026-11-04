@@ -3438,6 +3438,50 @@ fn the_processing_state_comes_from_the_tool_stage_not_the_phase_text() {
     );
 }
 
+/// The list leaves out a phase that only repeats its state, which it knows by the plain phase of
+/// the state; a transfer that words the same activity differently shows "Processing - Processing
+/// the media".
+#[test]
+fn a_transfer_that_only_downloads_or_processes_reports_the_plain_phase_of_that_state() {
+    use crate::model::JobState;
+    for info in crate::i18n::LANGUAGES.iter() {
+        crate::i18n::with_language(info.code, || {
+            let mut seen = Vec::new();
+            let mut gauge = DownloadGauge::new(0);
+            for line in [
+                format!("{PROGRESS_PREFIX}downloading	100	1000"),
+                format!("{PROGRESS_PREFIX}finished	1000	1000"),
+                format!("{POSTPROCESS_PREFIX}started"),
+            ] {
+                process::handle_machine_line(
+                    &line,
+                    Instant::now(),
+                    &mut |value| seen.push((value.processing, value.phase)),
+                    &mut HashSet::new(),
+                    &mut None,
+                    &mut gauge,
+                );
+            }
+            let state = |processing| {
+                if processing {
+                    JobState::Processing
+                } else {
+                    JobState::Downloading
+                }
+            };
+            assert_eq!(seen.len(), 3, "{}", info.code);
+            for (processing, phase) in seen {
+                assert_eq!(
+                    Some(phase.as_str()),
+                    state(processing).plain_phase(),
+                    "{}: {processing}",
+                    info.code
+                );
+            }
+        });
+    }
+}
+
 /// Plays a tool's progress lines into the monitor's gauge on a clock the test moves, waking the
 /// monitor every 100 ms between the lines as its loop does.
 struct Replay {
@@ -3929,19 +3973,24 @@ fn a_post_processor_marker_on_stderr_reaches_the_progress() {
     let mut running =
         tool_running("[Console]::Error.WriteLine(\"SSDOWNLOAD_POSTPROCESS`tstarted\")");
     let mut updates = Vec::new();
-    let outcome = monitor_download(
-        &mut running,
-        &TransferControl::default(),
-        0,
-        &mut |update| updates.push(update),
-        &mut HashSet::new(),
-        &mut None,
-        None,
-    )
+    // A phase and the plain phase that differ in wording still read alike in Turkish.
+    let outcome = crate::i18n::with_language("en", || {
+        monitor_download(
+            &mut running,
+            &TransferControl::default(),
+            0,
+            &mut |update| updates.push(update),
+            &mut HashSet::new(),
+            &mut None,
+            None,
+        )
+    })
     .unwrap();
 
     assert!(matches!(outcome, MonitorOutcome::Exited(status) if status.success()));
-    let phase = crate::i18n::ui("Medya işleniyor", "Processing the media");
+    let phase = crate::i18n::with_language("en", || {
+        crate::model::JobState::Processing.plain_phase().unwrap()
+    });
     assert!(
         updates.iter().any(|update| update.processing
             && update.phase == phase

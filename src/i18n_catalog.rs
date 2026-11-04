@@ -554,7 +554,6 @@ static AR: &[(&str, &str)] = &[
     ("Priority:", "الأولوية:"),
     ("Processing", "جارٍ المعالجة"),
     ("Processing media", "جارٍ معالجة الوسائط"),
-    ("Processing the media", "جارٍ معالجة الوسائط"),
     ("Program arguments (JSON)", "وسيطات البرنامج (JSON)"),
     ("Programs", "البرامج"),
     ("Progress", "التقدم"),
@@ -1199,6 +1198,11 @@ static AR: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "أعاد الخادم الرمز 403؛ جارٍ إعادة المحاولة مرة واحدة على المصدر نفسه باتصال متوافق مع المتصفح"),
     ("The server sent an invalid or changed response", "أرسل الخادم استجابة غير صالحة أو متغيّرة"),
     ("The server timed out waiting for the request (408)", "انتهت مهلة انتظار الخادم للطلب (408)"),
+    ("The server's certificate has been revoked", "تم إبطال شهادة الخادم"),
+    ("The server's certificate has expired or is not valid yet", "انتهت صلاحية شهادة الخادم أو أنها غير سارية بعد"),
+    ("The server's certificate or security settings were not accepted", "لم يتم قبول شهادة الخادم أو إعدادات الأمان الخاصة به"),
+    ("The server's certificate was issued by an authority this computer does not trust", "صدرت شهادة الخادم من جهة لا يثق بها هذا الكمبيوتر"),
+    ("The server's certificate was not issued for this address", "لم تصدر شهادة الخادم لهذا العنوان"),
     ("The server's retry delay exceeds the supported range", "مدة إعادة المحاولة التي حدّدها الخادم تتجاوز النطاق المدعوم"),
     ("The session cookie could not be converted to a safe Netscape file", "تعذّر تحويل ملف تعريف ارتباط الجلسة إلى ملف Netscape آمن"),
     ("The session cookie's host scope is invalid", "نطاق المضيف لملف تعريف ارتباط الجلسة غير صالح"),
@@ -1360,6 +1364,7 @@ static AR: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "لا يمكن استخدام هذا الإجراء من سياق المتصفح"),
     ("This action must be called through the result-producing command path.", "يجب استدعاء هذا الإجراء عبر مسار الأمر المُنتِج للنتيجة."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "لا يحتوي هذا العنوان على عنصر وسائط واحد (قد يكون قائمة تشغيل أو صفحة هبوط). افتح الصفحة الخاصة بالفيديو وابدأ التنزيل من هناك"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "هذا العنوان موجود بالفعل في قائمة التنزيلات.\n\nهل تريد استخدام المهمة الحالية، أم تنزيل نسخة جديدة؟"),
     ("This file is in use by another SSDownload process.", "هذا الملف مستخدم من عملية SSDownload أخرى."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "هذا التثبيت مسجَّل لملف بيانات مختلف؛ تم الاحتفاظ بتسجيل الملف الآخر"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "هذه قائمة التنزيلات. انقر نقرًا مزدوجًا على صف لفتح الملف؛ وتحتوي قائمة النقر بالزر الأيمن على الإيقاف المؤقت والنقل للأعلى ونسخ العنوان وغيرها. اسحب الصفوف لتغيير ترتيبها."),
@@ -2045,7 +2050,6 @@ static ES: &[(&str, &str)] = &[
     ("Priority:", "Prioridad:"),
     ("Processing", "Procesando"),
     ("Processing media", "Procesando contenido multimedia"),
-    ("Processing the media", "Procesando el contenido multimedia"),
     ("Program arguments (JSON)", "Argumentos del programa (JSON)"),
     ("Programs", "Programas"),
     ("Progress", "Progreso"),
@@ -2690,6 +2694,11 @@ static ES: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "El servidor ha devuelto 403; se reintenta una vez el mismo origen con una conexión compatible con el navegador"),
     ("The server sent an invalid or changed response", "El servidor ha enviado una respuesta no válida o modificada"),
     ("The server timed out waiting for the request (408)", "El servidor agotó el tiempo de espera de la solicitud (408)"),
+    ("The server's certificate has been revoked", "El certificado del servidor ha sido revocado"),
+    ("The server's certificate has expired or is not valid yet", "El certificado del servidor ha caducado o aún no es válido"),
+    ("The server's certificate or security settings were not accepted", "No se aceptó el certificado o la configuración de seguridad del servidor"),
+    ("The server's certificate was issued by an authority this computer does not trust", "El certificado del servidor lo emitió una entidad en la que este equipo no confía"),
+    ("The server's certificate was not issued for this address", "El certificado del servidor no se emitió para esta dirección"),
     ("The server's retry delay exceeds the supported range", "La espera de reintento del servidor supera el intervalo admitido"),
     ("The session cookie could not be converted to a safe Netscape file", "No se ha podido convertir la cookie de sesión en un archivo Netscape seguro"),
     ("The session cookie's host scope is invalid", "El ámbito de host de la cookie de sesión no es válido"),
@@ -2851,6 +2860,7 @@ static ES: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "Esta acción no se puede usar desde el contexto del navegador"),
     ("This action must be called through the result-producing command path.", "Esta acción debe llamarse a través de la ruta de comandos que devuelve resultados."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "Esta dirección no contiene ningún elemento multimedia (puede ser una lista de reproducción o una página de destino). Abrir la página propia del vídeo e iniciar allí la descarga"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "Esta dirección ya está en la lista de descargas.\n\n¿Usar la tarea existente o descargar una copia nueva?"),
     ("This file is in use by another SSDownload process.", "Este archivo está en uso por otro proceso de SSDownload."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "Esta instalación está registrada para otro perfil de datos; se conserva el registro del otro perfil"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "Esta es la lista de descargas. Hacer doble clic en una fila abre el archivo; el menú contextual incluye pausar, subir, copiar la dirección y más. Arrastrar las filas permite cambiar el orden."),
@@ -3536,7 +3546,6 @@ static PT: &[(&str, &str)] = &[
     ("Priority:", "Prioridade:"),
     ("Processing", "Processando"),
     ("Processing media", "Processando mídia"),
-    ("Processing the media", "Processando a mídia"),
     ("Program arguments (JSON)", "Argumentos do programa (JSON)"),
     ("Programs", "Programas"),
     ("Progress", "Progresso"),
@@ -4181,6 +4190,11 @@ static PT: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "O servidor retornou 403; tentando a mesma fonte mais uma vez com uma conexão compatível com o navegador"),
     ("The server sent an invalid or changed response", "O servidor enviou uma resposta inválida ou alterada"),
     ("The server timed out waiting for the request (408)", "O servidor esgotou o tempo de espera da solicitação (408)"),
+    ("The server's certificate has been revoked", "O certificado do servidor foi revogado"),
+    ("The server's certificate has expired or is not valid yet", "O certificado do servidor expirou ou ainda não é válido"),
+    ("The server's certificate or security settings were not accepted", "O certificado ou as configurações de segurança do servidor não foram aceitos"),
+    ("The server's certificate was issued by an authority this computer does not trust", "O certificado do servidor foi emitido por uma autoridade em que este computador não confia"),
+    ("The server's certificate was not issued for this address", "O certificado do servidor não foi emitido para este endereço"),
     ("The server's retry delay exceeds the supported range", "O atraso de nova tentativa do servidor excede o intervalo suportado"),
     ("The session cookie could not be converted to a safe Netscape file", "Não foi possível converter o cookie de sessão para um arquivo Netscape seguro"),
     ("The session cookie's host scope is invalid", "O escopo de host do cookie de sessão é inválido"),
@@ -4342,6 +4356,7 @@ static PT: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "Esta ação não pode ser usada a partir do contexto do navegador"),
     ("This action must be called through the result-producing command path.", "Esta ação deve ser chamada pelo caminho de comando que produz resultados."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "Este endereço não contém um único item de mídia (pode ser uma playlist ou página de entrada). Abra a própria página do vídeo e inicie o download por lá"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "Este endereço já está na lista de downloads.\n\nUsar a tarefa existente ou baixar uma nova cópia?"),
     ("This file is in use by another SSDownload process.", "Este arquivo está em uso por outro processo do SSDownload."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "Esta instalação está registrada para outro perfil de dados; o registro do outro perfil foi mantido"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "Esta é a lista de downloads. Clique duas vezes em uma linha para abrir o arquivo; o menu do botão direito tem pausar, mover para cima, copiar endereço e mais. Arraste as linhas para mudar a ordem."),
@@ -5027,7 +5042,6 @@ static FR: &[(&str, &str)] = &[
     ("Priority:", "Priorité :"),
     ("Processing", "Traitement"),
     ("Processing media", "Traitement du média"),
-    ("Processing the media", "Traitement du média"),
     ("Program arguments (JSON)", "Arguments du programme (JSON)"),
     ("Programs", "Programmes"),
     ("Progress", "Progression"),
@@ -5672,6 +5686,11 @@ static FR: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "Le serveur a renvoyé 403 ; nouvelle tentative unique sur la même source avec une connexion compatible avec le navigateur"),
     ("The server sent an invalid or changed response", "Le serveur a envoyé une réponse invalide ou modifiée"),
     ("The server timed out waiting for the request (408)", "Le serveur a dépassé le délai d'attente de la requête (408)"),
+    ("The server's certificate has been revoked", "Le certificat du serveur a été révoqué"),
+    ("The server's certificate has expired or is not valid yet", "Le certificat du serveur a expiré ou n'est pas encore valide"),
+    ("The server's certificate or security settings were not accepted", "Le certificat ou les paramètres de sécurité du serveur n'ont pas été acceptés"),
+    ("The server's certificate was issued by an authority this computer does not trust", "Le certificat du serveur a été délivré par une autorité à laquelle cet ordinateur ne fait pas confiance"),
+    ("The server's certificate was not issued for this address", "Le certificat du serveur n'a pas été délivré pour cette adresse"),
     ("The server's retry delay exceeds the supported range", "Le délai de nouvelle tentative du serveur dépasse la plage prise en charge"),
     ("The session cookie could not be converted to a safe Netscape file", "Le cookie de session n'a pas pu être converti en fichier Netscape sûr"),
     ("The session cookie's host scope is invalid", "La portée d'hôte du cookie de session est invalide"),
@@ -5833,6 +5852,7 @@ static FR: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "Cette action ne peut pas être utilisée depuis le contexte du navigateur"),
     ("This action must be called through the result-producing command path.", "Cette action doit être appelée via la commande qui produit le résultat."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "Cette adresse ne contient pas un seul élément média (il peut s'agir d'une liste de lecture ou d'une page d'accueil). Ouvrez la page propre à la vidéo et lancez le téléchargement à partir de celle-ci"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "Cette adresse figure déjà dans la liste des téléchargements.\n\nUtiliser la tâche existante ou télécharger une nouvelle copie ?"),
     ("This file is in use by another SSDownload process.", "Ce fichier est utilisé par un autre processus SSDownload."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "Cette installation est enregistrée pour un autre profil de données ; l'enregistrement de l'autre profil est conservé"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "Voici la liste des téléchargements. Double-cliquez sur une ligne pour ouvrir le fichier ; le menu contextuel contient la mise en pause, le déplacement vers le haut, la copie de l'adresse et plus encore. Faites glisser les lignes pour changer leur ordre."),
@@ -6518,7 +6538,6 @@ static DE: &[(&str, &str)] = &[
     ("Priority:", "Priorität:"),
     ("Processing", "Wird verarbeitet"),
     ("Processing media", "Medien werden verarbeitet"),
-    ("Processing the media", "Medien werden verarbeitet"),
     ("Program arguments (JSON)", "Programmargumente (JSON)"),
     ("Programs", "Programme"),
     ("Progress", "Fortschritt"),
@@ -7163,6 +7182,11 @@ static DE: &[(&str, &str)] = &[
     ("The server returned 403; retrying the same source once with a browser-compatible connection", "Der Server hat 403 zurückgegeben; die gleiche Quelle wird einmal über eine browserkompatible Verbindung erneut versucht"),
     ("The server sent an invalid or changed response", "Der Server hat eine ungültige oder geänderte Antwort gesendet"),
     ("The server timed out waiting for the request (408)", "Der Server hat beim Warten auf die Anfrage das Zeitlimit überschritten (408)"),
+    ("The server's certificate has been revoked", "Das Zertifikat des Servers wurde widerrufen"),
+    ("The server's certificate has expired or is not valid yet", "Das Zertifikat des Servers ist abgelaufen oder noch nicht gültig"),
+    ("The server's certificate or security settings were not accepted", "Das Zertifikat oder die Sicherheitseinstellungen des Servers wurden nicht akzeptiert"),
+    ("The server's certificate was issued by an authority this computer does not trust", "Das Zertifikat des Servers wurde von einer Stelle ausgestellt, der dieser Computer nicht vertraut"),
+    ("The server's certificate was not issued for this address", "Das Zertifikat des Servers wurde nicht für diese Adresse ausgestellt"),
     ("The server's retry delay exceeds the supported range", "Die Wiederholungsverzögerung des Servers überschreitet den unterstützten Bereich"),
     ("The session cookie could not be converted to a safe Netscape file", "Das Sitzungscookie konnte nicht in eine sichere Netscape-Datei umgewandelt werden"),
     ("The session cookie's host scope is invalid", "Der Hostbereich des Sitzungscookies ist ungültig"),
@@ -7324,6 +7348,7 @@ static DE: &[(&str, &str)] = &[
     ("This action cannot be used from the browser context", "Diese Aktion kann nicht aus dem Browserkontext verwendet werden"),
     ("This action must be called through the result-producing command path.", "Diese Aktion muss über den Befehlspfad mit Ergebnisausgabe aufgerufen werden."),
     ("This address does not contain a single media item (it may be a playlist or landing page). Open the video's own page and start the download there", "Diese Adresse enthält kein einzelnes Medienelement (möglicherweise eine Playlist oder Einstiegsseite). Öffnen Sie die eigene Seite des Videos und starten Sie den Download dort"),
+    ("This address is already in the download list.\n\nUse the existing job, or download a new copy?", "Diese Adresse befindet sich bereits in der Downloadliste.\n\nVorhandenen Auftrag verwenden oder neue Kopie herunterladen?"),
     ("This file is in use by another SSDownload process.", "Diese Datei wird von einem anderen SSDownload-Prozess verwendet."),
     ("This installation is registered for a different data profile; the other profile's registration is kept", "Diese Installation ist für ein anderes Datenprofil registriert; die Registrierung des anderen Profils bleibt erhalten"),
     ("This is the download list. Double-click a row to open the file; the right-click menu has pause, move up, copy address and more. Drag rows to change their order.", "Dies ist die Downloadliste. Ein Doppelklick auf eine Zeile öffnet die Datei; das Kontextmenü mit der rechten Maustaste enthält Pausieren, Nach oben verschieben, Adresse kopieren und mehr. Ziehen Sie Zeilen, um ihre Reihenfolge zu ändern."),
@@ -8255,7 +8280,7 @@ macro_rules! __ui_template_ar {
     ("{count} download(s) added to the queue.") => {
         "تمت إضافة التنزيلات: {count} إلى قائمة الانتظار."
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
         "العناوين الموجودة بالفعل في قائمة التنزيلات: {duplicates}.\n\nهل تريد استخدام المهام الموجودة، أم تنزيل نسخ جديدة؟"
     };
     ("{id}: not in the queue\r\n") => {
@@ -9118,8 +9143,8 @@ macro_rules! __ui_template_es {
     ("{count} download(s) added to the queue.") => {
         "{count} descarga(s) añadida(s) a la cola."
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
-        "{duplicates} dirección(es) ya están en la lista de descargas.\n\n¿Usar las tareas existentes o descargar copias nuevas?"
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+        "{duplicates} direcciones ya están en la lista de descargas.\n\n¿Usar las tareas existentes o descargar copias nuevas?"
     };
     ("{id}: not in the queue\r\n") => {
         "{id}: no está en la cola\r\n"
@@ -9981,8 +10006,8 @@ macro_rules! __ui_template_pt {
     ("{count} download(s) added to the queue.") => {
         "{count} download(s) adicionado(s) à fila."
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
-        "{duplicates} endereço(s) já estão na lista de downloads.\n\nUsar as tarefas existentes ou baixar novas cópias?"
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+        "{duplicates} endereços já estão na lista de downloads.\n\nUsar as tarefas existentes ou baixar novas cópias?"
     };
     ("{id}: not in the queue\r\n") => {
         "{id}: não está na fila\r\n"
@@ -10844,8 +10869,8 @@ macro_rules! __ui_template_fr {
     ("{count} download(s) added to the queue.") => {
         "{count} téléchargement(s) ajouté(s) à la file d'attente."
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
-        "{duplicates} adresse(s) figure(nt) déjà dans la liste des téléchargements.\n\nUtiliser les tâches existantes ou télécharger de nouvelles copies ?"
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+        "{duplicates} adresses figurent déjà dans la liste des téléchargements.\n\nUtiliser les tâches existantes ou télécharger de nouvelles copies ?"
     };
     ("{id}: not in the queue\r\n") => {
         "{id} : absent de la file d'attente\r\n"
@@ -11707,8 +11732,8 @@ macro_rules! __ui_template_de {
     ("{count} download(s) added to the queue.") => {
         "{count} Download(s) zur Warteschlange hinzugefügt."
     };
-    ("{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
-        "{duplicates} Adresse(n) befinden sich bereits in der Downloadliste.\n\nVorhandene Aufträge verwenden oder neue Kopien herunterladen?"
+    ("{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?") => {
+        "{duplicates} Adressen befinden sich bereits in der Downloadliste.\n\nVorhandene Aufträge verwenden oder neue Kopien herunterladen?"
     };
     ("{id}: not in the queue\r\n") => {
         "{id}: nicht in der Warteschlange\r\n"

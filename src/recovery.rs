@@ -246,6 +246,18 @@ pub(crate) fn work_dir(output: &Path, id: &str) -> PathBuf {
         .join("jobs")
         .join(id)
 }
+/// `fs::create_dir_all` for a folder below `.ssdownload-work`. `cleanup_work` of another job in
+/// the folder removes the folders it leaves empty, so a level that vanishes while the path is
+/// being created is created again.
+pub(crate) fn create_work_dirs(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path).or_else(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            fs::create_dir_all(path)
+        } else {
+            Err(error)
+        }
+    })
+}
 pub(crate) fn prepare_work(job: &Job) -> Result<PathBuf> {
     let path = job.work_dir.as_ref().context(crate::i18n::ui(
         "İş çalışma klasörü eksik",
@@ -286,7 +298,7 @@ pub(crate) fn prepare_work(job: &Job) -> Result<PathBuf> {
             Err(error) => return Err(error.into()),
         }
     } else {
-        fs::create_dir_all(path)?;
+        create_work_dirs(path)?;
         atomic_write(&marker, job.id.as_bytes())?;
     }
     if let Some(root) = path.ancestors().nth(2) {
@@ -527,6 +539,10 @@ pub(crate) fn cleanup_work(job: &Job) -> Result<()> {
         inventory(path, path, &mut entries)?;
         fs::remove_dir_all(path)?;
     }
+    let root = path.ancestors().nth(2).filter(|root| {
+        root.file_name()
+            .is_some_and(|name| name == ".ssdownload-work")
+    });
     // A source renewal that restarted the download moved the previous parts here
     // (see `archive_refresh_artifacts`); nothing else ever deletes them.
     if let Some(archives) = path
@@ -537,6 +553,17 @@ pub(crate) fn cleanup_work(job: &Job) -> Result<()> {
     {
         reject_link(&archives)?;
         fs::remove_dir_all(archives)?;
+    }
+    // The folders of the other jobs and the media workspaces keep theirs: removing a folder that
+    // is not empty fails and is left as it is.
+    if let Some(root) = root {
+        for folder in [
+            root.join("refresh-archives"),
+            root.join("jobs"),
+            root.to_path_buf(),
+        ] {
+            let _ = fs::remove_dir(folder);
+        }
     }
     Ok(())
 }
@@ -719,6 +746,69 @@ mod tests {
         assert!(!claim_path(&job.path).exists());
         assert!(!job.work_dir.as_ref().unwrap().exists());
         assert!(published.path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn names_in(folder: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_finished_job_leaves_no_work_folder_in_the_download_folder_once_no_job_uses_it() {
+        let (paths, root) = fixture();
+        let out = root.join("out");
+        let started = |filename: &str| {
+            let job = job(&root, uuid::Uuid::new_v4().to_string(), filename);
+            claim(&job.path, &job.id).unwrap();
+            let scratch = prepare_work(&job).unwrap();
+            fs::write(&scratch, b"bytes").unwrap();
+            (job, scratch)
+        };
+        let finish = |(job, scratch): &(Job, PathBuf)| {
+            let result = TransferResult {
+                path: scratch.clone(),
+                bytes: 5,
+                warning: None,
+            };
+            publish(&paths, job, result).unwrap();
+            acknowledge(&paths, job).unwrap();
+        };
+        let first = started("one.mp4");
+        let second = started("two.mp4");
+
+        finish(&first);
+        assert_eq!(
+            names_in(&out),
+            [".ssdownload-work", "one.mp4", "two.mp4.ssdownload.claim"]
+        );
+        assert!(second.0.work_dir.as_ref().unwrap().exists());
+
+        finish(&second);
+        assert_eq!(names_in(&out), ["one.mp4", "two.mp4"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removing_a_job_releases_its_name_and_leaves_no_work_folder() {
+        let (paths, root) = fixture();
+        let job = job(&root, uuid::Uuid::new_v4().to_string(), "movie.mp4");
+        claim(&job.path, &job.id).unwrap();
+        let scratch = prepare_work(&job).unwrap();
+        fs::write(append_state(&scratch), b"{}").unwrap();
+        let out = root.join("out");
+        // A failed job keeps its name and its work folder for the retry.
+        assert_eq!(
+            names_in(&out),
+            [".ssdownload-work", "movie.mp4.ssdownload.claim"]
+        );
+
+        remove(&paths, &job, false).unwrap();
+        assert_eq!(names_in(&out), Vec::<String>::new());
         fs::remove_dir_all(root).unwrap();
     }
 

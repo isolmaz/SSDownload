@@ -539,6 +539,9 @@ struct MainUi {
     tooltip: HWND,
     /// True while the window is too narrow for the command labels.
     labels_hidden: std::cell::Cell<bool>,
+    /// Whether the window has been shown since it was created. The placement of a window that
+    /// started hidden is where it was created, not where the saved one put it.
+    shown: std::cell::Cell<bool>,
     visible_ids: Vec<String>,
     row_cache: HashMap<String, Vec<String>>,
     /// The Job log tab's page with the job and the file stamps it was read
@@ -1297,6 +1300,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             tabs: null_mut(),
             tooltip: null_mut(),
             labels_hidden: std::cell::Cell::new(false),
+            shown: std::cell::Cell::new(false),
             visible_ids: Vec::new(),
             row_cache: HashMap::new(),
             job_log: std::cell::RefCell::new(None),
@@ -2256,6 +2260,12 @@ unsafe extern "system" fn main_proc(
                 show_job_menu(ui, lparam);
             }
             0
+        }
+        WM_SHOWWINDOW => {
+            if wparam != 0 {
+                ui.shown.set(true);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_QUERYENDSESSION => 1,
         WM_ENDSESSION if wparam != 0 => {
@@ -4672,14 +4682,19 @@ unsafe fn restore_placement(hwnd: HWND, settings: &Settings) -> bool {
     maximized != 0
 }
 
-unsafe fn save_placement(ui: &MainUi) {
+/// The placement of `hwnd` as it is saved, `None` while `shown` is false: a window that was never
+/// shown reports where it was created, which is not where the user last had it.
+unsafe fn placement_to_save(hwnd: HWND, shown: bool) -> Option<[i32; 5]> {
+    if !shown {
+        return None;
+    }
     let mut placement: WINDOWPLACEMENT = zeroed();
     placement.length = size_of::<WINDOWPLACEMENT>() as u32;
-    if GetWindowPlacement(ui.hwnd, &mut placement) == 0 {
-        return;
+    if GetWindowPlacement(hwnd, &mut placement) == 0 {
+        return None;
     }
     let rect = placement.rcNormalPosition;
-    let value = [
+    Some([
         rect.left,
         rect.top,
         rect.right,
@@ -4689,7 +4704,13 @@ unsafe fn save_placement(ui: &MainUi) {
             placement.showCmd == SW_SHOWMAXIMIZED as u32
                 || placement.flags & WPF_RESTORETOMAXIMIZED != 0,
         ),
-    ];
+    ])
+}
+
+unsafe fn save_placement(ui: &MainUi) {
+    let Some(value) = placement_to_save(ui.hwnd, ui.shown.get()) else {
+        return;
+    };
     let mut settings = ui.app.snapshot().settings;
     if settings.window_placement != Some(value) {
         settings.window_placement = Some(value);
@@ -12508,10 +12529,59 @@ mod tests {
                     "{}: each component names the folder that holds them: {report}",
                     info.code
                 );
-                assert!(report.contains("2026.03.17"), "{}: {report}", info.code);
+                for (version, lines) in [("2026.03.17", 1), ("n9.0-12-gabcdef", 2), ("2.5.6", 1)] {
+                    assert_eq!(
+                        report.matches(&format!("{version}\r\n")).count(),
+                        lines,
+                        "{}: the version line holds the version alone: {report}",
+                        info.code
+                    );
+                }
+                for banner_text in ["Copyright", "developers", "version"] {
+                    assert!(
+                        !report.contains(banner_text),
+                        "{}: {banner_text} of the banner in {report}",
+                        info.code
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn the_question_about_duplicate_addresses_is_worded_for_one_and_for_several_in_every_language()
+    {
+        crate::i18n::with_language("en", || {
+            assert_eq!(
+                super::duplicate_addresses_text(1),
+                "This address is already in the download list.\n\nUse the existing job, or download a new copy?"
+            );
+            assert_eq!(
+                super::duplicate_addresses_text(3),
+                "3 addresses are already in the download list.\n\nUse the existing jobs, or download new copies?"
+            );
+        });
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let (one, several) = (
+                    super::duplicate_addresses_text(1),
+                    super::duplicate_addresses_text(3),
+                );
+                for text in [&one, &several] {
+                    assert!(
+                        !text.contains(['(', '{']),
+                        "{}: an ending in parentheses or an unfilled placeholder in {text}",
+                        info.code
+                    );
+                }
                 assert!(
-                    report.contains("n9.0-12-gabcdef"),
-                    "{}: {report}",
+                    !one.contains(|c: char| c.is_ascii_digit()),
+                    "{}: a single address needs no count: {one}",
+                    info.code
+                );
+                assert!(
+                    several.contains('3'),
+                    "{}: several addresses state how many: {several}",
                     info.code
                 );
             });
@@ -12591,6 +12661,40 @@ mod tests {
         assert!(!subtitle_default_selected(false, &previous, &first, true));
         assert!(subtitle_default_selected(false, &previous, &second, false));
         assert!(!subtitle_default_selected(false, &previous, &third, false));
+    }
+
+    #[test]
+    fn the_placement_of_a_window_is_saved_only_once_it_has_been_shown() {
+        on_private_desktop(|| {
+            use super::{control, placement_to_save, restore_placement};
+            use std::ptr::null_mut;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                DestroyWindow, ShowWindow, SW_SHOWNOACTIVATE, WS_OVERLAPPEDWINDOW,
+            };
+
+            let saved = [200, 150, 900, 600, 0];
+            unsafe {
+                let window = control(null_mut(), "STATIC", "", WS_OVERLAPPEDWINDOW, 0, 0);
+                assert!(!window.is_null(), "the window is created");
+                let settings = crate::model::Settings {
+                    window_placement: Some(saved),
+                    ..Default::default()
+                };
+                restore_placement(window, &settings);
+                assert_eq!(
+                    placement_to_save(window, false),
+                    None,
+                    "a window that started hidden has nothing of the user's to save"
+                );
+                ShowWindow(window, SW_SHOWNOACTIVATE);
+                assert_eq!(
+                    placement_to_save(window, true),
+                    Some(saved),
+                    "a window that was shown saves where it is"
+                );
+                DestroyWindow(window);
+            }
+        });
     }
 
     #[test]

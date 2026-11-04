@@ -255,7 +255,7 @@ pub(super) fn download_streams(
         downloaded: received,
         total: Some(received),
         phase_name: "processing media",
-        phase: crate::i18n::ui("Medya işleniyor", "Processing media").into(),
+        phase: crate::model::processing_phase().into(),
         processing: true,
         ..TransferProgress::default()
     });
