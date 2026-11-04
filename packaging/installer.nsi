@@ -126,13 +126,13 @@ LangString ERR_REGISTER_HOST ${LANG_SPANISH} "No se ha podido crear el registro 
 LangString ERR_REGISTER_HOST ${LANG_PORTUGUESEBR} "Não foi possível criar o registro do Native Messaging no navegador (código de saída $0). A instalação não pôde ser concluída."
 LangString ERR_REGISTER_HOST ${LANG_FRENCH} "L'enregistrement Native Messaging du navigateur n'a pas pu être créé (code de sortie $0). L'installation n'a pas pu être terminée."
 LangString ERR_REGISTER_HOST ${LANG_GERMAN} "Die Native-Messaging-Registrierung für den Browser konnte nicht erstellt werden (Exitcode $0). Die Installation konnte nicht abgeschlossen werden."
-LangString ERR_FILE_IN_USE ${LANG_ENGLISH} "Setup could not replace $R0 because a program is still using it. Close SSDownload and run Setup again."
-LangString ERR_FILE_IN_USE ${LANG_TURKISH} "Kurulum, $R0 dosyasını değiştiremedi; bir program hâlâ kullanıyor. SSDownload'u kapatıp kurulumu yeniden çalıştırın."
-LangString ERR_FILE_IN_USE ${LANG_ARABIC} "تعذّر على الإعداد استبدال $R0 لأن برنامجًا لا يزال يستخدمه. أغلق SSDownload ثم شغّل الإعداد مرة أخرى."
-LangString ERR_FILE_IN_USE ${LANG_SPANISH} "La instalación no ha podido reemplazar $R0 porque un programa todavía lo está usando. Cierre SSDownload y vuelva a ejecutar la instalación."
-LangString ERR_FILE_IN_USE ${LANG_PORTUGUESEBR} "A instalação não conseguiu substituir $R0 porque um programa ainda o está usando. Feche o SSDownload e execute a instalação novamente."
-LangString ERR_FILE_IN_USE ${LANG_FRENCH} "L'installation n'a pas pu remplacer $R0 car un programme l'utilise encore. Fermez SSDownload et relancez l'installation."
-LangString ERR_FILE_IN_USE ${LANG_GERMAN} "Die Installation konnte $R0 nicht ersetzen, weil ein Programm die Datei noch verwendet. Beenden Sie SSDownload und starten Sie die Installation erneut."
+LangString ERR_FILE_IN_USE ${LANG_ENGLISH} "Setup could not replace $R0 because a program is still using it. Close SSDownload and your web browser, then run Setup again."
+LangString ERR_FILE_IN_USE ${LANG_TURKISH} "Kurulum, $R0 dosyasını değiştiremedi; bir program hâlâ kullanıyor. SSDownload'u ve tarayıcıyı kapatıp kurulumu yeniden çalıştırın."
+LangString ERR_FILE_IN_USE ${LANG_ARABIC} "تعذّر على الإعداد استبدال $R0 لأن برنامجًا لا يزال يستخدمه. أغلق SSDownload والمتصفح ثم شغّل الإعداد مرة أخرى."
+LangString ERR_FILE_IN_USE ${LANG_SPANISH} "La instalación no ha podido reemplazar $R0 porque un programa todavía lo está usando. Cierre SSDownload y el navegador, y vuelva a ejecutar la instalación."
+LangString ERR_FILE_IN_USE ${LANG_PORTUGUESEBR} "A instalação não conseguiu substituir $R0 porque um programa ainda o está usando. Feche o SSDownload e o navegador e execute a instalação novamente."
+LangString ERR_FILE_IN_USE ${LANG_FRENCH} "L'installation n'a pas pu remplacer $R0 car un programme l'utilise encore. Fermez SSDownload et le navigateur, puis relancez l'installation."
+LangString ERR_FILE_IN_USE ${LANG_GERMAN} "Die Installation konnte $R0 nicht ersetzen, weil ein Programm die Datei noch verwendet. Beenden Sie SSDownload und den Browser und starten Sie die Installation erneut."
 LangString DETAIL_FILE_IN_USE ${LANG_ENGLISH} "Waiting for $R0 to be released…"
 LangString DETAIL_FILE_IN_USE ${LANG_TURKISH} "$R0 dosyasının serbest kalması bekleniyor…"
 LangString DETAIL_FILE_IN_USE ${LANG_ARABIC} "جارٍ انتظار تحرير $R0…"
@@ -246,11 +246,11 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
   Push "$INSTDIR\ssdownload-cli.exe"
   Call WaitUntilWritable
 
-  RMDir /r "$INSTDIR\browser"
+  ; The documents and the icon come first and the programs last, just before the browser folder
+  ; and the version record, so a Setup that stops on a locked file leaves the old program with
+  ; the old record. A browser can start a host after the checks above, so both programs are
+  ; checked again right before they are replaced.
   SetOutPath "$INSTDIR"
-  File "${STAGE_DIR}\ssdownload.exe"
-  File "${STAGE_DIR}\ssdownload-cli.exe"
-  File "${STAGE_DIR}\LICENSE.txt"
   ; Remove only application-owned documents that earlier versions installed.
   Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
   RMDir /r "$INSTDIR\licenses"
@@ -261,11 +261,19 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
   Delete "$INSTDIR\plan.md"
   Delete "$INSTDIR\TESTING.md"
   RMDir /r "$INSTDIR\verification"
+  File "${STAGE_DIR}\LICENSE.txt"
   File "${STAGE_DIR}\README.md"
   File "${STAGE_DIR}\PRIVACY.md"
   File "${STAGE_DIR}\sbom.cdx.json"
   File "${STAGE_DIR}\app.ico"
+  Push "$INSTDIR\ssdownload-cli.exe"
+  Call WaitUntilWritable
+  Push "$INSTDIR\ssdownload.exe"
+  Call WaitUntilWritable
+  File "${STAGE_DIR}\ssdownload-cli.exe"
+  File "${STAGE_DIR}\ssdownload.exe"
 
+  RMDir /r "$INSTDIR\browser"
   SetOutPath "$INSTDIR\browser"
   File /r "${STAGE_DIR}\browser\*.*"
   SetOutPath "$INSTDIR"
@@ -295,7 +303,7 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
   ; Registration is a required installer operation, not a copy-only approximation.
   ExecWait '$\"$INSTDIR\ssdownload.exe$\" --register-host' $0
   ${If} $0 != 0
-    MessageBox MB_ICONSTOP "$(ERR_REGISTER_HOST)"
+    MessageBox MB_ICONSTOP "$(ERR_REGISTER_HOST)" /SD IDOK
     Abort
   ${EndIf}
 
