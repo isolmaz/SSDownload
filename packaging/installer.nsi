@@ -2,6 +2,8 @@ Unicode true
 RequestExecutionLevel user
 ManifestDPIAware true
 SetCompressor /SOLID lzma
+; A file that cannot be written must stop Setup. By default a silent Setup skips it and exits 0.
+AllowSkipFiles off
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
@@ -124,6 +126,20 @@ LangString ERR_REGISTER_HOST ${LANG_SPANISH} "No se ha podido crear el registro 
 LangString ERR_REGISTER_HOST ${LANG_PORTUGUESEBR} "Não foi possível criar o registro do Native Messaging no navegador (código de saída $0). A instalação não pôde ser concluída."
 LangString ERR_REGISTER_HOST ${LANG_FRENCH} "L'enregistrement Native Messaging du navigateur n'a pas pu être créé (code de sortie $0). L'installation n'a pas pu être terminée."
 LangString ERR_REGISTER_HOST ${LANG_GERMAN} "Die Native-Messaging-Registrierung für den Browser konnte nicht erstellt werden (Exitcode $0). Die Installation konnte nicht abgeschlossen werden."
+LangString ERR_FILE_IN_USE ${LANG_ENGLISH} "Setup could not replace $R0 because a program is still using it. Close SSDownload and your web browser, then run Setup again."
+LangString ERR_FILE_IN_USE ${LANG_TURKISH} "Kurulum, $R0 dosyasını değiştiremedi; bir program hâlâ kullanıyor. SSDownload'u ve tarayıcıyı kapatıp kurulumu yeniden çalıştırın."
+LangString ERR_FILE_IN_USE ${LANG_ARABIC} "تعذّر على الإعداد استبدال $R0 لأن برنامجًا لا يزال يستخدمه. أغلق SSDownload والمتصفح ثم شغّل الإعداد مرة أخرى."
+LangString ERR_FILE_IN_USE ${LANG_SPANISH} "La instalación no ha podido reemplazar $R0 porque un programa todavía lo está usando. Cierre SSDownload y el navegador, y vuelva a ejecutar la instalación."
+LangString ERR_FILE_IN_USE ${LANG_PORTUGUESEBR} "A instalação não conseguiu substituir $R0 porque um programa ainda o está usando. Feche o SSDownload e o navegador e execute a instalação novamente."
+LangString ERR_FILE_IN_USE ${LANG_FRENCH} "L'installation n'a pas pu remplacer $R0 car un programme l'utilise encore. Fermez SSDownload et le navigateur, puis relancez l'installation."
+LangString ERR_FILE_IN_USE ${LANG_GERMAN} "Die Installation konnte $R0 nicht ersetzen, weil ein Programm die Datei noch verwendet. Beenden Sie SSDownload und den Browser und starten Sie die Installation erneut."
+LangString DETAIL_FILE_IN_USE ${LANG_ENGLISH} "Waiting for $R0 to be released…"
+LangString DETAIL_FILE_IN_USE ${LANG_TURKISH} "$R0 dosyasının serbest kalması bekleniyor…"
+LangString DETAIL_FILE_IN_USE ${LANG_ARABIC} "جارٍ انتظار تحرير $R0…"
+LangString DETAIL_FILE_IN_USE ${LANG_SPANISH} "Esperando a que se libere $R0…"
+LangString DETAIL_FILE_IN_USE ${LANG_PORTUGUESEBR} "Aguardando a liberação de $R0…"
+LangString DETAIL_FILE_IN_USE ${LANG_FRENCH} "En attente de la libération de $R0…"
+LangString DETAIL_FILE_IN_USE ${LANG_GERMAN} "Warten, bis $R0 freigegeben wird…"
 LangString DETAIL_COMPONENTS ${LANG_ENGLISH} "Downloading and installing missing components…"
 LangString DETAIL_COMPONENTS ${LANG_TURKISH} "Eksik bileşenler indiriliyor ve kuruluyor…"
 LangString DETAIL_COMPONENTS ${LANG_ARABIC} "جارٍ تنزيل المكونات المفقودة وتثبيتها…"
@@ -171,6 +187,45 @@ Function .onVerifyInstDir
   Call ValidateInstallDirectory
 FunctionEnd
 
+; A program that runs a file keeps it from being replaced. The Native Messaging host is
+; ssdownload.exe itself, started by a browser for as long as one request lasts, so Setup waits
+; a bounded time for such a program to end. It never terminates one.
+!define FILE_WAIT_ATTEMPTS 60
+!define FILE_WAIT_STEP_MS 500
+
+; Takes the path of a file on the stack. Setup stops when the file still cannot be opened for
+; writing after the wait.
+Function WaitUntilWritable
+  Exch $R0
+  Push $R1
+  Push $R2
+  StrCpy $R2 0
+  ${While} ${FileExists} "$R0"
+    ClearErrors
+    FileOpen $R1 "$R0" a
+    ${IfNot} ${Errors}
+      FileClose $R1
+      ${Break}
+    ${EndIf}
+    ${If} $R2 = 0
+      DetailPrint "$(DETAIL_FILE_IN_USE)"
+    ${EndIf}
+    ${If} $R2 >= ${FILE_WAIT_ATTEMPTS}
+      DetailPrint "$(ERR_FILE_IN_USE)"
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONSTOP "$(ERR_FILE_IN_USE)"
+      ${EndIf}
+      SetErrorLevel 2
+      Abort
+    ${EndIf}
+    IntOp $R2 $R2 + 1
+    Sleep ${FILE_WAIT_STEP_MS}
+  ${EndWhile}
+  Pop $R2
+  Pop $R1
+  Pop $R0
+FunctionEnd
+
 Section "$(SEC_CORE_NAME)" SEC_CORE
   SectionIn RO
   SetShellVarContext current
@@ -186,11 +241,16 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
     ExecWait '$\"$INSTDIR\ssdownload.exe$\" --quit' $0
     Sleep 1200
 
-  RMDir /r "$INSTDIR\browser"
+  Push "$INSTDIR\ssdownload.exe"
+  Call WaitUntilWritable
+  Push "$INSTDIR\ssdownload-cli.exe"
+  Call WaitUntilWritable
+
+  ; The documents and the icon come first and the programs last, just before the browser folder
+  ; and the version record, so a Setup that stops on a locked file leaves the old program with
+  ; the old record. A browser can start a host after the checks above, so both programs are
+  ; checked again right before they are replaced.
   SetOutPath "$INSTDIR"
-  File "${STAGE_DIR}\ssdownload.exe"
-  File "${STAGE_DIR}\ssdownload-cli.exe"
-  File "${STAGE_DIR}\LICENSE.txt"
   ; Remove only application-owned documents that earlier versions installed.
   Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
   RMDir /r "$INSTDIR\licenses"
@@ -201,11 +261,19 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
   Delete "$INSTDIR\plan.md"
   Delete "$INSTDIR\TESTING.md"
   RMDir /r "$INSTDIR\verification"
+  File "${STAGE_DIR}\LICENSE.txt"
   File "${STAGE_DIR}\README.md"
   File "${STAGE_DIR}\PRIVACY.md"
   File "${STAGE_DIR}\sbom.cdx.json"
   File "${STAGE_DIR}\app.ico"
+  Push "$INSTDIR\ssdownload-cli.exe"
+  Call WaitUntilWritable
+  Push "$INSTDIR\ssdownload.exe"
+  Call WaitUntilWritable
+  File "${STAGE_DIR}\ssdownload-cli.exe"
+  File "${STAGE_DIR}\ssdownload.exe"
 
+  RMDir /r "$INSTDIR\browser"
   SetOutPath "$INSTDIR\browser"
   File /r "${STAGE_DIR}\browser\*.*"
   SetOutPath "$INSTDIR"
@@ -235,7 +303,7 @@ Section "$(SEC_CORE_NAME)" SEC_CORE
   ; Registration is a required installer operation, not a copy-only approximation.
   ExecWait '$\"$INSTDIR\ssdownload.exe$\" --register-host' $0
   ${If} $0 != 0
-    MessageBox MB_ICONSTOP "$(ERR_REGISTER_HOST)"
+    MessageBox MB_ICONSTOP "$(ERR_REGISTER_HOST)" /SD IDOK
     Abort
   ${EndIf}
 

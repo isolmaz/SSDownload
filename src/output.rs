@@ -99,12 +99,28 @@ pub(crate) fn real_extension(path: &Path) -> Option<&str> {
         .then_some(extension)
 }
 
-/// The path without its extension, or unchanged when the last dot belongs to the name.
+/// The length of the `.tar` that ends `stem`: `a.tar.xz` is a `tar.xz` archive, so its
+/// extension is both parts and `a.tar` is no name of its own. 0 when `stem` has none.
+fn tar_suffix_len(stem: &str) -> usize {
+    match stem.len().checked_sub(4) {
+        Some(at) if at > 0 && stem.as_bytes()[at..].eq_ignore_ascii_case(b".tar") => 4,
+        _ => 0,
+    }
+}
+
+/// The path without its extension (`a.tar.xz` without `tar.xz`), or unchanged when the last dot
+/// belongs to the name.
 pub(crate) fn without_real_extension(path: &Path) -> PathBuf {
-    if real_extension(path).is_some() {
-        path.with_extension("")
-    } else {
-        path.to_path_buf()
+    if real_extension(path).is_none() {
+        return path.to_path_buf();
+    }
+    let bare = path.with_extension("");
+    match bare.file_name().and_then(|name| name.to_str()) {
+        Some(name) if tar_suffix_len(name) > 0 => {
+            let head = &name[..name.len() - tar_suffix_len(name)];
+            bare.with_file_name(head)
+        }
+        _ => bare,
     }
 }
 
@@ -149,7 +165,8 @@ pub(crate) fn numbered(path: &Path, index: usize) -> PathBuf {
     let name = match real_extension(path) {
         Some(extension) => {
             let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-            format!("{stem} ({index}).{extension}")
+            let (stem, tar) = stem.split_at(stem.len() - tar_suffix_len(&stem));
+            format!("{stem} ({index}){tar}.{extension}")
         }
         None => format!(
             "{} ({index})",
@@ -251,6 +268,60 @@ mod tests {
             without_real_extension(&dir.join("list.m3u8")),
             dir.join("list")
         );
+    }
+
+    #[test]
+    fn a_tar_archive_keeps_its_double_extension_when_numbered_and_stripped() {
+        let dir = PathBuf::from(r"C:\d");
+        let numbered_name = |name: &str, index: usize| {
+            numbered(&dir.join(name), index)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(numbered_name("xz-5.4.6.tar.xz", 1), "xz-5.4.6 (1).tar.xz");
+        assert_eq!(numbered_name("linux-6.1.tar.gz", 2), "linux-6.1 (2).tar.gz");
+        assert_eq!(numbered_name("dump.tar.bz2", 1), "dump (1).tar.bz2");
+        assert_eq!(numbered_name("pkg.tar.zst", 3), "pkg (3).tar.zst");
+        assert_eq!(numbered_name("Backup.TAR.GZ", 1), "Backup (1).TAR.GZ");
+        assert_eq!(numbered_name("résumé.tar.xz", 1), "résumé (1).tar.xz");
+        assert_eq!(numbered_name("data.tar", 1), "data (1).tar");
+        assert_eq!(numbered_name("notes.xz", 1), "notes (1).xz");
+        assert_eq!(numbered_name("tar.xz", 1), "tar (1).xz");
+        assert_eq!(numbered_name("my.tarball.gz", 1), "my.tarball (1).gz");
+        for (name, bare) in [
+            ("xz-5.4.6.tar.xz", "xz-5.4.6"),
+            ("Backup.TAR.GZ", "Backup"),
+            ("résumé.tar.xz", "résumé"),
+            ("data.tar", "data"),
+            ("notes.xz", "notes"),
+            ("tar.xz", "tar"),
+            ("my.tarball.gz", "my.tarball"),
+        ] {
+            assert_eq!(
+                without_real_extension(&dir.join(name)),
+                dir.join(bare),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn publish_numbers_a_tar_archive_before_its_double_extension() {
+        let directory = TestDirectory::new();
+        let desired = directory.0.join("xz-5.4.6.tar.xz");
+        std::fs::write(&desired, b"user file").unwrap();
+        for (round, expected) in ["xz-5.4.6 (1).tar.xz", "xz-5.4.6 (2).tar.xz"]
+            .into_iter()
+            .enumerate()
+        {
+            let source = directory.0.join(format!("temporary{round}.part"));
+            std::fs::write(&source, b"downloaded file").unwrap();
+            let published = publish(&source, &desired).unwrap();
+            assert_eq!(published.file_name().unwrap(), expected);
+        }
+        assert_eq!(std::fs::read(&desired).unwrap(), b"user file");
     }
 
     #[test]
