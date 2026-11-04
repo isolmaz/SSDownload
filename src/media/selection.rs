@@ -303,8 +303,9 @@ pub(super) fn best_mp4_audio<'a>(
 /// [`mp4_fit`] ranks them for a single item. The fallback lets a format pass whose codec the
 /// extractor did not report (an HLS audio rendition has no `acodec`; `?` after `~=` and `<=`)
 /// unless its extension is in [`NON_MP4_EXTENSIONS`], which is how [`mp4_fit`] judges a format
-/// that names no codec. An exact height must be reported. Under a height limit the formats that
-/// report a height come first and the ones that do not follow, as in [`format_selector`].
+/// that names no codec. A separate video and audio pair is tried before a ready-made format, as
+/// in [`format_selector`]. An exact height must be reported. Under a height limit the formats
+/// that report a height come first and the ones that do not follow.
 pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> String {
     let exact = request
         .exact_height
@@ -319,27 +320,28 @@ pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> S
         .iter()
         .map(|excluded| format!("[ext!={excluded}]"))
         .collect();
-    let expression = |height: &str, unreported: &str, extension: &str| {
-        let video = format!("[vcodec~={unreported}'^({})']", MP4_VIDEO_CODECS.join("|"));
-        let audio = format!(
+    let video =
+        |unreported: &str| format!("[vcodec~={unreported}'^({})']", MP4_VIDEO_CODECS.join("|"));
+    let audio = |unreported: &str| {
+        format!(
             "[acodec~={unreported}'^({})']{language}",
             MP4_AUDIO_CODECS.join("|")
-        );
-        if with_audio {
-            format!(
-                "bestvideo{height}{video}{extension}+bestaudio{audio}{extension}\
-                 /best{height}{video}{audio}{extension}"
-            )
-        } else {
-            format!("bestvideo{height}{video}{extension}")
-        }
+        )
     };
     let stage = |height: &str| {
-        format!(
-            "{}/{}",
-            expression(height, "", ""),
-            expression(height, "?", &extension)
-        )
+        let (known_video, known_audio) = (video(""), audio(""));
+        let (open_video, open_audio) = (video("?"), audio("?"));
+        if with_audio {
+            format!(
+                "bestvideo{height}{known_video}+bestaudio{known_audio}\
+                 /bestvideo{height}{known_video}+bestaudio{open_audio}{extension}\
+                 /bestvideo{height}{open_video}{extension}+bestaudio{open_audio}{extension}\
+                 /best{height}{known_video}{known_audio}\
+                 /best{height}{open_video}{open_audio}{extension}"
+            )
+        } else {
+            format!("bestvideo{height}{known_video}/bestvideo{height}{open_video}{extension}")
+        }
     };
     match request.max_height {
         Some(maximum) => format!(

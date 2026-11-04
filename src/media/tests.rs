@@ -3338,18 +3338,18 @@ fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
     let outside_mp4 = "[ext!=ogv][ext!=ogg][ext!=oga][ext!=ogx][ext!=opus][ext!=webm]\
                        [ext!=weba][ext!=wmv][ext!=wma][ext!=asf][ext!=flac]";
     let selector = format_selector(&request, &sampled).unwrap();
+    let stage = |height: &str| {
+        format!(
+            "bestvideo{height}{strict_video}+bestaudio{strict_audio}\
+             /bestvideo{height}{strict_video}+bestaudio{audio}{outside_mp4}\
+             /bestvideo{height}{video}{outside_mp4}+bestaudio{audio}{outside_mp4}\
+             /best{height}{strict_video}{strict_audio}\
+             /best{height}{video}{audio}{outside_mp4}"
+        )
+    };
     assert_eq!(
         selector,
-        format!(
-            "bestvideo[height<=720]{strict_video}+bestaudio{strict_audio}\
-             /best[height<=720]{strict_video}{strict_audio}\
-             /bestvideo[height<=720]{video}{outside_mp4}+bestaudio{audio}{outside_mp4}\
-             /best[height<=720]{video}{audio}{outside_mp4}\
-             /bestvideo[height<=?720]{strict_video}+bestaudio{strict_audio}\
-             /best[height<=?720]{strict_video}{strict_audio}\
-             /bestvideo[height<=?720]{video}{outside_mp4}+bestaudio{audio}{outside_mp4}\
-             /best[height<=?720]{video}{audio}{outside_mp4}"
-        )
+        format!("{}/{}", stage("[height<=720]"), stage("[height<=?720]"))
     );
     assert_eq!(
         selected_format_ids(&selector, &sampled).unwrap(),
@@ -3482,6 +3482,45 @@ fn a_playlist_mp4_selector_prefers_a_known_fitting_codec_in_a_webm_container() {
         "{selector}"
     );
     assert_eq!(selected_ids(&single, &with_small_mp4), ["v-1080", "a-m4a"]);
+}
+
+/// A separate pair whose audio names no codec comes before a ready-made format, and a taller video
+/// whose codec fits MP4 before a shorter one in an MP4 container, as for a single item.
+#[test]
+fn a_playlist_mp4_selector_picks_the_pair_a_single_item_picks_when_the_audio_names_no_codec() {
+    let hls = media_info_from_json(&json!({"formats": [
+        {"format_id": "aud-en", "ext": "mp4", "vcodec": "none", "language": "en"},
+        {"format_id": "muxed-360", "ext": "mp4", "height": 360, "vcodec": "avc1.4d401e", "acodec": "mp4a.40.2"},
+        {"format_id": "v-720", "ext": "mp4", "height": 720, "vcodec": "avc1.640020", "acodec": "none"},
+        {"format_id": "v-1080", "ext": "mp4", "height": 1080, "vcodec": "avc1.64002a", "acodec": "none"}
+    ]}))
+    .unwrap();
+    let webm_av1 = media_info_from_json(&json!({"formats": [
+        {"format_id": "aud-en", "ext": "m4a", "vcodec": "none"},
+        {"format_id": "v-720", "ext": "mp4", "height": 720, "vcodec": "avc1.640020", "acodec": "none"},
+        {"format_id": "v-1080", "ext": "webm", "height": 1080, "vcodec": "av01.0.08M.08", "acodec": "none"}
+    ]}))
+    .unwrap();
+
+    for (info, maximum, expected) in [
+        (&hls, None, ["v-1080", "aud-en"]),
+        (&hls, Some(720), ["v-720", "aud-en"]),
+        (&webm_av1, None, ["v-1080", "aud-en"]),
+        (&webm_av1, Some(720), ["v-720", "aud-en"]),
+    ] {
+        let single = video_request("mp4", maximum);
+        let playlist = AddRequest {
+            playlist: true,
+            ..single.clone()
+        };
+        let selector = format_selector(&playlist, info).unwrap();
+        assert_eq!(selected_ids(&single, info), expected, "{maximum:?}");
+        assert_eq!(
+            selected_format_ids(&selector, info).unwrap(),
+            expected,
+            "{maximum:?}: {selector}"
+        );
+    }
 }
 
 #[test]
