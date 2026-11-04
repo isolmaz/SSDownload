@@ -14728,6 +14728,48 @@ mod tests {
     }
 
     #[test]
+    fn the_media_tools_bar_is_empty_while_nothing_runs_in_both_themes() {
+        use super::{DialogKind, FORM_HEIGHT, FORM_WIDTH, SETTINGS_FRAME};
+        use windows_sys::Win32::UI::Controls::{PBM_GETPOS, PBM_SETPOS};
+        use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+        for modern in [false, true] {
+            let theme = if modern { "Modern" } else { "Classic" };
+            let (width, height) = if modern {
+                (FORM_WIDTH, FORM_HEIGHT + SETTINGS_FRAME + 3)
+            } else {
+                (700, 470)
+            };
+            with_dialog(
+                move || {
+                    super::set_modern(modern);
+                    tools_kind()
+                },
+                width,
+                height,
+                |dialog| {
+                    let DialogKind::Tools(f) = dialog.kind() else {
+                        unreachable!()
+                    };
+                    let bar = f.progress;
+                    assert!(
+                        dialog.app().snapshot().tool_progress.is_none()
+                            && !dialog.app().snapshot().installing_tools,
+                        "{theme}: nothing runs"
+                    );
+                    unsafe { SendMessageW(bar, PBM_SETPOS, 100, 0) };
+                    tick(dialog);
+                    assert_eq!(
+                        unsafe { SendMessageW(bar, PBM_GETPOS, 0, 0) },
+                        0,
+                        "{theme}: an idle bar is empty"
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
     fn enter_in_the_media_tools_dialog_installs_nothing() {
         use super::{FORM_HEIGHT, FORM_WIDTH, SETTINGS_FRAME};
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
