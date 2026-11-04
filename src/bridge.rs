@@ -955,6 +955,7 @@ fn public_snapshot(mut snapshot: AppSnapshot) -> AppSnapshot {
             media.webpage_url = url.origin().ascii_serialization();
         }
         media.thumbnail = None;
+        media.analysed_url = None;
     }
     for job in std::sync::Arc::make_mut(&mut snapshot.jobs) {
         job.request.headers.clear();
@@ -971,6 +972,7 @@ fn public_snapshot(mut snapshot: AppSnapshot) -> AppSnapshot {
             }
         }
         job.request.page_url = None;
+        job.request.top_page_url = None;
         job.request.referer = None;
         // Page markup is report material: a browser response echoes nothing back.
         job.request.page_html = None;
@@ -1045,6 +1047,9 @@ fn validate_browser_add(request: &mut crate::model::AddRequest) -> Result<()> {
     validate_http_url(&request.url)?;
     if let Some(referer) = &request.referer {
         validate_http_url(referer)?;
+    }
+    if let Some(top_page) = &request.top_page_url {
+        validate_http_url(top_page)?;
     }
     validate_browser_headers(&request.headers)?;
     for subtitle in &request.external_subtitles {
@@ -1791,6 +1796,126 @@ mod tests {
         assert!(validate_browser_add(&mut request).is_err());
         request.page_html = None;
         assert!(validate_browser_add(&mut request).is_ok());
+    }
+
+    /// The wire message is the one the extension writes for a media handoff. The page that
+    /// embeds the media's frame is an optional field: a request without it is valid and keeps
+    /// no such page, and one with it keeps the address through validation. A field the app does
+    /// not know is ignored, which is how an app that predates `top_page_url` takes it.
+    #[test]
+    fn a_media_handoff_may_name_the_page_that_embeds_its_frame() {
+        let handoff = |top_page_url: Option<&str>| {
+            let mut request = serde_json::json!({
+                "url": "https://player.example/embed/frame.html",
+                "kind": "video",
+                "page_url": "https://player.example/embed/frame.html",
+                "playlist": false,
+                "a_field_of_a_later_extension": {"anything": [1, 2]},
+            });
+            if let Some(address) = top_page_url {
+                request["top_page_url"] = address.into();
+            }
+            let body = serde_json::json!({
+                "version": 2,
+                "action": {
+                    "type": "browser_media",
+                    "launch_id": "launch-1",
+                    "session_consent": false,
+                    "request": request,
+                },
+            })
+            .to_string();
+            serde_json::from_str::<WireRequest>(&body)
+                .expect("wire message")
+                .action
+                .expect("action")
+        };
+        let embedding_page = |action: &Action| match action {
+            Action::BrowserMedia { request, .. } => request.top_page_url.clone(),
+            other => panic!("not a media handoff: {other:?}"),
+        };
+
+        let mut without = handoff(None);
+        validate_browser_action(&mut without).expect("a handoff without the field is valid");
+        assert_eq!(embedding_page(&without), None);
+
+        let mut with = handoff(Some("https://clips.example/watch/7"));
+        validate_browser_action(&mut with).expect("a handoff with the field is valid");
+        assert_eq!(
+            embedding_page(&with).as_deref(),
+            Some("https://clips.example/watch/7")
+        );
+
+        for address in [
+            "ftp://clips.example/watch/7",
+            "file:///C:/page.html",
+            "watch",
+        ] {
+            assert!(
+                validate_browser_action(&mut handoff(Some(address))).is_err(),
+                "{address}"
+            );
+        }
+    }
+
+    /// A job's page addresses and the page an analysis was made for never travel back to the
+    /// browser, and the record of a job without the field is the record it always was.
+    #[test]
+    fn a_browser_response_carries_no_page_that_embeds_a_frame() {
+        let root = std::env::temp_dir().join(format!(
+            "ssdownload-bridge-top-page-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let app = App::open(paths).unwrap();
+        let add = |name: &str, top_page_url: Option<&str>| AddRequest {
+            url: format!("https://files.example/{name}.zip"),
+            kind: crate::model::DownloadKind::File,
+            page_url: Some("https://player.example/embed/frame.html".into()),
+            top_page_url: top_page_url.map(Into::into),
+            // The job waits for its time and performs no network I/O.
+            start_at: Some(chrono::Utc::now().timestamp() + 3_600),
+            ..Default::default()
+        };
+        for request in [
+            add("with-page", Some("https://clips.example/watch/7")),
+            add("without-page", None),
+        ] {
+            app.dispatch_result(Action::Add { request }).unwrap();
+        }
+        let stored = app.snapshot();
+        assert!(
+            stored
+                .jobs
+                .iter()
+                .any(|job| job.request.top_page_url.is_some()),
+            "the stored job holds the page: {:?}",
+            stored.jobs
+        );
+        let mut snapshot = app.snapshot();
+        snapshot.media = Some(crate::model::MediaInfo {
+            analysed_url: Some("https://clips.example/watch/7?token=SECRET".into()),
+            ..Default::default()
+        });
+        let browser = public_snapshot(snapshot);
+        assert!(browser
+            .media
+            .is_some_and(|media| media.analysed_url.is_none()));
+        assert_eq!(browser.jobs.len(), 2);
+        assert!(browser
+            .jobs
+            .iter()
+            .all(|job| job.request.page_url.is_none() && job.request.top_page_url.is_none()));
+        assert!(
+            !serde_json::to_value(AddRequest::default())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("top_page_url"),
+            "a request without the field serializes as it always did"
+        );
+        app.shutdown();
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

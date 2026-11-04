@@ -931,6 +931,7 @@ mod tests {
             }],
             referer: Some("https://site.example/".into()),
             page_url: Some("https://site.example/watch".into()),
+            top_page_url: Some("https://site.example/".into()),
             page_html: Some(MARKUP.into()),
             source_identity: Some(SourceIdentity {
                 video_id: "v1".into(),

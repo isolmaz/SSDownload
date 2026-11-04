@@ -53,6 +53,231 @@ const DENO_MAJOR: u64 = 2;
 /// pinned major version is older than this many releases, the install says so.
 const DENO_RELEASE_LIST: usize = 100;
 
+/// What a media component does, in the words every text the user reads uses for it. The names of
+/// the programs behind the components stay in logs, reports and code.
+pub(crate) fn component_label(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "ffprobe" => crate::i18n::ui("medya inceleyici", "media inspector"),
+        "ffmpeg" => crate::i18n::ui("dönüştürücü", "converter"),
+        "deno" => crate::i18n::ui("çalıştırma ortamı", "runtime"),
+        _ => crate::i18n::ui("medya bileşeni", "media component"),
+    }
+}
+
+/// `component_label` for the start of a sentence.
+pub(crate) fn component_title(name: &str) -> String {
+    let label = component_label(name);
+    let mut letters = label.chars();
+    letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default()
+}
+
+/// What a text may quote that is not for the filter of the program names to touch.
+#[derive(Debug, Default)]
+pub(crate) struct OwnText {
+    /// Addresses, folders, file names and titles of the user's own that contain spaces or are not
+    /// paths, so no word of the text shows them as one.
+    pub(crate) strings: Vec<String>,
+    /// The folder the application installs its programs into.
+    pub(crate) tools_dir: PathBuf,
+    /// The same folder as the file system spells it (`canonicalize`), which the paths of the
+    /// installed programs use, when that differs from `tools_dir`: a substituted or network
+    /// drive, a junction, or a `.` or `..` in the profile path.
+    pub(crate) canonical_tools_dir: Option<PathBuf>,
+}
+
+impl OwnText {
+    /// The folder of the profile: it holds the user name and can sit in a folder of any name.
+    pub(crate) fn profile(profile: &Path) -> Self {
+        Self {
+            strings: vec![profile.display().to_string()],
+            ..Self::tools_folder(&crate::paths::tools_dir_of(profile))
+        }
+    }
+
+    /// Only the tools folder `tools_dir`, in both of its spellings.
+    pub(crate) fn tools_folder(tools_dir: &Path) -> Self {
+        Self {
+            strings: Vec::new(),
+            tools_dir: tools_dir.to_path_buf(),
+            canonical_tools_dir: canonical_spelling(tools_dir),
+        }
+    }
+}
+
+/// The spelling of `dir` the file system uses, `None` when it is the same folder spelled the same
+/// way (a `\\?\` prefix and letter case aside). It is looked up once per folder: asking the file
+/// system costs a round trip on a network or disconnected drive, and the texts of the window are
+/// filtered on every refresh. A folder the file system cannot resolve is asked again next time.
+fn canonical_spelling(dir: &Path) -> Option<PathBuf> {
+    static SPELLINGS: Mutex<Vec<(PathBuf, Option<PathBuf>)>> = Mutex::new(Vec::new());
+    let mut spellings = SPELLINGS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, spelling)) = spellings.iter().find(|(known, _)| known == dir) {
+        return spelling.clone();
+    }
+    let canonical = dir.canonicalize().ok()?;
+    let shown = canonical.display().to_string();
+    let same = shown
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&shown)
+        .eq_ignore_ascii_case(&dir.display().to_string());
+    let spelling = (!same).then_some(canonical);
+    spellings.push((dir.to_path_buf(), spelling.clone()));
+    spelling
+}
+
+/// `text` with every name of a program behind a media component (yt-dlp, FFmpeg, ffprobe, Deno,
+/// BtbN) in any letter case replaced by what the component does; a name joined to a word, a path
+/// or an address by `-`, `_`, `/`, `\` or a file extension gets the words of the label joined by
+/// `-`, so the text keeps its shape. A name inside a longer word stays.
+///
+/// What is the user's own stays as it is: every occurrence of a string of `own`, and a file path
+/// (a word with a `\`, or one that begins like `C:/`, `/`, `./` or `../`). Below the tools folder
+/// of the application the names in a path are hidden whatever `own` holds, and the folder up to it
+/// stays. An address is hidden unless `own` holds it. A string of `own` that is itself the name of
+/// a program is not the user's text to keep, and a string of `own` keeps a name only when it holds
+/// the whole name.
+pub(crate) fn without_component_names(text: &str, own: &OwnText) -> String {
+    const NAMES: [&str; 5] = ["ffprobe", "ffmpeg", "yt-dlp", "deno", "btbn"];
+    let lower = text.to_ascii_lowercase();
+    let mut kept: Vec<std::ops::Range<usize>> = Vec::new();
+    for part in own
+        .strings
+        .iter()
+        .filter(|part| !part.is_empty())
+        .filter(|part| {
+            !NAMES
+                .iter()
+                .any(|name| part.trim().eq_ignore_ascii_case(name))
+        })
+    {
+        let part = part.to_ascii_lowercase();
+        kept.extend(
+            lower
+                .match_indices(&part)
+                .map(|(start, found)| start..start + found.len()),
+        );
+    }
+    let mut below: Vec<std::ops::Range<usize>> = Vec::new();
+    for tools_dir in std::iter::once(&own.tools_dir).chain(&own.canonical_tools_dir) {
+        let (tools, programs) = tools_folder_ranges(text, tools_dir);
+        kept.extend(tools);
+        below.extend(programs);
+    }
+    let mut hits: Vec<(usize, &str, bool)> = NAMES
+        .iter()
+        .flat_map(|name| {
+            lower
+                .match_indices(name)
+                .map(move |(start, _)| (start, *name))
+        })
+        .filter_map(|(start, name)| {
+            let end = start + name.len();
+            let in_program_path = below.iter().any(|range| range.contains(&start));
+            if !in_program_path
+                && kept
+                    .iter()
+                    .any(|range| range.start <= start && end <= range.end)
+            {
+                return None;
+            }
+            if !in_program_path && is_file_path(word_around(text, start, end)) {
+                return None;
+            }
+            let before = text[..start].chars().next_back();
+            let mut after = text[end..].chars();
+            let next = after.next();
+            if before.is_some_and(char::is_alphanumeric) || next.is_some_and(char::is_alphanumeric)
+            {
+                return None;
+            }
+            let joined = |c: Option<char>| matches!(c, Some('-' | '_' | '/' | '\\'));
+            let glued = joined(before)
+                || joined(next)
+                || (next == Some('.') && after.next().is_some_and(char::is_alphanumeric));
+            Some((start, name, glued))
+        })
+        .collect();
+    hits.sort_unstable();
+    let mut shown = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (start, name, glued) in hits {
+        shown.push_str(&text[copied..start]);
+        let label = component_label(name);
+        if glued {
+            shown.push_str(&label.replace(' ', "-"));
+        } else {
+            shown.push_str(label);
+        }
+        copied = start + name.len();
+    }
+    shown.push_str(&text[copied..]);
+    shown
+}
+
+/// Where `text` quotes the tools folder `tools_dir` (in any letter case, with either separator, with
+/// or without the `\\?\` prefix): the ranges of the folder itself, and the ranges from its end to the
+/// end of the word, the paths of the programs below it.
+fn tools_folder_ranges(
+    text: &str,
+    tools_dir: &Path,
+) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    let key = |path: &str| path.to_ascii_lowercase().replace('/', "\\");
+    let folder = tools_dir.display().to_string();
+    let folder = key(folder.strip_prefix(r"\\?\").unwrap_or(&folder));
+    let folder = folder.trim_end_matches('\\');
+    let mut inside = Vec::new();
+    let mut below = Vec::new();
+    if folder.is_empty() {
+        return (inside, below);
+    }
+    for (start, found) in key(text).match_indices(folder) {
+        let end = start + found.len();
+        let ends_here = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|next| !(next.is_alphanumeric() || "_-.".contains(next)));
+        if ends_here {
+            inside.push(start..end);
+            let word_end = text[end..]
+                .find(char::is_whitespace)
+                .map_or(text.len(), |at| end + at);
+            below.push(end..word_end);
+        }
+    }
+    (inside, below)
+}
+
+/// The run of characters without whitespace that holds `start..end`.
+fn word_around(text: &str, start: usize, end: usize) -> &str {
+    let from = text[..start]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(at, c)| at + c.len_utf8());
+    let to = text[end..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |at| end + at);
+    &text[from..to]
+}
+
+/// Whether a word is a file path rather than an address or an ordinary word: it holds a `\`, or it
+/// begins like `C:/`, `/`, `./`, `../` or `~/` (a word such as `ffmpeg/ffprobe` is no path).
+fn is_file_path(word: &str) -> bool {
+    if word.contains("://") {
+        return false;
+    }
+    let word = word.trim_start_matches(['"', '\'', '`', '(', '[', '{', '<']);
+    let drive = matches!(word.as_bytes(), [letter, b':', b'/', ..] if letter.is_ascii_alphabetic());
+    word.contains('\\')
+        || drive
+        || ["/", "./", "../", "~/"]
+            .iter()
+            .any(|prefix| word.starts_with(prefix))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallManifest {
     schema: u32,
@@ -261,8 +486,8 @@ pub(crate) fn ensure(
             network,
         )
         .context(crate::i18n::ui(
-            "yt-dlp sürüm bilgisi alınamadı",
-            "The yt-dlp version information could not be retrieved",
+            "Medya bileşeninin sürüm bilgisi alınamadı",
+            "The media component version information could not be retrieved",
         ))
     })?
     else {
@@ -277,8 +502,8 @@ pub(crate) fn ensure(
         network,
     )
     .context(crate::i18n::ui(
-        "Deno sürüm bilgisi alınamadı",
-        "The Deno version information could not be retrieved",
+        "Çalıştırma ortamının sürüm bilgisi alınamadı",
+        "The runtime version information could not be retrieved",
     ))?;
     let deno_release = newest_deno_release(deno_releases)?;
     let ffmpeg_release: GithubRelease = github_json(
@@ -287,8 +512,8 @@ pub(crate) fn ensure(
         network,
     )
     .context(crate::i18n::ui(
-        "FFmpeg sürüm bilgisi alınamadı",
-        "The FFmpeg version information could not be retrieved",
+        "Dönüştürücünün sürüm bilgisi alınamadı",
+        "The converter version information could not be retrieved",
     ))?;
 
     let yt_asset = exact_asset(&yt_release, "yt-dlp.exe")?;
@@ -313,8 +538,8 @@ pub(crate) fn ensure(
             anyhow!(
                 "{}",
                 crate::i18n::ui(
-                    "FFmpeg yayını upstream SHA-256 checksum dosyası içermiyor",
-                    "The FFmpeg release does not include an upstream SHA-256 checksum file"
+                    "Dönüştürücü yayını upstream SHA-256 checksum dosyası içermiyor",
+                    "The converter release does not include an upstream SHA-256 checksum file"
                 )
             )
         })?;
@@ -329,7 +554,7 @@ pub(crate) fn ensure(
 
     let yt_checksum_text = fetch_text(
         &yt_sums.browser_download_url,
-        "yt-dlp checksum",
+        &checksum_label("yt-dlp"),
         control,
         network,
     )?;
@@ -341,7 +566,7 @@ pub(crate) fn ensure(
         &yt_asset,
         &yt_path,
         &yt_expected,
-        "yt-dlp",
+        &component_title("yt-dlp"),
         control,
         network,
         progress,
@@ -349,7 +574,7 @@ pub(crate) fn ensure(
 
     let deno_checksum_text = fetch_text(
         &deno_sums.browser_download_url,
-        "Deno checksum",
+        &checksum_label("Deno"),
         control,
         network,
     )?;
@@ -359,14 +584,14 @@ pub(crate) fn ensure(
         &deno_asset,
         &deno_zip,
         &deno_expected,
-        "Deno",
+        &component_title("Deno"),
         control,
         network,
         progress,
     )?;
     emit(
         progress,
-        "Deno",
+        &component_title("Deno"),
         crate::i18n::ui(
             "Doğrulanmış arşiv güvenle açılıyor",
             "Safely extracting the verified archive",
@@ -376,23 +601,23 @@ pub(crate) fn ensure(
     );
     let deno_dir = staging.join("deno");
     extract_zip_safely(&deno_zip, &deno_dir).context(crate::i18n::ui(
-        "Deno arşivi açılamadı",
-        "The Deno archive could not be extracted",
+        "Çalıştırma ortamı arşivi açılamadı",
+        "The runtime archive could not be extracted",
     ))?;
     fs::remove_file(&deno_zip).ok();
     let deno_path = find_file_named(&deno_dir, "deno.exe").ok_or_else(|| {
         anyhow!(
             "{}",
             crate::i18n::ui(
-                "Deno arşivinde deno.exe bulunamadı",
-                "deno.exe was not found in the Deno archive"
+                "Çalıştırma ortamı arşivinde bulunamadı",
+                "The runtime was not found in its archive"
             )
         )
     })?;
 
     let ffmpeg_checksum_text = fetch_text(
         &ffmpeg_sums.browser_download_url,
-        "FFmpeg checksum",
+        &checksum_label("FFmpeg"),
         control,
         network,
     )?;
@@ -402,14 +627,14 @@ pub(crate) fn ensure(
         &ffmpeg_asset,
         &ffmpeg_zip,
         &ffmpeg_expected,
-        "FFmpeg",
+        &component_title("FFmpeg"),
         control,
         network,
         progress,
     )?;
     emit(
         progress,
-        "FFmpeg",
+        &component_title("FFmpeg"),
         crate::i18n::ui(
             "Doğrulanmış LGPL arşivi güvenle açılıyor",
             "Safely extracting the verified LGPL archive",
@@ -419,16 +644,16 @@ pub(crate) fn ensure(
     );
     let ffmpeg_dir = staging.join("ffmpeg");
     extract_zip_safely(&ffmpeg_zip, &ffmpeg_dir).context(crate::i18n::ui(
-        "FFmpeg arşivi açılamadı",
-        "The FFmpeg archive could not be extracted",
+        "Dönüştürücü arşivi açılamadı",
+        "The converter archive could not be extracted",
     ))?;
     fs::remove_file(&ffmpeg_zip).ok();
     let ffmpeg_path = find_file_named(&ffmpeg_dir, "ffmpeg.exe").ok_or_else(|| {
         anyhow!(
             "{}",
             crate::i18n::ui(
-                "FFmpeg arşivinde ffmpeg.exe bulunamadı",
-                "ffmpeg.exe was not found in the FFmpeg archive"
+                "Dönüştürücü arşivinde bulunamadı",
+                "The converter was not found in its archive"
             )
         )
     })?;
@@ -436,8 +661,8 @@ pub(crate) fn ensure(
         anyhow!(
             "{}",
             crate::i18n::ui(
-                "FFmpeg arşivinde ffprobe.exe bulunamadı",
-                "ffprobe.exe was not found in the FFmpeg archive"
+                "Medya inceleyici, dönüştürücü arşivinde bulunamadı",
+                "The media inspector was not found in the converter archive"
             )
         )
     })?;
@@ -806,7 +1031,7 @@ pub(crate) fn verified_toolchain(
                     crate::i18n::ui_format!(
                         "{name} etkin araç manifestinde bulunamadı",
                         "{name} was not found in the active tool manifest",
-                        name = name
+                        name = component_title(name)
                     )
                 )
             })?;
@@ -1003,8 +1228,8 @@ fn newest_deno_release(releases: Vec<GithubRelease>) -> Result<GithubRelease> {
                 anyhow!(
                     "{}",
                     crate::i18n::ui_format!(
-                        "Deno {0}. sürüm serisinden kararlı bir yayın son {1} Deno yayını arasında yok; uygulamanın bu sürümü çok eski bir Deno sürümüne bağlı",
-                        "No stable release of Deno {0}.x is among the newest {1} Deno releases; this version of the application is tied to a Deno version that is too old",
+                        "Çalıştırma ortamının {0}. sürüm serisinden kararlı bir yayın son {1} yayın arasında yok; uygulamanın bu sürümü çok eski bir çalıştırma ortamı sürümüne bağlı",
+                        "No stable release of the runtime {0}.x is among the newest {1} releases; this version of the application is tied to a runtime version that is too old",
                         DENO_MAJOR,
                         DENO_RELEASE_LIST
                     )
@@ -1013,8 +1238,8 @@ fn newest_deno_release(releases: Vec<GithubRelease>) -> Result<GithubRelease> {
                 anyhow!(
                     "{}",
                     crate::i18n::ui_format!(
-                        "Deno {0}. sürüm serisinde kararlı bir yayın bulunamadı",
-                        "No stable release of Deno {0}.x was found",
+                        "Çalıştırma ortamının {0}. sürüm serisinde kararlı bir yayın bulunamadı",
+                        "No stable release of the runtime {0}.x was found",
                         DENO_MAJOR
                     )
                 )
@@ -1063,8 +1288,8 @@ fn choose_ffmpeg_branch_asset(release: &GithubRelease, pinned: (u32, u32)) -> Re
             anyhow!(
                 "{}",
                 crate::i18n::ui(
-                    "BtbN latest yayınında Windows x64 LGPL FFmpeg sürüm dalı ZIP varlığı bulunamadı",
-                    "No Windows x64 LGPL FFmpeg release-branch ZIP asset was found in the BtbN latest release"
+                    "Son upstream yayınında Windows x64 LGPL dönüştürücü sürüm dalı ZIP varlığı bulunamadı",
+                    "No Windows x64 LGPL converter release-branch ZIP asset was found in the latest upstream release"
                 )
             )
         })
@@ -1096,6 +1321,14 @@ fn ffmpeg_branch(name: &str) -> Option<((u32, u32), bool)> {
     }
     let (major, minor) = branch.split_once('.')?;
     Some(((major.parse().ok()?, minor.parse().ok()?), shared))
+}
+
+fn checksum_label(name: &str) -> String {
+    crate::i18n::ui_format!(
+        "Sağlama toplamı ({0})",
+        "Checksum ({0})",
+        component_label(name)
+    )
 }
 
 fn fetch_text(
@@ -1676,12 +1909,13 @@ fn find_file_named(root: &Path, filename: &str) -> Option<PathBuf> {
 }
 
 fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<String> {
+    let title = component_title(name);
     let output =
         command_output_timeout(executable, args, Duration::from_secs(20)).with_context(|| {
             crate::i18n::ui_format!(
                 "{name} başlatılamadı",
                 "{name} could not be started",
-                name = name
+                name = title
             )
         })?;
     if !output.status.success() {
@@ -1691,7 +1925,7 @@ fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<Stri
                 "{name} sürüm doğrulaması başarısız: {0}",
                 "{name} version verification failed: {0}",
                 bounded(&String::from_utf8_lossy(&output.stderr), 4096),
-                name = name
+                name = title
             )
         );
     }
@@ -1703,9 +1937,9 @@ fn validate_version(executable: &Path, args: &[&str], name: &str) -> Result<Stri
             anyhow!(
                 "{}",
                 crate::i18n::ui_format!(
-                    "{name} sürüm çıktısı boş",
-                    "The {name} version output is empty",
-                    name = name
+                    "Sürüm çıktısı boş: {name}",
+                    "Version output is empty: {name}",
+                    name = component_label(name)
                 )
             )
         })?;
@@ -1906,9 +2140,9 @@ fn read_manifest(path: &Path) -> Result<InstallManifest> {
                 anyhow!(
                     "{}",
                     crate::i18n::ui_format!(
-                        "Araç manifestinde {name} eksik",
+                        "{name} araç manifestinde eksik",
                         "{name} is missing from the tool manifest",
-                        name = name
+                        name = component_title(name)
                     )
                 )
             })?;
@@ -1926,7 +2160,7 @@ fn read_manifest(path: &Path) -> Result<InstallManifest> {
                 crate::i18n::ui_format!(
                     "{name} doğrulanmış dosya listesinde bulunamadı",
                     "{name} was not found in the verified file list",
-                    name = name
+                    name = component_title(name)
                 )
             );
         }
@@ -2047,8 +2281,8 @@ fn yt_dlp_release(
             anyhow!(
                 "{}",
                 crate::i18n::ui(
-                    "Uygun kararlı bir yt-dlp yayını bulunamadı",
-                    "No suitable stable yt-dlp release was found"
+                    "Uygun kararlı bir medya bileşeni yayını bulunamadı",
+                    "No suitable stable media component release was found"
                 )
             )
         })
@@ -2565,7 +2799,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(format!("{error:#}").contains("yt-dlp failed"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("The media component failed"),
+            "{error:#}"
+        );
         assert!(!paths.tools_dir.join(MANIFEST_FILE).exists());
         assert!(!paths.tools_dir.join("versions").join("new").exists());
         assert!(!staging.exists());
@@ -3138,5 +3375,471 @@ mod tests {
         assert!(!root.join("escaped.txt").exists());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn english_without_names(text: &str, own: &[&str]) -> String {
+        english_without_names_in(text, own, "")
+    }
+
+    fn english_without_names_in(text: &str, own: &[&str], tools_dir: &str) -> String {
+        let own = OwnText {
+            strings: own.iter().map(|part| part.to_string()).collect(),
+            tools_dir: PathBuf::from(tools_dir),
+            canonical_tools_dir: None,
+        };
+        crate::i18n::with_language("en", || without_component_names(text, &own))
+    }
+
+    #[test]
+    fn a_text_names_no_program_behind_a_component_in_any_letter_case() {
+        assert_eq!(
+            english_without_names(
+                "ERROR: ffmpeg exited; FFMPEG, FFprobe and Yt-Dlp need Deno or BTBN",
+                &[]
+            ),
+            "ERROR: converter exited; converter, media inspector and media component need runtime or media component"
+        );
+        assert_eq!(
+            crate::i18n::with_language("tr", || without_component_names(
+                "yt-dlp ve FFmpeg",
+                &OwnText::default()
+            )),
+            "medya bileşeni ve dönüştürücü"
+        );
+        assert_eq!(
+            english_without_names("a text without a name", &[]),
+            "a text without a name"
+        );
+        assert_eq!(english_without_names("", &[]), "");
+    }
+
+    #[test]
+    fn a_name_inside_a_longer_word_stays_and_a_name_beside_punctuation_is_hidden() {
+        assert_eq!(
+            english_without_names("Denote the Denver video", &[]),
+            "Denote the Denver video"
+        );
+        assert_eq!(
+            english_without_names("undeno ffmpeg2 yt-dlpx", &[]),
+            "undeno ffmpeg2 yt-dlpx"
+        );
+        assert_eq!(
+            english_without_names("(yt-dlp), \"Deno\" and Deno's: yt-dlp.", &[]),
+            "(media component), \"runtime\" and runtime's: media component."
+        );
+        assert_eq!(
+            crate::i18n::with_language("tr", || without_component_names(
+                "Deno'nun sürümü ö yt-dlp",
+                &OwnText::default()
+            )),
+            "çalıştırma ortamı'nun sürümü ö medya bileşeni"
+        );
+    }
+
+    #[test]
+    fn a_name_in_an_address_or_below_the_tools_folder_is_hidden_and_keeps_its_shape() {
+        assert_eq!(
+            english_without_names(
+                "Deno failed; see https://github.com/yt-dlp/yt-dlp/wiki#pass-cookies-to-yt-dlp and https://github.com/yt-dlp/yt-dlp/issues",
+                &[]
+            ),
+            "runtime failed; see https://github.com/media-component/media-component/wiki#pass-cookies-to-media-component and https://github.com/media-component/media-component/issues"
+        );
+        assert_eq!(
+            english_without_names_in(
+                r"ffmpeg: unable to open C:\data\tools\yt-dlp\yt-dlp.exe and ./ffprobe/out.mp4: denied",
+                &[],
+                r"C:\data\tools"
+            ),
+            r"converter: unable to open C:\data\tools\media-component\media-component.exe and ./ffprobe/out.mp4: denied"
+        );
+        assert_eq!(
+            english_without_names(
+                "GET https://files.example/ffmpeg_tutorial?by=deno failed in ffmpeg",
+                &[]
+            ),
+            "GET https://files.example/converter_tutorial?by=runtime failed in converter"
+        );
+    }
+
+    #[test]
+    fn the_strings_of_the_user_stay_where_they_occur_and_the_program_below_them_is_hidden() {
+        let profile = r"C:\Users\Deno\AppData\Local\SSDownload";
+        // The tool path the application itself quotes sits under the profile folder.
+        let tools = r"C:\Users\Deno\AppData\Local\SSDownload\tools";
+        assert_eq!(
+            english_without_names_in(
+                r"C:\Users\Deno\AppData\Local\SSDownload\tools\versions\7\ffmpeg\ffmpeg.exe was modified or corrupted, ffmpeg stopped",
+                &[profile],
+                tools
+            ),
+            r"C:\Users\Deno\AppData\Local\SSDownload\tools\versions\7\converter\converter.exe was modified or corrupted, converter stopped"
+        );
+        assert_eq!(
+            english_without_names_in(
+                r"c:\users\deno\appdata\local\ssdownload\tools\.staging-x\yt-dlp\yt-dlp.exe",
+                &[profile],
+                tools
+            ),
+            r"c:\users\deno\appdata\local\ssdownload\tools\.staging-x\media-component\media-component.exe"
+        );
+        let file = r"C:\Users\deno\Videos\my ffmpeg tutorial.mp4";
+        let address = "https://files.example/yt-dlp-guide.mp4";
+        assert_eq!(
+            english_without_names(
+                &format!("ffmpeg could not write {file} for yt-dlp ({address}), see https://github.com/yt-dlp/yt-dlp/issues"),
+                &[file, address]
+            ),
+            format!("converter could not write {file} for media component ({address}), see https://github.com/media-component/media-component/issues")
+        );
+        // Every occurrence is kept, a name beside the kept text is not.
+        assert_eq!(
+            english_without_names("ffmpeg ffmpeg-clip ffmpeg", &["ffmpeg-clip"]),
+            "converter ffmpeg-clip converter"
+        );
+        assert_eq!(
+            english_without_names("deno Deno deno", &["deno Deno"]),
+            "deno Deno runtime"
+        );
+        // An empty string of the user changes nothing.
+        assert_eq!(english_without_names("ffmpeg", &[""]), "converter");
+    }
+
+    #[test]
+    fn a_path_outside_the_tools_folder_stays_whatever_names_it_holds() {
+        let tools = r"C:\data\tools";
+        for text in [
+            r"The download folder could not be created: Z:\Videos\ffmpeg tutorials",
+            r"could not write Z:/Videos/yt-dlp/clip.mp4 and \\nas\share\Deno\clip.mp4",
+            r#"cannot open "Z:\Videos\deno" and '..\ffprobe\a.mp4' (.\ffmpeg\b.mp4)"#,
+            "failed in /mnt/yt-dlp/clip.mp4 and ./ffmpeg/out.mp4 and ../deno/x and ~/ffprobe/y",
+            r"D:\tools\ffmpeg\a.exe, C:\data\tools2\ffmpeg\a.exe and C:\data\toolsffmpeg\a.exe",
+        ] {
+            assert_eq!(english_without_names_in(text, &[], tools), text);
+        }
+        // A word with a slash that does not look like a path is text, and so is a name beside a path.
+        assert_eq!(
+            english_without_names_in("ffmpeg/ffprobe not found in Z:\\x\\yt-dlp", &[], tools),
+            "converter/media-inspector not found in Z:\\x\\yt-dlp"
+        );
+        assert_eq!(
+            english_without_names_in(r"Z:\Videos\my ffmpeg tutorials", &[], tools),
+            r"Z:\Videos\my converter tutorials",
+            "a folder with a space before the name is the user's own only when `own` holds it"
+        );
+        assert_eq!(
+            english_without_names_in(
+                r"Z:\Videos\my ffmpeg tutorials",
+                &[r"Z:\Videos\my ffmpeg tutorials"],
+                tools
+            ),
+            r"Z:\Videos\my ffmpeg tutorials"
+        );
+    }
+
+    #[test]
+    fn a_program_below_the_tools_folder_is_hidden_in_any_spelling_of_the_folder() {
+        let tools = r"C:\Users\John Deno\AppData\Local\SSDownload\tools";
+        // The folder up to the tools folder stays, with its space and the name in it.
+        assert_eq!(
+            english_without_names_in(
+                r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\ffmpeg\ffmpeg.exe was modified",
+                &[],
+                tools
+            ),
+            r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\converter\converter.exe was modified"
+        );
+        // Another letter case and the other separator.
+        assert_eq!(
+            english_without_names_in(
+                "c:/users/john deno/appdata/local/ssdownload/TOOLS/.staging-x/yt-dlp/yt-dlp.exe",
+                &[],
+                tools
+            ),
+            "c:/users/john deno/appdata/local/ssdownload/TOOLS/.staging-x/media-component/media-component.exe"
+        );
+        // The verbatim prefix in the text, in the folder, and quotes around the path.
+        assert_eq!(
+            english_without_names_in(
+                r#"failed: "\\?\C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\deno\deno.exe""#,
+                &[],
+                tools
+            ),
+            r#"failed: "\\?\C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\runtime\runtime.exe""#
+        );
+        assert_eq!(
+            english_without_names_in(
+                r"C:\Users\John Deno\AppData\Local\SSDownload\tools\.staging-3\yt-dlp\yt-dlp.exe",
+                &[],
+                r"\\?\C:\Users\John Deno\AppData\Local\SSDownload\tools"
+            ),
+            r"C:\Users\John Deno\AppData\Local\SSDownload\tools\.staging-3\media-component\media-component.exe"
+        );
+        // A name in the next word is hidden like anywhere else.
+        assert_eq!(
+            english_without_names_in(
+                r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\deno\deno.exe and Deno",
+                &[],
+                tools
+            ),
+            r"C:\Users\John Deno\AppData\Local\SSDownload\tools\versions\7\runtime\runtime.exe and runtime"
+        );
+    }
+
+    #[test]
+    fn a_program_below_the_tools_folder_is_hidden_when_the_file_system_spells_the_folder_otherwise()
+    {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::create_dir_all(root.join("x").join("tools")).unwrap();
+        // The profile is given with a `..`, the file system spells the tools folder without it.
+        let profile = root.join("other").join("..").join("x");
+        let own = OwnText::profile(&profile);
+        let canonical = profile.join("tools").canonicalize().unwrap();
+        assert_ne!(canonical, own.tools_dir);
+        let text = format!(
+            r"{}\versions\7\ffmpeg\ffmpeg.exe was modified",
+            canonical.display()
+        );
+        let shown = crate::i18n::with_language("en", || without_component_names(&text, &own));
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            shown,
+            format!(
+                r"{}\versions\7\converter\converter.exe was modified",
+                canonical.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_program_below_the_tools_folder_is_hidden_whatever_a_string_of_the_user_holds() {
+        let tools = r"C:\p\tools";
+        let program = r"C:\p\tools\versions\1\ffmpeg\ffmpeg.exe";
+        assert_eq!(
+            english_without_names_in(
+                &format!("{program} was modified"),
+                &["ffmpeg.exe", program],
+                tools
+            ),
+            r"C:\p\tools\versions\1\converter\converter.exe was modified"
+        );
+        // The same string keeps the name where the text is not below the tools folder.
+        assert_eq!(
+            english_without_names_in("saved ffmpeg.exe", &["ffmpeg.exe"], tools),
+            "saved ffmpeg.exe"
+        );
+    }
+
+    #[test]
+    fn the_spelling_of_the_tools_folder_is_asked_of_the_file_system_once() {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::create_dir_all(root.join("tools")).unwrap();
+        let tools = root.join("other").join("..").join("tools");
+        let first = OwnText::tools_folder(&tools).canonical_tools_dir;
+        assert_eq!(first, Some(root.join("tools").canonicalize().unwrap()));
+        fs::remove_dir_all(root.join("tools")).unwrap();
+        let second = OwnText::tools_folder(&tools).canonical_tools_dir;
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            second, first,
+            "the folder is gone, so a new lookup would fail"
+        );
+    }
+
+    #[test]
+    fn a_tools_folder_the_file_system_cannot_resolve_is_asked_again_later() {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("other")).unwrap();
+        let tools = root.join("other").join("..").join("tools");
+        assert_eq!(OwnText::tools_folder(&tools).canonical_tools_dir, None);
+        fs::create_dir_all(root.join("tools")).unwrap();
+        let resolved = OwnText::tools_folder(&tools).canonical_tools_dir;
+        fs::remove_dir_all(&root).unwrap();
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn the_tools_folder_is_not_scanned_twice_when_the_file_system_spells_it_the_same() {
+        let root = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("tools")).unwrap();
+        // `canonicalize` adds the `\\?\` prefix on Windows to the very folder given.
+        let canonical = root
+            .join("tools")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string();
+        let same = PathBuf::from(canonical.strip_prefix(r"\\?\").unwrap_or(&canonical));
+        let own = OwnText::tools_folder(&same);
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(own.canonical_tools_dir, None);
+    }
+
+    #[test]
+    fn a_string_of_the_user_that_is_a_program_name_or_part_of_one_keeps_no_name_visible() {
+        let text = "ERROR: Postprocessing: ffprobe and ffmpeg not found";
+        let hidden = "ERROR: Postprocessing: media inspector and converter not found";
+        for own in [
+            "FFmpeg", "ffprobe", " Deno ", "yt-dlp", "e", "mp", "fm", "pe",
+        ] {
+            assert_eq!(english_without_names(text, &[own]), hidden, "{own:?}");
+        }
+        // The user's own text that holds a whole name still keeps it, next to a name that stays hidden.
+        assert_eq!(
+            english_without_names(
+                "ffmpeg wrote my ffmpeg clip",
+                &["ffmpeg", "e", "my ffmpeg clip"]
+            ),
+            "converter wrote my ffmpeg clip"
+        );
+    }
+
+    #[test]
+    fn a_name_joined_to_an_option_or_a_file_extension_keeps_the_shape_of_its_word() {
+        assert_eq!(
+            english_without_names("deno.exe was not found; use --ffmpeg-location", &[]),
+            "runtime.exe was not found; use --converter-location"
+        );
+        assert_eq!(
+            english_without_names("ffmpeg_i:-http_proxy and ffmpeg-n9.0-win64", &[]),
+            "converter_i:-http_proxy and converter-n9.0-win64"
+        );
+        assert_eq!(
+            english_without_names("yt-dlp.exe and yt-dlp_x86 and ffmpeg.", &[]),
+            "media-component.exe and media-component_x86 and converter."
+        );
+    }
+
+    #[test]
+    fn every_language_names_a_component_by_what_it_does() {
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                for (name, program) in [
+                    ("yt-dlp", "yt-dlp"),
+                    ("Deno", "Deno"),
+                    ("FFmpeg", "FFmpeg"),
+                    ("ffprobe", "ffprobe"),
+                ] {
+                    let shown =
+                        without_component_names(&format!("{program} x"), &OwnText::default());
+                    assert_eq!(
+                        shown,
+                        format!("{} x", component_label(name)),
+                        "{}",
+                        info.code
+                    );
+                    assert!(!shown.to_lowercase().contains(&program.to_lowercase()));
+                    assert!(component_title(name)
+                        .chars()
+                        .next()
+                        .is_some_and(|first| !first.is_lowercase()));
+                }
+                let labels: std::collections::HashSet<_> = ["yt-dlp", "Deno", "FFmpeg", "ffprobe"]
+                    .map(component_label)
+                    .into();
+                assert_eq!(
+                    labels.len(),
+                    4,
+                    "{}: four components, four words",
+                    info.code
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_texts_of_an_install_name_a_component_by_what_it_does() {
+        // The program the application starts lives in a folder named after it, under the profile.
+        let profile = std::env::temp_dir().join(format!("ssd-profile-{}", Uuid::new_v4()));
+        let missing = profile
+            .join("tools")
+            .join("versions")
+            .join("7")
+            .join("ffmpeg")
+            .join("ffmpeg.exe");
+        let own = OwnText::profile(&profile);
+        let shell = PathBuf::from(std::env::var_os("ComSpec").unwrap());
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let title = component_title("FFmpeg");
+                let label = component_label("FFmpeg");
+                let joined = label.replace(' ', "-");
+                // The label begins the text, or follows a colon at its end, so no language needs
+                // an article for it.
+                for (case, result) in [
+                    ("not started", validate_version(&missing, &[], "FFmpeg")),
+                    (
+                        "failed",
+                        validate_version(&shell, &["/C", "exit", "3"], "FFmpeg"),
+                    ),
+                ] {
+                    let raw = format!("{:#}", result.unwrap_err());
+                    let text = without_component_names(&raw, &own);
+                    assert!(text.starts_with(&title), "{} {case}: {text}", info.code);
+                    assert!(
+                        !text.to_lowercase().contains("ffmpeg"),
+                        "{} {case}: {text}",
+                        info.code
+                    );
+                    if case == "not started" {
+                        // Only the two folder names and the file name change; the rest of the
+                        // path and of the text stays byte for byte.
+                        let hidden = format!(
+                            "{}{sep}tools{sep}versions{sep}7{sep}{joined}{sep}{joined}.exe",
+                            profile.display(),
+                            sep = std::path::MAIN_SEPARATOR
+                        );
+                        let expected = raw.replace(&missing.display().to_string(), &hidden);
+                        assert_ne!(
+                            expected, raw,
+                            "{} {case}: the error quotes the path",
+                            info.code
+                        );
+                        assert_eq!(text, expected, "{} {case}", info.code);
+                    }
+                }
+                let empty = validate_version(&shell, &["/C", "rem"], "FFmpeg").unwrap_err();
+                let text = format!("{empty:#}");
+                assert!(
+                    text.ends_with(&format!(": {label}")),
+                    "{} empty: {text}",
+                    info.code
+                );
+                assert!(
+                    !text.to_lowercase().contains("ffmpeg"),
+                    "{} empty: {text}",
+                    info.code
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_checksum_of_a_download_is_named_by_what_the_component_does() {
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let label = checksum_label("yt-dlp");
+                assert!(
+                    label.ends_with(&format!("({})", component_label("yt-dlp"))),
+                    "{}: {label}",
+                    info.code
+                );
+                assert!(
+                    !label.to_lowercase().contains("yt-dlp"),
+                    "{}: {label}",
+                    info.code
+                );
+                assert!(
+                    label
+                        .chars()
+                        .next()
+                        .is_some_and(|first| !first.is_lowercase()),
+                    "{}: {label}",
+                    info.code
+                );
+            });
+        }
     }
 }

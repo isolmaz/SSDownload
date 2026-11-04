@@ -794,6 +794,7 @@ impl App {
                     session_cookies: request.session_cookies.clone(),
                     referer: request.referer.clone(),
                     page_url: request.page_url.clone(),
+                    top_page_url: request.top_page_url.clone(),
                     playlist: request.playlist,
                     live_from_start: false,
                 };

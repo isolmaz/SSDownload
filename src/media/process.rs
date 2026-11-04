@@ -118,14 +118,14 @@ pub(super) fn run_capture_with_proxy(
     let input_thread = write_input(&mut child, input)?;
     let stdout = child.stdout.take().ok_or_else(|| {
         anyhow!(crate::i18n::ui(
-            "yt-dlp stdout alınamadı",
-            "Could not capture yt-dlp stdout"
+            "Medya bileşeninin çıktısı alınamadı",
+            "Could not capture the media component's output"
         ))
     })?;
     let mut stderr = child.stderr.take().ok_or_else(|| {
         anyhow!(crate::i18n::ui(
-            "yt-dlp stderr alınamadı",
-            "Could not capture yt-dlp stderr"
+            "Medya bileşeninin hata çıktısı alınamadı",
+            "Could not capture the media component's error output"
         ))
     })?;
     // The latest reported output time in microseconds, `u64::MAX` once it has been passed on.
@@ -277,14 +277,14 @@ impl RunningDownload {
         let stdin_thread = Some(write_input(&mut child, input)?);
         let stdout = child.stdout.take().ok_or_else(|| {
             anyhow!(crate::i18n::ui(
-                "yt-dlp stdout alınamadı",
-                "Could not capture yt-dlp stdout"
+                "Medya bileşeninin çıktısı alınamadı",
+                "Could not capture the media component's output"
             ))
         })?;
         let stderr_pipe = child.stderr.take().ok_or_else(|| {
             anyhow!(crate::i18n::ui(
-                "yt-dlp stderr alınamadı",
-                "Could not capture yt-dlp stderr"
+                "Medya bileşeninin hata çıktısı alınamadı",
+                "Could not capture the media component's error output"
             ))
         })?;
         let (sender, lines) = mpsc::sync_channel(256);
@@ -887,7 +887,7 @@ pub(super) fn handle_machine_line(
             speed: 0,
             eta: None,
             phase_name: "processing with ffmpeg",
-            phase: crate::i18n::ui("FFmpeg ile işleniyor", "Processing with FFmpeg").into(),
+            phase: crate::i18n::ui("Medya işleniyor", "Processing the media").into(),
             processing: true,
         });
     } else if let Some(json_path) = line.strip_prefix(FILE_PREFIX) {
@@ -1011,8 +1011,8 @@ pub(super) fn useful_error(stderr: &str, secrets: &[String]) -> String {
     result = redact_url_credentials(&result);
     if result.is_empty() {
         crate::i18n::ui(
-            "yt-dlp ayrıntı vermeden başarısız oldu",
-            "yt-dlp failed without giving details",
+            "Medya bileşeni ayrıntı vermeden başarısız oldu",
+            "The media component failed without giving details",
         )
         .into()
     } else {

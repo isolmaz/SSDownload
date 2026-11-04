@@ -453,18 +453,28 @@ async function linkManifest(tabId, item, values) {
   while (manifestTasks.size > 400) manifestTasks.delete(manifestTasks.keys().next().value);
 }
 
+// The placeholders this extension shows for a video, a player or an embed that has no title,
+// in every language and with or without the player's number. They name nothing.
+const PLACEHOLDER_TITLE = new RegExp("^(?:" + [...new Set(Object.values(SSDownloadI18n.MESSAGES).flatMap(messages =>
+  ["videoTitleFallback", "playerTitleFallback", "embedTitleFallback"].map(key => messages[key].replace("{0}", "").trim().replace(/[\\^$.*+?()[\]{}|]/g, "\\$&"))))].join("|") + ")\\s*\\d*$", "iu");
+// A tab title leads with the unread count some sites keep there: "(3) Clips".
+const withoutUnreadCount = text => String(text).trim().replace(/^\(\d+\)\s+/, "");
+
 // A page-provided name is usable only when it names content: a player brand, an
-// opaque player title, a bare technical suffix or the frame's own host name is not
-// a film name and is never carried into the candidate list.
-function descriptiveTitle(value, frameUrl) {
+// opaque player title, a bare technical suffix, a placeholder of this extension, the
+// host name of the document it comes from (`host`) or the name the document declares
+// for its site (`siteNames`) is not a film name and is never carried into the candidate list.
+function descriptiveTitle(value, host, siteNames = []) {
   const title = String(value || "");
-  const trimmed = title.trim();
+  const trimmed = withoutUnreadCount(title);
   if (!trimmed) return "";
-  const host = safeUrl(frameUrl)?.hostname.split(".") || [];
+  const hostLabels = host ? String(host).split(".") : [];
+  if (siteNames.some(name => withoutUnreadCount(name).toLowerCase() === trimmed.toLowerCase())) return "";
+  if (PLACEHOLDER_TITLE.test(trimmed)) return "";
   if (/^(?:[a-z0-9_-]*player|(?:html5|video|audio|media)\s+player)$/i.test(trimmed)) return "";
   if (/^["']:\d+["'](?:\s|$)/.test(trimmed)) return "";
-  if (/^(?:video|player|embed|master|index|manifest|stream|hls|dash|youtube|service|forbidden|access denied|just a moment\.\.\.)$/i.test(trimmed)) return "";
-  if (host.some(part => part.toLowerCase() === trimmed.toLowerCase())) return "";
+  if (/^(?:video|player|embed|master|index|manifest|stream|hls|dash|service|forbidden|access denied|just a moment\.\.\.)$/i.test(trimmed)) return "";
+  if (hostLabels.some(part => part.toLowerCase() === trimmed.toLowerCase())) return "";
   if (/\.(?:mp4|mkv|m4v|m3u8|mpd)(?:$|\s)/i.test(trimmed)) return "";
   return title;
 }
@@ -485,6 +495,10 @@ function videoRecords(tabId) {
   const roots = items.filter(item => !items.some(parent => parent.frameId===item.frameId && sameDiscoveryDocument(parent,item) && parent.url !== item.url && descendants(parent).has(item.url)));
   for (const frame of tabFrames) {
     const produced = result.length;
+    // The tab's title belongs to the top document, which can be another site than this frame's.
+    const top = tabFrames.find(f => f.frameId === 0);
+    const topHost = urlHost(top?.url) || frame.tabHost;
+    const frameHost = urlHost(frame.url);
     const inFrameDocument=item=>item.frameId===frame.frameId && (item.documentId?item.documentId===frame.documentId:item.pageUrl?item.pageUrl===frame.url:item.lastSeen>=frame.since);
     const directByPlayer=new Map(frame.players.map(p=>[p,roots.filter(item=>item.downloadable && inFrameDocument(item) && [...descendants(item)].some(u=>p.urls.includes(u)))]));
     const assigned=new Set([...directByPlayer.values()].flat());
@@ -510,11 +524,13 @@ function videoRecords(tabId) {
       // address is not content, so it never becomes a candidate of its own.
       const preview = player.loop && player.muted && !player.userActivated;
       const frameTitle=frame.pageTitle || "";
-      const descriptiveFrameTitle=descriptiveTitle(frameTitle,frame.url);
+      const descriptiveFrameTitle=descriptiveTitle(frameTitle,frameHost,frame.siteNames);
+      const descriptiveTabTitle=descriptiveTitle(frame.tabTitle,topHost,top?.siteNames);
       const onePlayer=shown.filter(p=>p.urls.length || p.active || p.played).length===1;
-      const distinctPlayerTitle=player.title && player.title!==frameTitle && player.title!==frame.tabTitle && !/^(?:video|player|embed|master|index|manifest|stream|hls|dash)$/i.test(player.title.trim());
+      const distinctPlayerTitle=player.title && player.title!==frameTitle && player.title!==frame.tabTitle && !/^(?:video|player|embed|master|index|manifest|stream|hls|dash)$/i.test(player.title.trim()) && !PLACEHOLDER_TITLE.test(player.title.trim());
       const title = player.explicitTitle ? player.title : onePlayer && descriptiveFrameTitle ? frameTitle : onePlayer ? (frame.tabTitle || player.title) : distinctPlayerTitle ? player.title : t("playerTitleFallback", player.id);
-      const titleSource=player.explicitTitle?"element":onePlayer&&descriptiveFrameTitle?"frame":onePlayer&&frame.tabTitle?"tab":distinctPlayerTitle?"player":"generic";
+      // Only a title that names content is a suggestion for the file name (see suggestedFilename).
+      const titleSource=player.explicitTitle?"element":onePlayer&&descriptiveFrameTitle?"frame":onePlayer&&descriptiveTabTitle?"tab":distinctPlayerTitle&&descriptiveTitle(player.title,frameHost,frame.siteNames)?"player":"generic";
       const videoId = `${frame.frameId}:${frame.documentId}:${player.id}`;
       const base={videoId,playerId:player.id,documentId:frame.documentId,title,titleSource,filename:title,thumbnail:player.poster,
         pageUrl:frame.url,frameId:frame.frameId,tracks:player.tracks,duration:player.duration,adSignals:player.adSignals,
@@ -558,7 +574,7 @@ function videoRecords(tabId) {
     const previewsOnly = considered.length>0 && considered.every(p=>p.loop && p.muted && !p.userActivated);
     if (result.length === produced && signalled && !previewsOnly && !observedUrls.has(frame.url)) {
       const blocked = frame.responseStatus >= 400;
-      const frameName = descriptiveTitle(frame.pageTitle, frame.url), tabName = descriptiveTitle(frame.tabTitle, frame.url);
+      const frameName = descriptiveTitle(frame.pageTitle, frameHost, frame.siteNames), tabName = descriptiveTitle(frame.tabTitle, topHost, top?.siteNames);
       const title = frameName || tabName || t("videoTitleFallback");
       result.push({videoId:`${frame.frameId}:${frame.documentId}:page`,playerId:null,documentId:frame.documentId,title,
         titleSource:frameName?"frame":tabName?"tab":"generic",filename:title,thumbnail:null,pageUrl:frame.url,frameId:frame.frameId,
@@ -571,10 +587,12 @@ function videoRecords(tabId) {
     // covers the address is never duplicated.
     for (const embed of embeds) {
       if (observedUrls.has(embed.url)) continue;
-      const host = safeUrl(embed.url)?.hostname || "";
-      const title = (embed.title || host || t("embedTitleFallback")).slice(0,180);
+      const host = urlHost(embed.url) || "";
+      // An iframe's title is as often its player's brand as the video's name.
+      const named = descriptiveTitle(embed.title, host, frame.siteNames);
+      const title = (named || host || t("embedTitleFallback")).slice(0,180);
       result.push({videoId:`${frame.frameId}:${frame.documentId}:embed:${String(embed.url).slice(0,240)}`,playerId:null,documentId:frame.documentId,
-        title,titleSource:embed.title?"element":"generic",filename:embed.title?title:"",thumbnail:null,pageUrl:frame.url,frameId:frame.frameId,
+        title,titleSource:named?"element":"generic",filename:named?title:"",thumbnail:null,pageUrl:frame.url,frameId:frame.frameId,
         tracks:[],duration:null,adSignals:[],suspectedAd:false,played:false,active:false,preview:false,
         url:embed.url,kind:"page",downloadable:true,selectable:true,ambiguous:false,inferred:false,associationUncertainty:null,
         note:t("noteEmbed")});
@@ -1053,10 +1071,12 @@ function fileName(raw) {
 // the picker always wins at confirm time. The browser therefore suggests a name only
 // when the page itself named the content - a descriptive observed title or a
 // page-provided file name - and never a technical address basename such as "watch"
-// or "videoplayback".
+// or "videoplayback", a placeholder such as "Video 1" or a title that only names the site.
 function suggestedFilename(item) {
-  const title = String(item.title || "").trim();
-  if (title && item.titleSource && item.titleSource !== "generic") return baseFilename({ url: "", filename: title });
+  if (item.titleSource) {
+    const title = String(item.title || "").trim();
+    return title && item.titleSource !== "generic" ? baseFilename({ url: "", filename: title }) : null;
+  }
   return baseFilename({ url: "", filename: item.filename || "" });
 }
 // The exact observed URL is part of the identity: a renewed signed address must
@@ -1209,9 +1229,33 @@ async function sessionMetadata(tabId, item) {
   }
   return { headers, referer, session_cookies: [...cookies.values()] };
 }
+// The tab's own address for a source in a frame of it, otherwise null. A frame's address can be a
+// player page the desktop's media tool has no use for while the page that embeds it names the
+// video; the desktop turns to this page only when the tool cannot use the frame's address. That
+// page names this video only when the frame is the one frame of the tab that holds a player, an
+// embed or a player signal: with another one, the desktop could take that one for the video the
+// user acted on. The embed a document lists for this very frame is the frame itself and does not
+// count, and neither does the signal of a document that lists it or of the top document.
+async function topPageUrl(tabId, item) {
+  if (!Number.isInteger(item.frameId) || item.frameId === 0) return null;
+  const frameHref = safeUrl(item.pageUrl)?.href;
+  const isEmbed = record => String(record.videoId).includes(":embed:");
+  const records = videoRecords(tabId);
+  const listsFrame = record => isEmbed(record) && frameHref && safeUrl(record.url)?.href === frameHref;
+  const listing = new Set(records.filter(listsFrame).map(record => record.frameId));
+  const elsewhere = records.some(record => record.frameId !== item.frameId && !listsFrame(record)
+    && (record.playerId != null || record.unassociated || isEmbed(record) || (record.frameId !== 0 && !listing.has(record.frameId))));
+  if (elsewhere) return null;
+  try {
+    const top = safeUrl((await invoke(api.tabs, "get", tabId))?.url)?.href || null;
+    return top && top !== safeUrl(item.pageUrl)?.href ? top : null;
+  } catch (_) { return null; }
+}
 async function mediaRequest(tabId, item, session, kind, pageHtml) {
   const request = { url: item.url, kind, headers: session.headers, referer: session.referer,
     filename: suggestedFilename(item), container: null, playlist: false, page_url: item.pageUrl || null };
+  const top = await topPageUrl(tabId, item);
+  if (top) request.top_page_url = top;
   // The picker's error report carries the acted-on document's own markup when the page
   // could produce it; a page that answered nothing leaves the field out entirely.
   if (pageHtml) request.page_html = pageHtml;
@@ -1618,8 +1662,9 @@ async function handleContentMessage(message, sender) {
         ? {embeds,containers:declared.containers===true,playerScripts:declared.playerScripts===true} : null)
       : (navigated ? null : previous?.playerSignals ?? null);
     const pending = pendingCapabilities.get(key);
+    const siteNames=(Array.isArray(message.siteNames)?message.siteNames:[]).filter(name=>typeof name==="string").slice(0,4).map(name=>name.slice(0,120));
     frames.set(key, {tabId, frameId, documentId, url:frameUrl, players,responseStatus,playerSignals,
-      pageTitle:String(message.pageTitle||"").slice(0,180), tabTitle:String(sender.tab.title||"").slice(0,180),
+      pageTitle:String(message.pageTitle||"").slice(0,180), tabTitle:String(sender.tab.title||"").slice(0,180), tabHost:urlHost(sender.tab.url)||"", siteNames,
       observationCapabilities:(!navigated ? previous?.observationCapabilities : null)
         || (pending?.documentId === documentId ? pending.capabilities : null),
       since:(navigated || replaced)?previous.updatedAt:(previous?.since || 0), updatedAt:Date.now()});

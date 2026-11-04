@@ -122,6 +122,7 @@ pub(super) fn preserve_refresh_contract(previous: &AddRequest, next: &mut AddReq
     next.full_verification = previous.full_verification;
     next.live_from_start = previous.live_from_start;
     next.page_url = previous.page_url.clone();
+    next.top_page_url = previous.top_page_url.clone();
     if let (Some(old), Some(new)) = (&previous.source_identity, &mut next.source_identity) {
         new.video_id = old.video_id.clone();
         new.frame_id = old.frame_id;

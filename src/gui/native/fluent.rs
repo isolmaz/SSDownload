@@ -2549,6 +2549,10 @@ pub(super) unsafe extern "system" fn modern_progress_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_TIMER && wparam == BAR_SWEEP_TIMER {
+        sweep_due(hwnd);
+        return 0;
+    }
     if !high_contrast() {
         match msg {
             WM_PAINT => {
@@ -2556,6 +2560,7 @@ pub(super) unsafe extern "system" fn modern_progress_proc(
                 let dc = BeginPaint(hwnd, &mut paint);
                 paint_modern_progress(hwnd, dc);
                 EndPaint(hwnd, &paint);
+                schedule_sweep(hwnd);
                 return 0;
             }
             WM_PRINTCLIENT => {
@@ -3758,7 +3763,7 @@ unsafe fn paint_row_cells(ui: &MainUi, dc: HDC, row: usize) {
             }
             text.left += slot + pad;
         }
-        let empty = length == 1 && buffer[0] == '—' as u16;
+        let empty = length == 1 && buffer[0] == '-' as u16;
         SetTextColor(
             dc,
             if column == COL_LOCATION || empty {
@@ -4174,7 +4179,7 @@ mod tests {
                 let card = control(
                     parent,
                     "BUTTON",
-                    "Basic — downloads",
+                    "Basic - downloads",
                     WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
                     0,
                     ID_WIZARD_SIMPLE,
@@ -4241,7 +4246,7 @@ mod tests {
                     let card = control(
                         parent,
                         "BUTTON",
-                        "Advanced — queues, rules, crawler, sync, logs",
+                        "Advanced - queues, rules, crawler, sync, logs",
                         WS_CHILD | BS_AUTOCHECKBOX as u32 | BS_PUSHLIKE as u32,
                         0,
                         ID_WIZARD_ADVANCED,

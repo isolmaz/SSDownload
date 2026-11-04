@@ -46,8 +46,8 @@ fn check_tools(tools: &tools::VerifiedTools, scratch: &Path, run: &mut Run) -> R
         bail!(
             "{}",
             crate::i18n::ui_format!(
-                "FFmpeg deneme klibini üretemedi ({0}): {1}",
-                "FFmpeg did not generate the test clip ({0}): {1}",
+                "Dönüştürücü deneme klibini üretemedi ({0}): {1}",
+                "The converter did not generate the test clip ({0}): {1}",
                 describe(&made.status),
                 bounded_tail(made.stderr.trim(), 400)
             )
@@ -77,15 +77,15 @@ fn check_tools(tools: &tools::VerifiedTools, scratch: &Path, run: &mut Run) -> R
         bail!(
             "{}",
             crate::i18n::ui_format!(
-                "ffprobe çıktıyı okuyamadı ({0})",
-                "ffprobe could not read the output ({0})",
+                "Medya inceleyici çıktıyı okuyamadı ({0})",
+                "The media inspector could not read the output ({0})",
                 describe(&probed.status)
             )
         );
     }
     let probe: Value = serde_json::from_slice(&probed.stdout).context(crate::i18n::ui(
-        "ffprobe JSON yazdırmadı",
-        "ffprobe did not print JSON",
+        "Medya inceleyici JSON yazdırmadı",
+        "The media inspector did not print JSON",
     ))?;
     validate_probe(&probe, &probe_request(), &MediaInfo::default())
 }
@@ -162,8 +162,8 @@ fn check_download(captured: &Captured) -> Result<PathBuf> {
         bail!(
             "{}",
             crate::i18n::ui_format!(
-                "yt-dlp başarısız oldu ({0}): {1}",
-                "yt-dlp failed ({0}): {1}",
+                "Medya bileşeni başarısız oldu ({0}): {1}",
+                "The media component failed ({0}): {1}",
                 describe(&captured.status),
                 bounded_tail(captured.stderr.trim(), 400)
             )
@@ -202,8 +202,8 @@ fn check_download(captured: &Captured) -> Result<PathBuf> {
         bail!(
             "{}",
             crate::i18n::ui(
-                "yt-dlp hiç ilerleme satırı yazdırmadı",
-                "yt-dlp printed no progress line"
+                "Medya bileşeni hiç ilerleme satırı yazdırmadı",
+                "The media component printed no progress line"
             )
         );
     }
@@ -211,14 +211,14 @@ fn check_download(captured: &Captured) -> Result<PathBuf> {
         bail!(
             "{}",
             crate::i18n::ui(
-                "yt-dlp hiç son işlem satırı yazdırmadı",
-                "yt-dlp printed no post-processor line"
+                "Medya bileşeni hiç son işlem satırı yazdırmadı",
+                "The media component printed no post-processor line"
             )
         );
     }
     let file = file.context(crate::i18n::ui(
-        "yt-dlp çıktı dosyası satırı yazdırmadı",
-        "yt-dlp printed no output file line",
+        "Medya bileşeni çıktı dosyası satırı yazdırmadı",
+        "The media component printed no output file line",
     ))?;
     if !completed.contains(&file) {
         bail!(
@@ -476,7 +476,7 @@ mod tests {
                 ),
                 (
                     Fault::DownloadExitsWithError,
-                    "yt-dlp failed (exit code 1)".into(),
+                    "The media component failed (exit code 1)".into(),
                 ),
                 (Fault::NoProgressLine, "no progress line".into()),
                 (Fault::ProgressOnlyOnStderr, "no progress line".into()),
@@ -485,11 +485,11 @@ mod tests {
                 (Fault::FileLineNamesAMissingFile, "does not exist".into()),
                 (
                     Fault::ProbeExitsWithError,
-                    "ffprobe could not read the output".into(),
+                    "The media inspector could not read the output".into(),
                 ),
                 (
                     Fault::ProbePrintsNoJson,
-                    "ffprobe did not print JSON".into(),
+                    "The media inspector did not print JSON".into(),
                 ),
                 (Fault::ProbeFindsNoAudio, finding(true, false, "")),
                 (

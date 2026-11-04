@@ -75,42 +75,12 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             }
         }
         DialogKind::Tools(f) => {
-            let mut body = String::new();
-            for tool in &snapshot.tools {
-                body.push_str(&crate::i18n::ui_format!(
-                    "{0}\r\n  Durum: {1}\r\n  Sürüm: {2}\r\n  Konum: {3}\r\n\r\n",
-                    "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n",
-                    tool.name,
-                    if tool.installed {
-                        crate::i18n::ui("Kurulu", "Installed")
-                    } else {
-                        crate::i18n::ui("Kurulu değil", "Not installed")
-                    },
-                    if tool.version.is_empty() {
-                        "—"
-                    } else {
-                        &tool.version
-                    },
-                    tool.path.display()
-                ));
-            }
-            if body.is_empty() {
-                body.push_str(crate::i18n::ui(
-                    "Henüz araç bilgisi bulunmuyor. Eksikleri kur düğmesi güvenli upstream sürümlerini indirir.",
-                    "No tool information yet. The install button downloads safe upstream versions for anything missing.",
-                ));
-            }
+            let body = tools_report(
+                &snapshot.tools,
+                snapshot.tool_progress.as_ref(),
+                &dlg.app.paths().tools_dir,
+            );
             if let Some(p) = &snapshot.tool_progress {
-                body.push_str(&crate::i18n::ui_format!(
-                    "\r\n{0}: {1}\r\nİndirilen: {2}{3}",
-                    "\r\n{0}: {1}\r\nDownloaded: {2}{3}",
-                    p.name,
-                    p.message,
-                    format_bytes(p.downloaded),
-                    p.total
-                        .map(|t| format!(" / {}", format_bytes(t)))
-                        .unwrap_or_default()
-                ));
                 let percent = p
                     .total
                     .filter(|t| *t > 0)
@@ -158,7 +128,9 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
             }
             refresh_media(dlg, f, &snapshot);
         }
-        DialogKind::Progress(f) => refresh_job_view(dlg.hwnd, dlg.error, f, &snapshot),
+        DialogKind::Progress(f) => {
+            refresh_job_view(dlg.hwnd, dlg.error, f, &snapshot, &dlg.app.paths().base_dir)
+        }
         DialogKind::Events(f) => refresh_event_list(f),
         DialogKind::JobLog(f) => refresh_job_log(f),
         _ => {}
@@ -196,6 +168,7 @@ pub(super) unsafe fn refresh_job_view(
     error: HWND,
     f: &mut ProgressFields,
     snapshot: &AppSnapshot,
+    profile: &Path,
 ) {
     if f.ids.is_empty() {
         set_text(
@@ -309,7 +282,7 @@ pub(super) unsafe fn refresh_job_view(
                 detail.push_str(&crate::i18n::ui_format!(
                     "Aşama: {0}\r\n",
                     "Phase: {0}\r\n",
-                    phase
+                    without_component_names(phase, &job_own_text(job, profile))
                 ));
             }
             if let Some(message) = job.error.as_deref() {
@@ -318,7 +291,7 @@ pub(super) unsafe fn refresh_job_view(
                 detail.push_str(&crate::i18n::ui_format!(
                     "Hata: {message}\r\n",
                     "Error: {message}\r\n",
-                    message = message
+                    message = without_component_names(message, &job_own_text(job, profile))
                 ));
             }
             if job.state == JobState::Completed {
@@ -351,9 +324,6 @@ pub(super) unsafe fn refresh_job_view(
             can_open = job.state == JobState::Completed && job.remove_requested.is_none();
         }
     }
-    // The detail names the components the way the rest of the surface does; a
-    // phase or a failure reason can carry an upstream name.
-    let detail = display_text(snapshot.settings.debug_mode, &detail);
     if detail != f.rendered {
         set_text(f.status, &detail);
         // Modern shows the status's scroll bar only while the text overflows.
@@ -438,14 +408,14 @@ pub(super) unsafe fn refresh_job_view(
         for id in &f.ids {
             match snapshot.jobs.iter().find(|job| job.id == *id) {
                 Some(job) => rows.push_str(&format!(
-                    "{} — {} · {}\r\n",
+                    "{} - {} · {}\r\n",
                     job.name,
                     state_label(job),
                     format_progress(job)
                 )),
                 None => rows.push_str(&crate::i18n::ui_format!(
-                    "{id} — kuyrukta değil\r\n",
-                    "{id} — not in the queue\r\n",
+                    "{id}: kuyrukta değil\r\n",
+                    "{id}: not in the queue\r\n",
                     id = id
                 )),
             }
@@ -738,7 +708,7 @@ pub(super) fn media_format_label(format: &MediaFormat) -> String {
         .map(|value| format!(" · {}", size_text(value, format.size_estimated)))
         .unwrap_or_default();
     format!(
-        "{} — {} · {}{}{}{}{}",
+        "{} - {} · {}{}{}{}{}",
         format.id, dimensions, format.extension, fps, codec, range, size
     )
 }
@@ -973,6 +943,19 @@ pub(super) unsafe fn edited_media_name(
     }
 }
 
+/// Names the page the analysis was made for when it is not the address the picker was opened
+/// for, so that a video of the embedding page is never taken for the one that was clicked.
+fn analysed_page_note(info: &MediaInfo) -> String {
+    info.analysed_url
+        .as_deref()
+        .and_then(|address| url::Url::parse(address).ok())
+        .and_then(|address| address.host_str().map(str::to_owned))
+        .map(|host| {
+            crate::i18n::ui_format!(" · Analiz edilen sayfa: {0}", " · Analyzed page: {0}", host)
+        })
+        .unwrap_or_default()
+}
+
 pub(super) unsafe fn populate_media(
     hwnd: HWND,
     f: &mut MediaFields,
@@ -1021,6 +1004,7 @@ pub(super) unsafe fn populate_media(
         .playlist_count
         .map(|n| crate::i18n::ui_format!(" · Playlist: {n} öğe", " · Playlist: {n} items", n = n))
         .unwrap_or_default();
+    let status = format!("{}{status}", analysed_page_note(info));
     set_text(
         f.summary,
         &crate::i18n::ui_format!(
@@ -1038,22 +1022,13 @@ pub(super) unsafe fn populate_media(
 
     SendMessageW(f.format, CB_RESETCONTENT, 0, 0);
     f.video_formats.clear();
-    // The popup this replaces asked for the saved name; the field starts from
-    // whatever the handoff suggested, or the source title plus the selected
-    // container's extension.
-    let fallback = format!(
-        "{}.{}",
-        crate::engine::safe_filename(&info.title, "video"),
-        media_extension(f)
+    // Only a browser handoff carries a session consent, and only its name comes from a page.
+    let chosen = crate::media::picker_file_name(
+        &f.base,
+        f.session_consent.is_some(),
+        info,
+        &media_extension(f),
     );
-    let chosen = f
-        .base
-        .filename
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or(fallback);
     set_text(f.name, &chosen);
     combo_add(
         f.format,
@@ -1130,7 +1105,7 @@ pub(super) unsafe fn populate_media(
             language: format.language.clone(),
         };
         let label = format!(
-            "{} — {}{}{}",
+            "{} - {}{}{}",
             format.id,
             format
                 .language
@@ -1180,7 +1155,7 @@ pub(super) unsafe fn populate_media(
     let default_subtitle = subtitle_default_index(&f.subtitle_values, info.is_live);
     for (index, subtitle) in f.subtitle_values.iter().enumerate() {
         let value = wide(&format!(
-            "{} — {}",
+            "{} - {}",
             subtitle.language,
             if subtitle.automatic {
                 crate::i18n::ui("otomatik", "automatic")
@@ -1515,6 +1490,7 @@ pub(super) unsafe fn renew_source(hwnd: HWND, error: HWND, app: App, f: &MediaFi
     let headers = f.base.headers.clone();
     let session_cookies = f.base.session_cookies.clone();
     let referer = f.base.referer.clone();
+    let top_page_url = f.base.top_page_url.clone();
     // The same editable name the queue path forwards: a rebind renames the
     // pending job's target instead of keeping the stale one.
     let extension = f
@@ -1556,6 +1532,7 @@ pub(super) unsafe fn renew_source(hwnd: HWND, error: HWND, app: App, f: &MediaFi
             request.headers = headers;
             request.session_cookies = session_cookies;
             request.referer = referer;
+            request.top_page_url = top_page_url;
             if let Some(name) = rename {
                 request.filename = Some(name);
             }
@@ -1762,6 +1739,54 @@ fn fetch_thumbnail(app: &App, url: &str) -> Option<HBITMAP> {
     result
 }
 
+/// The media tools report: each component by what it does, and the folder that holds them
+/// instead of the file of each.
+pub(super) fn tools_report(
+    tools: &[crate::model::ToolInfo],
+    progress: Option<&ToolProgress>,
+    tools_dir: &Path,
+) -> String {
+    let own = OwnText::tools_folder(tools_dir);
+    let mut body = String::new();
+    for tool in tools {
+        body.push_str(&crate::i18n::ui_format!(
+            "{0}\r\n  Durum: {1}\r\n  Sürüm: {2}\r\n  Konum: {3}\r\n\r\n",
+            "{0}\r\n  Status: {1}\r\n  Version: {2}\r\n  Location: {3}\r\n\r\n",
+            crate::tools::component_title(&tool.name),
+            if tool.installed {
+                crate::i18n::ui("Kurulu", "Installed")
+            } else {
+                crate::i18n::ui("Kurulu değil", "Not installed")
+            },
+            if tool.version.is_empty() {
+                "-".to_string()
+            } else {
+                without_component_names(&tool.version, &own)
+            },
+            tools_dir.display()
+        ));
+    }
+    if body.is_empty() {
+        body.push_str(crate::i18n::ui(
+            "Henüz araç bilgisi bulunmuyor. Eksikleri kur düğmesi güvenli upstream sürümlerini indirir.",
+            "No tool information yet. The install button downloads safe upstream versions for anything missing.",
+        ));
+    }
+    if let Some(p) = progress {
+        body.push_str(&crate::i18n::ui_format!(
+            "\r\n{0}: {1}\r\nİndirilen: {2}{3}",
+            "\r\n{0}: {1}\r\nDownloaded: {2}{3}",
+            without_component_names(&p.name, &own),
+            without_component_names(&p.message, &own),
+            format_bytes(p.downloaded),
+            p.total
+                .map(|t| format!(" / {}", format_bytes(t)))
+                .unwrap_or_default()
+        ));
+    }
+    body
+}
+
 /// Where the job view's job comes from: the host of its address.
 pub(super) fn job_source(job: &Job) -> String {
     let host = url::Url::parse(job.request.url.trim())
@@ -1771,9 +1796,9 @@ pub(super) fn job_source(job: &Job) -> String {
     crate::i18n::ui_format!("Kaynak: {0}", "Source: {0}", host)
 }
 
-/// The values of `JOB_FACTS` for `job`, "—" where it has none.
+/// The values of `JOB_FACTS` for `job`, "-" where it has none.
 pub(super) fn job_facts(job: &Job) -> [String; JOB_FACTS.len()] {
-    let none = || "—".to_string();
+    let none = || "-".to_string();
     let downloaded = match job.total.filter(|total| *total > 0) {
         Some(total) => format!(
             "{} ({:.1}%)",
