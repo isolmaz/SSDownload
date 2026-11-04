@@ -5,7 +5,7 @@
 <h1 align="center">SSDownload</h1>
 
 <p align="center">
-  A download manager for Windows for files, video and audio. A browser extension adds a download button to videos and sends the media to the app.
+  A Windows download manager for files, video and audio. A browser extension adds a download button to videos and sends the media to the app.
 </p>
 
 <p align="center">
