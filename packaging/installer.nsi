@@ -193,8 +193,8 @@ FunctionEnd
 !define FILE_WAIT_ATTEMPTS 60
 !define FILE_WAIT_STEP_MS 500
 
-; Takes the path of a file on the stack. Setup stops, before it has changed anything, when the
-; file cannot be opened for writing after the wait.
+; Takes the path of a file on the stack. Setup stops when the file still cannot be opened for
+; writing after the wait.
 Function WaitUntilWritable
   Exch $R0
   Push $R1
