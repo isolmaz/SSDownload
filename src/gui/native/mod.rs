@@ -14083,16 +14083,51 @@ mod tests {
         });
     }
 
-    /// Runs `body` on a fresh thread attached to a private desktop. A dialog's
-    /// controls take the focus when they are created, which makes the dialog the
-    /// foreground window of the process; on a private desktop that never
-    /// reaches the keys the user is typing.
-    pub(super) fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+    /// The private desktops that no test is using. Windows keeps a little kernel
+    /// memory for every desktop that was created, also after `CloseDesktop`, so
+    /// the tests share a few desktops that live as long as the process instead of
+    /// making one per window.
+    struct DesktopPool(std::sync::Mutex<Vec<usize>>);
+
+    static DESKTOPS: DesktopPool = DesktopPool::new();
+
+    /// A desktop taken from a pool; it goes back to the pool when the lease
+    /// ends, also while a panic unwinds.
+    struct Lease<'a> {
+        pool: &'a DesktopPool,
+        desktop: usize,
+    }
+
+    impl DesktopPool {
+        const fn new() -> Self {
+            Self(std::sync::Mutex::new(Vec::new()))
+        }
+
+        fn free(&self) -> std::sync::MutexGuard<'_, Vec<usize>> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        fn lease(&self) -> Lease<'_> {
+            let free = self.free().pop();
+            Lease {
+                pool: self,
+                desktop: free.unwrap_or_else(create_private_desktop),
+            }
+        }
+    }
+
+    impl Drop for Lease<'_> {
+        fn drop(&mut self) {
+            self.pool.free().push(self.desktop);
+        }
+    }
+
+    fn create_private_desktop() -> usize {
         use std::ptr::null;
         use windows_sys::Win32::Foundation::{GetLastError, GENERIC_ALL};
-        use windows_sys::Win32::System::StationsAndDesktops::{
-            CloseDesktop, CreateDesktopW, SetThreadDesktop,
-        };
+        use windows_sys::Win32::System::StationsAndDesktops::CreateDesktopW;
 
         let name: Vec<u16> = format!("ssdownload-test-{}\0", uuid::Uuid::new_v4())
             .encode_utf16()
@@ -14104,18 +14139,41 @@ mod tests {
                 "the private desktop is created (Win32 {})",
                 GetLastError()
             );
-            let handle = desktop as usize;
-            let result = std::thread::scope(|scope| {
-                scope
-                    .spawn(|| {
-                        assert_ne!(SetThreadDesktop(handle as _), 0, "the thread moves over");
-                        body()
-                    })
-                    .join()
-            });
-            CloseDesktop(desktop);
-            result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            desktop as usize
         }
+    }
+
+    /// Runs `body` on a fresh thread attached to a private desktop that no
+    /// other test is using. A dialog's controls take the focus when they are
+    /// created, which makes the dialog the foreground window of the process; on
+    /// a private desktop that never reaches the keys the user is typing.
+    ///
+    /// The desktop is handed on to the next test once the thread has ended, and
+    /// a window dies with its thread, so the next test finds the desktop empty:
+    /// a thread that creates windows must be joined before `body` returns.
+    pub(super) fn on_private_desktop<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+        on_desktop_of(&DESKTOPS, body)
+    }
+
+    fn on_desktop_of<T: Send>(pool: &DesktopPool, body: impl FnOnce() -> T + Send) -> T {
+        use windows_sys::Win32::System::StationsAndDesktops::SetThreadDesktop;
+
+        let lease = pool.lease();
+        let handle = lease.desktop;
+        let result = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    assert_ne!(
+                        unsafe { SetThreadDesktop(handle as _) },
+                        0,
+                        "the thread moves over"
+                    );
+                    body()
+                })
+                .join()
+        });
+        drop(lease);
+        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 
     fn current_desktop_name() -> String {
@@ -14150,6 +14208,95 @@ mod tests {
             private.starts_with("ssdownload-test-") && private != users,
             "the body ran on {private:?}, the test thread is on {users:?}"
         );
+    }
+
+    #[test]
+    fn a_desktop_that_a_test_is_done_with_serves_the_next_test() {
+        // The tests below use a pool of their own: the shared one serves every
+        // other test at the same time, so what it hands out is not predictable.
+        let pool = DesktopPool::new();
+        let first = on_desktop_of(&pool, current_desktop_name);
+        let second = on_desktop_of(&pool, current_desktop_name);
+        assert_eq!(
+            first, second,
+            "the second body got another desktop than the first"
+        );
+    }
+
+    #[test]
+    fn tests_that_run_at_the_same_time_get_different_desktops() {
+        let pool = DesktopPool::new();
+        let (outer, inner) = on_desktop_of(&pool, || {
+            (
+                current_desktop_name(),
+                on_desktop_of(&pool, current_desktop_name),
+            )
+        });
+        assert_ne!(
+            outer, inner,
+            "a nested body shares the desktop of its caller"
+        );
+        let after = [
+            on_desktop_of(&pool, current_desktop_name),
+            on_desktop_of(&pool, current_desktop_name),
+        ];
+        assert!(
+            after.iter().all(|name| *name == outer || *name == inner),
+            "both desktops are kept for later bodies: {after:?} after {outer:?} and {inner:?}"
+        );
+    }
+
+    #[test]
+    fn a_desktop_is_handed_on_when_its_body_panics() {
+        let pool = DesktopPool::new();
+        let mut first = String::new();
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            on_desktop_of(&pool, || {
+                first = current_desktop_name();
+                panic!("the body fails");
+            })
+        }));
+        assert!(failed.is_err(), "the panic of the body reaches the caller");
+        assert_eq!(on_desktop_of(&pool, current_desktop_name), first);
+    }
+
+    fn windows_on_this_desktop() -> usize {
+        use windows_sys::Win32::System::StationsAndDesktops::{
+            EnumDesktopWindows, GetThreadDesktop,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+
+        unsafe extern "system" fn count(_: super::HWND, total: isize) -> super::BOOL {
+            *(total as *mut usize) += 1;
+            1
+        }
+        let mut total = 0usize;
+        unsafe {
+            EnumDesktopWindows(
+                GetThreadDesktop(GetCurrentThreadId()),
+                Some(count),
+                &mut total as *mut usize as isize,
+            );
+        }
+        total
+    }
+
+    #[test]
+    fn a_window_a_test_leaves_behind_is_gone_when_the_next_test_gets_the_desktop() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::WS_POPUP;
+
+        let pool = DesktopPool::new();
+        let (name, empty, with_window) = on_desktop_of(&pool, || {
+            let empty = windows_on_this_desktop();
+            unsafe { super::control(std::ptr::null_mut(), "STATIC", "", WS_POPUP, 0, 0) };
+            (current_desktop_name(), empty, windows_on_this_desktop())
+        });
+        assert!(with_window > empty, "the window is seen on its desktop");
+        let (again, now) = on_desktop_of(&pool, || {
+            (current_desktop_name(), windows_on_this_desktop())
+        });
+        assert_eq!(again, name, "the next body got the same desktop");
+        assert_eq!(now, empty, "the window of the earlier body is still there");
     }
 
     /// Registers the window classes once for the whole test process.
