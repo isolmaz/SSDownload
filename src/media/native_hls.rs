@@ -2703,8 +2703,10 @@ mod tests {
     }
 
     /// Fetches `segments` segments of 2000 bytes over four connections from a loopback server
-    /// that answers every request after 40 ms and admits them as `limit` allows. A download that
-    /// has not finished after a minute fails the test.
+    /// that answers every request after 40 ms and admits them as `limit` allows. A download of
+    /// which the server admits no request for a minute has stalled and fails the test. A slow
+    /// runner only stretches the download: a client that gets its first requests out late
+    /// measures a low rate at the first refusal, and its pace takes a while to grow back.
     fn fetch_limited(limit: crate::test_http::RequestLimit, segments: usize) -> Served {
         use crate::test_http::{pattern, Config, Logged, Server, TempDir};
         let server = Server::start(Config {
@@ -2737,7 +2739,20 @@ mod tests {
                     &mut |_| {},
                 ));
             });
-            let fetched = receiver.recv_timeout(Duration::from_secs(60));
+            let (mut admitted, mut progressed) = (0, Instant::now());
+            let fetched = loop {
+                match receiver.recv_timeout(Duration::from_secs(1)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        let count = server.log().iter().filter(|e| e.status == 200).count();
+                        if count > admitted {
+                            (admitted, progressed) = (count, Instant::now());
+                        } else if progressed.elapsed() >= Duration::from_secs(60) {
+                            break Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+                        }
+                    }
+                    result => break result,
+                }
+            };
             // A stalled download is stopped so that the scope can end.
             control.cancel();
             let joins = fetched.expect("the download stalled").unwrap();
