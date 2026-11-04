@@ -611,6 +611,7 @@ const playerSignalled = { containers: true, embeds: [], playerScripts: false };
 test("the tab's address is not sent when another frame carries only a player signal", async () => {
   assert.equal(await otherFrameSent({ playerSignals: playerSignalled }), false, "a frame with a player container and no media element");
   assert.equal(await otherFrameSent({}), true, "a frame with no signal at all stays silent");
+  assert.equal("top_page_url" in await framePlayerHandoff({ others: [[0, { documentId: "dt", pageUrl: "https://clips.example/watch/7", playerSignals: playerSignalled }]] }), true, "a player signal in the top document itself is no other frame");
 });
 
 test("the tab's address is not sent when another frame holds a video that has no source and was not played", async () => {

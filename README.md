@@ -40,7 +40,7 @@
 
 The builds are not code-signed yet, so SmartScreen may warn on first run. The release page lists the SHA-256 of every file. Installed copies update themselves after you accept the signed update.
 
-The app speaks **Turkish, English, Arabic, Spanish, Portuguese (Brazil), French and German**: it starts in your Windows display language (English when Windows uses another one), and **Settings → General** switches it. In Arabic the windows are laid out right to left. The browser extension, the command line and the installer speak the same languages; the extension and the command line follow the app's choice, while the extension's name and summary in the store and on the browser's extensions page follow the browser's language.
+The app speaks **Turkish, English, Arabic, Spanish, Portuguese (Brazil), French and German**. It starts in your Windows display language (English when Windows uses another one), and **Settings → General** switches it. In Arabic the windows are laid out right to left. The browser extension, the command line and the installer speak the same languages. The extension and the command line follow the app's choice; the extension's name and summary in the store and on the browser's extensions page follow the browser's language.
 
 ## Documentation
 
@@ -63,6 +63,6 @@ Checks run locally with `scripts\check.ps1` and on every pull request in GitHub 
 
 ## License
 
-[MIT](LICENSE.txt). yt-dlp, FFmpeg and Deno are not bundled; the app downloads them from their official releases. See [THIRD-PARTY-NOTICES.txt](https://github.com/isolmaz/SSDownload/blob/main/THIRD-PARTY-NOTICES.txt).
+[MIT](LICENSE.txt). yt-dlp, FFmpeg and Deno are not bundled; the app downloads them from their GitHub releases (FFmpeg from the BtbN builds). See [THIRD-PARTY-NOTICES.txt](https://github.com/isolmaz/SSDownload/blob/main/THIRD-PARTY-NOTICES.txt).
 
 Download only content you have the right to download. DRM-protected streams are not supported.
