@@ -5124,6 +5124,13 @@ fn is_name_control(character: char) -> bool {
             .any(|&(first, last)| (first..=last).contains(&character))
 }
 
+/// The file name of a title. A `/` or `\` in a title is text, so it becomes `_` like the other
+/// characters a name cannot hold, where `safe_filename` takes the part after the last one for a
+/// name that may carry a path.
+pub(crate) fn safe_title_filename(title: &str, id: &str) -> String {
+    safe_filename(&title.replace(['/', '\\'], "_"), id)
+}
+
 pub(crate) fn safe_filename(suggested: &str, id: &str) -> String {
     let leaf = suggested.rsplit(['/', '\\']).next().unwrap_or("");
     let mut in_flag = false;

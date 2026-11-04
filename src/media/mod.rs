@@ -41,12 +41,13 @@ mod workspace;
 use evidence::*;
 use metadata::*;
 pub(crate) use naming::picker_file_name;
+use naming::published_output;
 pub(crate) use postprocess::validate_options;
 use postprocess::*;
 use probe::*;
 use process::*;
-pub(crate) use selection::selected_formats;
 use selection::*;
+pub(crate) use selection::{format_fits_container, selected_formats};
 pub(crate) use selftest::self_test;
 #[cfg(test)]
 pub(crate) use selftest::stubs;
@@ -1021,7 +1022,7 @@ fn download_with(
         }
     }
     let result_path = output_plan.publish(
-        output,
+        &published_output(output, request, &info),
         request.playlist,
         &completed_files,
         last_path.as_deref(),
