@@ -2238,6 +2238,16 @@ mod tests {
                         );
                         let state = || card.app.snapshot().jobs[0].state;
                         let before = state();
+                        // A letter that no control takes makes Windows beep. This
+                        // check box takes it, after the buttons of the card.
+                        let taker = control(
+                            card.hwnd,
+                            "BUTTON",
+                            "&t",
+                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+                            0,
+                            9999,
+                        );
                         SendMessageW(card.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, at(1, 1));
                         SetFocus(buttons[0].0);
                         let mut msg: MSG = zeroed();
@@ -2245,6 +2255,11 @@ mod tests {
                         msg.message = WM_CHAR;
                         msg.wParam = 't' as usize;
                         dialog_message(main, &msg);
+                        assert_eq!(
+                            SendMessageW(taker, BM_GETCHECK, 0, 0),
+                            BST_CHECKED as isize,
+                            "the letter went to the control whose access key it is"
+                        );
                         assert_eq!(
                             state(),
                             before,
