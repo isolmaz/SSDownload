@@ -101,12 +101,8 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                     .unwrap_or(0);
                 SendMessageW(f.progress, PBM_SETPOS, percent as usize, 0);
             } else {
-                SendMessageW(
-                    f.progress,
-                    PBM_SETPOS,
-                    if snapshot.installing_tools { 0 } else { 100 },
-                    0,
-                );
+                // Nothing runs, so the bar is empty, not full.
+                SendMessageW(f.progress, PBM_SETPOS, 0, 0);
             }
             if body != f.last_render {
                 set_text(f.status, &body);
