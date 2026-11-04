@@ -1038,6 +1038,27 @@ mod tests {
     }
 
     #[test]
+    fn a_numbered_tar_archive_is_a_name_the_downloader_can_give() {
+        let (paths, root) = fixture();
+        let adopt = |index: usize, found: &dyn Fn(&str) -> String| {
+            let stem = format!("bundle{index}");
+            let name = format!("{stem}.tar.gz");
+            let (mut job, result) = stopped_before_the_journal(&root, &name, b"bytes");
+            job.request.filename = Some(name);
+            fs::rename(&result, result.with_file_name(found(&stem))).unwrap();
+            adopt_finished(&paths, &job).unwrap()
+        };
+        assert!(
+            adopt(0, &|stem| format!("{stem}2.tar.gz")).is_none(),
+            "another name"
+        );
+        let adopted = adopt(1, &|stem| format!("{stem} (1).tar.gz")).expect("numbered archive");
+        assert_eq!(adopted.bytes, 5);
+        assert!(adopted.path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_title_with_a_dot_and_no_extension_is_published_under_its_container() {
         let (paths, root) = fixture();
         // The title's last dot reads as the extension `.0`; the container's extension follows it.

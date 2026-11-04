@@ -3456,6 +3456,50 @@ fn a_job_named_from_the_address_gets_the_decoded_file_name() {
 }
 
 #[test]
+fn a_second_job_for_a_tar_archive_is_numbered_before_its_double_extension() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-tar-{}", Uuid::new_v4()));
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let start_at = Some(Utc::now().timestamp() + 3600);
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(
+            engine
+                .add(AddRequest {
+                    url: "https://example.test/files/xz-5.4.6.tar.xz".into(),
+                    directory: Some(root.join("out")),
+                    start_at,
+                    ..Default::default()
+                })
+                .unwrap()
+                .remove(0),
+        );
+    }
+    let snapshot = engine.snapshot();
+    let names: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            snapshot
+                .jobs
+                .iter()
+                .find(|job| &job.id == id)
+                .unwrap()
+                .name
+                .clone()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "xz-5.4.6.tar.xz",
+            "xz-5.4.6 (1).tar.xz",
+            "xz-5.4.6 (2).tar.xz"
+        ]
+    );
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn a_job_named_from_the_address_or_the_browser_loses_bidirectional_controls() {
     let root = std::env::temp_dir().join(format!("ssdownload-engine-bidi-{}", Uuid::new_v4()));
     let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
