@@ -13,6 +13,15 @@ pub(super) fn pretends_live(id: &str) -> bool {
 }
 
 #[test]
+fn the_warning_about_orphaned_permits_is_worded_for_one_and_for_several() {
+    crate::i18n::assert_worded_by_count(orphaned_permits_text);
+    crate::i18n::with_language("en", || {
+        assert!(orphaned_permits_text(1).contains("1 network permit is kept"));
+        assert!(orphaned_permits_text(2).contains("2 network permits are kept"));
+    });
+}
+
+#[test]
 fn daily_window_handles_overnight_boundaries() {
     assert_eq!(parse_minute("23:30"), Some(1410));
     assert_eq!(parse_minute("00:15"), Some(15));

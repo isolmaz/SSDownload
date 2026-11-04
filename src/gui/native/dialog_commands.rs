@@ -770,14 +770,8 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                     // Every addition posted its own "1 added" line and the last
                     // one would stay on the status bar; one line states the batch.
                     if batch > 1 {
-                        dlg.app.message(
-                            crate::i18n::ui_format!(
-                                "{added} indirme eklendi",
-                                "{added} download(s) added",
-                                added = added
-                            ),
-                            false,
-                        );
+                        dlg.app
+                            .message(crate::app::downloads_added_text(added), false);
                     }
                     let owner = GetWindow(dlg.hwnd, GW_OWNER);
                     let app = dlg.app.clone();

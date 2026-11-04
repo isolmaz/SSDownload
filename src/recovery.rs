@@ -87,6 +87,20 @@ fn reject_link(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// `reject_link` for a folder that may be removed meanwhile: `cleanup_work` of another job takes
+/// the folders it leaves empty, so a path that vanishes between a look and the check is absent.
+fn reject_link_if_present(path: &Path) -> Result<()> {
+    match reject_link(path) {
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(())
+        }
+        other => other,
+    }
+}
 /// Creates `temp` and fills it; a failed fill removes the partial file.
 fn write_temp(temp: &Path, fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>) -> Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(temp)?;
@@ -264,9 +278,7 @@ pub(crate) fn prepare_work(job: &Job) -> Result<PathBuf> {
         "The job work folder is missing",
     ))?;
     for ancestor in path.ancestors().take(3) {
-        if ancestor.exists() {
-            reject_link(ancestor)?;
-        }
+        reject_link_if_present(ancestor)?;
     }
     let marker = path.join(".job");
     if path.exists() {
@@ -809,6 +821,51 @@ mod tests {
 
         remove(&paths, &job, false).unwrap();
         assert_eq!(names_in(&out), Vec::<String>::new());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A directory junction `link` to `target`, which needs no privilege.
+    fn junction(link: &Path, target: &Path) {
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    }
+
+    #[test]
+    fn a_work_folder_another_job_removed_meanwhile_is_absent_and_a_redirection_is_refused() {
+        let (_, root) = fixture();
+        let missing = root.join("out").join(".ssdownload-work").join("jobs");
+        reject_link_if_present(&missing).unwrap();
+        reject_link_if_present(&root.join("out")).unwrap();
+
+        let target = root.join("target");
+        fs::create_dir_all(&target).unwrap();
+        let link = root.join("out").join("link");
+        junction(&link, &target);
+        let refused = reject_link_if_present(&link).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains(&link.display().to_string()),
+            "{refused:#}"
+        );
+        // A redirection whose target is gone is still a redirection.
+        fs::remove_dir(&target).unwrap();
+        assert!(reject_link_if_present(&link).is_err());
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let job = job(&root, id, "movie.mp4");
+        let redirected = root.join("out").join(".ssdownload-work");
+        junction(&redirected, &root);
+        assert!(
+            prepare_work(&job).is_err(),
+            "a work folder behind a redirection is refused"
+        );
+        fs::remove_dir(&redirected).unwrap();
+        prepare_work(&job).unwrap();
+        fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

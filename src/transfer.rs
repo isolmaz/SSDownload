@@ -779,6 +779,15 @@ impl TlsFailure {
         }
     }
 
+    /// The reason as an interface shows a refused secure connection, with its registry code.
+    pub(crate) fn shown(self) -> String {
+        let error = anyhow!("{}", self.text());
+        format!(
+            "{:#}",
+            crate::error_codes::with_code(error, crate::error_codes::NET_002)
+        )
+    }
+
     /// The class of a Windows status (`SEC_E_*`, `CERT_E_*`, `CRYPT_E_*`), `Other` when it is none
     /// of the four or unknown.
     fn of_status(status: Option<i32>) -> Self {
@@ -826,6 +835,19 @@ pub(crate) fn tls_failure(error: &anyhow::Error) -> Option<TlsFailure> {
         (curl_code(error.code()) == Some(crate::error_codes::NET_002))
             .then(|| TlsFailure::of_status(error.extra_description().and_then(windows_status)))
     })
+}
+
+/// `error` as an interface shows it: a refused secure connection reads as its reason in the
+/// language of the application, and the system's own sentence about it, in the language of
+/// Windows, goes to the log. Any other error reads as it is.
+pub(crate) fn shown_error(error: &anyhow::Error) -> String {
+    let Some(tls) = tls_failure(error) else {
+        return format!("{error:#}");
+    };
+    crate::logging::record(
+        crate::logging::Event::warn("transfer.tls_refused").detail(format!("{error:#}")),
+    );
+    tls.shown()
 }
 
 /// Whether the chain carries a kept partial file awaiting a proven source.
@@ -7254,6 +7276,50 @@ mod tests {
             staged.url,
             source_url_digest(&validate_source_url(&next.url).unwrap())
         );
+    }
+
+    #[test]
+    fn a_refused_secure_connection_is_shown_in_the_words_of_the_app_and_any_other_error_as_it_is() {
+        use TlsFailure::*;
+        // What libcurl reports for a certificate that Windows refuses, with the sentence Windows
+        // adds in its own language.
+        let refused = |code, status: &str| {
+            let mut error = curl::Error::new(code);
+            error.set_extra(format!(
+                "schannel: {status} - Sertifika zinciri güvenilmeyen bir yetkili tarafından verildi."
+            ));
+            anyhow::Error::new(error).context("The HTTPS transfer failed")
+        };
+        let peer = curl_sys::CURLE_PEER_FAILED_VERIFICATION;
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                for (status, reason) in [
+                    ("SEC_E_UNTRUSTED_ROOT (0x80090325)", UntrustedRoot),
+                    ("SEC_E_CERT_EXPIRED (0x80090328)", Expired),
+                    ("SEC_E_WRONG_PRINCIPAL (0x80090322)", WrongName),
+                    ("CRYPT_E_REVOKED (0x80092010)", Revoked),
+                    ("SEC_E_CERT_UNKNOWN (0x80090327)", Other),
+                ] {
+                    let shown = shown_error(&refused(peer, status));
+                    assert_eq!(shown, reason.shown(), "{}: {status}", info.code);
+                    assert!(
+                        shown.starts_with("SSD-NET-002 ")
+                            && shown.ends_with(reason.text())
+                            && !shown.contains("Sertifika")
+                            && !shown.contains("schannel"),
+                        "{}: {shown}",
+                        info.code
+                    );
+                }
+            });
+        }
+        let timed_out = refused(
+            curl_sys::CURLE_OPERATION_TIMEDOUT,
+            "SEC_E_UNTRUSTED_ROOT (0x80090325)",
+        );
+        assert_eq!(shown_error(&timed_out), format!("{timed_out:#}"));
+        let plain = anyhow!("The disk is full");
+        assert_eq!(shown_error(&plain), "The disk is full");
     }
 
     #[test]

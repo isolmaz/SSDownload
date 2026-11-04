@@ -3523,6 +3523,34 @@ fn a_playlist_mp4_selector_picks_the_pair_a_single_item_picks_when_the_audio_nam
     }
 }
 
+/// A video format that reports no codec at all is a video-only format for yt-dlp (`vcodec` is not
+/// `none`), so the evidence selector resolves the pair a single item picks.
+#[test]
+fn the_evidence_selector_takes_a_video_format_that_names_no_video_codec() {
+    let info = media_info_from_json(&json!({"formats": [
+        {"format_id": "a-m4a", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2"},
+        {"format_id": "v-1080", "ext": "mp4", "height": 1080, "acodec": "none"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        selected_format_ids("bestvideo", &info).unwrap(),
+        ["v-1080"],
+        "a format without a codec is not an audio-only one"
+    );
+    let single = video_request("mp4", None);
+    let playlist = AddRequest {
+        playlist: true,
+        ..single.clone()
+    };
+    let selector = format_selector(&playlist, &info).unwrap();
+    assert_eq!(selected_ids(&single, &info), ["v-1080", "a-m4a"]);
+    assert_eq!(
+        selected_format_ids(&selector, &info).unwrap(),
+        ["v-1080", "a-m4a"],
+        "{selector}"
+    );
+}
+
 #[test]
 fn the_evidence_selector_follows_ytdlp_for_a_format_without_the_filtered_field() {
     let info = media_info_from_json(&json!({"formats": [

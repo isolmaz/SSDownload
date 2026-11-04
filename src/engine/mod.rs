@@ -3984,7 +3984,7 @@ impl Actor {
             }
         }
         if newly_orphaned > 0 {
-            self.warning = Some(crate::i18n::ui_format!("Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar {newly_orphaned} ağ izni güvenli olarak tutuluyor", "The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed", newly_orphaned = newly_orphaned));
+            self.warning = Some(orphaned_permits_text(newly_orphaned));
         }
     }
 
@@ -5332,6 +5332,20 @@ struct TransferFailure {
     throttled: bool,
 }
 
+/// The warning after the sender of a browser transfer exited while it held `permits` (at least
+/// one) network permits.
+fn orphaned_permits_text(permits: usize) -> String {
+    if permits == 1 {
+        crate::i18n::ui(
+            "Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar 1 ağ izni güvenli olarak tutuluyor",
+            "The browser transfer sender exited; 1 network permit is kept safely until the Chrome request is confirmed",
+        )
+        .to_owned()
+    } else {
+        crate::i18n::ui_format!("Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar {newly_orphaned} ağ izni güvenli olarak tutuluyor", "The browser transfer sender exited; {newly_orphaned} network permits are kept safely until the Chrome request is confirmed", newly_orphaned = permits)
+    }
+}
+
 fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailure {
     let tls = transfer::tls_failure(&error);
     let error = match transfer::network_code(&error) {
@@ -5339,13 +5353,7 @@ fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailu
         None => error,
     };
     let detail = format!("{error:#}");
-    let shown = match tls {
-        Some(tls) => format!(
-            "{:#}",
-            crate::error_codes::with_code(anyhow!("{}", tls.text()), crate::error_codes::NET_002)
-        ),
-        None => detail.clone(),
-    };
+    let shown = tls.map_or_else(|| detail.clone(), transfer::TlsFailure::shown);
     TransferFailure {
         retryable: retryable_error(&error),
         retry_after: transfer::retry_after(&error),

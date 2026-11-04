@@ -3,6 +3,25 @@
 use super::*;
 use std::ffi::OsString;
 
+/// The part of a site scan's summary that names the pages that could not be fetched, after the
+/// reason of the last failure; empty when none failed.
+pub(super) fn failed_pages_note(pages: u32, last_failure: &str) -> String {
+    match pages {
+        0 => String::new(),
+        1 => crate::i18n::ui_format!(
+            ", 1 sayfa alınamadı: {0}",
+            ", 1 page could not be fetched: {0}",
+            last_failure
+        ),
+        pages => crate::i18n::ui_format!(
+            ", {0} sayfa alınamadı: {1}",
+            ", {0} pages could not be fetched: {1}",
+            pages,
+            last_failure
+        ),
+    }
+}
+
 pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
     let snapshot = dlg.app.snapshot();
     let dlg_ptr = dlg as *mut DialogUi;
@@ -37,16 +56,10 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                                 } else {
                                     ""
                                 };
-                                let failed_note = if result.failed_pages > 0 {
-                                    crate::i18n::ui_format!(
-                                        ", {0} sayfa alınamadı: {1}",
-                                        ", {0} pages could not be fetched: {1}",
-                                        result.failed_pages,
-                                        result.last_failure.clone().unwrap_or_default()
-                                    )
-                                } else {
-                                    String::new()
-                                };
+                                let failed_note = failed_pages_note(
+                                    result.failed_pages,
+                                    result.last_failure.as_deref().unwrap_or_default(),
+                                );
                                 set_text(dlg.error,&crate::i18n::ui_format!("{0} sayfa, {1} aday, {2} bayt tarandı{truncated_note}{failed_note}; yalnız seçilen adaylar eklenir.", "Scanned {0} pages, {1} candidates, {2} bytes{truncated_note}{failed_note}; only the selected candidates are added.", result.pages_scanned, result.candidates.len(), result.bytes_scanned, failed_note = failed_note, truncated_note = truncated_note));
                                 EnableWindow(
                                     GetDlgItem(dlg.hwnd, C_ADD),
