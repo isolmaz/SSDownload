@@ -13018,6 +13018,102 @@ mod tests {
         });
     }
 
+    /// The analysis of a source that offers an MP4 and a taller Ogg video without naming codecs,
+    /// an audio track, and a format that reports neither codecs nor a size.
+    fn mp4_and_ogg_analysis() -> crate::model::MediaInfo {
+        use crate::model::{MediaFormat, MediaInfo};
+        let video = |id: &str, extension: &str, width: u32, height: u32| MediaFormat {
+            id: id.into(),
+            extension: extension.into(),
+            width: Some(width),
+            height: Some(height),
+            ..Default::default()
+        };
+        MediaInfo {
+            title: "Real Title".into(),
+            extractor: "Generic".into(),
+            formats: vec![
+                video("0", "mp4", 320, 240),
+                video("1", "ogv", 400, 304),
+                MediaFormat {
+                    id: "audio".into(),
+                    video_codec: Some("none".into()),
+                    audio_codec: Some("mp3".into()),
+                    ..Default::default()
+                },
+                MediaFormat {
+                    id: "unsized".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_picker_lists_each_video_quality_that_reports_a_size_even_without_codecs() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let (raw, hwnd, root) = modern_test_dialog(
+                    blank_picker(),
+                    MEDIA_WIDTH,
+                    media_window_height(MEDIA_HEIGHT, 420),
+                );
+                let DialogKind::Media(f) = &mut (*raw).kind else {
+                    panic!("a media picker");
+                };
+                populate_media(hwnd, f, &mp4_and_ogg_analysis(), "");
+                let listed: Vec<Option<String>> = f
+                    .video_formats
+                    .iter()
+                    .map(|format| format.as_ref().map(|format| format.id.clone()))
+                    .collect();
+                let entries = SendMessageW(f.format, CB_GETCOUNT, 0, 0);
+                close_test_dialog(raw, hwnd, root);
+                // The automatic quality, then the taller quality first.
+                assert_eq!(listed, [None, Some("1".into()), Some("0".into())]);
+                assert_eq!(entries, 3);
+            }
+        });
+    }
+
+    #[test]
+    fn a_remembered_height_preselects_only_a_quality_the_chosen_container_can_hold() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let (raw, hwnd, root) = modern_test_dialog(
+                    blank_picker(),
+                    MEDIA_WIDTH,
+                    media_window_height(MEDIA_HEIGHT, 420),
+                );
+                let DialogKind::Media(f) = &mut (*raw).kind else {
+                    panic!("a media picker");
+                };
+                let containers: Vec<Option<String>> =
+                    f.kind_values.iter().map(|(_, c)| c.clone()).collect();
+                let mut preselected = |container: usize| {
+                    combo_select(f.kind, container as i32);
+                    f.base.max_height = Some(720);
+                    populate_media(hwnd, f, &mp4_and_ogg_analysis(), "");
+                    f.video_formats[combo_index(f.format) as usize]
+                        .as_ref()
+                        .map(|format| format.id.clone())
+                };
+                let mp4 = preselected(0);
+                let mkv = preselected(1);
+                close_test_dialog(raw, hwnd, root);
+                assert_eq!(
+                    containers[..2],
+                    [Some("mp4".to_string()), Some("mkv".to_string())]
+                );
+                assert_eq!(mp4.as_deref(), Some("0"), "MP4 cannot hold the Ogg video");
+                assert_eq!(mkv.as_deref(), Some("1"), "MKV holds the taller one");
+            }
+        });
+    }
+
     #[test]
     fn the_picker_names_the_page_it_analysed_when_that_is_not_the_address_it_was_opened_for() {
         on_private_desktop(|| {

@@ -2153,6 +2153,31 @@ fn windows_filename_rules_remove_traversal_and_devices() {
 }
 
 #[test]
+fn a_name_that_carries_a_path_keeps_only_its_last_part() {
+    assert_eq!(safe_filename(r"..\..\escape.bin", "12345678"), "escape.bin");
+    assert_eq!(
+        safe_filename("/etc/dir/report.pdf", "12345678"),
+        "report.pdf"
+    );
+}
+
+#[test]
+fn a_slash_in_a_title_becomes_an_underscore_and_keeps_the_text_around_it() {
+    assert_eq!(safe_title_filename("AC/DC Live", "12345678"), "AC_DC Live");
+    assert_eq!(safe_title_filename(r"a\b/c", "12345678"), "a_b_c");
+    assert_eq!(
+        safe_title_filename(r"..\..\escape", "12345678"),
+        "_.._escape"
+    );
+    assert_eq!(
+        safe_title_filename("Part 1: Who?", "12345678"),
+        "Part 1_ Who_"
+    );
+    assert_eq!(safe_title_filename("/", "12345678"), "_");
+    assert_eq!(safe_title_filename("", "12345678"), "download-12345678");
+}
+
+#[test]
 fn bidirectional_and_invisible_format_characters_never_stay_in_a_file_name() {
     // The right-to-left override draws the name that follows it backwards: this one ends in
     // `.exe` and reads as `exe.txt`.

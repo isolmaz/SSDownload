@@ -1,4 +1,4 @@
-//! The file name the media picker starts from.
+//! The file name the media picker starts from and the one a download without a name is published under.
 
 use super::*;
 
@@ -45,9 +45,30 @@ pub(crate) fn picker_file_name(
         .unwrap_or_else(|| {
             format!(
                 "{}.{extension}",
-                crate::engine::safe_filename(&info.title, "video")
+                crate::engine::safe_title_filename(&info.title, "video")
             )
         })
+}
+
+/// Where a finished media download is published. A request that carries a name keeps the job's
+/// output, which is that name. Otherwise the job was named after its address, and the file is
+/// saved under the analysed title instead, unless the title names nothing: the analysis found
+/// none or it is only the site's name. Only a name the browser supplies is checked for the
+/// extension's placeholders; a title the media tool read, such as `Video 2024`, is a title. The
+/// container's extension is added where the file is published.
+pub(super) fn published_output(output: &Path, request: &AddRequest, info: &MediaInfo) -> PathBuf {
+    let named = request
+        .filename
+        .as_deref()
+        .is_some_and(|name| !name.trim().is_empty());
+    let title = info.title.trim();
+    let names_nothing = title.is_empty()
+        || crate::i18n::wordings("Adsız medya", "Untitled media").any(|wording| wording == title)
+        || names_only_the_site(title, request, info);
+    if named || names_nothing {
+        return output.to_owned();
+    }
+    output.with_file_name(crate::engine::safe_title_filename(title, "video"))
 }
 
 /// Whether `name` is one of the extension's placeholders, with or without the player's number.
@@ -325,6 +346,91 @@ mod tests {
         assert_eq!(
             picker_file_name(&request, true, &info, "mp4"),
             "Real Title.mp4"
+        );
+    }
+
+    const WORK: &str = r"C:\work\jobs\id\watch";
+
+    fn published_name(name: Option<&str>, analysed: &MediaInfo) -> PathBuf {
+        published_output(Path::new(WORK), &request(name, MEDIA, None), analysed)
+    }
+
+    #[test]
+    fn a_download_without_a_name_is_published_under_the_media_title() {
+        let analysed = info("Real Title", "Generic", "https://clips.example/watch");
+        let titled = PathBuf::from(r"C:\work\jobs\id\Real Title");
+        for name in [None, Some(""), Some("  ")] {
+            assert_eq!(published_name(name, &analysed), titled, "{name:?}");
+        }
+        let awkward = info("Part 1: Who?", "Generic", "");
+        assert_eq!(
+            published_name(None, &awkward),
+            PathBuf::from(r"C:\work\jobs\id\Part 1_ Who_")
+        );
+    }
+
+    #[test]
+    fn a_name_the_request_carries_is_kept_exactly() {
+        let analysed = info("Real Title", "Generic", "https://clips.example/watch");
+        for name in ["mine.mp4", "Clips", "Video 3", "  spaced "] {
+            assert_eq!(
+                published_name(Some(name), &analysed),
+                PathBuf::from(WORK),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_title_that_names_nothing_leaves_the_name_of_the_address() {
+        for title in [
+            "",
+            "   ",
+            "Untitled media",
+            "Adsız medya",
+            "Moviehub",
+            "(2) Clips",
+        ] {
+            let analysed = info(title, "Moviehub", "https://clips.example/watch");
+            assert_eq!(
+                published_name(None, &analysed),
+                PathBuf::from(WORK),
+                "{title:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_title_the_media_tool_read_is_used_even_when_it_looks_like_a_placeholder() {
+        for title in ["Video 2024", "Vídeo 3", "Video"] {
+            let analysed = info(title, "Generic", "https://clips.example/watch");
+            assert_eq!(
+                published_name(None, &analysed),
+                PathBuf::from(format!(r"C:\work\jobs\id\{title}")),
+                "{title:?}"
+            );
+            assert_eq!(
+                picker_file_name(&request(None, MEDIA, None), true, &analysed, "mp4"),
+                format!("{title}.mp4"),
+                "{title:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_slash_in_a_title_is_kept_as_text_in_the_file_name() {
+        let analysed = info(
+            r"AC/DC Live \ 1979",
+            "Generic",
+            "https://clips.example/watch",
+        );
+        assert_eq!(
+            published_name(None, &analysed),
+            PathBuf::from(r"C:\work\jobs\id\AC_DC Live _ 1979")
+        );
+        assert_eq!(
+            picker_file_name(&request(None, MEDIA, None), true, &analysed, "mp4"),
+            "AC_DC Live _ 1979.mp4"
         );
     }
 

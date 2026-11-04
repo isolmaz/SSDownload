@@ -253,6 +253,7 @@ impl Fixture {
         let request = AddRequest {
             url: self.master.clone(),
             kind: DownloadKind::Video,
+            filename: Some("film.mp4".into()),
             container: Some("mp4".into()),
             expected_audio: Some(true),
             connections: Some(connections),
