@@ -1,4 +1,4 @@
-//! The file name the media picker starts from.
+//! The file name the media picker starts from and the one a download without a name is published under.
 
 use super::*;
 
@@ -48,6 +48,27 @@ pub(crate) fn picker_file_name(
                 crate::engine::safe_filename(&info.title, "video")
             )
         })
+}
+
+/// Where a finished media download is published. A request that carries a name keeps the job's
+/// output, which is that name. Otherwise the job was named after its address, and the file is
+/// saved under the analysed title instead, unless the title names nothing: the analysis found
+/// none, it is a placeholder of the extension, or it is only the site's name. The container's
+/// extension is added where the file is published.
+pub(super) fn published_output(output: &Path, request: &AddRequest, info: &MediaInfo) -> PathBuf {
+    let named = request
+        .filename
+        .as_deref()
+        .is_some_and(|name| !name.trim().is_empty());
+    let title = info.title.trim();
+    let names_nothing = title.is_empty()
+        || crate::i18n::wordings("Adsız medya", "Untitled media").any(|wording| wording == title)
+        || is_extension_placeholder(title)
+        || names_only_the_site(title, request, info);
+    if named || names_nothing {
+        return output.to_owned();
+    }
+    output.with_file_name(crate::engine::safe_filename(title, "video"))
 }
 
 /// Whether `name` is one of the extension's placeholders, with or without the player's number.
@@ -326,6 +347,58 @@ mod tests {
             picker_file_name(&request, true, &info, "mp4"),
             "Real Title.mp4"
         );
+    }
+
+    const WORK: &str = r"C:\work\jobs\id\watch";
+
+    fn published_name(name: Option<&str>, analysed: &MediaInfo) -> PathBuf {
+        published_output(Path::new(WORK), &request(name, MEDIA, None), analysed)
+    }
+
+    #[test]
+    fn a_download_without_a_name_is_published_under_the_media_title() {
+        let analysed = info("Real Title", "Generic", "https://clips.example/watch");
+        let titled = PathBuf::from(r"C:\work\jobs\id\Real Title");
+        for name in [None, Some(""), Some("  ")] {
+            assert_eq!(published_name(name, &analysed), titled, "{name:?}");
+        }
+        let awkward = info("Part 1: Who?", "Generic", "");
+        assert_eq!(
+            published_name(None, &awkward),
+            PathBuf::from(r"C:\work\jobs\id\Part 1_ Who_")
+        );
+    }
+
+    #[test]
+    fn a_name_the_request_carries_is_kept_exactly() {
+        let analysed = info("Real Title", "Generic", "https://clips.example/watch");
+        for name in ["mine.mp4", "Clips", "Video 3", "  spaced "] {
+            assert_eq!(
+                published_name(Some(name), &analysed),
+                PathBuf::from(WORK),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_title_that_names_nothing_leaves_the_name_of_the_address() {
+        for title in [
+            "",
+            "   ",
+            "Untitled media",
+            "Adsız medya",
+            "Video 3",
+            "Moviehub",
+            "(2) Clips",
+        ] {
+            let analysed = info(title, "Moviehub", "https://clips.example/watch");
+            assert_eq!(
+                published_name(None, &analysed),
+                PathBuf::from(WORK),
+                "{title:?}"
+            );
+        }
     }
 
     #[test]

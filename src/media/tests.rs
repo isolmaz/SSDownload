@@ -1069,6 +1069,141 @@ fn a_height_limit_does_not_turn_a_source_with_audio_into_a_silent_video() {
     );
 }
 
+/// The analysis of a source that offers an MP4 and a taller Ogg video and names no codecs.
+fn mp4_and_ogg_analysis() -> MediaInfo {
+    media_info_from_json(&json!({"title": "Film", "formats":[
+        {"format_id":"0","ext":"mp4","width":320,"height":240},
+        {"format_id":"1","ext":"ogv","width":400,"height":304}
+    ]}))
+    .unwrap()
+}
+
+fn video_request(container: &str, maximum: Option<u32>) -> AddRequest {
+    AddRequest {
+        url: "https://video.example/details/film".into(),
+        kind: DownloadKind::Video,
+        container: Some(container.into()),
+        max_height: maximum,
+        ..AddRequest::default()
+    }
+}
+
+#[test]
+fn an_mp4_download_takes_the_stream_mp4_can_hold_over_a_taller_one_it_cannot() {
+    let info = mp4_and_ogg_analysis();
+    for maximum in [None, Some(720)] {
+        let request = video_request("mp4", maximum);
+        assert_eq!(
+            format_selector(&request, &info).unwrap(),
+            "0",
+            "{maximum:?}"
+        );
+        assert_eq!(selected_ids(&request, &info), ["0"], "{maximum:?}");
+        validate_container_selection(&request, &info).unwrap();
+    }
+    // MKV holds any codec: the tool keeps choosing by size.
+    assert_eq!(
+        format_selector(&video_request("mkv", Some(720)), &info).unwrap(),
+        "bestvideo[height<=720]/best[height<=720]/bestvideo[height<=?720]/best[height<=?720]"
+    );
+}
+
+#[test]
+fn a_source_with_only_streams_mp4_cannot_hold_is_refused_for_mp4_before_any_download() {
+    let only_ogg = media_info_from_json(&json!({"formats":[
+        {"format_id":"1","ext":"ogv","width":400,"height":304}
+    ]}))
+    .unwrap();
+    let error = format_selector(&video_request("mp4", Some(720)), &only_ogg).unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::MED_014),
+        "{error:#}"
+    );
+
+    // Choosing the Ogg stream by hand for MP4 is refused the same way; the MP4 one is accepted.
+    let both = mp4_and_ogg_analysis();
+    let chosen = |id: &str| AddRequest {
+        format_id: Some(id.into()),
+        ..video_request("mp4", None)
+    };
+    let error = validate_container_selection(&chosen("1"), &both).unwrap_err();
+    assert_eq!(
+        crate::error_codes::code_of(&error),
+        Some(crate::error_codes::MED_014),
+        "{error:#}"
+    );
+    validate_container_selection(&chosen("0"), &both).unwrap();
+}
+
+#[test]
+fn a_stream_known_to_fit_mp4_comes_before_a_taller_one_nothing_is_known_about() {
+    let request = video_request("mp4", None);
+    let with_a_known_fit = media_info_from_json(&json!({"formats":[
+        {"format_id":"open","width":1280,"height":720},
+        {"format_id":"known","ext":"mp4","vcodec":"avc1.64001e","acodec":"mp4a.40.2","height":480}
+    ]}))
+    .unwrap();
+    assert_eq!(selected_ids(&request, &with_a_known_fit), ["known"]);
+
+    // Where nothing is known to fit, the stream nothing is known about is still taken.
+    let nothing_known = media_info_from_json(&json!({"formats":[
+        {"format_id":"open","width":1280,"height":720},
+        {"format_id":"small","height":360}
+    ]}))
+    .unwrap();
+    assert_eq!(selected_ids(&request, &nothing_known), ["open"]);
+
+    // The same order picks the audio.
+    let with_audio = |extra: Value| {
+        let mut formats =
+            vec![json!({"format_id":"v","ext":"mp4","vcodec":"avc1","acodec":"none","height":480})];
+        formats.extend(extra.as_array().unwrap().iter().cloned());
+        media_info_from_json(&json!({ "formats": formats })).unwrap()
+    };
+    let both = with_audio(json!([
+        {"format_id":"a-aac","ext":"m4a","vcodec":"none","acodec":"mp4a.40.2"},
+        {"format_id":"a-open","vcodec":"none"}
+    ]));
+    assert_eq!(selected_ids(&request, &both), ["v", "a-aac"]);
+    let only_open = with_audio(json!([{"format_id":"a-open","vcodec":"none"}]));
+    assert_eq!(selected_ids(&request, &only_open), ["v", "a-open"]);
+
+    // And a video that goes with a separate audio track.
+    let taller_open = with_audio(json!([
+        {"format_id":"v-open","vcodec":null,"acodec":"none","height":720},
+        {"format_id":"a-aac","ext":"m4a","vcodec":"none","acodec":"mp4a.40.2"}
+    ]));
+    assert_eq!(selected_ids(&request, &taller_open), ["v", "a-aac"]);
+    assert_eq!(best_mp4_video(&request, &taller_open).unwrap().id, "v");
+}
+
+#[test]
+fn only_mp4_limits_the_codecs_a_format_may_carry() {
+    let format = |extension: &str, video: Option<&str>, audio: Option<&str>| MediaFormat {
+        extension: extension.into(),
+        video_codec: video.map(Into::into),
+        audio_codec: audio.map(Into::into),
+        ..MediaFormat::default()
+    };
+    let unnamed_ogg = format("ogv", None, None);
+    let unnamed_webm = format("WebM", None, Some("opus"));
+    let unnamed_mp4 = format("mp4", None, None);
+    let unnamed_other = format("", None, None);
+    let vp9 = format("webm", Some("vp9"), Some("none"));
+    let avc = format("mp4", Some("avc1"), Some("none"));
+    for (container, expected) in [(Some("mp4"), false), (Some("mkv"), true), (None, true)] {
+        assert_eq!(format_fits_container(&unnamed_ogg, container), expected);
+        assert_eq!(format_fits_container(&unnamed_webm, container), expected);
+        assert_eq!(format_fits_container(&vp9, container), expected);
+    }
+    for container in [Some("mp4"), Some("mkv"), None] {
+        assert!(format_fits_container(&unnamed_mp4, container));
+        assert!(format_fits_container(&unnamed_other, container));
+        assert!(format_fits_container(&avc, container));
+    }
+}
+
 #[test]
 fn a_file_the_analysis_lists_once_is_still_downloaded_as_it_is() {
     let info = media_info_from_json(&json!({"formats":[{"format_id":"0","ext":"mp4"}]})).unwrap();
@@ -1608,6 +1743,57 @@ fn media_publication_moves_only_the_final_file_out_of_private_workspace() {
     assert_eq!(published, root.join("chosen-name.mp4"));
     assert_eq!(fs::read(&published).unwrap(), b"test media");
     assert!(!plan.workspace.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_download_without_a_name_is_saved_under_its_title_and_never_over_a_file() {
+    let root = std::env::temp_dir().join(format!("ssdownload-media-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("watch");
+    let request = AddRequest {
+        url: "https://video.example/watch?v=1".into(),
+        kind: DownloadKind::Video,
+        container: Some("mp4".into()),
+        ..AddRequest::default()
+    };
+    let info = MediaInfo {
+        title: "Real Title".into(),
+        extractor: "Generic".into(),
+        ..MediaInfo::default()
+    };
+    let save = |output: &Path, name_in_request: Option<&str>| {
+        let request = AddRequest {
+            filename: name_in_request.map(Into::into),
+            ..request.clone()
+        };
+        let plan = OutputPlan::new(output, &request, None).unwrap();
+        let staged = plan.workspace.join("media.mp4");
+        fs::write(&staged, b"test media").unwrap();
+        plan.publish(
+            &published_output(output, &request, &info),
+            false,
+            &HashSet::new(),
+            Some(&staged),
+        )
+        .unwrap()
+    };
+
+    assert_eq!(save(&output, None), root.join("Real Title.mp4"));
+    assert_eq!(
+        save(&output, None),
+        root.join("Real Title (1).mp4"),
+        "the file of the first download is not overwritten"
+    );
+    assert_eq!(
+        fs::read(root.join("Real Title.mp4")).unwrap(),
+        b"test media"
+    );
+    // A request that carries a name is published under it, whatever the title says.
+    assert_eq!(
+        save(&root.join("chosen"), Some("chosen.mp4")),
+        root.join("chosen.mp4")
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

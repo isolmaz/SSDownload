@@ -454,6 +454,15 @@ pub(super) fn media_stream_present(codec: Option<&str>) -> bool {
     codec.is_some_and(|value| value != "none" && value != "unknown")
 }
 
+/// Whether the quality list offers `format`: it carries a video stream, or the extractor named
+/// no codecs but reported a size, which only a video has.
+fn is_video_quality(format: &MediaFormat) -> bool {
+    !format.has_drm
+        && (media_stream_present(format.video_codec.as_deref())
+            || (format.video_codec.is_none()
+                && (format.height.is_some() || format.width.is_some())))
+}
+
 /// Shows the analysis of this picker's generation: what it is doing while it
 /// runs, the form once it has loaded, the error when it failed.
 pub(super) unsafe fn refresh_media(dlg: &DialogUi, f: &mut MediaFields, snapshot: &AppSnapshot) {
@@ -1038,7 +1047,7 @@ pub(super) unsafe fn populate_media(
     let mut formats: Vec<MediaFormat> = info
         .formats
         .iter()
-        .filter(|value| !value.has_drm && media_stream_present(value.video_codec.as_deref()))
+        .filter(|value| is_video_quality(value))
         .cloned()
         .collect();
     formats.sort_by(|left, right| {
@@ -1053,6 +1062,13 @@ pub(super) unsafe fn populate_media(
         combo_add(f.format, &media_format_label(&format));
         f.video_formats.push(Some(format));
     }
+    // A remembered height never preselects a quality the chosen container cannot hold.
+    let container = f
+        .kind_values
+        .get(combo_index(f.kind).max(0) as usize)
+        .and_then(|(_, container)| container.clone());
+    let fits =
+        |value: &MediaFormat| crate::media::format_fits_container(value, container.as_deref());
     let preferred = f
         .base
         .video_format_id
@@ -1069,16 +1085,15 @@ pub(super) unsafe fn populate_media(
                     .position(|format| {
                         format
                             .as_ref()
-                            .is_some_and(|value| value.height == Some(height))
+                            .is_some_and(|value| fits(value) && value.height == Some(height))
                     })
                     // The formats run from the highest down: the first one at or
                     // below the remembered height is the closest match.
                     .or_else(|| {
                         f.video_formats.iter().position(|format| {
-                            format
-                                .as_ref()
-                                .and_then(|value| value.height)
-                                .is_some_and(|value| value <= height)
+                            format.as_ref().is_some_and(|value| {
+                                fits(value) && value.height.is_some_and(|value| value <= height)
+                            })
                         })
                     })
             })

@@ -118,10 +118,10 @@ pub(super) fn format_selector(request: &AddRequest, info: &MediaInfo) -> Result<
             "best".into()
         });
     }
-    let silent = video_only_source(request, info);
-    if !silent && request.container.as_deref() == Some("mp4") {
+    if request.container.as_deref() == Some("mp4") {
         return automatic_mp4_selector(request, info);
     }
+    let silent = video_only_source(request, info);
     let expression = |height: &str| {
         if silent {
             format!("bestvideo{height}/best{height}")
@@ -171,14 +171,76 @@ pub(super) fn mp4_video_candidate(format: &MediaFormat, request: &AddRequest) ->
         && requested_video_size(format, request)
 }
 
-// Missing extractor metadata is not evidence of codec incompatibility. Unknown
-// formats remain provisional: validate_probe checks the actual output codecs.
+/// How far the analysis shows that a stream goes into MP4 without re-encoding. A reported codec
+/// decides. Without one the format's extension is the only evidence: a container of MP4's own
+/// family counts as a fit, one that carries codecs MP4 cannot hold rules the stream out, and any
+/// other extension leaves it open for `validate_probe` to check on the output.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Mp4Fit {
+    No,
+    Unproven,
+    Yes,
+}
+
+/// Extensions of containers that share MP4's codecs.
+const MP4_FAMILY_EXTENSIONS: &[&str] = &["mp4", "m4v", "m4a", "mov"];
+
+/// Extensions of containers whose streams (Theora, Vorbis, Opus, VP8, VP9, Windows Media, FLAC)
+/// MP4 cannot take without re-encoding.
+const NON_MP4_EXTENSIONS: &[&str] = &[
+    "ogv", "ogg", "oga", "ogx", "opus", "webm", "weba", "wmv", "wma", "asf", "flac",
+];
+
+fn mp4_fit(codec: Option<&str>, extension: &str, codec_fits: fn(&str) -> bool) -> Mp4Fit {
+    match codec {
+        Some(codec) if codec_fits(codec) => Mp4Fit::Yes,
+        Some(_) => Mp4Fit::No,
+        None if MP4_FAMILY_EXTENSIONS
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(extension)) =>
+        {
+            Mp4Fit::Yes
+        }
+        None if NON_MP4_EXTENSIONS
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(extension)) =>
+        {
+            Mp4Fit::No
+        }
+        None => Mp4Fit::Unproven,
+    }
+}
+
+fn mp4_video_fit(format: &MediaFormat) -> Mp4Fit {
+    mp4_fit(
+        format.video_codec.as_deref(),
+        &format.extension,
+        mp4_video_codec,
+    )
+}
+
+fn mp4_audio_fit(format: &MediaFormat) -> Mp4Fit {
+    mp4_fit(
+        format.audio_codec.as_deref(),
+        &format.extension,
+        mp4_audio_codec,
+    )
+}
+
 pub(super) fn mp4_video_stream(format: &MediaFormat) -> bool {
-    format.video_codec.as_deref().is_none_or(mp4_video_codec)
+    mp4_video_fit(format) != Mp4Fit::No
 }
 
 pub(super) fn mp4_audio_stream(format: &MediaFormat) -> bool {
-    format.audio_codec.as_deref().is_none_or(mp4_audio_codec)
+    mp4_audio_fit(format) != Mp4Fit::No
+}
+
+/// Whether every stream `format` carries goes into `container` without re-encoding. Only MP4
+/// limits the codecs.
+pub(crate) fn format_fits_container(format: &MediaFormat, container: Option<&str>) -> bool {
+    container != Some("mp4")
+        || ((stream_absent(format.video_codec.as_deref()) || mp4_video_stream(format))
+            && (stream_absent(format.audio_codec.as_deref()) || mp4_audio_stream(format)))
 }
 
 pub(super) fn mp4_audio_candidate(format: &MediaFormat, request: &AddRequest) -> bool {
@@ -196,10 +258,7 @@ pub(super) fn best_mp4_video<'a>(
     info.formats
         .iter()
         .filter(|format| mp4_video_candidate(format, request))
-        .max_by(|left, right| {
-            (left.height.unwrap_or(0), left.width.unwrap_or(0))
-                .cmp(&(right.height.unwrap_or(0), right.width.unwrap_or(0)))
-        })
+        .max_by_key(|format| (mp4_video_fit(format), pixel_size(format)))
         .ok_or_else(|| {
             anyhow!(crate::i18n::ui(
                 "Seçilen çözünürlükte MP4 uyumlu görüntü codec'i bulunamadı; MKV seçin",
@@ -208,12 +267,22 @@ pub(super) fn best_mp4_video<'a>(
         })
 }
 
+/// The pixels of a format, tallest first when compared; a format that reports none is the
+/// smallest.
+fn pixel_size(format: &MediaFormat) -> (u32, u32) {
+    (format.height.unwrap_or(0), format.width.unwrap_or(0))
+}
+
 /// The extractor lists formats from worst to best in its own preference order (the original
-/// language before dubs, DRC variants last), so the last compatible audio format is its pick.
+/// language before dubs, DRC variants last), so among the audio formats that fit equally well the
+/// last one is its pick.
 fn preferred_mp4_audio<'a>(request: &AddRequest, info: &'a MediaInfo) -> Option<&'a MediaFormat> {
     info.formats
         .iter()
-        .rfind(|format| mp4_audio_candidate(format, request))
+        .enumerate()
+        .filter(|(_, format)| mp4_audio_candidate(format, request))
+        .max_by_key(|(position, format)| (mp4_audio_fit(format), *position))
+        .map(|(_, format)| format)
 }
 
 pub(super) fn best_mp4_audio<'a>(
@@ -291,15 +360,11 @@ fn mp4_selection(request: &AddRequest, info: &MediaInfo, reported_height: bool) 
     let fits = |format: &MediaFormat| {
         requested_video_size(format, request) && (!reported_height || format.height.is_some())
     };
-    let tallest = |left: &&MediaFormat, right: &&MediaFormat| {
-        (left.height.unwrap_or(0), left.width.unwrap_or(0))
-            .cmp(&(right.height.unwrap_or(0), right.width.unwrap_or(0)))
-    };
     let video_only = info
         .formats
         .iter()
         .filter(|format| mp4_video_candidate(format, request) && fits(format))
-        .max_by(tallest);
+        .max_by_key(|format| (mp4_video_fit(format), pixel_size(format)));
     let audio_only = preferred_mp4_audio(request, info);
     if let (Some(video), Some(audio)) = (video_only, audio_only) {
         return Some(if request.playlist {
@@ -312,7 +377,12 @@ fn mp4_selection(request: &AddRequest, info: &MediaInfo, reported_height: bool) 
         .formats
         .iter()
         .filter(|format| mp4_video_stream(format) && mp4_audio_stream(format) && fits(format))
-        .max_by(tallest);
+        .max_by_key(|format| {
+            (
+                mp4_video_fit(format).min(mp4_audio_fit(format)),
+                pixel_size(format),
+            )
+        });
     if let Some(combined) = combined {
         return Some(if request.playlist {
             playlist_mp4_selector(request, true)
@@ -356,11 +426,6 @@ pub(super) fn validate_container_selection(request: &AddRequest, info: &MediaInf
         return Ok(());
     }
 
-    let format_compatible = |format: &MediaFormat| {
-        let video_ok = stream_absent(format.video_codec.as_deref()) || mp4_video_stream(format);
-        let audio_ok = stream_absent(format.audio_codec.as_deref()) || mp4_audio_stream(format);
-        video_ok && audio_ok
-    };
     let mut selected = Vec::new();
     if let Some(id) = request
         .format_id
@@ -385,7 +450,10 @@ pub(super) fn validate_container_selection(request: &AddRequest, info: &MediaInf
     for audio in &request.audio_tracks {
         selected.push(exact_audio_format(info, &audio.id)?);
     }
-    if selected.iter().any(|format| !format_compatible(format)) {
+    if selected
+        .iter()
+        .any(|format| !format_fits_container(format, Some("mp4")))
+    {
         crate::bail_code!(
             crate::error_codes::MED_014,
             "{}",
