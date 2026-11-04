@@ -299,12 +299,12 @@ pub(super) fn best_mp4_audio<'a>(
 
 /// A playlist is downloaded with one `--format` expression for every entry, and format ids
 /// belong to a single entry; the codecs, the height and the audio language take the place of
-/// the ids. A `?` after `~=` and `<=` lets a format pass whose value the extractor did not
-/// report, as the checks on the sampled entry do (an HLS audio rendition has no `acodec`); an
-/// exact height must be reported. A format with an extension in [`NON_MP4_EXTENSIONS`] is left
-/// out, which is how [`mp4_fit`] judges a format that names no codec. Under a height limit the
-/// formats that report a height come first and the ones that do not follow, as in
-/// [`format_selector`].
+/// the ids. The formats whose reported codec fits MP4 come first, whatever their extension, as
+/// [`mp4_fit`] ranks them for a single item. The fallback lets a format pass whose codec the
+/// extractor did not report (an HLS audio rendition has no `acodec`; `?` after `~=` and `<=`)
+/// unless its extension is in [`NON_MP4_EXTENSIONS`], which is how [`mp4_fit`] judges a format
+/// that names no codec. An exact height must be reported. Under a height limit the formats that
+/// report a height come first and the ones that do not follow, as in [`format_selector`].
 pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> String {
     let exact = request
         .exact_height
@@ -315,13 +315,16 @@ pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> S
         .as_ref()
         .map(|language| format!("[language={language}]"))
         .unwrap_or_default();
-    let video = format!("[vcodec~=?'^({})']", MP4_VIDEO_CODECS.join("|"));
-    let audio = format!("[acodec~=?'^({})']{language}", MP4_AUDIO_CODECS.join("|"));
     let extension: String = NON_MP4_EXTENSIONS
         .iter()
         .map(|excluded| format!("[ext!={excluded}]"))
         .collect();
-    let expression = |height: &str| {
+    let expression = |height: &str, unreported: &str, extension: &str| {
+        let video = format!("[vcodec~={unreported}'^({})']", MP4_VIDEO_CODECS.join("|"));
+        let audio = format!(
+            "[acodec~={unreported}'^({})']{language}",
+            MP4_AUDIO_CODECS.join("|")
+        );
         if with_audio {
             format!(
                 "bestvideo{height}{video}{extension}+bestaudio{audio}{extension}\
@@ -331,13 +334,20 @@ pub(super) fn playlist_mp4_selector(request: &AddRequest, with_audio: bool) -> S
             format!("bestvideo{height}{video}{extension}")
         }
     };
+    let stage = |height: &str| {
+        format!(
+            "{}/{}",
+            expression(height, "", ""),
+            expression(height, "?", &extension)
+        )
+    };
     match request.max_height {
         Some(maximum) => format!(
             "{}/{}",
-            expression(&format!("{exact}[height<={maximum}]")),
-            expression(&format!("{exact}[height<=?{maximum}]"))
+            stage(&format!("{exact}[height<={maximum}]")),
+            stage(&format!("{exact}[height<=?{maximum}]"))
         ),
-        None => expression(&exact),
+        None => stage(&exact),
     }
 }
 

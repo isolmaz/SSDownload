@@ -3333,14 +3333,20 @@ fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
     };
     let video = "[vcodec~=?'^(avc|h264|hevc|h265|hev1|hvc1|dvh1|dvhe|av01|av1|mpeg4|mp4v)']";
     let audio = "[acodec~=?'^(aac|mp4a|alac|mp3|ac3|ac-3|eac3|ec-3)']";
+    let strict_video = video.replace("~=?", "~=");
+    let strict_audio = audio.replace("~=?", "~=");
     let outside_mp4 = "[ext!=ogv][ext!=ogg][ext!=oga][ext!=ogx][ext!=opus][ext!=webm]\
                        [ext!=weba][ext!=wmv][ext!=wma][ext!=asf][ext!=flac]";
     let selector = format_selector(&request, &sampled).unwrap();
     assert_eq!(
         selector,
         format!(
-            "bestvideo[height<=720]{video}{outside_mp4}+bestaudio{audio}{outside_mp4}\
+            "bestvideo[height<=720]{strict_video}+bestaudio{strict_audio}\
+             /best[height<=720]{strict_video}{strict_audio}\
+             /bestvideo[height<=720]{video}{outside_mp4}+bestaudio{audio}{outside_mp4}\
              /best[height<=720]{video}{audio}{outside_mp4}\
+             /bestvideo[height<=?720]{strict_video}+bestaudio{strict_audio}\
+             /best[height<=?720]{strict_video}{strict_audio}\
              /bestvideo[height<=?720]{video}{outside_mp4}+bestaudio{audio}{outside_mp4}\
              /best[height<=?720]{video}{audio}{outside_mp4}"
         )
@@ -3357,9 +3363,15 @@ fn a_playlist_mp4_selector_resolves_for_every_entry_not_only_the_sampled_one() {
 
     request.max_height = None;
     request.exact_height = Some(720);
-    assert!(format_selector(&request, &sampled)
-        .unwrap()
-        .starts_with("bestvideo[height=720][vcodec~=?"));
+    let exact = format_selector(&request, &sampled).unwrap();
+    assert!(
+        exact.starts_with("bestvideo[height=720][vcodec~='^("),
+        "{exact}"
+    );
+    assert!(
+        exact.contains("/bestvideo[height=720][vcodec~=?'^("),
+        "{exact}"
+    );
 
     request.playlist = false;
     assert_eq!(format_selector(&request, &sampled).unwrap(), "f-avc+f-aac");
@@ -3432,6 +3444,44 @@ fn a_playlist_mp4_selector_leaves_out_codecless_formats_of_containers_mp4_cannot
         ["video", "audio"],
         "the audio stream without a codec that is last in the list is a WebM one"
     );
+}
+
+/// A playlist expression takes the formats whose codec is known to fit MP4 before the ones that
+/// name none, whatever their extension, so it picks what a single item picks.
+#[test]
+fn a_playlist_mp4_selector_prefers_a_known_fitting_codec_in_a_webm_container() {
+    let playlist = AddRequest {
+        playlist: true,
+        ..video_request("mp4", None)
+    };
+    let single = video_request("mp4", None);
+
+    let webm_only = media_info_from_json(&json!({"formats": [
+        {"format_id": "v-1080", "ext": "webm", "height": 1080, "vcodec": "av01.0.08M.08", "acodec": "none"},
+        {"format_id": "a-m4a", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2"}
+    ]}))
+    .unwrap();
+    let selector = format_selector(&playlist, &webm_only).unwrap();
+    assert_eq!(
+        selected_format_ids(&selector, &webm_only).unwrap(),
+        ["v-1080", "a-m4a"],
+        "{selector}"
+    );
+    assert_eq!(selected_ids(&single, &webm_only), ["v-1080", "a-m4a"]);
+
+    let with_small_mp4 = media_info_from_json(&json!({"formats": [
+        {"format_id": "v-360", "ext": "mp4", "height": 360, "vcodec": "avc1.4d401e", "acodec": "none"},
+        {"format_id": "v-1080", "ext": "webm", "height": 1080, "vcodec": "av01.0.08M.08", "acodec": "none"},
+        {"format_id": "a-m4a", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2"}
+    ]}))
+    .unwrap();
+    let selector = format_selector(&playlist, &with_small_mp4).unwrap();
+    assert_eq!(
+        selected_format_ids(&selector, &with_small_mp4).unwrap(),
+        ["v-1080", "a-m4a"],
+        "{selector}"
+    );
+    assert_eq!(selected_ids(&single, &with_small_mp4), ["v-1080", "a-m4a"]);
 }
 
 #[test]
