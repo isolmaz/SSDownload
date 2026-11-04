@@ -106,6 +106,57 @@ pub(crate) fn with_language<T>(code: &str, body: impl FnOnce() -> T) -> T {
     result
 }
 
+/// Asserts that `text(count)` words a count by one text for one item and one for several in
+/// every interface language: the two differ, the second states the count, neither keeps a
+/// placeholder or an ending such as "(s)", and the other languages translate both.
+#[cfg(test)]
+pub(crate) fn assert_worded_by_count(text: impl Fn(usize) -> String) {
+    let english = with_language("en", || (text(1), text(3)));
+    for info in LANGUAGES.iter() {
+        with_language(info.code, || {
+            let (one, several) = (text(1), text(3));
+            assert_ne!(one, several, "{}: one and several read the same", info.code);
+            assert!(
+                several.contains('3'),
+                "{}: several states how many: {several}",
+                info.code
+            );
+            for shown in [&one, &several] {
+                assert!(
+                    !shown.contains(['{', '}']),
+                    "{}: an unfilled placeholder in {shown}",
+                    info.code
+                );
+                assert!(
+                    !has_optional_ending(shown),
+                    "{}: an ending in parentheses in {shown}",
+                    info.code
+                );
+            }
+            if !matches!(info.language, Language::Turkish | Language::English) {
+                assert!(
+                    one != english.0 && several != english.1,
+                    "{}: a text is not translated: {one} / {several}",
+                    info.code
+                );
+            }
+        });
+    }
+}
+
+/// Whether `text` ends a word in parentheses with a few lowercase letters, as "file(s)" does.
+#[cfg(test)]
+fn has_optional_ending(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    chars.iter().enumerate().any(|(at, &c)| {
+        c == '(' && at > 0 && chars[at - 1].is_alphabetic() && {
+            let rest = &chars[at + 1..];
+            let letters = rest.iter().take_while(|c| c.is_lowercase()).count();
+            (1..=4).contains(&letters) && rest.get(letters) == Some(&')')
+        }
+    })
+}
+
 fn active() -> usize {
     #[cfg(test)]
     if let Some(index) = THREAD_LANGUAGE.get() {
@@ -298,6 +349,25 @@ mod tests {
             "Azerbaijani is not Turkish"
         );
         assert_eq!(language_of_langid(0x0411), "en", "Japanese is not offered");
+    }
+
+    #[test]
+    fn an_optional_ending_in_parentheses_is_found_and_other_parentheses_are_not() {
+        for text in [
+            "3 file(s) added",
+            "{0} adresse(s) exportée(s)",
+            "a download(es)",
+        ] {
+            assert!(has_optional_ending(text), "{text}");
+        }
+        for text in [
+            "Speed limit (KiB/s, 0 = global)",
+            "Interval (min):",
+            "Scan (TLS) 3 (a)",
+            "no parentheses",
+        ] {
+            assert!(!has_optional_ending(text), "{text}");
+        }
     }
 
     #[test]

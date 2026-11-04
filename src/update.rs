@@ -227,7 +227,7 @@ fn fetch_document(
             crate::i18n::ui_format!(
                 "Güncelleme akışına erişilemedi: {error}",
                 "The update feed could not be reached: {error}",
-                error = error
+                error = crate::transfer::shown_error(&anyhow::Error::new(error))
             )
         )
     })?;
@@ -1092,7 +1092,7 @@ pub(crate) fn run_update(ctx: &UpdateContext, manifest: &UpdateManifest) -> Upda
             let mut text = crate::i18n::ui_format!(
                 "Güncelleme indirilemedi: {error:#}",
                 "The update could not be downloaded: {error:#}",
-                error = error
+                error = crate::transfer::shown_error(&error)
             );
             if let Some(folder) = &quarantine {
                 text.push_str(&crate::i18n::ui_format!("\n\nKısmi indirme bu klasöre taşındı (istek üzerine inceleyip silebilirsiniz):\n{0}", "\n\nThe partial download was moved to this folder (you can review and delete it if you wish):\n{0}", folder.display()));
@@ -1939,6 +1939,51 @@ mod tests {
             "{error:#}"
         );
         server.join().unwrap();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_secure_connection_the_update_cannot_make_is_shown_in_the_words_of_the_app() {
+        let _guard = FEED_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        std::env::remove_var("SSDOWNLOAD_UPDATE_FEED");
+        let governor = NetworkGovernor::new(4);
+        let refused = crate::transfer::TlsFailure::Other.shown();
+
+        let (url, server) = crate::test_http::tls_refuser();
+        let error = fetch_document(&governor, &url, 1024, false)
+            .expect_err("the handshake of the feed fails");
+        server.join().unwrap();
+        let text = format!("{error:#}");
+        assert!(
+            text.contains(&refused) && !text.to_lowercase().contains("schannel"),
+            "the feed: {text}"
+        );
+
+        let (url, server) = crate::test_http::tls_refuser();
+        let root = temp_root("tls-refused");
+        let paths = AppPaths::new(root.clone()).unwrap();
+        let outcome = run_update(
+            &UpdateContext {
+                paths: &paths,
+                network: &governor,
+                dry_run: true,
+            },
+            &UpdateManifest {
+                version: "9.9.9".into(),
+                url,
+                sha256: "0".repeat(64),
+            },
+        );
+        server.join().unwrap();
+        assert!(!outcome.success);
+        assert!(
+            outcome.message.contains(&refused)
+                && !outcome.message.to_lowercase().contains("schannel"),
+            "the download: {}",
+            outcome.message
+        );
         fs::remove_dir_all(root).ok();
     }
 

@@ -3819,6 +3819,7 @@ impl Actor {
                 let retryable = failure.retryable;
                 let retry_after = failure.retry_after;
                 let message = failure.message;
+                let logged = failure.logged;
                 job.speed = 0;
                 job.eta = None;
                 job.error = Some(message.clone());
@@ -3845,7 +3846,7 @@ impl Actor {
                         crate::logging::Event::warn("job.source_lost")
                             .host(source_host_of(&job))
                             .outcome(crate::logging::Outcome::Failed)
-                            .detail(message.clone()),
+                            .detail(logged.clone()),
                     );
                 } else if retryable && job.attempts <= self.settings.retry_limit as u32 {
                     let delay = retry_after.unwrap_or_else(|| {
@@ -3865,10 +3866,10 @@ impl Actor {
                         );
                         crate::logging::record_job(
                             id,
-                            failure_event(&job, &message)
+                            failure_event(&job, &logged)
                                 .outcome(crate::logging::Outcome::Retry)
                                 .detail(format!(
-                                    "{message} (retry in {} s, attempt {})",
+                                    "{logged} (retry in {} s, attempt {})",
                                     delay.as_secs(),
                                     job.attempts
                                 )),
@@ -3886,7 +3887,7 @@ impl Actor {
                     job.state = JobState::Failed;
                     job.phase = crate::i18n::ui("Başarısız", "Failed").into();
                     self.retry_at.remove(id);
-                    crate::logging::record_job(id, failure_event(&job, &message));
+                    crate::logging::record_job(id, failure_event(&job, &logged));
                 }
                 // Only the user starts a failed job again, and with nothing kept it downloads from
                 // the beginning: a new download, which its queue's quota counts again.
@@ -3983,7 +3984,7 @@ impl Actor {
             }
         }
         if newly_orphaned > 0 {
-            self.warning = Some(crate::i18n::ui_format!("Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar {newly_orphaned} ağ izni güvenli olarak tutuluyor", "The browser transfer sender exited; {newly_orphaned} network permit(s) are kept safely until the Chrome request is confirmed", newly_orphaned = newly_orphaned));
+            self.warning = Some(orphaned_permits_text(newly_orphaned));
         }
     }
 
@@ -5124,6 +5125,13 @@ fn is_name_control(character: char) -> bool {
             .any(|&(first, last)| (first..=last).contains(&character))
 }
 
+/// The file name of a title. A `/` or `\` in a title is text, so it becomes `_` like the other
+/// characters a name cannot hold, where `safe_filename` takes the part after the last one for a
+/// name that may carry a path.
+pub(crate) fn safe_title_filename(title: &str, id: &str) -> String {
+    safe_filename(&title.replace(['/', '\\'], "_"), id)
+}
+
 pub(crate) fn safe_filename(suggested: &str, id: &str) -> String {
     let leaf = suggested.rsplit(['/', '\\']).next().unwrap_or("");
     let mut in_flag = false;
@@ -5306,7 +5314,11 @@ mod tests;
 
 #[derive(Debug)]
 struct TransferFailure {
+    /// What the job shows as its error.
     message: String,
+    /// What the job log records: the whole error, with the system's own wording of a refused
+    /// secure connection, which is in the language of Windows.
+    logged: String,
     retryable: bool,
     retry_after: Option<Duration>,
     source_refresh: bool,
@@ -5320,17 +5332,34 @@ struct TransferFailure {
     throttled: bool,
 }
 
+/// The warning after the sender of a browser transfer exited while it held `permits` (at least
+/// one) network permits.
+fn orphaned_permits_text(permits: usize) -> String {
+    if permits == 1 {
+        crate::i18n::ui(
+            "Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar 1 ağ izni güvenli olarak tutuluyor",
+            "The browser transfer sender exited; 1 network permit is kept safely until the Chrome request is confirmed",
+        )
+        .to_owned()
+    } else {
+        crate::i18n::ui_format!("Tarayıcı aktarım göndericisi kapandı; Chrome isteği doğrulanana kadar {newly_orphaned} ağ izni güvenli olarak tutuluyor", "The browser transfer sender exited; {newly_orphaned} network permits are kept safely until the Chrome request is confirmed", newly_orphaned = permits)
+    }
+}
+
 fn transfer_failure(request: &AddRequest, error: anyhow::Error) -> TransferFailure {
+    let tls = transfer::tls_failure(&error);
     let error = match transfer::network_code(&error) {
         Some(code) => crate::error_codes::with_code(error, code),
         None => error,
     };
     let detail = format!("{error:#}");
+    let shown = tls.map_or_else(|| detail.clone(), transfer::TlsFailure::shown);
     TransferFailure {
         retryable: retryable_error(&error),
         retry_after: transfer::retry_after(&error),
         source_refresh: source_refresh_needed(request, &error),
-        message: safe_error(request, &detail),
+        message: safe_error(request, &shown),
+        logged: safe_error(request, &detail),
         progressed: false,
         kept_nothing: false,
         throttled: transfer::http_status(&error)

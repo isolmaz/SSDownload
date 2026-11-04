@@ -1215,13 +1215,18 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
             let height_exact = selector_filter_u32(term, "height=");
             let height_max = selector_filter_u32(term, "height<=");
             let extension = selector_filter_text(term, "ext=");
+            let excluded_extensions: Vec<&str> = term
+                .split("[ext!=")
+                .skip(1)
+                .filter_map(|rest| rest.split(']').next())
+                .collect();
             let language = selector_filter_text(term, "language=");
             let video_codecs = selector_codec_prefixes(term, "vcodec");
             let audio_codecs = selector_codec_prefixes(term, "acodec");
             let candidate = info.formats.iter().rev().find(|format| {
                 let kind = match base {
                     "bestvideo" => {
-                        stream_present(format.video_codec.as_deref())
+                        !stream_absent(format.video_codec.as_deref())
                             && stream_absent(format.audio_codec.as_deref())
                     }
                     "bestaudio" => {
@@ -1242,17 +1247,20 @@ pub(super) fn selected_format_ids(selector: &str, info: &MediaInfo) -> Result<Ve
                     &extension,
                     Some(format.extension.as_str()),
                     |wanted, extension| extension == wanted,
-                ) && filter_admits(&language, format.language.as_deref(), |wanted, language| {
-                    language_key(language) == language_key(wanted)
-                }) && filter_admits(
-                    &video_codecs,
-                    format.video_codec.as_deref(),
-                    |prefixes, codec| starts_with_any(codec, prefixes),
-                ) && filter_admits(
-                    &audio_codecs,
-                    format.audio_codec.as_deref(),
-                    |prefixes, codec| starts_with_any(codec, prefixes),
-                )
+                ) && !excluded_extensions.contains(&format.extension.as_str())
+                    && filter_admits(&language, format.language.as_deref(), |wanted, language| {
+                        language_key(language) == language_key(wanted)
+                    })
+                    && filter_admits(
+                        &video_codecs,
+                        format.video_codec.as_deref(),
+                        |prefixes, codec| starts_with_any(codec, prefixes),
+                    )
+                    && filter_admits(
+                        &audio_codecs,
+                        format.audio_codec.as_deref(),
+                        |prefixes, codec| starts_with_any(codec, prefixes),
+                    )
             });
             if let Some(candidate) = candidate {
                 selected.push(candidate.id.clone());

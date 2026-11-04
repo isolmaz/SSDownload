@@ -14,6 +14,23 @@ fn parse_number<T: std::str::FromStr>(value: &str, label: &str) -> anyhow::Resul
     })
 }
 
+/// The question asked when `duplicates` (at least one) addresses are already in the download list.
+pub(super) fn duplicate_addresses_text(duplicates: usize) -> String {
+    if duplicates == 1 {
+        crate::i18n::ui(
+            "Bu adres zaten indirme listesinde.\n\nMevcut iş kullanılsın mı, yoksa yeni kopya mı indirilsin?",
+            "This address is already in the download list.\n\nUse the existing job, or download a new copy?",
+        )
+        .to_owned()
+    } else {
+        crate::i18n::ui_format!(
+            "{duplicates} adres zaten indirme listesinde.\n\nMevcut işler kullanılsın mı, yoksa yeni kopyalar mı indirilsin?",
+            "{duplicates} addresses are already in the download list.\n\nUse the existing jobs, or download new copies?",
+            duplicates = duplicates
+        )
+    }
+}
+
 /// The buttons of the question asked when an address is already in the download list.
 pub(super) fn duplicate_address_buttons() -> [(i32, &'static str); 3] {
     [
@@ -695,7 +712,7 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                         .filter(|request| queued.contains(&normalized_job_url(&request.url)))
                         .count();
                     if duplicates > 0 {
-                        let body = crate::i18n::ui_format!("{duplicates} adres zaten indirme listesinde.\n\nMevcut işler kullanılsın mı, yoksa yeni kopyalar mı indirilsin?", "{duplicates} address(es) are already in the download list.\n\nUse the existing jobs, or download new copies?", duplicates = duplicates);
+                        let body = duplicate_addresses_text(duplicates);
                         match run_alert_buttons(
                             dlg.hwnd,
                             &body,
@@ -753,14 +770,8 @@ pub(super) unsafe fn dialog_command(dlg: &mut DialogUi, id: i32, _code: u16) {
                     // Every addition posted its own "1 added" line and the last
                     // one would stay on the status bar; one line states the batch.
                     if batch > 1 {
-                        dlg.app.message(
-                            crate::i18n::ui_format!(
-                                "{added} indirme eklendi",
-                                "{added} download(s) added",
-                                added = added
-                            ),
-                            false,
-                        );
+                        dlg.app
+                            .message(crate::app::downloads_added_text(added), false);
                     }
                     let owner = GetWindow(dlg.hwnd, GW_OWNER);
                     let app = dlg.app.clone();

@@ -639,6 +639,24 @@ pub fn repr_digest_header(version: u8, size: u64) -> String {
     format!("Repr-Digest: sha-256=:{}:", STANDARD.encode(digest))
 }
 
+/// A loopback server that answers the first connection with plain text instead of a TLS
+/// handshake, so an `https` request to the returned address fails in the handshake. The thread
+/// ends with that connection.
+pub fn tls_refuser() -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+        let _ = stream.read(&mut [0u8; 1024]);
+        let _ = stream.write_all(b"HTTP/1.0 400 Bad Request\r\n\r\nnot a TLS server");
+        let _ = stream.flush();
+    });
+    (format!("https://{address}/"), server)
+}
+
 pub fn file_sha256(path: &Path) -> String {
     let mut file = File::open(path).unwrap();
     let mut hasher = Sha256::new();

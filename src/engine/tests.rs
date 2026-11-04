@@ -13,6 +13,15 @@ pub(super) fn pretends_live(id: &str) -> bool {
 }
 
 #[test]
+fn the_warning_about_orphaned_permits_is_worded_for_one_and_for_several() {
+    crate::i18n::assert_worded_by_count(orphaned_permits_text);
+    crate::i18n::with_language("en", || {
+        assert!(orphaned_permits_text(1).contains("1 network permit is kept"));
+        assert!(orphaned_permits_text(2).contains("2 network permits are kept"));
+    });
+}
+
+#[test]
 fn daily_window_handles_overnight_boundaries() {
     assert_eq!(parse_minute("23:30"), Some(1410));
     assert_eq!(parse_minute("00:15"), Some(15));
@@ -2153,6 +2162,31 @@ fn windows_filename_rules_remove_traversal_and_devices() {
 }
 
 #[test]
+fn a_name_that_carries_a_path_keeps_only_its_last_part() {
+    assert_eq!(safe_filename(r"..\..\escape.bin", "12345678"), "escape.bin");
+    assert_eq!(
+        safe_filename("/etc/dir/report.pdf", "12345678"),
+        "report.pdf"
+    );
+}
+
+#[test]
+fn a_slash_in_a_title_becomes_an_underscore_and_keeps_the_text_around_it() {
+    assert_eq!(safe_title_filename("AC/DC Live", "12345678"), "AC_DC Live");
+    assert_eq!(safe_title_filename(r"a\b/c", "12345678"), "a_b_c");
+    assert_eq!(
+        safe_title_filename(r"..\..\escape", "12345678"),
+        "_.._escape"
+    );
+    assert_eq!(
+        safe_title_filename("Part 1: Who?", "12345678"),
+        "Part 1_ Who_"
+    );
+    assert_eq!(safe_title_filename("/", "12345678"), "_");
+    assert_eq!(safe_title_filename("", "12345678"), "download-12345678");
+}
+
+#[test]
 fn bidirectional_and_invisible_format_characters_never_stay_in_a_file_name() {
     // The right-to-left override draws the name that follows it backwards: this one ends in
     // `.exe` and reads as `exe.txt`.
@@ -2669,6 +2703,91 @@ fn a_failed_attempt_leads_its_message_with_the_network_code_of_the_failure() {
     assert_eq!(
         failed(anyhow!("The disk is full")).message,
         "The disk is full"
+    );
+}
+
+#[test]
+fn a_refused_secure_connection_is_shown_in_the_words_of_the_app_and_logged_in_those_of_windows() {
+    use transfer::TlsFailure::*;
+    let request = AddRequest {
+        url: "https://files.example.test/a".into(),
+        ..Default::default()
+    };
+    // What libcurl reports for a certificate that Windows refuses, with the sentence Windows adds
+    // in its own language.
+    let refused = |code, status: &str| {
+        let mut error = curl::Error::new(code);
+        error.set_extra(format!(
+            "schannel: {status} - Sertifika zinciri güvenilmeyen bir yetkili tarafından verildi."
+        ));
+        anyhow::Error::new(error).context("The server information could not be retrieved")
+    };
+    let peer = curl_sys::CURLE_PEER_FAILED_VERIFICATION;
+    let cases = [
+        (peer, "SEC_E_UNTRUSTED_ROOT (0x80090325)", UntrustedRoot),
+        (peer, "Unknown error (0x800b0109)", UntrustedRoot),
+        (peer, "SEC_E_CERT_EXPIRED (0x80090328)", Expired),
+        (peer, "Unknown error (0x800b0101)", Expired),
+        (peer, "SEC_E_WRONG_PRINCIPAL (0x80090322)", WrongName),
+        (peer, "Unknown error (0x800b010f)", WrongName),
+        (peer, "CRYPT_E_REVOKED (0x80092010)", Revoked),
+        (peer, "Unknown error (0x800b010c)", Revoked),
+        (peer, "SEC_E_CERT_UNKNOWN (0x80090327)", Other),
+        (
+            curl_sys::CURLE_SSL_CONNECT_ERROR,
+            "SEC_E_ILLEGAL_MESSAGE (0x80090326)",
+            Other,
+        ),
+    ];
+    for info in crate::i18n::LANGUAGES.iter() {
+        crate::i18n::with_language(info.code, || {
+            let mut reasons = Vec::new();
+            for (code, status, reason) in cases {
+                let failed = transfer_failure(&request, refused(code, status));
+                let expected = format!(
+                    "{}: {}",
+                    crate::error_codes::labelled_message(crate::error_codes::NET_002),
+                    reason.text()
+                );
+                assert_eq!(failed.message, expected, "{}: {status}", info.code);
+                assert!(!failed.retryable, "{}: {status}", info.code);
+                assert!(
+                    failed.logged.starts_with("SSD-NET-002 ")
+                        && failed.logged.contains("Sertifika zinciri")
+                        && failed
+                            .logged
+                            .contains(&status[status.find("(0x").unwrap()..]),
+                    "{}: {}",
+                    info.code,
+                    failed.logged
+                );
+                reasons.push(reason.text());
+            }
+            for reason in [UntrustedRoot, Expired, WrongName, Revoked, Other] {
+                assert_eq!(
+                    reasons
+                        .iter()
+                        .filter(|text| **text == reason.text())
+                        .count(),
+                    cases.iter().filter(|case| case.2 == reason).count(),
+                    "{}: {reason:?} has a text of its own",
+                    info.code
+                );
+            }
+        });
+    }
+    // A failure that is no refused secure connection keeps the whole chain in what the job shows.
+    let timed_out = transfer_failure(
+        &request,
+        refused(
+            curl_sys::CURLE_OPERATION_TIMEDOUT,
+            "SEC_E_UNTRUSTED_ROOT (0x80090325)",
+        ),
+    );
+    assert!(
+        timed_out.message.starts_with("SSD-NET-007 ") && timed_out.message.contains("Sertifika"),
+        "{}",
+        timed_out.message
     );
 }
 
@@ -3863,6 +3982,56 @@ fn consumed_quota_bytes(engine: &Engine, queue: &str) -> u64 {
         .and_then(|candidate| candidate.quota.as_ref())
         .unwrap()
         .consumed_bytes
+}
+
+#[test]
+fn a_download_folder_holds_only_the_files_of_the_list_once_the_jobs_are_finished_or_removed() {
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-leftovers-{}", Uuid::new_v4()));
+    let out = root.join("out");
+    let server = FileServer::start(vec![("/done.bin".into(), vec![9u8; 50_000], false)]);
+    let engine = Engine::open(AppPaths::new(root.clone()).unwrap()).unwrap();
+    let names = || {
+        let mut names: Vec<String> = fs::read_dir(&out)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+
+    let done = engine
+        .add(file_request(server.url("/done.bin"), &out))
+        .unwrap()
+        .remove(0);
+    wait_until("the download", || {
+        job_state(&engine, &done) == JobState::Completed
+    });
+    assert_eq!(names(), ["done.bin"]);
+
+    // A failed job keeps its name reserved and its work files for a retry, as long as it stays in
+    // the list.
+    let missing = engine
+        .add(file_request(server.url("/missing.bin"), &out))
+        .unwrap()
+        .remove(0);
+    wait_until("the failure", || {
+        job_state(&engine, &missing) == JobState::Failed
+    });
+    assert_eq!(
+        names(),
+        [
+            ".ssdownload-work",
+            "done.bin",
+            "missing.bin.ssdownload.claim"
+        ]
+    );
+    engine.remove(&missing, false).unwrap();
+    assert_eq!(names(), ["done.bin"]);
+
+    engine.clear_completed().unwrap();
+    assert_eq!(names(), ["done.bin"]);
+    engine.shutdown();
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

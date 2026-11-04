@@ -41,12 +41,13 @@ mod workspace;
 use evidence::*;
 use metadata::*;
 pub(crate) use naming::picker_file_name;
+use naming::published_output;
 pub(crate) use postprocess::validate_options;
 use postprocess::*;
 use probe::*;
 use process::*;
-pub(crate) use selection::selected_formats;
 use selection::*;
+pub(crate) use selection::{format_fits_container, selected_formats};
 pub(crate) use selftest::self_test;
 #[cfg(test)]
 pub(crate) use selftest::stubs;
@@ -946,7 +947,7 @@ fn download_with(
                             ranges: None,
                             resumable: None,
                             phase_name: "restarting after a skipped fragment",
-                            phase: crate::i18n::ui_format!("Parça atlandı; yarım kalan {0} dosya ({1:.1} MB) atılıp akış baştan indiriliyor (deneme {2}, {3} bağlantı).", "A fragment was skipped; {0} unfinished file(s) ({1:.1} MB) discarded and the stream restarts (attempt {2}, {3} connection(s)).", discarded.0, discarded.1 as f64 / (1024.0 * 1024.0), fragment_restarts + 1, fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)),
+                            phase: crate::i18n::ui_format!("Parça atlandı; atılan yarım dosyalar: {0} ({1:.1} MB). Akış baştan indiriliyor (deneme {2}, bağlantı sayısı: {3}).", "A fragment was skipped; unfinished files discarded: {0} ({1:.1} MB). The stream restarts (attempt {2}, connections: {3}).", discarded.0, discarded.1 as f64 / (1024.0 * 1024.0), fragment_restarts + 1, fragment_concurrency(request.connections, network.per_host_limit(), fragment_restarts)),
                             ..TransferProgress::default()
                         });
                         crate::logging::record_job(
@@ -960,7 +961,7 @@ fn download_with(
                             crate::bail_code!(
                                 crate::error_codes::TRF_011,
                                 "{}",
-                                crate::i18n::ui_format!("Kaynak parçaları tekrar tekrar düşürdü; akış {0} kez baştan indirildi ve bütünlük sağlanamadı. Kaynağı daha sonra yeniden deneyin.", "The source kept dropping fragments; the stream was restarted {0} time(s) and integrity could not be ensured. Try the source again later.", fragment_restarts)
+                                crate::i18n::ui_format!("Kaynak parçaları tekrar tekrar düşürdü; akış {0} kez baştan indirildi ve bütünlük sağlanamadı. Kaynağı daha sonra yeniden deneyin.", "The source kept dropping fragments; the stream was restarted {0} times and integrity could not be ensured. Try the source again later.", fragment_restarts)
                             );
                         }
                         continue;
@@ -1021,7 +1022,7 @@ fn download_with(
         }
     }
     let result_path = output_plan.publish(
-        output,
+        &published_output(output, request, &info),
         request.playlist,
         &completed_files,
         last_path.as_deref(),

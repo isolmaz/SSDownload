@@ -204,7 +204,7 @@ pub(super) fn archive_refresh_artifacts(
             ))?
             .join("refresh-archives")
             .join(&job.id);
-        fs::create_dir_all(&archive_root)?;
+        crate::recovery::create_work_dirs(&archive_root)?;
         let saved = archive_root.join(archive_id);
         fs::rename(work, &saved).context(crate::i18n::ui(
             "Önceki çalışma verisi arşivlenemedi",
@@ -255,7 +255,7 @@ pub(super) fn archive_refresh_artifacts(
         .join("refresh-archives")
         .join(&job.id)
         .join(archive_id);
-    fs::create_dir_all(&archive_root)?;
+    crate::recovery::create_work_dirs(&archive_root)?;
     let mut archive = RefreshArchive { moves: Vec::new() };
     for (index, original) in candidates.into_iter().enumerate() {
         let saved = archive_root.join(format!("artifact-{index:03}"));

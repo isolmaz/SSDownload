@@ -150,11 +150,7 @@ impl Store {
     pub(crate) fn load_jobs(&mut self) -> Result<Vec<Job>> {
         let restored = self.restore_quarantined()?;
         if restored > 0 {
-            self.warnings.push(crate::i18n::ui_format!(
-                "{restored} karantinadaki iş kaydı yeniden okunabildi ve listeye geri alındı.",
-                "{restored} quarantined job record(s) could be read again and were restored.",
-                restored = restored
-            ));
+            self.warnings.push(restored_records_text(restored));
         }
         let rows = self
             .connection
@@ -428,6 +424,23 @@ impl Store {
     }
 }
 
+/// The warning after `restored` (at least one) quarantined job records were read again.
+fn restored_records_text(restored: usize) -> String {
+    if restored == 1 {
+        crate::i18n::ui(
+            "1 karantinadaki iş kaydı yeniden okunabildi ve listeye geri alındı.",
+            "1 quarantined job record could be read again and was restored.",
+        )
+        .to_owned()
+    } else {
+        crate::i18n::ui_format!(
+            "{restored} karantinadaki iş kaydı yeniden okunabildi ve listeye geri alındı.",
+            "{restored} quarantined job records could be read again and were restored.",
+            restored = restored
+        )
+    }
+}
+
 fn is_corrupt_database(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         matches!(
@@ -673,6 +686,21 @@ mod tests {
         assert_eq!(loaded[0].state, JobState::Paused);
         drop(store);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_warning_about_restored_job_records_is_worded_for_one_and_for_several() {
+        crate::i18n::assert_worded_by_count(restored_records_text);
+        crate::i18n::with_language("en", || {
+            assert_eq!(
+                restored_records_text(1),
+                "1 quarantined job record could be read again and was restored."
+            );
+            assert_eq!(
+                restored_records_text(2),
+                "2 quarantined job records could be read again and were restored."
+            );
+        });
     }
 
     #[test]

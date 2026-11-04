@@ -3,6 +3,25 @@
 use super::*;
 use std::ffi::OsString;
 
+/// The part of a site scan's summary that names the pages that could not be fetched, after the
+/// reason of the last failure; empty when none failed.
+pub(super) fn failed_pages_note(pages: u32, last_failure: &str) -> String {
+    match pages {
+        0 => String::new(),
+        1 => crate::i18n::ui_format!(
+            ", 1 sayfa alınamadı: {0}",
+            ", 1 page could not be fetched: {0}",
+            last_failure
+        ),
+        pages => crate::i18n::ui_format!(
+            ", {0} sayfa alınamadı: {1}",
+            ", {0} pages could not be fetched: {1}",
+            pages,
+            last_failure
+        ),
+    }
+}
+
 pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
     let snapshot = dlg.app.snapshot();
     let dlg_ptr = dlg as *mut DialogUi;
@@ -37,16 +56,10 @@ pub(super) unsafe fn dialog_timer(dlg: &mut DialogUi) {
                                 } else {
                                     ""
                                 };
-                                let failed_note = if result.failed_pages > 0 {
-                                    crate::i18n::ui_format!(
-                                        ", {0} sayfa alınamadı: {1}",
-                                        ", {0} pages could not be fetched: {1}",
-                                        result.failed_pages,
-                                        result.last_failure.clone().unwrap_or_default()
-                                    )
-                                } else {
-                                    String::new()
-                                };
+                                let failed_note = failed_pages_note(
+                                    result.failed_pages,
+                                    result.last_failure.as_deref().unwrap_or_default(),
+                                );
                                 set_text(dlg.error,&crate::i18n::ui_format!("{0} sayfa, {1} aday, {2} bayt tarandı{truncated_note}{failed_note}; yalnız seçilen adaylar eklenir.", "Scanned {0} pages, {1} candidates, {2} bytes{truncated_note}{failed_note}; only the selected candidates are added.", result.pages_scanned, result.candidates.len(), result.bytes_scanned, failed_note = failed_note, truncated_note = truncated_note));
                                 EnableWindow(
                                     GetDlgItem(dlg.hwnd, C_ADD),
@@ -452,6 +465,15 @@ pub(super) unsafe fn refresh_job_view(
 }
 pub(super) fn media_stream_present(codec: Option<&str>) -> bool {
     codec.is_some_and(|value| value != "none" && value != "unknown")
+}
+
+/// Whether the quality list offers `format`: it carries a video stream, or the extractor named
+/// no codecs but reported a size, which only a video has.
+fn is_video_quality(format: &MediaFormat) -> bool {
+    !format.has_drm
+        && (media_stream_present(format.video_codec.as_deref())
+            || (format.video_codec.is_none()
+                && (format.height.is_some() || format.width.is_some())))
 }
 
 /// Shows the analysis of this picker's generation: what it is doing while it
@@ -1038,7 +1060,7 @@ pub(super) unsafe fn populate_media(
     let mut formats: Vec<MediaFormat> = info
         .formats
         .iter()
-        .filter(|value| !value.has_drm && media_stream_present(value.video_codec.as_deref()))
+        .filter(|value| is_video_quality(value))
         .cloned()
         .collect();
     formats.sort_by(|left, right| {
@@ -1053,6 +1075,13 @@ pub(super) unsafe fn populate_media(
         combo_add(f.format, &media_format_label(&format));
         f.video_formats.push(Some(format));
     }
+    // A remembered height never preselects a quality the chosen container cannot hold.
+    let container = f
+        .kind_values
+        .get(combo_index(f.kind).max(0) as usize)
+        .and_then(|(_, container)| container.clone());
+    let fits =
+        |value: &MediaFormat| crate::media::format_fits_container(value, container.as_deref());
     let preferred = f
         .base
         .video_format_id
@@ -1069,16 +1098,15 @@ pub(super) unsafe fn populate_media(
                     .position(|format| {
                         format
                             .as_ref()
-                            .is_some_and(|value| value.height == Some(height))
+                            .is_some_and(|value| fits(value) && value.height == Some(height))
                     })
                     // The formats run from the highest down: the first one at or
                     // below the remembered height is the closest match.
                     .or_else(|| {
                         f.video_formats.iter().position(|format| {
-                            format
-                                .as_ref()
-                                .and_then(|value| value.height)
-                                .is_some_and(|value| value <= height)
+                            format.as_ref().is_some_and(|value| {
+                                fits(value) && value.height.is_some_and(|value| value <= height)
+                            })
                         })
                     })
             })
@@ -1360,7 +1388,7 @@ pub(super) unsafe fn queue_media(
         Ok(Some(name)) => request.filename = Some(name),
         Ok(None) => {
             if !f.loaded_title.is_empty() {
-                let title = crate::engine::safe_filename(&f.loaded_title, "video");
+                let title = crate::engine::safe_title_filename(&f.loaded_title, "video");
                 request.filename = Some(format!("{title}.{extension}"));
             }
         }
@@ -1761,7 +1789,7 @@ pub(super) fn tools_report(
             if tool.version.is_empty() {
                 "-".to_string()
             } else {
-                without_component_names(&tool.version, &own)
+                without_component_names(&crate::tools::version_number(&tool.version), &own)
             },
             tools_dir.display()
         ));

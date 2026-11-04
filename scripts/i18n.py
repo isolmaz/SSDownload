@@ -490,9 +490,11 @@ def bare_text_scan_problems():
 
 
 # The user reads no em dash (U+2014), and no text names the programs the app downloads for media
-# support: the texts say "media components" and name what each one does.
+# support: the texts say "media components" and name what each one does. A count is worded by one
+# text for one item and one for several, never by an ending in parentheses such as "file(s)".
 EM_DASH = "\u2014"
 MEDIA_TOOL_NAME = re.compile(r"ffmpeg|ffprobe|yt-dlp|\bdeno\b|btbn", re.I)
+OPTIONAL_ENDING = re.compile(r"[^\W\d_]\([a-z\u00e0-\u00ff]{1,4}\)")
 
 
 def forbidden_in(text):
@@ -501,6 +503,8 @@ def forbidden_in(text):
         found.append("an em dash")
     if MEDIA_TOOL_NAME.search(text):
         found.append("a media tool name")
+    if OPTIONAL_ENDING.search(text):
+        found.append("an optional ending in parentheses")
     return found
 
 
@@ -554,7 +558,9 @@ def forbidden_scan_problems():
     """The scans for an em dash and a media tool name find what they must and nothing else."""
     literals = string_literals(FORBIDDEN_FIXTURE)
     names = [forbidden_in(text) for text in ("Processing with FFmpeg", "ytdlp is fine", "Deno 2", "a denote", "plain \u2014 text")]
-    if [line for line, value in literals if EM_DASH in value] == [1, 2] and names == [["a media tool name"], [], ["a media tool name"], [], ["an em dash"]]:
+    endings = [forbidden_in(text) for text in ("{0} file(s) added", "{0} export\u00e9e(s)", "{0} (KiB/s)", "Scan (TLS) 3 (min)", "HTTP(S) or FTP")]
+    ending = ["an optional ending in parentheses"]
+    if [line for line, value in literals if EM_DASH in value] == [1, 2] and names == [["a media tool name"], [], ["a media tool name"], [], ["an em dash"]] and endings == [ending, ending, [], [], []]:
         return []
     return [f"the em dash and tool name scans misread their fixtures: {literals} {names}"]
 

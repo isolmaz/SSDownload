@@ -539,6 +539,12 @@ struct MainUi {
     tooltip: HWND,
     /// True while the window is too narrow for the command labels.
     labels_hidden: std::cell::Cell<bool>,
+    /// Whether the window has been shown since it was created. The placement of a window that
+    /// started hidden is where it was created, not where the saved one put it.
+    shown: std::cell::Cell<bool>,
+    /// The saved placement the first show of the window applies, so a window that started hidden
+    /// opens where and as the user left it.
+    first_show: std::cell::Cell<Option<[i32; 5]>>,
     visible_ids: Vec<String>,
     row_cache: HashMap<String, Vec<String>>,
     /// The Job log tab's page with the job and the file stamps it was read
@@ -1297,6 +1303,8 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
             tabs: null_mut(),
             tooltip: null_mut(),
             labels_hidden: std::cell::Cell::new(false),
+            shown: std::cell::Cell::new(false),
+            first_show: std::cell::Cell::new(None),
             visible_ids: Vec::new(),
             row_cache: HashMap::new(),
             job_log: std::cell::RefCell::new(None),
@@ -1393,9 +1401,11 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
                 GetLastError()
             );
         }
-        let maximized = restore_placement(hwnd, &(*raw).snapshot.settings);
+        (*raw)
+            .first_show
+            .set(saved_placement(&(*raw).snapshot.settings));
         if !start_hidden {
-            ShowWindow(hwnd, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOW });
+            show_window(hwnd, &(*raw).first_show);
             SetForegroundWindow(hwnd);
         } else {
             ShowWindow(hwnd, SW_HIDE);
@@ -2256,6 +2266,10 @@ unsafe extern "system" fn main_proc(
                 show_job_menu(ui, lparam);
             }
             0
+        }
+        WM_WINDOWPOSCHANGED => {
+            track_shown(&ui.shown, lparam);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_QUERYENDSESSION => 1,
         WM_ENDSESSION if wparam != 0 => {
@@ -4642,44 +4656,77 @@ unsafe fn update_filter_labels(ui: &mut MainUi) {
     combo_select(ui.filter, selected.max(0));
 }
 
-/// Restores the saved main window rectangle when it is still on a monitor; returns
-/// whether the window was maximized.
-unsafe fn restore_placement(hwnd: HWND, settings: &Settings) -> bool {
-    let Some([left, top, right, bottom, maximized]) = settings.window_placement else {
-        return false;
-    };
+/// The saved main window placement when it is still on a monitor.
+unsafe fn saved_placement(settings: &Settings) -> Option<[i32; 5]> {
+    let saved @ [left, top, right, bottom, _] = settings.window_placement?;
     let rect = RECT {
         left,
         top,
         right,
         bottom,
     };
-    if right - left < 400
-        || bottom - top < 300
-        || MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_null()
-    {
-        return false;
-    }
-    SetWindowPos(
-        hwnd,
-        null_mut(),
-        left,
-        top,
-        right - left,
-        bottom - top,
-        SWP_NOZORDER | SWP_NOACTIVATE,
-    );
-    maximized != 0
+    (right - left >= 400
+        && bottom - top >= 300
+        && !MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_null())
+    .then_some(saved)
 }
 
-unsafe fn save_placement(ui: &MainUi) {
+/// A saved placement as `SetWindowPlacement` takes it. The rectangle is the one
+/// `GetWindowPlacement` reported when it was saved, in workspace coordinates (relative to the
+/// work area, so a taskbar on the left or the top does not shift it), which the system converts.
+fn placement_for(saved: [i32; 5]) -> WINDOWPLACEMENT {
+    let [left, top, right, bottom, maximized] = saved;
+    WINDOWPLACEMENT {
+        length: size_of::<WINDOWPLACEMENT>() as u32,
+        flags: 0,
+        showCmd: if maximized != 0 {
+            SW_SHOWMAXIMIZED
+        } else {
+            SW_SHOWNORMAL
+        } as u32,
+        ptMinPosition: POINT { x: -1, y: -1 },
+        ptMaxPosition: POINT { x: -1, y: -1 },
+        rcNormalPosition: RECT {
+            left,
+            top,
+            right,
+            bottom,
+        },
+    }
+}
+
+/// Shows the window. The first show applies the saved placement, maximized or not, and later
+/// shows keep the window as it is.
+unsafe fn show_window(hwnd: HWND, first_show: &std::cell::Cell<Option<[i32; 5]>>) {
+    if let Some(saved) = first_show.take() {
+        if SetWindowPlacement(hwnd, &placement_for(saved)) != 0 {
+            return;
+        }
+    }
+    ShowWindow(hwnd, SW_SHOW);
+}
+
+/// Notes that the window has been shown. Every show of a hidden window carries `SWP_SHOWWINDOW`
+/// in `WM_WINDOWPOSCHANGED`, whichever show command is used.
+unsafe fn track_shown(shown: &std::cell::Cell<bool>, lparam: LPARAM) {
+    if (*(lparam as *const WINDOWPOS)).flags & SWP_SHOWWINDOW != 0 {
+        shown.set(true);
+    }
+}
+
+/// The placement of `hwnd` as it is saved, `None` while `shown` is false: a window that was never
+/// shown reports where it was created, which is not where the user last had it.
+unsafe fn placement_to_save(hwnd: HWND, shown: bool) -> Option<[i32; 5]> {
+    if !shown {
+        return None;
+    }
     let mut placement: WINDOWPLACEMENT = zeroed();
     placement.length = size_of::<WINDOWPLACEMENT>() as u32;
-    if GetWindowPlacement(ui.hwnd, &mut placement) == 0 {
-        return;
+    if GetWindowPlacement(hwnd, &mut placement) == 0 {
+        return None;
     }
     let rect = placement.rcNormalPosition;
-    let value = [
+    Some([
         rect.left,
         rect.top,
         rect.right,
@@ -4689,7 +4736,13 @@ unsafe fn save_placement(ui: &MainUi) {
             placement.showCmd == SW_SHOWMAXIMIZED as u32
                 || placement.flags & WPF_RESTORETOMAXIMIZED != 0,
         ),
-    ];
+    ])
+}
+
+unsafe fn save_placement(ui: &MainUi) {
+    let Some(value) = placement_to_save(ui.hwnd, ui.shown.get()) else {
+        return;
+    };
     let mut settings = ui.app.snapshot().settings;
     if settings.window_placement != Some(value) {
         settings.window_placement = Some(value);
@@ -4978,15 +5031,25 @@ unsafe fn export_url_list(ui: &MainUi) {
         );
         return;
     }
-    set_text(
-        ui.status,
-        &crate::i18n::ui_format!(
-            "{0} adres dışa aktarıldı: {1}",
-            "{0} address(es) exported: {1}",
-            urls.len(),
+    set_text(ui.status, &addresses_exported_text(urls.len(), &path));
+}
+
+/// What the status line says after the list of `count` addresses was written to `path`.
+fn addresses_exported_text(count: usize, path: &Path) -> String {
+    if count == 1 {
+        crate::i18n::ui_format!(
+            "1 adres dışa aktarıldı: {0}",
+            "1 address exported: {0}",
             path.display()
-        ),
-    );
+        )
+    } else {
+        crate::i18n::ui_format!(
+            "{0} adres dışa aktarıldı: {1}",
+            "{0} addresses exported: {1}",
+            count,
+            path.display()
+        )
+    }
 }
 
 /// The taskbar button's progress (ITaskbarList3 through its raw vtable).
@@ -6303,7 +6366,7 @@ unsafe fn show_main(ui: &MainUi) {
         ShowWindow(ui.hwnd, SW_RESTORE);
     }
     keep_window_on_screen(ui.hwnd);
-    ShowWindow(ui.hwnd, SW_SHOW);
+    show_window(ui.hwnd, &ui.first_show);
     let popup = GetLastActivePopup(ui.hwnd);
     let target = if !popup.is_null() && IsWindow(popup) != 0 && IsWindowVisible(popup) != 0 {
         popup
@@ -12508,10 +12571,59 @@ mod tests {
                     "{}: each component names the folder that holds them: {report}",
                     info.code
                 );
-                assert!(report.contains("2026.03.17"), "{}: {report}", info.code);
+                for (version, lines) in [("2026.03.17", 1), ("n9.0-12-gabcdef", 2), ("2.5.6", 1)] {
+                    assert_eq!(
+                        report.matches(&format!("{version}\r\n")).count(),
+                        lines,
+                        "{}: the version line holds the version alone: {report}",
+                        info.code
+                    );
+                }
+                for banner_text in ["Copyright", "developers", "version"] {
+                    assert!(
+                        !report.contains(banner_text),
+                        "{}: {banner_text} of the banner in {report}",
+                        info.code
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn the_question_about_duplicate_addresses_is_worded_for_one_and_for_several_in_every_language()
+    {
+        crate::i18n::with_language("en", || {
+            assert_eq!(
+                super::duplicate_addresses_text(1),
+                "This address is already in the download list.\n\nUse the existing job, or download a new copy?"
+            );
+            assert_eq!(
+                super::duplicate_addresses_text(3),
+                "3 addresses are already in the download list.\n\nUse the existing jobs, or download new copies?"
+            );
+        });
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                let (one, several) = (
+                    super::duplicate_addresses_text(1),
+                    super::duplicate_addresses_text(3),
+                );
+                for text in [&one, &several] {
+                    assert!(
+                        !text.contains(['(', '{']),
+                        "{}: an ending in parentheses or an unfilled placeholder in {text}",
+                        info.code
+                    );
+                }
                 assert!(
-                    report.contains("n9.0-12-gabcdef"),
-                    "{}: {report}",
+                    !one.contains(|c: char| c.is_ascii_digit()),
+                    "{}: a single address needs no count: {one}",
+                    info.code
+                );
+                assert!(
+                    several.contains('3'),
+                    "{}: several addresses state how many: {several}",
                     info.code
                 );
             });
@@ -12591,6 +12703,265 @@ mod tests {
         assert!(!subtitle_default_selected(false, &previous, &first, true));
         assert!(subtitle_default_selected(false, &previous, &second, false));
         assert!(!subtitle_default_selected(false, &previous, &third, false));
+    }
+
+    #[test]
+    fn the_texts_that_state_a_count_are_worded_for_one_and_for_several_in_every_language() {
+        use crate::i18n::assert_worded_by_count;
+        use std::path::Path;
+
+        let list = Path::new(r"C:\Users\me\list.txt");
+        assert_worded_by_count(|count| super::addresses_exported_text(count, list));
+        assert_worded_by_count(|count| super::failed_pages_note(count as u32, "no answer"));
+        assert_worded_by_count(super::speed_limit_text);
+        for info in crate::i18n::LANGUAGES.iter() {
+            crate::i18n::with_language(info.code, || {
+                for count in [1, 3] {
+                    assert!(
+                        super::addresses_exported_text(count, list)
+                            .contains(r"C:\Users\me\list.txt"),
+                        "{}: the file is named",
+                        info.code
+                    );
+                    assert!(
+                        super::failed_pages_note(count as u32, "no answer").contains("no answer"),
+                        "{}: the reason is given",
+                        info.code
+                    );
+                }
+                assert_ne!(
+                    super::speed_limit_text(0),
+                    super::speed_limit_text(1),
+                    "{}: the overall limit has a caption of its own",
+                    info.code
+                );
+                assert_eq!(super::failed_pages_note(0, "x"), "");
+            });
+        }
+        crate::i18n::with_language("en", || {
+            assert_eq!(
+                super::addresses_exported_text(1, list),
+                r"1 address exported: C:\Users\me\list.txt"
+            );
+            assert_eq!(
+                super::addresses_exported_text(2, list),
+                r"2 addresses exported: C:\Users\me\list.txt"
+            );
+            assert_eq!(
+                super::failed_pages_note(1, "no answer"),
+                ", 1 page could not be fetched: no answer"
+            );
+            assert_eq!(
+                super::speed_limit_text(1),
+                "Speed limit for the selected download (KiB/s, 0 = global limit):"
+            );
+            assert_eq!(
+                super::speed_limit_text(2),
+                "Speed limit for the 2 selected downloads (KiB/s, 0 = global limit):"
+            );
+        });
+    }
+
+    mod window_placement {
+        use super::on_private_desktop;
+        use std::cell::Cell;
+        use std::ptr::{null, null_mut};
+        use windows_sys::Win32::Foundation::{
+            GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM,
+        };
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+        /// Opens a top-level window that is not shown, handled by `proc`, and runs `body` on it.
+        unsafe fn with_hidden_window(
+            proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+            body: impl FnOnce(HWND),
+        ) {
+            let instance = GetModuleHandleW(null());
+            let class = super::super::wide(&format!("SsdPlacementProbe{}", proc as usize));
+            let registration = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32,
+                style: 0,
+                lpfnWndProc: Some(proc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: instance,
+                hIcon: null_mut(),
+                hCursor: null_mut(),
+                hbrBackground: null_mut(),
+                lpszMenuName: null(),
+                lpszClassName: class.as_ptr(),
+                hIconSm: null_mut(),
+            };
+            assert!(
+                RegisterClassExW(&registration) != 0
+                    || GetLastError() == ERROR_CLASS_ALREADY_EXISTS,
+                "the class is registered"
+            );
+            let window = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                class.as_ptr(),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                800,
+                600,
+                null_mut(),
+                null_mut(),
+                instance,
+                null(),
+            );
+            assert!(!window.is_null(), "the window is created");
+            body(window);
+            DestroyWindow(window);
+        }
+
+        /// A window procedure that notes a show the way the main window's procedure does; the
+        /// window data holds the flag it sets.
+        unsafe extern "system" fn noting_proc(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            let shown = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Cell<bool>;
+            if msg == WM_WINDOWPOSCHANGED && !shown.is_null() {
+                super::super::track_shown(&*shown, lparam);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
+        unsafe fn flag_in(window: HWND, shown: &Cell<bool>) {
+            SetWindowLongPtrW(window, GWLP_USERDATA, shown as *const _ as isize);
+        }
+
+        #[test]
+        fn a_saved_placement_is_handed_over_in_workspace_coordinates() {
+            let normal = super::super::placement_for([200, 150, 900, 600, 0]);
+            let maximized = super::super::placement_for([200, 150, 900, 600, 1]);
+            for placement in [&normal, &maximized] {
+                let rect = placement.rcNormalPosition;
+                assert_eq!(
+                    (rect.left, rect.top, rect.right, rect.bottom),
+                    (200, 150, 900, 600),
+                    "the saved rectangle is workspace coordinates, which SetWindowPlacement converts"
+                );
+                assert_eq!(placement.length as usize, size_of::<WINDOWPLACEMENT>());
+            }
+            assert_eq!(normal.showCmd, SW_SHOWNORMAL as u32);
+            assert_eq!(maximized.showCmd, SW_SHOWMAXIMIZED as u32);
+        }
+
+        #[test]
+        fn a_window_counts_as_shown_however_it_is_shown() {
+            on_private_desktop(|| unsafe {
+                for (name, command) in [
+                    ("SW_SHOW", SW_SHOW),
+                    ("SW_SHOWNORMAL", SW_SHOWNORMAL),
+                    ("SW_SHOWNOACTIVATE", SW_SHOWNOACTIVATE),
+                    ("SW_SHOWMAXIMIZED", SW_SHOWMAXIMIZED),
+                    ("SW_MAXIMIZE", SW_MAXIMIZE),
+                ] {
+                    with_hidden_window(noting_proc, |window| {
+                        let shown = Cell::new(false);
+                        flag_in(window, &shown);
+                        SetWindowPos(
+                            window,
+                            null_mut(),
+                            10,
+                            10,
+                            700,
+                            500,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                        ShowWindow(window, SW_HIDE);
+                        assert!(
+                            !shown.get(),
+                            "{name}: moving or hiding a hidden window shows nothing"
+                        );
+                        ShowWindow(window, command);
+                        assert!(shown.get(), "{name}: the window is shown");
+                    });
+                }
+            });
+        }
+
+        #[test]
+        fn a_hidden_window_opens_as_saved_on_its_first_show_only() {
+            on_private_desktop(|| unsafe {
+                use super::super::{placement_to_save, show_window};
+
+                let normal = [200, 150, 900, 600, 0];
+                let maximized = [200, 150, 900, 600, 1];
+                with_hidden_window(noting_proc, |window| {
+                    let shown = Cell::new(false);
+                    flag_in(window, &shown);
+                    let first_show = Cell::new(Some(normal));
+                    assert_eq!(
+                        placement_to_save(window, shown.get()),
+                        None,
+                        "a window that started hidden has nothing of the user's to save"
+                    );
+                    show_window(window, &first_show);
+                    assert_ne!(
+                        IsWindowVisible(window),
+                        0,
+                        "the first show shows the window"
+                    );
+                    assert_eq!(
+                        first_show.get(),
+                        None,
+                        "the saved placement is applied once"
+                    );
+                    assert!(shown.get(), "the show is noted");
+                    assert_eq!(placement_to_save(window, shown.get()), Some(normal));
+                    let mut rect = std::mem::zeroed();
+                    GetWindowRect(window, &mut rect);
+                    assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (700, 450));
+
+                    // The user moves the window and it goes back to the tray: the next show
+                    // keeps it where it is.
+                    ShowWindow(window, SW_HIDE);
+                    SetWindowPos(
+                        window,
+                        null_mut(),
+                        300,
+                        250,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    show_window(window, &first_show);
+                    GetWindowRect(window, &mut rect);
+                    assert_eq!(
+                        (rect.left, rect.top),
+                        (300, 250),
+                        "later shows keep the place"
+                    );
+                });
+                with_hidden_window(noting_proc, |window| {
+                    let shown = Cell::new(false);
+                    flag_in(window, &shown);
+                    show_window(window, &Cell::new(Some(maximized)));
+                    assert_ne!(IsZoomed(window), 0, "the saved maximized state is applied");
+                    assert!(shown.get(), "a window shown maximized is noted as shown");
+                    assert_eq!(
+                        placement_to_save(window, shown.get()),
+                        Some(maximized),
+                        "the restored rectangle stays the saved one"
+                    );
+                });
+                with_hidden_window(noting_proc, |window| {
+                    show_window(window, &Cell::new(None));
+                    assert_ne!(
+                        IsWindowVisible(window),
+                        0,
+                        "without a saved placement the window is shown where it is"
+                    );
+                });
+            });
+        }
     }
 
     #[test]
@@ -12910,6 +13281,102 @@ mod tests {
                 ];
                 close_test_dialog(raw, hwnd, root);
                 assert_eq!(names, ["Real Title.mp4", "Clips", "Real Film (2011)"]);
+            }
+        });
+    }
+
+    /// The analysis of a source that offers an MP4 and a taller Ogg video without naming codecs,
+    /// an audio track, and a format that reports neither codecs nor a size.
+    fn mp4_and_ogg_analysis() -> crate::model::MediaInfo {
+        use crate::model::{MediaFormat, MediaInfo};
+        let video = |id: &str, extension: &str, width: u32, height: u32| MediaFormat {
+            id: id.into(),
+            extension: extension.into(),
+            width: Some(width),
+            height: Some(height),
+            ..Default::default()
+        };
+        MediaInfo {
+            title: "Real Title".into(),
+            extractor: "Generic".into(),
+            formats: vec![
+                video("0", "mp4", 320, 240),
+                video("1", "ogv", 400, 304),
+                MediaFormat {
+                    id: "audio".into(),
+                    video_codec: Some("none".into()),
+                    audio_codec: Some("mp3".into()),
+                    ..Default::default()
+                },
+                MediaFormat {
+                    id: "unsized".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_picker_lists_each_video_quality_that_reports_a_size_even_without_codecs() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let (raw, hwnd, root) = modern_test_dialog(
+                    blank_picker(),
+                    MEDIA_WIDTH,
+                    media_window_height(MEDIA_HEIGHT, 420),
+                );
+                let DialogKind::Media(f) = &mut (*raw).kind else {
+                    panic!("a media picker");
+                };
+                populate_media(hwnd, f, &mp4_and_ogg_analysis(), "");
+                let listed: Vec<Option<String>> = f
+                    .video_formats
+                    .iter()
+                    .map(|format| format.as_ref().map(|format| format.id.clone()))
+                    .collect();
+                let entries = SendMessageW(f.format, CB_GETCOUNT, 0, 0);
+                close_test_dialog(raw, hwnd, root);
+                // The automatic quality, then the taller quality first.
+                assert_eq!(listed, [None, Some("1".into()), Some("0".into())]);
+                assert_eq!(entries, 3);
+            }
+        });
+    }
+
+    #[test]
+    fn a_remembered_height_preselects_only_a_quality_the_chosen_container_can_hold() {
+        on_private_desktop(|| {
+            use super::*;
+            unsafe {
+                let (raw, hwnd, root) = modern_test_dialog(
+                    blank_picker(),
+                    MEDIA_WIDTH,
+                    media_window_height(MEDIA_HEIGHT, 420),
+                );
+                let DialogKind::Media(f) = &mut (*raw).kind else {
+                    panic!("a media picker");
+                };
+                let containers: Vec<Option<String>> =
+                    f.kind_values.iter().map(|(_, c)| c.clone()).collect();
+                let mut preselected = |container: usize| {
+                    combo_select(f.kind, container as i32);
+                    f.base.max_height = Some(720);
+                    populate_media(hwnd, f, &mp4_and_ogg_analysis(), "");
+                    f.video_formats[combo_index(f.format) as usize]
+                        .as_ref()
+                        .map(|format| format.id.clone())
+                };
+                let mp4 = preselected(0);
+                let mkv = preselected(1);
+                close_test_dialog(raw, hwnd, root);
+                assert_eq!(
+                    containers[..2],
+                    [Some("mp4".to_string()), Some("mkv".to_string())]
+                );
+                assert_eq!(mp4.as_deref(), Some("0"), "MP4 cannot hold the Ogg video");
+                assert_eq!(mkv.as_deref(), Some("1"), "MKV holds the taller one");
             }
         });
     }
