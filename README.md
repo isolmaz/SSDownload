@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/video.gif" width="860" alt="The SSDownload button on a video is dragged to another spot on the player and its menu is opened and closed without a choice. Clicking the button opens the quality picker, 720p is chosen, Download turns the picker into the download's window, and the download then runs in the queue beside other jobs and ends with a completion card.">
+  <img src="docs/media/video.gif" width="860" alt="In the Classic theme, the SSDownload button on a video is dragged to another spot on the player and its menu is opened and closed without a choice. Clicking the button opens the quality picker, 720p is chosen, Download turns the picker into the download's window, and the download then runs in the queue beside other jobs and ends with a completion card.">
 </p>
 
 ## Features
@@ -34,7 +34,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/themes.gif" width="860" alt="Settings changes the theme from Classic to Modern, which applies after a restart, and the window then changes to Modern in place, first in light and then in dark.">
+  <img src="docs/media/themes.gif" width="860" alt="In the Modern theme, Settings sets Theme to Classic, which applies after a restart, and the window then changes to Classic in place.">
 </p>
 
 ## Install
