@@ -10,6 +10,7 @@
   " (off)": " (désactivé)",
   " (stopped at the limit)": " (arrêté à la limite)",
   " [line truncated]": " [ligne tronquée]",
+  " · Analyzed page: {0}": " · Page analysée : {0}",
   " · Duration unknown": " · Durée inconnue",
   " · Duration {0:02}:{1:02}:{2:02}": " · Durée {0:02}:{1:02}:{2:02}",
   " · FPS unknown": " · FPS inconnu",

@@ -251,6 +251,50 @@ fn refresh_keeps_player_profile_and_exact_track_selection() {
     assert!(refresh_identity_matches(&without_cookies, &without_cookies));
 }
 
+#[test]
+fn a_refresh_keeps_the_pages_the_job_was_handed_off_from() {
+    let previous = AddRequest {
+        url: "https://media.example.test/video.m3u8?token=old".into(),
+        kind: DownloadKind::Video,
+        page_url: Some("https://player.example.test/embed/7".into()),
+        top_page_url: Some("https://example.test/watch/7".into()),
+        ..Default::default()
+    };
+    let refreshed = |page_url: Option<&str>, top_page_url: Option<&str>| {
+        let mut next = AddRequest {
+            url: "https://media.example.test/video.m3u8?token=new".into(),
+            kind: DownloadKind::Video,
+            page_url: page_url.map(Into::into),
+            top_page_url: top_page_url.map(Into::into),
+            ..Default::default()
+        };
+        preserve_refresh_contract(&previous, &mut next);
+        (next.page_url, next.top_page_url)
+    };
+    let kept = (
+        Some("https://player.example.test/embed/7".to_owned()),
+        Some("https://example.test/watch/7".to_owned()),
+    );
+    assert_eq!(refreshed(None, None), kept);
+    assert_eq!(
+        refreshed(
+            Some("https://player.example.test/embed/other"),
+            Some("https://example.test/watch/other")
+        ),
+        kept
+    );
+
+    let mut without = previous.clone();
+    without.top_page_url = None;
+    let mut next = previous.clone();
+    next.top_page_url = Some("https://example.test/watch/other".into());
+    preserve_refresh_contract(&without, &mut next);
+    assert_eq!(
+        next.top_page_url, None,
+        "a job handed off without a top page keeps none"
+    );
+}
+
 fn refresh_request(url: String) -> AddRequest {
     AddRequest {
         url,

@@ -682,6 +682,7 @@ pub(crate) fn prepare_source_refresh(
         headers: next.headers.clone(),
         referer: next.referer.clone(),
         page_url: next.page_url.clone(),
+        top_page_url: next.top_page_url.clone(),
         session_cookies: next.session_cookies.clone(),
         playlist: next.playlist,
         ..InspectRequest::default()

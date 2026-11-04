@@ -38,7 +38,7 @@ function checkedDownloadQuery(query) {
 // measured to: pause needs a running download, resume needs a paused or resumable one (a running one it
 // accepts and leaves alone), cancel leaves `paused` as it was, and a normal browser exit cancels a paused
 // download while a crash leaves it interrupted and resumable (see the restart tests).
-function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map(), downloadItems = new Map(), browserLanguage = "tr", digestDelayMs = 0 } = {}) {
+function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map(), downloadItems = new Map(), browserLanguage = "tr", digestDelayMs = 0, tabUrl = "https://site.example/watch" } = {}) {
   const events = {
     headers: event(), beforeHeaders: event(), removed: event(), updated: event(), installed: event(), startup: event(),
     menu: event(), message: event(), activated: event(), alarm: event(), download: event(), suspend: event()
@@ -147,7 +147,7 @@ function backgroundHarness({ native = async request => request?.action?.type==="
         return typeof pageHtml === "function" ? pageHtml(message) : pageHtml === undefined ? undefined : { html: pageHtml };
       },
       query: tabsQuery([{ id: 7, url: "https://site.example/watch", active: true, incognito: false }]),
-      async get(id) { return { id, url: "https://site.example/watch", cookieStoreId: "0" }; },
+      async get(id) { return { id, url: tabUrl, cookieStoreId: "0" }; },
       async create(value) { tabCreates.push(value); return { id: 99, ...value }; }
     },
     runtime: {
@@ -559,6 +559,95 @@ test("the video entry on a blob player inside a frame hands over that frame's pa
   const handoff = h.nativeRequests.find(request => request?.action?.type === "browser_media");
   assert.equal(handoff.action.request.url, frameUrl, "the frame that holds the player is the source");
   assert.deepEqual(JSON.parse(JSON.stringify(handoff.action.request.source_identity)), { video_id: "2:df:inner", frame_id: 2, document_id: "df", page_url: frameUrl });
+});
+
+// The media handoff of an unresolved blob player in frame 2 of a tab: the frame's page is the source.
+async function framePlayerHandoff({ tabUrl = "https://clips.example/watch/7", frameId = 2, frameUrl = "https://player.example/embed/frame.html", lookup, others = [], observed = [] } = {}) {
+  const h = backgroundHarness({ tabUrl });
+  if (lookup) vm.runInContext("browser.tabs.get = async () => { throw new Error('The tab is gone'); }", h.context);
+  // What the tab's other frames report before the click: [frameId, message] pairs.
+  for (const [otherFrame, other] of others) await h.content({ channel: "ssdownload-content", event: "scan", players: [], sources: [], ...other }, 7, otherFrame);
+  // Media the network showed in a frame that reported no player: [frameId, address] pairs.
+  for (const [observedFrame, url] of observed) await h.events.headers.listeners[0]({ tabId: 7, frameId: observedFrame, statusCode: 200, url, responseHeaders: [{ name: "content-type", value: "application/vnd.apple.mpegurl" }] });
+  const message = { channel: "ssdownload-content", documentId: "df", pageUrl: frameUrl, pageTitle: "",
+    players: [{ id: "inner", title: "", urls: ["blob:https://player.example/inner"], active: true }], sources: [] };
+  await h.content({ ...message, event: "scan" }, 7, frameId);
+  await h.content({ ...message, event: "download-video", mediaKind: "video", playerId: "inner" }, 7, frameId);
+  const handoff = h.nativeRequests.find(request => request?.action?.type === "browser_media");
+  assert.ok(handoff, "the player reaches the picker");
+  return handoff.action.request;
+}
+
+test("a source in a frame is handed over with the tab's address beside the frame's", async () => {
+  const request = await framePlayerHandoff();
+  assert.equal(request.url, "https://player.example/embed/frame.html");
+  assert.equal(request.page_url, "https://player.example/embed/frame.html");
+  assert.equal(request.top_page_url, "https://clips.example/watch/7");
+});
+
+test("a source that is not in a frame, or whose frame is the tab's page, names no other page", async () => {
+  const topLevel = await framePlayerHandoff({ frameId: 0, frameUrl: "https://clips.example/watch/7", tabUrl: "https://clips.example/watch/7?list=1" });
+  assert.equal(topLevel.url, "https://clips.example/watch/7");
+  assert.ok(!("top_page_url" in topLevel), "the top document is the tab's page, whatever the tab says");
+  const same = await framePlayerHandoff({ tabUrl: "https://player.example/embed/frame.html" });
+  assert.ok(!("top_page_url" in same), "a frame at the tab's own address names nothing else");
+});
+
+test("the tab's address is sent only when the frame is the one frame of the tab that holds a player or an embed", async () => {
+  const frame = "https://player.example/embed/frame.html", top = "https://clips.example/watch/7";
+  const topLists = embeds => [0, { documentId: "dt", pageUrl: top, playerSignals: { embeds, containers: false, playerScripts: false } }];
+  const sent = async (others, observed) => "top_page_url" in await framePlayerHandoff({ others, observed });
+  assert.equal(await sent([]), true, "no other frame is known");
+  assert.equal(await sent([topLists([{ url: frame, title: "" }])]), true, "the page lists this frame as its only embed");
+  assert.equal(await sent([topLists([{ url: frame, title: "" }, { url: "https://video.example/embed/9", title: "" }])]), false, "the page lists another embed too");
+  assert.equal(await sent([[3, { documentId: "do", pageUrl: "https://other.example/embed/x", players: [{ id: "p", urls: ["blob:https://other.example/p"], active: true }] }]]), false, "another frame holds a player");
+  assert.equal(await sent([], [[3, "https://cdn.example/a.m3u8"]]), false, "the network showed media in another frame");
+  assert.equal(await sent([topLists([{ url: frame, title: "" }]), [3, { documentId: "do", pageUrl: "https://other.example/embed/x", players: [{ id: "p", urls: ["blob:https://other.example/p"], active: true }] }]]), false, "the page lists this frame and another frame holds a player");
+});
+
+const otherFrameSent = async other => "top_page_url" in await framePlayerHandoff({ others: [[3, { documentId: "do", pageUrl: "https://v.example/v/abc", ...other }]] });
+const playerSignalled = { containers: true, embeds: [], playerScripts: false };
+
+test("the tab's address is not sent when another frame carries only a player signal", async () => {
+  assert.equal(await otherFrameSent({ playerSignals: playerSignalled }), false, "a frame with a player container and no media element");
+  assert.equal(await otherFrameSent({}), true, "a frame with no signal at all stays silent");
+});
+
+test("the tab's address is not sent when another frame holds a video that has no source and was not played", async () => {
+  assert.equal(await otherFrameSent({ players: [{ id: "idle", title: "", urls: [], active: false }], playerSignals: playerSignalled }), false);
+});
+
+test("the tab's address is still sent when the only other document just lists this frame as its embed", async () => {
+  const parent = [1, { documentId: "dp", pageUrl: "https://host.example/outer", playerSignals: { containers: false, playerScripts: false, embeds: [{ url: "https://player.example/embed/frame.html", title: "" }] } }];
+  assert.equal("top_page_url" in await framePlayerHandoff({ others: [parent] }), true);
+});
+
+test("the tab's address is left out when the tab cannot give an http(s) one", async () => {
+  for (const tabUrl of ["chrome://newtab/", null, "not an address"]) {
+    const request = await framePlayerHandoff({ tabUrl });
+    assert.ok(!("top_page_url" in request), String(tabUrl));
+    assert.equal(request.url, "https://player.example/embed/frame.html", "the handoff itself goes ahead");
+  }
+  const lost = await framePlayerHandoff({ lookup: "fails" });
+  assert.ok(!("top_page_url" in lost), "a tab that cannot be read");
+  assert.equal(lost.url, "https://player.example/embed/frame.html");
+});
+
+test("only the host of the tab's address is kept with a frame", async () => {
+  const h = backgroundHarness();
+  // A tab that holds media is the one whose frames the session keeps.
+  await h.events.headers.listeners[0]({ tabId: 7, frameId: 2, statusCode: 200, url: "https://cdn.example/a.m3u8", responseHeaders: [{ name: "content-type", value: "application/vnd.apple.mpegurl" }] });
+  const message = { channel: "ssdownload-content", event: "scan", documentId: "df", pageUrl: "https://player.example/embed/frame.html", players: [], sources: [] };
+  await h.content(message, 7, 2, "A Film", "https://clips.example/private/watch?token=SECRET-TOKEN#part");
+  const kept = JSON.stringify(JSON.parse(vm.runInContext('JSON.stringify(frames.get("7\\n2"))', h.context)));
+  assert.equal(JSON.parse(kept).tabHost, "clips.example");
+  assert.ok(!("tabUrl" in JSON.parse(kept)));
+  await h.settle();
+  const saved = JSON.stringify(h.storage.session.discovery?.frames ?? null);
+  assert.ok(saved.includes('"tabHost":"clips.example"'), "the saved frame holds the host");
+  for (const part of ["SECRET-TOKEN", "/private/", "#part"]) {
+    assert.ok(!kept.includes(part) && !saved.includes(part), part);
+  }
 });
 
 test("two unresolved blob players on one page are told apart only by an explicit submenu choice", async () => {
@@ -2796,6 +2885,38 @@ test("an embed iframe address becomes its own page candidate beside the document
   const covering=state.videos.filter(item=>item.url===embedUrl);
   assert.equal(covering.length,1);
   assert.equal(covering[0].kind,'hls');
+});
+
+// The file name suggested for an embed the page lists, and the record the picker's menus show.
+async function embedHandoff(title, siteNames = []) {
+  const h = backgroundHarness();
+  const pageUrl = "https://watch.example/film/sample", embedUrl = "https://player.example/embed/sample";
+  await h.content({ channel: "ssdownload-content", event: "scan", documentId: "d", pageUrl, pageTitle: "Beastly", siteNames, players: [],
+    playerSignals: { embeds: [{ url: embedUrl, title }], containers: false, playerScripts: true }, sources: [] });
+  await h.menu("ssdownload-video", { info: { srcUrl: embedUrl } });
+  await h.waitFor(() => h.nativeRequests.some(request => request?.action?.type === "browser_media"));
+  const request = h.nativeRequests.find(handoff => handoff?.action?.type === "browser_media").action.request;
+  assert.equal(request.url, embedUrl);
+  return { filename: request.filename, record: (await h.state(7)).videos.find(item => item.url === embedUrl) };
+}
+
+test("an embed's title is a suggested file name only when it names content", async () => {
+  const named = await embedHandoff("Beastly 2011 Full HD");
+  assert.equal(named.filename, "Beastly 2011 Full HD");
+  assert.equal(named.record.title, "Beastly 2011 Full HD");
+  assert.equal(named.record.titleSource, "element");
+  for (const [title, siteNames, why] of [
+    ["Video Player", [], "the title names a player"],
+    ["HTML5 player", [], "a player by its technology"],
+    ["example", [], "a label of the embed's host name"],
+    ["Moviehub", ["Moviehub"], "the name the page declares for its site"],
+    ["(3) Moviehub", ["Moviehub"], "the same with an unread count"]
+  ]) {
+    const generic = await embedHandoff(title, siteNames);
+    assert.equal(generic.filename, null, why);
+    assert.equal(generic.record.titleSource, "generic", why);
+    assert.equal(generic.record.title, "player.example", `${why}: the list shows the embed's host`);
+  }
 });
 
 test("a frame without player signals keeps producing nothing",async()=>{

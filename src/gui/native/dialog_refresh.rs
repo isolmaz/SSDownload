@@ -943,6 +943,19 @@ pub(super) unsafe fn edited_media_name(
     }
 }
 
+/// Names the page the analysis was made for when it is not the address the picker was opened
+/// for, so that a video of the embedding page is never taken for the one that was clicked.
+fn analysed_page_note(info: &MediaInfo) -> String {
+    info.analysed_url
+        .as_deref()
+        .and_then(|address| url::Url::parse(address).ok())
+        .and_then(|address| address.host_str().map(str::to_owned))
+        .map(|host| {
+            crate::i18n::ui_format!(" · Analiz edilen sayfa: {0}", " · Analyzed page: {0}", host)
+        })
+        .unwrap_or_default()
+}
+
 pub(super) unsafe fn populate_media(
     hwnd: HWND,
     f: &mut MediaFields,
@@ -991,6 +1004,7 @@ pub(super) unsafe fn populate_media(
         .playlist_count
         .map(|n| crate::i18n::ui_format!(" · Playlist: {n} öğe", " · Playlist: {n} items", n = n))
         .unwrap_or_default();
+    let status = format!("{}{status}", analysed_page_note(info));
     set_text(
         f.summary,
         &crate::i18n::ui_format!(
@@ -1476,6 +1490,7 @@ pub(super) unsafe fn renew_source(hwnd: HWND, error: HWND, app: App, f: &MediaFi
     let headers = f.base.headers.clone();
     let session_cookies = f.base.session_cookies.clone();
     let referer = f.base.referer.clone();
+    let top_page_url = f.base.top_page_url.clone();
     // The same editable name the queue path forwards: a rebind renames the
     // pending job's target instead of keeping the stale one.
     let extension = f
@@ -1517,6 +1532,7 @@ pub(super) unsafe fn renew_source(hwnd: HWND, error: HWND, app: App, f: &MediaFi
             request.headers = headers;
             request.session_cookies = session_cookies;
             request.referer = referer;
+            request.top_page_url = top_page_url;
             if let Some(name) = rename {
                 request.filename = Some(name);
             }

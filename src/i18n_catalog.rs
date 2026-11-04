@@ -7493,6 +7493,9 @@ macro_rules! __ui_template_ar {
     ("\r\n{0}: {1}\r\nDownloaded: {2}{3}") => {
         "\r\n{0}: {1}\r\nتم التنزيل: {2}{3}"
     };
+    (" · Analyzed page: {0}") => {
+        " · الصفحة المحللة: {0}"
+    };
     (" · Duration {0:02}:{1:02}:{2:02}") => {
         " · المدة {0:02}:{1:02}:{2:02}"
     };
@@ -8352,6 +8355,9 @@ macro_rules! __ui_template_es {
     };
     ("\r\n{0}: {1}\r\nDownloaded: {2}{3}") => {
         "\r\n{0}: {1}\r\nDescargado: {2}{3}"
+    };
+    (" · Analyzed page: {0}") => {
+        " · Página analizada: {0}"
     };
     (" · Duration {0:02}:{1:02}:{2:02}") => {
         " · Duración {0:02}:{1:02}:{2:02}"
@@ -9213,6 +9219,9 @@ macro_rules! __ui_template_pt {
     ("\r\n{0}: {1}\r\nDownloaded: {2}{3}") => {
         "\r\n{0}: {1}\r\nBaixado: {2}{3}"
     };
+    (" · Analyzed page: {0}") => {
+        " · Página analisada: {0}"
+    };
     (" · Duration {0:02}:{1:02}:{2:02}") => {
         " · Duração {0:02}:{1:02}:{2:02}"
     };
@@ -10073,6 +10082,9 @@ macro_rules! __ui_template_fr {
     ("\r\n{0}: {1}\r\nDownloaded: {2}{3}") => {
         "\r\n{0} : {1}\r\nTéléchargé : {2}{3}"
     };
+    (" · Analyzed page: {0}") => {
+        " · Page analysée : {0}"
+    };
     (" · Duration {0:02}:{1:02}:{2:02}") => {
         " · Durée {0:02}:{1:02}:{2:02}"
     };
@@ -10932,6 +10944,9 @@ macro_rules! __ui_template_de {
     };
     ("\r\n{0}: {1}\r\nDownloaded: {2}{3}") => {
         "\r\n{0}: {1}\r\nHeruntergeladen: {2}{3}"
+    };
+    (" · Analyzed page: {0}") => {
+        " · Analysierte Seite: {0}"
     };
     (" · Duration {0:02}:{1:02}:{2:02}") => {
         " · Dauer {0:02}:{1:02}:{2:02}"

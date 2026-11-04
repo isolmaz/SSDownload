@@ -136,6 +136,7 @@ pub(super) fn media_info_from_json(root: &Value) -> Result<MediaInfo> {
         extractor: string_field(root, "extractor_key")
             .or_else(|| string_field(root, "extractor"))
             .unwrap_or_default(),
+        analysed_url: None,
     })
 }
 
