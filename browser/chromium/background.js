@@ -1232,16 +1232,19 @@ async function sessionMetadata(tabId, item) {
 // The tab's own address for a source in a frame of it, otherwise null. A frame's address can be a
 // player page the desktop's media tool has no use for while the page that embeds it names the
 // video; the desktop turns to this page only when the tool cannot use the frame's address. That
-// page names this video only when the frame is the one frame of the tab that holds a player or an
-// embed: with another one, the desktop could take that one for the video the user acted on. The
-// embed a document lists for this very frame is the frame itself and does not count.
+// page names this video only when the frame is the one frame of the tab that holds a player, an
+// embed or a player signal: with another one, the desktop could take that one for the video the
+// user acted on. The embed a document lists for this very frame is the frame itself and does not
+// count, and neither does the signal of a document that lists it or of the top document.
 async function topPageUrl(tabId, item) {
   if (!Number.isInteger(item.frameId) || item.frameId === 0) return null;
   const frameHref = safeUrl(item.pageUrl)?.href;
   const isEmbed = record => String(record.videoId).includes(":embed:");
-  const elsewhere = videoRecords(tabId).some(record => record.frameId !== item.frameId
-    && (record.playerId != null || record.unassociated || isEmbed(record))
-    && !(isEmbed(record) && frameHref && safeUrl(record.url)?.href === frameHref));
+  const records = videoRecords(tabId);
+  const listsFrame = record => isEmbed(record) && frameHref && safeUrl(record.url)?.href === frameHref;
+  const listing = new Set(records.filter(listsFrame).map(record => record.frameId));
+  const elsewhere = records.some(record => record.frameId !== item.frameId && !listsFrame(record)
+    && (record.playerId != null || record.unassociated || isEmbed(record) || (record.frameId !== 0 && !listing.has(record.frameId))));
   if (elsewhere) return null;
   try {
     const top = safeUrl((await invoke(api.tabs, "get", tabId))?.url)?.href || null;

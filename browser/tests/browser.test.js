@@ -605,6 +605,23 @@ test("the tab's address is sent only when the frame is the one frame of the tab 
   assert.equal(await sent([topLists([{ url: frame, title: "" }]), [3, { documentId: "do", pageUrl: "https://other.example/embed/x", players: [{ id: "p", urls: ["blob:https://other.example/p"], active: true }] }]]), false, "the page lists this frame and another frame holds a player");
 });
 
+const otherFrameSent = async other => "top_page_url" in await framePlayerHandoff({ others: [[3, { documentId: "do", pageUrl: "https://v.example/v/abc", ...other }]] });
+const playerSignalled = { containers: true, embeds: [], playerScripts: false };
+
+test("the tab's address is not sent when another frame carries only a player signal", async () => {
+  assert.equal(await otherFrameSent({ playerSignals: playerSignalled }), false, "a frame with a player container and no media element");
+  assert.equal(await otherFrameSent({}), true, "a frame with no signal at all stays silent");
+});
+
+test("the tab's address is not sent when another frame holds a video that has no source and was not played", async () => {
+  assert.equal(await otherFrameSent({ players: [{ id: "idle", title: "", urls: [], active: false }], playerSignals: playerSignalled }), false);
+});
+
+test("the tab's address is still sent when the only other document just lists this frame as its embed", async () => {
+  const parent = [1, { documentId: "dp", pageUrl: "https://host.example/outer", playerSignals: { containers: false, playerScripts: false, embeds: [{ url: "https://player.example/embed/frame.html", title: "" }] } }];
+  assert.equal("top_page_url" in await framePlayerHandoff({ others: [parent] }), true);
+});
+
 test("the tab's address is left out when the tab cannot give an http(s) one", async () => {
   for (const tabUrl of ["chrome://newtab/", null, "not an address"]) {
     const request = await framePlayerHandoff({ tabUrl });
