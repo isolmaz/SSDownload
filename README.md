@@ -30,7 +30,7 @@
 - **Privacy:** no account, no telemetry and no SSDownload server. The app connects only to the sources you download from and to GitHub, for updates and media support. See [PRIVACY.md](PRIVACY.md).
 
 <p align="center">
-  <img src="docs/media/light-dark.gif" width="860" alt="Settings turns the Classic window dark at once when the dark title bar and controls are ticked. In the dark window, a waiting download is dragged to the top of the queue, one running download is paused and then resumed from the mini panel, and the tray menu sets a speed limit of 1 MB/s.">
+  <img src="docs/media/light-dark.gif" width="860" alt="Settings turns the Classic window dark at once when the dark title bar and controls are ticked. In the dark window, a waiting download is dragged to the top of the queue, one running download is paused with the Pause / Resume button and resumed from the mini panel, and the tray menu sets a speed limit of 1 MB/s.">
 </p>
 
 <p align="center">
