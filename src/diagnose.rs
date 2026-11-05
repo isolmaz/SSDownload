@@ -305,7 +305,7 @@ fn render_page_markup(html: &str) -> Vec<u8> {
     let title = crate::i18n::ui("SSDownload sayfa işaretlemesi", "SSDownload page markup");
     format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>{}</title></head><body><pre style=\"white-space:pre-wrap;word-break:break-word\">{}</pre></body></html>\n",
-        escape_html(&title),
+        escape_html(title),
         escape_html(html)
     )
     .into_bytes()
