@@ -421,7 +421,12 @@ function manifestKey(tabId, item) { return `${tabId}\n${item.frameId ?? -1}\n${i
 async function linkManifest(tabId, item, values) {
   const key = manifestKey(tabId, item);
   const observed = values.get(sourceKey(item))?.generation;
-  if (item.kind !== "hls" || manifestTasks.has(key) || manifestActive>=4 || typeof fetch !== "function") return;
+  // Prefetch only a manifest the browser itself requested (a webRequest record or
+  // a matching observed request context). A page-declared type/src pair is enough
+  // to list the source, but it must not turn the service worker into a fetcher
+  // for a host the page chose without any request of its own.
+  const observedByBrowser = item.source === "network" || !!item.requestContext;
+  if (item.kind !== "hls" || !observedByBrowser || manifestTasks.has(key) || manifestActive>=4 || typeof fetch !== "function") return;
   // Bounded, credential-free metadata read. Authenticated manifests are handled by the engine after site consent.
   const task = (async () => {
     ++manifestActive;
@@ -1611,8 +1616,12 @@ async function handleContentMessage(message, sender) {
     // Chrome keeps MessageSender.url at the content script's initial document URL
     // across history navigation. The script reports the current location; accept
     // its same-origin changes without letting a page claim another sender origin.
+    // An about:blank/srcdoc frame has no http(s) sender.url, but the browser still
+    // supplies the frame's inherited origin; a document.baseURI from the page must
+    // match that origin, not merely be a well-formed URL.
     const senderUrl = safeUrl(sender.url), pageUrl = safeUrl(message.pageUrl);
-    const frameUrl = (pageUrl && (!senderUrl || pageUrl.origin === senderUrl.origin) ? pageUrl : senderUrl)?.href;
+    const senderOrigin = senderUrl?.origin || safeUrl(sender.origin)?.origin || null;
+    const frameUrl = (pageUrl && senderOrigin && pageUrl.origin === senderOrigin ? pageUrl : senderUrl)?.href;
     if (!frameUrl) return;
     const allowedAdSignals=new Set(["player-identity","ad-container","request-host","promotional-link","playback-pattern","skip-control"]);
     const players = message.players.slice(0,100).map(p => {

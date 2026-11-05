@@ -18,7 +18,7 @@ Supported version: the latest [release](https://github.com/isolmaz/SSDownload/re
 - The browser can never choose an output path, delete files, change settings or quit the app.
 - The extension reads a site's cookies only after you allowed that site, from one verified cookie store. A download it takes over from the browser follows the same rule, with the download's referrer as the site (no referrer, no cookies), and stays in the browser when that store cannot be verified. A download started from an allowed site's frame embedded in another page counts as that site, because its referrer is the frame's address.
 
-**Secrets at rest.** Queue records, completion journals, site logins and the proxy password are sealed with Windows DPAPI for the current user. Cookies, headers and page markup are removed from a job once it completes. Logs and error reports strip credentials, query strings and fragments from addresses. The page markup a **Report problem** folder may hold (`sayfa.html`) is kept as is, so review it before sharing.
+**Secrets at rest.** Queue records, completion journals, site logins and the proxy password are sealed with Windows DPAPI for the current user. Cookies, headers and page markup are removed from a job once it completes. Logs and error reports strip credentials, query strings and fragments from addresses. The page markup a **Report problem** folder may hold (`sayfa.html`) is kept as inert escaped text in a script-free document, so it cannot execute when opened; review it before sharing.
 
 **Transfers.**
 

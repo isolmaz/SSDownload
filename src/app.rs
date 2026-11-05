@@ -1274,6 +1274,13 @@ impl App {
         }
         (accepted, rejected)
     }
+    /// Surfaces a startup warning that does not by itself stop the app, such as
+    /// a browser bridge whose pipe name is held. Kept public for the binary
+    /// entry point, which constructs `App` before the GUI starts.
+    pub fn notify_startup_warning(&self, text: String) {
+        self.message(text, true);
+    }
+
     pub(crate) fn message(&self, text: String, error: bool) {
         let text = crate::logging::sanitize(&text);
         let code = crate::error_codes::from_text(&text);

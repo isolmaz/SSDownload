@@ -207,7 +207,7 @@ pub(crate) struct PageMarkup {
 /// Reads the page a failure came from, so a report carries markup the browser
 /// did not hand over. The address is the redacted one the report stores (query
 /// and fragment are gone), the request carries no credentials, no cookies and no
-/// referer, and it goes to that page and nowhere else: the report itself still
+/// referer, and the transfer is restricted to http(s). The report itself still
 /// uploads nothing, and a failure to read the page only means the report has no
 /// `sayfa.html`.
 pub(crate) fn fetch_page_markup(
@@ -280,6 +280,37 @@ fn restrict_to_http(easy: &mut crate::network::GovernedEasy) -> Result<()> {
     Ok(())
 }
 
+/// Escapes one string for text content. The report carries page markup as
+/// evidence, never as a document the browser may execute.
+fn escape_html(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Renders the captured markup as inert text inside a fixed, script-free
+/// document. `default-src 'none'` (and the escaped `<pre>` body) means a
+/// remote page cannot make the report execute or fetch anything, even if the
+/// user opens `sayfa.html` from the folder the app reveals.
+fn render_page_markup(html: &str) -> Vec<u8> {
+    let title = crate::i18n::ui("SSDownload sayfa işaretlemesi", "SSDownload page markup");
+    format!(
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>{}</title></head><body><pre style=\"white-space:pre-wrap;word-break:break-word\">{}</pre></body></html>\n",
+        escape_html(&title),
+        escape_html(html)
+    )
+    .into_bytes()
+}
+
 /// Drops what a report never needs and would rather not carry: script bodies,
 /// style sheets and comments. Page markup is evidence, so the rest is kept
 /// verbatim.
@@ -344,7 +375,8 @@ fn find_ignore_ascii_case(haystack: &str, needle: &str, from: usize) -> Option<u
 }
 
 /// Writes a failure report: the diagnostics package plus `hata.json` (what the
-/// user was doing) and, when the browser handed one over, `sayfa.html`.
+/// user was doing) and, when the browser handed one over, `sayfa.html` as inert
+/// escaped text in a script-free document.
 ///
 /// Nothing here leaves the machine; the report exists so the user can attach it
 /// to a bug report by hand.
@@ -355,7 +387,8 @@ pub fn report(
     context: &ReportContext,
 ) -> Result<Package> {
     let mut entries = collect_entries(paths, jobs, hours)?;
-    let html_bytes = context.page_html.as_ref().map(|html| html.len());
+    let markup_bytes = context.page_html.as_ref().map(|html| html.len());
+    let rendered_html = context.page_html.as_deref().map(render_page_markup);
     entries.push((
         "hata.json".to_owned(),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -367,9 +400,11 @@ pub fn report(
             "job_name": context.job_name,
             "site_url": context.site_url,
             "page_title": context.page_title,
-            "page_html": html_bytes.map(|bytes| serde_json::json!({
+            "page_html": markup_bytes.map(|markup_bytes| serde_json::json!({
                 "file": "sayfa.html",
-                "bytes": bytes,
+                "bytes": rendered_html.as_ref().map(Vec::len),
+                "markup_bytes": markup_bytes,
+                "encoding": "escaped-html",
                 "source": context.page_html_source,
                 "status": context.page_html_status,
                 "note": crate::i18n::ui(
@@ -379,8 +414,8 @@ pub fn report(
             })),
         }))?,
     ));
-    if let Some(html) = &context.page_html {
-        entries.push(("sayfa.html".to_owned(), html.as_bytes().to_vec()));
+    if let Some(rendered) = rendered_html {
+        entries.push(("sayfa.html".to_owned(), rendered));
     }
     write_package(paths, "SSDownload-hata", entries)
 }
@@ -541,7 +576,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("ssdownload-report-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(base.join("logs")).unwrap();
         let paths = AppPaths::new(base.clone()).unwrap();
-        let html = "<html><body>oynatıcı</body></html>";
+        let html = "<html><body onload=\"alert(1)\"><script>alert(2)</script><img src=x onerror=\"alert(3)\">oynatıcı</body></html>";
         let context = ReportContext {
             code: Some("SSD-MED-015".into()),
             message: "Seçilen çözünürlük artık yok".into(),
@@ -579,12 +614,18 @@ mod tests {
         assert_eq!(meta["job_id"], "job-1");
         assert_eq!(meta["site_url"], "https://site.example");
         assert_eq!(meta["page_html"]["file"], "sayfa.html");
-        assert_eq!(meta["page_html"]["bytes"], html.len());
+        assert_eq!(meta["page_html"]["markup_bytes"], html.len());
+        assert_eq!(meta["page_html"]["encoding"], "escaped-html");
         assert_eq!(meta["page_html"]["source"], "handoff");
-        assert_eq!(
-            std::fs::read(written.folder.join("sayfa.html")).unwrap(),
-            html.as_bytes()
-        );
+        let rendered = std::fs::read(written.folder.join("sayfa.html")).unwrap();
+        let rendered = String::from_utf8(rendered).unwrap();
+        assert_eq!(meta["page_html"]["bytes"], rendered.len());
+        assert!(rendered.contains("default-src 'none'"));
+        assert!(rendered.contains("&lt;html&gt;"));
+        assert!(rendered.contains("&lt;script&gt;"));
+        assert!(!rendered.contains("<body onload"));
+        assert!(!rendered.contains("<script>"));
+        assert!(!rendered.contains("<img src=x"));
         // The diagnostics payload travels with it, and the ZIP mirrors the folder.
         assert!(written.folder.join("session.json").is_file());
         assert!(written.folder.join("diagnostics.json").is_file());
