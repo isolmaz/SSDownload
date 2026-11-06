@@ -301,16 +301,43 @@ test("an about:blank frame cannot claim a cross-origin page URL", async () => {
   listener(message, { id: "test-extension", url: "about:blank", origin: "https://site.example",
     tab: { id: 7, title: "Site" }, frameId: 3 }, () => {});
   await h.settle();
-  assert.equal((await h.state(7)).items.length, 0, "a forged baseURI must not become the frame URL");
+  const frameUrl = harness => vm.runInContext('frames.get("7\\n3")?.url ?? null', harness.context);
+  assert.equal(frameUrl(h), "https://site.example/", "a forged baseURI falls back to the browser-supplied origin");
+  assert.equal((await h.state(7)).items.length, 1, "the frame and its player stay listed");
 
   const sameOrigin = backgroundHarness();
   sameOrigin.events.message.listeners.at(-1)({ ...message, documentId: "same", pageUrl: "https://site.example/frame" },
     { id: "test-extension", url: "about:blank", origin: "https://site.example",
       tab: { id: 7, title: "Site" }, frameId: 3 }, () => {});
   await sameOrigin.settle();
+  assert.equal(frameUrl(sameOrigin), "https://site.example/frame", "a same-origin baseURI is the frame URL");
   const items = (await sameOrigin.state(7)).items;
   assert.equal(items.length, 1);
   assert.equal(items[0].url, "https://cdn.attacker.example/movie.mp4");
+});
+
+test("a sandboxed frame with an opaque origin takes its nearest http(s) ancestor as its page", async () => {
+  const tree = { 3: { url: "about:srcdoc", parentFrameId: 2 }, 2: { url: "about:blank", parentFrameId: 0 }, 0: { url: "https://site.example/watch", parentFrameId: -1 } };
+  const navigation = { async getFrame({ frameId }) { return tree[frameId] ?? null; } };
+  const message = {
+    channel: "ssdownload-content", event: "scan", documentId: "sandboxed",
+    pageUrl: "https://attacker.example/watch",
+    players: [{ id: "p", urls: ["https://cdn.example/movie.mp4"] }],
+    sources: [{ url: "https://cdn.example/movie.mp4", contentType: "video/mp4", playerId: "p" }]
+  };
+  const sender = { id: "test-extension", url: "about:srcdoc", origin: "null", tab: { id: 7, title: "Site" }, frameId: 3 };
+  const h = backgroundHarness({ navigation });
+  h.events.message.listeners.at(-1)(message, sender, () => {});
+  await h.settle();
+  assert.equal(vm.runInContext('frames.get("7\\n3")?.url ?? null', h.context), "https://site.example/watch",
+    "the browser's frame tree, not the page's claim, names the page");
+  assert.equal((await h.state(7)).items.length, 1);
+
+  const orphan = backgroundHarness({ navigation: { async getFrame() { return { url: "about:srcdoc", parentFrameId: -1 }; } } });
+  orphan.events.message.listeners.at(-1)(message, sender, () => {});
+  await orphan.settle();
+  assert.equal(vm.runInContext('frames.get("7\\n3")?.url ?? null', orphan.context), null, "without an http(s) ancestor the frame has no identity");
+  assert.equal((await orphan.state(7)).items.length, 0);
 });
 
 test("page-declared HLS is listed but not fetched until the browser has observed it", async () => {
@@ -328,6 +355,24 @@ test("page-declared HLS is listed but not fetched until the browser has observed
     responseHeaders: [{ name: "content-type", value: "application/vnd.apple.mpegurl" }] });
   await observed.settle();
   assert.deepEqual(calls, [hls], "a browser-observed manifest still prefetches its relations");
+});
+
+test("a page-reported HLS source joined to a browser-observed request is prefetched", async () => {
+  const calls = [];
+  const h = backgroundHarness({ fetch: async url => { calls.push(url); return { ok: true, body: null }; } });
+  await h.state(7);
+  const url = "https://cdn.example/list/opaque";
+  const pageUrl = "https://player.example/watch";
+  await h.events.beforeHeaders.listeners[0]({ tabId: 7, requestId: "r1", frameId: 0, documentId: "doc", url,
+    requestHeaders: [{ name: "Accept", value: "*/*" }] });
+  h.events.message.listeners.at(-1)({ channel: "ssdownload-content", event: "scan", documentId: "doc", pageUrl,
+    players: [{ id: "p", urls: [url] }], sources: [{ url, contentType: "application/vnd.apple.mpegurl", playerId: "p" }] },
+  { id: "test-extension", tab: { id: 7 }, frameId: 0, documentId: "doc", url: pageUrl }, () => {});
+  await h.settle();
+  const item = (await h.state(7)).items.find(entry => entry.url === url);
+  assert.equal(item?.source, "page", "the source comes from the page, not from a webRequest record");
+  assert.ok(item.requestContext, "the source is joined to the request the browser observed");
+  assert.deepEqual(calls, [url]);
 });
 
 test("the toolbar switch flips discovery, persists it, and keeps the badge in step", async () => {
