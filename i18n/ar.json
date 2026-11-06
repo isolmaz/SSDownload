@@ -1783,5 +1783,7 @@
   "Source: {0}": "المصدر: {0}",
   "Getting the video information from the source.{status}": "جارٍ جلب معلومات الفيديو من المصدر.{status}",
   "The reason is below. Report problem writes a report on it and opens its folder.": "السبب أدناه. يكتب «الإبلاغ عن مشكلة» تقريرًا عنه ويفتح مجلده.",
-  "The streams could not be merged within {0} seconds": "تعذّر دمج البثوث خلال {0} ث"
+  "The streams could not be merged within {0} seconds": "تعذّر دمج البثوث خلال {0} ث",
+  "SSDownload page markup": "ترميز صفحة SSDownload",
+  "The browser bridge could not start; the app continues without browser integration: {0}": "تعذّر بدء جسر المتصفح؛ يتابع التطبيق بدون تكامل المتصفح: {0}"
 }

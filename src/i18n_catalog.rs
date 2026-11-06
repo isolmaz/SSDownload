@@ -644,6 +644,7 @@ static AR: &[(&str, &str)] = &[
     ("SSDownload could not be started in the background", "تعذّر تشغيل SSDownload في الخلفية"),
     ("SSDownload error", "خطأ في SSDownload"),
     ("SSDownload is running", "SSDownload قيد التشغيل"),
+    ("SSDownload page markup", "ترميز صفحة SSDownload"),
     ("SSDownload settings", "إعدادات SSDownload"),
     ("SSDownload setup", "إعداد SSDownload"),
     ("SSDownload started but the local channel did not become ready.", "بدأ SSDownload لكن القناة المحلية لم تصبح جاهزة."),
@@ -2146,6 +2147,7 @@ static ES: &[(&str, &str)] = &[
     ("SSDownload could not be started in the background", "No se pudo iniciar SSDownload en segundo plano"),
     ("SSDownload error", "Error de SSDownload"),
     ("SSDownload is running", "SSDownload está en ejecución"),
+    ("SSDownload page markup", "Marcado de la página de SSDownload"),
     ("SSDownload settings", "Configuración de SSDownload"),
     ("SSDownload setup", "Instalación de SSDownload"),
     ("SSDownload started but the local channel did not become ready.", "SSDownload se inició, pero el canal local no estuvo listo."),
@@ -3648,6 +3650,7 @@ static PT: &[(&str, &str)] = &[
     ("SSDownload could not be started in the background", "Não foi possível iniciar o SSDownload em segundo plano"),
     ("SSDownload error", "Erro do SSDownload"),
     ("SSDownload is running", "O SSDownload está em execução"),
+    ("SSDownload page markup", "Marcação da página do SSDownload"),
     ("SSDownload settings", "Configurações do SSDownload"),
     ("SSDownload setup", "Configuração do SSDownload"),
     ("SSDownload started but the local channel did not become ready.", "O SSDownload foi iniciado, mas o canal local não ficou pronto."),
@@ -5150,6 +5153,7 @@ static FR: &[(&str, &str)] = &[
     ("SSDownload could not be started in the background", "SSDownload n'a pas pu être démarré en arrière-plan"),
     ("SSDownload error", "Erreur SSDownload"),
     ("SSDownload is running", "SSDownload est en cours d'exécution"),
+    ("SSDownload page markup", "Balisage de la page SSDownload"),
     ("SSDownload settings", "Paramètres de SSDownload"),
     ("SSDownload setup", "Configuration de SSDownload"),
     ("SSDownload started but the local channel did not become ready.", "SSDownload a démarré mais le canal local n'a pas été établi."),
@@ -6652,6 +6656,7 @@ static DE: &[(&str, &str)] = &[
     ("SSDownload could not be started in the background", "SSDownload konnte nicht im Hintergrund gestartet werden"),
     ("SSDownload error", "SSDownload-Fehler"),
     ("SSDownload is running", "SSDownload läuft"),
+    ("SSDownload page markup", "Seiten-Markup von SSDownload"),
     ("SSDownload settings", "SSDownload-Einstellungen"),
     ("SSDownload setup", "SSDownload-Einrichtung"),
     ("SSDownload started but the local channel did not become ready.", "SSDownload wurde gestartet, der lokale Kanal ist aber nicht bereit."),
@@ -7893,6 +7898,9 @@ macro_rules! __ui_template_ar {
     ("The audio could not be converted: {0}") => {
         "تعذّر تحويل الصوت: {0}"
     };
+    ("The browser bridge could not start; the app continues without browser integration: {0}") => {
+        "تعذّر بدء جسر المتصفح؛ يتابع التطبيق بدون تكامل المتصفح: {0}"
+    };
     ("The browser data could not be written to disk: {error}") => {
         "تعذّرت كتابة بيانات المتصفح على القرص: {error}"
     };
@@ -8758,6 +8766,9 @@ macro_rules! __ui_template_es {
     };
     ("The audio could not be converted: {0}") => {
         "No se ha podido convertir el audio: {0}"
+    };
+    ("The browser bridge could not start; the app continues without browser integration: {0}") => {
+        "No se pudo iniciar el puente del navegador; la aplicación continúa sin la integración del navegador: {0}"
     };
     ("The browser data could not be written to disk: {error}") => {
         "No se pudieron escribir los datos del navegador en el disco: {error}"
@@ -9625,6 +9636,9 @@ macro_rules! __ui_template_pt {
     ("The audio could not be converted: {0}") => {
         "Não foi possível converter o áudio: {0}"
     };
+    ("The browser bridge could not start; the app continues without browser integration: {0}") => {
+        "Não foi possível iniciar a ponte do navegador; a aplicação continua sem a integração com o navegador: {0}"
+    };
     ("The browser data could not be written to disk: {error}") => {
         "Não foi possível gravar os dados do navegador no disco: {error}"
     };
@@ -10491,6 +10505,9 @@ macro_rules! __ui_template_fr {
     ("The audio could not be converted: {0}") => {
         "L'audio n'a pas pu être converti : {0}"
     };
+    ("The browser bridge could not start; the app continues without browser integration: {0}") => {
+        "Le pont vers le navigateur n'a pas pu démarrer ; l'application continue sans l'intégration du navigateur : {0}"
+    };
     ("The browser data could not be written to disk: {error}") => {
         "Les données du navigateur n'ont pas pu être écrites sur le disque : {error}"
     };
@@ -11356,6 +11373,9 @@ macro_rules! __ui_template_de {
     };
     ("The audio could not be converted: {0}") => {
         "Das Audio konnte nicht umgewandelt werden: {0}"
+    };
+    ("The browser bridge could not start; the app continues without browser integration: {0}") => {
+        "Die Browser-Brücke konnte nicht gestartet werden; die App läuft ohne Browser-Integration weiter: {0}"
     };
     ("The browser data could not be written to disk: {error}") => {
         "Die Browserdaten konnten nicht auf den Datenträger geschrieben werden: {error}"

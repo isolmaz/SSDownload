@@ -1783,5 +1783,7 @@
   "Source: {0}": "Source : {0}",
   "Getting the video information from the source.{status}": "Récupération des informations vidéo depuis la source.{status}",
   "The reason is below. Report problem writes a report on it and opens its folder.": "La raison figure ci-dessous. « Signaler un problème » rédige un rapport à ce sujet et ouvre son dossier.",
-  "The streams could not be merged within {0} seconds": "Les flux n'ont pas pu être fusionnés dans les {0} secondes"
+  "The streams could not be merged within {0} seconds": "Les flux n'ont pas pu être fusionnés dans les {0} secondes",
+  "SSDownload page markup": "Balisage de la page SSDownload",
+  "The browser bridge could not start; the app continues without browser integration: {0}": "Le pont vers le navigateur n'a pas pu démarrer ; l'application continue sans l'intégration du navigateur : {0}"
 }

@@ -243,7 +243,7 @@ The Basic level shows only **General**, with the concurrent jobs and connections
 
 | Symptom | What to do |
 |---|---|
-| The browser cannot connect | When the app or the extension is older than the other, the message says which one to update: the app through **Help → Check for updates**, the extension by the browser's own update or at once on its extensions page (Developer mode, **Update**). Otherwise register the copy you use. |
+| The browser cannot connect | When the app or the extension is older than the other, the message says which one to update: the app through **Help → Check for updates**, the extension by the browser's own update or at once on its extensions page (Developer mode, **Update**). If the app showed "The browser bridge could not start" at startup, another process held its connection name: restart the app. Otherwise register the copy you use. |
 | A second launch while SSDownload runs | The running copy comes to the front; no second instance starts. If that copy is still closing, the new one starts as soon as it has exited. |
 | Download stays disabled after analysis | Read the error, fix the source or session, analyze again. |
 | A quality or track disappeared | Analyze again and choose an available option; nothing is substituted silently. |
@@ -289,7 +289,7 @@ The Basic level shows only **General**, with the concurrent jobs and connections
   An analysis and a download that end in the same output get the same refusal code, and an output that answers 403 and also reads as a refusal is `SSD-MED-007`. The text of a failed download names the stage that failed.
 - Logs live in `<profile>\logs\`: `events-YYYYMMDD.jsonl` and `ssdownload-YYYYMMDD.log`, rotating at 5 MB with five kept and removed after 30 days, plus per-job timelines in `logs\jobs\`. The words the app writes into a log line itself (`state=`, `phase=`, `file=`, `bytes=` and the like) are English in every interface language; the text of an error stays in the language the app showed it in. A job's timeline has one `job.stage` line for every change of its state or phase (downloading media, processing, retrying, completing), and none for a count or a percentage that moves inside a phase. The browser connection appends its refusals to the same files (channel `native-host`) and leaves rotation to the app; it writes nothing when it cannot read the profile settings.
 - URLs are logged without credentials, query or fragment. With **Log site names** off, site names are hidden as well, also in error messages that repeat the download's site or name a host after `host:`, `host=` or `connect to`.
-- **Report problem** (on a failed analysis or job) and **Tools → Diagnostics** write a local folder and ZIP. Nothing is uploaded; look through it before sharing it in an issue. A **Report problem** folder can include the failing page's markup as `sayfa.html`, unredacted: the copy the browser handed over or, without one, the page read once by the app (address without query or fragment, no cookies, credentials or referer).
+- **Report problem** (on a failed analysis or job) and **Tools → Diagnostics** write a local folder and ZIP. Nothing is uploaded; look through it before sharing it in an issue. A **Report problem** folder can include the failing page's markup as `sayfa.html`, unredacted: the copy the browser handed over or, without one, the page read once by the app (address without query or fragment, no cookies, credentials or referer). It is stored as inert escaped text in a script-free document, not as executable HTML.
 
 ## Command line
 
