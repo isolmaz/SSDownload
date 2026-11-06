@@ -736,6 +736,23 @@ fn process_pipe_client(app: &App, pipe: windows_sys::Win32::Foundation::HANDLE) 
     write_message(pipe, &output)
 }
 
+/// Starts the bridge for the desktop. The bridge is the browser/CLI integration, not the
+/// download engine: when it cannot start (for example because another process holds the
+/// per-profile pipe name), the desktop and the queue keep working for the session and an
+/// error message says the browser integration is missing.
+pub fn start_or_warn(app: &App) {
+    if let Err(error) = start(app.clone()) {
+        app.message(
+            crate::i18n::ui_format!(
+                "Tarayıcı köprüsü başlatılamadı; uygulama tarayıcı bağlantısı olmadan devam ediyor: {0}",
+                "The browser bridge could not start; the app continues without browser integration: {0}",
+                format!("{error:#}")
+            ),
+            true,
+        );
+    }
+}
+
 /// Starts the per-user, local-only named-pipe server and returns once its listener is ready.
 pub fn start(app: App) -> Result<()> {
     let name = app.paths().pipe_name();
@@ -2304,6 +2321,31 @@ mod tests {
         );
         releasing.join().unwrap();
         drop(next);
+    }
+
+    /// Another process holding the profile's pipe name costs the browser integration, not
+    /// the app: starting the bridge returns after its wait and leaves one error message.
+    #[test]
+    fn a_held_pipe_name_leaves_the_app_running_with_an_error_message() {
+        let paths = pipe_test_paths();
+        let security = pipe_security().unwrap();
+        let holder = create_pipe(&paths.pipe_name(), &security, true).unwrap();
+        let app = App::open(paths).unwrap();
+        let before = app.snapshot().messages.len();
+
+        start_or_warn(&app);
+
+        let messages = app.snapshot().messages;
+        assert_eq!(messages.len(), before + 1, "{messages:?}");
+        let warning = messages.last().unwrap();
+        assert!(warning.error);
+        assert!(
+            warning.text.contains("browser bridge") || warning.text.contains("Tarayıcı köprüsü"),
+            "{}",
+            warning.text
+        );
+        assert!(!app.quit_requested());
+        drop(holder);
     }
 
     #[test]

@@ -243,7 +243,7 @@ The Basic level shows only **General**, with the concurrent jobs and connections
 
 | Symptom | What to do |
 |---|---|
-| The browser cannot connect | When the app or the extension is older than the other, the message says which one to update: the app through **Help → Check for updates**, the extension by the browser's own update or at once on its extensions page (Developer mode, **Update**). Otherwise register the copy you use. |
+| The browser cannot connect | When the app or the extension is older than the other, the message says which one to update: the app through **Help → Check for updates**, the extension by the browser's own update or at once on its extensions page (Developer mode, **Update**). If the app showed "The browser bridge could not start" at startup, another process held its connection name: restart the app. Otherwise register the copy you use. |
 | A second launch while SSDownload runs | The running copy comes to the front; no second instance starts. If that copy is still closing, the new one starts as soon as it has exited. |
 | Download stays disabled after analysis | Read the error, fix the source or session, analyze again. |
 | A quality or track disappeared | Analyze again and choose an available option; nothing is substituted silently. |

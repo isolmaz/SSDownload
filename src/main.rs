@@ -370,17 +370,7 @@ fn run(args: &[String]) -> Result<()> {
     }
     let _instance = instance;
     let app = App::open(paths)?;
-    // The bridge is the browser/CLI integration, not the download engine. If a
-    // foreign process holds the per-profile pipe name, keep the desktop and the
-    // queue working and surface the missing integration instead of exiting
-    // before the window exists.
-    if let Err(error) = bridge::start(app.clone()) {
-        app.notify_startup_warning(crate::i18n::ui_format!(
-            "Tarayıcı köprüsü başlatılamadı; uygulama tarayıcı bağlantısı olmadan devam ediyor: {0}",
-            "The browser bridge could not start; the app continues without browser integration: {0}",
-            format!("{error:#}")
-        ));
-    }
+    bridge::start_or_warn(&app);
     let result = gui::run(app.clone(), has(args, "--background"));
     app.shutdown();
     result
