@@ -8363,6 +8363,9 @@ unsafe fn dialog_message(dialog: HWND, msg: &MSG) -> bool {
 /// `IsDialogMessageW`, and a dialog that scrolls shows the control the message
 /// gave the focus to.
 unsafe fn navigate(dialog: HWND, msg: &MSG) -> bool {
+    if page_takes_wheel(dialog, msg) {
+        return true;
+    }
     let before = GetFocus();
     let handled = IsDialogMessageW(dialog, msg) != 0;
     if handled && GetFocus() != before {
@@ -8372,6 +8375,29 @@ unsafe fn navigate(dialog: HWND, msg: &MSG) -> bool {
         }
     }
     handled
+}
+
+/// A wheel turned over a closed drop-down list of a dialog scrolls the dialog's
+/// page, as it does over every other control; the list box would otherwise
+/// step its selection. An open list keeps the wheel for its own items.
+unsafe fn page_takes_wheel(dialog: HWND, msg: &MSG) -> bool {
+    if msg.message != WM_MOUSEWHEEL || msg.hwnd.is_null() || dialog_state(dialog).is_null() {
+        return false;
+    }
+    let combo = if window_class(msg.hwnd).eq_ignore_ascii_case("ComboBox") {
+        msg.hwnd
+    } else {
+        GetParent(msg.hwnd)
+    };
+    if combo.is_null()
+        || GetParent(combo) != dialog
+        || !window_class(combo).eq_ignore_ascii_case("ComboBox")
+        || SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) != 0
+    {
+        return false;
+    }
+    SendMessageW(dialog, WM_MOUSEWHEEL, msg.wParam, msg.lParam);
+    true
 }
 
 /// True when a window of this process other than `owner` holds the foreground:
@@ -8448,10 +8474,7 @@ unsafe fn run_modal_at(
         {
             let delta = scroll_delta_for_key(msg.wParam as u16, dialog.dpi);
             if delta != 0 {
-                dialog
-                    .scroll_y
-                    .set(dialog.scroll_y.get().saturating_add(delta).max(0));
-                layout_dialog(dialog);
+                scroll_dialog(dialog, dialog.scroll_y.get().saturating_add(delta));
                 continue;
             }
         }
@@ -9432,17 +9455,14 @@ unsafe extern "system" fn dialog_proc(
                 SB_THUMBTRACK | SB_THUMBPOSITION => info.nTrackPos,
                 _ => info.nPos,
             };
-            dlg.scroll_y.set(y.max(0));
-            layout_dialog(dlg);
+            scroll_dialog(dlg, y);
             0
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             // No system scroll bar in dark mode, so the keys scroll instead.
             let delta = scroll_delta_for_key(wparam as u16, dlg.dpi);
             if delta != 0 && dlg.scroll_range.get() > 0 {
-                dlg.scroll_y
-                    .set(dlg.scroll_y.get().saturating_add(delta).max(0));
-                layout_dialog(dlg);
+                scroll_dialog(dlg, dlg.scroll_y.get().saturating_add(delta));
             }
             0
         }
@@ -9454,11 +9474,10 @@ unsafe extern "system" fn dialog_proc(
             0
         }
         WM_MOUSEWHEEL => {
-            dlg.scroll_y.set(
-                (dlg.scroll_y.get() - (hiword(wparam) as i16 as i32) * scale(48, dlg.dpi) / 120)
-                    .max(0),
+            scroll_dialog(
+                dlg,
+                dlg.scroll_y.get() - (hiword(wparam) as i16 as i32) * scale(48, dlg.dpi) / 120,
             );
-            layout_dialog(dlg);
             0
         }
         WM_SETTINGCHANGE => {
@@ -17020,6 +17039,160 @@ mod tests {
                 200,
                 "Queues",
             );
+        }
+    }
+
+    thread_local! {
+        /// The window procs `record_moves` replaced, by control.
+        static SPIED_PROCS: std::cell::RefCell<std::collections::HashMap<isize, isize>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+        /// Every move `record_moves` saw: (control, top).
+        static SPIED_MOVES: std::cell::RefCell<Vec<(isize, i32)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "system" fn record_moves(
+        hwnd: super::HWND,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CallWindowProcW, WINDOWPOS, WM_WINDOWPOSCHANGED,
+        };
+        if msg == WM_WINDOWPOSCHANGED {
+            let pos = &*(lparam as *const WINDOWPOS);
+            SPIED_MOVES.with(|moves| moves.borrow_mut().push((hwnd as isize, pos.y)));
+        }
+        let previous = SPIED_PROCS.with(|procs| procs.borrow()[&(hwnd as isize)]);
+        let previous: unsafe extern "system" fn(super::HWND, u32, usize, isize) -> isize =
+            std::mem::transmute(previous);
+        CallWindowProcW(Some(previous), hwnd, msg, wparam, lparam)
+    }
+
+    /// A wheel notch over Settings moves every control that scrolls straight from where it was
+    /// to its scrolled place, in both themes and both schemes. A control that visits its
+    /// unscrolled place on the way is painted there for a moment, and the page smears.
+    #[test]
+    fn a_wheel_notch_moves_each_settings_control_straight_to_its_scrolled_place() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindow, SendMessageW, SetWindowLongPtrW, GWLP_WNDPROC, GW_CHILD, GW_HWNDNEXT,
+            WM_MOUSEWHEEL,
+        };
+        for modern in [false, true] {
+            for dark in [false, true] {
+                with_themed_dialog(
+                    dark,
+                    move || {
+                        super::set_modern(modern);
+                        settings_kind(crate::model::UiMode::Advanced)
+                    },
+                    620,
+                    260,
+                    |dialog| unsafe {
+                        let dlg = &*dialog.raw;
+                        let what = format!("modern {modern}, dark {dark}");
+                        let step = super::scale(48, dlg.dpi);
+                        assert!(dlg.scroll_range.get() > step, "{what}: Settings scrolls");
+                        let pinned = super::pinned_controls(dlg);
+                        let mut spied = Vec::new();
+                        let mut child = GetWindow(dialog.hwnd, GW_CHILD);
+                        while !child.is_null() {
+                            if !pinned.contains(&child) {
+                                let previous = SetWindowLongPtrW(
+                                    child,
+                                    GWLP_WNDPROC,
+                                    record_moves as *const () as isize,
+                                );
+                                SPIED_PROCS.with(|procs| {
+                                    procs.borrow_mut().insert(child as isize, previous)
+                                });
+                                spied.push((child, previous));
+                            }
+                            child = GetWindow(child, GW_HWNDNEXT);
+                        }
+                        let before = control_tops(dialog.hwnd);
+                        SendMessageW(
+                            dialog.hwnd,
+                            WM_MOUSEWHEEL,
+                            ((-120i16) as u16 as usize) << 16,
+                            0,
+                        );
+                        let moves =
+                            SPIED_MOVES.with(|moves| std::mem::take(&mut *moves.borrow_mut()));
+                        for (child, previous) in &spied {
+                            SetWindowLongPtrW(*child, GWLP_WNDPROC, *previous);
+                        }
+                        SPIED_PROCS.with(|procs| procs.borrow_mut().clear());
+                        assert_eq!(dlg.scroll_y.get(), step, "{what}: the offset");
+                        for (child, _) in &spied {
+                            let id = super::GetDlgCtrlID(*child);
+                            let was = before.iter().find(|(other, _)| *other == id).unwrap().1;
+                            let tops: Vec<i32> = moves
+                                .iter()
+                                .filter(|(hwnd, _)| *hwnd == *child as isize)
+                                .map(|(_, top)| *top)
+                                .collect();
+                            assert!(
+                                !tops.is_empty() && tops.iter().all(|top| *top == was - step),
+                                "{what}: control {id} moved through the tops {tops:?} from {was}, not straight to {}",
+                                was - step
+                            );
+                        }
+                    },
+                );
+            }
+        }
+    }
+
+    /// A wheel turned over a closed drop-down list scrolls the Settings page and leaves the
+    /// list's selection alone, in both themes and both schemes.
+    #[test]
+    fn the_wheel_over_a_closed_settings_list_scrolls_the_page_and_keeps_its_value() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetDlgItem, SendMessageW, CB_GETCURSEL, MSG, WM_MOUSEWHEEL,
+        };
+        for modern in [false, true] {
+            for dark in [false, true] {
+                with_themed_dialog(
+                    dark,
+                    move || {
+                        super::set_modern(modern);
+                        settings_kind(crate::model::UiMode::Advanced)
+                    },
+                    620,
+                    260,
+                    |dialog| unsafe {
+                        let dlg = &*dialog.raw;
+                        let what = format!("modern {modern}, dark {dark}");
+                        let step = super::scale(48, dlg.dpi);
+                        for id in [super::S_UI_LANGUAGE, super::S_THEME] {
+                            dlg.scroll_y.set(0);
+                            super::layout_dialog(dlg);
+                            let list = GetDlgItem(dialog.hwnd, id);
+                            let selected = SendMessageW(list, CB_GETCURSEL, 0, 0);
+                            let mut msg: MSG = std::mem::zeroed();
+                            msg.hwnd = list;
+                            msg.message = WM_MOUSEWHEEL;
+                            msg.wParam = ((-120i16) as u16 as usize) << 16;
+                            assert!(
+                                super::dialog_message(dialog.hwnd, &msg),
+                                "{what}: list {id} hands the wheel on"
+                            );
+                            assert_eq!(
+                                SendMessageW(list, CB_GETCURSEL, 0, 0),
+                                selected,
+                                "{what}: list {id} kept its value"
+                            );
+                            assert_eq!(
+                                dlg.scroll_y.get(),
+                                step,
+                                "{what}: list {id} scrolled the page"
+                            );
+                        }
+                    },
+                );
+            }
         }
     }
 
