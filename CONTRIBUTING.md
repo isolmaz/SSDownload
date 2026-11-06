@@ -109,4 +109,4 @@ Dropping a previous value is a later release of its own, published only after th
 
 | Releases | Bridge protocol | Capability version | Also accepts |
 |---|---|---|---|
-| 1.6.1 – 1.10.0 | 2 | 3 | – |
+| 1.6.1 – 1.11.0 | 2 | 3 | – |
