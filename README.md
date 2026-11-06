@@ -5,7 +5,7 @@
 <h1 align="center">SSDownload</h1>
 
 <p align="center">
-  A fast, private download manager for Windows: files, video and audio, with a browser button that sends media straight to the app.
+  A Windows download manager for files, video and audio. A browser extension adds a download button to videos and sends the media to the app.
 </p>
 
 <p align="center">
@@ -16,27 +16,32 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/download.gif" width="860" alt="Three links pasted into New download, downloaded over eight connections each, with completion cards">
+  <img src="docs/media/video.gif" width="860" alt="In the Classic theme, the SSDownload button on a video is dragged to another spot on the player and its menu is opened and closed without a choice. Clicking the button opens the quality picker, 720p is chosen, Download turns the picker into the download's window, and the download then runs in the queue beside other jobs and ends with a completion card.">
 </p>
 
 ## Features
 
-- **Fast, resumable downloads** over up to 16 connections per file. A download resumes only when the server proves the file is unchanged, and a finished file never overwrites an existing one. A file downloaded over HTTP(S) is checked against the SHA-256 its source publishes, when there is one.
-- **Video and audio** from the page you are watching: choose the quality, container, audio and subtitle tracks, or save as MP3. Every result is checked with FFmpeg before it is published. Live streams are recorded, from their beginning where the site keeps it, and a live video recording can be finished early with what was recorded so far.
+- **Downloads** over up to 16 connections per file (8 by default). A download resumes only when the server proves the file is unchanged, and a finished file never overwrites an existing one. A file downloaded over HTTP(S) is checked against the SHA-256 its source publishes, when there is one.
+- **Video and audio** from the page you are watching: choose the quality, container, audio and subtitle tracks, or save as MP3. Every result is checked with ffprobe and FFmpeg before it is published. Live streams are recorded, from their beginning where the site keeps it, and a live video recording can be finished early with what was recorded so far.
 - **Browser extension** for Chrome and Edge: a download button on videos, right-click entries and optional download takeover.
-- **A tidy queue:** drag to reorder, pause and resume, speed limits, a mini panel, completion cards and tray controls.
-- **For larger jobs:** named queues with time windows, folder rules, batch ranges, a site crawler, a command line and signed automatic updates.
-- **Private by design:** no account, no telemetry, no server. Everything stays on your PC.
+- **Queue:** drag to reorder, pause and resume, speed limits, a mini panel, completion cards and tray controls.
+- **Themes:** Classic (the default) and Modern, each in light and dark.
+- **For larger jobs:** named queues with time windows, folder rules, batch ranges, a site explorer, a command line and signed updates that install after you accept them.
+- **Privacy:** no account, no telemetry and no SSDownload server. The app connects only to the sources you download from and to GitHub, for updates and media support. See [PRIVACY.md](PRIVACY.md).
 
 <p align="center">
-  <img src="docs/media/video.gif" width="860" alt="The SSDownload button on a video opens the quality picker; 720p is chosen and downloaded">
+  <img src="docs/media/light-dark.gif" width="860" alt="Settings turns the Classic window dark at once when the dark title bar and controls are ticked. In the dark window, a waiting download is dragged to the top of the queue, one running download is paused with the Pause / Resume button and resumed from the mini panel, and the tray menu sets a speed limit of 1 MB/s.">
+</p>
+
+<p align="center">
+  <img src="docs/media/themes.gif" width="860" alt="In the Modern theme, Settings sets Theme to Classic, which applies after a restart, and the window then changes to Classic in place.">
 </p>
 
 ## Install
 
 1. Download **`SSDownload-<version>-Setup.exe`** (or the portable ZIP) from the [latest release](https://github.com/isolmaz/SSDownload/releases/latest) and run it. No administrator rights are needed.
 2. The installer adds the browser extension to Chrome and Edge. The next time you open the browser, click **Enable extension** on its "New extension added" notice. No notice? Add it from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham), or use **Tools → Browser setup** to load the bundled copy without the store.
-3. That's it. The installer downloads media support (yt-dlp, FFmpeg, Deno), each file verified against its published SHA-256. Without a connection, the app installs it on its first start instead.
+3. The installer downloads media support (yt-dlp, FFmpeg, Deno), each file verified against its published SHA-256. Without a connection, the app installs it on its first start instead.
 
 The builds are not code-signed yet, so SmartScreen may warn on first run. The release page lists the SHA-256 of every file. Installed copies update themselves after you accept the signed update.
 
