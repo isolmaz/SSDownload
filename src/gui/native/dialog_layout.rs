@@ -2286,18 +2286,10 @@ pub(super) unsafe fn scroll_dialog(dlg: &DialogUi, y: i32) {
     if let Some(end) = page_end(dlg) {
         clip_to_page(dlg, &pinned, end);
     }
-    if dialog_is_dark(dlg) {
-        let mut client: RECT = zeroed();
-        if GetClientRect(dlg.hwnd, &mut client) != 0 {
-            let strip = RECT {
-                left: (client.right - scale(10, dlg.dpi)).max(0),
-                top: 0,
-                right: client.right,
-                bottom: client.bottom,
-            };
-            InvalidateRect(dlg.hwnd, &strip, 1);
-        }
-    } else {
+    // The surface paints Modern's input frames around the controls and the dark
+    // thumb at the offset; both are left behind unless it is painted again.
+    InvalidateRect(dlg.hwnd, null(), 1);
+    if !dialog_is_dark(dlg) {
         let info = SCROLLINFO {
             cbSize: size_of::<SCROLLINFO>() as u32,
             fMask: SIF_POS,
