@@ -1625,14 +1625,8 @@ pub(super) unsafe fn paint_menu_strip_into(ui: &MainUi, dc: HDC) {
     let Some(strip) = menu_strip(ui) else {
         return;
     };
-    // Classic draws the strip straight into the context.
-    if !modern() {
-        fill_menu_bar(dc, &strip, ui.hwnd);
-        draw_strip_items(ui, dc, menu, count, &strip);
-        return;
-    }
-    // Modern composes the strip off screen and copies it in one step, so the
-    // screen never shows the bar filled but without its captions.
+    // The strip is composed off screen and copied in one step, so the screen
+    // never shows the bar filled but without its captions.
     let memory = CreateCompatibleDC(dc);
     let bitmap = CreateCompatibleBitmap(dc, strip.bar.right, strip.bar.bottom);
     if memory.is_null() || bitmap.is_null() {

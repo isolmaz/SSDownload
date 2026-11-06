@@ -421,7 +421,12 @@ function manifestKey(tabId, item) { return `${tabId}\n${item.frameId ?? -1}\n${i
 async function linkManifest(tabId, item, values) {
   const key = manifestKey(tabId, item);
   const observed = values.get(sourceKey(item))?.generation;
-  if (item.kind !== "hls" || manifestTasks.has(key) || manifestActive>=4 || typeof fetch !== "function") return;
+  // Prefetch only a manifest the browser itself requested (a webRequest record or
+  // a matching observed request context). A page-declared type/src pair is enough
+  // to list the source, but it must not turn the service worker into a fetcher
+  // for a host the page chose without any request of its own.
+  const observedByBrowser = item.source === "network" || !!item.requestContext;
+  if (item.kind !== "hls" || !observedByBrowser || manifestTasks.has(key) || manifestActive>=4 || typeof fetch !== "function") return;
   // Bounded, credential-free metadata read. Authenticated manifests are handled by the engine after site consent.
   const task = (async () => {
     ++manifestActive;
@@ -629,6 +634,16 @@ async function pruneFrames(tabId) {
   } catch (_) { /* Tab may be closing. */ }
 }
 if(api.webNavigation?.onCommitted) api.webNavigation.onCommitted.addListener(details=>{pruneFrames(details.tabId).catch(()=>{});});
+async function ancestorUrl(tabId, frameId) {
+  if (!api.webNavigation?.getFrame) return null;
+  for (let id = frameId, depth = 0; id >= 0 && depth < 8; depth++) {
+    const frame = await invoke(api.webNavigation, "getFrame", { tabId, frameId: id }).catch(() => null);
+    const url = safeUrl(frame?.url);
+    if (url) return url;
+    id = Number.isInteger(frame?.parentFrameId) ? frame.parentFrameId : -1;
+  }
+  return null;
+}
 
 function relatedRole(tabId,frameId,url) {
   for(const [key,relations] of manifestLinks) if(key.startsWith(`${tabId}\n${frameId}\n`)) {
@@ -1606,14 +1621,21 @@ async function handleContentMessage(message, sender) {
   if (Array.isArray(message.players)) {
     const frameId = sender.frameId || 0;
     const key = `${tabId}\n${frameId}`;
-    const previous = frames.get(key);
-    const documentId = String(sender.documentId || message.documentId || "").slice(0,100);
     // Chrome keeps MessageSender.url at the content script's initial document URL
     // across history navigation. The script reports the current location; accept
     // its same-origin changes without letting a page claim another sender origin.
+    // An about:blank/srcdoc frame has no http(s) sender.url: its identity is the
+    // origin the browser reports for it, or, when that origin is opaque (a sandboxed
+    // frame), the address of its nearest http(s) ancestor frame. A document.baseURI
+    // from the page is kept only when it matches that origin.
     const senderUrl = safeUrl(sender.url), pageUrl = safeUrl(message.pageUrl);
-    const frameUrl = (pageUrl && (!senderUrl || pageUrl.origin === senderUrl.origin) ? pageUrl : senderUrl)?.href;
+    const senderOrigin = senderUrl?.origin || safeUrl(sender.origin)?.origin || null;
+    const frameUrl = (senderOrigin
+      ? (pageUrl?.origin === senderOrigin ? pageUrl : senderUrl || new URL(`${senderOrigin}/`))
+      : await ancestorUrl(tabId, frameId))?.href;
     if (!frameUrl) return;
+    const previous = frames.get(key);
+    const documentId = String(sender.documentId || message.documentId || "").slice(0,100);
     const allowedAdSignals=new Set(["player-identity","ad-container","request-host","promotional-link","playback-pattern","skip-control"]);
     const players = message.players.slice(0,100).map(p => {
       const id=String(p.id).slice(0,100);

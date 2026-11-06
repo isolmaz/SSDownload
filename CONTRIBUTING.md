@@ -5,7 +5,7 @@ Bug reports and pull requests are welcome.
 ## Issues
 
 - Use the **Bug report** form. It asks for the SSDownload version (**Help → About**), your Windows version and the `SSD-…` error code if one was shown.
-- Never attach cookies, signed download addresses or private files. Addresses in a **Report problem** or **Diagnostics** ZIP are redacted, but the page markup (`sayfa.html`) is not; look through it before sharing.
+- Never attach cookies, signed download addresses or private files. Addresses in a **Report problem** or **Diagnostics** ZIP are redacted, but the page markup (`sayfa.html`) is not, so look through it before sharing. It is stored as escaped text that opens without running anything.
 - Security problems go privately through **Security → Report a vulnerability**, not into an issue (see [SECURITY.md](SECURITY.md)).
 - Only report problems with content you have the right to download. DRM-protected streams are out of scope.
 
@@ -109,4 +109,4 @@ Dropping a previous value is a later release of its own, published only after th
 
 | Releases | Bridge protocol | Capability version | Also accepts |
 |---|---|---|---|
-| 1.6.1 – 1.10.0 | 2 | 3 | – |
+| 1.6.1 – 1.11.0 | 2 | 3 | – |

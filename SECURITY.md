@@ -8,7 +8,7 @@ Supported version: the latest [release](https://github.com/isolmaz/SSDownload/re
 
 ## Security model
 
-**Local only.** The app, its command line and the browser extension talk through a per-profile named pipe that only the current Windows user can open. Clients open it at the identification level and write nothing until the process serving it is confirmed to run as the same user, so a pipe another user created under that name receives nothing. Nothing listens on the network. The media tools reach the internet only through an authenticated loopback proxy owned by the app.
+**Local only.** The app, its command line and the browser extension talk through a per-profile named pipe that only the current Windows user can open. Clients open it at the identification level and write nothing until the process serving it is confirmed to run as the same user, so a pipe another user created under that name receives nothing. When another process already holds the name at startup, the app runs without the browser and command-line connection for that session and says so in an error message; restart the app once the name is free. Nothing listens on the network. The media tools reach the internet only through an authenticated loopback proxy owned by the app.
 
 **Browser bridge.**
 
@@ -18,7 +18,7 @@ Supported version: the latest [release](https://github.com/isolmaz/SSDownload/re
 - The browser can never choose an output path, delete files, change settings or quit the app.
 - The extension reads a site's cookies only after you allowed that site, from one verified cookie store. A download it takes over from the browser follows the same rule, with the download's referrer as the site (no referrer, no cookies), and stays in the browser when that store cannot be verified. A download started from an allowed site's frame embedded in another page counts as that site, because its referrer is the frame's address.
 
-**Secrets at rest.** Queue records, completion journals, site logins and the proxy password are sealed with Windows DPAPI for the current user. Cookies, headers and page markup are removed from a job once it completes. Logs and error reports strip credentials, query strings and fragments from addresses. The page markup a **Report problem** folder may hold (`sayfa.html`) is kept as is, so review it before sharing.
+**Secrets at rest.** Queue records, completion journals, site logins and the proxy password are sealed with Windows DPAPI for the current user. Cookies, headers and page markup are removed from a job once it completes. Logs and error reports strip credentials, query strings and fragments from addresses. The page markup a **Report problem** folder may hold (`sayfa.html`) is kept as inert escaped text in a script-free document, so it cannot execute when opened; review it before sharing.
 
 **Transfers.**
 

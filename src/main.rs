@@ -370,7 +370,7 @@ fn run(args: &[String]) -> Result<()> {
     }
     let _instance = instance;
     let app = App::open(paths)?;
-    bridge::start(app.clone())?;
+    bridge::start_or_warn(&app);
     let result = gui::run(app.clone(), has(args, "--background"));
     app.shutdown();
     result

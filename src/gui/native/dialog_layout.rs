@@ -2231,6 +2231,78 @@ unsafe fn clip_to_page(dlg: &DialogUi, pinned: &[HWND], bottom: i32) {
     }
 }
 
+/// Scrolls a laid-out dialog's page to `y`, clamped to its scroll range, by
+/// moving every scrolling control once by the difference. A layout first puts
+/// each control back at its unscrolled place, and the screen shows it there for
+/// a moment, so a scroll does not lay the dialog out again.
+pub(super) unsafe fn scroll_dialog(dlg: &DialogUi, y: i32) {
+    let target = y.clamp(0, dlg.scroll_range.get().max(0));
+    let delta = target - dlg.scroll_y.get();
+    if delta == 0 {
+        return;
+    }
+    dlg.scroll_y.set(target);
+    let pinned = pinned_controls(dlg);
+    let mut moves = Vec::new();
+    let mut child = GetWindow(dlg.hwnd, GW_CHILD);
+    while !child.is_null() {
+        if !pinned.contains(&child) {
+            let rect = child_rect(dlg.hwnd, child);
+            moves.push((child, rect.left, rect.top - delta));
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    let mut batch = BeginDeferWindowPos(moves.len() as i32);
+    for (child, x, y) in &moves {
+        if batch.is_null() {
+            break;
+        }
+        batch = DeferWindowPos(
+            batch,
+            *child,
+            null_mut(),
+            *x,
+            *y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    if batch.is_null() {
+        for (child, x, y) in &moves {
+            SetWindowPos(
+                *child,
+                null_mut(),
+                *x,
+                *y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    } else {
+        EndDeferWindowPos(batch);
+    }
+    if let Some(end) = page_end(dlg) {
+        clip_to_page(dlg, &pinned, end);
+    }
+    // The surface paints Modern's input frames around the controls and the dark
+    // thumb at the offset; both are left behind unless it is painted again.
+    InvalidateRect(dlg.hwnd, null(), 1);
+    if !dialog_is_dark(dlg) {
+        let info = SCROLLINFO {
+            cbSize: size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_POS,
+            nMin: 0,
+            nMax: 0,
+            nPage: 0,
+            nPos: target,
+            nTrackPos: 0,
+        };
+        SetScrollInfo(dlg.hwnd, SB_VERT, &info, 1);
+    }
+}
+
 /// Scrolls a dialog with pinned controls so that `focus`, a control on its
 /// page, is wholly between the top of the window and the command bar.
 pub(super) unsafe fn scroll_into_view(dlg: &DialogUi, focus: HWND) {
@@ -2256,8 +2328,7 @@ pub(super) unsafe fn scroll_into_view(dlg: &DialogUi, focus: HWND) {
         0
     };
     if delta != 0 {
-        dlg.scroll_y.set((dlg.scroll_y.get() + delta).max(0));
-        layout_dialog(dlg);
+        scroll_dialog(dlg, dlg.scroll_y.get() + delta);
     }
 }
 
@@ -3568,9 +3639,7 @@ pub(super) unsafe fn reveal_focus(dlg: &DialogUi) {
         0
     };
     if by != 0 {
-        dlg.scroll_y
-            .set(dlg.scroll_y.get().saturating_add(by).max(0));
-        layout_dialog(dlg);
+        scroll_dialog(dlg, dlg.scroll_y.get().saturating_add(by));
     }
 }
 

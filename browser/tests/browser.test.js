@@ -38,7 +38,7 @@ function checkedDownloadQuery(query) {
 // measured to: pause needs a running download, resume needs a paused or resumable one (a running one it
 // accepts and leaves alone), cancel leaves `paused` as it was, and a normal browser exit cancels a paused
 // download while a crash leaves it interrupted and resumable (see the restart tests).
-function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, alarmStore = new Map(), downloadItems = new Map(), browserLanguage = "tr", digestDelayMs = 0, tabUrl = "https://site.example/watch" } = {}) {
+function backgroundHarness({ native = async request => request?.action?.type==="capabilities"?nativeCapabilities:({ ok: true, message: "Tamam" }), session = {}, local = {}, navigation, pageHtml, fetch: fetchImpl, alarmStore = new Map(), downloadItems = new Map(), browserLanguage = "tr", digestDelayMs = 0, tabUrl = "https://site.example/watch" } = {}) {
   const events = {
     headers: event(), beforeHeaders: event(), removed: event(), updated: event(), installed: event(), startup: event(),
     menu: event(), message: event(), activated: event(), alarm: event(), download: event(), suspend: event()
@@ -173,7 +173,7 @@ function backgroundHarness({ native = async request => request?.action?.type==="
   // The duplicate check of a context-menu add hashes on another thread; a delay makes the hashes finish late.
   const slowCrypto = { subtle: { digest: async (...args) => { await new Promise(resolve => setTimeout(resolve, digestDelayMs)); return webcrypto.subtle.digest(...args); } },
     randomUUID: () => webcrypto.randomUUID(), getRandomValues: array => webcrypto.getRandomValues(array) };
-  const context = vm.createContext({ browser, URL, crypto: digestDelayMs ? slowCrypto : webcrypto, TextEncoder, Uint8Array, Promise, Map, Set, Array, Object, Number, String, RegExp, JSON, Error, Date, queueMicrotask, setTimeout: scheduleTimer, clearTimeout: cancelTimer });
+  const context = vm.createContext({ browser, URL, crypto: digestDelayMs ? slowCrypto : webcrypto, TextEncoder, TextDecoder, AbortController, Uint8Array, Promise, Map, Set, Array, Object, Number, String, RegExp, JSON, Error, Date, queueMicrotask, setTimeout: scheduleTimer, clearTimeout: cancelTimer, fetch: fetchImpl });
   loadI18n(context);
   for (const name of ["codes.js", "events.js", "background.js"]) vm.runInContext(source(name), context, { filename: name });
   // The context-menu adds the worker has finished with, whether it sent a request or recognised a repeat.
@@ -287,6 +287,92 @@ test("content sources retain direct files but mark blob and WebRTC as non-downlo
   assert.equal(state.items.find(item => item.kind === "webrtc").downloadable, false);
   assert.equal(state.items.find(item => item.kind === "video").afterPlay, true);
   assert.equal(state.items.find(item => item.kind === "file").filename, "archive.zip");
+});
+
+test("an about:blank frame cannot claim a cross-origin page URL", async () => {
+  const h = backgroundHarness();
+  const listener = h.events.message.listeners.at(-1);
+  const message = {
+    channel: "ssdownload-content", event: "scan", documentId: "blank",
+    pageUrl: "https://attacker.example/watch",
+    players: [{ id: "p", urls: ["https://cdn.attacker.example/movie.mp4"] }],
+    sources: [{ url: "https://cdn.attacker.example/movie.mp4", contentType: "video/mp4", playerId: "p" }]
+  };
+  listener(message, { id: "test-extension", url: "about:blank", origin: "https://site.example",
+    tab: { id: 7, title: "Site" }, frameId: 3 }, () => {});
+  await h.settle();
+  const frameUrl = harness => vm.runInContext('frames.get("7\\n3")?.url ?? null', harness.context);
+  assert.equal(frameUrl(h), "https://site.example/", "a forged baseURI falls back to the browser-supplied origin");
+  assert.equal((await h.state(7)).items.length, 1, "the frame and its player stay listed");
+
+  const sameOrigin = backgroundHarness();
+  sameOrigin.events.message.listeners.at(-1)({ ...message, documentId: "same", pageUrl: "https://site.example/frame" },
+    { id: "test-extension", url: "about:blank", origin: "https://site.example",
+      tab: { id: 7, title: "Site" }, frameId: 3 }, () => {});
+  await sameOrigin.settle();
+  assert.equal(frameUrl(sameOrigin), "https://site.example/frame", "a same-origin baseURI is the frame URL");
+  const items = (await sameOrigin.state(7)).items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0].url, "https://cdn.attacker.example/movie.mp4");
+});
+
+test("a sandboxed frame with an opaque origin takes its nearest http(s) ancestor as its page", async () => {
+  const tree = { 3: { url: "about:srcdoc", parentFrameId: 2 }, 2: { url: "about:blank", parentFrameId: 0 }, 0: { url: "https://site.example/watch", parentFrameId: -1 } };
+  const navigation = { async getFrame({ frameId }) { return tree[frameId] ?? null; } };
+  const message = {
+    channel: "ssdownload-content", event: "scan", documentId: "sandboxed",
+    pageUrl: "https://attacker.example/watch",
+    players: [{ id: "p", urls: ["https://cdn.example/movie.mp4"] }],
+    sources: [{ url: "https://cdn.example/movie.mp4", contentType: "video/mp4", playerId: "p" }]
+  };
+  const sender = { id: "test-extension", url: "about:srcdoc", origin: "null", tab: { id: 7, title: "Site" }, frameId: 3 };
+  const h = backgroundHarness({ navigation });
+  h.events.message.listeners.at(-1)(message, sender, () => {});
+  await h.settle();
+  assert.equal(vm.runInContext('frames.get("7\\n3")?.url ?? null', h.context), "https://site.example/watch",
+    "the browser's frame tree, not the page's claim, names the page");
+  assert.equal((await h.state(7)).items.length, 1);
+
+  const orphan = backgroundHarness({ navigation: { async getFrame() { return { url: "about:srcdoc", parentFrameId: -1 }; } } });
+  orphan.events.message.listeners.at(-1)(message, sender, () => {});
+  await orphan.settle();
+  assert.equal(vm.runInContext('frames.get("7\\n3")?.url ?? null', orphan.context), null, "without an http(s) ancestor the frame has no identity");
+  assert.equal((await orphan.state(7)).items.length, 0);
+});
+
+test("page-declared HLS is listed but not fetched until the browser has observed it", async () => {
+  const calls = [];
+  const page = backgroundHarness({ fetch: async url => { calls.push(url); return { ok: true, body: null }; } });
+  const hls = "https://attacker.example/playlist.m3u8";
+  await page.content({ channel: "ssdownload-content", event: "scan", documentId: "d", pageUrl: "https://attacker.example/watch",
+    players: [{ id: "p", urls: [hls] }], sources: [{ url: hls, contentType: "application/vnd.apple.mpegurl", playerId: "p" }] });
+  await page.settle();
+  assert.equal((await page.state(7)).items.length, 1, "the source is still visible");
+  assert.deepEqual(calls, [], "a page-declared type/src pair must not trigger a service-worker fetch");
+
+  const observed = backgroundHarness({ fetch: async url => { calls.push(url); return { ok: true, body: null }; } });
+  await observed.events.headers.listeners[0]({ tabId: 7, frameId: 0, documentId: "d", statusCode: 200, url: hls,
+    responseHeaders: [{ name: "content-type", value: "application/vnd.apple.mpegurl" }] });
+  await observed.settle();
+  assert.deepEqual(calls, [hls], "a browser-observed manifest still prefetches its relations");
+});
+
+test("a page-reported HLS source joined to a browser-observed request is prefetched", async () => {
+  const calls = [];
+  const h = backgroundHarness({ fetch: async url => { calls.push(url); return { ok: true, body: null }; } });
+  await h.state(7);
+  const url = "https://cdn.example/list/opaque";
+  const pageUrl = "https://player.example/watch";
+  await h.events.beforeHeaders.listeners[0]({ tabId: 7, requestId: "r1", frameId: 0, documentId: "doc", url,
+    requestHeaders: [{ name: "Accept", value: "*/*" }] });
+  h.events.message.listeners.at(-1)({ channel: "ssdownload-content", event: "scan", documentId: "doc", pageUrl,
+    players: [{ id: "p", urls: [url] }], sources: [{ url, contentType: "application/vnd.apple.mpegurl", playerId: "p" }] },
+  { id: "test-extension", tab: { id: 7 }, frameId: 0, documentId: "doc", url: pageUrl }, () => {});
+  await h.settle();
+  const item = (await h.state(7)).items.find(entry => entry.url === url);
+  assert.equal(item?.source, "page", "the source comes from the page, not from a webRequest record");
+  assert.ok(item.requestContext, "the source is joined to the request the browser observed");
+  assert.deepEqual(calls, [url]);
 });
 
 test("the toolbar switch flips discovery, persists it, and keeps the badge in step", async () => {
@@ -2177,7 +2263,7 @@ test("duplicate media elements share a record but empty hidden placeholders do n
 
 test("about blank sender uses inherited HTTP document context", async () => {
   const h=backgroundHarness();
-  await vm.runInContext('handleContentMessage({channel:"ssdownload-content",event:"scan",documentId:"blank",pageUrl:"https://site.example/watch",players:[{id:"p",urls:["https://cdn.example/film.mp4"],title:"Frame player"}],sources:[{url:"https://cdn.example/film.mp4",contentType:"video/mp4"}]},{id:"test-extension",tab:{id:7,title:"Real film name"},frameId:2,url:"about:blank"})',h.context);
+  await vm.runInContext('handleContentMessage({channel:"ssdownload-content",event:"scan",documentId:"blank",pageUrl:"https://site.example/watch",players:[{id:"p",urls:["https://cdn.example/film.mp4"],title:"Frame player"}],sources:[{url:"https://cdn.example/film.mp4",contentType:"video/mp4"}]},{id:"test-extension",tab:{id:7,title:"Real film name"},frameId:2,url:"about:blank",origin:"https://site.example"})',h.context);
   const state=await h.state(7);
   assert.equal(state.videos.length,1);assert.equal(state.videos[0].title,"Real film name");
   assert.equal(state.videos[0].downloadable,true);
