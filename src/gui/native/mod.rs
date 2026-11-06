@@ -17070,30 +17070,35 @@ mod tests {
         CallWindowProcW(Some(previous), hwnd, msg, wparam, lparam)
     }
 
-    /// A wheel notch over Settings moves every control that scrolls straight from where it was
-    /// to its scrolled place, in both themes and both schemes. A control that visits its
+    /// A wheel notch over a dialog moves every control that scrolls straight from where it was
+    /// to its scrolled place, in each given theme and both schemes. A control that visits its
     /// unscrolled place on the way is painted there for a moment, and the page smears.
-    #[test]
-    fn a_wheel_notch_moves_each_settings_control_straight_to_its_scrolled_place() {
+    fn assert_a_wheel_notch_moves_each_control_straight_to_its_scrolled_place(
+        make: fn() -> super::DialogKind,
+        width: i32,
+        height: i32,
+        name: &str,
+        themes: &[bool],
+    ) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetWindow, SendMessageW, SetWindowLongPtrW, GWLP_WNDPROC, GW_CHILD, GW_HWNDNEXT,
             WM_MOUSEWHEEL,
         };
-        for modern in [false, true] {
+        for &modern in themes {
             for dark in [false, true] {
                 with_themed_dialog(
                     dark,
                     move || {
                         super::set_modern(modern);
-                        settings_kind(crate::model::UiMode::Advanced)
+                        make()
                     },
-                    620,
-                    260,
+                    width,
+                    height,
                     |dialog| unsafe {
                         let dlg = &*dialog.raw;
-                        let what = format!("modern {modern}, dark {dark}");
+                        let what = format!("{name}, modern {modern}, dark {dark}");
                         let step = super::scale(48, dlg.dpi);
-                        assert!(dlg.scroll_range.get() > step, "{what}: Settings scrolls");
+                        assert!(dlg.scroll_range.get() > step, "{what}: the page scrolls");
                         let pinned = super::pinned_controls(dlg);
                         let mut spied = Vec::new();
                         let mut child = GetWindow(dialog.hwnd, GW_CHILD);
@@ -17145,31 +17150,63 @@ mod tests {
         }
     }
 
-    /// A wheel turned over a closed drop-down list scrolls the Settings page and leaves the
-    /// list's selection alone, in both themes and both schemes.
     #[test]
-    fn the_wheel_over_a_closed_settings_list_scrolls_the_page_and_keeps_its_value() {
+    fn a_wheel_notch_moves_each_dialog_control_straight_to_its_scrolled_place() {
+        assert_a_wheel_notch_moves_each_control_straight_to_its_scrolled_place(
+            || settings_kind(crate::model::UiMode::Advanced),
+            620,
+            260,
+            "Settings",
+            &[false, true],
+        );
+        assert_a_wheel_notch_moves_each_control_straight_to_its_scrolled_place(
+            queues_kind,
+            620,
+            200,
+            "Queues",
+            &[false, true],
+        );
+        assert_a_wheel_notch_moves_each_control_straight_to_its_scrolled_place(
+            add_kind,
+            620,
+            200,
+            "Add",
+            &[false, true],
+        );
+    }
+
+    /// A wheel turned over each closed drop-down list of a dialog scrolls the page and leaves
+    /// the list's selection alone, in each given theme and both schemes.
+    fn assert_the_wheel_over_a_closed_list_scrolls_the_page_and_keeps_its_value(
+        make: fn() -> super::DialogKind,
+        width: i32,
+        height: i32,
+        name: &str,
+        themes: &[bool],
+        lists: &[i32],
+    ) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetDlgItem, SendMessageW, CB_GETCURSEL, MSG, WM_MOUSEWHEEL,
         };
-        for modern in [false, true] {
+        for &modern in themes {
             for dark in [false, true] {
                 with_themed_dialog(
                     dark,
                     move || {
                         super::set_modern(modern);
-                        settings_kind(crate::model::UiMode::Advanced)
+                        make()
                     },
-                    620,
-                    260,
+                    width,
+                    height,
                     |dialog| unsafe {
                         let dlg = &*dialog.raw;
-                        let what = format!("modern {modern}, dark {dark}");
+                        let what = format!("{name}, modern {modern}, dark {dark}");
                         let step = super::scale(48, dlg.dpi);
-                        for id in [super::S_UI_LANGUAGE, super::S_THEME] {
+                        for &id in lists {
                             dlg.scroll_y.set(0);
                             super::layout_dialog(dlg);
                             let list = GetDlgItem(dialog.hwnd, id);
+                            assert!(!list.is_null(), "{what}: list {id} exists");
                             let selected = SendMessageW(list, CB_GETCURSEL, 0, 0);
                             let mut msg: MSG = std::mem::zeroed();
                             msg.hwnd = list;
@@ -17194,6 +17231,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_wheel_over_a_closed_dialog_list_scrolls_the_page_and_keeps_its_value() {
+        assert_the_wheel_over_a_closed_list_scrolls_the_page_and_keeps_its_value(
+            || settings_kind(crate::model::UiMode::Advanced),
+            620,
+            260,
+            "Settings",
+            &[false, true],
+            &[super::S_UI_LANGUAGE, super::S_THEME],
+        );
+        assert_the_wheel_over_a_closed_list_scrolls_the_page_and_keeps_its_value(
+            queues_kind,
+            620,
+            200,
+            "Queues",
+            &[false, true],
+            &[super::Q_COMPLETION],
+        );
+        assert_the_wheel_over_a_closed_list_scrolls_the_page_and_keeps_its_value(
+            media_kind,
+            620,
+            200,
+            "Media",
+            // Modern's media picker sizes its window to its rows, so its page does not scroll.
+            &[false],
+            &[super::M_KIND, super::M_FORMAT],
+        );
     }
 
     /// Scrolls a dialog that is too short for its controls by one wheel notch, changes the
