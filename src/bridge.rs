@@ -44,7 +44,7 @@ use windows_sys::Win32::{
         },
         Threading::{
             GetCurrentProcess, GetCurrentThread, GetProcessTimes, OpenProcess, OpenProcessToken,
-            OpenThreadToken, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+            OpenThreadToken, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
             PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
@@ -1282,19 +1282,30 @@ fn spawn_background(paths: &AppPaths) -> Result<()> {
         "SSDownload çalıştırılabilir dosyası bulunamadı",
         "The SSDownload executable was not found",
     ))?;
-    Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("--background")
         .arg("--data-dir")
         .arg(&paths.base_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
-        .spawn()
-        .context(ui(
-            "SSDownload arka planda başlatılamadı",
-            "SSDownload could not be started in the background",
-        ))?;
+        .stderr(Stdio::null());
+    // Firefox runs the native host in a job that ends every process in it once the host exits,
+    // so the desktop instance leaves the job. A job that forbids leaving refuses the flag with
+    // ERROR_ACCESS_DENIED; the instance then starts inside it.
+    let spawned = command
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn();
+    match spawned {
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => command
+            .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+            .spawn(),
+        other => other,
+    }
+    .context(ui(
+        "SSDownload arka planda başlatılamadı",
+        "SSDownload could not be started in the background",
+    ))?;
     Ok(())
 }
 
