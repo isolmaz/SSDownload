@@ -28,9 +28,9 @@ Pull requests and pushes to `main` run these checks on GitHub Actions (`.github/
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1
 ```
 
-The script runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the translation catalog check (`python scripts/i18n.py check`), the extension tests (`node --test`) and `cargo audit` when it is installed. A step whose tool is missing is reported as skipped. `scripts\install-hooks.ps1` installs the script as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
+The script runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the translation catalog check (`python scripts/i18n.py check`), the extension tests (`node --test`), the two Firefox add-on checks below and `cargo audit` when it is installed. A step whose tool is missing is reported as skipped. `scripts\install-hooks.ps1` installs the script as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
 
-The Firefox add-on has its own two checks, which CI runs in its **Firefox extension** step:
+The Firefox add-on has its own two checks, which the script and CI's **Firefox extension** step run:
 
 ```powershell
 python scripts\sync-firefox-extension.py --check
