@@ -14,12 +14,22 @@ let lastState = null;
 
 function ask(command, extra) {
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (reply) => {
+      if (settled) return;
+      settled = true;
+      resolve(reply || {});
+    };
     try {
-      popupApi.runtime.sendMessage({ channel: "ssdownload-popup", command, ...(extra || {}) }, (reply) => {
-        void popupApi.runtime.lastError;
-        resolve(reply || {});
-      });
-    } catch (_) { resolve({}); }
+      // Chrome answers through the callback; Firefox returns a promise and ignores it.
+      const result = popupApi.runtime.sendMessage(
+        { channel: "ssdownload-popup", command, ...(extra || {}) },
+        (reply) => {
+          void popupApi.runtime.lastError;
+          done(reply);
+        });
+      if (result && typeof result.then === "function") result.then(done, () => done({}));
+    } catch (_) { done({}); }
   });
 }
 

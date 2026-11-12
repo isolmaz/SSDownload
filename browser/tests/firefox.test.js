@@ -307,3 +307,72 @@ test("Firefox background scripts load under the promise-only browser namespace",
   // confirm nothing rejects unhandled.
   await new Promise((resolve) => setTimeout(resolve, 30));
 });
+
+test("Firefox popup reads the worker reply through the promise API", async () => {
+  const elements = new Map();
+  const element = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, {
+        id,
+        textContent: "",
+        checked: false,
+        hidden: false,
+        disabled: false,
+        listeners: {},
+        addEventListener(type, listener) { this.listeners[type] = listener; },
+        append() {},
+        replaceChildren() {},
+        querySelectorAll() { return []; }
+      });
+    }
+    return elements.get(id);
+  };
+  const context = vm.createContext({
+    document: {
+      documentElement: { lang: "", dir: "" },
+      getElementById: element,
+      querySelectorAll: () => []
+    },
+    window: { close() {} },
+    SSDownloadI18n: {
+      load: async () => {},
+      watch: () => {},
+      language: () => "en",
+      direction: () => "ltr",
+      t: (key) => key
+    },
+    browser: {
+      runtime: {
+        lastError: undefined,
+        // Firefox ignores the callback argument and answers only through the promise.
+        sendMessage() {
+          return Promise.resolve({
+            detectionEnabled: true,
+            host: "site.example",
+            siteHidden: false,
+            media: []
+          });
+        }
+      },
+      tabs: { create: async () => ({}) }
+    },
+    Promise,
+    Object,
+    Array,
+    String,
+    setTimeout,
+    clearTimeout
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(firefoxDir, "popup.js"), "utf8"),
+    context,
+    { filename: "popup.js" }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.equal(element("setup").hidden, true, "the setup view must be replaced by the main view");
+  assert.equal(element("main").hidden, false);
+  assert.equal(element("detection").checked, true);
+  assert.equal(element("state").textContent, "stateOn");
+  assert.equal(element("site-label").textContent, "popupHideOnHost");
+});
