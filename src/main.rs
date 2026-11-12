@@ -946,6 +946,30 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_file_sets_the_colour_mode_and_an_older_one_its_dark_flag() {
+        let folder = std::env::temp_dir().join(format!("ssdownload-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        for (json, expected) in [
+            (r#"{"color_mode":"system"}"#, ColorMode::System),
+            (
+                r#"{"color_mode":"light","dark_mode":true}"#,
+                ColorMode::Light,
+            ),
+            (r#"{"dark_mode":true}"#, ColorMode::Dark),
+            (r#"{"dark_mode":false}"#, ColorMode::Light),
+        ] {
+            let file = folder.join("settings.json");
+            std::fs::write(&file, json).unwrap();
+            let action = parse_action(&argv(&["--set-settings", file.to_str().unwrap()]));
+            let Ok(Some(Action::SetSettings { settings })) = action else {
+                panic!("{json}: {action:?}");
+            };
+            assert_eq!(settings.color_mode(), expected, "{json}");
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
     fn autostart_is_a_command_that_cannot_swallow_another() {
         assert!(validate_arguments(&argv(&["--enable-autostart"])).is_ok());
         assert!(validate_arguments(&argv(&["--disable-autostart"])).is_ok());

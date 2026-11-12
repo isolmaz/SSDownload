@@ -1651,7 +1651,7 @@ unsafe extern "system" fn card_proc(
             let mut ps: PAINTSTRUCT = zeroed();
             let dc = BeginPaint(hwnd, &mut ps);
             let snapshot = card.app.snapshot();
-            let colours = colours(snapshot.settings.dark_mode, high_contrast());
+            let colours = colours(settings_dark(&snapshot.settings), high_contrast());
             let painted = paint_buffered(card, dc, &snapshot, &colours);
             EndPaint(hwnd, &ps);
             sync_controls(card, painted, colours);
@@ -1659,7 +1659,7 @@ unsafe extern "system" fn card_proc(
         }
         WM_PRINTCLIENT => {
             let snapshot = card.app.snapshot();
-            let colours = colours(snapshot.settings.dark_mode, high_contrast());
+            let colours = colours(settings_dark(&snapshot.settings), high_contrast());
             paint_buffered(card, wparam as HDC, &snapshot, &colours);
             0
         }

@@ -445,10 +445,18 @@ pub(super) unsafe fn layout_dialog(dlg: &DialogUi) {
             row_y += check_step;
             put(f.notify, genel, cx, row_y, cw, line);
             row_y += check_step;
-            put(f.dark, genel, cx, row_y, cw, line);
-            row_y += check_step;
-            // Tema: the box in the field column like the level box, the note
-            // beside it.
+            // Renk modu and Tema: each box in the field column like the level
+            // box, the theme's note beside its box.
+            put(
+                f.color_mode_label,
+                genel,
+                cx,
+                row_y + label_dy,
+                label_w,
+                label_h,
+            );
+            put(f.color_mode, genel, field_x, row_y, hx(150), line);
+            row_y += step;
             put(f.theme_label, genel, cx, row_y + label_dy, label_w, label_h);
             put(f.theme, genel, field_x, row_y, hx(110), line);
             put(

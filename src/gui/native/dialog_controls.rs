@@ -510,16 +510,6 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 S_NOTIFY,
             );
             set_check(f.notify, f.value.notify_completion);
-            f.dark = dialog_check(
-                dlg.hwnd,
-                dlg.font,
-                crate::i18n::ui(
-                    "Koyu pencere başlığı ve denetim teması",
-                    "Dark window title and control theme",
-                ),
-                S_DARK,
-            );
-            set_check(f.dark, f.value.dark_mode);
             f.schedule = dialog_check(
                 dlg.hwnd,
                 dlg.font,
@@ -956,6 +946,27 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 ),
                 0,
             );
+            f.color_mode_label = dialog_label(
+                dlg.hwnd,
+                dlg.font,
+                crate::i18n::ui("Renk modu:", "Color mode:"),
+                0,
+            );
+            f.color_mode = dialog_combo(dlg.hwnd, dlg.font, S_COLOR_MODE);
+            combo_add(f.color_mode, crate::i18n::ui("Açık", "Light"));
+            combo_add(f.color_mode, crate::i18n::ui("Koyu", "Dark"));
+            combo_add(
+                f.color_mode,
+                crate::i18n::ui("Windows'a uy", "Follow Windows"),
+            );
+            let mode = f.value.color_mode();
+            combo_select(
+                f.color_mode,
+                COLOR_MODES
+                    .iter()
+                    .position(|item| *item == mode)
+                    .unwrap_or(0) as i32,
+            );
             dialog_button(
                 dlg.hwnd,
                 dlg.font,
@@ -992,7 +1003,14 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                 f.connections,
             ];
             if simple {
-                order.extend([f.site_entries, f.startup, f.tray, f.notify, f.dark, f.theme]);
+                order.extend([
+                    f.site_entries,
+                    f.startup,
+                    f.tray,
+                    f.notify,
+                    f.color_mode,
+                    f.theme,
+                ]);
             } else {
                 order.extend([
                     f.mode_video,
@@ -1002,7 +1020,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
                     f.startup,
                     f.tray,
                     f.notify,
-                    f.dark,
+                    f.color_mode,
                     f.theme,
                     f.site_entries,
                     f.schedule,

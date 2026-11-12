@@ -169,7 +169,7 @@ pub(super) unsafe fn tab_palette(dark: bool) -> TabPalette {
 }
 /// True when the dialog paints its surface dark.
 pub(super) unsafe fn dialog_is_dark(dlg: &DialogUi) -> bool {
-    dlg.app.snapshot().settings.dark_mode && !high_contrast()
+    settings_dark(&dlg.app.snapshot().settings)
 }
 /// Live brushes and colours for the wizard cards, indexed dark * 2 + selected.
 pub(super) struct CardFace {
@@ -2263,6 +2263,48 @@ pub(super) unsafe fn high_contrast() -> bool {
     ) != 0
         && value.dwFlags & HCF_HIGHCONTRASTON != 0
 }
+/// Whether the windows are dark in `mode`. High contrast keeps the system colours whatever the
+/// mode. `System` follows the app mode of Windows, read through `apps_use_light_theme` only
+/// then: its `AppsUseLightTheme` value 0 is dark, any other value and a missing one light.
+fn resolve_dark(
+    mode: ColorMode,
+    high_contrast: bool,
+    apps_use_light_theme: impl FnOnce() -> Option<u32>,
+) -> bool {
+    !high_contrast
+        && match mode {
+            ColorMode::Light => false,
+            ColorMode::Dark => true,
+            ColorMode::System => apps_use_light_theme() == Some(0),
+        }
+}
+/// The current user's `AppsUseLightTheme`, which Windows' light or dark app mode sets.
+#[cfg(not(test))]
+fn apps_use_light_theme() -> Option<u32> {
+    winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .and_then(|key| key.get_value("AppsUseLightTheme"))
+        .ok()
+}
+// Tests never read the app mode of the machine they run on: the windows of a test thread see
+// Windows light until the test sets the value for its own thread.
+#[cfg(test)]
+thread_local! {
+    static APPS_USE_LIGHT_THEME: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(Some(1)) };
+}
+#[cfg(test)]
+pub(super) fn set_apps_use_light_theme(value: Option<u32>) {
+    APPS_USE_LIGHT_THEME.with(|cell| cell.set(value));
+}
+#[cfg(test)]
+fn apps_use_light_theme() -> Option<u32> {
+    APPS_USE_LIGHT_THEME.with(std::cell::Cell::get)
+}
+/// Whether `settings` makes the windows dark right now. Every window reads its scheme here, and
+/// applies it again on WM_SETTINGCHANGE, which Windows sends when its app mode changes.
+pub(super) unsafe fn settings_dark(settings: &Settings) -> bool {
+    resolve_dark(settings.color_mode(), high_contrast(), apps_use_light_theme)
+}
 /// uxtheme's dark-mode entry points, resolved by ordinal the way the shell
 /// exposes them. Windows 11 ships all three; when a build lacks one the lookup
 /// returns None and the app keeps painting what it can itself.
@@ -2833,10 +2875,53 @@ pub(super) unsafe extern "system" fn progress_proc(
 #[cfg(test)]
 mod tests {
     use super::{
-        app_mode_argument, processing_sweep, progress_colour, progress_fraction,
+        app_mode_argument, processing_sweep, progress_colour, progress_fraction, resolve_dark,
         set_dark_caption_with, split_mnemonic, windows_build, SWEEP_ONE_WAY_MS,
     };
-    use crate::model::JobState;
+    use crate::model::{ColorMode, JobState};
+
+    #[test]
+    fn follow_windows_is_dark_only_while_windows_shows_apps_dark() {
+        // AppsUseLightTheme: missing, dark, light, a value Windows does not write.
+        for (value, dark) in [
+            (None, false),
+            (Some(0), true),
+            (Some(1), false),
+            (Some(2), false),
+        ] {
+            assert_eq!(
+                resolve_dark(ColorMode::System, false, || value),
+                dark,
+                "AppsUseLightTheme {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn light_and_dark_ignore_the_app_mode_of_windows() {
+        for value in [None, Some(0), Some(1)] {
+            assert!(
+                !resolve_dark(ColorMode::Light, false, || value),
+                "{value:?}"
+            );
+            assert!(resolve_dark(ColorMode::Dark, false, || value), "{value:?}");
+        }
+        let unread = || -> Option<u32> { panic!("the app mode of Windows was read") };
+        assert!(!resolve_dark(ColorMode::Light, false, unread));
+        assert!(resolve_dark(ColorMode::Dark, false, unread));
+    }
+
+    #[test]
+    fn high_contrast_keeps_every_mode_light() {
+        for mode in [ColorMode::Light, ColorMode::Dark, ColorMode::System] {
+            for value in [None, Some(0), Some(1)] {
+                assert!(
+                    !resolve_dark(mode, true, || value),
+                    "{mode:?}, AppsUseLightTheme {value:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn windows_10_1809_is_told_dark_or_light_as_a_bool_and_every_other_build_as_a_mode() {

@@ -25,7 +25,7 @@
 - **Video and audio** from the page you are watching: choose the quality, container, audio and subtitle tracks, or save as MP3. Every result is checked with ffprobe and FFmpeg before it is published. Live streams are recorded, from their beginning where the site keeps it, and a live video recording can be finished early with what was recorded so far.
 - **Browser extension** for Chrome, Edge and Firefox: a download button on videos, right-click entries and optional download takeover.
 - **Queue:** drag to reorder, pause and resume, speed limits, a mini panel, completion cards and tray controls.
-- **Themes:** Classic (the default) and Modern, each in light and dark.
+- **Themes:** Classic (the default) and Modern, each in light and dark or following Windows' light or dark mode.
 - **For larger jobs:** named queues with time windows, folder rules, batch ranges, a site explorer, a command line and signed updates that install after you accept them.
 - **Privacy:** no account, no telemetry and no SSDownload server. The app connects only to the sources you download from and to GitHub, for updates and media support. See [PRIVACY.md](PRIVACY.md).
 
