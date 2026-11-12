@@ -352,6 +352,43 @@ fn write_browser_setup(browser_root: &Path, paths: &AppPaths) -> Result<PathBuf>
         "The extension talks only to SSDownload on this computer. If it cannot connect, open SSDownload and run <b>Tools → Browser setup</b> again, or use <code>ssdownload.exe --register-host</code>. The extension never runs downloaded files.",
     );
 
+    // The Firefox add-on ships next to the Chromium one but is optional: without its manifest
+    // the page keeps the Chrome only layout.
+    let firefox_manifest = browser_root.join("firefox").join("manifest.json");
+    let firefox_section = if firefox_manifest.is_file() {
+        let manifest_url = url::Url::from_file_path(&firefox_manifest).map_err(|_| {
+            anyhow::anyhow!(
+                "{}",
+                ui(
+                    "Firefox eklenti bildirimi URL'ye dönüştürülemedi",
+                    "The Firefox add-on manifest could not be converted to a URL"
+                )
+            )
+        })?;
+        let manifest_path = html_escape(&firefox_manifest.display().to_string());
+        let manifest_url = html_escape(manifest_url.as_str());
+        let addon_id = html_escape(crate::extension::FIREFOX_EXTENSION_ID);
+        let firefox_heading = ui("Firefox", "Firefox");
+        let firefox_body = ui(
+            "SSDownload yerel mesajlaşma bağlantısını kurdu, ancak Firefox eklentinin bir kez yüklenmesini ister.",
+            "SSDownload has registered the Native Messaging connection, but Firefox needs the add-on loaded once.",
+        );
+        let firefox_steps = ui(
+            "<li><b>about:debugging#/runtime/this-firefox</b> adresini açın.</li><li><b>Geçici eklenti yükle</b>'yi seçin.</li><li>Aşağıda gösterilen bildirim dosyasını seçin.</li>",
+            "<li>Open <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choose <b>Load Temporary Add-on</b>.</li><li>Select the manifest file shown below.</li>",
+        );
+        let firefox_button = ui("Bildirim dosyasını aç", "Open the manifest file");
+        let firefox_note = ui(
+            "Geçici eklenti Firefox kapandığında kaldırılır. Kalıcı kurulum için AMO'da yayımlanmış, Mozilla tarafından imzalanmış bir XPI gerekir; bu depo böyle bir paketi kendiliğinden yayımlamaz.",
+            "A temporary add-on is removed when Firefox closes. A permanent install needs a Mozilla-signed XPI published on AMO; this repository does not publish one automatically.",
+        );
+        format!(
+            r#"<section><h2>{firefox_heading}</h2><p>{firefox_body}</p><ol>{firefox_steps}</ol><pre>{manifest_path}</pre><p><a class="button" href="{manifest_url}">{firefox_button}</a></p><small>{id_label}: {addon_id}</small><p><small>{firefox_note}</small></p></section>"#
+        )
+    } else {
+        String::new()
+    };
+
     let html = format!(
         r#"<!doctype html>
 <html lang="{lang}" dir="{dir}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -364,6 +401,7 @@ h1{{margin:0 0 8px;font-size:30px}}header p{{margin:0;line-height:1.55}}section{
 <header><h1>{title}</h1><p>{intro}</p></header>
 <section><h2>{store_heading}</h2><p>{store_body}</p><p><a class="button" href="{store_url}">{store_button}</a></p></section>
 <section><h2>{manual_heading}</h2><ol>{manual_steps}</ol><pre>{chromium_path}</pre><p><a class="button" href="{chromium_url}">{folder_button}</a></p><small>{id_label}: {extension_id}</small></section>
+{firefox_section}
 <section><h2>{host_heading}</h2><p>{host_body}</p></section>
 </main></body></html>"#
     );
@@ -481,6 +519,8 @@ mod tests {
         let chrome_root = root.join("browser");
         std::fs::create_dir_all(chrome_root.join("chromium")).unwrap();
         std::fs::write(chrome_root.join("chromium/manifest.json"), "{}").unwrap();
+        std::fs::create_dir_all(chrome_root.join("firefox")).unwrap();
+        std::fs::write(chrome_root.join("firefox/manifest.json"), "{}").unwrap();
         let paths = AppPaths::new(root.join("isolated-profile")).unwrap();
 
         assert_eq!(
@@ -494,6 +534,35 @@ mod tests {
             &chrome_root.join("chromium").display().to_string()
         )));
         assert!(html.contains(crate::extension::WEB_STORE_LISTING_URL));
+        assert!(html.contains(&html_escape(
+            &chrome_root
+                .join("firefox")
+                .join("manifest.json")
+                .display()
+                .to_string()
+        )));
+        assert!(html.contains(&html_escape(crate::extension::FIREFOX_EXTENSION_ID)));
+        assert!(html.contains("about:debugging#/runtime/this-firefox"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn setup_page_without_firefox_manifest_has_no_firefox_section() {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-install-test-{}", uuid::Uuid::new_v4()));
+        let chrome_root = root.join("browser");
+        std::fs::create_dir_all(chrome_root.join("chromium")).unwrap();
+        std::fs::write(chrome_root.join("chromium/manifest.json"), "{}").unwrap();
+        let paths = AppPaths::new(root.join("isolated-profile")).unwrap();
+
+        let page = write_browser_setup(&chrome_root, &paths).unwrap();
+        let html = std::fs::read_to_string(&page).unwrap();
+        assert!(html.contains(&html_escape(
+            &chrome_root.join("chromium").display().to_string()
+        )));
+        assert!(!html.contains(crate::extension::FIREFOX_EXTENSION_ID));
+        assert!(!html.contains("about:debugging"));
 
         std::fs::remove_dir_all(root).unwrap();
     }

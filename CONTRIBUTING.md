@@ -22,13 +22,22 @@ cargo run --locked --bin ssdownload -- --data-dir .qa\dev-profile   # separate p
 
 ## Checks
 
-Pull requests and pushes to `main` run these checks on GitHub Actions (`.github/workflows/ci.yml`) on Windows: `cargo fmt --check`, Clippy with warnings as errors, `cargo test`, the translation catalog check, the extension tests and `cargo build`. The cargo commands run with `--locked`. Run the checks on your machine first:
+Pull requests and pushes to `main` run these checks on GitHub Actions (`.github/workflows/ci.yml`) on Windows: `cargo fmt --check`, Clippy with warnings as errors, `cargo test`, the translation catalog check, the extension tests, the Firefox add-on check and `cargo build`. The cargo commands run with `--locked`. Run the checks on your machine first:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1
 ```
 
 The script runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the translation catalog check (`python scripts/i18n.py check`), the extension tests (`node --test`) and `cargo audit` when it is installed. A step whose tool is missing is reported as skipped. `scripts\install-hooks.ps1` installs the script as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
+
+The Firefox add-on has its own two checks, which CI runs in its **Firefox extension** step:
+
+```powershell
+python scripts\sync-firefox-extension.py --check
+npx --yes web-ext@10.8.0 lint --source-dir browser/firefox --output text
+```
+
+The first fails when `browser\firefox` differs from the copy the script generates from `browser\chromium`; the second runs the Mozilla linter over the add-on.
 
 Two kinds of test run only on request.
 
@@ -58,9 +67,10 @@ src/bridge.rs        Native messaging and the local named pipe
 src/update.rs        Signed update feed
 src/test_http.rs     Configurable loopback HTTP server for tests (test builds only)
 browser/chromium/    The Chrome/Edge extension (Manifest V3), loadable as is
+browser/firefox/     The Firefox add-on, generated from browser/chromium by scripts/sync-firefox-extension.py
 browser/tests/       Extension tests (node:test, no dependencies)
 packaging/           NSIS installer and browser registration scripts
-scripts/             Local checks, error-code generator and release scripts
+scripts/             Local checks, error-code generator, Firefox sync and release scripts
 ```
 
 ## Conventions
@@ -85,12 +95,13 @@ Contributions are licensed under the [MIT License](LICENSE.txt).
 
 ## Releases (maintainer)
 
-The application ships from this repository's GitHub Releases: the Setup and portable ZIP and the signed update feed (`version.json`, `version.json.sig`). The browser extension ships through the Chrome Web Store. Requirements: NSIS 3.10 (`%LOCALAPPDATA%\Programs\nsis-3.10`), OpenSSL, an authenticated `gh`, and the two private keys outside the repository: `%LOCALAPPDATA%\SSDownload\keys\update-signing.key` (Ed25519, must match `FEED_PUBLIC_KEY` in `src/update.rs`) and `extension.key` (fixes the extension ID). If either key is lost, installed copies cannot verify updates or the extension ID changes, so keep an offline backup.
+The application ships from this repository's GitHub Releases: the Setup and portable ZIP and the signed update feed (`version.json`, `version.json.sig`). The Chrome and Edge extension ships through the Chrome Web Store; the Firefox add-on is packaged separately and needs a signature from Mozilla for a permanent install. Requirements: NSIS 3.10 (`%LOCALAPPDATA%\Programs\nsis-3.10`), OpenSSL, an authenticated `gh`, and the two private keys outside the repository: `%LOCALAPPDATA%\SSDownload\keys\update-signing.key` (Ed25519, must match `FEED_PUBLIC_KEY` in `src/update.rs`) and `extension.key` (fixes the extension ID). If either key is lost, installed copies cannot verify updates or the extension ID changes, so keep an offline backup.
 
 1. Set the new version in `Cargo.toml` and `browser/chromium/manifest.json`, run `cargo check` to update `Cargo.lock`, and run `scripts\check.ps1`. Compare the bridge versions with the [compatibility table](#app-and-extension-compatibility): a change blocks the release until the conditions there hold.
 2. `scripts\package.ps1` builds the release and writes the Setup, portable ZIP, symbols ZIP and `SHA256SUMS` to `artifacts\<version>\app`.
 3. `scripts\package-extension.ps1` writes the store package `artifacts\<version>\extension\SSDownload-<version>-store.zip` (the manifest without `key`). Upload it to the Chrome Web Store item `hgndggnlfpnflkmnbddmcnfniamckham`. The first upload of the item must be built with `-FirstUpload`: it adds `key.pem`, which makes the store keep the manifest-key ID that the app registers and the native host allows. Never publish that ZIP.
-4. Add the release to the compatibility table. Commit and push, then `scripts\prepare-release.ps1 -PackageDir artifacts\<version>\app -Notes "<what changed>" -Publish` signs the feed, checks every checksum and creates the GitHub release with all assets. It refuses a `-Repository` that differs from `DEFAULT_FEED_BASE` in `src/update.rs`, and after publishing it reads `version.json` anonymously and fails unless the public feed serves the new version.
+4. `scripts\package-firefox.ps1` writes an unsigned XPI of `browser\firefox` to `artifacts\<version>\extension`. Firefox installs it permanently only when Mozilla has signed it for an addons.mozilla.org listing, so signing and uploading the XPI is a manual maintainer step of its own, separate from the Chrome Web Store ZIP. No script publishes or uploads it.
+5. Add the release to the compatibility table. Commit and push, then `scripts\prepare-release.ps1 -PackageDir artifacts\<version>\app -Notes "<what changed>" -Publish` signs the feed, checks every checksum and creates the GitHub release with all assets. It refuses a `-Repository` that differs from `DEFAULT_FEED_BASE` in `src/update.rs`, and after publishing it reads `version.json` anonymously and fails unless the public feed serves the new version.
 
 Optional Authenticode signing: `scripts\package.ps1 -SigningProfile <metadata.json>` (Azure Artifact Signing) or `-CertificateThumbprint <sha1> -TimestampServer <url>`.
 

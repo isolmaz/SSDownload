@@ -17,9 +17,13 @@
 use anyhow::{Context, Result};
 
 pub const CHROME_EXTENSION_ID: &str = "hgndggnlfpnflkmnbddmcnfniamckham";
-/// Every extension identity the native host answers. The Chrome Web Store
-/// listing keeps the manifest-key ID; an Edge Add-ons listing gets its own ID,
-/// which must be added here once the listing exists.
+/// Firefox signs the add-on under this ID; its Native Messaging manifest lists it in
+/// `allowed_extensions`, and Firefox passes it to the host when it starts it.
+pub const FIREFOX_EXTENSION_ID: &str = "ssdownload@ssdownload.local";
+/// Every Chromium extension identity the native host answers. The Chrome Web
+/// Store listing keeps the manifest-key ID; an Edge Add-ons listing gets its own
+/// ID, which must be added here once the listing exists. The Firefox add-on ID
+/// is allowed separately in `bridge` through the Firefox native host manifest.
 pub const ALLOWED_EXTENSION_IDS: &[&str] = &[CHROME_EXTENSION_ID];
 /// Chrome Web Store update service; Edge accepts it for registry installs too.
 pub const WEB_STORE_UPDATE_URL: &str = "https://clients2.google.com/service/update2/crx";

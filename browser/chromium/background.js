@@ -2,6 +2,11 @@
 
 const api = globalThis.browser || chrome;
 const isPromiseApi = typeof globalThis.browser !== "undefined";
+// Firefox serves extension pages from moz-extension:, Chrome from chrome-extension:.
+// The namespace alone cannot tell them apart in tests or in Chromium forks.
+const isFirefoxRuntime = (() => {
+  try { return api.runtime.getURL("").startsWith("moz-extension://"); } catch (_) { return false; }
+})();
 // Every user-visible text goes through i18n.js (loaded first by service-worker.js); the
 // language is the desktop app's, learned from its capabilities reply.
 const { t } = SSDownloadI18n;
@@ -2047,7 +2052,11 @@ async function takeOverDownload(item) {
   }
 }
 async function discardBrowserCopy(downloadId) {
-  try { await invoke(api.downloads, "cancel", downloadId); await invoke(api.downloads, "erase", { id: downloadId }); } catch (_) {}
+  try {
+    await invoke(api.downloads, "cancel", downloadId);
+    // Firefox has no downloads.erase; the cancelled copy stays in its download list.
+    if (typeof api.downloads.erase === "function") await invoke(api.downloads, "erase", { id: downloadId });
+  } catch (_) {}
 }
 
 // The paused browser copies that wait for the desktop's job to receive the file, as
@@ -2170,7 +2179,8 @@ function ensureTakeoverAlarm() {
   if (!api.alarms?.create) return;
   invoke(api.alarms, "get", TAKEOVER_ALARM).catch(() => null).then(existing => {
     if (existing) return;
-    try { api.alarms.create(TAKEOVER_ALARM, { periodInMinutes: TAKEOVER_POLL_MAX / 60000 }); } catch (_) {}
+    // Firefox rejects a period below one minute; Chrome keeps the 30-second poll.
+    try { api.alarms.create(TAKEOVER_ALARM, { periodInMinutes: isFirefoxRuntime ? 1 : TAKEOVER_POLL_MAX / 60000 }); } catch (_) {}
   });
 }
 function wakeTakeovers() {

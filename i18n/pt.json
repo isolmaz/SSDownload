@@ -1785,5 +1785,12 @@
   "The reason is below. Report problem writes a report on it and opens its folder.": "O motivo está abaixo. “Relatar problema” grava um relatório sobre ele e abre a pasta.",
   "The streams could not be merged within {0} seconds": "Não foi possível mesclar os fluxos em {0} segundos",
   "SSDownload page markup": "Marcação da página do SSDownload",
-  "The browser bridge could not start; the app continues without browser integration: {0}": "Não foi possível iniciar a ponte do navegador; a aplicação continua sem a integração com o navegador: {0}"
+  "The browser bridge could not start; the app continues without browser integration: {0}": "Não foi possível iniciar a ponte do navegador; a aplicação continua sem a integração com o navegador: {0}",
+  "The Firefox add-on manifest could not be converted to a URL": "Não foi possível converter o manifesto da extensão do Firefox em um URL",
+  "Firefox": "Firefox",
+  "SSDownload has registered the Native Messaging connection, but Firefox needs the add-on loaded once.": "O SSDownload registrou a conexão de mensagens nativas, mas o Firefox precisa que a extensão seja carregada uma vez.",
+  "<li>Open <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choose <b>Load Temporary Add-on</b>.</li><li>Select the manifest file shown below.</li>": "<li>Abra <b>about:debugging#/runtime/this-firefox</b>.</li><li>Escolha <b>Carregar extensão temporária</b>.</li><li>Selecione o arquivo de manifesto mostrado abaixo.</li>",
+  "Open the manifest file": "Abrir o arquivo de manifesto",
+  "A temporary add-on is removed when Firefox closes. A permanent install needs a Mozilla-signed XPI published on AMO; this repository does not publish one automatically.": "A extensão temporária é removida quando o Firefox fecha. A instalação permanente exige um XPI assinado pela Mozilla e publicado no AMO; este repositório não publica um automaticamente.",
+  "The Firefox Native Messaging manifest could not be written": "Não foi possível gravar o manifesto de mensagens nativas do Firefox"
 }

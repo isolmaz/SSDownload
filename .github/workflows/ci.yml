@@ -44,5 +44,11 @@ jobs:
           $suites = Get-ChildItem browser/tests -Filter '*.test.js' | ForEach-Object { $_.FullName }
           node --test @suites
 
+      - name: Firefox extension
+        run: |
+          python scripts/sync-firefox-extension.py --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx --yes web-ext@10.8.0 lint --source-dir browser/firefox --output text
+
       - name: cargo build
         run: cargo build --locked
