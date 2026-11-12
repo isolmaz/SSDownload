@@ -103,6 +103,25 @@ impl UiMode {
     }
 }
 
+/// Whether the desktop windows are light, dark, or follow the light or dark mode Windows sets
+/// for apps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    Light,
+    Dark,
+    System,
+}
+
+impl ColorMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+            Self::System => "system",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ScopedCookie {
@@ -610,7 +629,12 @@ pub struct Settings {
     pub schedule_enabled: bool,
     pub schedule_start: String,
     pub schedule_end: String,
+    /// Dark windows, the only colour setting builds without `color_mode` read. It keeps the
+    /// last Light or Dark choice and decides while `color_mode` holds no known value.
     pub dark_mode: bool,
+    /// Light or dark windows: `light` | `dark` | `system` (follows Windows). Read through
+    /// `color_mode()`.
+    pub color_mode: String,
     /// Look of the desktop windows: `modern` | `classic`. Read when the app starts.
     pub theme: String,
     pub last_video_container: String,
@@ -749,6 +773,7 @@ impl Default for Settings {
             schedule_start: "00:00".into(),
             schedule_end: "23:59".into(),
             dark_mode: false,
+            color_mode: String::new(),
             theme: "classic".into(),
             last_video_container: "mp4".into(),
             last_video_height: None,
@@ -804,12 +829,36 @@ impl Settings {
         self.theme == "modern"
     }
 
+    /// The stored colour mode. A profile without `color_mode`, or with a value no build writes,
+    /// keeps the look of its `dark_mode` flag.
+    pub fn color_mode(&self) -> ColorMode {
+        match self.color_mode.as_str() {
+            "light" => ColorMode::Light,
+            "dark" => ColorMode::Dark,
+            "system" => ColorMode::System,
+            _ if self.dark_mode => ColorMode::Dark,
+            _ => ColorMode::Light,
+        }
+    }
+
+    /// Stores `mode`. Light and Dark also set `dark_mode`, so a build that reads only that flag
+    /// shows the last explicit choice.
+    pub fn set_color_mode(&mut self, mode: ColorMode) {
+        self.color_mode = mode.as_str().into();
+        match mode {
+            ColorMode::Light => self.dark_mode = false,
+            ColorMode::Dark => self.dark_mode = true,
+            ColorMode::System => {}
+        }
+    }
+
     /// The settings of a profile that has none stored yet: the defaults, in the Windows display
-    /// language. `Default` stays Turkish, so a stored value that predates `ui_language` reads
-    /// as it always did.
+    /// language and following Windows' light or dark mode. `Default` stays Turkish and light, so
+    /// a stored value that predates `ui_language` or `color_mode` reads as it always did.
     pub(crate) fn first_run() -> Self {
         Self {
             ui_language: crate::i18n::system_language().into(),
+            color_mode: ColorMode::System.as_str().into(),
             ..Self::default()
         }
     }
@@ -1280,6 +1329,78 @@ mod tests {
         // A value no build writes reads as the default.
         let unknown: super::Settings = serde_json::from_str(r#"{"theme":"neon"}"#).unwrap();
         assert!(!unknown.modern_theme());
+    }
+
+    #[test]
+    fn a_stored_dark_flag_without_a_colour_mode_keeps_its_look() {
+        use super::{ColorMode, Settings};
+        for (stored, expected) in [
+            (r#"{"dark_mode":true}"#, ColorMode::Dark),
+            (r#"{"dark_mode":false}"#, ColorMode::Light),
+            (r#"{"connections":4}"#, ColorMode::Light),
+            // A value no build writes falls back to the flag.
+            (r#"{"dark_mode":true,"color_mode":"neon"}"#, ColorMode::Dark),
+            (r#"{"dark_mode":false,"color_mode":""}"#, ColorMode::Light),
+        ] {
+            let settings: Settings = serde_json::from_str(stored).unwrap();
+            assert_eq!(settings.color_mode(), expected, "{stored}");
+        }
+    }
+
+    #[test]
+    fn a_stored_colour_mode_wins_over_the_dark_flag() {
+        use super::{ColorMode, Settings};
+        for (stored, expected) in [
+            (
+                r#"{"dark_mode":true,"color_mode":"light"}"#,
+                ColorMode::Light,
+            ),
+            (
+                r#"{"dark_mode":false,"color_mode":"dark"}"#,
+                ColorMode::Dark,
+            ),
+            (
+                r#"{"dark_mode":true,"color_mode":"system"}"#,
+                ColorMode::System,
+            ),
+            (
+                r#"{"dark_mode":false,"color_mode":"system"}"#,
+                ColorMode::System,
+            ),
+        ] {
+            let settings: Settings = serde_json::from_str(stored).unwrap();
+            assert_eq!(settings.color_mode(), expected, "{stored}");
+        }
+    }
+
+    #[test]
+    fn a_new_profile_follows_windows_and_the_default_stays_light() {
+        use super::{ColorMode, Settings};
+        assert_eq!(Settings::first_run().color_mode(), ColorMode::System);
+        assert_eq!(Settings::default().color_mode(), ColorMode::Light);
+    }
+
+    #[test]
+    fn each_colour_mode_survives_a_round_trip_and_leaves_the_flag_an_older_build_reads() {
+        use super::{ColorMode, Settings};
+        // (chosen mode, dark flag before, dark flag stored)
+        for (mode, before, flag) in [
+            (ColorMode::Light, true, false),
+            (ColorMode::Dark, false, true),
+            (ColorMode::System, true, true),
+            (ColorMode::System, false, false),
+        ] {
+            let mut settings = Settings {
+                dark_mode: before,
+                ..Settings::default()
+            };
+            settings.set_color_mode(mode);
+            let stored = serde_json::to_value(&settings).unwrap();
+            assert_eq!(stored["color_mode"], mode.as_str(), "{mode:?}");
+            assert_eq!(stored["dark_mode"], flag, "{mode:?} after dark {before}");
+            let loaded: Settings = serde_json::from_value(stored).unwrap();
+            assert_eq!(loaded.color_mode(), mode);
+        }
     }
 
     #[test]
