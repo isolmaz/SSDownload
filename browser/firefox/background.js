@@ -2209,8 +2209,7 @@ function ensureTakeoverAlarm() {
   if (!api.alarms?.create) return;
   invoke(api.alarms, "get", TAKEOVER_ALARM).catch(() => null).then(existing => {
     if (existing) return;
-    // Firefox rejects a period below one minute; Chrome keeps the 30-second poll.
-    try { api.alarms.create(TAKEOVER_ALARM, { periodInMinutes: isFirefoxRuntime ? 1 : TAKEOVER_POLL_MAX / 60000 }); } catch (_) {}
+    try { api.alarms.create(TAKEOVER_ALARM, { periodInMinutes: TAKEOVER_POLL_MAX / 60000 }); } catch (_) {}
   });
 }
 function wakeTakeovers() {

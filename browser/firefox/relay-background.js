@@ -6,9 +6,6 @@
 (function installBrowserRelay() {
   const relayApi = globalThis.browser || chrome;
   const relayPromiseApi = typeof globalThis.browser !== "undefined";
-  const relayIsFirefox = (() => {
-    try { return relayApi.runtime.getURL("").startsWith("moz-extension://"); } catch (_) { return false; }
-  })();
   const { t } = SSDownloadI18n;
   const RELAY_HOST = "com.ssdownload.desktop";
   const CONTROL_CHANNEL = "ssdownload-relay-control";
@@ -20,8 +17,7 @@
   const MAX_CHECKPOINT_BYTES = 4096;
   const MAX_SAVED_BYTES = 512 * 1024;
   const AUTO_RESUME_ALARM = "ssdownload-browser-transfer-resume";
-  // Firefox rejects an alarm delay below one minute, so it waits the minimum there.
-  const AUTO_RESUME_DELAY_MINUTES = relayIsFirefox ? 1 : 0.5;
+  const AUTO_RESUME_DELAY_MINUTES = 0.5;
   const jobs = new Map();
   let nativePort = null;
   let resumeTimer = null;
