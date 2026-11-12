@@ -1138,15 +1138,45 @@ function partitionSite(partition) {
     return /^https?:$/.test(parsed.protocol) && !parsed.username && !parsed.password && parsed.pathname === "/" && !parsed.search && !parsed.hash ? parsed.origin : null;
   } catch (_) { return null; }
 }
-// Firefox has no cookies.getPartitionKey. A frame whose ancestors all share the top
-// document's origin has no cross-site ancestor; any other frame may have one, so it is
-// reported as one and its partition is refused.
-async function firefoxFramePartition(tabId, frameId) {
+// The partition and the consent are judged for the document the item came from, so the frame
+// must still hold it: a frame that moved on would answer for another document.
+async function frameStillShows(tabId, frameId, item) {
+  if (typeof api.webNavigation?.getFrame !== "function") throw new Error(t("partitionedScopeUnverifiable"));
+  const frame = await invoke(api.webNavigation, "getFrame", { tabId, frameId });
+  if (!frame) return false;
+  if (item.documentId && frame.documentId) return frame.documentId === item.documentId;
+  const page = safeUrl(item.pageUrl);
+  return !page || safeUrl(frame.url)?.origin === page.origin;
+}
+// Firefox exposes no URL's site, but its cookies.getAll refuses a partition key without a
+// cross-site ancestor for a URL cross-site to topLevelSite, judged by its own public suffix list.
+async function firefoxSameSite(url, topLevelSite, storeId) {
+  const target = safeUrl(url), top = safeUrl(topLevelSite);
+  if (!target || !top || target.protocol !== top.protocol) return false;
+  try {
+    await invoke(api.cookies, "getAll", { url: target.href, storeId, partitionKey: { topLevelSite: top.origin, hasCrossSiteAncestor: false } });
+    return true;
+  } catch (_) { return false; }
+}
+// A blob: document has the origin of the document that made it; about:blank and about:srcdoc
+// documents belong to their parent's.
+function frameAddress(url) {
+  if (/^blob:/i.test(String(url))) { try { return new URL(url).origin; } catch (_) { return null; } }
+  return /^about:(blank|srcdoc)([?#]|$)/i.test(String(url)) ? "inherit" : url;
+}
+// Firefox has no cookies.getPartitionKey. A frame whose ancestors are all same-site with the
+// top document has no cross-site ancestor; any other frame may have one, so it is reported as
+// one and its partition is refused.
+async function firefoxFramePartition(tabId, frameId, storeId) {
   if (typeof api.webNavigation?.getAllFrames !== "function") throw new Error(t("partitionedScopeUnverifiable"));
   const frames = new Map((await invoke(api.webNavigation, "getAllFrames", { tabId }) || []).map(frame => [frame.frameId, frame]));
   const top = safeUrl(frames.get(0)?.url)?.origin;
   let frame = frames.get(frameId), steps = 0;
-  while (top && frame && frame.frameId !== 0 && steps++ < frames.size && safeUrl(frame.url)?.origin === top) frame = frames.get(frame.parentFrameId);
+  while (top && frame && frame.frameId !== 0 && steps++ < frames.size) {
+    const address = frameAddress(frame.url);
+    if (address !== "inherit" && !await firefoxSameSite(address, top, storeId)) break;
+    frame = frames.get(frame.parentFrameId);
+  }
   return { topLevelSite: top || null, hasCrossSiteAncestor: !top || frame?.frameId !== 0 };
 }
 function sameOrParentHost(host, parent) {
@@ -1255,25 +1285,35 @@ async function sessionMetadata(tabId, item) {
     throw error;
   }
   const frameId = Number.isInteger(item.frameId) ? item.frameId : 0;
-  let partition, query, inPartition;
+  if (!await frameStillShows(tabId, frameId, item)) {
+    const error = new Error(t("requestContextExpired"));
+    error.code = "SSD-EXT-005";
+    throw error;
+  }
+  let partition, query, inPartition, sendsUnpartitioned = async () => true;
   if (typeof api.cookies?.getPartitionKey === "function") {
     const partitionResult = await invoke(api.cookies, "getPartitionKey", { tabId, frameId });
     partition = query = partitionResult?.partitionKey || partitionResult;
     inPartition = cookie => samePartition(cookie.partitionKey, partition);
   } else if (isFirefoxRuntime) {
-    partition = await firefoxFramePartition(tabId, frameId);
+    partition = await firefoxFramePartition(tabId, frameId, storeId);
     // Firefox rejects hasCrossSiteAncestor:false for a URL cross-site to topLevelSite.
     query = { topLevelSite: partition.topLevelSite };
     inPartition = cookie => inFirefoxPartition(cookie, partition);
+    // Total Cookie Protection keeps a host's unpartitioned cookies out of requests made under a
+    // site cross-site to it; such a target gets only the partition's cookies.
+    sendsUnpartitioned = target => firefoxSameSite(target, partition.topLevelSite, storeId);
   } else {
     throw new Error(t("partitionedScopeUnverifiable"));
   }
   if (!partitionSite(partition)) throw new Error(t("partitionScopeUntransferable"));
   const cookies = new Map();
   for (const target of cookieTargets(item)) {
-    const ordinary = await invoke(api.cookies, "getAll", { url: target, storeId });
+    const ordinary = await sendsUnpartitioned(target) ? await invoke(api.cookies, "getAll", { url: target, storeId }) : [];
     const partitioned = await invoke(api.cookies, "getAll", { url: target, storeId, partitionKey: query });
-    for (const cookie of [...ordinary, ...partitioned]) {
+    // Only the partitioned query's partitioned cookies count, so whether an unpartitioned cookie
+    // travels is decided by the ordinary query alone.
+    for (const cookie of [...ordinary, ...partitioned.filter(cookie => cookie?.partitionKey)]) {
       if (cookie?.storeId !== storeId || !cookieMatchesTarget(cookie, target)) continue;
       if (cookie.partitionKey && !inPartition(cookie)) continue;
       const value = scopedCookie(cookie, storeId, cookie.partitionKey ? partitionSite({ topLevelSite: cookie.partitionKey.topLevelSite }) : null);

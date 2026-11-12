@@ -115,15 +115,27 @@ function response(url,requestId,statusCode=200,type="application/octet-stream") 
     responseHeaders:[{name:"Content-Type",value:type}]};
 }
 
+// The site of a fixture address: its last two labels, as the public suffix list gives for *.example.
+const fixtureSite=value=>{const url=new URL(value);return `${url.protocol}//${url.hostname.split(".").slice(-2).join(".")}`;};
+
+// Without `frames` the tab holds only its top document and lists no frame tree.
 function consentHarness({cookieList=[],partition={topLevelSite:"https://site.example"},scopes=[{site:"https://site.example",storeId:"chrome-main"}],cookieCalls=[],frames}={}) {
   const cookies={
     async getAllCookieStores(){return [{id:"chrome-main",tabIds:[7]},{id:"chrome-other",tabIds:[8]}];},
-    async getAll(details){cookieCalls.push(details);return cookieList;},
+    async getAll(details){
+      cookieCalls.push(details);
+      // Firefox refuses a key without a cross-site ancestor for a URL cross-site to its top site.
+      if(details.partitionKey?.hasCrossSiteAncestor===false&&fixtureSite(details.url)!==fixtureSite(details.partitionKey.topLevelSite))
+        throw new Error("Invalid value for 'partitionKey' attribute");
+      return cookieList;
+    },
   };
   if(partition!==false)cookies.getPartitionKey=async()=>({partitionKey:partition});
-  const webNavigation=frames?{async getAllFrames(){return frames;}}:undefined;
+  const tree=frames||[{frameId:0,parentFrameId:-1,url:"https://site.example/watch"}];
+  const webNavigation={async getFrame({frameId}){return tree.find(frame=>frame.frameId===frameId)||null;},...(frames?{async getAllFrames(){return frames;}}:{})};
   return backgroundHarness({local:{sessionScopes:scopes},cookies,cookieCalls,webNavigation});
 }
+const siteCheck=call=>call.partitionKey?.hasCrossSiteAncestor===false;
 
 test("session cookies stay inside the consented store and matching targets",async()=>{
   const cookieCalls=[];
@@ -188,7 +200,7 @@ test("Firefox without getPartitionKey exports the cookies its top site's partiti
   const h=consentHarness({cookieCalls,partition:false,
     scopes:[{site:"https://www.site.example",storeId:"chrome-main"}],
     frames:[{frameId:0,parentFrameId:-1,url:"https://www.site.example/watch"},{frameId:4,parentFrameId:0,url:"https://www.site.example/embed"}],
-    cookieList:[cookie("sid","media.example"),
+    cookieList:[cookie("sid","media.example"),cookie("site-session","static.site.example"),
       cookie("third-party","media.example",{topLevelSite:"https://site.example",hasCrossSiteAncestor:true}),
       cookie("first-party","static.site.example",{topLevelSite:"https://site.example",hasCrossSiteAncestor:false}),
       cookie("embedded","static.site.example",{topLevelSite:"https://site.example",hasCrossSiteAncestor:true}),
@@ -197,22 +209,57 @@ test("Firefox without getPartitionKey exports the cookies its top site's partiti
   const session=JSON.parse(await vm.runInContext(`(async()=>JSON.stringify(await sessionMetadata(7,{url:"https://media.example/video/master.m3u8",pageUrl:"https://www.site.example/embed",frameId:4,
     requestChain:[{url:"https://static.site.example/segment-001.m4s",role:"segment"}]})))()`,h.context));
   assert.deepEqual(session.session_cookies.map(value=>[value.name,value.partition_key]).sort(),
-    [["first-party","https://site.example"],["sid",null],["third-party","https://site.example"]]);
-  const partitioned=cookieCalls.filter(call=>call.partitionKey!==undefined);
+    [["first-party","https://site.example"],["site-session",null],["third-party","https://site.example"]],
+    "Total Cookie Protection keeps media.example's own session out of a request made under www.site.example");
+  assert.ok(!cookieCalls.some(call=>call.url.startsWith("https://media.example/")&&call.partitionKey===undefined),
+    "the unpartitioned cookies of a cross-site target are never read");
+  const partitioned=cookieCalls.filter(call=>call.partitionKey!==undefined&&!siteCheck(call));
   assert.ok(partitioned.length>0);
   assert.ok(partitioned.every(call=>JSON.stringify(call.partitionKey)===JSON.stringify({topLevelSite:"https://www.site.example"})),
     "Firefox rejects hasCrossSiteAncestor:false for a cross-site URL, so the query names only the top site");
 });
 
-test("Firefox refuses the partition of a frame with a cross-origin ancestor before reading cookies",async()=>{
+test("Firefox refuses the partition of a frame with a cross-site ancestor before reading cookies",async()=>{
   for(const frames of [
     [{frameId:0,parentFrameId:-1,url:"https://site.example/watch"},{frameId:4,parentFrameId:0,url:"https://player.example/embed"},{frameId:9,parentFrameId:4,url:"https://site.example/inner"}],
+    [{frameId:0,parentFrameId:-1,url:"https://site.example/watch"},{frameId:4,parentFrameId:0,url:"data:text/html,player"},{frameId:9,parentFrameId:4,url:"https://site.example/inner"}],
     [{frameId:4,parentFrameId:0,url:"https://site.example/inner"}],
   ]) {
     const cookieCalls=[];
     const h=consentHarness({cookieCalls,partition:false,frames});
     await assert.rejects(vm.runInContext("sessionMetadata(7,{url:\"https://media.example/video/master.m3u8\",pageUrl:\"https://site.example/inner\",frameId:"+frames.at(-1).frameId+"})",h.context),/güvenle aktarılamıyor/i);
-    assert.deepEqual(cookieCalls,[],"a refused partition must not look like an empty cookie export");
+    assert.ok(cookieCalls.every(siteCheck),"only site checks run: a refused partition must not look like an empty cookie export");
+  }
+});
+
+test("Firefox exports the partition of a frame same-site with the top page, about:blank and blob: frames included",async()=>{
+  const cookie=(name,partitionKey)=>({name,value:"fixture",domain:"cdn.site.example",path:"/",secure:true,hostOnly:true,storeId:"chrome-main",...(partitionKey?{partitionKey}:{})});
+  for(const [frameId,documentId] of [[4,"player"],[6,"blank"],[7,"blob"]]) {
+    const h=consentHarness({partition:false,scopes:[{site:"https://player.site.example",storeId:"chrome-main"}],
+      frames:[{frameId:0,parentFrameId:-1,url:"https://www.site.example/watch",documentId:"top"},
+        {frameId:4,parentFrameId:0,url:"https://player.site.example/embed",documentId:"player"},
+        {frameId:6,parentFrameId:4,url:"about:blank",documentId:"blank"},
+        {frameId:7,parentFrameId:4,url:"blob:https://player.site.example/0f6c",documentId:"blob"}],
+      cookieList:[cookie("cdn"),cookie("chips",{topLevelSite:"https://site.example",hasCrossSiteAncestor:false})]});
+    const session=JSON.parse(await vm.runInContext(`(async()=>JSON.stringify(await sessionMetadata(7,{url:"https://cdn.site.example/v.m3u8",
+      pageUrl:"https://player.site.example/embed",frameId:${frameId},documentId:"${documentId}"})))()`,h.context));
+    assert.deepEqual(session.session_cookies.map(value=>[value.name,value.partition_key]).sort(),[["cdn",null],["chips","https://site.example"]],`frame ${frameId}`);
+  }
+});
+
+test("a source whose frame now shows another document is refused before any cookie is read",async()=>{
+  for(const partition of [{topLevelSite:"https://site.example"},false]) {
+    for(const [frames,item] of [
+      [[{frameId:0,parentFrameId:-1,url:"https://site.example/watch",documentId:"new"}],"documentId:\"old\""],
+      [[{frameId:0,parentFrameId:-1,url:"https://other.example/watch"}],"documentId:null"],
+      [[],"documentId:null"],
+    ]) {
+      const cookieCalls=[];
+      const h=consentHarness({partition,cookieCalls,frames});
+      await assert.rejects(vm.runInContext(`sessionMetadata(7,{url:"https://media.example/video/master.m3u8",pageUrl:"https://site.example/watch",frameId:0,${item}})`,h.context),
+        error=>error.code==="SSD-EXT-005"&&/eskidi/i.test(error.message));
+      assert.deepEqual(cookieCalls,[],"a stale source must not read cookies for the tab's new document");
+    }
   }
 });
 
