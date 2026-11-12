@@ -1785,5 +1785,12 @@
   "The reason is below. Report problem writes a report on it and opens its folder.": "La raison figure ci-dessous. « Signaler un problème » rédige un rapport à ce sujet et ouvre son dossier.",
   "The streams could not be merged within {0} seconds": "Les flux n'ont pas pu être fusionnés dans les {0} secondes",
   "SSDownload page markup": "Balisage de la page SSDownload",
-  "The browser bridge could not start; the app continues without browser integration: {0}": "Le pont vers le navigateur n'a pas pu démarrer ; l'application continue sans l'intégration du navigateur : {0}"
+  "The browser bridge could not start; the app continues without browser integration: {0}": "Le pont vers le navigateur n'a pas pu démarrer ; l'application continue sans l'intégration du navigateur : {0}",
+  "The Firefox add-on manifest could not be converted to a URL": "Le manifeste de l’extension Firefox n’a pas pu être converti en URL",
+  "Firefox": "Firefox",
+  "SSDownload has registered the Native Messaging connection, but Firefox needs the add-on loaded once.": "SSDownload a enregistré la connexion de messagerie native, mais Firefox doit charger l’extension une fois.",
+  "<li>Open <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choose <b>Load Temporary Add-on</b>.</li><li>Select the manifest file shown below.</li>": "<li>Ouvrez <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choisissez <b>Charger un module temporaire</b>.</li><li>Sélectionnez le fichier manifeste indiqué ci-dessous.</li>",
+  "Open the manifest file": "Ouvrir le fichier manifeste",
+  "A temporary add-on is removed when Firefox closes. A permanent install needs a Mozilla-signed XPI published on AMO; this repository does not publish one automatically.": "L’extension temporaire est supprimée à la fermeture de Firefox. Une installation permanente nécessite un XPI signé par Mozilla et publié sur AMO ; ce dépôt n’en publie pas automatiquement.",
+  "The Firefox Native Messaging manifest could not be written": "Le manifeste de messagerie native Firefox n’a pas pu être écrit"
 }

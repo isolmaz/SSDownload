@@ -2,6 +2,11 @@
 
 const api = globalThis.browser || chrome;
 const isPromiseApi = typeof globalThis.browser !== "undefined";
+// Firefox serves extension pages from moz-extension:, Chrome from chrome-extension:.
+// The namespace alone cannot tell them apart in tests or in Chromium forks.
+const isFirefoxRuntime = (() => {
+  try { return api.runtime.getURL("").startsWith("moz-extension://"); } catch (_) { return false; }
+})();
 // Every user-visible text goes through i18n.js (loaded first by service-worker.js); the
 // language is the desktop app's, learned from its capabilities reply.
 const { t } = SSDownloadI18n;
@@ -1133,6 +1138,67 @@ function partitionSite(partition) {
     return /^https?:$/.test(parsed.protocol) && !parsed.username && !parsed.password && parsed.pathname === "/" && !parsed.search && !parsed.hash ? parsed.origin : null;
   } catch (_) { return null; }
 }
+// The partition and the consent are judged for the document the item came from, so the frame
+// must still hold it: a frame that moved on would answer for another document.
+async function frameStillShows(tabId, frameId, item) {
+  if (typeof api.webNavigation?.getFrame !== "function") throw new Error(t("partitionedScopeUnverifiable"));
+  // Chrome answers null for a frame that is gone, Firefox throws.
+  const frame = await invoke(api.webNavigation, "getFrame", { tabId, frameId }).catch(() => null);
+  if (!frame) return false;
+  if (item.documentId && frame.documentId) return frame.documentId === item.documentId;
+  // Without a document ID the frame must show the page's origin or, for a navigation that put
+  // the source itself in the frame (its page is then the initiator), the source's.
+  const shown = safeUrl(frame.url)?.origin;
+  return !safeUrl(item.pageUrl) || (!!shown && [item.pageUrl, item.url].some(value => safeUrl(value)?.origin === shown));
+}
+// Firefox exposes no URL's site, but its cookies.getAll refuses a partition key without a
+// cross-site ancestor for a URL cross-site to topLevelSite, judged by its own public suffix list.
+// Any other failure is an error, never a silently dropped cookie.
+async function firefoxSameSite(url, topLevelSite, storeId) {
+  const target = safeUrl(url), top = safeUrl(topLevelSite);
+  if (!target || !top || target.protocol !== top.protocol) return false;
+  try {
+    await invoke(api.cookies, "getAll", { url: target.href, storeId, partitionKey: { topLevelSite: top.origin, hasCrossSiteAncestor: false } });
+    return true;
+  } catch (error) {
+    if (/partitionKey/.test(String(error?.message || ""))) return false;
+    throw error;
+  }
+}
+// A blob: document has the origin of the document that made it; about:blank and about:srcdoc
+// documents belong to their parent's.
+function frameAddress(url) {
+  if (/^blob:/i.test(String(url))) { try { return new URL(url).origin; } catch (_) { return null; } }
+  return /^about:(blank|srcdoc)([?#]|$)/i.test(String(url)) ? "inherit" : url;
+}
+// Firefox has no cookies.getPartitionKey. A frame whose ancestors are all same-site with the
+// top document has no cross-site ancestor; any other frame may have one, so it is reported as
+// one and its partition is refused.
+async function firefoxFramePartition(tabId, frameId, storeId) {
+  if (typeof api.webNavigation?.getAllFrames !== "function") throw new Error(t("partitionedScopeUnverifiable"));
+  const frames = new Map((await invoke(api.webNavigation, "getAllFrames", { tabId }) || []).map(frame => [frame.frameId, frame]));
+  const top = safeUrl(frames.get(0)?.url)?.origin;
+  let frame = frames.get(frameId), steps = 0;
+  while (top && frame && frame.frameId !== 0 && steps++ < frames.size) {
+    const address = frameAddress(frame.url);
+    if (address !== "inherit" && !await firefoxSameSite(address, top, storeId)) break;
+    frame = frames.get(frame.parentFrameId);
+  }
+  return { topLevelSite: top || null, hasCrossSiteAncestor: !top || frame?.frameId !== 0 };
+}
+function sameOrParentHost(host, parent) {
+  return host === parent || host.endsWith(`.${parent}`);
+}
+// Firefox's cookies.getAll matches a topLevelSite given as an origin to that origin's site,
+// which it does not otherwise expose: a returned key is in the frame's partition when its site
+// is the top host or a parent of it. Firefox sets hasCrossSiteAncestor on every partitioned
+// cookie of a host cross-site to that site, which a first-party frame still sends; on a
+// same-site host it marks a cookie of a cross-site embed, which this frame never sends.
+function inFirefoxPartition(cookie, partition) {
+  const key = cookie.partitionKey, site = safeUrl(partitionSite({ topLevelSite: key?.topLevelSite })), top = safeUrl(partition?.topLevelSite);
+  if (!site || !top || site.protocol !== top.protocol || !sameOrParentHost(top.hostname, site.hostname)) return false;
+  return !key.hasCrossSiteAncestor || !sameOrParentHost(String(cookie.domain || "").replace(/^\./, "").toLowerCase(), site.hostname);
+}
 function hasSessionConsent(scopes, site, storeId) {
   return Array.isArray(scopes) && scopes.some(scope => scope?.site === site && scope?.storeId === storeId);
 }
@@ -1225,19 +1291,39 @@ async function sessionMetadata(tabId, item) {
     error.code = "SSD-EXT-001";
     throw error;
   }
-  if (typeof api.cookies?.getPartitionKey !== "function") throw new Error(t("partitionedScopeUnverifiable"));
-  const partitionResult = await invoke(api.cookies, "getPartitionKey", { tabId, frameId: Number.isInteger(item.frameId) ? item.frameId : 0 });
-  const partition = partitionResult?.partitionKey || partitionResult;
-  const partitionKey = partitionSite(partition);
-  if (!partitionKey) throw new Error(t("partitionScopeUntransferable"));
+  const frameId = Number.isInteger(item.frameId) ? item.frameId : 0;
+  if (!await frameStillShows(tabId, frameId, item)) {
+    const error = new Error(t("requestContextExpired"));
+    error.code = "SSD-EXT-005";
+    throw error;
+  }
+  let partition, query, inPartition, sendsUnpartitioned = async () => true;
+  if (typeof api.cookies?.getPartitionKey === "function") {
+    const partitionResult = await invoke(api.cookies, "getPartitionKey", { tabId, frameId });
+    partition = query = partitionResult?.partitionKey || partitionResult;
+    inPartition = cookie => samePartition(cookie.partitionKey, partition);
+  } else if (isFirefoxRuntime) {
+    partition = await firefoxFramePartition(tabId, frameId, storeId);
+    // Firefox rejects hasCrossSiteAncestor:false for a URL cross-site to topLevelSite.
+    query = { topLevelSite: partition.topLevelSite };
+    inPartition = cookie => inFirefoxPartition(cookie, partition);
+    // Total Cookie Protection keeps a host's unpartitioned cookies out of requests made under a
+    // site cross-site to it; such a target gets only the partition's cookies.
+    sendsUnpartitioned = target => firefoxSameSite(target, partition.topLevelSite, storeId);
+  } else {
+    throw new Error(t("partitionedScopeUnverifiable"));
+  }
+  if (!partitionSite(partition)) throw new Error(t("partitionScopeUntransferable"));
   const cookies = new Map();
   for (const target of cookieTargets(item)) {
-    const ordinary = await invoke(api.cookies, "getAll", { url: target, storeId });
-    const partitioned = await invoke(api.cookies, "getAll", { url: target, storeId, partitionKey: partition });
-    for (const cookie of [...ordinary, ...partitioned]) {
+    const ordinary = await sendsUnpartitioned(target) ? await invoke(api.cookies, "getAll", { url: target, storeId }) : [];
+    const partitioned = await invoke(api.cookies, "getAll", { url: target, storeId, partitionKey: query });
+    // Only the partitioned query's partitioned cookies count, so whether an unpartitioned cookie
+    // travels is decided by the ordinary query alone.
+    for (const cookie of [...ordinary, ...partitioned.filter(cookie => cookie?.partitionKey)]) {
       if (cookie?.storeId !== storeId || !cookieMatchesTarget(cookie, target)) continue;
-      if (cookie.partitionKey && !samePartition(cookie.partitionKey, partition)) continue;
-      const value = scopedCookie(cookie, storeId, cookie.partitionKey ? partitionKey : null);
+      if (cookie.partitionKey && !inPartition(cookie)) continue;
+      const value = scopedCookie(cookie, storeId, cookie.partitionKey ? partitionSite({ topLevelSite: cookie.partitionKey.topLevelSite }) : null);
       cookies.set(JSON.stringify([value.name, value.domain, value.path, value.partition_key]), value);
       if (cookies.size > 500) throw new Error(t("cookieLimit"));
     }

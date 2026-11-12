@@ -1785,5 +1785,12 @@
   "The reason is below. Report problem writes a report on it and opens its folder.": "Der Grund steht unten. „Problem melden“ schreibt einen Bericht dazu und öffnet seinen Ordner.",
   "The streams could not be merged within {0} seconds": "Die Streams konnten nicht innerhalb von {0} Sekunden zusammengeführt werden",
   "SSDownload page markup": "Seiten-Markup von SSDownload",
-  "The browser bridge could not start; the app continues without browser integration: {0}": "Die Browser-Brücke konnte nicht gestartet werden; die App läuft ohne Browser-Integration weiter: {0}"
+  "The browser bridge could not start; the app continues without browser integration: {0}": "Die Browser-Brücke konnte nicht gestartet werden; die App läuft ohne Browser-Integration weiter: {0}",
+  "The Firefox add-on manifest could not be converted to a URL": "Das Firefox-Add-on-Manifest konnte nicht in eine URL umgewandelt werden",
+  "Firefox": "Firefox",
+  "SSDownload has registered the Native Messaging connection, but Firefox needs the add-on loaded once.": "SSDownload hat die Native-Messaging-Verbindung registriert, aber Firefox muss das Add-on einmal laden.",
+  "<li>Open <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choose <b>Load Temporary Add-on</b>.</li><li>Select the manifest file shown below.</li>": "<li>Öffnen Sie <b>about:debugging#/runtime/this-firefox</b>.</li><li>Wählen Sie <b>Vorübergehendes Add-on laden</b>.</li><li>Wählen Sie die unten gezeigte Manifestdatei.</li>",
+  "Open the manifest file": "Manifestdatei öffnen",
+  "A temporary add-on is removed when Firefox closes. A permanent install needs a Mozilla-signed XPI published on AMO; this repository does not publish one automatically.": "Ein vorübergehendes Add-on wird beim Schließen von Firefox entfernt. Eine dauerhafte Installation erfordert ein von Mozilla signiertes, auf AMO veröffentlichtes XPI; dieses Repository veröffentlicht keines automatisch.",
+  "The Firefox Native Messaging manifest could not be written": "Das Firefox-Native-Messaging-Manifest konnte nicht geschrieben werden"
 }

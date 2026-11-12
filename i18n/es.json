@@ -1785,5 +1785,12 @@
   "The reason is below. Report problem writes a report on it and opens its folder.": "El motivo aparece abajo. «Informar de un problema» escribe un informe sobre él y abre su carpeta.",
   "The streams could not be merged within {0} seconds": "No se han podido combinar los flujos en {0} segundos",
   "SSDownload page markup": "Marcado de la página de SSDownload",
-  "The browser bridge could not start; the app continues without browser integration: {0}": "No se pudo iniciar el puente del navegador; la aplicación continúa sin la integración del navegador: {0}"
+  "The browser bridge could not start; the app continues without browser integration: {0}": "No se pudo iniciar el puente del navegador; la aplicación continúa sin la integración del navegador: {0}",
+  "The Firefox add-on manifest could not be converted to a URL": "No se pudo convertir el manifiesto del complemento de Firefox en una URL",
+  "Firefox": "Firefox",
+  "SSDownload has registered the Native Messaging connection, but Firefox needs the add-on loaded once.": "SSDownload ha registrado la conexión de mensajería nativa, pero Firefox necesita que el complemento se cargue una vez.",
+  "<li>Open <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choose <b>Load Temporary Add-on</b>.</li><li>Select the manifest file shown below.</li>": "<li>Abre <b>about:debugging#/runtime/this-firefox</b>.</li><li>Elige <b>Cargar complemento temporal</b>.</li><li>Selecciona el archivo de manifiesto que se muestra abajo.</li>",
+  "Open the manifest file": "Abrir el archivo de manifiesto",
+  "A temporary add-on is removed when Firefox closes. A permanent install needs a Mozilla-signed XPI published on AMO; this repository does not publish one automatically.": "El complemento temporal se elimina al cerrar Firefox. Una instalación permanente requiere un XPI firmado por Mozilla y publicado en AMO; este repositorio no publica uno automáticamente.",
+  "The Firefox Native Messaging manifest could not be written": "No se pudo escribir el manifiesto de mensajería nativa de Firefox"
 }
