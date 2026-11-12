@@ -260,7 +260,34 @@ test("a source whose frame now shows another document is refused before any cook
         error=>error.code==="SSD-EXT-005"&&/eskidi/i.test(error.message));
       assert.deepEqual(cookieCalls,[],"a stale source must not read cookies for the tab's new document");
     }
+    const blank=consentHarness({partition,frames:[{frameId:0,parentFrameId:-1,url:"about:blank"}]});
+    await assert.rejects(vm.runInContext("sessionMetadata(7,{url:\"blob:https://site.example/player\",pageUrl:\"https://site.example/watch\",frameId:0})",blank.context),
+      error=>error.code==="SSD-EXT-005","a frame without an http(s) address never matches a source without one");
+    const cookieCalls=[];
+    const h=consentHarness({partition,cookieCalls});
+    vm.runInContext("browser.webNavigation.getFrame=async()=>{throw new Error(\"No frame found with frameId: 0\");}",h.context);
+    await assert.rejects(vm.runInContext("sessionMetadata(7,{url:\"https://media.example/video/master.m3u8\",pageUrl:\"https://site.example/watch\",frameId:0})",h.context),
+      error=>error.code==="SSD-EXT-005","Firefox throws for a frame that is gone");
+    assert.deepEqual(cookieCalls,[]);
   }
+});
+
+test("a navigation that put the source itself in the frame keeps its cookies",async()=>{
+  const cookie={name:"media",value:"fixture",domain:"media.site.example",path:"/",secure:true,hostOnly:true,storeId:"chrome-main"};
+  for(const partition of [{topLevelSite:"https://site.example"},false]) {
+    const frames=[{frameId:0,parentFrameId:-1,url:"https://media.site.example/v.mp4"}];
+    const h=consentHarness({partition,frames,cookieList:[cookie],scopes:[{site:"https://www.site.example",storeId:"chrome-main"}]});
+    // A navigation request reports no document ID and names its initiator as the page.
+    const session=JSON.parse(await vm.runInContext(`(async()=>JSON.stringify(await sessionMetadata(7,{url:"https://media.site.example/v.mp4",
+      pageUrl:"https://www.site.example/",frameId:0})))()`,h.context));
+    assert.deepEqual(session.session_cookies.map(value=>value.name),["media"],partition?"Chrome":"Firefox");
+  }
+});
+
+test("Firefox surfaces a cookie API failure of its site check instead of dropping cookies",async()=>{
+  const h=consentHarness({partition:false,frames:[{frameId:0,parentFrameId:-1,url:"https://site.example/watch"}]});
+  vm.runInContext("browser.cookies.getAll=async details=>{if(details.partitionKey?.hasCrossSiteAncestor===false)throw new Error(\"Invalid cookie store id\");return [];}",h.context);
+  await assert.rejects(vm.runInContext("sessionMetadata(7,{url:\"https://site.example/video.mp4\",pageUrl:\"https://site.example/watch\",frameId:0})",h.context),/Invalid cookie store id/);
 });
 
 test("final redirect context distinguishes observed header absence from unavailable capture",async()=>{

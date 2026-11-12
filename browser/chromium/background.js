@@ -1142,21 +1142,28 @@ function partitionSite(partition) {
 // must still hold it: a frame that moved on would answer for another document.
 async function frameStillShows(tabId, frameId, item) {
   if (typeof api.webNavigation?.getFrame !== "function") throw new Error(t("partitionedScopeUnverifiable"));
-  const frame = await invoke(api.webNavigation, "getFrame", { tabId, frameId });
+  // Chrome answers null for a frame that is gone, Firefox throws.
+  const frame = await invoke(api.webNavigation, "getFrame", { tabId, frameId }).catch(() => null);
   if (!frame) return false;
   if (item.documentId && frame.documentId) return frame.documentId === item.documentId;
-  const page = safeUrl(item.pageUrl);
-  return !page || safeUrl(frame.url)?.origin === page.origin;
+  // Without a document ID the frame must show the page's origin or, for a navigation that put
+  // the source itself in the frame (its page is then the initiator), the source's.
+  const shown = safeUrl(frame.url)?.origin;
+  return !safeUrl(item.pageUrl) || (!!shown && [item.pageUrl, item.url].some(value => safeUrl(value)?.origin === shown));
 }
 // Firefox exposes no URL's site, but its cookies.getAll refuses a partition key without a
 // cross-site ancestor for a URL cross-site to topLevelSite, judged by its own public suffix list.
+// Any other failure is an error, never a silently dropped cookie.
 async function firefoxSameSite(url, topLevelSite, storeId) {
   const target = safeUrl(url), top = safeUrl(topLevelSite);
   if (!target || !top || target.protocol !== top.protocol) return false;
   try {
     await invoke(api.cookies, "getAll", { url: target.href, storeId, partitionKey: { topLevelSite: top.origin, hasCrossSiteAncestor: false } });
     return true;
-  } catch (_) { return false; }
+  } catch (error) {
+    if (/partitionKey/.test(String(error?.message || ""))) return false;
+    throw error;
+  }
 }
 // A blob: document has the origin of the document that made it; about:blank and about:srcdoc
 // documents belong to their parent's.
