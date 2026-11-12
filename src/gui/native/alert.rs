@@ -583,10 +583,22 @@ pub(super) unsafe extern "system" fn alert_proc(
         }
         WM_SETTINGCHANGE => {
             // Windows sends this to every window in no set order: the window the alert
-            // takes its scheme from applies the new one first.
+            // takes its scheme from applies the new one first. That window can belong to
+            // another thread (the update offer runs on its own), so the call is bounded.
             let window = alert_scheme_window(GetWindow(hwnd, GW_OWNER));
             if !window.is_null() {
-                SendMessageW(window, WM_SETTINGCHANGE, wparam, lparam);
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    SendMessageTimeoutW, SMTO_ABORTIFHUNG,
+                };
+                SendMessageTimeoutW(
+                    window,
+                    WM_SETTINGCHANGE,
+                    wparam,
+                    lparam,
+                    SMTO_ABORTIFHUNG,
+                    1000,
+                    null_mut(),
+                );
             }
             ui.dark = !window.is_null() && scheme_dark(window);
             if !ui.link_handle.is_null() && !ui.modern {
