@@ -39,7 +39,7 @@
 
 ## Install
 
-1. Download **`SSDownload-<version>-Setup.exe`** (or the portable ZIP) from the [latest release](https://github.com/isolmaz/SSDownload/releases/latest) and run it. No administrator rights are needed.
+1. Download **`SSDownload-<version>-Setup.exe`** (or the portable ZIP) from the [latest release](https://github.com/isolmaz/SSDownload/releases/latest) and run it. No administrator rights are needed. Package managers work too: `winget install isolmaz.SSDownload` runs the same Setup (a release reaches winget a few days later, after Microsoft's review), and `scoop bucket add isolmaz https://github.com/isolmaz/scoop-bucket` followed by `scoop install isolmaz/ssdownload` installs the portable copy.
 2. The installer adds the browser extension to Chrome and Edge. The next time you open the browser, click **Enable extension** on its "New extension added" notice. No notice? Add it from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham), or use **Tools → Browser setup** to load the bundled copy without the store. Firefox uses the bundled copy: the app registers its native host, and you load `browser\firefox\manifest.json` temporarily from `about:debugging#/runtime/this-firefox`. A permanent Firefox install needs an XPI signed by Mozilla for addons.mozilla.org, which is not published yet.
 3. The installer downloads media support (yt-dlp, FFmpeg, Deno), each file verified against its published SHA-256. Without a connection, the app installs it on its first start instead.
 
