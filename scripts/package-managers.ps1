@@ -57,7 +57,10 @@ function Write-Text([string]$Path, [string]$Text) {
 # Scoop runs the portable copy. The native host is registered for the copy's own path, which
 # Scoop's post_install names through the `current` junction; the app resolves it to the version
 # folder, so every update registers the new folder and pre_uninstall removes the old one. The
-# console CLI is called because PowerShell does not wait for the GUI executable.
+# browser connects to the copy registered last, so `scoop uninstall` hands the connection back to
+# an installed Setup copy. Only on uninstall it also removes the copy's Start-with-Windows entry,
+# which names the `current` path the shortcut started it from. The console CLI is called because
+# PowerShell does not wait for the GUI executable.
 # Windows PowerShell's ConvertTo-Json escapes & and ' and misaligns nesting, so the manifest is
 # written as text and parsed back to prove it is valid JSON.
 $scoopPath = Join-Path $Dist 'scoop\ssdownload.json'
@@ -81,8 +84,11 @@ Write-Text $scoopPath @"
         "if (`$LASTEXITCODE -ne 0) { warn 'The SSDownload browser integration could not be registered; run: ssdownload --register-host' }"
     ],
     "pre_uninstall": [
+        "if (`$cmd -eq 'uninstall') { & \"`$(Split-Path `$dir)\\current\\ssdownload-cli.exe\" --disable-autostart | Out-Null }",
         "& \"`$dir\\ssdownload-cli.exe\" --unregister-host",
-        "if (`$LASTEXITCODE -ne 0) { warn 'The SSDownload browser integration could not be removed; run: ssdownload --unregister-host' }"
+        "if (`$LASTEXITCODE -ne 0) { warn 'The SSDownload browser integration of this copy could not be removed.' }",
+        "`$setup = (Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SSDownload' -ErrorAction SilentlyContinue).InstallLocation",
+        "if (`$cmd -eq 'uninstall' -and `$setup -and (Test-Path \"`$setup\\ssdownload-cli.exe\")) { & \"`$setup\\ssdownload-cli.exe\" --register-host | Out-Null }"
     ],
     "checkver": {
         "github": "$RepoUrl"
@@ -129,7 +135,6 @@ InstallModes:
 - silentWithProgress
 UpgradeBehavior: install
 ProductCode: SSDownload
-ReleaseDate: $(Get-Date -Format 'yyyy-MM-dd')
 AppsAndFeaturesEntries:
 - DisplayName: SSDownload
   Publisher: SSDownload Project
