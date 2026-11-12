@@ -957,7 +957,7 @@ pub(super) unsafe fn create_kind_controls(dlg: &mut DialogUi) {
             combo_add(f.color_mode, crate::i18n::ui("Koyu", "Dark"));
             combo_add(
                 f.color_mode,
-                crate::i18n::ui("Windows'a uy", "Follow Windows"),
+                crate::i18n::ui("Windows'u izle", "Follow Windows"),
             );
             let mode = f.value.color_mode();
             combo_select(

@@ -168,14 +168,19 @@ pub(super) unsafe fn alert_work_height(owner: HWND) -> i32 {
         768
     }
 }
-/// The scheme of the window an alert belongs to; a missing owner falls back to
-/// the application's main window so the alert still follows the setting.
-pub(super) unsafe fn alert_is_dark(owner: HWND) -> bool {
+/// The window whose scheme an alert takes: its owner, or the application's main
+/// window when it has none, so the alert still follows the setting.
+unsafe fn alert_scheme_window(owner: HWND) -> HWND {
     if !owner.is_null() && IsWindow(owner) != 0 {
-        return scheme_dark(owner);
+        owner
+    } else {
+        FindWindowW(wide(CLASS_MAIN).as_ptr(), null())
     }
-    let main = FindWindowW(wide(CLASS_MAIN).as_ptr(), null());
-    !main.is_null() && scheme_dark(main)
+}
+/// The scheme of the window an alert belongs to.
+pub(super) unsafe fn alert_is_dark(owner: HWND) -> bool {
+    let window = alert_scheme_window(owner);
+    !window.is_null() && scheme_dark(window)
 }
 /// The width of an alert button whose label is `extent` wide.
 fn alert_button_width(extent: i32, dpi: u32, modern: bool) -> i32 {
@@ -574,6 +579,24 @@ pub(super) unsafe extern "system" fn alert_proc(
         }
         WM_DPICHANGED => {
             alert_dpi_changed(ui, loword(wparam) as u32, &*(lparam as *const RECT));
+            0
+        }
+        WM_SETTINGCHANGE => {
+            // Windows sends this to every window in no set order: the window the alert
+            // takes its scheme from applies the new one first.
+            let window = alert_scheme_window(GetWindow(hwnd, GW_OWNER));
+            if !window.is_null() {
+                SendMessageW(window, WM_SETTINGCHANGE, wparam, lparam);
+            }
+            ui.dark = !window.is_null() && scheme_dark(window);
+            if !ui.link_handle.is_null() && !ui.modern {
+                let mut item: LITEM = zeroed();
+                item.mask = LIF_ITEMINDEX | LIF_STATE;
+                item.state = if ui.dark { LIS_DEFAULTCOLORS } else { 0 };
+                item.stateMask = LIS_DEFAULTCOLORS;
+                SendMessageW(ui.link_handle, LM_SETITEM, 0, &item as *const _ as LPARAM);
+            }
+            apply_dark_mode(hwnd, ui.dark);
             0
         }
         WM_ERASEBKGND | WM_PAINT | WM_PRINTCLIENT => {

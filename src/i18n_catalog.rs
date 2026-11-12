@@ -6376,7 +6376,7 @@ static DE: &[(&str, &str)] = &[
     ("Folder rule IDs must be unique.", "Ordnerregel-IDs müssen eindeutig sein."),
     ("Folder rule types must be unique.", "Ordnerregel-Typen müssen eindeutig sein."),
     ("Folder rules", "Ordnerregeln"),
-    ("Follow Windows", "Wie Windows"),
+    ("Follow Windows", "Windows folgen"),
     ("Found candidates", "Gefundene Kandidaten"),
     ("Full media verification: the audio/video could not be decoded from start to end", "Vollständige Medienprüfung: Audio und Video konnten nicht vom Anfang bis zum Ende dekodiert werden"),
     ("Full program path (program action only):", "Vollständiger Programmpfad (nur Programmaktion):"),

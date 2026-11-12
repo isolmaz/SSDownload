@@ -1901,6 +1901,7 @@ unsafe extern "system" fn main_proc(
             0
         }
         WM_SETTINGCHANGE => {
+            refresh_apps_use_light_theme();
             apply_dark_mode(hwnd, settings_dark(&ui.snapshot.settings));
             if modern() {
                 refresh_main_surfaces(ui);
@@ -9488,6 +9489,7 @@ unsafe extern "system" fn dialog_proc(
         WM_SETTINGCHANGE => {
             // The scroll bar shows only in the light scheme, so a new scheme lays the page out
             // again.
+            refresh_apps_use_light_theme();
             let dark = settings_dark(&dlg.app.snapshot().settings);
             let changed = dark != scheme_dark(hwnd);
             apply_dark_mode(hwnd, dark);
@@ -17433,7 +17435,6 @@ mod tests {
             420,
             90,
             |dialog| unsafe {
-                let dlg = &*dialog.raw;
                 let area = super::wide("ImmersiveColorSet");
                 let scroll_bar =
                     || GetWindowLongPtrW(dialog.hwnd, GWL_STYLE) as u32 & WS_VSCROLL != 0;
@@ -17447,7 +17448,11 @@ mod tests {
                         dark,
                         "AppsUseLightTheme {value:?}: the scheme"
                     );
-                    assert_eq!(super::dialog_is_dark(dlg), dark, "{value:?}: the surface");
+                    assert_eq!(
+                        dark_caption::stored(dialog.hwnd),
+                        Some(dark as i32),
+                        "AppsUseLightTheme {value:?}: the title bar"
+                    );
                     assert_eq!(
                         scroll_bar(),
                         !dark,
@@ -19831,7 +19836,7 @@ mod tests {
         }
 
         /// The title bar setting the window stores.
-        unsafe fn stored(hwnd: native::HWND) -> Option<i32> {
+        pub(super) unsafe fn stored(hwnd: native::HWND) -> Option<i32> {
             let mut value = 0i32;
             let result = DwmGetWindowAttribute(
                 hwnd,
@@ -19894,6 +19899,55 @@ mod tests {
                     press_escape(alert, buttons);
                 });
                 assert_eq!(seen.load(Ordering::SeqCst), dark as i32, "dark {dark}");
+            }
+        }
+
+        #[test]
+        fn an_open_alert_over_a_window_that_follows_windows_switches_when_windows_changes_its_app_mode(
+        ) {
+            use super::{answer_alert, press_escape, speed_kind, HiddenDialog};
+            use crate::model::ColorMode;
+            use windows_sys::Win32::Graphics::Gdi::{
+                CreateCompatibleDC, DeleteDC, GetSysColorBrush, COLOR_WINDOW,
+            };
+
+            for modern in [false, true] {
+                for (from, to) in [(Some(1), Some(0)), (Some(0), Some(1))] {
+                    let (from_dark, to_dark) = (from == Some(0), to == Some(0));
+                    let case = format!("modern {modern}, AppsUseLightTheme {from:?} to {to:?}");
+                    let alert_over_a_dialog = || unsafe {
+                        native::set_modern(modern);
+                        native::set_apps_use_light_theme(from);
+                        native::refresh_apps_use_light_theme();
+                        let owner = HiddenDialog::seeded(speed_kind(), 420, 90, |app| {
+                            let mut settings = app.snapshot().settings.clone();
+                            settings.set_color_mode(ColorMode::System);
+                            app.update_settings_quiet(settings).unwrap();
+                        });
+                        native::set_apps_use_light_theme(to);
+                        native::run_alert(owner.hwnd, "A message", "Title", MB_OK)
+                    };
+                    answer_alert(alert_over_a_dialog, |alert, buttons| unsafe {
+                        let hwnd = alert as native::HWND;
+                        assert_eq!(native::scheme_dark(hwnd), from_dark, "{case}: before");
+                        let area = native::wide("ImmersiveColorSet");
+                        SendMessageW(hwnd, WM_SETTINGCHANGE, 0, area.as_ptr() as isize);
+                        assert_eq!(native::scheme_dark(hwnd), to_dark, "{case}: the scheme");
+                        assert_eq!(stored(hwnd), Some(to_dark as i32), "{case}: the title bar");
+                        if !modern {
+                            let dc = CreateCompatibleDC(null_mut());
+                            let brush = SendMessageW(hwnd, WM_CTLCOLORSTATIC, dc as usize, 0);
+                            DeleteDC(dc);
+                            let expected = if to_dark {
+                                native::palette_brush(native::DARK_BACKGROUND)
+                            } else {
+                                GetSysColorBrush(COLOR_WINDOW)
+                            };
+                            assert_eq!(brush, expected as isize, "{case}: the surface");
+                        }
+                        press_escape(alert, buttons);
+                    });
+                }
             }
         }
     }

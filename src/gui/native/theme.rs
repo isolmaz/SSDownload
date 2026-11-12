@@ -2280,25 +2280,54 @@ fn resolve_dark(
 }
 /// The current user's `AppsUseLightTheme`, which Windows' light or dark app mode sets.
 #[cfg(not(test))]
-fn apps_use_light_theme() -> Option<u32> {
+fn read_apps_use_light_theme() -> Option<u32> {
     winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
         .and_then(|key| key.get_value("AppsUseLightTheme"))
         .ok()
 }
+/// `AppsUseLightTheme` as last read, `u64::MAX` for a missing value. Cards repaint many times a
+/// second and read the scheme on every frame, so the registry is read once and again only by
+/// `refresh_apps_use_light_theme`.
+#[cfg(not(test))]
+static APPS_USE_LIGHT_THEME: std::sync::LazyLock<std::sync::atomic::AtomicU64> =
+    std::sync::LazyLock::new(|| {
+        std::sync::atomic::AtomicU64::new(read_apps_use_light_theme().map_or(u64::MAX, u64::from))
+    });
+#[cfg(not(test))]
+fn apps_use_light_theme() -> Option<u32> {
+    u32::try_from(APPS_USE_LIGHT_THEME.load(Ordering::Relaxed)).ok()
+}
+/// Reads Windows' app mode again; the main window and every dialog call it on WM_SETTINGCHANGE
+/// before they apply their scheme, since Windows sends that message to the windows in no set
+/// order.
+#[cfg(not(test))]
+pub(super) fn refresh_apps_use_light_theme() {
+    APPS_USE_LIGHT_THEME.store(
+        read_apps_use_light_theme().map_or(u64::MAX, u64::from),
+        Ordering::Relaxed,
+    );
+}
 // Tests never read the app mode of the machine they run on: the windows of a test thread see
-// Windows light until the test sets the value for its own thread.
+// Windows light until the test sets the value for its own thread, and see the value it set once
+// a window has read it again on WM_SETTINGCHANGE.
 #[cfg(test)]
 thread_local! {
+    static WINDOWS_APPS_USE_LIGHT_THEME: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(Some(1)) };
     static APPS_USE_LIGHT_THEME: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(Some(1)) };
 }
 #[cfg(test)]
 pub(super) fn set_apps_use_light_theme(value: Option<u32>) {
-    APPS_USE_LIGHT_THEME.with(|cell| cell.set(value));
+    WINDOWS_APPS_USE_LIGHT_THEME.with(|cell| cell.set(value));
 }
 #[cfg(test)]
 fn apps_use_light_theme() -> Option<u32> {
     APPS_USE_LIGHT_THEME.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+pub(super) fn refresh_apps_use_light_theme() {
+    APPS_USE_LIGHT_THEME
+        .with(|cell| cell.set(WINDOWS_APPS_USE_LIGHT_THEME.with(std::cell::Cell::get)));
 }
 /// Whether `settings` makes the windows dark right now. Every window reads its scheme here, and
 /// applies it again on WM_SETTINGCHANGE, which Windows sends when its app mode changes.
