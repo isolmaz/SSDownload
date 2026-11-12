@@ -4,6 +4,10 @@
 // Its texts come from i18n.js in the desktop app's language (stored by the worker, followed live).
 "use strict";
 const popupApi = globalThis.browser || chrome;
+// Firefox serves extension pages from moz-extension:, Chrome from chrome-extension:.
+const popupIsFirefox = (() => {
+  try { return popupApi.runtime.getURL("").startsWith("moz-extension://"); } catch (_) { return false; }
+})();
 const { t } = SSDownloadI18n;
 const DOWNLOAD_PAGE = "https://ssdownload.isolmaz.com/download";
 // Without the desktop app (not installed, or not Windows) nothing else in the popup can work, so
@@ -20,14 +24,15 @@ function ask(command, extra) {
       settled = true;
       resolve(reply || {});
     };
+    const message = { channel: "ssdownload-popup", command, ...(extra || {}) };
     try {
-      // Chrome answers through the callback; Firefox returns a promise and ignores it.
-      const result = popupApi.runtime.sendMessage(
-        { channel: "ssdownload-popup", command, ...(extra || {}) },
-        (reply) => {
-          void popupApi.runtime.lastError;
-          done(reply);
-        });
+      // Chrome answers through the callback; Firefox accepts only the promise form.
+      const result = popupIsFirefox
+        ? popupApi.runtime.sendMessage(message)
+        : popupApi.runtime.sendMessage(message, (reply) => {
+            void popupApi.runtime.lastError;
+            done(reply);
+          });
       if (result && typeof result.then === "function") result.then(done, () => done({}));
     } catch (_) { done({}); }
   });

@@ -327,6 +327,7 @@ test("Firefox popup reads the worker reply through the promise API", async () =>
     }
     return elements.get(id);
   };
+  const sendCalls = [];
   const context = vm.createContext({
     document: {
       documentElement: { lang: "", dir: "" },
@@ -344,8 +345,10 @@ test("Firefox popup reads the worker reply through the promise API", async () =>
     browser: {
       runtime: {
         lastError: undefined,
-        // Firefox ignores the callback argument and answers only through the promise.
-        sendMessage() {
+        getURL: (resource) => `moz-extension://test/${resource ?? ""}`,
+        // Firefox accepts only the promise form and answers through it.
+        sendMessage(...args) {
+          sendCalls.push(args);
           return Promise.resolve({
             detectionEnabled: true,
             host: "site.example",
@@ -375,4 +378,8 @@ test("Firefox popup reads the worker reply through the promise API", async () =>
   assert.equal(element("detection").checked, true);
   assert.equal(element("state").textContent, "stateOn");
   assert.equal(element("site-label").textContent, "popupHideOnHost");
+  assert.ok(sendCalls.length > 0);
+  for (const args of sendCalls) {
+    assert.equal(args.length, 1, "Firefox must not receive a callback argument");
+  }
 });
