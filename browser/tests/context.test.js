@@ -20,7 +20,7 @@ function capabilities(modes={video:true,file:true,audio:true}) {
   return {ok:true,result:{capabilities:{protocol:2,capability_version:3,usage_modes:modes,onboarding_version:1,settings_revision:4}}};
 }
 
-function backgroundHarness({session={},local={},native=async request=>request.action?.type==="capabilities"?capabilities():{ok:true,message:"ok"},permissions={async contains(){return true;},async request(){return {granted:true};}},cookies}={}) {
+function backgroundHarness({session={},local={},native=async request=>request.action?.type==="capabilities"?capabilities():{ok:true,message:"ok"},permissions={async contains(){return true;},async request(){return {granted:true};}},cookies,webNavigation}={}) {
   const events={before:event(),redirect:event(),headers:event(),message:event(),removed:event(),updated:event(),installed:event(),startup:event(),menu:event(),activated:event()};
   const storage={session:{...session},local:{...local}}, menus=[];
   const nativeRequests=[];
@@ -37,6 +37,7 @@ function backgroundHarness({session={},local={},native=async request=>request.ac
     action:{async setBadgeText(){},async setBadgeBackgroundColor(){},async setTitle(){}},
     contextMenus:{onClicked:events.menu,async removeAll(){menus.length=0;},create(entry){menus.push(entry);}},
     windows:{async create(){}},
+    ...(webNavigation?{webNavigation}:{}),
   };
   const context=vm.createContext({browser,URL,crypto:webcrypto,TextEncoder,Uint8Array,Promise,Map,Set,Array,Object,Number,String,RegExp,JSON,Error,Date,
     queueMicrotask,setTimeout(callback){queueMicrotask(callback);return 1;},clearTimeout(){}});
@@ -114,13 +115,14 @@ function response(url,requestId,statusCode=200,type="application/octet-stream") 
     responseHeaders:[{name:"Content-Type",value:type}]};
 }
 
-function consentHarness({cookieList=[],partition={topLevelSite:"https://site.example"},scopes=[{site:"https://site.example",storeId:"chrome-main"}],cookieCalls=[]}={}) {
+function consentHarness({cookieList=[],partition={topLevelSite:"https://site.example"},scopes=[{site:"https://site.example",storeId:"chrome-main"}],cookieCalls=[],frames}={}) {
   const cookies={
     async getAllCookieStores(){return [{id:"chrome-main",tabIds:[7]},{id:"chrome-other",tabIds:[8]}];},
     async getAll(details){cookieCalls.push(details);return cookieList;},
   };
   if(partition!==false)cookies.getPartitionKey=async()=>({partitionKey:partition});
-  return backgroundHarness({local:{sessionScopes:scopes},cookies,cookieCalls});
+  const webNavigation=frames?{async getAllFrames(){return frames;}}:undefined;
+  return backgroundHarness({local:{sessionScopes:scopes},cookies,cookieCalls,webNavigation});
 }
 
 test("session cookies stay inside the consented store and matching targets",async()=>{
@@ -177,6 +179,40 @@ test("unsupported Chrome partition contexts never look like an empty cookie expo
     const h=consentHarness({partition,cookieCalls});
     await assert.rejects(vm.runInContext("sessionMetadata(7,{url:\"https://media.example/video/master.m3u8\",pageUrl:\"https://site.example/watch\",frameId:0})",h.context),/bölümlenmiş oturum kapsamı|güvenle aktarılamıyor/i);
     assert.deepEqual(cookieCalls,[],"an unsupported partition must not look like an empty cookie export");
+  }
+});
+
+test("Firefox without getPartitionKey exports the cookies its top site's partition sends",async()=>{
+  const cookieCalls=[];
+  const cookie=(name,domain,partitionKey)=>({name,value:"fixture",domain,path:"/",secure:true,hostOnly:true,storeId:"chrome-main",...(partitionKey?{partitionKey}:{})});
+  const h=consentHarness({cookieCalls,partition:false,
+    scopes:[{site:"https://www.site.example",storeId:"chrome-main"}],
+    frames:[{frameId:0,parentFrameId:-1,url:"https://www.site.example/watch"},{frameId:4,parentFrameId:0,url:"https://www.site.example/embed"}],
+    cookieList:[cookie("sid","media.example"),
+      cookie("third-party","media.example",{topLevelSite:"https://site.example",hasCrossSiteAncestor:true}),
+      cookie("first-party","static.site.example",{topLevelSite:"https://site.example",hasCrossSiteAncestor:false}),
+      cookie("embedded","static.site.example",{topLevelSite:"https://site.example",hasCrossSiteAncestor:true}),
+      cookie("other-site","media.example",{topLevelSite:"https://other.example",hasCrossSiteAncestor:true}),
+      cookie("lookalike","media.example",{topLevelSite:"https://ite.example",hasCrossSiteAncestor:true})]});
+  const session=JSON.parse(await vm.runInContext(`(async()=>JSON.stringify(await sessionMetadata(7,{url:"https://media.example/video/master.m3u8",pageUrl:"https://www.site.example/embed",frameId:4,
+    requestChain:[{url:"https://static.site.example/segment-001.m4s",role:"segment"}]})))()`,h.context));
+  assert.deepEqual(session.session_cookies.map(value=>[value.name,value.partition_key]).sort(),
+    [["first-party","https://site.example"],["sid",null],["third-party","https://site.example"]]);
+  const partitioned=cookieCalls.filter(call=>call.partitionKey!==undefined);
+  assert.ok(partitioned.length>0);
+  assert.ok(partitioned.every(call=>JSON.stringify(call.partitionKey)===JSON.stringify({topLevelSite:"https://www.site.example"})),
+    "Firefox rejects hasCrossSiteAncestor:false for a cross-site URL, so the query names only the top site");
+});
+
+test("Firefox refuses the partition of a frame with a cross-origin ancestor before reading cookies",async()=>{
+  for(const frames of [
+    [{frameId:0,parentFrameId:-1,url:"https://site.example/watch"},{frameId:4,parentFrameId:0,url:"https://player.example/embed"},{frameId:9,parentFrameId:4,url:"https://site.example/inner"}],
+    [{frameId:4,parentFrameId:0,url:"https://site.example/inner"}],
+  ]) {
+    const cookieCalls=[];
+    const h=consentHarness({cookieCalls,partition:false,frames});
+    await assert.rejects(vm.runInContext("sessionMetadata(7,{url:\"https://media.example/video/master.m3u8\",pageUrl:\"https://site.example/inner\",frameId:"+frames.at(-1).frameId+"})",h.context),/güvenle aktarılamıyor/i);
+    assert.deepEqual(cookieCalls,[],"a refused partition must not look like an empty cookie export");
   }
 });
 

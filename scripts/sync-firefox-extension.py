@@ -25,39 +25,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_DIR = REPO_ROOT / "browser" / "chromium"
 TARGET_DIR = REPO_ROOT / "browser" / "firefox"
 
-# Shared extension files, relative to both directories. manifest.json and
-# service-worker.js are deliberately absent: Firefox gets its own manifest and
-# loads background.scripts instead of a Chromium service worker.
-SHARED_FILES = (
-    "i18n.js",
-    "codes.js",
-    "events.js",
-    "background.js",
-    "relay-background.js",
-    "relay-content.js",
-    "relay-sha256.js",
-    "content.js",
-    "page-observer.js",
-    "popup.html",
-    "popup.js",
-    "welcome.html",
-    "welcome.js",
-)
-
-# Whole directory trees that are identical in both builds.
-SHARED_TREES = ("icons", "_locales")
+# Every file under browser/chromium is shared except these: Firefox gets its own
+# manifest and loads background.scripts instead of a Chromium service worker.
+CHROMIUM_ONLY = frozenset({"manifest.json", "service-worker.js"})
+FIREFOX_ONLY = frozenset({"manifest.json"})
 
 
 def shared_entries():
     """Yield (relative path, source path) for every file the sync owns."""
-    for name in SHARED_FILES:
-        yield Path(name), SOURCE_DIR / name
-    for tree in SHARED_TREES:
-        root = SOURCE_DIR / tree
-        if not root.is_dir():
-            continue
-        for source in sorted(p for p in root.rglob("*") if p.is_file()):
-            yield source.relative_to(SOURCE_DIR), source
+    for source in sorted(p for p in SOURCE_DIR.rglob("*") if p.is_file()):
+        relative = source.relative_to(SOURCE_DIR)
+        if relative.as_posix() not in CHROMIUM_ONLY:
+            yield relative, source
+
+
+def extra_entries():
+    """Return files in the target tree that the sync neither owns nor expects."""
+    owned = {relative for relative, _ in shared_entries()}
+    return sorted(
+        relative
+        for relative in (p.relative_to(TARGET_DIR) for p in TARGET_DIR.rglob("*") if p.is_file())
+        if relative not in owned and relative.as_posix() not in FIREFOX_ONLY
+    )
 
 
 def stale_entries():
@@ -66,8 +55,6 @@ def stale_entries():
     differing = []
     for relative, source in shared_entries():
         target = TARGET_DIR / relative
-        if not source.is_file():
-            continue
         if not target.is_file():
             missing.append(relative)
             continue
@@ -77,11 +64,12 @@ def stale_entries():
 
 
 def sync():
-    """Write every shared file into the Firefox directory."""
+    """Write every shared file into the Firefox directory and drop stale ones."""
+    if TARGET_DIR.is_dir():
+        for relative in extra_entries():
+            (TARGET_DIR / relative).unlink()
     copied = 0
     for relative, source in shared_entries():
-        if not source.is_file():
-            continue
         target = TARGET_DIR / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
@@ -98,6 +86,7 @@ def check():
         missing, differing = stale_entries()
         problems.extend(f"missing: {path.as_posix()}" for path in missing)
         problems.extend(f"out of date: {path.as_posix()}" for path in differing)
+        problems.extend(f"not in browser/chromium: {path.as_posix()}" for path in extra_entries())
     if problems:
         print("browser/firefox is not in sync with browser/chromium:", file=sys.stderr)
         for problem in problems:

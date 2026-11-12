@@ -19,10 +19,6 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-function sorted(values) {
-  return [...(values ?? [])].sort();
-}
-
 // Every path-like manifest value: js/html/icon/locale payloads. Wildcards and
 // absolute URLs are not local files.
 function manifestFileReferences(value, found = new Set()) {
@@ -47,41 +43,28 @@ test("Firefox manifest declares the Firefox MV3 bundle", () => {
   const chromium = readJson(chromiumManifestPath);
 
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.name, chromium.name);
-  assert.equal(manifest.description, chromium.description);
-  assert.equal(manifest.default_locale, chromium.default_locale);
 
-  assert.deepEqual(sorted(manifest.permissions), sorted([
-    "alarms", "contextMenus", "downloads", "nativeMessaging",
-    "storage", "tabs", "webRequest", "webNavigation"
-  ]));
-  assert.deepEqual(sorted(manifest.optional_permissions), ["cookies"]);
-  assert.deepEqual(sorted(manifest.host_permissions), sorted(["http://*/*", "https://*/*"]));
+  // Everything but the browser-specific keys is the Chromium manifest, so a
+  // permission or content script added there fails here until Firefox has it.
+  const { key, minimum_chrome_version, background: chromiumBackground, ...chromiumShared } = chromium;
+  const { browser_specific_settings, background, ...firefoxShared } = manifest;
+  assert.deepEqual(firefoxShared, chromiumShared);
 
-  const gecko = manifest.browser_specific_settings?.gecko;
+  const gecko = browser_specific_settings?.gecko;
   assert.ok(gecko, "browser_specific_settings.gecko is required");
   assert.equal(gecko.id, "ssdownload@ssdownload.local");
-  // data_collection_permissions requires a recent Firefox; 142 also clears the
-  // Android data_collection_permissions lint warning.
-  assert.ok(Number.parseFloat(gecko.strict_min_version) >= 142,
-    `gecko.strict_min_version must be at least 142.0, got ${gecko.strict_min_version}`);
+  // The browser-transfer relay targets frames by webNavigation documentId and
+  // tabs.sendMessage documentId, which Firefox supports from 153.
+  assert.ok(Number.parseFloat(gecko.strict_min_version) >= 153,
+    `gecko.strict_min_version must be at least 153.0, got ${gecko.strict_min_version}`);
   assert.deepEqual(gecko.data_collection_permissions?.required, ["none"]);
 
-  assert.ok(manifest.background && typeof manifest.background === "object");
-  assert.deepEqual(manifest.background.scripts, [
-    "i18n.js", "codes.js", "events.js", "background.js", "relay-background.js"
-  ]);
-  assert.equal(Object.hasOwn(manifest.background, "service_worker"), false);
-  assert.equal(Object.hasOwn(manifest, "key"), false);
-  assert.equal(Object.hasOwn(manifest, "minimum_chrome_version"), false);
-  assert.equal(manifest.background.scripts.includes("service-worker.js"), false);
-
-  assert.ok(Array.isArray(manifest.content_scripts) && manifest.content_scripts.length >= 2);
-  assert.deepEqual(manifest.content_scripts[0].js, [
-    "i18n.js", "relay-sha256.js", "content.js", "relay-content.js"
-  ]);
-  assert.deepEqual(manifest.content_scripts[1].js, ["page-observer.js"]);
-  assert.equal(manifest.content_scripts[1].world, "MAIN");
+  // Firefox loads the scripts the Chromium service worker imports, in the same order.
+  const worker = fs.readFileSync(path.join(chromiumDir, chromiumBackground.service_worker), "utf8");
+  const imported = [...worker.matchAll(/importScripts\(([^)]*)\)/g)]
+    .flatMap(match => [...match[1].matchAll(/"([^"]+)"/g)].map(name => name[1]));
+  assert.ok(imported.length > 0, "service-worker.js imports no scripts");
+  assert.deepEqual(background, { scripts: imported });
 });
 
 test("Firefox manifest version matches Chromium and Cargo.toml", () => {
@@ -112,19 +95,20 @@ test("every file referenced by the Firefox manifest exists", () => {
     "the Firefox manifest must not reference service-worker.js");
 });
 
-test("Firefox shared files are byte-identical to the Chromium copies", () => {
-  const shared = [
-    "i18n.js", "codes.js", "events.js", "background.js", "relay-background.js",
-    "relay-content.js", "relay-sha256.js", "content.js", "page-observer.js",
-    "popup.html", "popup.js", "welcome.html", "welcome.js"
-  ];
+function treeFiles(root) {
+  return fs.readdirSync(root, { recursive: true })
+    .map(name => String(name).split(path.sep).join("/"))
+    .filter(name => fs.statSync(path.join(root, name)).isFile())
+    .sort();
+}
 
-  for (const name of shared) {
-    const firefoxFile = path.join(firefoxDir, name);
-    const chromiumFile = path.join(chromiumDir, name);
-    assert.ok(fs.existsSync(firefoxFile), `Firefox copy is missing: ${name}`);
-    assert.ok(fs.existsSync(chromiumFile), `Chromium source is missing: ${name}`);
-    assert.ok(fs.readFileSync(firefoxFile).equals(fs.readFileSync(chromiumFile)),
+test("Firefox shared files are byte-identical to the Chromium copies", () => {
+  const chromiumFiles = treeFiles(chromiumDir).filter(name => name !== "manifest.json" && name !== "service-worker.js");
+  const firefoxFiles = treeFiles(firefoxDir).filter(name => name !== "manifest.json");
+  assert.deepEqual(firefoxFiles, chromiumFiles);
+
+  for (const name of chromiumFiles) {
+    assert.ok(fs.readFileSync(path.join(firefoxDir, name)).equals(fs.readFileSync(path.join(chromiumDir, name))),
       `Firefox copy drifted from Chromium: ${name}`);
   }
 });

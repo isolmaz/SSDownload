@@ -37,7 +37,7 @@ python scripts\sync-firefox-extension.py --check
 npx --yes web-ext@10.8.0 lint --source-dir browser/firefox --output text
 ```
 
-The first fails when `browser\firefox` differs from the copy the script generates from `browser\chromium`; the second runs the Mozilla linter over the add-on.
+The first fails when `browser\firefox` differs from the copy the script generates from `browser\chromium`, including a file that exists only in `browser\firefox`; the second runs the Mozilla linter over the add-on.
 
 Two kinds of test run only on request.
 
@@ -67,7 +67,7 @@ src/bridge.rs        Native messaging and the local named pipe
 src/update.rs        Signed update feed
 src/test_http.rs     Configurable loopback HTTP server for tests (test builds only)
 browser/chromium/    The Chrome/Edge extension (Manifest V3), loadable as is
-browser/firefox/     The Firefox add-on, generated from browser/chromium by scripts/sync-firefox-extension.py
+browser/firefox/     The Firefox add-on, generated from browser/chromium by scripts/sync-firefox-extension.py (except its manifest.json)
 browser/tests/       Extension tests (node:test, no dependencies)
 packaging/           NSIS installer and browser registration scripts
 scripts/             Local checks, error-code generator, Firefox sync and release scripts

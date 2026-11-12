@@ -1215,17 +1215,15 @@ fn validate_browser_action(action: &mut Action) -> Result<()> {
 }
 
 /// Recognizes explicit CLI mode and the argument shape Chrome uses when it starts the
-/// registered native host from its manifest executable path. Firefox passes its add-on ID
-/// and/or the manifest path, so both are recognized too.
+/// registered native host from its manifest executable path. Firefox passes the manifest
+/// path and then its add-on ID; the ID alone identifies that launch.
 pub fn is_native_invocation(args: &[String]) -> bool {
-    let firefox_manifest = firefox_manifest_name().to_ascii_lowercase();
     args.iter().any(|argument| {
         argument == "--native-host"
             || argument
                 .to_ascii_lowercase()
                 .starts_with("chrome-extension://")
             || argument.eq_ignore_ascii_case(crate::extension::FIREFOX_EXTENSION_ID)
-            || argument.to_ascii_lowercase().ends_with(&firefox_manifest)
     })
 }
 
@@ -3057,13 +3055,16 @@ mod tests {
     }
 
     #[test]
-    fn native_invocation_recognizes_the_firefox_addon_id_and_manifest_path() {
-        assert!(is_native_invocation(
-            &["ssdownload@ssdownload.local".into()]
-        ));
+    fn native_invocation_recognizes_the_firefox_launch_by_its_addon_id() {
+        let manifest =
+            r"C:\Users\user\AppData\Local\SSDownload\native\com.ssdownload.desktop.firefox.json";
         assert!(is_native_invocation(&[
-            r"C:\Users\user\AppData\Local\SSDownload\native\com.ssdownload.desktop.firefox.json"
-                .into()
+            manifest.into(),
+            "ssdownload@ssdownload.local".into()
+        ]));
+        assert!(!is_native_invocation(&[
+            "--request-json".into(),
+            manifest.into()
         ]));
         assert!(!is_native_invocation(&["other@example.com".into()]));
     }

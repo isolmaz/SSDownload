@@ -66,7 +66,7 @@ cargo build --release --locked
 
 Checks run locally with `scripts\check.ps1` and on every pull request in GitHub Actions. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
-The Firefox add-on in `browser\firefox` is generated from the Chrome and Edge sources in `browser\chromium`: edit that folder and run `python scripts\sync-firefox-extension.py`, which writes the Firefox copy (add `--check` to verify the two agree). No extra build tool is needed for it.
+The Firefox add-on in `browser\firefox` is generated from the Chrome and Edge sources in `browser\chromium`: edit that folder and run `python scripts\sync-firefox-extension.py`, which writes the Firefox copy (add `--check` to verify the two agree). Only `browser\firefox\manifest.json` is kept by hand; the extension tests fail when it differs from the Chromium manifest in anything but the browser-specific keys. No extra build tool is needed for it.
 
 ## License
 
