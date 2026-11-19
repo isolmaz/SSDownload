@@ -1,6 +1,6 @@
 [package]
 name = "ssdownload"
-version = "1.11.0"
+version = "1.12.1"
 edition = "2021"
 description = "Native Windows file, video and audio download manager"
 license = "MIT"
@@ -27,7 +27,7 @@ curl-sys = "0.4.90"
 ed25519-dalek = "2.1"
 winreg = "0.55"
 hex = "0.4"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 sha2 = "0.10"
