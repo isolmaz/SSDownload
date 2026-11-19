@@ -61,6 +61,9 @@ $BrowserPath = Join-Path $ProjectRoot 'browser'
 if (-not (Test-Path (Join-Path $BrowserPath 'chromium\manifest.json') -PathType Leaf)) {
     throw 'browser/chromium must contain a directly loadable Chrome extension manifest before packaging.'
 }
+if (-not (Test-Path (Join-Path $BrowserPath 'firefox\manifest.json') -PathType Leaf)) {
+    throw 'browser/firefox must contain a directly loadable Firefox add-on manifest before packaging.'
+}
 if (-not (Test-Path $Makensis -PathType Leaf)) {
     throw "NSIS compiler was not found: $Makensis"
 }
@@ -102,9 +105,10 @@ try {
 
     Copy-Item -LiteralPath $ExePath -Destination (Join-Path $PackageRoot 'ssdownload.exe')
     Copy-Item -LiteralPath $CliPath -Destination (Join-Path $PackageRoot 'ssdownload-cli.exe')
-    # Only the loadable extension ships; browser/tests stays in the repository.
+    # Only the loadable extensions ship; browser/tests stays in the repository.
     New-Item -ItemType Directory -Path (Join-Path $PackageRoot 'browser') | Out-Null
     Copy-Item -LiteralPath (Join-Path $BrowserPath 'chromium') -Destination (Join-Path $PackageRoot 'browser\chromium') -Recurse
+    Copy-Item -LiteralPath (Join-Path $BrowserPath 'firefox') -Destination (Join-Path $PackageRoot 'browser\firefox') -Recurse
     foreach ($Doc in @('README.md', 'PRIVACY.md')) {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot $Doc) -Destination $PackageRoot
     }

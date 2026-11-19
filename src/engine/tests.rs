@@ -3378,6 +3378,70 @@ fn a_stored_profile_moves_each_field_with_its_old_default_and_keeps_the_others()
 }
 
 #[test]
+fn a_new_profile_follows_windows_and_stores_that_choice() {
+    use crate::model::ColorMode;
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-colors-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    let engine = Engine::open(paths.clone()).unwrap();
+    assert_eq!(engine.snapshot().settings.color_mode(), ColorMode::System);
+    engine.shutdown();
+    let saved = Store::open(&paths.database)
+        .unwrap()
+        .load_settings()
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.color_mode, "system");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_stored_profile_without_a_colour_mode_keeps_its_light_or_dark_look() {
+    use crate::model::ColorMode;
+    for (dark, expected) in [(true, ColorMode::Dark), (false, ColorMode::Light)] {
+        let root =
+            std::env::temp_dir().join(format!("ssdownload-engine-colors-{}", Uuid::new_v4()));
+        let paths = AppPaths::new(root.clone()).unwrap();
+        Engine::open(paths.clone()).unwrap().shutdown();
+        let mut store = Store::open(&paths.database).unwrap();
+        let mut value = serde_json::to_value(store.load_settings().unwrap().unwrap()).unwrap();
+        let fields = value.as_object_mut().unwrap();
+        fields.remove("color_mode");
+        fields.insert("dark_mode".into(), dark.into());
+        store
+            .save_settings(&serde_json::from_value(value).unwrap())
+            .unwrap();
+        drop(store);
+
+        let engine = Engine::open(paths).unwrap();
+        assert_eq!(
+            engine.snapshot().settings.color_mode(),
+            expected,
+            "stored dark_mode {dark}"
+        );
+        engine.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn a_chosen_colour_mode_stays_through_restarts() {
+    use crate::model::ColorMode;
+    let root = std::env::temp_dir().join(format!("ssdownload-engine-colors-{}", Uuid::new_v4()));
+    let paths = AppPaths::new(root.clone()).unwrap();
+    for mode in [ColorMode::Dark, ColorMode::Light, ColorMode::System] {
+        let engine = Engine::open(paths.clone()).unwrap();
+        let mut settings = engine.snapshot().settings.clone();
+        settings.set_color_mode(mode);
+        engine.update_settings(settings).unwrap();
+        engine.shutdown();
+        let engine = Engine::open(paths.clone()).unwrap();
+        assert_eq!(engine.snapshot().settings.color_mode(), mode);
+        engine.shutdown();
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn four_and_two_chosen_after_the_move_stay_through_restarts() {
     let root = std::env::temp_dir().join(format!("ssdownload-engine-defaults-{}", Uuid::new_v4()));
     let paths = AppPaths::new(root.clone()).unwrap();

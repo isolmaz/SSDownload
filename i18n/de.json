@@ -214,7 +214,10 @@
   "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Neuer Download\nCtrl+Shift+N  Video herunterladen\nCtrl+V  URLs aus der Zwischenablage hinzufügen\nCtrl+F  Suchen\nCtrl+A  Alle auswählen\nDelete  Ausgewählte entfernen\nF5  Aktualisieren\nEnter  Datei öffnen\nSpace  Pausieren / fortsetzen\nAlt+Home / Alt+End  Ganz nach oben / unten verschieben\nCtrl+Shift+D  Link aus der Zwischenablage von überall hinzufügen",
   "Custom...": "Benutzerdefiniert...",
   "DRM-protected content is not supported.": "DRM-geschützte Inhalte werden nicht unterstützt.",
-  "Dark window title and control theme": "Dunkle Fenstertitelleiste und Design der Steuerelemente",
+  "Color mode:": "Farbmodus:",
+  "Light": "Hell",
+  "Dark": "Dunkel",
+  "Follow Windows": "Windows folgen",
   "Day number": "Tagesnummer",
   "Default": "Standard",
   "Default download folder:": "Standard-Download-Ordner:",
@@ -1785,5 +1788,14 @@
   "The reason is below. Report problem writes a report on it and opens its folder.": "Der Grund steht unten. „Problem melden“ schreibt einen Bericht dazu und öffnet seinen Ordner.",
   "The streams could not be merged within {0} seconds": "Die Streams konnten nicht innerhalb von {0} Sekunden zusammengeführt werden",
   "SSDownload page markup": "Seiten-Markup von SSDownload",
-  "The browser bridge could not start; the app continues without browser integration: {0}": "Die Browser-Brücke konnte nicht gestartet werden; die App läuft ohne Browser-Integration weiter: {0}"
+  "The browser bridge could not start; the app continues without browser integration: {0}": "Die Browser-Brücke konnte nicht gestartet werden; die App läuft ohne Browser-Integration weiter: {0}",
+  "The Firefox add-on manifest could not be converted to a URL": "Das Firefox-Add-on-Manifest konnte nicht in eine URL umgewandelt werden",
+  "Firefox": "Firefox",
+  "SSDownload has registered the connection to Firefox. Add the add-on from Firefox Add-ons (addons.mozilla.org).": "SSDownload hat die Verbindung zu Firefox registriert. Fügen Sie das Add-on über Firefox Add-ons (addons.mozilla.org) hinzu.",
+  "Open in Firefox Add-ons": "In Firefox Add-ons öffnen",
+  "Without the store, you can load the bundled copy temporarily:": "Ohne Store können Sie die mitgelieferte Kopie vorübergehend laden:",
+  "<li>Open <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choose <b>Load Temporary Add-on</b>.</li><li>Select the manifest file shown below.</li>": "<li>Öffnen Sie <b>about:debugging#/runtime/this-firefox</b>.</li><li>Wählen Sie <b>Vorübergehendes Add-on laden</b>.</li><li>Wählen Sie die unten gezeigte Manifestdatei.</li>",
+  "Open the manifest file": "Manifestdatei öffnen",
+  "A temporary add-on is removed when Firefox closes.": "Ein vorübergehendes Add-on wird beim Schließen von Firefox entfernt.",
+  "The Firefox Native Messaging manifest could not be written": "Das Firefox-Native-Messaging-Manifest konnte nicht geschrieben werden"
 }
