@@ -1791,9 +1791,11 @@
   "The browser bridge could not start; the app continues without browser integration: {0}": "تعذّر بدء جسر المتصفح؛ يتابع التطبيق بدون تكامل المتصفح: {0}",
   "The Firefox add-on manifest could not be converted to a URL": "تعذر تحويل بيان إضافة Firefox إلى عنوان URL",
   "Firefox": "Firefox",
-  "SSDownload has registered the Native Messaging connection, but Firefox needs the add-on loaded once.": "سجّل SSDownload اتصال المراسلة الأصلية، لكن Firefox يحتاج إلى تحميل الإضافة مرة واحدة.",
+  "SSDownload has registered the connection to Firefox. Add the add-on from Firefox Add-ons (addons.mozilla.org).": "سجّل SSDownload الاتصال بـ Firefox. أضف الإضافة من Firefox Add-ons ‏(addons.mozilla.org).",
+  "Open in Firefox Add-ons": "فتح في Firefox Add-ons",
+  "Without the store, you can load the bundled copy temporarily:": "بدون المتجر، يمكنك تحميل النسخة المرفقة مؤقتًا:",
   "<li>Open <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choose <b>Load Temporary Add-on</b>.</li><li>Select the manifest file shown below.</li>": "<li>افتح <b>about:debugging#/runtime/this-firefox</b>.</li><li>اختر <b>Load Temporary Add-on</b>.</li><li>حدد ملف البيان الموضح أدناه.</li>",
   "Open the manifest file": "افتح ملف البيان",
-  "A temporary add-on is removed when Firefox closes. A permanent install needs a Mozilla-signed XPI published on AMO; this repository does not publish one automatically.": "تُزال الإضافة المؤقتة عند إغلاق Firefox. يتطلب التثبيت الدائم ملف XPI موقّعًا من Mozilla ومنشورًا على AMO؛ وهذا المستودع لا ينشر واحدًا تلقائيًا.",
+  "A temporary add-on is removed when Firefox closes.": "تُزال الإضافة المؤقتة عند إغلاق Firefox.",
   "The Firefox Native Messaging manifest could not be written": "تعذر كتابة بيان المراسلة الأصلية لـ Firefox"
 }
