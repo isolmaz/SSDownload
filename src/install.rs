@@ -368,10 +368,16 @@ fn write_browser_setup(browser_root: &Path, paths: &AppPaths) -> Result<PathBuf>
         let manifest_path = html_escape(&firefox_manifest.display().to_string());
         let manifest_url = html_escape(manifest_url.as_str());
         let addon_id = html_escape(crate::extension::FIREFOX_EXTENSION_ID);
+        let listing_url = html_escape(crate::extension::FIREFOX_LISTING_URL);
         let firefox_heading = ui("Firefox", "Firefox");
         let firefox_body = ui(
-            "SSDownload yerel mesajlaşma bağlantısını kurdu, ancak Firefox eklentinin bir kez yüklenmesini ister.",
-            "SSDownload has registered the Native Messaging connection, but Firefox needs the add-on loaded once.",
+            "SSDownload, Firefox bağlantısını kurdu. Eklentiyi Firefox Eklentileri'nden (addons.mozilla.org) ekleyin.",
+            "SSDownload has registered the connection to Firefox. Add the add-on from Firefox Add-ons (addons.mozilla.org).",
+        );
+        let listing_button = ui("Firefox Eklentileri'nde aç", "Open in Firefox Add-ons");
+        let temporary_intro = ui(
+            "Mağaza olmadan, birlikte gelen kopyayı geçici olarak yükleyebilirsiniz:",
+            "Without the store, you can load the bundled copy temporarily:",
         );
         let firefox_steps = ui(
             "<li><b>about:debugging#/runtime/this-firefox</b> adresini açın.</li><li><b>Geçici eklenti yükle</b>'yi seçin.</li><li>Aşağıda gösterilen bildirim dosyasını seçin.</li>",
@@ -379,11 +385,11 @@ fn write_browser_setup(browser_root: &Path, paths: &AppPaths) -> Result<PathBuf>
         );
         let firefox_button = ui("Bildirim dosyasını aç", "Open the manifest file");
         let firefox_note = ui(
-            "Geçici eklenti Firefox kapandığında kaldırılır. Kalıcı kurulum için AMO'da yayımlanmış, Mozilla tarafından imzalanmış bir XPI gerekir; bu depo böyle bir paketi kendiliğinden yayımlamaz.",
-            "A temporary add-on is removed when Firefox closes. A permanent install needs a Mozilla-signed XPI published on AMO; this repository does not publish one automatically.",
+            "Geçici eklenti Firefox kapandığında kaldırılır.",
+            "A temporary add-on is removed when Firefox closes.",
         );
         format!(
-            r#"<section><h2>{firefox_heading}</h2><p>{firefox_body}</p><ol>{firefox_steps}</ol><pre>{manifest_path}</pre><p><a class="button" href="{manifest_url}">{firefox_button}</a></p><small>{id_label}: {addon_id}</small><p><small>{firefox_note}</small></p></section>"#
+            r#"<section><h2>{firefox_heading}</h2><p>{firefox_body}</p><p><a class="button" href="{listing_url}">{listing_button}</a></p><p>{temporary_intro}</p><ol>{firefox_steps}</ol><pre>{manifest_path}</pre><p><a class="button" href="{manifest_url}">{firefox_button}</a></p><small>{id_label}: {addon_id}</small><p><small>{firefox_note}</small></p></section>"#
         )
     } else {
         String::new()
@@ -543,6 +549,7 @@ mod tests {
         )));
         assert!(html.contains(&html_escape(crate::extension::FIREFOX_EXTENSION_ID)));
         assert!(html.contains("about:debugging#/runtime/this-firefox"));
+        assert!(html.contains(crate::extension::FIREFOX_LISTING_URL));
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -563,6 +570,7 @@ mod tests {
         )));
         assert!(!html.contains(crate::extension::FIREFOX_EXTENSION_ID));
         assert!(!html.contains("about:debugging"));
+        assert!(!html.contains(crate::extension::FIREFOX_LISTING_URL));
 
         std::fs::remove_dir_all(root).unwrap();
     }

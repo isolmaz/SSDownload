@@ -51,11 +51,10 @@ Its text (button, popup, menus and messages) is in the app's seven languages and
 
 ### Firefox
 
-The Firefox add-on (`ssdownload@ssdownload.local`) uses the same extension code as the Chrome and Edge one and needs Firefox 153 or later. There is no store flow for it in this release: the app registers the native host, and you load the bundled copy yourself. Firefox keeps only add-ons signed by Mozilla, so a permanent installation needs an addon signed for addons.mozilla.org, and no Firefox listing is published yet.
+The Firefox add-on (`ssdownload@ssdownload.local`) uses the same extension code as the Chrome and Edge one and needs Firefox 153 or later. Install it from [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/ssdownload/); the app registers the connection to Firefox, so nothing else is needed. **Tools → Browser setup** links to that page.
 
 - **Native host:** Setup (and `register-native-host.cmd` for the portable ZIP) registers both the Chrome/Edge and the Firefox native host for your Windows user. It writes `com.ssdownload.desktop.firefox.json` and points the `HKCU\Software\Mozilla\NativeMessagingHosts\com.ssdownload.desktop` key at it. `ssdownload.exe --register-host` repeats it, for example after a portable copy moves; `--unregister-host` removes it, as does uninstalling the app.
-- **Temporary load:** open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and select `browser\firefox\manifest.json` next to `ssdownload.exe` (installed copies: `%LOCALAPPDATA%\Programs\SSDownload\browser\firefox`). **Tools → Browser setup** lists the steps and the manifest's path, and its button opens the manifest file. Firefox removes a temporary add-on when it restarts, so load it again after a restart. The add-on keeps the ID `ssdownload@ssdownload.local`, which the registered native host allows.
-- **Permanent install:** needs an XPI signed by Mozilla through an addons.mozilla.org listing. `scripts\package-firefox.ps1` builds an unsigned XPI for checking the package; Firefox refuses an unsigned XPI for a permanent install.
+- **Temporary load (without the store):** open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and select `browser\firefox\manifest.json` next to `ssdownload.exe` (installed copies: `%LOCALAPPDATA%\Programs\SSDownload\browser\firefox`). **Tools → Browser setup** lists the steps and the manifest's path, and its button opens the manifest file. Firefox removes a temporary add-on when it restarts, so load it again after a restart. The add-on keeps the ID `ssdownload@ssdownload.local`, which the registered native host allows. Firefox installs only add-ons signed by Mozilla permanently, so the bundled copy stays temporary.
 
 ## Downloading
 

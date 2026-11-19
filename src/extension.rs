@@ -30,6 +30,8 @@ pub const WEB_STORE_UPDATE_URL: &str = "https://clients2.google.com/service/upda
 /// Public Chrome Web Store listing of the extension.
 pub const WEB_STORE_LISTING_URL: &str =
     "https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham";
+/// Public addons.mozilla.org listing of the Firefox add-on.
+pub const FIREFOX_LISTING_URL: &str = "https://addons.mozilla.org/firefox/addon/ssdownload/";
 
 /// Per-user external extension roots read by Chrome (and Chromium forks that
 /// keep Chrome's key) and by Microsoft Edge.
