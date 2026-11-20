@@ -1517,14 +1517,37 @@ fn dolby_codec_names_from_the_extractor_match_the_probed_output() {
 
 #[test]
 fn yt_dlp_policy_disables_user_configuration_and_plugins() {
+    let parent = std::env::temp_dir().join(format!("ssdownload-policy-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&parent).unwrap();
+    let plugins = PluginLease::create_in(&parent).unwrap();
+    let folder = plugins.folder().unwrap().to_string_lossy().into_owned();
     let arguments = common_args(
         Path::new(r"C:\tools\deno.exe"),
         Path::new(r"C:\tools\ffmpeg.exe"),
+        Some(Path::new(&folder)),
         false,
     );
     assert!(arguments
         .windows(2)
         .any(|pair| pair == ["--ignore-config", "--no-plugin-dirs"]));
+    // `--no-plugin-dirs` clears the user's and the tool's default folders; the only folder added
+    // back afterwards is the application's own lease, never "default".
+    let cleared = arguments
+        .iter()
+        .position(|argument| argument == "--no-plugin-dirs")
+        .unwrap();
+    let added = arguments
+        .iter()
+        .enumerate()
+        .filter(|(_, argument)| *argument == "--plugin-dirs")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(added.len(), 1, "{arguments:?}");
+    assert!(added[0] > cleared, "{arguments:?}");
+    assert_eq!(arguments[added[0] + 1], folder);
+    assert!(!arguments.iter().any(|argument| argument == "default"));
+    drop(plugins);
+    fs::remove_dir_all(parent).unwrap();
     assert!(arguments.contains(&"--no-exec".into()));
     assert!(arguments
         .windows(2)
@@ -2999,12 +3022,15 @@ fn playlist_items_separate_request_fingerprints_but_unset_keeps_the_stored_value
 }
 
 #[test]
-fn startup_sweep_removes_cookie_jars_and_extractor_document_leases_only() {
+fn startup_sweep_removes_cookie_jars_and_extractor_document_and_plugin_leases_only() {
     let root = std::env::temp_dir().join(format!("ssdownload-sweep-test-{}", uuid::Uuid::new_v4()));
     let info = root.join(format!("{INFO_LEASE_PREFIX}one"));
     let pinned = root.join(format!("{PINNED_LEASE_PREFIX}two"));
     fs::create_dir_all(&info).unwrap();
     fs::create_dir_all(&pinned).unwrap();
+    let plugin_folder = root.join(format!("{PLUGIN_LEASE_PREFIX}four"));
+    fs::create_dir_all(plugin_folder.join("ssdownload")).unwrap();
+    fs::write(plugin_folder.join("ssdownload").join("plugin.py"), b"#").unwrap();
     fs::write(info.join("source.info.json"), b"{}").unwrap();
     let jar = root.join("ssdownload-cookie-three.txt");
     fs::write(&jar, b"jar").unwrap();
@@ -3013,7 +3039,7 @@ fn startup_sweep_removes_cookie_jars_and_extractor_document_leases_only() {
 
     sweep_stale_session_files(&root);
 
-    assert!(!info.exists() && !pinned.exists() && !jar.exists());
+    assert!(!info.exists() && !pinned.exists() && !jar.exists() && !plugin_folder.exists());
     assert!(other.exists());
     fs::remove_dir_all(root).unwrap();
 }

@@ -22,13 +22,13 @@ cargo run --locked --bin ssdownload -- --data-dir .qa\dev-profile   # separate p
 
 ## Checks
 
-Pull requests and pushes to `main` run these checks on GitHub Actions (`.github/workflows/ci.yml`) on Windows: `cargo fmt --check`, Clippy with warnings as errors, `cargo test`, the translation catalog check, the extension tests, the Firefox add-on check and `cargo build`. The cargo commands run with `--locked`. Run the checks on your machine first:
+Pull requests and pushes to `main` run these checks on GitHub Actions (`.github/workflows/ci.yml`) on Windows: `cargo fmt --check`, Clippy with warnings as errors, `cargo test`, the translation catalog check, the yt-dlp plugin tests, the extension tests, the Firefox add-on check and `cargo build`. The cargo commands run with `--locked`. Run the checks on your machine first:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1
 ```
 
-The script runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the translation catalog check (`python scripts/i18n.py check`), the extension tests (`node --test`), the two Firefox add-on checks below and `cargo audit` when it is installed. A step whose tool is missing is reported as skipped. `scripts\install-hooks.ps1` installs the script as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
+The script runs `cargo fmt --check`, Clippy with warnings as errors, the Rust tests, the translation catalog check (`python scripts/i18n.py check`), the yt-dlp plugin tests (below), the extension tests (`node --test`), the two Firefox add-on checks below and `cargo audit` when it is installed. A step whose tool is missing is reported as skipped. `scripts\install-hooks.ps1` installs the script as a pre-push hook. CI does not run `cargo audit`, e2e checks, packaging or signing; releases stay a local maintainer task.
 
 The Firefox add-on has its own two checks, which the script and CI's **Firefox extension** step run:
 
@@ -38,6 +38,12 @@ npx --yes web-ext@10.8.0 lint --source-dir browser/firefox --output text
 ```
 
 The first fails when `browser\firefox` differs from the copy the script generates from `browser\chromium`, including a file that exists only in `browser\firefox`; the second runs the Mozilla linter over the add-on.
+
+The extractor plugin the app hands yt-dlp (`src/media/yt_dlp_plugin`) has Python tests that import yt-dlp from PyPI at the release they were written against. The script runs them through [uv](https://docs.astral.sh/uv/) and reports them as skipped without it; CI installs that yt-dlp with pip:
+
+```powershell
+uv run --no-project --with yt-dlp==2026.10.26 python src/media/yt_dlp_plugin/test_instagram_story_fallback.py
+```
 
 Two kinds of test run only on request.
 
@@ -76,6 +82,7 @@ scripts/             Local checks, error-code generator, Firefox sync and releas
 ## Conventions
 
 - Behaviour is general and never tied to one site: no code checks a particular site's host name, address or page layout. A fix follows from what the source does (how the server answers, what the playlist or the player contains), so it applies to every site that behaves the same way.
+  - The single, temporary exception is the yt-dlp extractor plugin `src/media/yt_dlp_plugin/instagram_story_fallback.py` (Instagram stories, [yt-dlp/yt-dlp#17755](https://github.com/yt-dlp/yt-dlp/issues/17755)). Its site logic stays in that file; the Rust side only writes it into a plugin folder (`src/media/plugin.rs`). Remove the plugin, its `--plugin-dirs` wiring, its tests and its documentation once a yt-dlp release fixes #17755.
 - Match the surrounding code. Identifiers, comments and documentation are in English.
 - Interface text goes through `crate::i18n::ui("Türkçe", "English")`, or `crate::i18n::ui_format!("Türkçe {0}", "English {0}", value)` for a template, with both languages written at the call. The compiler checks that a translated template uses every argument of the call. A count has one text for one item and one for several (`1 download added`, `{count} downloads added`), never an ending in parentheses such as `download(s)`.
 - Arabic, Spanish, Portuguese, French and German translate the English text in `i18n/<code>.json` (English text → translation). After adding or changing a text, add its translation to each catalog and run `python scripts/i18n.py build`, which regenerates `src/i18n_catalog.rs`.
