@@ -223,6 +223,10 @@ into SSDownload, and are not included in the installer or portable ZIP.
     install the application starts by itself takes the newest one published at least
     three days earlier)
     License: The Unlicense
+    SSDownload hands yt-dlp one extractor plugin of its own
+    (src/media/yt_dlp_plugin/instagram_story_fallback.py), part of SSDownload's
+    source under the MIT License; it is written into a folder for each run and is not
+    a part of yt-dlp.
 
   Deno
     Project/source: https://github.com/denoland/deno
