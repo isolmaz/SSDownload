@@ -31,6 +31,7 @@ mod evidence;
 mod metadata;
 mod naming;
 mod native_hls;
+mod plugin;
 mod postprocess;
 mod probe;
 mod process;
@@ -42,6 +43,7 @@ use evidence::*;
 use metadata::*;
 pub(crate) use naming::picker_file_name;
 use naming::published_output;
+use plugin::*;
 pub(crate) use postprocess::validate_options;
 use postprocess::*;
 use probe::*;
@@ -205,7 +207,13 @@ fn run_inspection(
         &request.session_cookies,
     )?;
     ensure_helpers_startable(deno, ffmpeg, &toolchain.ffprobe)?;
-    let args = common_args(deno, ffmpeg, request.playlist);
+    let plugins = plugin_lease();
+    let args = common_args(
+        deno,
+        ffmpeg,
+        plugin_folder(plugins.as_ref()),
+        request.playlist,
+    );
     let mut command_args = args;
     command_args.extend([
         "--dump-single-json".into(),
@@ -239,6 +247,7 @@ fn run_inspection(
             }
             thread::sleep(Duration::from_millis(50));
         }
+        recheck_plugin_dirs(&mut command_args, plugins.as_ref());
         captured = run_ytdlp_capture(
             yt_dlp,
             &command_args,
@@ -250,6 +259,7 @@ fn run_inspection(
         )?;
     }
     if !captured.status.success() && is_forbidden(&captured.stderr) {
+        recheck_plugin_dirs(&mut command_args, plugins.as_ref());
         let mut retried_args = command_args.clone();
         retried_args.extend(["--impersonate".into(), "".into()]);
         captured = run_ytdlp_capture(
@@ -590,7 +600,13 @@ fn download_with(
         &request.session_cookies,
         source_info.is_none(),
     )?;
-    let mut base_args = common_args(deno, ffmpeg, request.playlist);
+    let plugins = plugin_lease();
+    let mut base_args = common_args(
+        deno,
+        ffmpeg,
+        plugin_folder(plugins.as_ref()),
+        request.playlist,
+    );
     if let Some(items) = request
         .playlist_items
         .as_deref()
@@ -836,6 +852,7 @@ fn download_with(
         // Files finished before this attempt are known good; of the attempt's own files only the
         // streams the tool finished survive a lost fragment.
         let known_good = completed_files.clone();
+        recheck_plugin_dirs(&mut args, plugins.as_ref());
         let mut running = RunningDownload::spawn_ytdlp(
             yt_dlp,
             &args,
@@ -2042,11 +2059,19 @@ fn marker_args() -> Vec<String> {
     ]
 }
 
-fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
+/// `plugins` is the folder of a [`PluginLease`]: `--no-plugin-dirs` drops every folder of the
+/// user and of the tool, and the application's own folder is the only one added back. Without
+/// one, the run goes without plugins.
+fn common_args(deno: &Path, ffmpeg: &Path, plugins: Option<&Path>, playlist: bool) -> Vec<String> {
     let ffmpeg_dir = ffmpeg.parent().unwrap_or(ffmpeg);
-    vec![
-        "--ignore-config".into(),
-        "--no-plugin-dirs".into(),
+    let mut args: Vec<String> = vec!["--ignore-config".into(), "--no-plugin-dirs".into()];
+    if let Some(plugins) = plugins {
+        args.extend([
+            "--plugin-dirs".into(),
+            plugins.to_string_lossy().into_owned(),
+        ]);
+    }
+    args.extend([
         "--no-exec".into(),
         // Without it the frozen tool writes stdout/stderr in the Windows ANSI code page and drops
         // everything outside it, while every reader here decodes UTF-8.
@@ -2066,7 +2091,8 @@ fn common_args(deno: &Path, ffmpeg: &Path, playlist: bool) -> Vec<String> {
         } else {
             "--no-playlist".into()
         },
-    ]
+    ]);
+    args
 }
 
 /// Whether the tool's final error ([`last_error`]) is a 403: a 403 it met on the way, in a warning

@@ -1,0 +1,1127 @@
+"use strict";
+
+const extensionApi = globalThis.browser || chrome;
+// Every user-visible text goes through i18n.js (the first content script). The language is the
+// desktop app's, stored by the service worker and followed live from storage below.
+const { t } = SSDownloadI18n;
+// Reloading the unpacked extension invalidates the content script of every page that
+// stayed open; `sendMessage` then throws synchronously ("Extension context
+// invalidated") from whichever callback runs next. Failures are handled per call site,
+// so an invalidated context only has to stop reporting.
+function sendToExtension(message) {
+  try {
+    return extensionApi.runtime.sendMessage(message);
+  } catch (_) {
+    return undefined;
+  }
+}
+// The in-page observer listens through `window`; the helper is defined here so the
+// background message handler can reach it too, and it stays a no-op wherever the page
+// exposes no `postMessage`, never an exception. The page-visible token correlates
+// worker sessions; it is not an authentication boundary.
+let observerToken = null;
+function observerControl() {
+  try {
+    if (typeof window === "undefined" || typeof window.postMessage !== "function") return;
+    window.postMessage({ channel: "ssdownload-observer-control", enabled: overlayEnabled, token: observerToken || "" }, "*");
+  } catch (_) {}
+}
+function applyObserverToken(value) {
+  if (typeof value !== "string" || !value || value.length > 128) return;
+  observerToken = value;
+  try { document.documentElement?.setAttribute?.("data-ssdownload-observer-token", value); } catch (_) {}
+}
+let scanTimer = 0;
+let lastScan = "";
+const playerIds = new WeakMap();
+let playerSequence = 0;
+const documentId = `${Date.now()}-${Math.random()}`;
+// The in-page observer announces its capabilities once per document; the content
+// script keeps that report so the background can ask for it again after a frame
+// record it held was evicted.
+let observationCapabilities = null;
+const overlays = new Map();
+let overlayEnabled = false;
+// The stored switch. While it is off the periodic and mutation-driven scans stop: the worker
+// would discard their reports, and walking the document every 1.5 s would be pure cost.
+let detectionOn = true;
+let usageModes = null;
+// Page-level entries are the desktop's to grant, never this document's to assume: without
+// the negotiated capability the page tile is not drawn and no page handoff is submitted,
+// exactly like the context menu that is not registered without it.
+let siteEntries = false;
+let observeLimitSent = false;
+// null until the worker has answered once; the tile title then says the desktop is unverified.
+let usageModeError = null;
+function usageModeTitle() { return usageModeError === null ? t("capabilitiesNotVerified") : usageModeError; }
+let mediaRoots = [document];
+// A player that loops, stays muted and started without the user asking is a preview or an
+// ad on any site; the report carries those three facts so the background can decide. The
+// own-tile shield keeps these phases from the page, so they are named once and the shield
+// notes the same gesture where it stands in for this listener.
+const USER_GESTURE_EVENTS = ["pointerdown", "keydown", "touchstart"];
+let lastUserGestureAt = 0;
+function noteUserGesture() { lastUserGestureAt = Date.now(); }
+for (const event of USER_GESTURE_EVENTS) document.addEventListener(event, noteUserGesture, true);
+const observedMediaRoots = new WeakSet();
+function refreshMediaRoots() {
+  const roots = [document];
+  // querySelectorAll does not cross open shadow roots. Closed roots remain inaccessible.
+  for (let index=0; index<roots.length; index++) {
+    const root=roots[index];
+    for (const host of root.querySelectorAll("*")) if(host.shadowRoot) roots.push(host.shadowRoot);
+    if(root!==document && !observedMediaRoots.has(root)) {
+      observedMediaRoots.add(root);
+      root.addEventListener("play",()=>report("play"),true);
+      root.addEventListener("loadstart",scheduleScan,true);
+      root.addEventListener("loadedmetadata",scheduleScan,true);
+      root.addEventListener("encrypted",()=>report("drm"),true);
+    }
+  }
+  mediaRoots=roots;
+}
+function queryMediaRoots(selector) {
+  return mediaRoots.flatMap(root=>[...root.querySelectorAll(selector)]);
+}
+// A player is not always an element: a JS player mounted into a container, an embed
+// iframe or a player library script renders the video without ever creating a media
+// element of its own. Those signals are reported in the same scan so the background can
+// still offer the document (and every embed address) as a candidate; a page with none
+// of them reports nothing extra.
+const PLAYER_SIGNAL_PATTERN = /(?:^|[/.&?=_-])(?:player|jwplayer|hls|dplayer|plyr|videojs|preroll|embed|movie|video)(?:[/.&?=_-]|$)/i;
+const PLAYER_CONTAINER_SELECTORS = ['[id*="player" i]','[class*="player" i]','[id*="video" i]','[class*="video" i]','[id*="movie" i]','[class*="movie" i]'];
+function collectPlayerSignals() {
+  const embeds = [], seen = new Set();
+  for (const node of queryMediaRoots("iframe")) {
+    if (embeds.length >= 4) break;
+    const declared = node.getAttribute?.("src") || node.src || node.getAttribute?.("data-src") || node.getAttribute?.("data-lazy-src") || "";
+    const url = absoluteUrl(String(declared));
+    // An unloaded placeholder (about:blank, srcdoc, javascript:) and a MediaSource
+    // address name no document to resolve, so neither is an embed candidate.
+    if (!url || url.startsWith("blob:") || seen.has(url) || !PLAYER_SIGNAL_PATTERN.test(url)) continue;
+    seen.add(url);
+    embeds.push({url, title: String(node.title || node.getAttribute?.("title") || "").trim().slice(0, 120)});
+  }
+  let containers = false;
+  for (const selector of PLAYER_CONTAINER_SELECTORS) {
+    try { if (queryMediaRoots(selector).length) { containers = true; break; } } catch (_) { /* Selector form unsupported here. */ }
+  }
+  const playerScripts = queryMediaRoots("script[src]").some(node => PLAYER_SIGNAL_PATTERN.test(absoluteUrl(String(node.src || node.getAttribute?.("src") || ""))));
+  return {embeds, containers, playerScripts};
+}
+function pageUrl() { return /^https?:/.test(location.href) ? location.href : /^https?:/.test(document.baseURI) ? document.baseURI : document.referrer; }
+function pageTitle() {
+  return document.querySelector?.('meta[property="og:title"]')?.content || document.title || "";
+}
+// The names the document gives its own site. A title equal to one of them names the site, not
+// the content, and is never suggested as a file name.
+function siteNames() {
+  const names = [];
+  for (const selector of ['meta[property="og:site_name"]', 'meta[name="application-name"]']) {
+    const name = String(document.querySelector?.(selector)?.content || "").trim().slice(0, 120);
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+// The error report carries this document's own markup, serialized on demand at the moment a
+// handoff asks for it. The extension's own affordances are not the page, and a script or
+// style body would only pad the report, so both are dropped from the copy the report is
+// taken from. The capture is bounded in bytes: an oversized page is cut between two
+// characters, never inside one, and the marker states the cut.
+const PAGE_HTML_LIMIT = 192 * 1024;
+const PAGE_HTML_TRUNCATION = "<!-- ssdownload:page-html-truncated -->";
+function truncatePageHtml(value) {
+  if (!value) return "";
+  const budget = PAGE_HTML_LIMIT - PAGE_HTML_TRUNCATION.length;
+  let bytes = 0;
+  for (let index = 0; index < value.length;) {
+    const start = index;
+    const code = value.charCodeAt(index);
+    let width = code < 0x80 ? 1 : code < 0x800 ? 2 : 3;
+    index += 1;
+    if (code >= 0xd800 && code <= 0xdbff && index < value.length) {
+      const low = value.charCodeAt(index);
+      if (low >= 0xdc00 && low <= 0xdfff) { width = 4; index += 1; }
+    }
+    bytes += width;
+    if (bytes > budget) return `${value.slice(0, start)}${PAGE_HTML_TRUNCATION}`;
+  }
+  return value;
+}
+function pageHtml() {
+  try {
+    // about:blank, a browser page and a document that answered 4xx/5xx have no page to
+    // report, and neither has a frame that cannot be read: nothing is sent for them.
+    if (!/^https?:/.test(location.href) || documentBlocked()) return "";
+    const root = document.documentElement;
+    if (!root || typeof root.cloneNode !== "function") return "";
+    const clone = root.cloneNode(true);
+    if (!clone) return "";
+    if (typeof clone.querySelectorAll === "function") {
+      for (const node of clone.querySelectorAll("script, style, noscript, template, [data-ssdownload-tile], [data-ssdownload-status]")) node.remove?.();
+    }
+    return truncatePageHtml(typeof clone.outerHTML === "string" ? clone.outerHTML : "");
+  } catch (_) { return ""; }
+}
+// The content script relays its own events to the background; sendToExtension keeps an
+// invalidated context silent and every field is bounded before it leaves the page.
+function pageHost() { try { return new URL(pageUrl()).hostname; } catch (_) { return null; } }
+function sendLogEvent(event, fields) {
+  try {
+    const entry = { event, level: fields.level || "info", outcome: fields.outcome || "ok" };
+    if (fields.code) entry.code = fields.code;
+    if (fields.host) entry.host = String(fields.host).slice(0, 190);
+    if (fields.detail) entry.detail = String(fields.detail).replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 200);
+    const pending = sendToExtension({ channel: "ssdownload-content", event: "log", events: [entry] });
+    if (pending && typeof pending.catch === "function") pending.catch(() => {});
+  } catch (_) {}
+}
+function observeLimitFacts(list) {
+  const facts = [`players=${list.length}`];
+  const hidden = list.filter(player => player.visible === false && !player.active && !player.played).length;
+  if (hidden) facts.push(`hidden=${hidden}`);
+  const blob = list.filter(player => (player.urls || []).some(value => value.startsWith("blob:"))).length;
+  if (blob) facts.push(`blobAmbiguous=${blob}`);
+  if (list.every(player => player.visible === false)) facts.push("closedShadow=possible");
+  facts.push("noCandidate");
+  return facts.join(" ");
+}
+function playerIdentity(media) {
+  const current = media.currentSrc || media.src || "";
+  let identity = playerIds.get(media);
+  if (!identity || (identity.current && current && identity.current !== current)) {
+    identity = {id:String(++playerSequence), current, since:Date.now()}; playerIds.set(media, identity);
+  }
+  if (current) identity.current = current;
+  return identity;
+}
+// Subtitle files this document's player loaded itself, newest last (see page-observer.js),
+// each with the page address and the playing video's source it was loaded for: a single-page
+// site that moves to the next episode, or a second video in the document, does not get them.
+const observedSubtitles = new Map();
+// Chapter, thumbnail and preview tracks are WebVTT as well, but not subtitles. Their names are
+// compared word by word, so a title such as "Thumbelina" stays a subtitle; "chapter" counts
+// only as the last word, because episode titles carry it ("S01E01.Chapter.One.en.vtt").
+const NOT_SUBTITLE_WORDS = new Set(["chapters", "thumb", "thumbs", "thumbnail", "thumbnails", "sprite", "sprites",
+  "storyboard", "storyboards", "preview", "previews"]);
+function notSubtitleFile(url) {
+  const words = nameWords(url, /[^\p{L}]+/u);
+  return words.some(word => NOT_SUBTITLE_WORDS.has(word)) || words.at(-1) === "chapter";
+}
+function mediaSource(media) {
+  return media.currentSrc || media.src || "";
+}
+function observeSubtitle(url) {
+  if (notSubtitleFile(url)) return;
+  const videos = [...queryMediaRoots("video")];
+  const playing = videos.find(video => video.paused === false) || (videos.length === 1 ? videos[0] : null);
+  observedSubtitles.delete(url);
+  observedSubtitles.set(url, { page: pageKey(), source: playing ? mediaSource(playing) : "" });
+  while (observedSubtitles.size > 32) observedSubtitles.delete(observedSubtitles.keys().next().value);
+}
+// Language names and codes a subtitle file name carries ("film.tr.vtt", "Turkish.srt"),
+// written without diacritics because file names are compared that way. Two-letter codes
+// that are also common English words are left out; those that are common words in other
+// languages count only as the name's last word.
+const SUBTITLE_LANGUAGES = (() => {
+  const languages = {
+    tr:"tur turkish turkce", en:"eng english ingilizce", de:"ger deu german deutsch almanca",
+    fr:"fre fra french francais fransizca", es:"spa spanish espanol ispanyolca",
+    pt:"por portuguese portugues portekizce", it:"ita italian italiano italyanca",
+    ru:"rus russian rusca", ar:"ara arabic arapca", ja:"jpn japanese japonca",
+    ko:"kor korean korece", zh:"chi zho chinese cince", nl:"dut nld dutch nederlands",
+    pl:"pol polish polski", sv:"swe swedish svenska", da:"dan danish dansk", fi:"fin finnish suomi",
+    el:"gre ell greek", cs:"cze ces czech cestina", hu:"hun hungarian magyar",
+    ro:"rum ron romanian romana", bg:"bul bulgarian", uk:"ukr ukrainian",
+    fa:"per fas persian farsi", az:"aze azerbaijani", hi:"hin hindi",
+    id:"ind indonesian", he:"heb hebrew", sr:"srp serbian", hr:"hrv croatian hrvatski"
+  };
+  const names = new Map();
+  for (const [code, words] of Object.entries(languages)) {
+    names.set(code, code);
+    for (const word of words.split(" ")) names.set(word, code);
+  }
+  for (const word of ["it", "id", "he", "hi", "uk"]) names.delete(word);
+  return names;
+})();
+const LAST_WORD_LANGUAGES = new Set(["de", "da", "el", "en", "es", "por", "per"]);
+function fileName(url) {
+  try { return decodeURIComponent(new URL(url).pathname.split("/").pop() || ""); }
+  catch (_) { return ""; }
+}
+// The words of a file name without its extension, lowercase and without diacritics.
+function nameWords(url, separator) {
+  return fileName(url).toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "").replace(/\u0131/g, "i")
+    .replace(/\.[^.]*$/, "").split(separator).filter(Boolean);
+}
+// The language word nearest the file extension wins: "subtitles01.eng.vtt" is English. A word
+// joined to digits ("24hr", "x264") names no language.
+function addressLanguage(url) {
+  const words = nameWords(url, /[^\p{L}\p{N}]+/u);
+  for (let index = words.length - 1; index >= 0; index--) {
+    const code = SUBTITLE_LANGUAGES.get(words[index]);
+    if (code && (index === words.length - 1 || !LAST_WORD_LANGUAGES.has(words[index]))) return code;
+  }
+  return "";
+}
+function playerTracks(media, playerId) {
+  const tracks=[];
+  for (const track of [...media.querySelectorAll("track[src]")].slice(0,32)) {
+    const url=absoluteUrl(track.src || track.getAttribute?.("src"));
+    if(!url || url.length>16384) continue;
+    tracks.push({url, language:String(track.srclang || track.getAttribute?.("srclang") || addressLanguage(url) || "und").slice(0,35),
+      label:String(track.label || track.getAttribute?.("label") || "").slice(0,180),
+      kind:String(track.kind || track.getAttribute?.("kind") || "subtitles").slice(0,32),
+      isDefault:track.default === true || track.hasAttribute?.("default") === true, playerId});
+  }
+  if (media.tagName === "VIDEO") {
+    for (const [url, loaded] of observedSubtitles) {
+      if (tracks.length >= 32 || tracks.some(track => track.url === url) || loaded.page !== pageKey()
+        || (loaded.source && loaded.source !== mediaSource(media))) continue;
+      // The app keeps a label within 200 bytes.
+      tracks.push({url, language:addressLanguage(url) || "und", label:fileName(url).slice(0,60), kind:"subtitles", isDefault:false, playerId});
+    }
+  }
+  return tracks;
+}
+function hasSkipAdControl(media) {
+  let container=media.parentElement;
+  for(let depth=0;container && depth<3;depth++,container=container.parentElement) {
+    // Never borrow an advert control from a different player on the page.
+    if(container===document.body || container===document.documentElement || container.querySelectorAll('video,audio').length>1) break;
+    for(const control of container.querySelectorAll('button,[role="button"],[data-ad-skip],[class*="skip"],.videoAdUiSkipButton')) {
+      const rect=control.getBoundingClientRect();
+      if(rect.width<=0 || rect.height<=0 || control.checkVisibility?.()===false) continue;
+      const text=`${control.textContent||""} ${control.getAttribute("aria-label")||""}`.slice(0,180);
+      if(/reklam(?:ı|i|ları|lari)?\s*(?:geç|atla)|skip\s+(?:this\s+)?ads?\b/i.test(text)) return true;
+    }
+  }
+  return false;
+}
+
+function players() {
+  return [...queryMediaRoots("video, audio")].map(media => {
+    const current = media.currentSrc || media.src || "";
+    const identity=playerIdentity(media);
+    const rect = media.getBoundingClientRect?.();
+    const description = `${media.id || ""} ${media.className || ""} ${media.getAttribute("aria-label") || ""}`;
+    const link=media.closest?.('a[href]');
+    let promotionalLink=false;
+    try { promotionalLink=!!link && (/sponsored/i.test(link.rel) || (/nofollow/i.test(link.rel) && link.target==="_blank" && new URL(link.href).origin!==new URL(pageUrl()).origin)); } catch (_) {}
+    const adSignals=[];
+    if (/(?:^|[\s_-])(ad|advert|advertisement|reklam)(?:$|[\s_-])/i.test(description)) adSignals.push("player-identity");
+    if (media.closest?.('[data-ad], [data-ad-slot], [aria-label="Advertisement"], [aria-label="Reklam"]')) adSignals.push("ad-container");
+    if (/(?:^|[/?&._-])(?:doubleclick|adserver|advertisement)(?:[/?&._=-]|$)/i.test(current)) adSignals.push("request-host");
+    if (promotionalLink) adSignals.push("promotional-link");
+    if (media.autoplay && media.loop && (media.muted || media.defaultMuted)) adSignals.push("playback-pattern");
+    if (hasSkipAdControl(media)) adSignals.push("skip-control");
+    const elementTitle=media.getAttribute("title") || media.getAttribute("data-title") || "";
+    // Media under `visibility: hidden` (a seek-bar preview the player keeps loaded) is laid out
+    // but not shown, which checkVisibility() without options does not see.
+    const concealed=media.checkVisibility?.()!==false && media.checkVisibility?.({visibilityProperty:true})===false;
+    return {id:identity.id, urls:[current, ...[...media.querySelectorAll("source[src]")].map(s=>s.src)].map(absoluteUrl).filter(Boolean),
+      title:elementTitle || pageTitle(), explicitTitle:!!elementTitle, titleSource:elementTitle?"element":"page",
+      poster:media.poster || "", active:media.paused === false, played:media.currentTime>0 || media.readyState>=2,
+      visible:!rect || (rect.width>=100 && rect.height>=60 && media.checkVisibility?.()!==false), concealed,
+      since:identity.since, duration:Number.isFinite(media.duration)?media.duration:null,
+      loop:media.loop===true, muted:media.muted===true || media.volume===0,
+      userActivated:Date.now()-lastUserGestureAt<15000, adSignals,tracks:playerTracks(media,identity.id)};
+  });
+}
+
+// Feedback is its own surface: a refusal must be visible even while discovery has
+// withdrawn the page's media entries, so a message is never carried by the affordance
+// (whose visibility is the switch's own business). The surface is non-interactive and
+// lives only for its bounded window.
+let statusNode = null;
+let statusTimer = 0;
+function showPageStatus(message, error) {
+  const text = String(message || "").slice(0, 240);
+  if (!text) return;
+  if (!statusNode) {
+    statusNode = document.createElement("div");
+    statusNode.dataset.ssdownloadStatus = "";
+    statusNode.style.cssText = "position:fixed;left:12px;top:12px;z-index:2147483647;background:#17633d;color:white;border:1px solid white;border-radius:6px;padding:7px 10px;font:13px sans-serif;pointer-events:none";
+    document.documentElement.appendChild(statusNode);
+  }
+  statusNode.textContent = text;
+  statusNode.title = text;
+  statusNode.style.background = error ? "#b42318" : "#17633d";
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => {
+    statusTimer = 0;
+    statusNode?.remove();
+    statusNode = null;
+  }, 8000);
+}
+
+// Both kinds of tile submit through one path: the gesture is the page's own report, and a
+// refusal is answered on the document's status surface rather than on the tile's label. The
+// request is read from the document at the moment of the gesture, inside the guard that
+// answers a refusal, so nothing the tile carried can break the submission it started.
+async function handOver(buildRequest) {
+  report("play");
+  try {
+    const reply = await sendToExtension(buildRequest());
+    if (reply && reply.error) showPageStatus(String(reply.error), true);
+  } catch (error) { try { showPageStatus(t("extensionConnectionFailed"), true); } catch (_) {} }
+}
+
+// The affordance is not the page's surface. A page keeps its own handlers on `window` and
+// `document`, and propagation reaches them before a listener on the tile itself is ever
+// called: the player opens a pop-under from the user's gesture, or it swallows the event so
+// the tile never sees the click at all. These listeners are added while this script runs at
+// document_start (the document executes no script of its own until this whole script has
+// finished), so the shield is the first listener of the capture path: an event aimed at one
+// of our tiles stops there, and the tile's own submission runs from that same point, once
+// per user gesture.
+//
+// A tile is recognised by object identity alone (`ownTiles`), so nothing the page writes
+// (text, class, attribute) can make one of its own controls pass for the affordance, and
+// nothing about the page is filtered: an event aimed anywhere else is dispatched exactly as
+// the page wrote it, and the browser's own default actions (focus, the pointer's active
+// state, the click a keyboard activation generates) are never cancelled.
+const ownTiles = new WeakMap();
+// The phases a pop-under is opened from, the activation itself, and the keys a tile acts on:
+// a page handler that cancels those keys would suppress the click the browser generates.
+const OWN_TILE_TYPES = ["pointerdown", "mousedown", "pointerup", "mouseup", "auxclick", "contextmenu", "click", "touchstart", "touchend", "keydown", "keyup"];
+const OWN_TILE_KEYS = new Set(["Enter", " "]);
+
+// Where the user dragged the tiles to, as fractions of the room the anchor's on-screen part
+// leaves around a tile, so a tile on a box taller or wider than the window stays in view; null
+// keeps them 8 px inside the anchor's top-left corner. One placement serves every player, so a
+// tile moved off a site's own controls stays clear of them on the next page.
+let tilePlacement = null;
+// A press on a tile becomes a drag once it moves 5 px; its release then moves the tile
+// instead of activating it.
+let tileDrag = null;
+let draggedTile = null;
+function validPlacement(value) {
+  const x = Number(value?.x), y = Number(value?.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) } : null;
+}
+function onScreen(rect) {
+  const left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+  return { left, top, width: Math.max(0, Math.min(innerWidth, rect.left + rect.width) - left),
+    height: Math.max(0, Math.min(innerHeight, rect.top + rect.height) - top) };
+}
+function tileSpot(button, rect) {
+  if (!tilePlacement) return { left: rect.left + 8, top: rect.top + 8 };
+  const room = onScreen(rect);
+  return { left: room.left + tilePlacement.x * Math.max(0, room.width - (button.offsetWidth || 0)),
+    top: room.top + tilePlacement.y * Math.max(0, room.height - (button.offsetHeight || 0)) };
+}
+function tileAnchor(tile) {
+  for (const [node, button] of overlays) if (button === tile) return node.getBoundingClientRect();
+  return tile === pageOverlay ? playerContainerBox() : null;
+}
+// Only the pointer that pressed the tile, as the browser delivers it, moves or drops it.
+function dragPointer(event) {
+  return !!tileDrag && event?.isTrusted === true && event.pointerId === tileDrag.pointerId;
+}
+function dragTile(event) {
+  if (!dragPointer(event)) return;
+  const dx = event.clientX - tileDrag.x, dy = event.clientY - tileDrag.y;
+  if (!tileDrag.moved && Math.hypot(dx, dy) < 5) return;
+  tileDrag.moved = true;
+  const tile = tileDrag.tile;
+  tile.style.right = "auto";
+  tile.style.left = `${Math.min(Math.max(0, tileDrag.left + dx), Math.max(0, innerWidth - (tile.offsetWidth || 0)))}px`;
+  tile.style.top = `${Math.min(Math.max(0, tileDrag.top + dy), Math.max(0, innerHeight - (tile.offsetHeight || 0)))}px`;
+  event.stopImmediatePropagation();
+}
+function dropTile(event) {
+  if (!dragPointer(event)) return;
+  const drag = tileDrag;
+  tileDrag = null;
+  if (!drag?.moved) return;
+  // A cancelled gesture (the browser took a touch for scrolling) moves nothing and is
+  // followed by no click.
+  if (event?.type === "pointercancel") {
+    updateOverlays();
+    return;
+  }
+  draggedTile = drag.tile;
+  const rect = tileAnchor(drag.tile);
+  if (!rect) return;
+  const room = onScreen(rect);
+  const box = drag.tile.getBoundingClientRect();
+  const share = (offset, space) => space > 0 ? offset / space : 0;
+  tilePlacement = validPlacement({ x: share(box.left - room.left, room.width - box.width), y: share(box.top - room.top, room.height - box.height) });
+  // An updated or removed extension throws here instead of rejecting.
+  try { Promise.resolve(extensionApi.storage?.local?.set({ tilePlacement })).catch(() => {}); } catch (_) {}
+  updateOverlays();
+}
+
+// The tile this event belongs to, or null for the page's own events. Identity walks the
+// target's ancestry, so a click that lands on the tile's glyph or label reaches the tile.
+function ownTileTarget(event) {
+  for (let node = event.target; node; node = node.parentNode) if (ownTiles.has(node)) return node;
+  return null;
+}
+
+// Every phase a tile is activated through is resolved here, before the page can see it. The
+// phases this swallows are painted here too (a listener on the tile itself would never run
+// for them) while the phases the page may keep (enter, leave, cancel) stay on the tile.
+function ownTileEvent(event) {
+  const tile = ownTileTarget(event);
+  if (!tile) return;
+  if (USER_GESTURE_EVENTS.includes(event.type)) noteUserGesture();
+  if (event.type === "click") {
+    // One submission per user gesture: the click the browser generated for a real press or a
+    // keyboard activation, on a tile that still offers its action.
+    if (draggedTile === tile) draggedTile = null;
+    else if (event.isTrusted === true && event.button === 0 && overlayEnabled && !tile.hidden && !tile.disabled) ownTiles.get(tile).activate?.();
+  } else if (event.type === "keydown" || event.type === "keyup") {
+    // Only the keys a tile acts on are the tile's; every other key stays the page's event.
+    if (!OWN_TILE_KEYS.has(event.key)) return;
+    paintTile(tile, event.type === "keydown" ? "pressed" : "idle");
+    // A button turns the key into a click; the menu trigger inside a tile is no button.
+    if (event.type === "keydown" && tile.tagName !== "BUTTON" && event.isTrusted === true && overlayEnabled) {
+      event.preventDefault();
+      ownTiles.get(tile).activate?.();
+    }
+  } else if (event.type === "pointerdown") {
+    paintTile(tile, "pressed");
+    draggedTile = null;
+    if (event.isTrusted === true && event.button === 0) {
+      const box = tile.getBoundingClientRect();
+      tileDrag = { tile, pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: box.left, top: box.top, moved: false };
+      try { tile.setPointerCapture?.(event.pointerId); } catch (_) {}
+    }
+  }
+  else if (event.type === "pointerup") paintTile(tile, "hover");
+  event.stopImmediatePropagation();
+}
+
+// A document without a window is a bare test double, never a page the extension ships to.
+if (typeof window !== "undefined") {
+  window.addEventListener("pointermove", dragTile, true);
+  for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, dropTile, true);
+  for (const type of OWN_TILE_TYPES) window.addEventListener(type, ownTileEvent, true);
+}
+
+// The affordance is the application icon: a blue gradient tile with the white arrow over
+// the turquoise tray. A page styles `button` and `svg` however it likes, so every property
+// the look depends on is an inline declaration and `:hover`, `:active` and `:focus-visible`
+// come from listeners.
+const TILE_FACES = {
+  idle: { background: "linear-gradient(135deg,#2369E8,#123E9B)", boxShadow: "inset 0 1px 0 rgba(255,255,255,.28),0 2px 6px rgba(9,36,93,.35)", cursor: "pointer", opacity: "1" },
+  hover: { background: "linear-gradient(135deg,#2E76F0,#1648B0)", boxShadow: "inset 0 1px 0 rgba(255,255,255,.32),0 3px 10px rgba(9,36,93,.45)", cursor: "pointer", opacity: "1" },
+  pressed: { background: "linear-gradient(135deg,#1B57CC,#0F347F)", boxShadow: "inset 0 2px 5px rgba(4,18,48,.45)", cursor: "pointer", opacity: "1" },
+  disabled: { background: "linear-gradient(135deg,#8AA6DE,#6B84BE)", boxShadow: "none", cursor: "default", opacity: ".72" }
+};
+const TILE_CSS = "appearance:none;-webkit-appearance:none;position:fixed;z-index:2147483647;display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;margin:0;padding-block:7px;padding-inline:10px 12px;border:1px solid rgba(255,255,255,.55);border-radius:10px;background:linear-gradient(135deg,#2369E8,#123E9B);color:#fff;-webkit-text-fill-color:#fff;font:600 13px/1.2 system-ui,sans-serif;text-align:start;text-decoration:none;text-transform:none;text-indent:0;text-shadow:none;letter-spacing:normal;white-space:nowrap;unicode-bidi:isolate;width:auto;height:auto;min-width:0;min-height:0;max-width:none;max-height:none;overflow:visible;float:none;transform:none;visibility:visible;vertical-align:middle;user-select:none;-webkit-user-select:none;touch-action:none;cursor:pointer;pointer-events:auto;box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 2px 6px rgba(9,36,93,.35);transition:background .12s ease,box-shadow .12s ease;outline:none;outline-offset:0";
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const tileLabels = new WeakMap();
+let tileSequence = 0;
+
+// The tile's menu trigger and the menu's entries carry their own faces.
+const TRIGGER_FACES = {
+  idle: { background: "transparent", boxShadow: "none", cursor: "pointer", opacity: "1" },
+  hover: { background: "rgba(255,255,255,.18)", boxShadow: "none", cursor: "pointer", opacity: "1" },
+  pressed: { background: "rgba(255,255,255,.3)", boxShadow: "none", cursor: "pointer", opacity: "1" }
+};
+const MENU_ITEM_FACES = {
+  idle: { background: "transparent", boxShadow: "none", cursor: "pointer", opacity: "1" },
+  hover: { background: "#EEF3FF", boxShadow: "none", cursor: "pointer", opacity: "1" },
+  pressed: { background: "#DCE6FF", boxShadow: "none", cursor: "pointer", opacity: "1" }
+};
+const TRIGGER_CSS = "display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;align-self:stretch;box-sizing:border-box;margin-block:-7px;margin-inline:2px -12px;padding:0 9px;border:0;border-inline-start:1px solid rgba(255,255,255,.35);border-radius:0;border-start-end-radius:9px;border-end-end-radius:9px;background:transparent;color:#fff;cursor:pointer;pointer-events:auto;outline:none";
+const MENU_CSS = "position:fixed;z-index:2147483647;display:flex;flex-direction:column;box-sizing:border-box;min-width:190px;margin:0;padding:4px;border:1px solid rgba(15,23,42,.12);border-radius:10px;background:#fff;color:#1F2937;-webkit-text-fill-color:#1F2937;font:500 13px/1.2 system-ui,sans-serif;text-align:start;text-transform:none;letter-spacing:normal;white-space:nowrap;box-shadow:0 10px 28px rgba(15,23,42,.22);transform:none;visibility:visible;pointer-events:auto";
+const MENU_ITEM_CSS = "appearance:none;-webkit-appearance:none;display:block;box-sizing:border-box;width:100%;margin:0;padding:8px 12px;border:0;border-radius:7px;background:transparent;color:#1F2937;-webkit-text-fill-color:#1F2937;font:inherit;text-align:start;text-transform:none;text-decoration:none;letter-spacing:normal;white-space:nowrap;cursor:pointer;outline:none;box-shadow:none";
+
+function paintTile(button, state) {
+  const faces = ownTiles.get(button)?.faces || TILE_FACES;
+  const face = faces[state] || faces.idle;
+  button.style.background = face.background;
+  button.style.boxShadow = face.boxShadow;
+  button.style.cursor = face.cursor;
+  button.style.opacity = face.opacity;
+}
+
+// The tile's own inline `display` outranks the `hidden` attribute, so withdrawal is restated inline.
+function hideTile(button, hidden) {
+  button.hidden = hidden;
+  button.style.display = hidden ? "none" : "inline-flex";
+  if (hidden && tileMenu?.tile === button) closeTileMenu();
+}
+
+// The tile's own menu hides it: on this video or this page until the document goes, or on
+// this site through the same stored list the popup's switch writes.
+const hiddenMedia = new WeakSet();
+let hiddenPage = "";
+function pageKey() { return String(location.href).split("#")[0]; }
+function pageHidden() { return hiddenPage !== "" && hiddenPage === pageKey(); }
+async function hideOnThisSite() {
+  hiddenPage = pageKey();
+  const host = location.hostname;
+  if (!host || !extensionApi.storage?.local) return;
+  try {
+    const saved = await extensionApi.storage.local.get({ hiddenHosts: [] });
+    const hosts = new Set(Array.isArray(saved.hiddenHosts) ? saved.hiddenHosts : []);
+    hosts.add(host);
+    await extensionApi.storage.local.set({ hiddenHosts: [...hosts].slice(-500) });
+  } catch (_) { showPageStatus(t("pageUiUpdateFailed"), true); }
+}
+function hideChoices(media) {
+  const choices = [];
+  if (media) choices.push({ label: media.tagName === "AUDIO" ? t("tileHideAudio") : t("tileHideVideo"), run: () => hiddenMedia.add(media) });
+  choices.push({ label: t("tileHidePage"), run: () => { hiddenPage = pageKey(); } });
+  choices.push({ label: t("tileHideSite"), hint: t("tileHideSiteHint"), run: hideOnThisSite });
+  return choices;
+}
+
+let tileMenu = null;
+function closeTileMenu() {
+  if (!tileMenu) return;
+  tileMenu.node.remove();
+  tileMenu.trigger.setAttribute("aria-expanded", "false");
+  tileMenu = null;
+}
+// Under the tile, or above it when the viewport has no room below; never past the right edge.
+function placeTileMenu() {
+  const box = tileMenu.tile.getBoundingClientRect();
+  const menu = tileMenu.node;
+  const width = menu.offsetWidth || 0, height = menu.offsetHeight || 0;
+  const below = box.bottom + 4, above = box.top - 4 - height;
+  menu.style.top = `${below + height > innerHeight && above >= 0 ? above : below}px`;
+  menu.style.left = `${Math.max(0, Math.min(box.left, innerWidth - width - 8))}px`;
+}
+function toggleTileMenu(tile, trigger, choices) {
+  const open = tileMenu?.tile === tile;
+  closeTileMenu();
+  if (open) return;
+  const menu = document.createElement("div");
+  menu.dataset.ssdownloadTile = "";
+  menu.setAttribute("role", "menu");
+  menu.style.cssText = MENU_CSS;
+  menu.style.direction = SSDownloadI18n.direction();
+  let first = null;
+  for (const choice of choices) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.textContent = choice.label;
+    if (choice.hint) item.title = choice.hint;
+    item.style.cssText = MENU_ITEM_CSS;
+    ownTiles.set(item, { activate: () => { closeTileMenu(); choice.run(); updateOverlays(); }, faces: MENU_ITEM_FACES });
+    item.addEventListener("pointerenter", () => paintTile(item, "hover"));
+    item.addEventListener("pointerleave", () => paintTile(item, "idle"));
+    item.addEventListener("focus", () => paintTile(item, "hover"));
+    item.addEventListener("blur", () => paintTile(item, "idle"));
+    menu.appendChild(item);
+    first = first || item;
+  }
+  document.documentElement.appendChild(menu);
+  trigger.setAttribute("aria-expanded", "true");
+  tileMenu = { tile, trigger, node: menu };
+  placeTileMenu();
+  first?.focus?.({ preventScroll: true });
+}
+if (typeof window !== "undefined") {
+  // A press anywhere else on the page, or Escape, closes the menu; the page keeps that event.
+  window.addEventListener("pointerdown", event => { if (tileMenu && !ownTileTarget(event)) closeTileMenu(); }, true);
+  window.addEventListener("keydown", event => { if (tileMenu && event.key === "Escape") closeTileMenu(); }, true);
+}
+
+// The chevron at the tile's right end opens the hide choices; the rest of the tile still downloads.
+function createMenuTrigger(tile, choices) {
+  const trigger = document.createElement("span");
+  trigger.setAttribute("role", "button");
+  trigger.setAttribute("tabindex", "0");
+  trigger.setAttribute("aria-haspopup", "menu");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.setAttribute("aria-label", t("tileOptions"));
+  trigger.title = t("tileOptions");
+  trigger.style.cssText = TRIGGER_CSS;
+  const chevron = document.createElementNS(SVG_NAMESPACE, "svg");
+  chevron.setAttribute("viewBox", "0 0 24 24");
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.setAttribute("focusable", "false");
+  chevron.style.cssText = "width:14px;height:14px;display:block;flex:0 0 auto;margin:0;padding:0;overflow:visible;pointer-events:none";
+  const path = document.createElementNS(SVG_NAMESPACE, "path");
+  path.setAttribute("d", "M6 9.5l6 6 6-6");
+  path.style.cssText = "fill:none;stroke:#fff;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round";
+  chevron.appendChild(path);
+  trigger.appendChild(chevron);
+  ownTiles.set(trigger, { activate: () => toggleTileMenu(tile, trigger, choices()), faces: TRIGGER_FACES });
+  trigger.addEventListener("pointerenter", () => paintTile(trigger, "hover"));
+  trigger.addEventListener("pointerleave", () => paintTile(trigger, "idle"));
+  return trigger;
+}
+
+// Arrow and tray paint from inline styles so a page rule such as `svg path { fill: currentColor }`
+// cannot repaint them; the tray gradient id is unique per tile because it lives in the page's document.
+function downloadGlyph() {
+  const element = name => document.createElementNS(SVG_NAMESPACE, name);
+  const gradientId = `ssdownload-tray-${++tileSequence}`;
+  const glyph = element("svg");
+  glyph.setAttribute("viewBox", "0 0 24 24");
+  glyph.setAttribute("aria-hidden", "true");
+  glyph.setAttribute("focusable", "false");
+  glyph.style.cssText = "width:20px;height:20px;display:block;flex:0 0 auto;position:static;margin:0;padding:0;overflow:visible;pointer-events:none";
+  const defs = element("defs");
+  const gradient = element("linearGradient");
+  gradient.setAttribute("id", gradientId);
+  gradient.setAttribute("gradientUnits", "userSpaceOnUse");
+  gradient.setAttribute("x1", "5.4");
+  gradient.setAttribute("y1", "15.5");
+  gradient.setAttribute("x2", "18.6");
+  gradient.setAttribute("y2", "19.9");
+  for (const [offset, color] of [["0", "#27D4C1"], ["1", "#16A5B9"]]) {
+    const stop = element("stop");
+    stop.setAttribute("offset", offset);
+    stop.setAttribute("stop-color", color);
+    gradient.appendChild(stop);
+  }
+  defs.appendChild(gradient);
+  const tray = element("path");
+  tray.setAttribute("d", "M4.4 16.4a1.2 1.2 0 0 1 1.2-1.2h3.4l2.5 2.2q.5.55 1 0l2.5-2.2h3.4a1.2 1.2 0 0 1 1.2 1.2v1.8a2.2 2.2 0 0 1-2.2 2.2H6.6a2.2 2.2 0 0 1-2.2-2.2z");
+  tray.style.cssText = `fill:url(#${gradientId});stroke:none`;
+  const arrow = element("path");
+  arrow.setAttribute("d", "M12 5.2V11.4M6.4 11 12 15.8 17.4 11");
+  arrow.style.cssText = "fill:none;stroke:#fff;stroke-width:3.3;stroke-linecap:round;stroke-linejoin:round";
+  const accent = element("circle");
+  accent.setAttribute("cx", "16.3");
+  accent.setAttribute("cy", "17.5");
+  accent.setAttribute("r", "0.9");
+  accent.style.cssText = "fill:#E8FFFC;stroke:none";
+  glyph.appendChild(defs); glyph.appendChild(tray); glyph.appendChild(arrow); glyph.appendChild(accent);
+  return glyph;
+}
+
+// Both kinds of tile are the same affordance: the application icon, one label child a
+// later pass rewrites without losing the glyph, the page's own hover, pressed, keyboard
+// and focus states, and the submission the shield calls for the user's gesture.
+// Only the label child is rewritten: `textContent` on the tile would drop the glyph. The tile
+// follows the language's writing direction, which a language change can flip.
+function labelTile(tile, text) {
+  tileLabels.get(tile).textContent = text;
+  tile.style.direction = SSDownloadI18n.direction();
+}
+
+function createTile(activate, choices) {
+  const button = document.createElement("button");
+  button.type = "button";
+  // The affordance is the extension's, not the page's: the marker lets a report of the
+  // page's own markup leave our controls out of the copy it is taken from.
+  button.dataset.ssdownloadTile = "";
+  button.style.cssText = TILE_CSS;
+  // Two children, so a later pass rewrites the label without losing the glyph.
+  const labelNode = document.createElement("span");
+  labelNode.style.cssText = "display:block;flex:0 0 auto;margin:0;padding:0;color:#fff;-webkit-text-fill-color:#fff;font:inherit;line-height:1.2;white-space:nowrap;text-align:start;text-transform:none;letter-spacing:normal;pointer-events:none";
+  button.appendChild(downloadGlyph());
+  button.appendChild(labelNode);
+  if (choices) button.appendChild(createMenuTrigger(button, choices));
+  tileLabels.set(button, labelNode);
+  ownTiles.set(button, { activate });
+  // Enter, leave and cancel are the phases the page may keep, so they stay on the tile; the
+  // press, the release and the activation keys are the shield's own, and it paints them.
+  button.addEventListener("pointerenter", () => paintTile(button, "hover"));
+  button.addEventListener("pointerleave", () => paintTile(button, "idle"));
+  button.addEventListener("pointercancel", () => paintTile(button, "idle"));
+  button.addEventListener("blur", () => { paintTile(button, button.disabled ? "disabled" : "idle"); button.style.outline = ""; button.style.outlineOffset = ""; });
+  // An inline style cannot express `:focus-visible`, so the keyboard ring comes from the focus event.
+  button.addEventListener("focus", () => {
+    if (!button.matches(":focus-visible")) return;
+    button.style.outline = "3px solid #7FACFF";
+    button.style.outlineOffset = "2px";
+  });
+  return button;
+}
+
+// A document that renders its player without a media element of its own (a JS player
+// mounted into a container, a player library script, an embed iframe) keeps one
+// page-level tile: the same affordance and the same click path as a media-anchored
+// tile, carrying the product's own wording for a page candidate and never its address.
+// It hands the document itself over, exactly like the context menu's page entry.
+const PAGE_TILE_MARGIN = 8;
+let pageOverlay = null;
+
+// The detected player container's own box, so the tile stands on the player instead of
+// the viewport corner. The selector set is the one behind the `containers` signal, and
+// the largest visible match is the film player rather than a sidebar list sharing its
+// name. Only numbers leave this function: the scan message could not carry an element.
+function playerContainerBox() {
+  let best = null;
+  for (const selector of PLAYER_CONTAINER_SELECTORS) {
+    let nodes = [];
+    try { nodes = queryMediaRoots(selector); } catch (_) { continue; }
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect?.();
+      if (!rect || rect.width < 1 || rect.height < 1 || node.checkVisibility?.() === false) continue;
+      const area = rect.width * rect.height;
+      if (!best || area > best.area) best = { rect, area };
+    }
+  }
+  return best?.rect || null;
+}
+
+// A document that answered 4xx/5xx has no content to resolve, so it is no page
+// candidate at all. Chrome reports the status on the document's own navigation timing
+// entry; a value this page cannot read is not a block.
+function documentBlocked() {
+  try {
+    const status = Number(globalThis.performance?.getEntriesByType?.("navigation")?.[0]?.responseStatus);
+    return Number.isFinite(status) && status >= 400;
+  } catch (_) { return false; }
+}
+
+// A frame is another document's surface: that document draws the player's own controls
+// there, and its own content script stands the tile of that player on the same corner
+// this document would anchor to. A tile of this document is painted above the frame it
+// covers, so anchoring there would take the click that belongs to the embedded document.
+// Only the frame's box is read; what the embedded document draws inside it is never
+// guessed, and a frame this document cannot show is no surface at all.
+const EMBED_FRAME_SELECTOR = "iframe, frame, embed, object";
+function frameOccupies(box) {
+  for (const node of queryMediaRoots(EMBED_FRAME_SELECTOR)) {
+    const rect = node.getBoundingClientRect?.();
+    if (!rect || rect.width < 1 || rect.height < 1 || node.checkVisibility?.() === false) continue;
+    if (rect.left < box.right && rect.right > box.left && rect.top < box.bottom && rect.bottom > box.top) return true;
+  }
+  return false;
+}
+
+// The tile stands on the player container, where the tiles were dragged to, while that
+// container is on screen and the spot is this document's own surface, and 8 px inside the
+// viewport's top-right corner otherwise. An embedded document keeps its own affordance on its
+// player, so a document that hosts a frame under the spot keeps its offer on the corner of
+// the screen instead: the two tiles never fight over one click, and the page candidate itself
+// is unchanged.
+function placePageTile(button) {
+  if (tileDrag?.moved && tileDrag.tile === button) return;
+  const width = button.offsetWidth || 0, height = button.offsetHeight || 0;
+  const rect = playerContainerBox();
+  if (rect && rect.bottom > PAGE_TILE_MARGIN && rect.top < innerHeight) {
+    const spot = tileSpot(button, rect);
+    const left = Math.max(0, spot.left), top = Math.max(0, spot.top);
+    if (!frameOccupies({ left, top, right: left + width, bottom: top + height })) {
+      button.style.right = "auto";
+      button.style.left = `${left}px`;
+      button.style.top = `${top}px`;
+      return;
+    }
+  }
+  button.style.left = "auto";
+  button.style.top = `${PAGE_TILE_MARGIN}px`;
+  button.style.right = `${PAGE_TILE_MARGIN}px`;
+}
+
+// The page tile is the tab's own offer, and the tab is the top-level document: a frame is
+// another document's surface, so a document that stands inside one keeps the media tiles
+// of its own player and never a second offer for a page that is not its own. The manifest
+// injects this script into every frame, so this is the one place the offer is decided.
+function topLevelDocument() {
+  if (typeof window === "undefined") return true;
+  try { return window.top === window.self; } catch (_) { return true; }
+}
+
+// The page-level tile exists only while the desktop offers site entries and this document
+// has no media element the background would turn into a candidate of its own: an empty
+// placeholder that renders no player yet leaves the page address as the candidate, while a
+// loaded, playing or preview element is a producer and keeps its own tile. A blocked
+// document has no content to resolve at all, and a preview-only document is no candidate
+// either; nothing about the page's candidate is decided silently here.
+function updatePageOverlay(descriptions) {
+  if (!topLevelDocument()) {
+    if (pageOverlay) hideTile(pageOverlay, true);
+    return;
+  }
+  const producers = descriptions.filter(player => (player.urls.length || player.active || player.played) && !(player.visible === false && !player.active && !player.played));
+  const signals = producers.length ? null : collectPlayerSignals();
+  const signalled = !!signals && (signals.embeds.length > 0 || signals.containers === true || signals.playerScripts === true);
+  if (!signalled || siteEntries !== true || usageModes?.video !== true || documentBlocked() || pageHidden()) {
+    if (pageOverlay) hideTile(pageOverlay, true);
+    return;
+  }
+  if (!pageOverlay) {
+    // The document's own name travels with the gesture: the page candidate is named from
+    // this report, so a message without it would leave the candidate to the tab name.
+    pageOverlay = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-page",mediaKind:"video",documentId,pageUrl:pageUrl(),pageTitle:pageTitle(),siteNames:siteNames(),players:players(),sources:collectSources(),playerSignals:collectPlayerSignals()})), () => hideChoices(null));
+    document.documentElement.appendChild(pageOverlay);
+  }
+  labelTile(pageOverlay, t("tilePage"));
+  pageOverlay.title = usageModeTitle();
+  hideTile(pageOverlay, false);
+  placePageTile(pageOverlay);
+}
+
+let overlayFailures = 0;
+function updateOverlays() {
+  // Every caller runs through here: a page that refuses any DOM step gets the
+  // first failure stated on the page's status surface and later ones are only
+  // counted, so no overlay failure can become an unhandled rejection anywhere.
+  try { paintOverlays(); }
+  catch (_) {
+    if (++overlayFailures === 1) { try { showPageStatus(t("pageUiUpdateFailed"), true); } catch (_) {} }
+  }
+}
+function paintOverlays() {
+  if (!document.createElement) return;
+  if (!overlayEnabled || !usageModes || (!usageModes.video && !usageModes.audio)) {
+    for (const button of overlays.values()) hideTile(button, true);
+    if (pageOverlay) hideTile(pageOverlay, true);
+    return;
+  }
+  const media = [...queryMediaRoots("video, audio")].filter(node=>node.tagName==="AUDIO"?usageModes.audio:(usageModes.video||usageModes.audio));
+  const descriptions=players();
+  for (const [node, button] of overlays) if (!media.includes(node)) { hideTile(button, true); button.remove(); overlays.delete(node); }
+  for (const node of media) {
+    const mediaKind=node.tagName==="AUDIO"||!usageModes.video?"audio":"video";
+    let button = overlays.get(node);
+    if (!button) {
+      button = createTile(() => handOver(() => ({channel:"ssdownload-content",event:"download-video",mediaKind:node.tagName==="AUDIO"||!usageModes?.video?"audio":"video",playerId:playerIds.get(node)?.id,documentId,pageUrl:pageUrl(),siteNames:siteNames(),players:players(),sources:collectSources()})), () => hideChoices(node));
+      document.documentElement.appendChild(button); overlays.set(node, button);
+    }
+    labelTile(button, mediaKind==="audio"?t("tileAudio"):t("tileVideo"));
+    button.title=usageModeTitle();
+    const rect = node.getBoundingClientRect();
+    const description=descriptions.find(p=>p.id===playerIds.get(node)?.id);
+    const minimumHeight=mediaKind==="audio"?24:60;
+    // An element with no address of its own, never started, is no source producer: its tile
+    // could only fail, and a document with recognised player markup keeps the page-level tile
+    // for that case instead.
+    const withdrawn = (description && !description.urls.length && !description.active && !description.played) || rect.width < 100 || rect.height < minimumHeight || rect.bottom < 0 || rect.top > innerHeight
+      || rect.right < 0 || rect.left > innerWidth
+      || node.checkVisibility?.()===false || description?.concealed || description?.adSignals.length>=2 || hiddenMedia.has(node) || pageHidden();
+    hideTile(button, withdrawn);
+    if (button.disabled) paintTile(button, "disabled");
+    if (tileDrag?.moved && tileDrag.tile === button) continue;
+    const spot = tileSpot(button, rect);
+    button.style.left = `${Math.max(0, spot.left)}px`;
+    button.style.top = `${Math.max(0, spot.top)}px`;
+  }
+  updatePageOverlay(descriptions);
+  if (tileMenu) placeTileMenu();
+}
+
+function absoluteUrl(value) {
+  if (!value) return "";
+  if (value.startsWith("blob:")) return value;
+  try {
+    const parsed = new URL(value, document.baseURI);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : "";
+  } catch (_) { return ""; }
+}
+
+function collectSources() {
+  const found = new Map();
+  const add = (url, contentType, explicitKind, playerId = null, tracks = []) => {
+    const absolute = explicitKind === "webrtc" ? String(url) : absoluteUrl(url);
+    if (!absolute || absolute.length>16384) return;
+    const kind = explicitKind || (absolute.startsWith("blob:") ? "blob" : "url");
+    const key=`${kind}\n${playerId || ""}\n${absolute}`;
+    found.set(key, {
+      url: absolute,
+      contentType: String(contentType || found.get(key)?.contentType || ""),
+      kind,
+      pageUrl: pageUrl(),
+      playerId,
+      tracks
+    });
+  };
+
+  for (const media of queryMediaRoots("video, audio")) {
+    const identity=playerIdentity(media);
+    const tracks=playerTracks(media,identity.id);
+    if (media.srcObject) add(`webrtc:${location.origin}`, "", "webrtc", identity.id, tracks);
+    add(media.currentSrc || media.src, media.getAttribute("type") || (media.tagName === "AUDIO" ? "audio/unknown" : "video/unknown"), null, identity.id, tracks);
+    for (const source of media.querySelectorAll("source[src]")) add(source.src, source.type || (media.tagName === "AUDIO" ? "audio/unknown" : "video/unknown"), null, identity.id, tracks);
+  }
+  for (const source of queryMediaRoots("source[src]")) if (!source.closest?.("video,audio")) add(source.src, source.type || "");
+  for (const link of document.querySelectorAll('link[rel="preload"][href], link[rel="alternate"][href]')) {
+    const type = link.getAttribute("type") || "";
+    if (type.startsWith("video/") || type.startsWith("audio/") || /mpegurl|dash\+xml/i.test(type)) add(link.href, type);
+  }
+  for (const link of document.querySelectorAll('a[download][href]')) {
+    const value=absoluteUrl(link.href);
+    if(value) found.set(`file\n${value}`,{url:value,kind:"file",contentType:"",filename:link.download||"",pageUrl:pageUrl()});
+    if(found.size>=100) break;
+  }
+  return Array.from(found.values()).slice(0, 100);
+}
+
+function report(event) {
+  try {
+    refreshMediaRoots();
+    const sources = collectSources();
+    const currentPlayers = players();
+    const playerSignals = collectPlayerSignals();
+    const signature = JSON.stringify([sources, currentPlayers, location.href, playerSignals]);
+    if (event === "scan" && signature === lastScan) return;
+    lastScan = signature;
+    if (!observeLimitSent && currentPlayers.length && currentPlayers.every(player => player.visible === false && !player.active && !player.played)) {
+      observeLimitSent = true;
+      sendLogEvent("ext.observe.limit", { level: "warn", outcome: "failed", code: "SSD-EXT-010",
+        host: pageHost(), detail: observeLimitFacts(currentPlayers) });
+    }
+    const result = sendToExtension({
+      channel: "ssdownload-content",
+      event,
+      sources, players:currentPlayers, documentId, pageUrl:pageUrl(), pageTitle:pageTitle(), siteNames:siteNames(), playerSignals
+    });
+    if (result && typeof result.catch === "function") result.catch(() => {});
+  } catch (_) {}
+  updateOverlays();
+}
+
+function scheduleScan() {
+  clearTimeout(scanTimer);
+  scanTimer = setTimeout(() => { if (detectionOn) report("scan"); }, 350);
+}
+
+document.addEventListener("play", () => report("play"), true);
+document.addEventListener("loadstart", scheduleScan, true);
+document.addEventListener("loadedmetadata", scheduleScan, true);
+document.addEventListener("encrypted", () => report("drm"), true);
+
+new MutationObserver((mutations) => {
+  if (mutations.some((mutation) => (mutation.type === "childList" && [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === 1 && (node.matches("video,audio,source,track,a[download],link[rel]") || node.querySelector("video,audio,source,track,a[download],link[rel]")))) || mutation.type === "attributes")) scheduleScan();
+}).observe(document.documentElement || document, {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ["src", "href", "download"]
+});
+
+try {
+  const observer = new PerformanceObserver((list) => {
+    const sources = [];
+    for (const entry of list.getEntries()) {
+      if (["video","audio","fetch","xmlhttprequest"].includes(entry.initiatorType)) {
+        const url = absoluteUrl(entry.name);
+        if (url) sources.push({ url, contentType: "", kind: "url", pageUrl: pageUrl() });
+      }
+    }
+    if (sources.length) sendToExtension({ channel: "ssdownload-content", event: "resource", sources })?.catch(() => {});
+  });
+  observer.observe({ type: "resource", buffered: true });
+} catch (_) {}
+
+extensionApi.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // The worker asks for this document's markup at the moment of a handoff. A document
+  // with nothing to report (about:blank, a blocked frame, a page without a document
+  // element) answers with nothing, so the request goes without the field at all.
+  if(message && message.channel==="ssdownload-background" && message.command==="page-html") {
+    const html=pageHtml();
+    if(sendResponse) sendResponse(html?{html}:{});
+    return;
+  }
+  // The desktop rejected this document as a whole page (a feed, a search page, an
+  // empty playlist). Stop offering the in-page button here so the same address is
+  // not retried by every click; a navigation resets this because the script runs
+  // per document.
+  if(message && message.channel==="ssdownload-background" && message.command==="no-single-media") {
+    overlayEnabled=false;
+    closeTileMenu();
+    for (const button of overlays.values()) button.remove();
+    overlays.clear();
+    // The document-level tile is the same offer for the rejected page address.
+    if (pageOverlay) hideTile(pageOverlay, true);
+    observerControl();
+  }
+  if(message && message.channel==="ssdownload-background" && message.command==="observation-capabilities-refresh") {
+    // The worker lost the frame record that held them; the page world announces its
+    // capabilities once per document, so this re-send is the only recovery path.
+    if (observationCapabilities) sendToExtension({channel:"ssdownload-content",event:"observation-capabilities",documentId,pageUrl:pageUrl(),capabilities:observationCapabilities})?.catch(()=>{});
+  }
+  if(message && message.channel==="ssdownload-background" && message.command==="status") {
+    showPageStatus(message.message, message.error===true);
+  }
+  if(message && message.channel==="ssdownload-background" && message.command==="usage-modes") {
+    usageModes=message.status==="ready"&&message.usageModes?{video:message.usageModes.video===true,file:message.usageModes.file===true,audio:message.usageModes.audio===true}:null;
+    siteEntries=message.status==="ready"&&message.siteEntries===true;
+    usageModeError=String(message.error||"").slice(0,240);
+    // A restarted worker broadcasts a fresh token; re-delivering it here keeps the
+    // legitimate enable/disable flow working across worker sessions.
+    applyObserverToken(message.observerToken);
+    observerControl();
+    updateOverlays();
+  }
+});
+async function refreshUsageModes() {
+  try {
+    const result=await sendToExtension({channel:"ssdownload-content",event:"usage-modes"});
+    usageModes=result?.status==="ready"&&result.usageModes?{video:result.usageModes.video===true,file:result.usageModes.file===true,audio:result.usageModes.audio===true}:null;
+    siteEntries=result?.status==="ready"&&result.siteEntries===true;
+    usageModeError=String(result?.error||"").slice(0,240);
+    applyObserverToken(result?.observerToken);
+    observerControl();
+  } catch(error) { usageModes=null;siteEntries=false;usageModeError=String(error?.message||error).slice(0,240); }
+  updateOverlays();
+}
+
+sendLogEvent("ext.content.session", { level: "info", outcome: "ok", host: pageHost() });
+report("scan");
+refreshUsageModes();
+if (extensionApi.storage?.local) {
+  // A site the user hid in the popup keeps discovery but shows no overlay button.
+  const siteHidden=hosts=>Array.isArray(hosts)&&hosts.includes(location.hostname);
+  let hostHidden=false;
+  Promise.resolve(extensionApi.storage.local.get({detectionEnabled:true,hiddenHosts:[],tilePlacement:null,[SSDownloadI18n.STORAGE_KEY]:null})).then(saved=>{SSDownloadI18n.setLanguage(saved[SSDownloadI18n.STORAGE_KEY]);tilePlacement=validPlacement(saved.tilePlacement);detectionOn=saved.detectionEnabled!==false;hostHidden=siteHidden(saved.hiddenHosts);overlayEnabled=detectionOn&&!hostHidden;if(overlayEnabled){lastScan="";report("scan");}observerControl();updateOverlays();}).catch(()=>{});
+  extensionApi.storage.onChanged?.addListener((changes,area)=>{
+    if(area!=="local") return;
+    // The desktop's language, stored by the worker: tiles are repainted in it at once.
+    if(changes[SSDownloadI18n.STORAGE_KEY]) { SSDownloadI18n.setLanguage(changes[SSDownloadI18n.STORAGE_KEY].newValue); updateOverlays(); }
+    if(changes.tilePlacement) { tilePlacement=validPlacement(changes.tilePlacement.newValue); updateOverlays(); }
+    if(!changes.detectionEnabled && !changes.hiddenHosts) return;
+    if(changes.detectionEnabled) detectionOn=changes.detectionEnabled.newValue!==false;
+    if(changes.hiddenHosts) hostHidden=siteHidden(changes.hiddenHosts.newValue);
+    overlayEnabled=detectionOn&&!hostHidden;
+    // Switching discovery back on must bring the page's sources back: the worker has
+    // cleared its discoveries, and a paused player would otherwise never be reported
+    // again until the page changed. The captured context rule (only observed request
+    // context travels) is unchanged.
+    if(overlayEnabled) { lastScan=""; report("scan"); }
+    observerControl();
+    updateOverlays();
+  });
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("message",event=>{
+    if(event.source!==window || !event.data || !overlayEnabled) return;
+    if(event.data.channel==="ssdownload-observer-ready") {
+      observerControl();
+      const capabilities=event.data.capabilities;
+      if(capabilities && typeof capabilities==="object") {
+        // Kept so the background can ask for them again when an eviction removed
+        // the frame record that held them: the page world sends these once.
+        observationCapabilities=capabilities;
+        sendToExtension({channel:"ssdownload-content",event:"observation-capabilities",documentId,pageUrl:pageUrl(),capabilities})?.catch(()=>{});
+      }
+      return;
+    }
+    const data=event.data;
+    if(data.channel==="ssdownload-observed-subtitle") {
+      if(typeof data.url!=="string" || data.url.length>16384 || !/^https?:/.test(data.url)) return;
+      observeSubtitle(data.url);
+      return;
+    }
+    if(data.channel!=="ssdownload-observed-manifest" || typeof data.url!=="string" || data.url.length>16384 || !/^https?:/.test(data.url)) return;
+    const roles=new Set(["variant","audio","init","segment"]);
+    const relations=Array.isArray(data.relations)?data.relations.slice(0,200).flatMap(relation=>{
+      if(!relation || !roles.has(relation.role) || typeof relation.url!=="string" || relation.url.length>16384 || !/^https?:/.test(relation.url)) return [];
+      return [{url:relation.url,role:relation.role}];
+    }):[];
+    const children=Array.isArray(data.children)?data.children.filter(u=>typeof u==="string" && u.length<=16384 && /^https?:/.test(u)).slice(0,200):[];
+    if(JSON.stringify(relations).length>32768 || JSON.stringify(children).length>32768) return;
+    const kind=data.kind==="dash"?"dash":"hls";
+    sendToExtension({channel:"ssdownload-content",event:"manifest",documentId,pageUrl:pageUrl(),
+      manifest:{url:data.url,kind,relations,children},sources:[{url:data.url,contentType:kind==="dash"?"application/dash+xml":"application/vnd.apple.mpegurl",pageUrl:pageUrl()}]})?.catch(()=>{});
+  });
+  observerControl();
+  // Scroll fires for every scroller in the page, many times per frame: one repaint per frame.
+  let overlayFrame = 0;
+  const repaintOnce = () => { overlayFrame = 0; updateOverlays(); };
+  const scheduleOverlayUpdate = () => {
+    if (overlayFrame) return;
+    overlayFrame = typeof requestAnimationFrame === "function" ? requestAnimationFrame(repaintOnce) : setTimeout(repaintOnce, 16);
+  };
+  window.addEventListener("scroll", scheduleOverlayUpdate, true);
+  window.addEventListener("resize", updateOverlays);
+  window.addEventListener("popstate", scheduleScan);
+  // Covers history.pushState and MSE source changes without patching page APIs.
+  setInterval(() => { if (detectionOn) report("scan"); }, 1500);
+}

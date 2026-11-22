@@ -44,7 +44,7 @@ use windows_sys::Win32::{
         },
         Threading::{
             GetCurrentProcess, GetCurrentThread, GetProcessTimes, OpenProcess, OpenProcessToken,
-            OpenThreadToken, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+            OpenThreadToken, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
             PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
@@ -1215,13 +1215,31 @@ fn validate_browser_action(action: &mut Action) -> Result<()> {
 }
 
 /// Recognizes explicit CLI mode and the argument shape Chrome uses when it starts the
-/// registered native host from its manifest executable path.
+/// registered native host from its manifest executable path. Firefox passes the manifest
+/// path and then its add-on ID; the ID alone identifies that launch.
 pub fn is_native_invocation(args: &[String]) -> bool {
     args.iter().any(|argument| {
         argument == "--native-host"
             || argument
                 .to_ascii_lowercase()
                 .starts_with("chrome-extension://")
+            || argument.eq_ignore_ascii_case(crate::extension::FIREFOX_EXTENSION_ID)
+    })
+}
+
+/// File name of the Firefox Native Messaging manifest written next to the Chromium one.
+fn firefox_manifest_name() -> String {
+    format!("{HOST_NAME}.firefox.json")
+}
+
+/// Firefox manifest body: `allowed_extensions` carries the signed add-on ID.
+fn firefox_manifest_json(executable: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": HOST_NAME,
+        "description": "SSDownload Firefox integration",
+        "path": executable,
+        "type": "stdio",
+        "allowed_extensions": [crate::extension::FIREFOX_EXTENSION_ID]
     })
 }
 
@@ -1245,7 +1263,10 @@ fn launch_origin_allowed(arguments: &[String]) -> bool {
                 return false;
             }
         } else if lower.contains("-extension://")
-            || (argument.contains('@') && !argument.contains('\\') && !argument.contains('/'))
+            || (argument.contains('@')
+                && !argument.contains('\\')
+                && !argument.contains('/')
+                && !argument.eq_ignore_ascii_case(crate::extension::FIREFOX_EXTENSION_ID))
         {
             return false;
         }
@@ -1261,19 +1282,30 @@ fn spawn_background(paths: &AppPaths) -> Result<()> {
         "SSDownload çalıştırılabilir dosyası bulunamadı",
         "The SSDownload executable was not found",
     ))?;
-    Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("--background")
         .arg("--data-dir")
         .arg(&paths.base_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
-        .spawn()
-        .context(ui(
-            "SSDownload arka planda başlatılamadı",
-            "SSDownload could not be started in the background",
-        ))?;
+        .stderr(Stdio::null());
+    // Firefox runs the native host in a job that ends every process in it once the host exits,
+    // so the desktop instance leaves the job. A job that forbids leaving refuses the flag with
+    // ERROR_ACCESS_DENIED; the instance then starts inside it.
+    let spawned = command
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn();
+    match spawned {
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => command
+            .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+            .spawn(),
+        other => other,
+    }
+    .context(ui(
+        "SSDownload arka planda başlatılamadı",
+        "SSDownload could not be started in the background",
+    ))?;
     Ok(())
 }
 
@@ -1659,11 +1691,24 @@ fn registry_delete_tree(key_path: &str) -> Result<()> {
     }
 }
 
-fn registry_locations() -> [&'static str; 3] {
+fn registry_locations() -> [(&'static str, bool); 4] {
     [
-        r"Software\Google\Chrome\NativeMessagingHosts\com.ssdownload.desktop",
-        r"Software\Chromium\NativeMessagingHosts\com.ssdownload.desktop",
-        r"Software\Microsoft\Edge\NativeMessagingHosts\com.ssdownload.desktop",
+        (
+            r"Software\Google\Chrome\NativeMessagingHosts\com.ssdownload.desktop",
+            false,
+        ),
+        (
+            r"Software\Chromium\NativeMessagingHosts\com.ssdownload.desktop",
+            false,
+        ),
+        (
+            r"Software\Microsoft\Edge\NativeMessagingHosts\com.ssdownload.desktop",
+            false,
+        ),
+        (
+            r"Software\Mozilla\NativeMessagingHosts\com.ssdownload.desktop",
+            true,
+        ),
     ]
 }
 
@@ -1698,6 +1743,7 @@ pub fn register(executable: &Path, paths: &AppPaths) -> Result<()> {
         "The Native Messaging folder could not be created",
     ))?;
     let chromium_manifest = root.join(format!("{HOST_NAME}.chromium.json"));
+    let firefox_manifest = root.join(firefox_manifest_name());
     let chrome = serde_json::json!({
         "name": HOST_NAME,
         "description": "SSDownload Chrome integration",
@@ -1713,13 +1759,28 @@ pub fn register(executable: &Path, paths: &AppPaths) -> Result<()> {
             "Chrome Native Messaging manifesti yazılamadı",
             "The Chrome Native Messaging manifest could not be written",
         ))?;
+    crate::recovery::atomic_write(
+        &firefox_manifest,
+        &serde_json::to_vec_pretty(&firefox_manifest_json(&executable))?,
+    )
+    .context(ui(
+        "Firefox Native Messaging manifesti yazılamadı",
+        "The Firefox Native Messaging manifest could not be written",
+    ))?;
 
     crate::recovery::atomic_write(
         &root.join("profile.json"),
         &serde_json::to_vec(&paths.base_dir)?,
     )?;
-    for location in registry_locations() {
-        registry_set_default(location, &chromium_manifest)?;
+    for (location, is_firefox) in registry_locations() {
+        registry_set_default(
+            location,
+            if is_firefox {
+                &firefox_manifest
+            } else {
+                &chromium_manifest
+            },
+        )?;
     }
     Ok(())
 }
@@ -1740,16 +1801,26 @@ pub fn unregister(executable: &Path, paths: &AppPaths) -> Result<()> {
     }
     let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
     let chromium_manifest = root.join(format!("{HOST_NAME}.chromium.json"));
-    for location in registry_locations() {
+    let firefox_manifest = root.join(firefox_manifest_name());
+    for (location, is_firefox) in registry_locations() {
         let Ok(key) = hkcu.open_subkey(location) else {
             continue;
         };
         let actual: String = key.get_value("")?;
-        if Path::new(&actual) == chromium_manifest.as_path() {
+        let expected = if is_firefox {
+            &firefox_manifest
+        } else {
+            &chromium_manifest
+        };
+        if Path::new(&actual) == expected.as_path() {
             registry_delete_tree(location)?;
         }
     }
-    for name in [format!("{HOST_NAME}.chromium.json"), "profile.json".into()] {
+    for name in [
+        format!("{HOST_NAME}.chromium.json"),
+        firefox_manifest_name(),
+        "profile.json".into(),
+    ] {
         let path = root.join(name);
         if path.exists() {
             std::fs::remove_file(path)?;
@@ -1788,7 +1859,7 @@ pub fn host_registered() -> bool {
     let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
     registry_locations()
         .iter()
-        .any(|location| hkcu.open_subkey(location).is_ok())
+        .any(|(location, _)| hkcu.open_subkey(location).is_ok())
 }
 
 #[cfg(test)]
@@ -2077,13 +2148,26 @@ mod tests {
     }
 
     #[test]
-    fn native_registration_covers_chrome_chromium_and_edge() {
+    fn native_registration_covers_chrome_chromium_edge_and_firefox() {
         assert_eq!(
             registry_locations(),
             [
-                r"Software\Google\Chrome\NativeMessagingHosts\com.ssdownload.desktop",
-                r"Software\Chromium\NativeMessagingHosts\com.ssdownload.desktop",
-                r"Software\Microsoft\Edge\NativeMessagingHosts\com.ssdownload.desktop",
+                (
+                    r"Software\Google\Chrome\NativeMessagingHosts\com.ssdownload.desktop",
+                    false,
+                ),
+                (
+                    r"Software\Chromium\NativeMessagingHosts\com.ssdownload.desktop",
+                    false,
+                ),
+                (
+                    r"Software\Microsoft\Edge\NativeMessagingHosts\com.ssdownload.desktop",
+                    false,
+                ),
+                (
+                    r"Software\Mozilla\NativeMessagingHosts\com.ssdownload.desktop",
+                    true,
+                ),
             ]
         );
         assert!(is_native_invocation(&[format!(
@@ -2979,5 +3063,45 @@ mod tests {
 
         app.shutdown();
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn native_invocation_recognizes_the_firefox_launch_by_its_addon_id() {
+        let manifest =
+            r"C:\Users\user\AppData\Local\SSDownload\native\com.ssdownload.desktop.firefox.json";
+        assert!(is_native_invocation(&[
+            manifest.into(),
+            "ssdownload@ssdownload.local".into()
+        ]));
+        assert!(!is_native_invocation(&[
+            "--request-json".into(),
+            manifest.into()
+        ]));
+        assert!(!is_native_invocation(&["other@example.com".into()]));
+    }
+
+    #[test]
+    fn launch_origin_allows_only_the_registered_browser_identities() {
+        assert!(launch_origin_allowed(&[
+            "ssdownload@ssdownload.local".into()
+        ]));
+        assert!(!launch_origin_allowed(&["evil@example.com".into()]));
+        assert!(!launch_origin_allowed(&["chrome-extension://wrong".into()]));
+        assert!(!launch_origin_allowed(
+            &["edge-extension://anything".into()]
+        ));
+    }
+
+    #[test]
+    fn firefox_manifest_lists_the_addon_and_keeps_the_host_path() {
+        let executable = r"C:\Program Files\SSDownload\ssdownload.exe";
+        let manifest = firefox_manifest_json(executable);
+        assert_eq!(manifest["name"], HOST_NAME);
+        assert_eq!(manifest["type"], "stdio");
+        assert_eq!(
+            manifest["allowed_extensions"],
+            serde_json::json!([crate::extension::FIREFOX_EXTENSION_ID])
+        );
+        assert_eq!(manifest["path"], executable);
     }
 }

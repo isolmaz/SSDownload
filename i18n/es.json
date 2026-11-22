@@ -214,7 +214,10 @@
   "Ctrl+N  New download\nCtrl+Shift+N  Download video\nCtrl+V  Add URLs from the clipboard\nCtrl+F  Search\nCtrl+A  Select all\nDelete  Remove selected\nF5  Refresh\nEnter  Open file\nSpace  Pause / resume\nAlt+Home / Alt+End  Move to top / bottom\nCtrl+Shift+D  Add the clipboard link from anywhere": "Ctrl+N  Nueva descarga\nCtrl+Shift+N  Descargar vídeo\nCtrl+V  Añadir URL desde el portapapeles\nCtrl+F  Buscar\nCtrl+A  Seleccionar todo\nDelete  Quitar lo seleccionado\nF5  Actualizar\nEnter  Abrir archivo\nSpace  Pausar / reanudar\nAlt+Home / Alt+End  Mover al principio / al final\nCtrl+Shift+D  Añadir el enlace del portapapeles desde cualquier lugar",
   "Custom...": "Personalizado...",
   "DRM-protected content is not supported.": "El contenido protegido por DRM no es compatible.",
-  "Dark window title and control theme": "Tema oscuro para la barra de título y los controles",
+  "Color mode:": "Modo de color:",
+  "Light": "Claro",
+  "Dark": "Oscuro",
+  "Follow Windows": "Seguir a Windows",
   "Day number": "Número de día",
   "Default": "Predeterminado",
   "Default download folder:": "Carpeta de descarga predeterminada:",
@@ -1785,5 +1788,14 @@
   "The reason is below. Report problem writes a report on it and opens its folder.": "El motivo aparece abajo. «Informar de un problema» escribe un informe sobre él y abre su carpeta.",
   "The streams could not be merged within {0} seconds": "No se han podido combinar los flujos en {0} segundos",
   "SSDownload page markup": "Marcado de la página de SSDownload",
-  "The browser bridge could not start; the app continues without browser integration: {0}": "No se pudo iniciar el puente del navegador; la aplicación continúa sin la integración del navegador: {0}"
+  "The browser bridge could not start; the app continues without browser integration: {0}": "No se pudo iniciar el puente del navegador; la aplicación continúa sin la integración del navegador: {0}",
+  "The Firefox add-on manifest could not be converted to a URL": "No se pudo convertir el manifiesto del complemento de Firefox en una URL",
+  "Firefox": "Firefox",
+  "SSDownload has registered the connection to Firefox. Add the add-on from Firefox Add-ons (addons.mozilla.org).": "SSDownload ha registrado la conexión con Firefox. Añade el complemento desde Firefox Add-ons (addons.mozilla.org).",
+  "Open in Firefox Add-ons": "Abrir en Firefox Add-ons",
+  "Without the store, you can load the bundled copy temporarily:": "Sin la tienda, puedes cargar temporalmente la copia incluida:",
+  "<li>Open <b>about:debugging#/runtime/this-firefox</b>.</li><li>Choose <b>Load Temporary Add-on</b>.</li><li>Select the manifest file shown below.</li>": "<li>Abre <b>about:debugging#/runtime/this-firefox</b>.</li><li>Elige <b>Cargar complemento temporal</b>.</li><li>Selecciona el archivo de manifiesto que se muestra abajo.</li>",
+  "Open the manifest file": "Abrir el archivo de manifiesto",
+  "A temporary add-on is removed when Firefox closes.": "El complemento temporal se elimina al cerrar Firefox.",
+  "The Firefox Native Messaging manifest could not be written": "No se pudo escribir el manifiesto de mensajería nativa de Firefox"
 }

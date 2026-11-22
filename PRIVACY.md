@@ -21,7 +21,7 @@ SSDownload connects only to:
 
 GitHub, like any web server, sees the IP address of the computer that requests a file.
 
-The installer also registers the extension with Chrome and Edge (`HKCU\Software\Google\Chrome\Extensions` and `HKCU\Software\Microsoft\Edge\Extensions`). The browser itself then downloads and updates the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham), as it does for any store extension; SSDownload makes no connection for this. Uninstalling removes the entries and the browser removes the extension.
+The installer also registers the extension with Chrome and Edge (`HKCU\Software\Google\Chrome\Extensions` and `HKCU\Software\Microsoft\Edge\Extensions`). The browser itself then downloads and updates the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham), as it does for any store extension; SSDownload makes no connection for this. For Firefox, it writes the native messaging host manifest `com.ssdownload.desktop.firefox.json` and its `HKCU\Software\Mozilla\NativeMessagingHosts\com.ssdownload.desktop` key for your Windows user, which lets a Firefox add-on on this computer reach the app. Uninstalling removes these entries: Chrome and Edge then remove their store extension, while a Firefox add-on you loaded yourself stays until you remove it in Firefox.
 
 ## Browser extension
 

@@ -288,8 +288,9 @@ pub(crate) fn sweep_stale_cookie_jars() {
     }
 }
 
-/// Cookie jars and the per-download extractor-document leases (`workspace.rs`) are session
-/// material that is deleted when its download ends; only a hard kill leaves them behind.
+/// Cookie jars, the per-download extractor-document leases (`workspace.rs`) and the plugin leases
+/// of a yt-dlp run (`plugin.rs`) are session material that is deleted when its download or run
+/// ends; only a hard kill leaves them behind.
 pub(super) fn sweep_stale_session_files(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -299,7 +300,9 @@ pub(super) fn sweep_stale_session_files(dir: &Path) {
         let name = name.to_string_lossy();
         if name.starts_with("ssdownload-cookie-") && name.ends_with(".txt") {
             let _ = fs::remove_file(entry.path());
-        } else if (name.starts_with(INFO_LEASE_PREFIX) || name.starts_with(PINNED_LEASE_PREFIX))
+        } else if [INFO_LEASE_PREFIX, PINNED_LEASE_PREFIX, PLUGIN_LEASE_PREFIX]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
             && entry.file_type().is_ok_and(|kind| kind.is_dir())
         {
             let _ = fs::remove_dir_all(entry.path());

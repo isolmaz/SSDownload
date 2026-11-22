@@ -2,7 +2,7 @@ use crate::{
     app::App,
     logging::Level,
     model::{
-        Action, AddRequest, AppSnapshot, AudioSelection, CompletionAction, DownloadKind,
+        Action, AddRequest, AppSnapshot, AudioSelection, ColorMode, CompletionAction, DownloadKind,
         ExternalSubtitle, FolderRule, InspectRequest, Job, JobState, MediaFormat, MediaInfo,
         MediaLaunch, QueuePolicy, Settings, SiteCrawlRequest, SiteCrawlResult, SubtitleSelection,
         SubtitleTrack, SyncPolicy, ToolProgress, UiMode, UsageModes, UserMessage,
@@ -1267,7 +1267,7 @@ pub fn run(app: App, start_hidden: bool) -> Result<()> {
         // uxtheme only honours the shell colour scheme when the process asked
         // for it before the first window exists, so the menu bar and the
         // themed controls match the stored setting from the very first frame.
-        dark_app_mode(app.snapshot().settings.dark_mode);
+        dark_app_mode(settings_dark(&app.snapshot().settings));
         let Some(snapshot) = before_main_window(&app, start_hidden, wizard_auto_open_suppressed())
         else {
             return Ok(());
@@ -1901,7 +1901,8 @@ unsafe extern "system" fn main_proc(
             0
         }
         WM_SETTINGCHANGE => {
-            apply_dark_mode(hwnd, ui.snapshot.settings.dark_mode);
+            refresh_apps_use_light_theme();
+            apply_dark_mode(hwnd, settings_dark(&ui.snapshot.settings));
             if modern() {
                 refresh_main_surfaces(ui);
             }
@@ -2983,7 +2984,7 @@ unsafe fn create_main_controls(ui: &mut MainUi) {
     AddClipboardFormatListener(ui.hwnd);
     add_tray(ui);
     SetTimer(ui.hwnd, TIMER_REFRESH, 350, None);
-    apply_dark_mode(ui.hwnd, ui.snapshot.settings.dark_mode);
+    apply_dark_mode(ui.hwnd, settings_dark(&ui.snapshot.settings));
     if modern() {
         refresh_main_surfaces(ui);
     }
@@ -5446,8 +5447,8 @@ unsafe fn refresh(ui: &mut MainUi, force_rows: bool) {
             );
         }
     }
-    if snapshot.settings.dark_mode != ui.snapshot.settings.dark_mode {
-        apply_dark_mode(ui.hwnd, snapshot.settings.dark_mode);
+    if snapshot.settings.color_mode() != ui.snapshot.settings.color_mode() {
+        apply_dark_mode(ui.hwnd, settings_dark(&snapshot.settings));
         if modern() {
             refresh_main_surfaces(ui);
         }
@@ -7614,7 +7615,7 @@ const S_NOTIFY: i32 = 2113;
 const S_SCHEDULE: i32 = 2114;
 const S_START: i32 = 2115;
 const S_END: i32 = 2116;
-const S_DARK: i32 = 2117;
+const S_COLOR_MODE: i32 = 2117;
 const S_OK: i32 = 2118;
 const S_UPDATE_CHECK: i32 = 2119;
 const S_LOG_LEVEL: i32 = 2120;
@@ -7643,6 +7644,8 @@ const S_DOUBLE_CLICK: i32 = 2139;
 const S_HISTORY: i32 = 2140;
 const S_BATTERY_SAVER: i32 = 2141;
 const S_THEME: i32 = 2142;
+/// The entries of the colour mode box on the Genel page, in the order it lists them.
+const COLOR_MODES: [ColorMode; 3] = [ColorMode::Light, ColorMode::Dark, ColorMode::System];
 const S_BAR: i32 = 2143;
 const SP_EDIT: i32 = 2701;
 const RN_EDIT: i32 = 2703;
@@ -7761,7 +7764,9 @@ struct SettingsFields {
     schedule: HWND,
     start: HWND,
     end: HWND,
-    dark: HWND,
+    /// The colour mode box and its label; its entries are `COLOR_MODES` in order.
+    color_mode: HWND,
+    color_mode_label: HWND,
     /// The theme box, its label and the note that it applies after a restart.
     theme: HWND,
     theme_label: HWND,
@@ -8817,7 +8822,8 @@ fn settings_fields(value: Settings) -> SettingsFields {
         schedule: null_mut(),
         start: null_mut(),
         end: null_mut(),
-        dark: null_mut(),
+        color_mode: null_mut(),
+        color_mode_label: null_mut(),
         theme: null_mut(),
         theme_label: null_mut(),
         theme_note: null_mut(),
@@ -9481,7 +9487,15 @@ unsafe extern "system" fn dialog_proc(
             0
         }
         WM_SETTINGCHANGE => {
-            apply_dark_mode(hwnd, dlg.app.snapshot().settings.dark_mode);
+            // The scroll bar shows only in the light scheme, so a new scheme lays the page out
+            // again.
+            refresh_apps_use_light_theme();
+            let dark = settings_dark(&dlg.app.snapshot().settings);
+            let changed = dark != scheme_dark(hwnd);
+            apply_dark_mode(hwnd, dark);
+            if changed {
+                layout_dialog(dlg);
+            }
             0
         }
         WM_DISPLAYCHANGE => {
@@ -9779,7 +9793,7 @@ unsafe fn create_dialog_controls(dlg: &mut DialogUi) {
     } else if matches!(dlg.kind, DialogKind::Wizard(_)) {
         fit_first_label(dlg);
     }
-    apply_dark_mode(dlg.hwnd, dlg.app.snapshot().settings.dark_mode);
+    apply_dark_mode(dlg.hwnd, settings_dark(&dlg.app.snapshot().settings));
     layout_dialog(dlg);
     if let DialogKind::Rename(f) = &dlg.kind {
         // Selected once the field has its width: an edit control scrolls the
@@ -13832,6 +13846,61 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_colour_mode_box_shows_the_stored_mode_and_stores_the_picked_one() {
+        on_private_desktop(|| {
+            use super::*;
+            for modern in [false, true] {
+                // (stored color_mode, stored dark flag, entry shown)
+                for (stored, dark, shown) in [
+                    ("light", true, 0),
+                    ("dark", false, 1),
+                    ("system", false, 2),
+                    ("", true, 1),
+                    ("", false, 0),
+                ] {
+                    unsafe {
+                        let value = Settings {
+                            color_mode: stored.into(),
+                            dark_mode: dark,
+                            download_dir: std::env::temp_dir(),
+                            ..Settings::default()
+                        };
+                        let simple = UiMode::parse(&value.ui_mode).is_simple();
+                        let (raw, hwnd, root) = theme_test_dialog(
+                            modern,
+                            DialogKind::Settings(Box::new(settings_fields(value))),
+                            settings_width(),
+                            settings_logical_height(modern, simple) + SETTINGS_FRAME,
+                        );
+                        let mut saved = Vec::new();
+                        let mut opened = -1;
+                        if let DialogKind::Settings(f) = &(*raw).kind {
+                            opened = combo_index(f.color_mode);
+                            for pick in [0, 1, 2] {
+                                combo_select(f.color_mode, pick);
+                                saved
+                                    .push(collect_settings(f).map(|value| value.color_mode()).ok());
+                            }
+                        }
+                        close_test_dialog(raw, hwnd, root);
+                        let context = format!("modern {modern}, stored {stored:?}, dark {dark}");
+                        assert_eq!(opened, shown, "{context}");
+                        assert_eq!(
+                            saved,
+                            [
+                                Some(ColorMode::Light),
+                                Some(ColorMode::Dark),
+                                Some(ColorMode::System)
+                            ],
+                            "{context}"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
     fn modern_s_job_view_gives_its_bar_the_state_of_its_job() {
         on_private_desktop(|| {
             use super::*;
@@ -16931,7 +17000,11 @@ mod tests {
         with_seeded_dialog(
             |app| {
                 let mut settings = app.snapshot().settings.clone();
-                settings.dark_mode = dark;
+                settings.set_color_mode(if dark {
+                    crate::model::ColorMode::Dark
+                } else {
+                    crate::model::ColorMode::Light
+                });
                 app.update_settings_quiet(settings).unwrap();
             },
             make,
@@ -17289,7 +17362,11 @@ mod tests {
             assert_eq!(dlg.scroll_y.get(), step, "{what}, dark {dark}: the scroll");
 
             let mut settings = dialog.app().snapshot().settings.clone();
-            settings.dark_mode = !dark;
+            settings.set_color_mode(if dark {
+                crate::model::ColorMode::Light
+            } else {
+                crate::model::ColorMode::Dark
+            });
             dialog.app().update_settings_quiet(settings).unwrap();
             let passes = dlg.layout_pass.get();
             super::layout_dialog(dlg);
@@ -17339,6 +17416,51 @@ mod tests {
                 "Queues",
             );
         }
+    }
+
+    #[test]
+    fn an_open_dialog_that_follows_windows_switches_when_windows_changes_its_app_mode() {
+        use crate::model::ColorMode;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SendMessageW, GWL_STYLE, WM_SETTINGCHANGE, WS_VSCROLL,
+        };
+
+        with_seeded_dialog(
+            |app| {
+                let mut settings = app.snapshot().settings.clone();
+                settings.set_color_mode(ColorMode::System);
+                app.update_settings_quiet(settings).unwrap();
+            },
+            speed_kind,
+            420,
+            90,
+            |dialog| unsafe {
+                let area = super::wide("ImmersiveColorSet");
+                let scroll_bar =
+                    || GetWindowLongPtrW(dialog.hwnd, GWL_STYLE) as u32 & WS_VSCROLL != 0;
+                assert!(!super::scheme_dark(dialog.hwnd), "Windows is light");
+                assert!(scroll_bar(), "the light page shows the system scroll bar");
+                for (value, dark) in [(Some(0), true), (Some(1), false), (None, false)] {
+                    super::set_apps_use_light_theme(value);
+                    SendMessageW(dialog.hwnd, WM_SETTINGCHANGE, 0, area.as_ptr() as isize);
+                    assert_eq!(
+                        super::scheme_dark(dialog.hwnd),
+                        dark,
+                        "AppsUseLightTheme {value:?}: the scheme"
+                    );
+                    assert_eq!(
+                        dark_caption::stored(dialog.hwnd),
+                        Some(dark as i32),
+                        "AppsUseLightTheme {value:?}: the title bar"
+                    );
+                    assert_eq!(
+                        scroll_bar(),
+                        !dark,
+                        "AppsUseLightTheme {value:?}: the system scroll bar"
+                    );
+                }
+            },
+        );
     }
 
     /// A dialog that closes with a commit row, and what that row holds.
@@ -19714,7 +19836,7 @@ mod tests {
         }
 
         /// The title bar setting the window stores.
-        unsafe fn stored(hwnd: native::HWND) -> Option<i32> {
+        pub(super) unsafe fn stored(hwnd: native::HWND) -> Option<i32> {
             let mut value = 0i32;
             let result = DwmGetWindowAttribute(
                 hwnd,
@@ -19777,6 +19899,55 @@ mod tests {
                     press_escape(alert, buttons);
                 });
                 assert_eq!(seen.load(Ordering::SeqCst), dark as i32, "dark {dark}");
+            }
+        }
+
+        #[test]
+        fn an_open_alert_over_a_window_that_follows_windows_switches_when_windows_changes_its_app_mode(
+        ) {
+            use super::{answer_alert, press_escape, speed_kind, HiddenDialog};
+            use crate::model::ColorMode;
+            use windows_sys::Win32::Graphics::Gdi::{
+                CreateCompatibleDC, DeleteDC, GetSysColorBrush, COLOR_WINDOW,
+            };
+
+            for modern in [false, true] {
+                for (from, to) in [(Some(1), Some(0)), (Some(0), Some(1))] {
+                    let (from_dark, to_dark) = (from == Some(0), to == Some(0));
+                    let case = format!("modern {modern}, AppsUseLightTheme {from:?} to {to:?}");
+                    let alert_over_a_dialog = || unsafe {
+                        native::set_modern(modern);
+                        native::set_apps_use_light_theme(from);
+                        native::refresh_apps_use_light_theme();
+                        let owner = HiddenDialog::seeded(speed_kind(), 420, 90, |app| {
+                            let mut settings = app.snapshot().settings.clone();
+                            settings.set_color_mode(ColorMode::System);
+                            app.update_settings_quiet(settings).unwrap();
+                        });
+                        native::set_apps_use_light_theme(to);
+                        native::run_alert(owner.hwnd, "A message", "Title", MB_OK)
+                    };
+                    answer_alert(alert_over_a_dialog, |alert, buttons| unsafe {
+                        let hwnd = alert as native::HWND;
+                        assert_eq!(native::scheme_dark(hwnd), from_dark, "{case}: before");
+                        let area = native::wide("ImmersiveColorSet");
+                        SendMessageW(hwnd, WM_SETTINGCHANGE, 0, area.as_ptr() as isize);
+                        assert_eq!(native::scheme_dark(hwnd), to_dark, "{case}: the scheme");
+                        assert_eq!(stored(hwnd), Some(to_dark as i32), "{case}: the title bar");
+                        if !modern {
+                            let dc = CreateCompatibleDC(null_mut());
+                            let brush = SendMessageW(hwnd, WM_CTLCOLORSTATIC, dc as usize, 0);
+                            DeleteDC(dc);
+                            let expected = if to_dark {
+                                native::palette_brush(native::DARK_BACKGROUND)
+                            } else {
+                                GetSysColorBrush(COLOR_WINDOW)
+                            };
+                            assert_eq!(brush, expected as isize, "{case}: the surface");
+                        }
+                        press_escape(alert, buttons);
+                    });
+                }
             }
         }
     }
@@ -19891,7 +20062,11 @@ mod tests {
                 let _styles = VisualStyles::activate();
                 let dialog = HiddenDialog::seeded(make(), width, height, |app| {
                     let mut settings = app.snapshot().settings.clone();
-                    settings.dark_mode = dark;
+                    settings.set_color_mode(if dark {
+                        crate::model::ColorMode::Dark
+                    } else {
+                        crate::model::ColorMode::Light
+                    });
                     app.update_settings_quiet(settings).unwrap();
                 });
                 body(&dialog)
@@ -21461,7 +21636,11 @@ mod tests {
         fn dialog(case: &Case, dark: bool) -> HiddenDialog {
             HiddenDialog::seeded((case.make)(), case.width, case.height, |app| {
                 let mut settings = app.snapshot().settings.clone();
-                settings.dark_mode = dark;
+                settings.set_color_mode(if dark {
+                    crate::model::ColorMode::Dark
+                } else {
+                    crate::model::ColorMode::Light
+                });
                 app.update_settings_quiet(settings).unwrap();
             })
         }

@@ -3,8 +3,10 @@
 # every release.
 #
 # Steps: cargo fmt --check, Clippy with warnings as errors, the Rust tests, the
-# translation catalog check (Python), the browser-extension tests (Node.js) and, when
-# installed, cargo audit. A step that cannot run is reported as skipped, never as passed.
+# translation catalog check (Python), the yt-dlp plugin tests (uv), the
+# browser-extension tests (Node.js), the Firefox add-on sync and lint checks, and,
+# when installed, cargo audit. A step that
+# cannot run is reported as skipped, never as passed.
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1
@@ -52,11 +54,26 @@ try {
     } else {
         $skipped += 'translation catalogs (Python 3 is not installed)'
     }
+    if (Test-Command 'uv') {
+        Invoke-Step 'yt-dlp plugin tests' { uv run --no-project --with yt-dlp==2026.10.26 python src/media/yt_dlp_plugin/test_instagram_story_fallback.py }
+    } else {
+        $skipped += 'yt-dlp plugin tests (uv is not installed)'
+    }
     if (Test-Command 'node') {
         $suites = Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'browser\tests') -Filter '*.test.js' | ForEach-Object { $_.FullName }
         Invoke-Step 'browser extension tests' { node --test @suites }
     } else {
         $skipped += 'browser extension tests (Node.js 20+ is not installed)'
+    }
+    if ($pythonVersion -match '^Python 3\.') {
+        Invoke-Step 'Firefox add-on sync' { python scripts/sync-firefox-extension.py --check }
+    } else {
+        $skipped += 'Firefox add-on sync (Python 3 is not installed)'
+    }
+    if (Test-Command 'npx') {
+        Invoke-Step 'Firefox add-on lint' { npx --yes web-ext@10.8.0 lint --source-dir browser/firefox --output text }
+    } else {
+        $skipped += 'Firefox add-on lint (npx is not installed)'
     }
     $auditVersion = $null
     try { $auditVersion = (& cargo audit --version 2>$null | Select-Object -First 1) } catch { $auditVersion = $null }

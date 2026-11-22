@@ -2827,7 +2827,7 @@ pub(super) fn settings_inputs(f: &SettingsFields) -> [HWND; 16] {
     ]
 }
 
-pub(super) fn settings_combos(f: &SettingsFields) -> [HWND; 6] {
+pub(super) fn settings_combos(f: &SettingsFields) -> [HWND; 7] {
     [
         f.ui_mode,
         f.ui_language,
@@ -2835,6 +2835,7 @@ pub(super) fn settings_combos(f: &SettingsFields) -> [HWND; 6] {
         f.proxy_mode,
         f.double_click,
         f.theme,
+        f.color_mode,
     ]
 }
 

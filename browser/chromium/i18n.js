@@ -147,7 +147,7 @@
     nativeInvalidReply: "The local app sent an invalid reply",
 
     // ---- site session (cookies)
-    cookieStoreUnverifiable: "This Chrome version cannot verify the current tab's cookie store.",
+    cookieStoreUnverifiable: "This browser version cannot verify the current tab's cookie store.",
     cookieStoreAmbiguous: "The current tab's cookie store could not be verified as exactly one.",
     cookieTargetLimit: "The cookie target limit for the selected source chain was exceeded.",
     cookieLimit: "The cookie limit for the selected source chain was exceeded.",
@@ -157,8 +157,8 @@
     requestContextExpired: "The source's request context has expired. Play the video again and retry.",
     sessionPermissionQueryFailed: "The site session permission could not be queried. Restart the browser and grant the permission again in this tab.",
     sessionPermissionWrongStore: "The site session permission was not granted for this tab's cookie store. Grant it again in this tab.",
-    partitionedScopeUnverifiable: "This Chrome version cannot verify the partitioned session scope. Update the browser or remove the site session permission.",
-    partitionScopeUntransferable: "The session scope of this Chrome partition cannot be handed over safely.",
+    partitionedScopeUnverifiable: "This browser version cannot verify the partitioned session scope. Update the browser or remove the site session permission.",
+    partitionScopeUntransferable: "The session scope of this browser partition cannot be handed over safely.",
     takeoverStoreUnverifiable: "The browser's cookie store could not be verified as exactly one for this download, so it stays in the browser.",
     takeoverSessionWrongStore: "The site session permission was not granted for the browser's regular cookie store, so the download stays in the browser.",
     takeoverReturned: "SSDownload could not receive this file, so the browser continues the download.",
@@ -412,7 +412,7 @@
     nativeInvalidReply: "Yerel uygulama geçersiz yanıt verdi",
 
     // ---- site session (cookies)
-    cookieStoreUnverifiable: "Bu Chrome sürümünde geçerli sekmenin çerez deposu doğrulanamıyor.",
+    cookieStoreUnverifiable: "Bu tarayıcı sürümünde geçerli sekmenin çerez deposu doğrulanamıyor.",
     cookieStoreAmbiguous: "Geçerli sekmenin çerez deposu tek olarak doğrulanamadı.",
     cookieTargetLimit: "Seçili kaynak zinciri için çerez hedefi sınırı aşıldı.",
     cookieLimit: "Seçili kaynak zincirinin çerez sınırı aşıldı.",
@@ -422,8 +422,8 @@
     requestContextExpired: "Kaynağın istek bağlamı eskidi. Videoyu yeniden oynatıp yeniden deneyin.",
     sessionPermissionQueryFailed: "Site oturum izni sorgulanamadı. Tarayıcıyı yeniden başlatıp izni bu sekmede yeniden verin.",
     sessionPermissionWrongStore: "Site oturum izni bu sekmenin çerez deposu için verilmiş değil. İzni bu sekmede yeniden verin.",
-    partitionedScopeUnverifiable: "Bu Chrome sürümünde bölümlenmiş oturum kapsamı doğrulanamıyor. Tarayıcıyı güncelleyin veya site oturumu iznini kaldırın.",
-    partitionScopeUntransferable: "Bu Chrome bölümünün oturum kapsamı güvenle aktarılamıyor.",
+    partitionedScopeUnverifiable: "Bu tarayıcı sürümünde bölümlenmiş oturum kapsamı doğrulanamıyor. Tarayıcıyı güncelleyin veya site oturumu iznini kaldırın.",
+    partitionScopeUntransferable: "Bu tarayıcı bölümünün oturum kapsamı güvenle aktarılamıyor.",
     takeoverStoreUnverifiable: "Bu indirme için tarayıcının çerez deposu tek olarak doğrulanamadı; indirme tarayıcıda kalıyor.",
     takeoverSessionWrongStore: "Site oturum izni tarayıcının normal çerez deposu için verilmiş değil; indirme tarayıcıda kalıyor.",
     takeoverReturned: "SSDownload bu dosyayı alamadı; indirmeyi tarayıcı sürdürüyor.",
@@ -677,7 +677,7 @@
     nativeInvalidReply: "أرسل التطبيق المحلي ردًا غير صالح",
 
     // ---- site session (cookies)
-    cookieStoreUnverifiable: "لا يمكن لإصدار Chrome هذا التحقق من مخزن ملفات تعريف الارتباط للعلامة الحالية.",
+    cookieStoreUnverifiable: "لا يمكن لإصدار المتصفح هذا التحقق من مخزن ملفات تعريف الارتباط للعلامة الحالية.",
     cookieStoreAmbiguous: "تعذّر التحقق من أن مخزن ملفات تعريف الارتباط للعلامة الحالية واحد فقط.",
     cookieTargetLimit: "تم تجاوز حد هدف ملفات تعريف الارتباط لسلسلة المصدر المحددة.",
     cookieLimit: "تم تجاوز حد ملفات تعريف الارتباط لسلسلة المصدر المحددة.",
@@ -687,8 +687,8 @@
     requestContextExpired: "انتهت صلاحية سياق طلب المصدر. شغّل الفيديو مرة أخرى وأعد المحاولة.",
     sessionPermissionQueryFailed: "تعذّر الاستعلام عن إذن جلسة الموقع. أعد تشغيل المتصفح، وامنح الإذن مرة أخرى في هذه العلامة.",
     sessionPermissionWrongStore: "لم يُمنح إذن جلسة الموقع لمخزن ملفات تعريف الارتباط الخاص بهذه العلامة. امنحه مرة أخرى في هذه العلامة.",
-    partitionedScopeUnverifiable: "لا يمكن لإصدار Chrome هذا التحقق من نطاق الجلسة المقسَّمة. حدّث المتصفح أو أزل إذن جلسة الموقع.",
-    partitionScopeUntransferable: "لا يمكن تسليم نطاق الجلسة لقسم Chrome هذا بأمان.",
+    partitionedScopeUnverifiable: "لا يمكن لإصدار المتصفح هذا التحقق من نطاق الجلسة المقسَّمة. حدّث المتصفح أو أزل إذن جلسة الموقع.",
+    partitionScopeUntransferable: "لا يمكن تسليم نطاق الجلسة لقسم المتصفح هذا بأمان.",
     takeoverStoreUnverifiable: "تعذّر التحقق من أن مخزن ملفات تعريف الارتباط في المتصفح واحد فقط لهذا التنزيل، لذلك يبقى التنزيل في المتصفح.",
     takeoverSessionWrongStore: "لم يُمنح إذن جلسة الموقع لمخزن ملفات تعريف الارتباط العادي في المتصفح، لذلك يبقى التنزيل في المتصفح.",
     takeoverReturned: "تعذّر على SSDownload استلام هذا الملف، لذلك يتابع المتصفح التنزيل.",
@@ -942,7 +942,7 @@
     nativeInvalidReply: "La aplicación local ha enviado una respuesta no válida",
 
     // ---- site session (cookies)
-    cookieStoreUnverifiable: "Esta versión de Chrome no puede verificar el almacén de cookies de la pestaña actual.",
+    cookieStoreUnverifiable: "Esta versión del navegador no puede verificar el almacén de cookies de la pestaña actual.",
     cookieStoreAmbiguous: "No se ha podido verificar que el almacén de cookies de la pestaña actual sea exactamente uno.",
     cookieTargetLimit: "Se ha superado el límite de destinos de cookies para la cadena de orígenes seleccionada.",
     cookieLimit: "Se ha superado el límite de cookies de la cadena de orígenes seleccionada.",
@@ -952,8 +952,8 @@
     requestContextExpired: "El contexto de la solicitud del origen ha caducado. Reproducir de nuevo el vídeo y volver a intentarlo.",
     sessionPermissionQueryFailed: "No se ha podido consultar el permiso de sesión del sitio. Reiniciar el navegador y volver a conceder el permiso en esta pestaña.",
     sessionPermissionWrongStore: "El permiso de sesión del sitio no se concedió para el almacén de cookies de esta pestaña. Volver a concederlo en esta pestaña.",
-    partitionedScopeUnverifiable: "Esta versión de Chrome no puede verificar el ámbito de sesión particionado. Actualizar el navegador o quitar el permiso de sesión del sitio.",
-    partitionScopeUntransferable: "El ámbito de sesión de esta partición de Chrome no se puede traspasar de forma segura.",
+    partitionedScopeUnverifiable: "Esta versión del navegador no puede verificar el ámbito de sesión particionado. Actualizar el navegador o quitar el permiso de sesión del sitio.",
+    partitionScopeUntransferable: "El ámbito de sesión de esta partición del navegador no se puede traspasar de forma segura.",
     takeoverStoreUnverifiable: "No se ha podido verificar que el almacén de cookies del navegador sea exactamente uno para esta descarga, así que se queda en el navegador.",
     takeoverSessionWrongStore: "El permiso de sesión del sitio no se concedió para el almacén de cookies normal del navegador, así que la descarga se queda en el navegador.",
     takeoverReturned: "SSDownload no pudo recibir este archivo, así que el navegador continúa la descarga.",
@@ -1207,7 +1207,7 @@
     nativeInvalidReply: "O aplicativo local enviou uma resposta inválida",
 
     // ---- site session (cookies)
-    cookieStoreUnverifiable: "Esta versão do Chrome não consegue verificar o armazenamento de cookies da guia atual.",
+    cookieStoreUnverifiable: "Esta versão do navegador não consegue verificar o armazenamento de cookies da guia atual.",
     cookieStoreAmbiguous: "O armazenamento de cookies da guia atual não pôde ser verificado como um único.",
     cookieTargetLimit: "O limite de destinos de cookies para a cadeia de fontes selecionada foi excedido.",
     cookieLimit: "O limite de cookies da cadeia de fontes selecionada foi excedido.",
@@ -1217,8 +1217,8 @@
     requestContextExpired: "O contexto de solicitação da fonte expirou. Reproduza o vídeo novamente e tente de novo.",
     sessionPermissionQueryFailed: "Não foi possível consultar a permissão de sessão do site. Reinicie o navegador e conceda a permissão novamente nesta guia.",
     sessionPermissionWrongStore: "A permissão de sessão do site não foi concedida para o armazenamento de cookies desta guia. Conceda-a novamente nesta guia.",
-    partitionedScopeUnverifiable: "Esta versão do Chrome não consegue verificar o escopo de sessão particionado. Atualize o navegador ou remova a permissão de sessão do site.",
-    partitionScopeUntransferable: "O escopo de sessão desta partição do Chrome não pode ser transferido com segurança.",
+    partitionedScopeUnverifiable: "Esta versão do navegador não consegue verificar o escopo de sessão particionado. Atualize o navegador ou remova a permissão de sessão do site.",
+    partitionScopeUntransferable: "O escopo de sessão desta partição do navegador não pode ser transferido com segurança.",
     takeoverStoreUnverifiable: "Não foi possível verificar que o armazenamento de cookies do navegador seja único para este download, então ele permanece no navegador.",
     takeoverSessionWrongStore: "A permissão de sessão do site não foi concedida para o armazenamento de cookies normal do navegador, então o download permanece no navegador.",
     takeoverReturned: "O SSDownload não conseguiu receber este arquivo, então o navegador continua o download.",
@@ -1472,7 +1472,7 @@
     nativeInvalidReply: "L'application locale a envoyé une réponse invalide",
 
     // ---- site session (cookies)
-    cookieStoreUnverifiable: "Cette version de Chrome ne peut pas vérifier le magasin de cookies de l'onglet actuel.",
+    cookieStoreUnverifiable: "Cette version du navigateur ne peut pas vérifier le magasin de cookies de l'onglet actuel.",
     cookieStoreAmbiguous: "Le magasin de cookies de l'onglet actuel n'a pas pu être vérifié comme unique.",
     cookieTargetLimit: "La limite de cibles de cookies pour la chaîne de source sélectionnée a été dépassée.",
     cookieLimit: "La limite de cookies de la chaîne de source sélectionnée a été dépassée.",
@@ -1482,8 +1482,8 @@
     requestContextExpired: "Le contexte de requête de la source a expiré. Relisez la vidéo et réessayez.",
     sessionPermissionQueryFailed: "L'autorisation de session du site n'a pas pu être vérifiée. Redémarrez le navigateur et accordez de nouveau l'autorisation dans cet onglet.",
     sessionPermissionWrongStore: "L'autorisation de session du site n'a pas été accordée pour le magasin de cookies de cet onglet. Accordez-la de nouveau dans cet onglet.",
-    partitionedScopeUnverifiable: "Cette version de Chrome ne peut pas vérifier la portée de session partitionnée. Mettez à jour le navigateur ou supprimez l'autorisation de session du site.",
-    partitionScopeUntransferable: "La portée de session de cette partition Chrome ne peut pas être transmise en toute sécurité.",
+    partitionedScopeUnverifiable: "Cette version du navigateur ne peut pas vérifier la portée de session partitionnée. Mettez à jour le navigateur ou supprimez l'autorisation de session du site.",
+    partitionScopeUntransferable: "La portée de session de cette partition du navigateur ne peut pas être transmise en toute sécurité.",
     takeoverStoreUnverifiable: "Le magasin de cookies du navigateur n'a pas pu être vérifié comme unique pour ce téléchargement ; il reste donc dans le navigateur.",
     takeoverSessionWrongStore: "L'autorisation de session du site n'a pas été accordée pour le magasin de cookies normal du navigateur ; le téléchargement reste donc dans le navigateur.",
     takeoverReturned: "SSDownload n'a pas pu recevoir ce fichier ; le navigateur poursuit donc le téléchargement.",
@@ -1737,7 +1737,7 @@
     nativeInvalidReply: "Die lokale App hat eine ungültige Antwort gesendet",
 
     // ---- site session (cookies)
-    cookieStoreUnverifiable: "Diese Chrome-Version kann den Cookie-Speicher des aktuellen Tabs nicht prüfen.",
+    cookieStoreUnverifiable: "Diese Browserversion kann den Cookie-Speicher des aktuellen Tabs nicht prüfen.",
     cookieStoreAmbiguous: "Der Cookie-Speicher des aktuellen Tabs konnte nicht eindeutig als einzelner Speicher bestätigt werden.",
     cookieTargetLimit: "Das Cookie-Ziellimit für die ausgewählte Quellenkette wurde überschritten.",
     cookieLimit: "Das Cookie-Limit für die ausgewählte Quellenkette wurde überschritten.",
@@ -1747,8 +1747,8 @@
     requestContextExpired: "Der Anfragekontext der Quelle ist abgelaufen. Spielen Sie das Video erneut ab und versuchen Sie es noch einmal.",
     sessionPermissionQueryFailed: "Die Berechtigung für die Website-Sitzung konnte nicht abgefragt werden. Starten Sie den Browser neu und erteilen Sie die Berechtigung in diesem Tab erneut.",
     sessionPermissionWrongStore: "Die Berechtigung für die Website-Sitzung wurde nicht für den Cookie-Speicher dieses Tabs erteilt. Erteilen Sie sie in diesem Tab erneut.",
-    partitionedScopeUnverifiable: "Diese Chrome-Version kann den partitionierten Sitzungsbereich nicht prüfen. Aktualisieren Sie den Browser oder entfernen Sie die Berechtigung für die Website-Sitzung.",
-    partitionScopeUntransferable: "Der Sitzungsbereich dieser Chrome-Partition kann nicht sicher übergeben werden.",
+    partitionedScopeUnverifiable: "Diese Browserversion kann den partitionierten Sitzungsbereich nicht prüfen. Aktualisieren Sie den Browser oder entfernen Sie die Berechtigung für die Website-Sitzung.",
+    partitionScopeUntransferable: "Der Sitzungsbereich dieser Browser-Partition kann nicht sicher übergeben werden.",
     takeoverStoreUnverifiable: "Der Cookie-Speicher des Browsers konnte für diesen Download nicht eindeutig als einzelner Speicher bestätigt werden, daher bleibt er im Browser.",
     takeoverSessionWrongStore: "Die Berechtigung für die Website-Sitzung wurde nicht für den normalen Cookie-Speicher des Browsers erteilt, daher bleibt der Download im Browser.",
     takeoverReturned: "SSDownload konnte diese Datei nicht empfangen, daher setzt der Browser den Download fort.",

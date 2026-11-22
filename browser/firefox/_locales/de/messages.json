@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "SSDownload – Video-Downloader und -Manager",
+    "description": "Store name and the name on the extensions page (at most 75 characters)."
+  },
+  "extDescription": {
+    "message": "Video-Downloader und Download-Manager für Windows: Videos speichern, Downloads fortsetzen. Benötigt die kostenlose SSDownload-App.",
+    "description": "Store summary and the description on the extensions page (at most 132 characters)."
+  }
+}

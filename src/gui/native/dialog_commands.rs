@@ -1625,7 +1625,9 @@ pub(super) unsafe fn collect_settings(
     value.close_to_tray = check(f.tray);
     value.start_with_windows = check(f.startup);
     value.notify_completion = check(f.notify);
-    value.dark_mode = check(f.dark);
+    if let Some(mode) = COLOR_MODES.get(combo_index(f.color_mode) as usize) {
+        value.set_color_mode(*mode);
+    }
     value.theme = if combo_index(f.theme) == 1 {
         "modern".into()
     } else {

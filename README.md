@@ -23,14 +23,14 @@
 
 - **Downloads** over up to 16 connections per file (8 by default). A download resumes only when the server proves the file is unchanged, and a finished file never overwrites an existing one. A file downloaded over HTTP(S) is checked against the SHA-256 its source publishes, when there is one.
 - **Video and audio** from the page you are watching: choose the quality, container, audio and subtitle tracks, or save as MP3. Every result is checked with ffprobe and FFmpeg before it is published. Live streams are recorded, from their beginning where the site keeps it, and a live video recording can be finished early with what was recorded so far.
-- **Browser extension** for Chrome and Edge: a download button on videos, right-click entries and optional download takeover.
+- **Browser extension** for Chrome, Edge and Firefox: a download button on videos, right-click entries and optional download takeover.
 - **Queue:** drag to reorder, pause and resume, speed limits, a mini panel, completion cards and tray controls.
-- **Themes:** Classic (the default) and Modern, each in light and dark.
+- **Themes:** Classic (the default) and Modern, each in light and dark or following Windows' light or dark mode.
 - **For larger jobs:** named queues with time windows, folder rules, batch ranges, a site explorer, a command line and signed updates that install after you accept them.
 - **Privacy:** no account, no telemetry and no SSDownload server. The app connects only to the sources you download from and to GitHub, for updates and media support. See [PRIVACY.md](PRIVACY.md).
 
 <p align="center">
-  <img src="docs/media/light-dark.gif" width="860" alt="Settings turns the Classic window dark at once when the dark title bar and controls are ticked. In the dark window, a waiting download is dragged to the top of the queue, one running download is paused with the Pause / Resume button and resumed from the mini panel, and the tray menu sets a speed limit of 1 MB/s.">
+  <img src="docs/media/light-dark.gif" width="860" alt="Setting the color mode to Dark in Settings turns the Classic window dark at once. In the dark window, a waiting download is dragged to the top of the queue, one running download is paused with the Pause / Resume button and resumed from the mini panel, and the tray menu sets a speed limit of 1 MB/s.">
 </p>
 
 <p align="center">
@@ -39,8 +39,8 @@
 
 ## Install
 
-1. Download **`SSDownload-<version>-Setup.exe`** (or the portable ZIP) from the [latest release](https://github.com/isolmaz/SSDownload/releases/latest) and run it. No administrator rights are needed.
-2. The installer adds the browser extension to Chrome and Edge. The next time you open the browser, click **Enable extension** on its "New extension added" notice. No notice? Add it from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham), or use **Tools → Browser setup** to load the bundled copy without the store.
+1. Download **`SSDownload-<version>-Setup.exe`** (or the portable ZIP) from the [latest release](https://github.com/isolmaz/SSDownload/releases/latest) and run it. No administrator rights are needed. Package managers work too: `winget install isolmaz.SSDownload` runs the same Setup (a release reaches winget a few days later, after Microsoft's review), and `scoop bucket add isolmaz https://github.com/isolmaz/scoop-bucket` followed by `scoop install isolmaz/ssdownload` installs the portable copy.
+2. The installer adds the browser extension to Chrome and Edge. The next time you open the browser, click **Enable extension** on its "New extension added" notice. No notice? Add it from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgndggnlfpnflkmnbddmcnfniamckham), or use **Tools → Browser setup** to load the bundled copy without the store. In Firefox, add it from [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/ssdownload/); the app registers the connection to Firefox.
 3. The installer downloads media support (yt-dlp, FFmpeg, Deno), each file verified against its published SHA-256. Without a connection, the app installs it on its first start instead.
 
 The builds are not code-signed yet, so SmartScreen may warn on first run. The release page lists the SHA-256 of every file. Installed copies update themselves after you accept the signed update.
@@ -65,6 +65,8 @@ cargo build --release --locked
 ```
 
 Checks run locally with `scripts\check.ps1` and on every pull request in GitHub Actions. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+The Firefox add-on in `browser\firefox` is generated from the Chrome and Edge sources in `browser\chromium`: edit that folder and run `python scripts\sync-firefox-extension.py`, which writes the Firefox copy (add `--check` to verify the two agree). Only `browser\firefox\manifest.json` is kept by hand; the extension tests fail when it differs from the Chromium manifest in anything but the browser-specific keys. No extra build tool is needed for it.
 
 ## License
 

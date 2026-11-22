@@ -127,7 +127,8 @@ function backgroundHarness({ native = async request => request?.action?.type==="
         return [...downloadItems.values()].filter(item => (query.id === undefined || item.id === query.id)).map(item => ({ ...item }));
       }
     },
-    webNavigation: navigation,
+    // Without a frame tree of its own, the tab holds only its top document.
+    webNavigation: navigation ?? { async getFrame({ frameId }) { return frameId === 0 ? { frameId: 0, parentFrameId: -1, url: tabUrl } : null; } },
     permissions: {
       async contains() { return storage.granted === true; },
       async request() { storage.granted = true; return { granted: true }; }
