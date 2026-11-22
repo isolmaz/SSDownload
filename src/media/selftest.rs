@@ -57,7 +57,13 @@ fn check_tools(tools: &tools::VerifiedTools, scratch: &Path, run: &mut Run) -> R
     let info = scratch.join("info.json");
     fs::write(&info, serde_json::to_vec(&info_document(&video, &audio)?)?)?;
     let output = scratch.join("out");
-    let mut args = common_args(&tools.deno, &tools.ffmpeg, false);
+    let plugins = plugin_lease();
+    let mut args = common_args(
+        &tools.deno,
+        &tools.ffmpeg,
+        plugin_folder(plugins.as_ref()),
+        false,
+    );
     args.extend(load_info_args(&info, true));
     args.extend(["--windows-filenames".into(), "--no-overwrites".into()]);
     args.extend(marker_args());
@@ -563,9 +569,22 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, ["ffmpeg.exe", "yt-dlp.exe", "ffprobe.exe"]);
         let download = &seen[1].1;
+        // The run had a plugin lease of its own, removed when the run ended.
+        let plugins = download
+            .windows(2)
+            .find(|pair| pair[0] == "--plugin-dirs")
+            .map(|pair| PathBuf::from(&pair[1]))
+            .expect("the download names a plugin folder");
+        assert!(plugins
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(PLUGIN_LEASE_PREFIX));
+        assert!(!plugins.exists(), "{}", plugins.display());
         let common = common_args(
             Path::new("C:\\fake\\deno.exe"),
             Path::new("C:\\fake\\ffmpeg.exe"),
+            Some(&plugins),
             false,
         );
         assert!(download.starts_with(&common), "{download:?}");

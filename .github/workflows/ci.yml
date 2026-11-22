@@ -39,6 +39,12 @@ jobs:
       - name: Translation catalogs
         run: python scripts/i18n.py check
 
+      - name: yt-dlp plugin tests
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps yt-dlp==2026.10.26
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python src/media/yt_dlp_plugin/test_instagram_story_fallback.py
+
       - name: Browser extension tests
         run: |
           $suites = Get-ChildItem browser/tests -Filter '*.test.js' | ForEach-Object { $_.FullName }

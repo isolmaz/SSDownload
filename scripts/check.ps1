@@ -3,8 +3,9 @@
 # every release.
 #
 # Steps: cargo fmt --check, Clippy with warnings as errors, the Rust tests, the
-# translation catalog check (Python), the browser-extension tests (Node.js), the
-# Firefox add-on sync and lint checks, and, when installed, cargo audit. A step that
+# translation catalog check (Python), the yt-dlp plugin tests (uv), the
+# browser-extension tests (Node.js), the Firefox add-on sync and lint checks, and,
+# when installed, cargo audit. A step that
 # cannot run is reported as skipped, never as passed.
 #
 # Usage:
@@ -52,6 +53,11 @@ try {
         Invoke-Step 'translation catalogs' { python scripts/i18n.py check }
     } else {
         $skipped += 'translation catalogs (Python 3 is not installed)'
+    }
+    if (Test-Command 'uv') {
+        Invoke-Step 'yt-dlp plugin tests' { uv run --no-project --with yt-dlp==2026.10.26 python src/media/yt_dlp_plugin/test_instagram_story_fallback.py }
+    } else {
+        $skipped += 'yt-dlp plugin tests (uv is not installed)'
     }
     if (Test-Command 'node') {
         $suites = Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'browser\tests') -Filter '*.test.js' | ForEach-Object { $_.FullName }
